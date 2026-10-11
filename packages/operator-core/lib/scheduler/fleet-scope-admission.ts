@@ -2048,7 +2048,8 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
  * conflation EI-15185 guards against (fleet-scope-admission.test.ts asserts no events:await).
  */
 const HELD_BLOCKED_ITEM_STAYS_HELD =
-  '(a blocked item you still hold stays held: record work_items:set_blocker on it first — loop:end then refuses ' +
+  '(a blocked item you still hold stays held: record work_items:set_blocker on it first — that frees its ' +
+  'concurrent-claim slot without releasing it, and loop:end then refuses ' +
   'the stop and returns the bounded wake to register in recovery.steps)';
 
 export function fleetScopedMiss(

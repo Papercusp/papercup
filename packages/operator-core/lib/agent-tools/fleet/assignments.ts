@@ -150,13 +150,15 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'dag',
 ] as const;
 
-export type SchedulerClaimState = Pick<ClaimConcurrencyVerdict, 'activeClaims' | 'heldIds'>;
+export type SchedulerClaimState = Pick<ClaimConcurrencyVerdict, 'activeClaims' | 'heldIds' | 'blockerParkedIds'>;
 
 /**
  * Keep scheduler-capacity claims visible beside the actionable assignment list.
  * The scheduler counts every non-terminal taken_by row, including blocked and
  * needs-human items that the fleet_assignment view intentionally hides from its
- * work-list to avoid calling correctly parked work stalled or reclaimable.
+ * work-list to avoid calling correctly parked work stalled or reclaimable — except
+ * a blocked/needs-human hold with an active external blocker, which P-010 (plan
+ * D-010) does not count; those are listed in blockerParkedIds so they stay visible.
  */
 export function projectSchedulerClaimState<T extends AgentAssignment>(
   agents: readonly T[],
@@ -167,7 +169,11 @@ export function projectSchedulerClaimState<T extends AgentAssignment>(
     return {
       ...agent,
       schedulerClaimState: state
-        ? { activeClaims: state.activeClaims, heldIds: [...state.heldIds] }
+        ? {
+            activeClaims: state.activeClaims,
+            heldIds: [...state.heldIds],
+            blockerParkedIds: [...state.blockerParkedIds],
+          }
         : null,
     };
   });
@@ -1756,7 +1762,10 @@ export default defineTool({
       claims: rows.filter((r) => r.source !== 'presence').length,
       // This uses the scheduler's exact held-work-item predicate. It can exceed
       // claims/load because blocked and needs-human holds consume scheduler capacity
-      // while remaining absent from the actionable fleet_assignment work-list.
+      // while remaining absent from the actionable fleet_assignment work-list —
+      // EXCEPT a blocked/needs-human hold carrying an active external blocker
+      // (work_items:set_blocker), which P-010 (plan D-010) stops counting; those ids
+      // are on each agent's schedulerClaimState.blockerParkedIds instead.
       scheduler_claim_state_status: !snapshotRead && schedulerClaimStateComplete ? 'measured' : 'unknown',
       scheduler_active_work_item_claims: !snapshotRead && schedulerClaimStateComplete
         ? agents.reduce((count, agent) => count + (agent.schedulerClaimState?.activeClaims ?? 0), 0)

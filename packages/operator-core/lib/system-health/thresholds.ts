@@ -958,6 +958,11 @@ export function coordinationStatus(d: CoordinationHealth, now?: number): PanelSt
   // suppress checkpoint-documented holds (see types.ts), so warn only — and
   // parkedMembers (benched-by-design) never affects status at all.
   if (d.stalledClaims > 0) return 'warn';
+  // P-011(b): any session that cannot take a turn, or any autonomous claim holder with nothing
+  // to wake it, is a real smell. Warn only: the threshold alarm (`agents-wedged` /
+  // `agents-stranded` in liveness-alarm.ts) owns paging, and a crit here would ALSO raise the
+  // generic `panel:coordination` catch-all for the same condition.
+  if ((d.agentStrand?.wedged ?? 0) > 0 || (d.agentStrand?.stranded ?? 0) > 0) return 'warn';
   return 'ok';
 }
 

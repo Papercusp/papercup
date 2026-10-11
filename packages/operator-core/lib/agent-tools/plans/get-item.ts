@@ -123,12 +123,7 @@ export default defineTool({
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:get-item', decision);
       autoResolvedHarness = decision.harnessSlug;
       const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-      ctxAny.metadata?.({
-        harnessAutoResolved: decision.bySlug,
-        ...(Object.keys(decision.ambiguous).length > 0
-          ? { harnessAmbiguous: decision.ambiguous }
-          : {}),
-      });
+      ctxAny.metadata?.({ harnessAutoResolved: decision.bySlug });
     }
 
     // The all-blocked overlay is workspace-wide, not per-slug — fetch it ONCE for

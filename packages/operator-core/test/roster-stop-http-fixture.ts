@@ -8,8 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import type { SystemHealth } from '../lib/system-health/types';
-import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
+import { createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -21,6 +20,8 @@ assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
+const preparedApiBundle = resolvePreparedPrivateApiBundle(process.argv, evidence);
+const apiBundle = preparedApiBundle ?? join(evidence, 'hono-host.mjs');
 const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1'
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
@@ -177,7 +178,6 @@ async function coordCanary(health: unknown) {
     if (process.env.ROSTER_HEALTH_BROWSER_PROOF === '1') {
       const { writeSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
       const { recordHealthHistory } = await import('../lib/system-health/history');
-      const { PANEL_ORDER, PANEL_LABELS } = await import('../lib/system-health/types');
       const { createWorkItem, setWorkItemState, updateExternalBlockerHistory } = await import('../lib/work-items');
       // A real private needs-human row keeps the maintained Work-items collector
       // alarming across the positive ack/unack ticks; no collector is mocked.
@@ -190,15 +190,7 @@ async function coordCanary(health: unknown) {
       const needsHuman = await setWorkItemState(condition.id, 'needs-human', { harness: 'papercusp', by: 'private-health-fixture' });
       assert.equal(needsHuman?.state, 'needs-human');
       const now = Date.now();
-      const snapshot = (workspaceId: string, foreign: boolean): SystemHealth => ({ workspaceId, evaluatedAt: now, overall: 'warn',
-        crossMonitor: { queenAlive: true, overwatchAlive: null },
-        panels: Object.fromEntries(PANEL_ORDER.map(key => [key, { key, label: PANEL_LABELS[key],
-          status: key === 'workItems' || key === 'plans' ? 'warn' : 'unknown',
-          summary: foreign ? 'private-health-foreign' : key === 'workItems' ? 'private-health-selected'
-            : key === 'plans' ? 'private-health-neighbor' : 'private-health-unmeasured',
-          metrics: [], data: null,
-          ...(key === 'workItems' ? { link: { label: 'Work', href: '/adv?tab=harnesses' } } : {}),
-        }])) as SystemHealth['panels'] });
+      const snapshot = (workspaceId: string, foreign: boolean) => createPrivateHealthSnapshot(workspaceId, foreign, now);
       const current = snapshot(workspace, false);
       await writeSharedSnapshot('system.health', workspace, current, 1);
       await writeSharedSnapshot('system.health', foreignWorkspace, snapshot(foreignWorkspace, true), 1);
@@ -335,7 +327,7 @@ async function coordCanary(health: unknown) {
       } } : {}),
       verifyReceipt: (value, summary, wake) => verifyReceipt(value, selected, wake, summary) });
     console.log('ROSTER_COORD_BROWSER_RECEIPT ' + JSON.stringify({ ...receipt, health,
-      apiBundleSha256: createHash('sha256').update(readFileSync(join(evidence, 'hono-host.mjs'))).digest('hex') }));
+      apiBundleSha256: createHash('sha256').update(readFileSync(apiBundle)).digest('hex') }));
     return;
   }
   for (const wake of [false, true]) {
@@ -364,7 +356,7 @@ async function coordCanary(health: unknown) {
   }
   // Tokens are deliberately absent from retained evidence.
   console.log('ROSTER_COORD_HTTP_RECEIPT ' + JSON.stringify({ workspace, health,
-    bundleSha256: createHash('sha256').update(readFileSync(join(evidence, 'hono-host.mjs'))).digest('hex'),
+    bundleSha256: createHash('sha256').update(readFileSync(apiBundle)).digest('hex'),
     authenticatedUser: ownPrincipal?.id, authMethod: 'cookie-session', selected, neighbor, foreign, stale,
     selectedMessageIds: selectedIds, receipts, denialStatuses: denied.map(receipt => receipt.status),
     neighborIsolated: true, positiveControl: 'wrong-recipient rejected',
@@ -390,11 +382,14 @@ async function main() {
     assert.equal(prepared.workspace, workspace);
     console.log('ROSTER_STOP_HTTP_PHASE registry-ready');
   }
-  const bundle = join(evidence, 'hono-host.mjs');
-  console.log('ROSTER_STOP_HTTP_PHASE bundle-start');
-  try { execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-    { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000 }); }
-  catch (error: any) { writeFileSync(join(evidence, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? '')); throw error; }
+  const bundle = apiBundle;
+  if (preparedApiBundle) console.log('ROSTER_STOP_HTTP_PHASE bundle-prepared');
+  else {
+    console.log('ROSTER_STOP_HTTP_PHASE bundle-start');
+    try { execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
+      { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000 }); }
+    catch (error: any) { writeFileSync(join(evidence, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? '')); throw error; }
+  }
   const log = (chunk: Buffer) => process.stdout.write(chunk);
   api = spawn(process.execPath, [bundle], { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   api.stdout!.on('data', log); api.stderr!.on('data', log);

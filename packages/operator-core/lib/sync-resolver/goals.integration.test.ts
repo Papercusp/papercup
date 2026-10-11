@@ -113,6 +113,10 @@ beforeAll(async () => {
   sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
   // The owner report also uses dedicated connections outside getOrgPg().
   nestedPg = await setupBaselineCoordFixture({ dsn: db.url });
+  // A name-filtered run may start with the deadline regression. Keep Vitest's
+  // cold module transforms in suite setup, outside its per-case timer; a timed
+  // out async test keeps running and would otherwise race the next SQL fixture.
+  await Promise.all([import('./goals'), import('../goal-launch-settings'), import('../agent-obligation-reader')]);
 }, 600_000);
 
 afterAll(async () => {
@@ -479,6 +483,65 @@ describe('goals.* resolvers against real SQL', () => {
     const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
     expect(stored.properties.worklist_policy).toEqual(policy);
   });
+
+  it.each(['late success', 'failure'] as const)(
+    'shares the holder portfolio with the collection after optional read %s', async (outcome) => {
+      await goal();
+      await agentOnGoal('su-slow-portfolio');
+      await plan('shared-plan', { harness: 'alpha', title: 'Shared portfolio', status: 'active' });
+      const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+          selectable: true, defaultSelected: false } },
+        worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+          default: { order: [], excluded: [] } } };
+      const properties = { worklist: { value: ['plan:alpha/shared-plan'], version: 1 },
+        worklist_policy: { value: { order: ['plan:alpha/shared-plan'], included: ['plan:alpha/shared-plan'],
+          excluded: [] }, version: 1,
+          provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' } };
+      expect(readTypedPropertyCollection({ propertySchema: schema, properties, property: 'worklist',
+        source: { ok: true, items: ['plan:alpha/shared-plan'] } }))
+        .toMatchObject({ ok: true, selected: ['plan:alpha/shared-plan'] });
+      await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+        properties = ${sql.json(properties)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+      const settings = await import('../goal-launch-settings');
+      const read = settings.readGoalPortfolioBrief;
+      const { AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS } = await import('../agent-obligation-reader');
+      const spy = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async (args) => {
+        // A real pending read outlives the agenda's optional bound. The table
+        // must consume its eventual result (or error), without starting again.
+        await new Promise((resolve) => setTimeout(resolve, AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS + 100));
+        if (outcome === 'failure') throw new Error('portfolio unavailable');
+        return read(args);
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { resolveGoalDetail } = await import('./goals');
+        const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+          goalModeState: { status: string; portfolio: unknown };
+          goalData: { collections: Record<string, {
+            selection: { ok: boolean; selected?: string[] }; rows: Array<{ id: string; label: string }> }> };
+        };
+        expect(detail.goalModeState).toMatchObject({ status: 'degraded', portfolio: null });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, goalId: GOAL,
+          collectionProperty: 'worklist', sql, claimability: 'skip', rubricStewardship: 'skip' }));
+        if (outcome === 'late success') {
+          expect(detail.goalData.collections.worklist.selection).toMatchObject({
+            ok: true, selected: ['plan:alpha/shared-plan'] });
+          expect(detail.goalData.collections.worklist.rows).toContainEqual(expect.objectContaining({
+            id: 'plan:alpha/shared-plan', label: 'Shared portfolio' }));
+        } else {
+          expect(detail.goalData.collections.worklist.selection.ok).toBe(false);
+          expect(detail.goalData.collections.worklist.rows).toEqual([]);
+        }
+        const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+        expect(stored.properties).toEqual(properties);
+      } finally {
+        spy.mockRestore();
+        warn.mockRestore();
+      }
+    }, 15_000,
+  );
 
   it('reads a non-plan collection through the shared reader, retaining owner choices', async () => {
     await goal();

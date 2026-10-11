@@ -51,9 +51,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return {
     ...actual,
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
-      const tx = ((strings: TemplateStringsArray | string[]) => {
+      const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
         h.querySql.push(sql);
+        // The subject plan's slug-only harness lookup (planHarnessesForSlugs) answers like the
+        // real table: one row per requested slug, owned by 'papercusp' (resolvePlanScope above).
+        // harness_plans' primary key is (workspace_id, harness_slug, plan_slug), so a slug never
+        // lists one harness twice; handing it the binding rows would read as an ambiguous slug.
+        if (sql.includes('SELECT plan_slug, harness_slug FROM harness_shared.harness_plans')) {
+          const slugs = (values.find(Array.isArray) ?? []) as string[];
+          return Promise.resolve(slugs.map((plan_slug) => ({ plan_slug, harness_slug: 'papercusp' })));
+        }
         // The provisional-scorecard lookup finds none; every other read returns the bindings.
         return Promise.resolve(sql.includes('provisional') ? [] : h.rows);
       }) as unknown;

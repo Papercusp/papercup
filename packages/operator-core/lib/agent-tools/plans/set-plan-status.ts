@@ -72,7 +72,6 @@ import { propagatePlanScopeWrite, type PlanScopeCascadeResult } from './plan-sco
 import { defaultPlanScopeCascadeDeps } from './plan-scope-cascade-deps';
 import {
   recoverHarnessFromSlugs,
-  requireUnambiguousSlugScope,
   slugScopeErrorResult,
 } from './slug-scope';
 
@@ -646,16 +645,12 @@ export default defineTool({
     // EI-21405955283990151: lifecycle closeout already names exact plan slugs,
     // so reuse the PG-canonical recovery used by plans:get/items instead of
     // demanding a harness the caller cannot discover from a workspace-bound
-    // session. Writes are stricter than reads: a slug present in >1 harness is
-    // fail-loud rather than taking the most-recently-updated candidate.
+    // session. A slug present in >1 harness refuses rather than taking the
+    // most-recently-updated candidate (P-006: the decider itself refuses).
     const scope = resolveHarnessScope(args.harness, ctx);
     let sctx: typeof ctx & { harnessSlug: string };
     if (scope.kind === 'none') {
-      const recovered = await recoverHarnessFromSlugs(ctx, slugs);
-      const decision = requireUnambiguousSlugScope(
-        recovered,
-        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-      );
+      const decision = await recoverHarnessFromSlugs(ctx, slugs);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:set-plan-status', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
       (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({

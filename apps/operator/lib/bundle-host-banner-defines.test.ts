@@ -377,12 +377,31 @@ describe('shared esbuild host banner (WI-10005299)', () => {
   });
 
   describe('bundling with the real banner', () => {
-    async function bundleAndRun(entrySource: string, opts: { banner: string; define?: Record<string, string> }) {
+    // Exercise the maintained desktop policy before applying it to another producer.
+    // The development host still needs its emitted source-comment diagnostics.
+    function desktopCompaction() {
+      const desktop = readFileSync(join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
+      const declaration = /^MINIFY_ARGS=\(([^)]*)\)/m.exec(desktop);
+      expect(declaration, 'desktop compaction policy must remain discoverable').not.toBeNull();
+      const flags = declaration![1].trim().split(/\s+/);
+      expect(flags.sort()).toEqual(['--minify-syntax', '--minify-whitespace']);
+      return { minifyWhitespace: flags.includes('--minify-whitespace'), minifySyntax: flags.includes('--minify-syntax') };
+    }
+
+    async function bundleAndRun(entrySource: string, opts: {
+      banner: string;
+      define?: Record<string, string>;
+      compact?: boolean;
+      minifyIdentifiers?: boolean;
+      env?: NodeJS.ProcessEnv;
+      modules?: Record<string, string>;
+    }) {
       // realpath: macOS tmpdir is a symlink, and the bundle reports its resolved location.
       const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bundle-host-banner-')));
       try {
         const entry = join(dir, 'entry.mjs');
         writeFileSync(entry, entrySource);
+        for (const [name, source] of Object.entries(opts.modules ?? {})) writeFileSync(join(dir, name), source);
         const result = await build({
           entryPoints: [entry],
           bundle: true,
@@ -391,14 +410,20 @@ describe('shared esbuild host banner (WI-10005299)', () => {
           target: 'node22',
           banner: { js: opts.banner },
           define: opts.define,
+          ...(opts.compact ? desktopCompaction() : {}),
+          minifyIdentifiers: opts.minifyIdentifiers ?? false,
+          metafile: true,
           write: false,
           logLevel: 'silent',
         });
         const out = join(dir, 'out.mjs');
         writeFileSync(out, result.outputFiles[0].text);
         const check = spawnSync(process.execPath, ['--check', out], { encoding: 'utf8' });
-        const run = check.status === 0 ? spawnSync(process.execPath, [out], { encoding: 'utf8' }) : null;
-        return { dir, check, stdout: run?.stdout.trim() ?? '', runStatus: run?.status ?? null };
+        const run = check.status === 0 ? spawnSync(process.execPath, [out], {
+          encoding: 'utf8', env: { ...process.env, ...opts.env },
+        }) : null;
+        return { dir, check, stdout: run?.stdout.trim() ?? '', stderr: run?.stderr ?? '',
+          runStatus: run?.status ?? null, code: result.outputFiles[0].text, metafile: result.metafile };
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -438,6 +463,74 @@ describe('shared esbuild host banner (WI-10005299)', () => {
       expect(result.check.status, result.check.stderr).toBe(0);
       expect(result.runStatus).toBe(0);
       expect(result.stdout).toBe(`${result.dir}|${join(result.dir, 'out.mjs')}`);
+    });
+
+    const DBOS_NAME_FIXTURE = [
+      'const { DBOS } = require(process.env.P058_DBOS_SDK);',
+      'const { getRegisteredFunctionName } = require(process.env.P058_DBOS_DECORATORS);',
+      'async function portableWorkflow() { return 42; }',
+      'function portableStep() { return 42; }',
+      'class PortableTask { run() { return 42; } }',
+      'const workflow = DBOS.registerWorkflow(portableWorkflow);',
+      'const step = DBOS.registerStep(portableStep);',
+      'console.log(JSON.stringify({ workflow: getRegisteredFunctionName(workflow),',
+      '  step: getRegisteredFunctionName(step), task: PortableTask.name, value: new PortableTask().run() }));',
+    ].join('\n');
+    const DBOS_ENV = {
+      P058_DBOS_SDK: join(REPO_ROOT, 'node_modules/@dbos-inc/dbos-sdk'),
+      P058_DBOS_DECORATORS: join(REPO_ROOT, 'node_modules/@dbos-inc/dbos-sdk/dist/src/decorators.js'),
+    };
+
+    it('desktop compaction preserves actual DBOS workflow/step registration and class names', async () => {
+      const { banner, defines } = loadSharedBanner();
+      const result = await bundleAndRun(DBOS_NAME_FIXTURE, { banner, define: defines, compact: true, env: DBOS_ENV });
+      expect(result.check.status, result.check.stderr).toBe(0);
+      expect(result.runStatus, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ workflow: 'portableWorkflow', step: 'portableStep', task: 'PortableTask', value: 42 });
+    });
+
+    it('control: identifier mangling changes the names DBOS actually registers', async () => {
+      const { banner, defines } = loadSharedBanner();
+      const result = await bundleAndRun(DBOS_NAME_FIXTURE, {
+        banner, define: defines, compact: true, minifyIdentifiers: true, env: DBOS_ENV,
+      });
+      expect(result.runStatus, result.stderr).toBe(0);
+      const registered = JSON.parse(result.stdout);
+      expect(registered.workflow).not.toBe('portableWorkflow');
+      expect(registered.step).not.toBe('portableStep');
+      expect(registered.task).not.toBe('PortableTask');
+      expect(registered.value).toBe(42);
+    });
+
+    it('desktop compaction retains the generated banner, path bindings and CJS CLI protection', async () => {
+      const { banner, defines } = loadSharedBanner();
+      const entry = [
+        'if (require.main === module) throw new Error("bundled library CLI ran");',
+        'console.log(__dirname + "|" + __filename + "|" + __PAPERCUSP_BUNDLED_SOURCE_SHA__);',
+      ].join('\n');
+      const result = await bundleAndRun(entry, {
+        banner, define: { ...defines, __PAPERCUSP_BUNDLED_SOURCE_SHA__: '"source-fixture"' }, compact: true,
+      });
+      expect(result.code.startsWith(banner)).toBe(true);
+      expect(result.check.status, result.check.stderr).toBe(0);
+      expect(result.runStatus, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`${result.dir}|${join(result.dir, 'out.mjs')}|source-fixture`);
+    });
+
+    it('development output retains source markers; compact output retains the same input graph in its metafile', async () => {
+      const { banner, defines } = loadSharedBanner();
+      const entry = 'import { value } from "./diagnostic-leaf.mjs"; console.log(value);';
+      const modules = { 'diagnostic-leaf.mjs': 'export const value = 42;' };
+      const development = await bundleAndRun(entry, { banner, define: defines, modules });
+      const compact = await bundleAndRun(entry, { banner, define: defines, modules, compact: true });
+      for (const result of [development, compact]) {
+        expect(result.runStatus, result.stderr).toBe(0);
+        expect(result.stdout).toBe('42');
+        expect(Object.keys(result.metafile!.inputs).some((path) => path.endsWith('/diagnostic-leaf.mjs'))).toBe(true);
+        expect(Object.keys(result.metafile!.inputs).some((path) => path.endsWith('/entry.mjs'))).toBe(true);
+      }
+      expect(development.code).toMatch(/\/\/[^\n]*diagnostic-leaf\.mjs/);
+      expect(compact.code).not.toMatch(/\/\/[^\n]*diagnostic-leaf\.mjs/);
     });
   });
 });

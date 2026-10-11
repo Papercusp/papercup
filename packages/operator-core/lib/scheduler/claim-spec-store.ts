@@ -27,6 +27,7 @@ import { recordClaimAttempt } from '../orchestrator/claim-audit';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
+import { activeExternalBlockers } from '../external-blockers';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
@@ -91,11 +92,54 @@ export interface SetClaimSpecResult {
  * real work. WI-1250584 fixed the terminal-status half of this same
  * mis-count (a governor receipt left in 'done'/'dropped'); this fixes the
  * still-active half (a receipt in 'wip' for an in-flight admission).
+ *
+ * P-010 (parked-agent-census-resumption-and-root-cause-2026-10-09 D-010): a held row that is
+ * PARKED ON A TYPED EXTERNAL BLOCKER does not count — see {@link isParkedOnExternalBlocker}.
+ * This returns the rows that DO count; {@link getHeldClaimsForBee} returns every held row
+ * with that classification attached, for surfaces that must still name the parked ones.
  */
 export async function getActiveClaimsForBee(
   args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
 ): Promise<{ id: string; kind: string }[]> {
+  return (await getHeldClaimsForBee(args, sqlOverride))
+    .filter((row) => !row.parkedOnExternalBlocker)
+    .map(({ id, kind }) => ({ id, kind }));
+}
+
+/**
+ * P-010 (plan D-010): true when a held row is parked on a typed external blocker, so it must
+ * NOT consume a concurrent-claim slot. BOTH must hold:
+ *
+ *   1. the row is `blocked` or `needs-human` — a `wip` row that carries a blocker still counts,
+ *      because its holder says it is working it; and
+ *   2. it carries at least one ACTIVE external blocker (work_items:set_blocker), read with the
+ *      REAL external-blockers parser — never a SQL re-spelling of it, which would drift.
+ *
+ * What still counts, on purpose (EI-11796's protection against unexplained parking): a plain
+ * claim-hold park with no typed blocker, and an item blocked only by a work-item `blocks` edge.
+ *
+ * Measured 2026-10-11 02:29Z: 56 of 188 holders held such a row (78 rows); 18 holders sat at a
+ * 2-claim cap only because of them, which is the 2/2 starvation the parked-agent census found.
+ */
+export function isParkedOnExternalBlocker(row: { status: string | null; externalBlockers?: unknown }): boolean {
+  if (row.status !== 'blocked' && row.status !== 'needs-human') return false;
+  return activeExternalBlockers({ externalBlockers: row.externalBlockers }).length > 0;
+}
+
+/** One held row with its P-010 classification — the shape {@link getHeldClaimsForBee} returns. */
+export type HeldClaimRow = { id: string; kind: string; parkedOnExternalBlocker: boolean };
+
+/**
+ * Every non-terminal row this bee holds (same predicate as before P-010), each classified by
+ * {@link isParkedOnExternalBlocker}. The ONE read behind {@link getActiveClaimsForBee} and
+ * {@link readClaimConcurrency}, so the counted set and the parked set cannot come from
+ * different queries.
+ */
+export async function getHeldClaimsForBee(
+  args: { cupId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<HeldClaimRow[]> {
   const sql = sqlOverride ?? getOrgPg().sql;
   const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
   // NOTE: harness_shared.work_items's unified item id lives in `feature_id` (not `id` —
@@ -103,7 +147,8 @@ export async function getActiveClaimsForBee(
   // separate, unrelated legacy column that is null for issue-family rows). Aliased below so
   // every caller of this function sees the { id, kind } shape its name promises.
   const rows = (await sql`
-    SELECT feature_id AS id, item_kind AS kind
+    SELECT feature_id AS id, item_kind AS kind, status,
+           payload->'externalBlockers' AS external_blockers
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
@@ -111,8 +156,17 @@ export async function getActiveClaimsForBee(
        AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     kind: string;
+    status?: string | null;
+    external_blockers?: unknown;
   }>;
-  return rows;
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    parkedOnExternalBlocker: isParkedOnExternalBlocker({
+      status: row.status ?? null,
+      externalBlockers: row.external_blockers,
+    }),
+  }));
 }
 
 /** Thin count-only projection of {@link getActiveClaimsForBee} — kept for callers (and tests)
@@ -159,6 +213,12 @@ export type ClaimConcurrencyVerdict = {
   maxConcurrentClaims: number;
   /** The held item ids, so a refusal/alert can name exactly what to release. */
   heldIds: string[];
+  /**
+   * P-010 (plan D-010): held ids parked on a typed external blocker. They are STILL held but do
+   * NOT count toward `activeClaims`; every surface names them so they are never hidden. Empty
+   * when the caller passed a bare count (never fabricated).
+   */
+  blockerParkedIds: string[];
 };
 
 /**
@@ -188,8 +248,10 @@ export type ClaimConcurrencyVerdict = {
  * and the DECISION lives here, where every caller shares it.
  */
 export function evaluateClaimConcurrency(args: {
-  /** Either the held rows (preferred — yields `heldIds`) or a bare count. */
+  /** Either the COUNTED held rows (preferred — yields `heldIds`) or a bare count. */
   activeClaims: readonly { id: string }[] | number;
+  /** P-010: held rows parked on a typed external blocker — reported, never counted. */
+  blockerParked?: readonly { id: string }[];
   /** The resolved spec's limit; nullish ⇒ {@link DEFAULT_MAX_CONCURRENT_CLAIMS}. */
   maxConcurrentClaims?: number | null;
 }): ClaimConcurrencyVerdict {
@@ -201,6 +263,18 @@ export function evaluateClaimConcurrency(args: {
     activeClaims,
     maxConcurrentClaims,
     heldIds,
+    blockerParkedIds: (args.blockerParked ?? []).map((c) => c.id),
+  };
+}
+
+/** Split classified held rows into the verdict's counted and blocker-parked inputs. */
+function splitHeldClaims(rows: readonly HeldClaimRow[]): {
+  activeClaims: { id: string }[];
+  blockerParked: { id: string }[];
+} {
+  return {
+    activeClaims: rows.filter((r) => !r.parkedOnExternalBlocker).map((r) => ({ id: r.id })),
+    blockerParked: rows.filter((r) => r.parkedOnExternalBlocker).map((r) => ({ id: r.id })),
   };
 }
 
@@ -213,9 +287,9 @@ export async function readClaimConcurrency(
   args: { cupId: string; workspaceId?: string; maxConcurrentClaims?: number | null },
   sqlOverride?: OrgSql,
 ): Promise<ClaimConcurrencyVerdict> {
-  const activeClaims = await getActiveClaimsForBee({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
+  const held = await getHeldClaimsForBee({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
   return evaluateClaimConcurrency({
-    activeClaims,
+    ...splitHeldClaims(held),
     maxConcurrentClaims: args.maxConcurrentClaims,
   });
 }
@@ -258,8 +332,11 @@ export async function readClaimConcurrencyBatch(
   // counts here, which is exactly the row the presence layer's `load` can omit. Kept
   // identical to getActiveClaimsForBee's WHERE clause on purpose (EI-21902965465306743) —
   // do not hand-edit one without the other.
+  // P-010 (plan D-010): the same classification as getHeldClaimsForBee — status + the
+  // externalBlockers array, judged in JS by isParkedOnExternalBlocker.
   const rows = (await sql`
-    SELECT feature_id AS id, taken_by AS cup_id
+    SELECT feature_id AS id, taken_by AS cup_id, status,
+           payload->'externalBlockers' AS external_blockers
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ANY(${cupIds}::text[])
@@ -267,19 +344,28 @@ export async function readClaimConcurrencyBatch(
        AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     cup_id: string;
+    status?: string | null;
+    external_blockers?: unknown;
   }>;
 
-  const heldByCup = new Map<string, { id: string }[]>();
+  const heldByCup = new Map<string, HeldClaimRow[]>();
   for (const row of rows) {
     const list = heldByCup.get(row.cup_id) ?? [];
-    list.push({ id: row.id });
+    list.push({
+      id: row.id,
+      kind: '',
+      parkedOnExternalBlocker: isParkedOnExternalBlocker({
+        status: row.status ?? null,
+        externalBlockers: row.external_blockers,
+      }),
+    });
     heldByCup.set(row.cup_id, list);
   }
   for (const cupId of cupIds) {
     out.set(
       cupId,
       evaluateClaimConcurrency({
-        activeClaims: heldByCup.get(cupId) ?? [],
+        ...splitHeldClaims(heldByCup.get(cupId) ?? []),
         maxConcurrentClaims: args.maxConcurrentClaims,
       }),
     );

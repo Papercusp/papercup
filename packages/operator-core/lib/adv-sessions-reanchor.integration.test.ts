@@ -21,9 +21,12 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
+import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import {
+  acquireAdvSessionResume,
   adoptStartingTerminalLaunch,
   classifyOwnerNativeSession,
+  finalizeAdvSessionResume,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
   reanchorAdvSessionNativeId,
@@ -52,6 +55,7 @@ vi.mock('./session-archive-hook', () => ({ scheduleArchiveForAdvSession: vi.fn()
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
+let isolatedDb: OrgTestDb | undefined;
 
 const WS = 'reanchor-ws';
 const OWNER = 'su-reanchor-owner';
@@ -81,7 +85,10 @@ async function seedAdv(opts: {
 }
 
 beforeAll(async () => {
-  fx = await setupBaselineCoordFixture();
+  // Lifecycle tests truncate global tables. A migrated clone keeps this suite
+  // independent of other files holding the shared baseline fixture mutex.
+  isolatedDb = await createOrgTestDb();
+  fx = await setupBaselineCoordFixture({ dsn: isolatedDb.adminDsn });
   admin = fx.admin;
 });
 async function cleanupReanchorFixture(
@@ -91,7 +98,13 @@ async function cleanupReanchorFixture(
   if (currentAdmin) await currentAdmin`TRUNCATE harness_shared.adv_sessions`.catch(() => {});
   if (currentFixture) await currentFixture.dispose();
 }
-afterAll(async () => cleanupReanchorFixture(admin, fx));
+afterAll(async () => {
+  try {
+    await cleanupReanchorFixture(admin, fx);
+  } finally {
+    await isolatedDb?.cleanup();
+  }
+});
 
 describe('baseline fixture teardown', () => {
   it('is safe when beforeAll fails before returning fixture resources', async () => {
@@ -353,6 +366,150 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
       }
     },
   );
+});
+
+describe('keyed resume applied receipt retention (real PG)', () => {
+  it.each(['current', 'history', 'desired-only', 'foreign-owner', 'foreign-workspace'] as const)(
+    'finalizes a retained row using only its exact applied same-owner receipt from %s',
+    async (receiptSource) => {
+      const owner = `su-finalize-receipt-${randomUUID()}`;
+      const siblingOwner = receiptSource === 'foreign-owner' ? `su-other-${randomUUID()}` : owner;
+      const retainedId = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID, ended: true });
+      const siblingId = await seedAdv({ coordOwnerId: siblingOwner, sessionId: FRESH_ID, startedAgoSec: 0 });
+      const makeRecord = (text: string, stateRevision: string) => {
+        const artifact = compileAgentSpecification({
+          source: {
+            id: 'finalize-receipt', workItem: { kind: 'feature' },
+            spine: { edges: { DONE: { to: 'done' } } },
+            grants: { requires: [], optional: [] },
+          },
+          prompt: { role: 'worker', text }, inputClosure: [],
+        });
+        return {
+          v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+          stack: ['domain:blueprint-operation-worker'],
+          specificationRevision: artifact.specificationRevision,
+          stateRevision, specificationArtifact: artifact,
+        };
+      };
+      const oldRecord = makeRecord('retained old instructions', 'old-state');
+      const appliedRecord = makeRecord('acknowledged newer instructions', 'applied-state');
+      const applied = {
+        specificationRevision: appliedRecord.specificationRevision,
+        stateRevision: appliedRecord.stateRevision,
+      };
+      const key = `receipt-resume:${randomUUID()}`;
+      try {
+        expect(await recordSuLaunchSpec(retainedId, owner, oldRecord)).toBe(true);
+        expect(await recordSuLaunchSpec(siblingId, siblingOwner, appliedRecord)).toBe(true);
+        const requested = await requestSessionIdentityActivation({
+          ownerId: owner, workspaceId: WS, revision: applied, source: 'launch',
+          attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        });
+        const activation = receiptSource === 'desired-only'
+          ? requested.state.activation!
+          : acknowledgeActivation(prepareActivation(requested.state.activation!, applied), applied);
+        await admin`
+          UPDATE harness_shared.session_briefs
+             SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(activation)}, true)
+           WHERE workspace_id = ${WS} AND owner_id = ${owner}
+        `;
+        if (receiptSource === 'history') {
+          expect(await recordSuLaunchSpec(
+            siblingId, owner, makeRecord('newer prepared instructions', 'prepared-state'),
+          )).toBe(true);
+        }
+        if (receiptSource === 'foreign-workspace') {
+          await admin`UPDATE harness_shared.adv_sessions SET workspace_id = 'other-receipt-ws' WHERE id = ${siblingId}`;
+        }
+        // The acknowledged sibling ended before the retained native row returned.
+        await markAdvSessionEnded(siblingId, 0, 'self');
+        const readRetained = async () => (await admin<{
+          launch_spec: Record<string, unknown>; ended: boolean; resume_claim_key: string | null;
+        }[]>`
+          SELECT launch_spec, ended_at IS NOT NULL AS ended, resume_claim_key
+            FROM harness_shared.adv_sessions WHERE id = ${retainedId}
+        `)[0];
+        expect(resolveIdentityArtifact((await readRetained()).launch_spec, applied)).toEqual({
+          kind: 'stale-artifact', reason: 'receipt-missing',
+        });
+        expect((await acquireAdvSessionResume(retainedId, key)).acquired).toBe(true);
+        expect(await finalizeAdvSessionResume(retainedId, `${key}:wrong`)).toBe(false);
+        expect((await readRetained()).launch_spec).toEqual(oldRecord);
+        if (receiptSource === 'current') {
+          // A receipt write failure must roll back liveness, reservation clearing,
+          // and the keyed success verdict together.
+          await admin.unsafe(`
+            CREATE FUNCTION harness_shared.reject_resume_receipt() RETURNS trigger
+              LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected receipt write rejection'; END $$;
+            CREATE TRIGGER reject_resume_receipt BEFORE UPDATE OF launch_spec
+              ON harness_shared.adv_sessions FOR EACH ROW
+              EXECUTE FUNCTION harness_shared.reject_resume_receipt();
+          `);
+          try {
+            await expect(finalizeAdvSessionResume(retainedId, key)).rejects.toThrow('injected receipt write rejection');
+            expect(await readRetained()).toMatchObject({ ended: true, resume_claim_key: key });
+            const [receipt] = await admin<{ count: number | string }[]>`
+              SELECT count(*) AS count FROM harness_shared.agent_launch_idempotency
+               WHERE workspace_id = ${WS} AND idempotency_key = ${`psu-resume-finalize:${retainedId}:${key}`}
+            `;
+            expect(Number(receipt.count)).toBe(0);
+          } finally {
+            await admin.unsafe('DROP TRIGGER reject_resume_receipt ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.reject_resume_receipt()');
+          }
+        }
+        expect(await finalizeAdvSessionResume(retainedId, key)).toBe(true);
+        const stored = await readRetained();
+        expect(stored).toMatchObject({ ended: false, resume_claim_key: null });
+        expect(stored.launch_spec).toMatchObject(oldRecord);
+        if (receiptSource === 'current' || receiptSource === 'history') {
+          // This is the identity verdict used before tool readiness, not merely a JSON copy.
+          expect(resolveIdentityArtifact(stored.launch_spec, applied)).toMatchObject({
+            kind: 'governed', artifact: appliedRecord.specificationArtifact,
+            current: oldRecord.specificationArtifact,
+          });
+          expect(stored.launch_spec.identityHistory).toHaveLength(1);
+          expect(stored.launch_spec.identityHistory).toEqual([expect.objectContaining(applied)]);
+        } else {
+          expect(stored.launch_spec).toEqual(oldRecord);
+          expect(resolveIdentityArtifact(stored.launch_spec, applied)).toEqual({
+            kind: 'stale-artifact', reason: 'receipt-missing',
+          });
+        }
+        // Lost-response replay returns the original verdict without modifying receipts.
+        expect(await finalizeAdvSessionResume(retainedId, key)).toBe(true);
+        expect(await readRetained()).toEqual(stored);
+        if (receiptSource === 'current') {
+          // Model a successful receipt committed before retention was deployed.
+          // Replaying that key must repair identity without a second resurrection.
+          await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${admin.json(oldRecord)} WHERE id = ${retainedId}`;
+          expect(await finalizeAdvSessionResume(retainedId, key)).toBe(true);
+          expect(resolveIdentityArtifact((await readRetained()).launch_spec, applied)).toMatchObject({
+            kind: 'governed', artifact: appliedRecord.specificationArtifact,
+          });
+        }
+      } finally {
+        await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id IN (${owner}, ${siblingOwner})`;
+        await admin`DELETE FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${WS} AND idempotency_key LIKE ${`psu-resume-finalize:${retainedId}:%`}`;
+      }
+    },
+  );
+  it('resumes a non-persona session without manufacturing launch or activation receipts', async () => {
+    const owner = `su-resume-no-persona-${randomUUID()}`;
+    const id = await seedAdv({ coordOwnerId: owner, ended: true });
+    const key = randomUUID();
+    try {
+      expect((await acquireAdvSessionResume(id, key)).acquired).toBe(true);
+      expect(await finalizeAdvSessionResume(id, key)).toBe(true);
+      const [row] = await admin<{ launch_spec: unknown; ended: boolean }[]>`
+        SELECT launch_spec, ended_at IS NOT NULL AS ended FROM harness_shared.adv_sessions WHERE id = ${id}
+      `;
+      expect(row).toEqual({ launch_spec: null, ended: false });
+      expect(await admin`SELECT 1 FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`).toHaveLength(0);
+    } finally {
+      await admin`DELETE FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${WS} AND idempotency_key = ${`psu-resume-finalize:${id}:${key}`}`;
+    }
+  });
 });
 
 describe('control activation receipt concurrency', () => {

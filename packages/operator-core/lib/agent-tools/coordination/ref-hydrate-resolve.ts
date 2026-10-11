@@ -218,8 +218,22 @@ export function makePlanItemResolver(harness?: string): RefResolver {
     const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
     const item = items.find((i) => i.id === ref.item);
     if (!item) return null;
+    // scope-unique-identifiers P-004: a plan-item ref crosses a plan boundary here,
+    // and P-NNN is unique only inside its plan. Name the workspace-unique work-item the
+    // item resolves through (the same rule plans:items prints as workItemId). Dynamic
+    // import: this module's static chain must not grow (see bodyRefWorkItemResolver).
+    // Decoration only, so any failure omits it.
+    let linked = '';
+    try {
+      const { readPlanItemLinkedWorkItem, renderLinkedWorkItemSuffix } = await import(
+        '../../plan-item-linked-work-item-read'
+      );
+      linked = renderLinkedWorkItemSuffix(await readPlanItemLinkedWorkItem(ref.slug, ref.item));
+    } catch {
+      /* fail-soft: no linked work-item */
+    }
     return {
-      label: `plan:${ref.slug}#${ref.item} [${item.effectiveStatus}]`,
+      label: `plan:${ref.slug}#${ref.item} [${item.effectiveStatus}]${linked}`,
       snippet: clampSnippet(item.text, budget.snippetChars),
     };
   };

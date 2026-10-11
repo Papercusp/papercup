@@ -307,6 +307,76 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
     expect(signals.workspaceId).toBe(DEFAULT_WORKSPACE_ID);
   });
 
+  // scope-unique-identifiers-2026-07-26 P-003. The badge (linkedFeatures) and coverage
+  // (planItemTests) reads were pinned to DEFAULT_WORKSPACE_ID, so outside workspace
+  // 'default' they always came back empty. They now read the plan row's workspace, and
+  // every item carries the work-item id it resolves through.
+  const linkedRow = (featureId: string, status: string, itemId: string) => ({
+    feature_id: featureId, status, source_plan_slug: "linked", source_plan_item_ids: [itemId],
+    harness_slug: "papercup", updated_ts: "2026-10-01T00:00:00Z",
+  });
+  const recordEnrichmentScopes = () => {
+    const scopes: Array<{ workspace: string; table: string }> = [];
+    M.withWorkspace.mockImplementation(async (workspace, read) => read(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes("harness_features_consolidated")) {
+        scopes.push({ workspace, table: "features" });
+        return [
+          linkedRow("WI-11", "wip", "P-001"), // one live link
+          linkedRow("WI-21", "done", "P-002"), // terminal + live: the live one resolves
+          linkedRow("WI-22", "open", "P-002"),
+          linkedRow("WI-31", "wip", "P-003"), // two live links: ambiguous, report both
+          linkedRow("WI-32", "open", "P-003"),
+        ];
+      }
+      if (sql.includes("harness_plan_assertions")) {
+        scopes.push({ workspace, table: "assertions" });
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    }));
+    return scopes;
+  };
+  const planItems = ["P-001", "P-002", "P-003", "P-004"].map((id) => ({ id, text: id, status: "todo" }));
+
+  it("P-003: badge and coverage reads use the plan row's workspace; each item carries its linked workItemId", async () => {
+    expect("ws-lifecycle-scope").not.toBe(DEFAULT_WORKSPACE_ID);
+    M.overlayIssueBlocksForPlan.mockImplementationOnce(async () => ({ items: planItems, blockingIssues: {} }));
+    const scopes = recordEnrichmentScopes();
+
+    const result = (await run({ slug: "linked", includeHistory: false })).results[0] as {
+      items: Array<Record<string, unknown>>;
+      linkedFeatures: Record<string, { featureId: string }>;
+    };
+
+    expect(scopes.map((s) => s.table).sort()).toEqual(["assertions", "features"]);
+    expect(scopes.every((s) => s.workspace === "ws-lifecycle-scope")).toBe(true);
+
+    const byId = new Map(result.items.map((item) => [item.id, item]));
+    expect(byId.get("P-001")).toMatchObject({ workItemId: "WI-11" });
+    expect(byId.get("P-001")).not.toHaveProperty("workItemIds");
+    expect(byId.get("P-002")).toMatchObject({ workItemId: "WI-22", workItemIds: ["WI-22", "WI-21"] });
+    expect(byId.get("P-003")).toMatchObject({ workItemId: null, workItemIds: ["WI-31", "WI-32"] });
+    expect(byId.get("P-004")).toMatchObject({ workItemId: null });
+    expect(byId.get("P-004")).not.toHaveProperty("workItemIds");
+
+    // The badge shows the resolvable work-item; an ambiguous item keeps the first row seen.
+    expect(result.linkedFeatures["P-001"]?.featureId).toBe("WI-11");
+    expect(result.linkedFeatures["P-002"]?.featureId).toBe("WI-22");
+    expect(result.linkedFeatures["P-003"]?.featureId).toBe("WI-31");
+  });
+
+  it("P-003: enrichment reads fall back to DEFAULT_WORKSPACE_ID only when the row carries no workspace", async () => {
+    M.readPlanBySlug.mockImplementationOnce(async (slug: string) => M.planFixture(slug, null));
+    M.overlayIssueBlocksForPlan.mockImplementationOnce(async () => ({ items: planItems, blockingIssues: {} }));
+    const scopes = recordEnrichmentScopes();
+
+    await run({ slug: "linked-default", includeHistory: false });
+
+    expect(scopes.length).toBeGreaterThan(0);
+    expect(scopes.every((s) => s.workspace === DEFAULT_WORKSPACE_ID)).toBe(true);
+  });
+
   it("a failed signal derivation never fails the plan read (advisory overlay)", async () => {
     M.derivePlanLifecycleForRead.mockImplementationOnce(async () => {
       throw new Error("signal-lookup-down");

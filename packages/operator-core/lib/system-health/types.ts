@@ -18,6 +18,7 @@ import type { PerfVerdict } from './perf-budgets';
 import type { PerfRegressionProducerHealth } from './perf-regression-rig';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
+import type { AgentStrandHealth } from './agent-strand-census';
 
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
@@ -928,6 +929,14 @@ export interface CoordinationHealth {
   /** Live members deliberately parked on a non-inbox events:await key — benched
    *  by design (idle-but-healthy), NOT stalled/abandoned. Informational only. */
   parkedMembers: number;
+  /**
+   * P-011(b) (plan parked-agent-census-resumption-and-root-cause-2026-10-09): sessions that
+   * cannot take a turn (wedged, by class) and autonomous claim holders with no wake source
+   * (stranded). Feeds the `agents-wedged` / `agents-stranded` liveness alarms. Optional because
+   * the snapshot is shared across builds: ABSENT means "not computed by the build that wrote this
+   * snapshot", which the alarm treats as unobserved, never as zero.
+   */
+  agentStrand?: AgentStrandHealth | null;
 }
 
 /**

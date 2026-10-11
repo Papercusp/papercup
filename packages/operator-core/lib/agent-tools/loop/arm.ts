@@ -1421,7 +1421,8 @@ export default defineTool({
             // refuses to hand it out (it is not a requestable `states` value; blocked items
             // are leader-triage-only), so the member can neither progress it nor re-pull it.
             // It is still non-terminal, so getActiveClaimsForBee counts it against
-            // maxConcurrentClaims — and under the default cap of 1 the member is then
+            // maxConcurrentClaims (unless it carries an active external blocker — P-010,
+            // which a bare `blocked` binding here does not) — and under the default cap of 1 the member is then
             // starved from ALL work until it manually releases. That refusal is correct and
             // deliberately fires BEFORE lane evaluation (EI-12095), so the starvation reads
             // as "claim cap reached" with no hint that an unworkable auto-binding caused it.

@@ -22,7 +22,6 @@ vi.mock('./slug-scope', () => ({
     status: 'resolved',
     harnessSlug: 'papercusp',
     bySlug: Object.fromEntries(slugs.map((slug) => [slug, 'papercusp'])),
-    ambiguous: {},
   })),
   slugScopeErrorResult: vi.fn(),
 }));

@@ -693,6 +693,9 @@ export function currentBenchGatewayController(input: {
    * The host may tighten this limit but cannot widen the frozen allowance. */
   outputTokenLimit?: number;
   authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
+  /** Host-owned artifact capture, before reservation/send. Never pass this
+   * callback through candidate configuration. Failure refuses generation. */
+  captureProviderInput?: (attempt: Readonly<GatewayCarryTrialAttempt>) => Promise<void>;
 }, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & {
   readonly accountingBinding: CurrentBenchAccountingBinding;
   startNativeGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostGateway>;
@@ -704,7 +707,7 @@ export function currentBenchGatewayController(input: {
       !/^[a-f0-9]{64}$/.test(input.preregHash) || typeof input.authenticateProvider !== 'function') {
     throw new Error('Benchmark gateway requires its frozen assignment and authenticated provider.');
   }
-  const { workspaceId, loopId, token, preregHash, authenticateProvider, taskId } = input;
+  const { workspaceId, loopId, token, preregHash, authenticateProvider, captureProviderInput, taskId } = input;
   const assignmentId = currentBenchAssignmentId(protocol.runId, input.armId, input.taskId, input.seed);
   const assignmentIds = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
     protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed)))).sort();
@@ -757,6 +760,7 @@ export function currentBenchGatewayController(input: {
         const grantMicros = Math.round(authority.requestedUsd * 1_000_000);
         if (!Number.isSafeInteger(grantMicros) || grantMicros <= 0 || grantMicros / 1_000_000 !== authority.requestedUsd ||
             grantMicros < Math.round(requiredUsd * 1_000_000) || authority.requestedUsd > arm.generationBudget.maxUsd) return null;
+        await captureProviderInput?.(request);
         return authority;
       } catch { return null; }
     },

@@ -1946,7 +1946,7 @@ async function classifyOwnerNativeSessionUnshared(opts: {
 
   let phase: NativeSessionVerificationPhase = 'transaction_setup';
   try {
-    const classifyRows = async (sql: ReturnType<typeof getOrgPg>['sql']) => {
+    const classifyRows = async (sql: ReturnType<typeof getOrgPg>['sql']): Promise<OwnerNativeSessionClassification> => {
       let rows: OwnerNativeSessionRow[];
       if (opts.advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
@@ -2127,7 +2127,7 @@ async function recordSuLaunchSpecInTransaction(
   if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
   const payload = JSON.stringify(retained);
   const updated = await tx<{ id: number }[]>`
-    UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::jsonb
+    UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::text::jsonb
      WHERE id = ${row.id}
     RETURNING id
   `;

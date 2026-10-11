@@ -2788,8 +2788,12 @@ export async function getIssue(
  * That holds for `EI-<snowflake>` ids. It does NOT hold for `WI-<n>` ids: D-008
  * (migration 142-work-items-unify.sql) began minting them into THIS table from
  * `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1 — so
- * `WI-1`/`WI-2`/`WI-3` exist in every long-lived store, and a fresh or recovered store
- * mints exactly those ids first. Resolving such an id "by id alone" can therefore land
+ * `WI-1`/`WI-2`/`WI-3` exist in many long-lived stores. Since
+ * scope-unique-identifiers-2026-07-26 (D-005/D-006) a federated database mints into its
+ * own node slot, but one that has never federated still starts at 1, and ids minted
+ * before a database's first federation keep their old numbers. Within ONE workspace an
+ * id names one row (P-011/P-012), and a same-workspace twin is refused (P-013); the
+ * cross-WORKSPACE fallback below is the half that can still pick a stranger's row. Resolving such an id "by id alone" can therefore land
  * on a DIFFERENT row than the caller meant, across a workspace OR a harness boundary,
  * and this function will return it without complaint (the `ORDER BY` below just picks
  * one). That is not hypothetical: it silently retargeted ~3h of writes — including a
@@ -2907,16 +2911,26 @@ export async function getIssueInWorkspace(
 export async function getIssueThreadWindow(
   id: string,
   limit: number,
+  deps: {
+    /** Test seam for proving the issue row lookup shares the bounded transaction. */
+    getIssue?: (id: string, tx: OrgSql) => Promise<EngineerIssue | null>;
+  } = {},
 ): Promise<{ posts: ThreadPostRow[]; total: number; topics: string[]; createdAt: string } | null> {
-  const issue = await getIssue(id);
-  if (!issue) return null;
-  const [thread, topics] = await Promise.all([threads.getThreadByParent(issueRef(id)), tags.listTags(issueRef(id))]);
-  // No thread row is the DEFAULT for an uncommented item (threads are created on
-  // first post) — a real measured zero, not a failure.
-  const window = thread
-    ? await threads.listRecentPosts(thread.thread_id, limit)
-    : { posts: [] as ThreadPostRow[], total: 0 };
-  return { posts: window.posts, total: window.total, topics, createdAt: issue.createdAt };
+  return boundedPgReadTxn(async (tx) => {
+    const issue = deps.getIssue ? await deps.getIssue(id, tx) : await getIssue(id, {}, tx);
+    if (!issue) return null;
+    const scopedThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const scopedTags = new PgTaggableStore({ ...coordOpts, getSql: () => tx });
+    const ref = issueRef(id);
+    const thread = await scopedThreads.getThreadByParent(ref);
+    const topics = await scopedTags.listTags(ref);
+    // No thread row is the DEFAULT for an uncommented item (threads are created on
+    // first post) — a real measured zero, not a failure.
+    const window = thread
+      ? await scopedThreads.listRecentPosts(thread.thread_id, limit)
+      : { posts: [] as ThreadPostRow[], total: 0 };
+    return { posts: window.posts, total: window.total, topics, createdAt: issue.createdAt };
+  });
 }
 
 export async function getIssueDetail(id: string): Promise<EngineerIssueDetail | null> {

@@ -29,6 +29,8 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 import { planItemProvenanceFromRow } from '../../plan-item-provenance';
+import { linkedWorkItemFields, type LinkedWorkItemCandidate } from '../../plan-item-linked-work-item';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { boundRowField } from '../_bound-output';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { cachedRead, type CachedReadCtx } from '../../cache';
@@ -711,10 +713,7 @@ export default defineTool({
       const decision = await recoverHarnessFromSlugs(ctx, slugs);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:get', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
-      ctxAny.metadata?.({
-        harnessAutoResolved: decision.bySlug,
-        ...(Object.keys(decision.ambiguous).length > 0 ? { harnessAmbiguous: decision.ambiguous } : {}),
-      });
+      ctxAny.metadata?.({ harnessAutoResolved: decision.bySlug });
     } else {
       sctx = harnessScopedCtx(args.harness, ctx);
     }
@@ -925,9 +924,18 @@ export default defineTool({
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+            // scope-unique-identifiers P-003: the enrichment reads below are scoped to the
+            // PLAN's workspace. They were pinned to DEFAULT_WORKSPACE_ID ('default'), so in
+            // any other workspace linkedFeatures and planItemTests were always empty
+            // (measured 2026-10-11: linkedFeatures {} on a plan whose 13 items all had a
+            // linked work-item in papercusp-workspace).
+            const planWorkspaceId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
             const linkedFeaturesRead = includeEnrichments
               ? timeStage('linkedFeatures', async () => {
                   let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+                  // P-003: every linked work-item per plan item, folded into workItemId /
+                  // workItemIds on each item by the shared report-don't-guess rule.
+                  const linkedWorkItems: Record<string, LinkedWorkItemCandidate[]> = {};
                   // P-003: the newest transition across work-items linked to this
                   // plan — one of the two measurable freshness sources. Taken from
                   // the query below rather than a second one: it already selects
@@ -939,7 +947,7 @@ export default defineTool({
                     let beganAt: number | null = null;
                     let callbackEndedAt: number | null = null;
                     const rows = await withWorkspace(
-                      DEFAULT_WORKSPACE_ID,
+                      planWorkspaceId,
                       async (tx) => {
                         try {
                           return await timeDetail(
@@ -961,7 +969,7 @@ export default defineTool({
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
                        harness_slug, updated_ts
                   FROM harness_shared.harness_features_consolidated
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+                 WHERE workspace_id = ${planWorkspaceId}
                    AND (source_plan_slug = ${slug}
                         OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
               `,
@@ -1007,19 +1015,33 @@ export default defineTool({
                       // nothing and this badge map was always empty. Resolve via the shared
                       // precedence rule instead.
                       for (const itemId of planItemProvenanceFromRow(row).itemIds) {
-                        linkedFeatures[itemId] = {
+                        (linkedWorkItems[itemId] ??= []).push({
+                          id: row.feature_id,
+                          terminal: ANY_FAMILY_TERMINAL_STATES.includes(row.status),
+                        });
+                        const candidate = {
                           featureId: row.feature_id,
                           status: row.status,
                           harnessSlug: row.harness_slug,
                         };
+                        // The badge shows the item's resolvable work-item when there is
+                        // one; otherwise the first row seen keeps its place (P-003).
+                        const prior = linkedFeatures[itemId];
+                        if (!prior || linkedWorkItemFields(linkedWorkItems[itemId]!).workItemId === row.feature_id) {
+                          linkedFeatures[itemId] = candidate;
+                        }
                       }
                     }
                   } catch {
                     // Non-fatal — UI degrades to no badges.
                   }
-                  return { linkedFeatures, linkedWorkItemUpdatedAt };
+                  return { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems };
                 })
-              : Promise.resolve({ linkedFeatures: {}, linkedWorkItemUpdatedAt: null });
+              : Promise.resolve({
+                  linkedFeatures: {},
+                  linkedWorkItemUpdatedAt: null,
+                  linkedWorkItems: {} as Record<string, LinkedWorkItemCandidate[]>,
+                });
             // P-083: per-plan-item test coverage (the plan↔test rollup, through the
             // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
             // side by decoratePlanItemTestBadges. Skips the tests query when the plan
@@ -1032,7 +1054,7 @@ export default defineTool({
                     let beganAt: number | null = null;
                     let callbackEndedAt: number | null = null;
                     planItemTests = await withWorkspace(
-                      DEFAULT_WORKSPACE_ID,
+                      planWorkspaceId,
                       async (tx) => {
                         try {
                           const assertions = await timeDetail(
@@ -1045,7 +1067,7 @@ export default defineTool({
                               }[]
                             >`
                 SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
+                 WHERE workspace_id = ${planWorkspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
               `,
                           );
                           if (assertions.length === 0) return {};
@@ -1053,7 +1075,7 @@ export default defineTool({
                             'testCoverage.testsQuery',
                             () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
                 SELECT status, payload FROM harness_shared.harness_tests
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
+                 WHERE workspace_id = ${planWorkspaceId} AND harness_slug = ${harnessSlug}
               `,
                           );
                           return computePlanItemTestStatus(
@@ -1099,15 +1121,24 @@ export default defineTool({
             const nowRead = timeStage('nowDecoration', () => decoratePlanNowBlock(parsed.now));
             const [
               { items: resolvedItems, blockingIssues },
-              { linkedFeatures, linkedWorkItemUpdatedAt },
+              { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems },
               planItemTests,
               decoratedNow,
               [acceptanceRubric, latestAudit],
             ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead, rubricAndAuditRead]);
             stageStarted = performance.now();
-            const responseItems = requestedItemIdSet
-              ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
-              : resolvedItems;
+            // P-003: every item carries the workspace-unique work-item id it resolves
+            // through (null when unlinked or several qualify; workItemIds then names them).
+            const responseItems = (
+              requestedItemIdSet ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id)) : resolvedItems
+            ).map((item) => {
+              const linked = linkedWorkItemFields(linkedWorkItems[item.id] ?? []);
+              return {
+                ...item,
+                workItemId: linked.workItemId,
+                ...(linked.workItemIds.length > 1 ? { workItemIds: linked.workItemIds } : {}),
+              };
+            });
             const responseItemIds = new Set(responseItems.map((item) => item.id));
             const itemSelection = requestedItemIds
               ? {

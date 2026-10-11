@@ -34,7 +34,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
-import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
+import { recoverHarnessFromSlugs, type SlugScopeDecision } from './slug-scope';
 import {
   citedDecisionAuthorities,
   decisionProvenance,
@@ -277,8 +277,7 @@ type AddDecisionValue =
   // WI-10004529: the live body is missing decisions its own latest revision recorded.
   | { ok: false; code: 'stale_base_decisions_lost'; reason: string };
 
-type WritableSlugScope = ReturnType<typeof requireUnambiguousSlugScope>;
-type WritableSlugScopeFailure = Exclude<WritableSlugScope, { status: 'resolved' }>;
+type WritableSlugScopeFailure = Exclude<SlugScopeDecision, { status: 'resolved' }>;
 
 /** Keep exact-slug recovery failures self-describing inside the bulk result. */
 function decisionScopeFailure(slug: string, decision: WritableSlugScopeFailure): BulkItemResult {
@@ -305,6 +304,7 @@ function decisionScopeFailure(slug: string, decision: WritableSlugScopeFailure):
     slug,
     error: 'plan_slug_ambiguous_across_harnesses',
     candidates: decision.candidates,
+    workspaceId: decision.workspaceId,
   };
 }
 
@@ -319,11 +319,7 @@ async function decisionContext(
     return { ok: true, ctx: harnessScopedCtx(it.harness, ctx) };
   }
 
-  const recovered = await recoverHarnessFromSlugs(ctx, [it.slug]);
-  const decision = requireUnambiguousSlugScope(
-    recovered,
-    ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-  );
+  const decision = await recoverHarnessFromSlugs(ctx, [it.slug]);
   if (decision.status !== 'resolved') {
     return { ok: false, result: decisionScopeFailure(it.slug, decision) };
   }

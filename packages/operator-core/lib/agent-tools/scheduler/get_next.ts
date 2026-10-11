@@ -536,9 +536,11 @@ function concurrencyBlockedRefusal(
     activeClaims: number;
     maxConcurrentClaims: number;
     heldIds: string[];
+    blockerParkedIds?: string[];
   },
   ownerId: string,
 ): { error: string; diagnosis: Record<string, unknown> } {
+  const blockerParkedIds = concurrency.blockerParkedIds ?? [];
   return {
     // EI-19931420102632438: lead with the CAP, never with a lane-contents claim. A caller refused
     // on its own cap had the lane never consulted at all.
@@ -546,8 +548,14 @@ function concurrencyBlockedRefusal(
       `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
       `concurrent claim(s) — release or complete one before claiming another; ` +
       `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
-      `not a statement about lane contents.) A parked or externally-blocked claim STILL counts ` +
-      `(EI-11796: declaring a blocker does not buy a slot). To hold more than one lane at once the ` +
+      `not a statement about lane contents.) A plainly parked claim STILL counts (EI-11796). A held ` +
+      `item that is blocked/needs-human with an active external blocker does NOT count (P-010): if one ` +
+      `of the held items above is waiting on an event, gate, runtime or human decision, record it with ` +
+      `work_items:set_blocker — that frees its slot while you keep it. ` +
+      (blockerParkedIds.length > 0
+        ? `Already parked on a recorded blocker (held, not counted): ${blockerParkedIds.join(', ')}. `
+        : '') +
+      `To hold more than one lane at once the ` +
       `LEADER raises your cap by reading scheduler:get_claim_spec { cupId: '${ownerId}' } and ` +
       `replacing it with scheduler:set_claim_spec { cupId: '${ownerId}', spec: { ...current.spec, ` +
       `limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ` +
@@ -558,6 +566,7 @@ function concurrencyBlockedRefusal(
       activeClaims: concurrency.activeClaims,
       maxConcurrentClaims: concurrency.maxConcurrentClaims,
       heldIds: concurrency.heldIds,
+      blockerParkedIds,
     },
   };
 }

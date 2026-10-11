@@ -273,7 +273,9 @@ export function concurrencyClaimWarning(
     'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ' +
     'target selector (cupId or fleet) and a full replacement spec; limits belongs inside spec. ' +
     'Do not accumulate past the cap one claim at a time. ' +
-    `A PARKED item still counts: it retains taken_by; ${subject} must account for it under ${possessive} cap.`
+    `A PARKED item still counts (it retains taken_by), UNLESS it is blocked/needs-human with an active ` +
+    `external blocker recorded by work_items:set_blocker — that hold stays ${possessive} but frees ${possessive} slot ` +
+    `(P-010). Record the blocker instead of releasing an item ${subject} still own${isDispatch ? 's' : ''}.`
   );
 }
 

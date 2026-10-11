@@ -1921,11 +1921,11 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for bm25-bakeoff-cli.ts (WI-10008294, plan bm25-lexical-search-evoke-adoption-2026-10-10 P-001): an attended, operator-invoked research bench. Every child start is a blocking spawnSync (docker build/run/exec/restart/logs, one read-only sudo psql COPY, git rev-parse); the parent waits for each to exit, detaches nothing and keeps no resident queue. The one long-lived resource, the throwaway bake-off container, is removed by `docker rm -f` in a finally block unless the operator passes --keep. This disposition rejects any asynchronous or detached start (spawn/fork/execFile) or removal of the finally cleanup.",
+      "P-016 reviewed bypass disposition for bm25-bakeoff-cli.ts (WI-10008294, plan bm25-lexical-search-evoke-adoption-2026-10-10 P-001): an attended, operator-invoked research bench. Every child start is a blocking spawnSync (docker build/run/exec/restart/logs, a read-only `docker image inspect` preflight for --skip-build, one read-only sudo psql COPY, git rev-parse); the parent waits for each to exit, detaches nothing and keeps no resident queue. The one long-lived resource, the throwaway bake-off container, is removed by `docker rm -f` in a finally block unless the operator passes --keep. This disposition rejects any asynchronous or detached start (spawn/fork/execFile) or removal of the finally cleanup.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return [...code.matchAll(/\b(?:spawn|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 0 &&
-        [...code.matchAll(/\bspawnSync\s*\(/g)].length === 5 &&
+        [...code.matchAll(/\bspawnSync\s*\(/g)].length === 6 &&
         source.includes("if (!args.keep) spawnSync('docker', ['rm', '-f', c.name]") &&
         !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
     },

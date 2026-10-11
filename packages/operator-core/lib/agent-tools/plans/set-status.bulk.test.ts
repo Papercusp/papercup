@@ -152,7 +152,6 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       status: 'resolved',
       harnessSlug: 'papercusp',
       bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: {},
     });
     const metadata = vi.fn();
     const result = await body(
@@ -167,10 +166,9 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
 
   it('refuses an ambiguous exact slug before any status write', async () => {
     slugScopeM.recover.mockResolvedValue({
-      status: 'resolved',
-      harnessSlug: 'papercusp',
-      bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: { 'plan-a': ['papercusp', 'other-harness'] },
+      status: 'ambiguous',
+      candidates: { 'plan-a': ['papercusp', 'other-harness'] },
+      workspaceId: 'papercusp-workspace',
     });
     const result = await body(
       { slug: 'plan-a', item: 'P-001', status: 'todo' },

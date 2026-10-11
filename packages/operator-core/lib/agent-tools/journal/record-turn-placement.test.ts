@@ -66,6 +66,18 @@ describe('journal native placement seam', () => {
     } } });
     expect(h.persist).toHaveBeenCalledExactlyOnceWith(input, { recorded: false, reason: 'native-session-mismatch' });
   });
+  it('preserves turn-end diagnostics through the journal outcome-writer seam', async () => {
+    const input = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: 'native', sourceKind: 'codex' };
+    const outcome = {
+      recorded: false,
+      reason: 'turn-end-read-unavailable',
+      diagnostics: { boundary: 'timeout' as const, elapsedMs: 3_500, activeStage: 'current-session', stages: [] },
+    };
+    h.record.mockResolvedValueOnce(outcome);
+    const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
+    expect(result).toMatchObject({ data: { goalPlacementTurnEnd: outcome } });
+    expect(h.persist).toHaveBeenCalledExactlyOnceWith(input, outcome);
+  });
   it('returns but does not diagnose the no-canonical-goal outcome', async () => {
     h.record.mockResolvedValueOnce({ recorded: false, reason: 'no-canonical-goal' });
     const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);

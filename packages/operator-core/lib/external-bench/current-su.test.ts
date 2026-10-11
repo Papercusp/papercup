@@ -290,6 +290,35 @@ function budgetFixture() {
 }
 
 describe('frozen benchmark native provider admission', () => {
+  it('captures the immutable authenticated request at the host before reserving or sending', async () => {
+    const f = budgetFixture();
+    const captureProviderInput = vi.fn(async (request: Readonly<GatewayCarryTrialAttempt>) => {
+      expect(Object.isFrozen(request)).toBe(true);
+      expect(request.body).toBe(f.attempt.body);
+      expect(request.bodySha256).toBe(f.digest(request.body));
+      expect(f.input.authenticateProvider).toHaveBeenCalledOnce();
+      expect(f.reserve).not.toHaveBeenCalled();
+    });
+    const controller = currentBenchGatewayController({ ...f.input, captureProviderInput }, f.governor);
+    try {
+      const receipt = await controller.gateway.carryTrial.authorizeAttempt(f.attempt);
+      expect(receipt).not.toBeNull(); expect(captureProviderInput).toHaveBeenCalledOnce();
+      expect(f.reserve).toHaveBeenCalledOnce();
+      await receipt!.observeAttemptResult!(f.result(f.attempt, receipt!.reservationRef, 'send-refused'));
+    } finally { controller.revoke(); f.revoke(); }
+  });
+  it.each(['capture-failed', 'protocol-refused'])('refuses %s without a reservation or an inferred send', async fault => {
+    const f = budgetFixture(), captureProviderInput = vi.fn(async () => { throw new Error('Private capture failed'); });
+    const controller = currentBenchGatewayController({ ...f.input, captureProviderInput }, f.governor);
+    const request = fault === 'protocol-refused' ? { ...f.attempt,
+      body: JSON.stringify({ model: 'foreign-model', reasoning: { effort: 'high' }, max_output_tokens: 10 }) } : f.attempt;
+    try {
+      expect(await controller.gateway.carryTrial.authorizeAttempt(request)).toBeNull();
+      expect(captureProviderInput).toHaveBeenCalledTimes(fault === 'capture-failed' ? 1 : 0);
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { controller.revoke(); f.revoke(); }
+  });
+
   it('requires the atomic combined-token policy to match the frozen generation cap', () => {
     const f = budgetFixture();
     const protocol = structuredClone(f.input.protocol);

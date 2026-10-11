@@ -38,6 +38,7 @@ const {
   resolveClaimSpecWorkspace,
   fleetSpecBeeKey,
   countActiveClaimsForBee,
+  readClaimConcurrency,
   readClaimConcurrencyBatch,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
@@ -45,6 +46,7 @@ const {
   SCHEDULER_CLAIM_SETUP_BUDGET_MS,
 } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
+const { updateExternalBlockerHistory } = await import('../external-blockers');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -346,6 +348,69 @@ describe('cup_claim_specs store (mig 372)', () => {
       const verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-never-claimed'] }, db.sql);
       expect(verdicts.has('su-bee-batch-never-claimed')).toBe(true);
       expect(verdicts.get('su-bee-batch-never-claimed')).toMatchObject({ blocked: false, activeClaims: 0 });
+    });
+  });
+
+  // P-010 (parked-agent-census-resumption-and-root-cause-2026-10-09 D-010): a held row that is
+  // blocked/needs-human WITH an active typed external blocker stops consuming a concurrent-claim
+  // slot; it is reported as blockerParkedIds instead. Everything EI-11796 protects still counts:
+  // a wip row carrying a blocker, a plain blocked park, and a blocked row whose blocker cleared.
+  // The blocker records come from the canonical writer, so the fixture cannot drift from the
+  // shape work_items:set_blocker persists.
+  describe('P-010 (D-010): a hold parked on a typed external blocker frees its concurrency slot', () => {
+    const cupId = 'su-bee-p010-blocker-parked';
+    const actor = 'su-p010-test';
+    const ref = 'event:p010-test-upstream';
+    const active = updateExternalBlockerHistory(
+      {},
+      { kind: 'event', ref, summary: 'waiting on an upstream event' },
+      actor,
+    ).blockers;
+    const cleared = updateExternalBlockerHistory({ externalBlockers: active }, { kind: 'event', ref, clear: true }, actor)
+      .blockers;
+    const withBlockers = (blockers: unknown) => JSON.stringify({ externalBlockers: blockers });
+
+    beforeAll(async () => {
+      expect(active.map((b) => b.status)).toEqual(['active']);
+      expect(cleared.map((b) => b.status)).toEqual(['cleared']);
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status, payload)
+        VALUES ('default', 'P010-blocked-ext', ${cupId}, 'blocked', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-needs-human-ext', ${cupId}, 'needs-human', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-wip-ext', ${cupId}, 'wip', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-blocked-plain', ${cupId}, 'blocked', NULL),
+               ('default', 'P010-blocked-cleared', ${cupId}, 'blocked', ${withBlockers(cleared)}::text::jsonb)`;
+      // Bound via ::text::jsonb (as work-item-blocker-reaper.ts does): this test client would
+      // otherwise JSON-encode the string a second time and store a jsonb STRING scalar
+      // (EI-20633798408131012), which no reader can see as an externalBlockers array.
+      const [shape] = await db.sql<{ t: string }[]>`
+        SELECT jsonb_typeof(payload->'externalBlockers') AS t
+          FROM harness_shared.work_items WHERE feature_id = 'P010-blocked-ext'`;
+      expect(shape?.t).toBe('array');
+    });
+
+    it('counts only the rows its holder is not parked on externally', async () => {
+      expect(await countActiveClaimsForBee({ cupId }, db.sql)).toBe(3);
+    });
+
+    it('readClaimConcurrency names the parked rows and leaves them out of activeClaims', async () => {
+      const verdict = await readClaimConcurrency({ cupId, maxConcurrentClaims: 3 }, db.sql);
+      expect(verdict).toMatchObject({ blocked: true, activeClaims: 3, maxConcurrentClaims: 3 });
+      expect([...verdict.heldIds].sort()).toEqual(['P010-blocked-cleared', 'P010-blocked-plain', 'P010-wip-ext']);
+      expect([...verdict.blockerParkedIds].sort()).toEqual(['P010-blocked-ext', 'P010-needs-human-ext']);
+      // The two parked rows would have pinned this bee at a cap of 4 before P-010; now it has room.
+      expect(await readClaimConcurrency({ cupId, maxConcurrentClaims: 4 }, db.sql)).toMatchObject({
+        blocked: false,
+        activeClaims: 3,
+      });
+    });
+
+    it('readClaimConcurrencyBatch returns the same verdict as the single-bee reader', async () => {
+      const single = await readClaimConcurrency({ cupId, maxConcurrentClaims: 3 }, db.sql);
+      const batch = (await readClaimConcurrencyBatch({ cupIds: [cupId], maxConcurrentClaims: 3 }, db.sql)).get(cupId);
+      expect(batch).toBeDefined();
+      expect({ ...batch!, heldIds: [...batch!.heldIds].sort(), blockerParkedIds: [...batch!.blockerParkedIds].sort() })
+        .toEqual({ ...single, heldIds: [...single.heldIds].sort(), blockerParkedIds: [...single.blockerParkedIds].sort() });
     });
   });
 

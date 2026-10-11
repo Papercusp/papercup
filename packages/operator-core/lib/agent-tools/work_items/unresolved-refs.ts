@@ -48,10 +48,12 @@
  *
  * `getWorkItem(id)` resolves the issue family UNSCOPED and the feature family scoped
  * to the active workspace. `EI-<snowflake>` ids are globally unique, so non-resolution
- * is trustworthy. `WI-<n>` ids are NOT globally unique — D-008 (migration
- * 142-work-items-unify.sql) mints them from `harness_shared.work_item_seq`, a
- * PER-DATABASE sequence starting at 1, so WI-1/WI-2/WI-3 exist in every long-lived
- * store. A `WI-<n>` that does not resolve HERE may well exist elsewhere.
+ * is trustworthy. `WI-<n>` ids are unique within a workspace but NOT across databases:
+ * D-008 (migration 142-work-items-unify.sql) minted them from a per-database sequence
+ * starting at 1, and a database that has never federated still does (slot 0 of
+ * scope-unique-identifiers-2026-07-26 D-005/D-006; a federated one mints into its own
+ * node slot). So WI-1/WI-2/WI-3 exist in many stores, and a `WI-<n>` that does not
+ * resolve HERE may well exist elsewhere.
  *
  * Hence the warning says "does not resolve in this workspace" and never "does not
  * exist": the former is what was actually measured, the latter is a claim this check

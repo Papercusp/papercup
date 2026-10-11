@@ -10,8 +10,9 @@
  *   issue-family    kinds {bug, change}                   → engineer_issues
  *
  * Reads MERGE across both tables; writes DISPATCH by kind. New ids are the
- * kind-independent WI-NNN scheme (D-008, allocated from harness_shared.work_item_seq
- * via next_work_item_id()); existing F-NNN / EI-NNN rows keep their ids (the bulk
+ * kind-independent WI-NNN scheme (D-008, allocated by next_work_item_id(), which since
+ * scope-unique-identifiers-2026-07-26 D-005/D-006 prefixes a federated database's node
+ * slot); existing F-NNN / EI-NNN rows keep their ids (the bulk
  * in-place re-id is a supervised, pipeline-drained follow-on — see the plan Risks).
  *
  * Capabilities (D-003) ride the same coord substrate stores issues use — but keyed
@@ -63,6 +64,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedPgReadTxn } from './pg-read-query';
 import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
@@ -1735,10 +1737,12 @@ export async function getWorkItem(
   //
   // This used to read "Issue-family ids (EI-* or a WI-* that lives in engineer_issues)
   // are globally unique", which justified the unscoped read. That premise is TRUE for
-  // `EI-<snowflake>` ids and FALSE for `WI-<n>` ids: D-008 (migration
+  // `EI-<snowflake>` ids and FALSE for `WI-<n>` ids across databases: D-008 (migration
   // 142-work-items-unify.sql) started minting WI ids into this same table from
-  // `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1. So
-  // WI-1/WI-2/WI-3 exist in every long-lived store and a fresh one mints exactly those.
+  // `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1, and a
+  // database that has never federated still does (scope-unique-identifiers-2026-07-26
+  // D-005/D-006 slot a federated one). Within one workspace an id names one row, and
+  // getIssue refuses a same-workspace twin the harness does not pick (P-013).
   // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
   // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
   // halves of one id space disagreed, and the issue half was the one being trusted.
@@ -1886,13 +1890,18 @@ export async function getWorkItemThreadWindow(
   // Issue-family: the correctly-scoped store lives in issues-engineer.
   if (wi.family === 'issue') return (deps.getIssueThreadWindow ?? getIssueThreadWindow)(id, limit);
   const ref = workItemObjectRef(wi);
-  const [thread, topics] = await Promise.all([threads.getThreadByParent(ref), tags.listTags(ref)]);
-  // No thread row at all is the DEFAULT for an item nobody has commented on
-  // (threads are created on first post), not a failure — a real, measured zero.
-  const window = thread
-    ? await threads.listRecentPosts(thread.thread_id, limit)
-    : { posts: [] as ThreadPostRow[], total: 0 };
-  return { posts: window.posts, total: window.total, topics, createdAt: wi.createdAt };
+  return boundedPgReadTxn(async (tx) => {
+    const scopedThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const scopedTags = new PgTaggableStore({ ...coordOpts, getSql: () => tx });
+    const thread = await scopedThreads.getThreadByParent(ref);
+    const topics = await scopedTags.listTags(ref);
+    // No thread row at all is the DEFAULT for an item nobody has commented on
+    // (threads are created on first post), not a failure — a real, measured zero.
+    const window = thread
+      ? await scopedThreads.listRecentPosts(thread.thread_id, limit)
+      : { posts: [] as ThreadPostRow[], total: 0 };
+    return { posts: window.posts, total: window.total, topics, createdAt: wi.createdAt };
+  });
 }
 
 /** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */

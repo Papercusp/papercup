@@ -41,7 +41,7 @@ import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-even
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
-import { recoverHarnessFromSlugs, requireUnambiguousSlugScope, slugScopeErrorResult } from './slug-scope';
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
 import { autoConvertClaimIntent } from '../../plan-items/claim-holder';
@@ -1035,11 +1035,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     // An exact plan slug is sufficient to recover a workspace-scoped write,
     // provided the canonical index identifies one unambiguous owning harness.
     // Explicit or session harness bindings still take the normal scoped path.
-    const recovered = await recoverHarnessFromSlugs(ctx, [it.slug]);
-    const decision = requireUnambiguousSlugScope(
-      recovered,
-      ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-    );
+    const decision = await recoverHarnessFromSlugs(ctx, [it.slug]);
     if (decision.status !== 'resolved') {
       const failure = JSON.parse(slugScopeErrorResult('plans:set-status', decision).content[0].text) as {
         error: string;

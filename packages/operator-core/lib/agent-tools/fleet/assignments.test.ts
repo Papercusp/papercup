@@ -193,6 +193,7 @@ describe('scheduler claim state projection (EI-25482945548879685)', () => {
             activeClaims: 2,
             maxConcurrentClaims: 2,
             heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+            blockerParkedIds: ['EI-parked-on-blocker'],
           },
         ],
       ]),
@@ -200,9 +201,11 @@ describe('scheduler claim state projection (EI-25482945548879685)', () => {
 
     expect(projected.claims).toEqual([]);
     expect(projected.load).toBe(0);
+    // P-010: a hold parked on a typed external blocker is held but not counted — named here.
     expect(projected.schedulerClaimState).toEqual({
       activeClaims: 2,
       heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+      blockerParkedIds: ['EI-parked-on-blocker'],
     });
   });
 
@@ -1089,9 +1092,20 @@ describe('shapeFleetAssignments carries scheduler claim state at every tier (EI-
         schedulerClaimState: {
           activeClaims: 2,
           heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+          blockerParkedIds: ['EI-parked-on-blocker'],
         },
       },
       { agentId: 'su-unknown', claims: [], load: 0, schedulerClaimState: null },
+      {
+        agentId: 'su-many-parked',
+        claims: [],
+        load: 0,
+        schedulerClaimState: {
+          activeClaims: 0,
+          heldIds: [],
+          blockerParkedIds: Array.from({ length: 10 }, (_, i) => `EI-parked-${i}`),
+        },
+      },
     ],
   };
 
@@ -1105,8 +1119,21 @@ describe('shapeFleetAssignments carries scheduler claim state at every tier (EI-
       activeClaims: 2,
       heldIds: ['EI-blocked-1', 'EI-blocked-2'],
       heldIdsOmitted: 0,
+      blockerParkedIds: ['EI-parked-on-blocker'],
+      blockerParkedIdsOmitted: 0,
     });
     expect(shaped.agents[1].schedulerClaimState).toBeNull();
+  });
+
+  // P-010 (plan D-010): the shaper is the default fleet:assignments view; it must never drop the
+  // blocker-parked holds (they are held but uncounted), only cap them with an explicit omitted count.
+  it.each(['trimmed', 'standard'] as const)('%s caps blocker-parked holds without hiding them', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
+    const state = shaped.agents.find((a) => a.agentId === 'su-many-parked')?.schedulerClaimState as
+      | { blockerParkedIds: string[]; blockerParkedIdsOmitted: number }
+      | undefined;
+    expect(state?.blockerParkedIds).toHaveLength(8);
+    expect(state?.blockerParkedIdsOmitted).toBe(2);
   });
 });
 

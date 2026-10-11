@@ -182,7 +182,7 @@ beforeEach(() => {
         new Map(
           cupIds.map((id) => [
             id,
-            { blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] },
+            { blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [], blockerParkedIds: [] },
           ]),
         ),
       ),
@@ -470,6 +470,9 @@ describe('fleet:assignments bounded handler reads', () => {
             activeClaims: 2,
             maxConcurrentClaims: 2,
             heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+            // P-010 (plan D-010): a hold parked on a recorded external blocker is held but
+            // not counted — the projection must still surface it.
+            blockerParkedIds: ['EI-parked-3'],
           },
         ],
       ]),
@@ -491,6 +494,7 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(result.data.agents[0].schedulerClaimState).toEqual({
       activeClaims: 2,
       heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+      blockerParkedIds: ['EI-parked-3'],
     });
   });
 });

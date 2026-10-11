@@ -124,7 +124,7 @@ import {
 } from '../../rubrics-criterion-checks';
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
-import { resolvePlanHarnessSlug } from '../plans/source';
+import { resolvePlanHarness } from '../plans/source';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -1394,6 +1394,19 @@ export async function cleanupAcceptanceGraderTasks(
  * paths belong to targetHive, not the grader's checkout. Same-Hive and legacy
  * callers retain the handler's caller-root behavior.
  */
+type DeterministicCheckScope =
+  | { root: string; workspaceId?: string; harnessSlug?: string; refusal?: undefined }
+  | {
+      /** The subject plan's slug names plans in several harnesses and nothing
+       *  on the call or the rubric says which one is graded. */
+      refusal: {
+        error: 'subject_plan_ambiguous_across_harnesses';
+        subjectPlan: string;
+        candidates: string[];
+        detail: string;
+      };
+    };
+
 async function resolveDeterministicCheckScope(
   args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
   input: {
@@ -1402,22 +1415,38 @@ async function resolveDeterministicCheckScope(
     checkRoot?: string;
     rubricWorkspaceId?: string | null;
     rubricSubjectPlan?: string | null;
+    rubricSubjectHarness?: string | null;
   },
-): Promise<{ root: string; workspaceId?: string; harnessSlug?: string }> {
+): Promise<DeterministicCheckScope> {
   const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
   // EI-21384279769470409: a workspace-scoped superuser dispatch may omit
   // ctx.workspaceId even though the rubric itself is workspace-bound.
   const workspaceId = input.workspaceId ?? input.rubricWorkspaceId ?? undefined;
   // Acceptance graders often omit targetHive because the rubric already names its
   // subject plan. Recover that plan's owning harness so repo-relative checks run in
-  // the subject tree rather than the grader's checkout. An explicit targetHive is
-  // authoritative and short-circuits this fallback, preserving cross-hive callers'
-  // existing precedence.
-  const targetHive =
-    args.targetHive ??
-    (input.rubricSubjectPlan && workspaceId
-      ? await resolvePlanHarnessSlug(workspaceId, input.rubricSubjectPlan)
-      : undefined);
+  // the subject tree rather than the grader's checkout. Precedence: an explicit
+  // targetHive, then the harness the rubric recorded for its subject, then a
+  // slug-only lookup. The lookup refuses a slug held by several harnesses rather
+  // than run the checks in whichever same-slug plan was touched last (P-006).
+  let targetHive: string | null | undefined = args.targetHive ?? input.rubricSubjectHarness ?? undefined;
+  if (!targetHive && input.rubricSubjectPlan && workspaceId) {
+    const resolution = await resolvePlanHarness(workspaceId, input.rubricSubjectPlan);
+    if (resolution.status === 'ambiguous') {
+      return {
+        refusal: {
+          error: 'subject_plan_ambiguous_across_harnesses',
+          subjectPlan: input.rubricSubjectPlan,
+          candidates: resolution.candidates,
+          detail:
+            `The rubric's subject plan '${input.rubricSubjectPlan}' exists in several harnesses of ` +
+            `workspace '${workspaceId}' (${resolution.candidates.join(', ')}), and neither this call nor ` +
+            'the rubric names one, so its tests-checks have no unambiguous tree to run in. Pass ' +
+            'targetHive naming the subject plan\'s harness.',
+        },
+      };
+    }
+    if (resolution.status === 'resolved') targetHive = resolution.harnessSlug;
+  }
   const harnessSlug = targetHive ?? input.ctxHarness;
   // Scope is useful only as a complete pair: the ledger query requires both
   // tenant dimensions, and passing one half would recreate the same ambiguous
@@ -3227,7 +3256,11 @@ export async function emitScorecard(
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
+        rubricSubjectHarness: rubric.subjectHarnessSlug,
       });
+      if (checkScope.refusal) {
+        return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
+      }
       const checkEvaluation = await evaluateChecks({
         criteria: rubric.criteria,
         ratings,
@@ -3305,7 +3338,11 @@ export async function emitScorecard(
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
+        rubricSubjectHarness: rubric.subjectHarnessSlug,
       });
+      if (checkScope.refusal) {
+        return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
+      }
       const checkEvaluation = await evaluateCargo({
         criteria: rubric.criteria,
         ratings,

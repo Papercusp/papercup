@@ -19,7 +19,7 @@ const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
-const resolvePlanHarnessSlug = vi.fn();
+const resolvePlanHarness = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -76,7 +76,7 @@ vi.mock('../../resolve-harness-paths', () => ({
   resolveHarnessPaths: (...a: unknown[]) => resolveHarnessPaths(...a),
 }));
 vi.mock('../plans/source', () => ({
-  resolvePlanHarnessSlug: (...a: unknown[]) => resolvePlanHarnessSlug(...a),
+  resolvePlanHarness: (...a: unknown[]) => resolvePlanHarness(...a),
 }));
 
 import scorecardEmitTool, {
@@ -380,7 +380,8 @@ beforeEach(() => {
   );
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   resolveHarnessPaths.mockReset();
-  resolvePlanHarnessSlug.mockReset();
+  // Default: the subject plan is not store-backed, so checks keep the caller root.
+  resolvePlanHarness.mockReset().mockResolvedValue({ status: 'missing' });
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
@@ -578,11 +579,11 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(res.ok).toBe(true);
     expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
-    expect(resolvePlanHarnessSlug).not.toHaveBeenCalled();
+    expect(resolvePlanHarness).not.toHaveBeenCalled();
   });
 
   it('derives targetHive from the rubric subject plan when targetHive is omitted', async () => {
-    resolvePlanHarnessSlug.mockResolvedValue('papercusp');
+    resolvePlanHarness.mockResolvedValue({ status: 'resolved', harnessSlug: 'papercusp' });
     resolveHarnessPaths.mockResolvedValue({
       projectDir: '/tmp/papercusp-target-tree',
       stateDir: '/tmp/papercusp-target-tree/.papercusp',
@@ -604,9 +605,67 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     );
 
     expect(res.ok).toBe(true);
-    expect(resolvePlanHarnessSlug).toHaveBeenCalledWith('ws-test', CHECKED_RUBRIC.subjectPlan);
+    expect(resolvePlanHarness).toHaveBeenCalledWith('ws-test', CHECKED_RUBRIC.subjectPlan);
     expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
+  });
+
+  // scope-unique-identifiers-2026-07-26 P-006: a subject-plan slug held by several
+  // harnesses used to resolve to the most recently updated one, so the checks ran
+  // in whichever same-slug plan's tree was touched last.
+  it('refuses with the candidates when the subject plan slug is ambiguous and nothing names its harness', async () => {
+    resolvePlanHarness.mockResolvedValue({ status: 'ambiguous', candidates: ['email', 'papercusp'] });
+    const evaluateChecks = vi.fn<EvaluateChecks>();
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(false);
+    expect(res).toMatchObject({
+      checkScopeRefusal: {
+        error: 'subject_plan_ambiguous_across_harnesses',
+        subjectPlan: CHECKED_RUBRIC.subjectPlan,
+        candidates: ['email', 'papercusp'],
+      },
+    });
+    expect(evaluateChecks).not.toHaveBeenCalled();
+    expect(resolveHarnessPaths).not.toHaveBeenCalled();
+  });
+
+  it("uses the rubric's recorded subject harness before any slug lookup", async () => {
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, subjectHarnessSlug: 'email' });
+    resolveHarnessPaths.mockResolvedValue({
+      projectDir: '/tmp/email-target-tree',
+      stateDir: '/tmp/email-target-tree/.papercusp',
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': PASS_RUN },
+    });
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(resolvePlanHarness).not.toHaveBeenCalled();
+    expect(resolveHarnessPaths).toHaveBeenCalledWith('email', 'ws-test');
+    expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/email-target-tree');
   });
 
   it('uses the rubric workspace when a superuser dispatch omits workspaceId', async () => {

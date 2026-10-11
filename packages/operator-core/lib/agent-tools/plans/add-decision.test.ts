@@ -507,7 +507,6 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       status: 'resolved',
       harnessSlug: 'recovered-harness',
       bySlug: { 'handler-plan': 'recovered-harness' },
-      ambiguous: {},
     });
 
     const result = await handlerBody(
@@ -793,10 +792,9 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
   it('refuses an ambiguous recovered slug before taking the plan lock', async () => {
     const ctx = handlerContext();
     handlerMocks.recoverHarnessFromSlugs.mockResolvedValue({
-      status: 'resolved',
-      harnessSlug: 'new-harness',
-      bySlug: { 'handler-plan': 'new-harness' },
-      ambiguous: { 'handler-plan': ['new-harness', 'old-harness'] },
+      status: 'ambiguous',
+      candidates: { 'handler-plan': ['new-harness', 'old-harness'] },
+      workspaceId: 'ws-add-decision',
     });
 
     const result = await handlerBody(

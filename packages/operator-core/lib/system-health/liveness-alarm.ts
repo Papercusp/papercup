@@ -95,6 +95,11 @@ import {
   POOL_PROJECTION_STALE_WARN_MS,
   projectionWriteStalled,
 } from './thresholds';
+import {
+  AGENT_STRANDED_ALARM_THRESHOLD,
+  AGENT_WEDGED_ALARM_THRESHOLD,
+  formatWedgedByClass,
+} from './agent-strand-census';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -541,6 +546,8 @@ export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
   'rubric-emission-dark',
   'accounts-starved',
   'pg-restarted',
+  'agents-wedged',
+  'agents-stranded',
 ]);
 
 /** Families keyed `<family>:<subject>` (one row per install or role). `panel:<key>` is handled
@@ -863,6 +870,37 @@ export function evaluateLivenessAlarm(
     }
   }
 
+  // 5d. P-011(b) (plan parked-agent-census-resumption-and-root-cause-2026-10-09): agents that
+  //     cannot take a turn, and autonomous claim holders that nothing will wake. Per-session
+  //     remedies exist for both (the pickup sweep; silent-halt's per-owner wake + page), so ONE
+  //     victim is not page-worthy here. A population over threshold means those remedies are not
+  //     keeping up, usually behind one shared cause, which is what nothing alarmed on while 61
+  //     loops stalled for days. An unreadable leg raises nothing and is kept open by
+  //     `unobservableLivenessSignatures`.
+  const strand = health.panels.coordination?.data?.agentStrand;
+  if (strand && !strand.wedgedUnreadable && strand.wedged >= AGENT_WEDGED_ALARM_THRESHOLD) {
+    signals.push({
+      key: 'agents-wedged',
+      severity: 'blocker',
+      summary:
+        `${strand.wedged} agent session(s) cannot take a turn (${formatWedgedByClass(strand.wedgedByClass)}; ` +
+        `threshold ${AGENT_WEDGED_ALARM_THRESHOLD}) — wakes to them land and nothing happens. coord:presence ` +
+        `reports each as suspect with its wedged class; a single class at this scale is one shared cause ` +
+        `(a quota-walled account, a dead credential, a launcher fault). e.g. ${strand.wedgedSample.slice(0, 3).join(', ')}`,
+    });
+  }
+  if (strand && !strand.strandedUnreadable && strand.stranded >= AGENT_STRANDED_ALARM_THRESHOLD) {
+    signals.push({
+      key: 'agents-stranded',
+      severity: 'blocker',
+      summary:
+        `${strand.stranded} autonomous agent(s) hold work with their loop off and nothing to wake them ` +
+        `(threshold ${AGENT_STRANDED_ALARM_THRESHOLD}) — their claims stay held and no turn will advance them. ` +
+        `reconcile-silent-halts wakes then pages each one; this many means that is not clearing them. ` +
+        `e.g. ${strand.strandedSample.slice(0, 3).join(', ')}`,
+    });
+  }
+
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
   //    is never silently missed). Sharper-keyed panels above are skipped.
   //    NOTE: the panel KEY for the Queen/Mug card is the STABLE identifier
@@ -1020,6 +1058,18 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     // The bare family key marks EVERY per-install signature unobservable (isUnobservableLivenessSignature).
     out.add(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
   }
+
+  // P-011(b): the agent-strand census is fail-soft per leg, and a panel computed by a build
+  // without it carries no census at all (the snapshot is shared across builds, WI-10006898).
+  // Neither is a recovery: keep an open alarm open. Same `data: null` convention as workFeed
+  // above: a null panel body is "nothing to report", only an errored panel or a computed body
+  // MISSING the census is unread.
+  const coordination = health.panels.coordination;
+  const coordinationErrored = coordination != null && (coordination.status === 'unknown' || coordination.error != null);
+  const strand = coordination?.data?.agentStrand;
+  const censusMissing = coordination?.data != null && strand == null;
+  if (coordinationErrored || censusMissing || strand?.wedgedUnreadable) out.add('agents-wedged');
+  if (coordinationErrored || censusMissing || strand?.strandedUnreadable) out.add('agents-stranded');
   return out;
 }
 
@@ -1181,6 +1231,15 @@ export function resolveEvidenceFor(
       ? ` ${slug} missedIntervals=${perInstall.find((e) => e.installSlug === slug)?.missedIntervals ?? 0}`
       : '';
     return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+  }
+  if (sig === 'agents-wedged' || sig === 'agents-stranded') {
+    const strand = health.panels.coordination?.data?.agentStrand;
+    if (!strand) return `observed coordination status=${health.panels.coordination?.status ?? 'panel-absent'} agentStrand=absent`;
+    return sig === 'agents-wedged'
+      ? `observed coordination agentStrand wedged=${strand.wedgedUnreadable ? 'unreadable' : strand.wedged}` +
+          ` (${formatWedgedByClass(strand.wedgedByClass) || 'no class'}; alarm threshold >= ${AGENT_WEDGED_ALARM_THRESHOLD})`
+      : `observed coordination agentStrand stranded=${strand.strandedUnreadable ? 'unreadable' : strand.stranded}` +
+          ` (alarm threshold >= ${AGENT_STRANDED_ALARM_THRESHOLD})`;
   }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;
@@ -1391,6 +1450,8 @@ export function deriveSignatureFromSummary(summary: string): string | null {
     return 'overwatch-dark';
   if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
+  if (/^\d+ agent session\(s\) cannot take a turn/.test(s)) return 'agents-wedged';
+  if (/^\d+ autonomous agent\(s\) hold work with their loop off/.test(s)) return 'agents-stranded';
   const gitSyncMissedMatch = /^git-sync\b(?: on (\S+))?.* has missed \d+ consecutive scheduler intervals/.exec(s);
   if (gitSyncMissedMatch) return gitSyncMissedIntervalsSignature(gitSyncMissedMatch[1] ?? null);
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".

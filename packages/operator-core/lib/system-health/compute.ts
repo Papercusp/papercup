@@ -82,6 +82,14 @@ import type {
   HostPressureSample,
 } from './types';
 import { PANEL_LABELS } from './types';
+// Import-light (type imports only at module scope; the readers load lazily inside it).
+import {
+  AGENT_STRANDED_ALARM_THRESHOLD,
+  AGENT_WEDGED_ALARM_THRESHOLD,
+  WEDGE_CLASSES,
+  formatWedgedByClass,
+  type AgentStrandHealth,
+} from './agent-strand-census';
 import { getPanelRefreshCoalescer } from './refresh-coalescer';
 // EI-19275994927087666: ONE classifier shared by the escalation broadcast and this
 // panel — they told the same lie independently, so they must now agree by construction.
@@ -2584,6 +2592,30 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
 }
 
 /**
+ * P-011(b): one metric per wedge class plus the stranded count. An unreadable leg renders as
+ * `unreadable` rather than 0, and a snapshot without the census renders no strand metrics at all.
+ */
+function strandMetrics(strand: AgentStrandHealth | null | undefined): HealthMetric[] {
+  if (!strand) return [];
+  const out: HealthMetric[] = [];
+  if (strand.wedgedUnreadable) {
+    out.push(m('wedged', 'unreadable', 'warn'));
+  } else {
+    out.push(m('wedged', strand.wedged, strand.wedged >= AGENT_WEDGED_ALARM_THRESHOLD ? 'crit' : strand.wedged > 0 ? 'warn' : undefined));
+    for (const cls of WEDGE_CLASSES) {
+      const n = strand.wedgedByClass[cls] ?? 0;
+      if (n > 0) out.push(m(`wedged · ${cls}`, n, 'warn'));
+    }
+  }
+  out.push(
+    strand.strandedUnreadable
+      ? m('stranded', 'unreadable', 'warn')
+      : m('stranded', strand.stranded, strand.stranded >= AGENT_STRANDED_ALARM_THRESHOLD ? 'crit' : strand.stranded > 0 ? 'warn' : undefined),
+  );
+  return out;
+}
+
+/**
  * Coordination (health-tab-v2 P-009) — the fleet-coordination failure modes the
  * playbook ranks highest, previously visible only in coord:glance: unanswered
  * DIRECTED messages (a peer blind-waiting on a reply), sessions at critical
@@ -2600,6 +2632,11 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
  */
 async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<CoordinationHealth>> {
   return panelSafe<CoordinationHealth>('coordination', async () => {
+    // P-011(b): started first so it overlaps every read below (~1 s warm over ~400 sessions,
+    // measured 2026-10-11). Never rejects — each leg reports its own read failure as unreadable.
+    const agentStrandP = import('./agent-strand-census')
+      .then(({ readAgentStrandCensus }) => readAgentStrandCensus(ctx.ws))
+      .catch(() => null);
     const { listPresence } = await import('../agent-tools/coordination/presence');
     const presence = await listPresence({ workspaceId: ctx.ws });
     const live = presence.filter((p) => !p.stale);
@@ -2695,9 +2732,13 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
       stalledClaims: stalledCount,
       coverageCollisions: collisionCount,
       parkedMembers,
+      agentStrand: await agentStrandP,
     };
     const status = coordinationStatus(data, ctx.now);
+    const strand = data.agentStrand;
     const problems: string[] = [];
+    if (strand && strand.wedged > 0) problems.push(`${strand.wedged} wedged session(s) (${formatWedgedByClass(strand.wedgedByClass)})`);
+    if (strand && strand.stranded > 0) problems.push(`${strand.stranded} stranded claim holder(s) with no wake source`);
     if (data.unansweredTotal > 0) problems.push(`${data.unansweredTotal} unanswered directed (oldest ${agoMin(data.unansweredOldestMs === null ? null : ctx.now - data.unansweredOldestMs, ctx.now)})`);
     if (data.leaderlessFleets > 0) problems.push(`${data.leaderlessFleets} leaderless fleet(s)`);
     if (data.staleAwaits > 0) problems.push(`${data.staleAwaits} stale waiter(s)`);
@@ -2718,6 +2759,8 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
         m('orphaned', data.orphanedClaims, data.orphanedClaims > 0 ? 'warn' : undefined),
         m('stalled', data.stalledClaims, data.stalledClaims > 0 ? 'warn' : undefined),
         m('collisions', data.coverageCollisions, data.coverageCollisions > 0 ? 'warn' : undefined),
+        // P-011(b): per-class counts, so /admin shows WHY sessions cannot take a turn.
+        ...strandMetrics(strand),
         m('benched', data.parkedMembers),
         m('live fleets', data.liveFleets),
       ],
