@@ -1,7 +1,7 @@
 import { test, expect, type TestInfo } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
@@ -129,6 +129,37 @@ test('native eval transport rejects absent or malformed result envelopes', () =>
   }
   expect(decodeNativeBridgeJson('{"result":null}', 'eval')).toBeNull();
 });
+
+async function attachNativeEvidence(info: TestInfo, name: string,
+  attachment: { body: string; contentType: string }) {
+  // Body-only attachments disappear when a successful trace is discarded.
+  // Keep the original measurement in the retained assertion output as well.
+  const file = info.outputPath(`${name}.${attachment.contentType === 'application/json' ? 'json' : 'txt'}`);
+  await writeFile(file, attachment.body);
+  await info.attach(name, { path: file, contentType: attachment.contentType });
+}
+
+test('native JSON evidence survives successful trace disposal', async ({}, info) => {
+  const name = 'native-retained-evidence-guard';
+  const evidence = { viewport: { width: 1280, height: 900 },
+    rows: [{ id: 'plan-a', height: 80, visibleHeight: 80 }],
+    nativeKeys: [{ key: ' ', trusted: true }] };
+  const legacyName = `${name}-body-only`;
+  await info.attach(legacyName, { body: JSON.stringify(evidence), contentType: 'application/json' });
+  const legacy = info.attachments.find(value => value.name === legacyName);
+  expect(legacy?.path).toBeUndefined();
+  expect(legacy?.body?.toString('utf8')).toBe(JSON.stringify(evidence));
+  await expect(readFile(info.outputPath(`${legacyName}.json`), 'utf8'))
+    .rejects.toMatchObject({ code: 'ENOENT' });
+  await attachNativeEvidence(info, name, {
+    body: JSON.stringify(evidence), contentType: 'application/json',
+  });
+  const attachment = info.attachments.find(value => value.name === name);
+  expect(attachment?.path, 'Evidence must have a file independent of retained traces').toBeTruthy();
+  expect(attachment?.body).toBeUndefined();
+  expect(JSON.parse(await readFile(attachment!.path!, 'utf8'))).toEqual(evidence);
+  expect(JSON.parse(await readFile(info.outputPath(`${name}.json`), 'utf8'))).toEqual(evidence);
+});
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived,
   recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
 
@@ -139,7 +170,7 @@ async function recordJourney(info: TestInfo, run: () => Promise<void>) {
     sourceRoot: process.env.OPERATOR_SOURCE_ROOT!,
     verifierRunId: basename(dirname(dirname(process.env.VH_PHASE_DIR!))),
     testPath: 'apps/operator/e2e/ongoing-work-native-collection.spec.mts', run });
-  await info.attach('native-completed-runtime', { body: JSON.stringify({ completedRuntime,
+  await attachNativeEvidence(info, 'native-completed-runtime', { body: JSON.stringify({ completedRuntime,
     runtimeUnits: [`verify-tauri-headless:${process.env.VERIFY_TAURI_PID}`] }), contentType: 'application/json' });
 }
 
@@ -345,7 +376,7 @@ test('real Work on Everything goal exposes its saved picks in the native progres
         };
       })()`);
       const after = await readSaved();
-      await info.attach('real-goal-table-readback', { body: JSON.stringify({ goalId, before, expected, dom, after, migration }), contentType: 'application/json' });
+      await attachNativeEvidence(info, 'real-goal-table-readback', { body: JSON.stringify({ goalId, before, expected, dom, after, migration }), contentType: 'application/json' });
       expect(dom.rows).toBeGreaterThan(0);
       expect(dom.selected.sort((a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id)))
         .toEqual(expected.sort((a, b) => a.id.localeCompare(b.id)));
@@ -406,12 +437,12 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
           alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(n => n.textContent),
           body: document.body.innerText,
         })`);
-        await info.attach(`native-ready-failure-${failure}`, {
+        await attachNativeEvidence(info, `native-ready-failure-${failure}`, {
           body: JSON.stringify({ state, sourceReceipt }), contentType: 'application/json',
         });
         await native('screenshot', '--output', info.outputPath(`ready-failure-${failure}.png`));
       } catch (captureError) {
-        await info.attach(`native-ready-capture-error-${failure}`, {
+        await attachNativeEvidence(info, `native-ready-capture-error-${failure}`, {
           body: String(captureError), contentType: 'text/plain',
         });
       }
@@ -478,7 +509,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     // Preserve the native view and canonical readback even when an assertion
     // fails, before the owned rig tears down its temporary source and profile.
     await native('screenshot', '--output', info.outputPath('goal-cockpit.png'));
-    await info.attach('native-design-c-cockpit', {
+    await attachNativeEvidence(info, 'native-design-c-cockpit', {
       body: JSON.stringify({ cockpit, detail, sourceReceipt }), contentType: 'application/json',
     });
     expect(cockpit.priorities).toEqual(ids.slice(0, 2));
@@ -513,7 +544,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
       states: ['Not measured', 'Not measured', 'Not measured'],
       empty: true, claimsImprovement: false, rubricLink: '/rubrics',
     });
-    await info.attach('native-rubric-stewardship-empty-goal', {
+    await attachNativeEvidence(info, 'native-rubric-stewardship-empty-goal', {
       body: JSON.stringify({ stewardship, reading: detail.rubricStewardship, sourceReceipt }),
       contentType: 'application/json',
     });
@@ -561,7 +592,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     } finally {
       await native('eval', `${table}.style.flexShrink = ${JSON.stringify(originalShrink)}`);
     }
-    await info.attach('native-worklist-row-geometry', {
+    await attachNativeEvidence(info, 'native-worklist-row-geometry', {
       body: JSON.stringify({ viewport: { width: layout.width, height: layout.height },
         rows: rowGeometry, oldShrinkRows, sourceReceipt }),
       contentType: 'application/json',
@@ -605,11 +636,11 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
       await run('xdotool', ['key', '--clearmodifiers', 'space'], { timeout: 10_000, env: xEnv });
       await ready(nativeWorklistKeyReceived(' ', 'Move Design search reliability up'));
       await ready(`document.querySelector('${panel} [data-testid="ongoing-worklist-row"] td:nth-child(2)')?.textContent?.trim().startsWith(${JSON.stringify(labels[1])})`);
-      await info.attach('native-key-delivery-success', { body: JSON.stringify({
+      await attachNativeEvidence(info, 'native-key-delivery-success', { body: JSON.stringify({
         keys: await measure('window.__nativeWorklistKeys'), sourceReceipt, nativeKeyboardReorder: true,
       }), contentType: 'application/json' });
     } catch (error) {
-      await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
+      await attachNativeEvidence(info, 'native-key-delivery', { body: JSON.stringify(await measure(`({
         keys: window.__nativeWorklistKeys, tab: new URL(location.href).searchParams.get('tab'),
         focusedControl: document.activeElement?.getAttribute('aria-label'),
         included: Array.from(document.querySelectorAll('${panel} .woe__scope--in')).map(e => e.getAttribute('aria-label')),
@@ -632,7 +663,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     await ready(`!document.querySelector('.woe__draft-bar') && document.querySelectorAll('${panel} .woe__scope--in').length === 2`);
     const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     expect(saved.properties?.worklist_policy).toBeUndefined();
-    await info.attach('native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
+    await attachNativeEvidence(info, 'native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
       nativeKeys: await measure('window.__nativeWorklistKeys'),
       fixture: { goalId, labels }, legacyWithoutPackage: true, nativeKeyboardReorder: true,
       globalHudTabRetained: true, scopeStaged: true, reviewOpened: true, discardRestored: true,
@@ -928,7 +959,7 @@ test(`native declared collections persist controls and reject a barrier-controll
       await native('screenshot', '--output', screenshot);
       await info.attach('native-collection-final', { path: screenshot, contentType: 'image/png' });
     } catch (error) { evidence.push({ screenshotError: String(error) }); }
-    await info.attach('native-collection-readbacks', { body: JSON.stringify(evidence), contentType: 'application/json' });
+    await attachNativeEvidence(info, 'native-collection-readbacks', { body: JSON.stringify(evidence), contentType: 'application/json' });
     schedulerFixtureFlags(false);
     await sql.end({ timeout: 5 });
   }
