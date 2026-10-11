@@ -4570,7 +4570,53 @@
      "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-523 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "gcpP2pFieldDrillEvidenceQualification": {
+    "auditDate": "2026-10-11",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "status": "retained-excluded-p2p-cloud-rig-lane",
+    "storedAudit": {
+     "ref": "thread-post:1173972",
+     "createdAt": "2026-10-11T09:55:07.686Z",
+     "bodySha256": "9710f5b398bc79250fb92851096ff77dfaf7ffbf83180731442d4a2e63b67c07",
+     "independentStoredBodyReadback": true
+    },
+    "governingSource": {
+     "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+     "version": 166,
+     "contentHash": "6d14cd7f2b6454e7dc496c00c23b734b461ea6e5c34b37ef09f0b4bba104f46d",
+     "item": "P-523",
+     "itemState": "todo",
+     "phase": "p2p field test",
+     "unresolvedBlockers": [],
+     "prerequisite": "P-522 DONE/effective DONE; the original blocked snapshot's dependency has cleared without establishing drill acceptance.",
+     "requiredEvidence": "S4: reclaim a hello-world-3-pot GCP peer mid-sync, rejoin it, prove no lost or duplicated commits, and measure reconvergence time; shares drills with P-007.",
+     "decision": "D-008 retains joint P2P/cloud ownership, a clean shipping artifact, an announced rig window and hive-git-physical-rig serialization."
+    },
+    "datedCanonicalObservation": {
+     "observedAt": "2026-10-11T09:54:07Z",
+     "state": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHashPrefix": "f91cf642a32a",
+     "planLaneBlockerStatus": "cleared",
+     "planLaneBlockerClearedAt": "2026-10-06T04:48:19.825Z",
+     "authoredBlockerIds": [],
+     "claimHold": false,
+     "correction": "Excluded drill admission was observed, but the decision-derived assignment floor remains unqualified. Preserve the retraction of the definitive title-only root-cause claim; the former own global hold was cleared.",
+     "historyBoundary": "The finite lifecycle read omits some nonterminal transitions and does not establish complete history."
+    },
+    "sourceInspection": "README/reclaim-drill is the P-007/D-026 VM and CLI resume foundation. Recorded phases and faked-gcloud assertions do not establish P-523 mid-sync P2P no-loss/no-duplicate acceptance; named source pins and inspection are recorded in thread-post:1173974, without a fresh test or live drill.",
+    "nonP2pBoundary": {
+     "plan": "nonp2p-feature-queue-cleanup-2026-10-03",
+     "version": 25,
+     "contentHash": "d2011d43075b0d5bc6ac1929e7982c77914d6b58dc7327513942bbcb04f866d8",
+     "decision": "D-008",
+     "qualification": "Retains non-P2P mission/spec6/cap1 and existing source routes; stops new generic scheduler pulls, continues this PERSONAL audit lane, and directs conflicting workers to release without global holds.",
+     "existingRouteAuthorityBlocker": "WI-10006417"
+    },
+    "dispositionBoundary": "Preserve the original version143 blocked row and all captured population boundaries. Retain the accountable excluded P2P/cloud rig lane; no obsolete, duplicate or superseded determination and no drill acceptance grade. No child claim/state/hold change, test run, provider action, route change, LIVE_GATE_OPS, killed-goal renewal or shipment."
+   }
   },
   {
    "id": "WI-10004391",
@@ -4604,7 +4650,44 @@
      "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-524 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "gcpP2pFieldDrillEvidenceQualification": {
+    "auditDate": "2026-10-11",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "status": "retained-excluded-p2p-cloud-rig-lane",
+    "storedAudit": {
+     "ref": "thread-post:1173974",
+     "createdAt": "2026-10-11T09:57:34.895Z",
+     "bodySha256": "5933fc32bec54edab07870b4f47d74f2def84c5c5cf8b4a45113a1ef8cf6297b",
+     "independentStoredBodyReadback": true
+    },
+    "governingSource": {
+     "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+     "version": 166,
+     "contentHash": "6d14cd7f2b6454e7dc496c00c23b734b461ea6e5c34b37ef09f0b4bba104f46d",
+     "item": "P-524",
+     "itemState": "todo",
+     "phase": "p2p field test",
+     "unresolvedBlockers": [],
+     "prerequisite": "P-522 DONE/effective DONE; dependency clearance does not establish S5 acceptance.",
+     "requiredEvidence": "S5: demonstrate convergence of two or three simultaneously active GCP peers.",
+     "decisions": "D-001 preserves the original su/self route. D-008 and cleanup25 D-008 govern the P2P/cloud split, clean artifact, announced rig window and non-P2P exclusion/admission stop; full shared qualification is recorded in thread-post:1173972."
+    },
+    "datedCanonicalObservation": {
+     "observationSource": "thread-post:1173974, 2026-10-11",
+     "state": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHashPrefix": "14612677383d",
+     "planLaneBlockerStatus": "cleared",
+     "planLaneBlockerClearedAt": "2026-10-06T04:48:21.364Z",
+     "authoredBlockerIds": [],
+     "claimHold": false,
+     "qualification": "The full checkpoint records repeated excluded S5 admission and release by four prior members; the actual filter/routing cause remains undiagnosed. Metadata rig=false does not establish suitability or authorization.",
+     "historyBoundary": "The finite lifecycle read omits some nonterminal transitions and does not establish complete history."
+    },
+    "dispositionBoundary": "Preserve the original version143 blocked snapshot, requirements and evidence. Retain the accountable excluded P2P/source route; no obsolete, duplicate or superseded determination and no live S5 acceptance. No child state/hold change, new scheduler pull, tests, cloud/rig actuation, route change, LIVE_GATE_OPS, killed-goal renewal or shipment."
+   }
   },
   {
    "id": "WI-10004393",
@@ -4638,7 +4721,74 @@
      "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-526 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "gcpP2pFieldDrillEvidenceQualification": {
+    "auditDate": "2026-10-11",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "status": "retained-excluded-p2p-cloud-rig-lane",
+    "storedAudit": {
+     "ref": "thread-post:1173974",
+     "createdAt": "2026-10-11T09:57:34.895Z",
+     "bodySha256": "5933fc32bec54edab07870b4f47d74f2def84c5c5cf8b4a45113a1ef8cf6297b",
+     "independentStoredBodyReadback": true
+    },
+    "governingSource": {
+     "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+     "version": 166,
+     "contentHash": "6d14cd7f2b6454e7dc496c00c23b734b461ea6e5c34b37ef09f0b4bba104f46d",
+     "item": "P-526",
+     "itemState": "todo",
+     "phase": "p2p field test",
+     "unresolvedBlockers": [],
+     "prerequisite": "P-522 DONE/effective DONE; dependency clearance does not establish S8 acceptance.",
+     "requiredEvidence": "S8: revoke/remove a peer and demonstrate that it can neither pull nor push.",
+     "decisions": "D-001 preserves the original su/self route. D-008 and cleanup25 D-008 govern the P2P/cloud split, clean artifact, announced rig window and non-P2P exclusion/admission stop; full shared qualification is recorded in thread-post:1173972."
+    },
+    "datedCanonicalObservation": {
+     "observationSource": "thread-post:1173974, 2026-10-11",
+     "state": "open",
+     "assignee": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002",
+     "completionAuthority": null,
+     "checkpointContentHashPrefix": "ca1f67e74024",
+     "planLaneBlockerStatus": "cleared",
+     "planLaneBlockerClearedAt": "2026-10-06T04:48:23.965Z",
+     "authoredBlockerIds": [],
+     "claimHold": false,
+     "claimBoundary": "Preserve the dated peer claim; this audit does not claim the excluded drill or its implementation.",
+     "historyBoundary": "Oct7 session-wide flight stamps are not item progress or rerun evidence. Finite lifecycle coverage omits some nonterminal transitions."
+    },
+    "retainedS8Evidence": {
+     "datedRun": "Oct6 c1010r peer-authored evidence",
+     "result": "INCONCLUSIVE/controlfailed",
+     "pullQualification": "The apparent pullBlocked=1 indicator was invalidated by tower-serve/all-ref evidence.",
+     "pushQualification": "The reported push refusal and fixes remain dated peer evidence, not an independently rerun live outcome.",
+     "rawEvidenceBoundary": "Peer-cited ~/.cache/agent-capacity/c1010r raw paths were not independently opened by this audit.",
+     "existingIssue": {
+      "id": "WI-10006827",
+      "datedState": "open",
+      "datedAssignee": null,
+      "datedCompletionAuthority": null,
+      "checkpointContentHashPrefix": "bee37818c4e6",
+      "qualification": "Revoked verified-peer main-repo serve refusal, fail-closed lookup and tests are the proposed remedy. The older child checkpoint's fix-in-tree statement does not prove committed, loaded or live S8 success."
+     }
+    },
+    "sourceInspection": {
+     "scope": "Named p2p-join-soak source and test excerpts inspected in thread-post:1173974; no fresh suite or live drill.",
+     "controls": "Requires successful same-run BEFORE exchange, unique RUN-qualified markers, successful AFTER commits, all-ref history checks and rejection of CONFLICT_AT_OBS. Suite source includes failed-control, stale-run, commit-failure and post-revoke pull/push controls.",
+     "pins": [
+      {
+       "path": "scripts/agent-capacity/vm/p2p-join-soak.sh",
+       "sha256": "f614e103e312cdbb53a5d30d7e7b821df1ed8f81acc74602a420fa918dae6d66"
+      },
+      {
+       "path": "scripts/agent-capacity/vm/p2p-join-soak.test.ts",
+       "sha256": "fedcaac5e1077a64704a2f5658db69e4a7b1e73fe5f6c92c63ec70d04f237a7c"
+      }
+     ],
+     "boundary": "Source assertions and named-file identity do not establish whole-import/runtime identity, a fresh test pass or successful live revoke behavior."
+    },
+    "dispositionBoundary": "Preserve the original version143 blocked snapshot, requirements, existing evidence, scope exclusions and peer claim. Retain the accountable P2P/source route; no obsolete, duplicate or superseded determination. No child state/hold change, duplicate DRAIN filing, excluded fix takeover, tests, cloud/rig actuation, acceptance waiver, LIVE_GATE_OPS, killed-goal renewal or shipment."
+   }
   },
   {
    "id": "WI-10004538",
