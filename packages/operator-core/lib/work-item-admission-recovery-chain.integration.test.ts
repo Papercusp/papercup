@@ -46,7 +46,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
-  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'system:reviewer/reviewer' && h.revoked }),
+  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer-session' && h.revoked }),
 }));
 vi.mock('./modes/store', async (orig) => ({
   ...await orig<typeof import('./modes/store')>(), getModes: async () => [],
@@ -87,7 +87,7 @@ vi.mock('./work-scope-policy', async (orig) => ({
 vi.mock('./scheduler/fleet-scope-admission', async (orig) => ({
   ...await orig<typeof import('./scheduler/fleet-scope-admission')>(),
   admitWorkItemForFleetTarget: async ({ target }: { target: string }) =>
-    h.denied && target === 'system:reviewer/reviewer'
+    h.denied && target === 'reviewer-session'
       ? { allowed: false, reason: 'restrictive reviewer override' } : { allowed: true },
 }));
 // Peripheral lifecycle subscriptions/events must not escape into live agent queues.
@@ -119,6 +119,7 @@ await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
+const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
 const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
 const originalContext = {
   workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
@@ -126,11 +127,11 @@ const originalContext = {
   chunkId: 'original-chunk', featureId: 'original-feature', planRunSessionId: null,
   transport: 'mcp' as const,
 };
-// The authenticated principal is `system:reviewer` with uiClientId `reviewer`;
-// resolveAgentIdentity namespaces that caller as `system:reviewer/reviewer`.
+// A trusted signed-spawn principal preserves its accepted uiClientId session owner.
+// Ordinary bearer clients remain namespaced under `system:reviewer`.
 // Recovery dispatch, durable assignment, and target-owned pickup must use that same
-// owner id; the role label `reviewer` correctly fails the real holder-CAS claim.
-const reviewerOwnerId = 'system:reviewer/reviewer';
+// session id rather than assigning the principal's ordinary bearer identity.
+const reviewerOwnerId = 'reviewer-session';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -299,9 +300,10 @@ async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer')
   });
   const ctx: UnifiedToolContext = {
     role, principal, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
-    uiClientId: 'reviewer', sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
+    uiClientId: reviewerOwnerId, sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
     log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
   };
+  expect(resolveAgentIdentity(ctx).ownerId).toBe(reviewerOwnerId);
   return inProcessCall(ctx)('work_items:pickup', { id, harness: scope.harnessSlug, detail: false });
 }
 
@@ -411,7 +413,8 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
       } },
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
-    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: reviewerOwnerId } });
+    const picked = await pickup(original.id);
+    expect(picked, JSON.stringify(picked)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: reviewerOwnerId } });
     expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
       'work_items:pickup', 'work_items:get', 'work_items:claim',
     ]);
@@ -563,6 +566,22 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
         admission: 'pending', taken_by: null,
         payload: { _admissionRecovery: { state: 'held', stage: 'screen', pickupConfirmed: false } },
       });
+      if (outcome === 'distinct') {
+        const refusal = result.guardRefusals!.find(({ itemId }) => itemId === original.id)!;
+        const recovery = (await row(original.id)).payload._admissionRecovery;
+        expect(recovery.reason).toContain('outside-mutation-scope');
+        expect(recovery.reason).toContain(refusal.detail);
+        expect(recovery.reason).toContain(`${result.runId}:recovery:${original.id}`);
+        expect(recovery.reason).toContain('ordinary component screening/review');
+        expect(recovery.reason).not.toContain('no hold reason');
+        expect((await row(original.id)).payload).not.toHaveProperty('admissionHold');
+        expect((await row(twin.id)).payload).not.toHaveProperty('_admissionRecovery');
+      } else if (outcome === 'hold') {
+        const recovery = (await row(original.id)).payload._admissionRecovery;
+        expect(recovery.reason).toContain('Controlled screening response');
+        expect(recovery.reason).toContain('admission hold');
+        expect(recovery.reason).not.toContain('outside-mutation-scope');
+      }
       expect(h.claim).not.toHaveBeenCalled();
       expect(h.wake).not.toHaveBeenCalled();
     },
