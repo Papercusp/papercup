@@ -20,7 +20,9 @@
  */
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
 import { createHash } from 'node:crypto';
-import { captureElevenLabsCredentialReceipt, provisionElevenLabsRestrictedCredential, type ElevenLabsCredentialReceipt } from './voice-engines/elevenlabs-agent-sync';
+import { captureElevenLabsCredentialReceipt, provisionElevenLabsRestrictedCredential,
+  readElevenLabsRestrictedCredential, readElevenLabsImmutableProfile,
+  type ElevenLabsAgentDefinition, type ElevenLabsCredentialReceipt } from './voice-engines/elevenlabs-agent-sync';
 
 export type IntegrationCredentials = Record<string, string>;
 
@@ -110,6 +112,34 @@ export async function readElevenLabsCredentialPair(name: string): Promise<{
     if (!captured || receipt.secretRef !== captured.receipt.secretRef
       || receipt.secretSha256 !== createHash('sha256').update(apiKey).digest('hex')) return null;
     return captured;
+  } catch { return null; }
+}
+
+/** Server-only admission, immediately before issuance. Policy comes from the
+ * host, never a request body. No cached attestation or generic voice-key fallback.
+ * The returned secret must stay in the server's token provider. */
+export async function readAdmittedElevenLabsIntegrationCredential(options: {
+  integrationName: string; metadataApiKey: string; allowedPermissions: readonly string[];
+  maximumCredits: number; definition: ElevenLabsAgentDefinition; toolIds: string[];
+  agentId: string; fetch: typeof fetch; signal: AbortSignal;
+}): Promise<{ apiKey: string; keyId: string; agentId: string; maximumSeconds: number } | null> {
+  const policy = { ...options, allowedPermissions: [...options.allowedPermissions],
+    definition: structuredClone(options.definition), toolIds: [...options.toolIds] };
+  if (policy.signal.aborted) return null;
+  try {
+    const pair = await readElevenLabsCredentialPair(policy.integrationName);
+    if (!pair || policy.signal.aborted) return null;
+    const restriction = await readElevenLabsRestrictedCredential({ ...policy, ...pair,
+      secretRef: `integration:${policy.integrationName}` });
+    if (!restriction || policy.signal.aborted) return null;
+    const profile = await readElevenLabsImmutableProfile(policy.definition, policy.toolIds,
+      { apiKey: pair.apiKey, agentId: policy.agentId, fetch: policy.fetch, signal: policy.signal });
+    if (!profile || policy.signal.aborted) return null;
+    // A save/rotation during remote admission invalidates this result.
+    const current = await readElevenLabsCredentialPair(policy.integrationName);
+    if (!current || current.apiKey !== pair.apiKey
+      || JSON.stringify(current.receipt) !== JSON.stringify(pair.receipt) || policy.signal.aborted) return null;
+    return { apiKey: pair.apiKey, keyId: restriction.keyId, ...profile };
   } catch { return null; }
 }
 
