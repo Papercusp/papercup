@@ -692,7 +692,7 @@ export default defineTool({
       // the 1500-char budget, notWhen is). Unchanged in substance — these are the
       // two args that DO carry what callers reach for the rejected provenance
       // fields to express, so the rule and its remedy have to travel together.
-      'CLAIM + ATTRIBUTE: assign_to:"self" claims the filing, and observation.refs carries evidence attribution. ' +
+      'CLAIM + ATTRIBUTE: assign_to:"self" atomically claims non-observation filings. lane:"observation" records are non-claimable sensor readings and ignore assign_to; use a bug/change filing when you need to claim implementation work. observation.refs carries evidence attribution. ' +
         'Never pass createdBy / source / sourceRole / filedByRole — the server derives filer identity and role, and the strict schema rejects them.',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
       'plans:new (something needing real design — capture kind=feature linking it)',

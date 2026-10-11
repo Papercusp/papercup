@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../integration-credentials', () => ({ readAdmittedElevenLabsIntegrationCredential: vi.fn() }));
 import { readAdmittedElevenLabsIntegrationCredential } from '../integration-credentials';
-import { createElevenLabsTutorialVoiceLimitVerifier } from './tutorial-voice-reservation-store';
+import { createElevenLabsTutorialVoiceLimitVerifier, readReservedElevenLabsTutorialCredential } from './tutorial-voice-reservation-store';
 import { PAPERCUP_FRONT_AGENT } from '../voice-engines/elevenlabs-agent-sync';
 
 const read = vi.mocked(readAdmittedElevenLabsIntegrationCredential);
@@ -17,6 +17,28 @@ const verify = (reader: ReturnType<typeof createElevenLabsTutorialVoiceLimitVeri
   reader(null as never, null as never);
 beforeEach(() => { read.mockReset(); read.mockResolvedValue(admitted); });
 describe('host-owned tutorial provider limits', () => {
+  it('rechecks the exact reserved credential and refuses rotation or duration growth', async () => {
+    const reservation = { ok: true as const, reservationId: '11111111-1111-4111-8111-111111111111',
+      maximumSeconds: 120, providerLimitRef: 'elevenlabs:restricted:tutorial' };
+    expect(await readReservedElevenLabsTutorialCredential(reservation, options().credential)).toEqual(admitted);
+    for (const changed of [{ ...admitted, keyId: 'rotated' }, { ...admitted, agentId: 'other' },
+      { ...admitted, maximumSeconds: 121 }, { ...admitted, maximumSeconds: 0 }, null]) {
+      read.mockResolvedValueOnce(changed);
+      expect(await readReservedElevenLabsTutorialCredential(reservation, options().credential)).toBeNull();
+    }
+  });
+  it('snapshots the committed reservation and retains cancellation checks after re-admission', async () => {
+    const reservation = { ok: true as const, reservationId: '11111111-1111-4111-8111-111111111111',
+      maximumSeconds: 120, providerLimitRef: 'elevenlabs:restricted:tutorial' };
+    read.mockImplementationOnce(async () => { reservation.maximumSeconds = 999; return { ...admitted, maximumSeconds: 121 }; });
+    expect(await readReservedElevenLabsTutorialCredential(reservation, options().credential)).toBeNull();
+    const controller = new AbortController(); const policy = options(); policy.credential.signal = controller.signal;
+    read.mockImplementationOnce(async () => { controller.abort(); return admitted; });
+    expect(await readReservedElevenLabsTutorialCredential(reservation, policy.credential)).toBeNull();
+    read.mockClear();
+    expect(await readReservedElevenLabsTutorialCredential(reservation, policy.credential)).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
   it('freshly admits each reservation and returns no credential', async () => {
     const reader = createElevenLabsTutorialVoiceLimitVerifier(options());
     const result = await verify(reader);

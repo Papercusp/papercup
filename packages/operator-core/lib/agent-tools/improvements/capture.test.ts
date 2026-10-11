@@ -1868,6 +1868,8 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(guidance.notWhen).toMatch(/sourceRole/);
     const seeAlso = (guidance.seeAlso ?? []).join('\n');
     expect(seeAlso).toMatch(/assign_to:"self"/);
+    expect(seeAlso).toMatch(/claims non-observation filings/);
+    expect(seeAlso).toMatch(/lane:"observation" records are non-claimable sensor readings and ignore assign_to/);
     expect(seeAlso).toMatch(/observation\.refs/);
 
     const r = argsSchema.safeParse({

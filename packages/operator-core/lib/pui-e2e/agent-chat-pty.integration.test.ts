@@ -5600,6 +5600,28 @@ async function verifyOperatorProcessViewState(port: number, scope?: 'pot' | 'all
     ...(scope ? { scope } : {}) } });
 }
 
+/** Bounded reads of the exact setup prerequisites, including their bodies.
+ * HTTP 200 on unrelated configuration routes does not prove projects loaded. */
+async function operatorSetupProbe(port: number) {
+  const read = async (route: string) => {
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = await response.json();
+      return { route, status: response.status, durationMs: Date.now() - startedAt,
+        workspaceId: body.workspaceId,
+        projects: Array.isArray(body.projects)
+          ? body.projects.map((project: { slug?: string }) => project.slug) : undefined };
+    } catch (error) {
+      return { route, durationMs: Date.now() - startedAt,
+        error: redactSensitiveText(cleanupErrorText(error)) };
+    }
+  };
+  return Promise.all(['/api/tui/identity', '/api/harness/projects/lite'].map(read));
+}
+
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
@@ -7583,8 +7605,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   test('operator OS process setup selects the seeded project before native launch', async () => {
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('process-context') });
+    const frames: Record<string, string> = {};
     let primaryFailure: { error: unknown } | null = null;
     try {
+      const prerequisites = await operatorSetupProbe(first.port);
+      console.info('PUI_OPERATOR_CONTEXT_PREREQUISITES', JSON.stringify(prerequisites));
+      expect(prerequisites).toEqual([
+        expect.objectContaining({ status: 200, workspaceId: WORKSPACE }),
+        expect.objectContaining({ status: 200, projects: expect.arrayContaining([HARNESS]) }),
+      ]);
       await verifyOperatorProcessViewState(first.port);
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       // Isolate project lookup from the asynchronous wizard driver and
@@ -7594,8 +7623,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       pane.enter();
       await pane.waitFor('New session — 1 Context');
       await pane.waitFor('Connection: Connected');
+      frames.connected = pane.screen();
       pane.write('/');
       pane.write(HARNESS);
+      await pane.waitFor(`Project search: ${HARNESS}`);
+      frames.searching = pane.screen();
       pane.enter();
       await pane.waitFor(`> ${HARNESS}`);
       pane.enter();
@@ -7608,9 +7640,18 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       }));
     } catch (error) {
       primaryFailure = { error };
+      const probe = await operatorSetupProbe(first.port);
+      // Use the installed client's own full rendezvous diagnostic; its footer
+      // intentionally omits the error chain. This is a fresh probe, not proof
+      // of the earlier failing request, and never launches an engine.
+      const doctor = await promisify(execFile)(bin, ['doctor'], {
+        timeout: 15_000, maxBuffer: 32_000,
+        env: { PATH: process.env.PATH, HOME: home, PUI_OPERATOR: `http://127.0.0.1:${first.port}` },
+      }).then(({ stdout, stderr }) => ({ output: redactSensitiveText(stdout + stderr) }))
+        .catch((doctorError) => ({ error: redactSensitiveText(cleanupErrorText(doctorError)) }));
       console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT_FAILURE', JSON.stringify({
         diagnostics: first.diagnostics, screen: pane.failureScreen(),
-        responses: first.responses, output: first.output(),
+        frames, probe, doctor, responses: first.responses, output: first.output(),
       }));
       throw error;
     } finally {

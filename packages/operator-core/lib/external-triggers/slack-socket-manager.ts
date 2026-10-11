@@ -228,7 +228,14 @@ export class SlackSocketManager {
     }
     for (const source of sources) {
       const id = key(source);
-      if (this.connections.has(id) || (this.retryAt.get(id) ?? 0) > this.now()) continue;
+      const connection = this.connections.get(id);
+      if (connection) {
+        // Admission and channel settings can change while the socket stays open.
+        // Use the authoritative row for subsequent envelopes, including revocations.
+        connection.source = source;
+        continue;
+      }
+      if ((this.retryAt.get(id) ?? 0) > this.now()) continue;
       try {
         const credentials = await (this.deps.resolveCredentials ?? resolveSlackSocketCredentials)(source, installSlug(source));
         const reconciled = this.deps.reconcileHistory

@@ -2872,6 +2872,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       it('publishes the same soft row caps as loop:checkpoint while retaining the hard backstop', async () => {
         type JsonNode = { [key: string]: unknown };
+        const { CARRY_ROW_ID_MAX } = await import('../../carry-note');
         const schemaOf = (candidate: unknown) => {
           const args = (candidate as { args: { toJSONSchema: () => unknown } }).args;
           const schema = args.toJSONSchema() as JsonNode;
@@ -2891,6 +2892,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const loopCheckpoint = (await import('../loop/checkpoint')).default;
         const workItemRows = schemaOf(checkpoint);
         const loopRows = schemaOf(loopCheckpoint);
+
+        const idCaps = {
+          maxLength: CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE,
+          'x-soft-maxLength': CARRY_ROW_ID_MAX,
+        };
+        expect(workItemRows.id).toMatchObject(idCaps);
+        expect(loopRows.id).toMatchObject(idCaps);
+        expect(workItemRows.id.description).toContain(`Soft cap: ${CARRY_ROW_ID_MAX} chars`);
+        expect(loopRows.id.description).toContain(`Hard input backstop: ${idCaps.maxLength} chars`);
 
         for (const field of ['claim', 'recheck', 'verified'] as const) {
           const softCap = CARRY_ROW_SOFT_CAPS[field];

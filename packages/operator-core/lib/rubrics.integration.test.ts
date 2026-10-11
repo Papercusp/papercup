@@ -2528,6 +2528,18 @@ describe('template_data persistence boundary — the set-template-data door', ()
       })),
     };
     expect((await rubrics.previewAcceptanceBarAmendment(manual))?.changedBars).toEqual(['R-1', 'R-2']);
+
+    const manualWithTestLayer = {
+      ...manual,
+      criteria: manual.criteria.map((criterion) => ({
+        ...criterion,
+        requiredTestLayers: ['unit'],
+      })),
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(manualWithTestLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_check_layer_mismatch.*R-1.*explicitly manual.*unit/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
   });
 
   // EI-24372605712471072: a BAR on a plan that has not started may name the test file its

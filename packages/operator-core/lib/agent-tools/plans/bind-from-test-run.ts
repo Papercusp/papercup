@@ -161,6 +161,15 @@ export const testRunBindingSchema = z
       .optional()
       .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
     details: z.record(z.string(), z.unknown()).optional(),
+    reaimJustification: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe(
+        'Required to bind a caught mutant when the same unchanged test file had a surviving mutant in the preceding 4 h (a re-aimed mutation). Persisted on the binding as details.reaim.',
+      ),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
   .strict()
@@ -308,6 +317,7 @@ export type TestRunBindingError =
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
   | 'mutation_causal_controls_invalid'
+  | 'mutation_reaim_unjustified'
   | 'test_run_as_committed_content_mismatch'
   | 'test_run_source_modified_after_run'
   | 'test_run_cargo_not_a_test'
@@ -958,6 +968,63 @@ export interface TestRunBindingDeps {
     recordedRoot: string | null,
   ): Promise<SiblingCheckout | null>;
   git?: GitRunner;
+  /**
+   * Surviving mutant rows (source mutation-probe, phase mutant, status pass) for any of
+   * `filePaths` that started in [before - windowMs, before). Absent = re-aim detection off.
+   */
+  loadMutationSurvivors?(
+    scope: TestRunBindingScope,
+    filePaths: readonly string[],
+    before: Date,
+    windowMs: number,
+  ): Promise<MutationSurvivor[]>;
+}
+
+export interface MutationSurvivor {
+  id: number;
+  startedAt: string;
+}
+
+/** An earlier surviving mutant of the same test file inside this window makes a catch a re-aim. */
+export const MUTATION_REAIM_WINDOW_MS = 4 * 3_600_000;
+
+export interface MutationReaimRecord {
+  justification: string;
+  survivorTestRunIds: number[];
+}
+
+/**
+ * Re-aiming a mutation until it is caught, with the test file unchanged, proves the
+ * MUTATION moved, not that the guard got stronger. The catch is still bindable, but
+ * only with a stated reason, and that reason travels on the binding so a grader sees
+ * the re-aim instead of a clean first-try catch. A test file modified since the latest
+ * survivor is a strengthened guard, not a re-aim.
+ */
+export function decideMutationReaim(args: {
+  testRunId: number;
+  caughtMutant: boolean;
+  survivors: readonly MutationSurvivor[];
+  testFileChangedSinceSurvivor: boolean;
+  justification: string | undefined;
+}):
+  | { ok: false; error: 'mutation_reaim_unjustified'; testRunId: number; message: string }
+  | { ok: true; record: MutationReaimRecord | null } {
+  const survivorIds = args.survivors.map((s) => s.id);
+  const reaim = args.caughtMutant && survivorIds.length > 0 && !args.testFileChangedSinceSurvivor;
+  if (reaim && !args.justification) {
+    return {
+      ok: false,
+      error: 'mutation_reaim_unjustified',
+      testRunId: args.testRunId,
+      message:
+        `test-run ${args.testRunId} is a caught mutant, but the same test file had surviving mutant run(s) ` +
+        `${survivorIds.join(', ')} in the preceding 4 h and has not changed since. That is a re-aimed mutation, ` +
+        'not a stronger guard. Pass reaimJustification explaining why this catch is still sound evidence, or ' +
+        'strengthen the test and re-run the probe.',
+    };
+  }
+  if (!args.justification) return { ok: true, record: null };
+  return { ok: true, record: { justification: args.justification, survivorTestRunIds: reaim ? survivorIds : [] } };
 }
 
 export interface SiblingCheckout {
@@ -1033,6 +1100,28 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
       if (!row) return null;
       const recordedRoot = executionDetails(row.execution_details).root;
       return { ...row, root: typeof recordedRoot === 'string' ? recordedRoot : null };
+    });
+  },
+  async loadMutationSurvivors(scope, filePaths, before, windowMs) {
+    if (!filePaths.length) return [];
+    const since = new Date(before.getTime() - windowMs);
+    return withWorkspace(scope.workspaceId, async (tx) => {
+      const rows = await tx<{ id: string | number; started_at: Date | string }[]>`
+        SELECT id, started_at
+          FROM harness_shared.test_runs
+         WHERE source = 'mutation-probe'
+           AND status = 'pass'
+           AND execution_details->>'mutationPhase' = 'mutant'
+           AND file_path = ANY(${[...filePaths]}::text[])
+           AND (workspace_id IS NULL OR workspace_id = ${scope.workspaceId})
+           AND started_at >= ${since.toISOString()}::timestamptz
+           AND started_at < ${before.toISOString()}::timestamptz
+         ORDER BY started_at
+         LIMIT 20`;
+      return rows.map((r) => ({
+        id: Number(r.id),
+        startedAt: (r.started_at instanceof Date ? r.started_at : new Date(r.started_at)).toISOString(),
+      }));
     });
   },
   async adoptRun(scope, testRunId) {
@@ -1305,6 +1394,26 @@ export async function expandTestRunBinding(
           'so the binding would fingerprint bytes this run may never have executed. Re-run the test and bind the new run.',
       };
     }
+  }
+  if (result.ok && deps.loadMutationSurvivors) {
+    const caughtMutant = (input.evidenceKind ?? deriveKind(row)) === 'mutation' && row.status === 'fail';
+    const before = measurementLowerBound(row.started_at, row.execution_details);
+    const survivors = caughtMutant && before
+      ? await deps.loadMutationSurvivors(scope, [...new Set([row.file_path ?? testPath, testPath])], before, MUTATION_REAIM_WINDOW_MS)
+      : [];
+    const latest = survivors.at(-1);
+    const testFileChangedSinceSurvivor = latest
+      ? (await measuredFileModifiedAfterRun(root, [testPath], latest.startedAt)) != null
+      : false;
+    const reaim = decideMutationReaim({
+      testRunId: Number(row.id),
+      caughtMutant,
+      survivors,
+      testFileChangedSinceSurvivor,
+      justification: input.reaimJustification,
+    });
+    if (!reaim.ok) return reaim;
+    if (reaim.record) (result.binding.details as Record<string, unknown>).reaim = reaim.record;
   }
   if (result.ok) {
     Object.assign(result.binding.details.testRun as Record<string, unknown>, {

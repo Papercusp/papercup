@@ -1,11 +1,34 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 const script = resolve(import.meta.dirname, '../../../../scripts/tauri-surface-verify-dao-launch.sh');
 const repo = resolve(import.meta.dirname, '../../../..');
+
+// The current CLI rejects PID-only screenshots before bridge discovery. Parse
+// actual maintained calls so capture drift fails before the expensive boot.
+function screenshotTargets(source: string, name: string) {
+  const parsed = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true);
+  const missing: string[] = [];
+  let captures = 0;
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'native'
+      && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'screenshot') {
+      captures++;
+      const targeted = node.arguments.some((arg, index) => ts.isStringLiteral(arg)
+        && ['--selector', '--title', '--window-id'].includes(arg.text)
+        && node.arguments[index + 1] !== undefined
+        && (!ts.isStringLiteral(node.arguments[index + 1]) || node.arguments[index + 1].text.length > 0));
+      if (!targeted) missing.push(`${name}:${parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1}`);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  return { captures, missing };
+}
 
 // Exercise the maintained real-mode bootstrap and vh.sh. Stop at the first
 // bridge command so this fixture never starts or interacts with a desktop.
@@ -86,6 +109,22 @@ function run(path: string, syntax = true) {
 }
 
 describe('maintained DAO native assertion syntax preflight', () => {
+  it('gives every maintained native TypeScript screenshot an explicit CLI target', () => {
+    const files = readdirSync(resolve(repo, 'scripts')).filter(name => /^tauri-surface-verify-.*\.mts$/.test(name));
+    const calls = files.map(name => screenshotTargets(readFileSync(resolve(repo, 'scripts', name), 'utf8'), name));
+    expect(calls.reduce((total, result) => total + result.captures, 0)).toBeGreaterThan(0);
+    expect(calls.flatMap(result => result.missing)).toEqual([]);
+  });
+
+  it('detects a reverted PID-only native capture before desktop boot', () => {
+    const path = resolve(repo, 'scripts/tauri-surface-verify-dao-workbench.mts');
+    const source = readFileSync(path, 'utf8');
+    expect(screenshotTargets(source, path).missing).toEqual([]);
+    const mutant = source.replace("native('screenshot', '--selector', 'html',", "native('screenshot',");
+    expect(mutant).not.toBe(source);
+    expect(screenshotTargets(mutant, path).missing).toHaveLength(1);
+  });
+
   it('preflights every generated poll with the real helper and fuses both legal close guards', () => {
     const result = pollContract();
     expect(result.status, result.stderr).toBe(0);

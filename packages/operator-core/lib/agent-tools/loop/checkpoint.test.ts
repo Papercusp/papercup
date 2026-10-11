@@ -972,7 +972,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     const guidance = String((tool as unknown as { guidance?: { when?: unknown } }).guidance?.when ?? '');
 
     expect(projectedProbeDescription).toBe(rawProbeDescription);
-    for (const text of [description, guidance, rawProbeDescription, projectedProbeDescription]) {
+    for (const text of [guidance, rawProbeDescription, projectedProbeDescription]) {
       expect(text).toContain("kind:'tool'");
       expect(text).toContain("kind:'state-cell'");
       expect(text).toContain('schemaRevision');

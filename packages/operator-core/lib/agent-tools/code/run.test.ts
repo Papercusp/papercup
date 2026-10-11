@@ -155,6 +155,8 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('Nested tool calls return their typed result root');
     expect(scriptDescription).toContain('read `result.output`, `result.exit_code`, and `result.status`');
     expect(scriptDescription).toContain('do not read `result.content[0].text`');
+    expect(scriptDescription).toContain('`dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`');
+    expect(scriptDescription).toContain('relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`');
   });
 
   it('documents bounded read-only results recovered after a script timeout', () => {

@@ -329,20 +329,18 @@ const CARRY_ALIAS_FIELD = z
   .optional();
 
 const EXECUTABLE_PROBE_SHAPE =
-  "Executable `probe` shape (choose ONE target): `{ kind:'tool', tool:'<direct read-only tool>', args:{...}, schemaRevision:'live', expect:{ path:'$.state', op:'eq', value:'green' } }` or `{ kind:'state-cell', cell:'<registered cell>', as:'<reader>', schemaRevision:'<revision>', expect:{ path:'$.state', op:'eq', value:'green' } }`. " +
-  '`kind`, the matching target (`tool` or `cell`), `schemaRevision`, and `expect` are required; `args` defaults to `{}` for tool probes. ' +
-  '`probe:{ expect:... }` has no executable target — omit `probe` and put the human command in `recheck`.';
+  "`{kind:'tool',tool,args?,schemaRevision,expect}` or `{kind:'state-cell',cell,as,schemaRevision,expect}`. Required: kind, target, schemaRevision, expect; args defaults to `{}`. " +
+  '`probe:{ expect:... }` has no target; omit `probe` and use `recheck` for a human command.';
 
 export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    `Read/write/clear COLD loop carry-note; carry mode belongs to loop:arm (\`carry:'cold'|'warm'\`); loop:checkpoint does not accept a \`carry\` argument. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}; blank/null clears. Narrative inputs are accepted up to ${CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE} characters, then persisted with an ${CARRY_TEXT_SOFT_CAP}-character soft cap per field; every clipped field is listed in the response's repairs. The schema input maximum is not a persistence-length guarantee. ` +
-    "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). `confirmShrink` is accepted by `work_items:checkpoint` only; use `confirmRetire` here. " + EXECUTABLE_PROBE_SHAPE,
+    "COLD loop carry-note. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}. Oversized fields clip on write; repairs list them. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. Default rowsMode:'merge' preserves; rowsMode:'replace' retires (empty list with replace clears).",
   guidance: {
     when:
-      "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Label claims [self-imposed], [peer:<sid>], [inferred]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance the immediately runnable action in `next` or perform a bounded progress read; writing this checkpoint alone is not post-note progress. `cold-successor-no-progress` may refuse; scheduled fire/compaction is a narrow boundary exception. The carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. " + EXECUTABLE_PROBE_SHAPE,
-    notWhen: "WARM (carry:'warm', default) use live transcript; work_items:checkpoint for state.",
+      "COLD: pair facts with work_items:checkpoint. Same-line [turn:<session>@<iso-ts>] refs; never invent a ref; label [self-imposed]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance an immediately runnable action or do a bounded progress read; writing this checkpoint alone is not post-note progress. cold-successor-no-progress may refuse; scheduled fire/compaction is a narrow boundary exception. carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. " + EXECUTABLE_PROBE_SHAPE,
+    notWhen: "WARM: use live transcript; work_items:checkpoint for state.",
     chaining:
       'Retune: read loop:status, then ' +
       "loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",

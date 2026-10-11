@@ -6,6 +6,7 @@ import {
   type SlackSocketLike,
 } from './slack-socket-manager';
 import type { ExternalTriggerSourceRow } from './source-store';
+import { normalizeSlackSocketEnvelope } from './slack';
 
 class FakeSocket extends EventEmitter implements SlackSocketLike {
   sent: string[] = [];
@@ -26,6 +27,63 @@ const source: ExternalTriggerSourceRow = {
 };
 
 describe('SlackSocketManager', () => {
+  it('applies source allowance updates and revocation to an already open socket', async () => {
+    let current: ExternalTriggerSourceRow = {
+      ...source, config: { installSlug: 'papercusp', channels: ['C1'], botUserId: 'USYSTEM', botId: 'BSYSTEM' },
+    };
+    const socket = new FakeSocket();
+    const createSocket = vi.fn(() => socket);
+    const processEnvelope = vi.fn(async (value, envelope) => normalizeSlackSocketEnvelope(envelope, value.config));
+    const manager = new SlackSocketManager({
+      sql: {} as never,
+      workspaceId: () => 'papercusp-workspace',
+      listSources: vi.fn(async () => [current]),
+      resolveCredentials: vi.fn(async () => ({ appToken: 'xapp-token', botToken: 'xoxb-token' })),
+      reconcileHistory: vi.fn(async (value) => value),
+      openUrl: vi.fn(async () => 'wss://slack.test/socket'),
+      createSocket,
+      processEnvelope,
+      updateSource: vi.fn(async (_sql, _workspace, _id, input) => ({
+        ...current, status: input.status, cursor: input.cursor ?? current.cursor,
+      })),
+      log: () => {},
+    });
+    const emit = (id: string) => socket.emit('message', JSON.stringify({
+      envelope_id: id, type: 'events_api', payload: {
+        event_id: id, event: {
+          type: 'message', user: 'UTEST', bot_id: 'BTEST', app_id: 'ATEST', channel: 'C1',
+          channel_type: 'channel', ts: '1777000003.000300', text: 'Shipping calculation is broken',
+        },
+      },
+    }));
+
+    try {
+      await manager.reconcile();
+      socket.emit('open');
+      emit('before');
+      await vi.waitFor(() => expect(processEnvelope).toHaveBeenCalledTimes(1));
+      expect(await processEnvelope.mock.results[0].value).toBeNull();
+
+      current = { ...current, config: { ...current.config, testBotAllowance: {
+        botId: 'BTEST', appId: 'ATEST', userId: 'UTEST', channelId: 'C1',
+      } } };
+      await manager.reconcile();
+      emit('allowed');
+      await vi.waitFor(() => expect(processEnvelope).toHaveBeenCalledTimes(2));
+      expect(await processEnvelope.mock.results[1].value).toMatchObject({ event: 'message', channelId: 'C1' });
+
+      current = { ...current, config: { ...current.config, testBotAllowance: null } };
+      await manager.reconcile();
+      emit('revoked');
+      await vi.waitFor(() => expect(processEnvelope).toHaveBeenCalledTimes(3));
+      expect(await processEnvelope.mock.results[2].value).toBeNull();
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      expect(socket.sent.map((message) => JSON.parse(message).envelope_id)).toEqual(['before', 'allowed', 'revoked']);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it('ACKs a burst immediately, serializes ingest, and reconnects with bounded backoff', async () => {
     let now = 1_000;
     const sockets: FakeSocket[] = [];

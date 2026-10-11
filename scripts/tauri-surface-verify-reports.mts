@@ -159,7 +159,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(missingReportId)}
       && document.querySelector('.reports-reader')?.textContent.includes('This report is unavailable.')
       && !document.querySelector('.reports-reader h2')`);
-    native('screenshot', '--output', join(evidenceDir, 'reports-unknown-citation.png'));
+    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-unknown-citation.png'));
     native('navigate', `${original.path}&ws=${encodeURIComponent(workspace)}`, '--json');
     poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
@@ -242,9 +242,9 @@ async function verifyReports(evidenceDir: string) {
     // The desktop's other panels can narrow Reports even on a wide viewport.
     poll(`document.querySelector('.reports-reader').getBoundingClientRect().width >= 300`);
     native('eval', `document.querySelector('.reports-reader').scrollIntoView({block:'start'})`);
-    native('screenshot', '--output', join(evidenceDir, 'reports-reader.png'));
+    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-reader.png'));
     native('eval', `document.querySelector('.reports-reader svg').scrollIntoView({block:'center'})`);
-    native('screenshot', '--output', join(evidenceDir, 'reports-diagram.png'));
+    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-diagram.png'));
     const selectRetiring = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
       args: { params: { sel: correction.report_id, hist: null } }, timeout_ms: 30_000 });
     assert.equal(selectRetiring.status, 'done');
@@ -269,7 +269,7 @@ async function verifyReports(evidenceDir: string) {
     assert.equal(retiredReadback.results?.[0]?.ok, true);
     assert.equal(retiredReadback.results?.[0]?.report?.body_md, body + '\nA correction.\n');
     assert.ok(retiredReadback.results?.[0]?.report?.retired_at, 'The exact retired citation remains readable');
-    native('screenshot', '--output', join(evidenceDir, 'reports-retired-citation.png'));
+    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-retired-citation.png'));
     // This is a separate author in the verifier's private database. The UI must
     // exercise the human-owner read path rather than pass by being the author.
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -285,7 +285,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`document.querySelector('.reports-reader h2')?.textContent === 'Private peer audit'
       && document.querySelector('.reports-metadata')?.textContent.includes('reports-native-foreign-author')
       && document.querySelector('.reports-metadata')?.textContent.includes('owner')`);
-    native('screenshot', '--output', join(evidenceDir, 'reports-owner-private.png'));
+    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-owner-private.png'));
     const after = fingerprints();
     assert.deepEqual(after, before, 'Relevant source changed during the verification window');
     save('manifest.json', { result: 'pass', original: original.report_id, correction: correction.report_id,

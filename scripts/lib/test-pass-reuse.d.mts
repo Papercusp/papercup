@@ -6,6 +6,7 @@
  * `process.version process.platform process.arch` of the node the task will spawn.
  *
  * @param {string | null | undefined} nodeIdentity
+ * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
 export function reuseRunnerIdentity(nodeIdentity: string | null | undefined, proofFormat?: string): string | null;

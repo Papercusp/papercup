@@ -169,6 +169,24 @@ export function createTutorialVoiceAuthorityReader(options: {
 export type TutorialVoiceReservationResult =
   | { ok: true; reservationId: string; maximumSeconds: number; providerLimitRef: string }
   | { ok: false; reason: 'quota_exhausted' | 'session_active' | 'unavailable' };
+/** Re-admit after reservation commit, immediately before remote issuance.
+ * Rotation or duration growth must not spend against the old reservation.
+ * Server-only result; never serialize this credential to a browser or ledger.
+ * A refusal retains the reservation until verified provider finality. */
+export async function readReservedElevenLabsTutorialCredential(
+  reservation: Extract<TutorialVoiceReservationResult, { ok: true }>,
+  credential: Parameters<typeof readAdmittedElevenLabsIntegrationCredential>[0],
+): ReturnType<typeof readAdmittedElevenLabsIntegrationCredential> {
+  const reserved = { ...reservation };
+  if (credential.signal.aborted || !/^[0-9a-f-]{36}$/i.test(reserved.reservationId)
+    || !positive(reserved.maximumSeconds) || reserved.maximumSeconds > 7200
+    || !identifier(reserved.providerLimitRef)) return null;
+  const admitted = await readAdmittedElevenLabsIntegrationCredential(credential);
+  if (!admitted || credential.signal.aborted || !positive(admitted.maximumSeconds)
+    || admitted.maximumSeconds > reserved.maximumSeconds
+    || `elevenlabs:${admitted.keyId}:${admitted.agentId}` !== reserved.providerLimitRef) return null;
+  return admitted;
+}
 const identifier = (s: unknown): s is string => typeof s === 'string' && s.length > 0 && s.length <= 256;
 const positive = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) > 0;
 async function fence(sql: Sql) {

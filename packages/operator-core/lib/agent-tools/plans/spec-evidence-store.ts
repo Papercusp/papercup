@@ -107,9 +107,19 @@ const repoMeasurementGlobSchema = repoMeasurementPathSchema
 const runtimeUnitsSchema = z.array(z.string().trim().min(1).max(120)).min(1).max(32)
   .refine(units => new Set(units).size === units.length, 'runtime units must be unique');
 
+/**
+ * The current evidence-measurement schema version. A binding that omits `schemaVersion` is
+ * stored at this version (P-005 of plan-verification-friction-reduction-2026-10-11); any
+ * other explicit value is refused, so an unsupported version still fails loudly.
+ */
+export const EVIDENCE_MEASUREMENT_SCHEMA_VERSION = 1 as const;
+const measurementSchemaVersionSchema = z
+  .literal(EVIDENCE_MEASUREMENT_SCHEMA_VERSION)
+  .default(EVIDENCE_MEASUREMENT_SCHEMA_VERSION);
+
 export const repoFilesEvidenceMeasurementSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: measurementSchemaVersionSchema,
     kind: z.literal('repo-files'),
     /**
      * Optional workspace-registry slug for a source/test checkout other than the
@@ -203,7 +213,7 @@ const ledgerMeasurementIdSchema = z
  */
 export const workItemsEvidenceMeasurementSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: measurementSchemaVersionSchema,
     kind: z.literal('work-items'),
     /**
      * The census population. Bounded like `sourcePaths`: a measurement basis has to stay cheap

@@ -279,6 +279,7 @@ export default defineTool({
           'Omission returns `work_item_id_required` before dispatch; a single held claim can remain implicit. ' +
           'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +
           'read `result.output`, `result.exit_code`, and `result.status` from capability:bash; do not read `result.content[0].text`. ' +
+          'For `dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`; relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
           'media from intermediate tool calls is never emitted implicitly. ' +
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +

@@ -1454,8 +1454,8 @@ export function stripFrontmatter(text: string): string {
 /**
  * One ledger row's expanded detail (WI-39534): body/provenance beyond the
  * row's title+status, per kind, in ONE neutral shape. Best-effort like every
- * retain read — a store failure or unknown id resolves to null (the client
- * renders "detail unavailable"), never a 500.
+ * retain read. An unknown id resolves to null; a failed store read propagates
+ * through sync's error path so the client can show the cause and recover.
  */
 export async function readRetainDetail(
   sql: Sql,
@@ -1627,7 +1627,7 @@ export async function readRetainDetail(
     }
   } catch (err) {
     console.warn(`[learning.retainDetail] ${kind} read failed:`, err instanceof Error ? err.message : err);
-    return null;
+    throw err;
   }
 }
 

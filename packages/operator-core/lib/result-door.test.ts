@@ -1262,8 +1262,13 @@ describe('applyResultDoor', () => {
     expect(Object.keys(controlBody.rows[0].ratings ?? {})).not.toEqual(criteria);
   });
 
-  it('REGRESSION (EI-22663465512565342): marker pipeline verdicts survive a generic door re-projection', () => {
+  it('REGRESSION (EI-22663465512565342, EI-25574253034038454): pipeline verdicts and test route survive a generic door re-projection', () => {
     const marker = 'pipeline-marker-added-by-this-change';
+    const currentBuildTestRoute = {
+      testClass: 'operator-api',
+      readiness: 'ready',
+      route: 'staging',
+    };
     const admissions = Array.from({ length: 24 }, (_, index) => ({
       paths: [`packages/operator-core/lib/changed-${index}.ts`],
       unchanged: [`packages/operator-core/lib/unchanged-${index}.ts`],
@@ -1292,6 +1297,9 @@ describe('applyResultDoor', () => {
         detail: 'marker settles the judged candidate and next candidate',
       },
       summary: 'pipeline summary',
+      // Handler extras are appended after the compact pipeline fields. Keep this
+      // late so the generic control reproduces the real omission under pressure.
+      currentBuildTestRoute,
     };
     const original = JSON.stringify(payload);
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
@@ -1310,6 +1318,7 @@ describe('applyResultDoor', () => {
     });
     expect(kept.positions).toMatchObject({ inMain: false, deployed: false });
     expect(kept.positionsMarker).toMatchObject({ marker, inMain: true, deployed: true });
+    expect(kept.currentBuildTestRoute).toEqual(currentBuildTestRoute);
 
     // FALSIFIABILITY CONTROL: the same oversized bytes through an ordinary tool
     // have no marker-verdict policy and should still demonstrate the old drop.
@@ -1320,6 +1329,7 @@ describe('applyResultDoor', () => {
     const controlBody = JSON.parse((control.content[0] as { text: string }).text) as any;
     expect(controlBody._projection.truncated).toBe(true);
     expect(controlBody.changeInCandidate).toBeUndefined();
+    expect(controlBody.currentBuildTestRoute).toBeUndefined();
   });
 
   it('preserves exact event identity and state while marking overflowed default history incomplete', () => {

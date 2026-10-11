@@ -763,7 +763,7 @@ describe('EI-21656724796029687 — forYouBecause is signposted on `expects`, not
       properties?: { expects?: { description?: string } };
     };
     const expectsDescription = schema.properties?.expects?.description ?? '';
-    expect(description.slice(0, 80)).toMatch(/directed action\/answer requires `body\[\]\.forYouBecause`/i);
+    expect(description.slice(0, 100)).toMatch(/directed action\/answer requires `body\[\]\.forYouBecause: \{ relation, ref\?, note\? \}`/i);
     expect(
       expectsDescription,
       'the `expects` arg description must name `forYouBecause` — the requirement is keyed on ' +

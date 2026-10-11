@@ -7,6 +7,7 @@ import {
   parseDerivedBinding,
 } from './bind-spec-evidence';
 import tool from './bind-spec-evidence';
+import { EVIDENCE_MEASUREMENT_SCHEMA_VERSION, evidenceMeasurementSchema } from './spec-evidence-store';
 
 describe('native compiler dependency binding input', () => {
   it('requires a repo-files measurement or a recorded test run', () => {
@@ -164,6 +165,50 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
       );
     },
   );
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-005 (R-5): a caller that omits
+// measurement.schemaVersion is stored at the current version; an unsupported one still refuses.
+describe('plans:bind-spec-evidence measurement schemaVersion tolerance (P-005)', () => {
+  const { schemaVersion: _omitted, ...measurementWithoutVersion } = measuredBinding.measurement;
+
+  it('stores a measurement binding that omits schemaVersion at the current schema version', () => {
+    const parsed = tool.args.safeParse({
+      slug: 'friction-plan',
+      binding: { ...measuredBinding, measurement: measurementWithoutVersion },
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // The handler persists exactly this parsed object as details.currentMeasurement.
+    const stored = (parsed.data as { binding: { measurement: Record<string, unknown> } }).binding.measurement;
+    expect(stored.schemaVersion).toBe(EVIDENCE_MEASUREMENT_SCHEMA_VERSION);
+    expect(stored).toEqual({ ...measurementWithoutVersion, schemaVersion: EVIDENCE_MEASUREMENT_SCHEMA_VERSION });
+    // The read side re-measures from that stored recipe, so it must parse back unchanged.
+    expect(evidenceMeasurementSchema.parse(stored)).toEqual(stored);
+    // The same default applies to the work-items measurement kind.
+    const workItems = evidenceMeasurementSchema.parse({ kind: 'work-items', workItemIds: ['WI-1'] });
+    expect(workItems.schemaVersion).toBe(EVIDENCE_MEASUREMENT_SCHEMA_VERSION);
+  });
+
+  it('refuses a measurement with an unsupported schemaVersion', () => {
+    const parsed = tool.args.safeParse({
+      slug: 'friction-plan',
+      binding: { ...measuredBinding, measurement: { ...measurementWithoutVersion, schemaVersion: 2 } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    // binding is a union (measured vs fromTestRun), so the refusal is nested in a branch.
+    type Issue = { path: PropertyKey[]; errors?: Issue[][] };
+    const flatten = (issues: Issue[], prefix: PropertyKey[] = []): PropertyKey[][] =>
+      issues.flatMap((issue) => [
+        [...prefix, ...issue.path],
+        ...(issue.errors ?? []).flatMap((branch) => flatten(branch, [...prefix, ...issue.path])),
+      ]);
+    expect(flatten(parsed.error.issues as Issue[]).map((path) => path.join('.')))
+      .toContain('binding.measurement.schemaVersion');
+    expect(evidenceMeasurementSchema.safeParse({ kind: 'work-items', workItemIds: ['WI-1'], schemaVersion: 0 }).success)
+      .toBe(false);
+  });
 });
 
 describe('plans:bind-spec-evidence adequacy completeness metadata', () => {

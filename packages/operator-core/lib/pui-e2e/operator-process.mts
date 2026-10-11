@@ -79,6 +79,8 @@ const server = createAdaptorServer({
       ? 'operator-identity'
       : pathname === '/api/tui/view-state'
         ? 'view-state'
+        : pathname === '/api/harness/projects/lite'
+          ? 'setup-projects'
         : pathname.startsWith('/api/tui/')
           ? 'tui-snapshot'
       : pathname === '/api/agent-config'
@@ -251,6 +253,21 @@ const server = createAdaptorServer({
     }
     return response;
   },
+});
+// Observe the TCP boundary without reading request bodies or changing replies.
+// A missing route log otherwise conflates an unaccepted connection with a
+// handler that has not reached app.fetch yet.
+let connectionSequence = 0;
+server.on('connection', (socket) => {
+  const connectionId = ++connectionSequence;
+  send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CONNECTION', {
+    connectionId, phase: 'accepted', at: new Date().toISOString(),
+  }] });
+  socket.once('close', (hadError) => {
+    send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CONNECTION', {
+      connectionId, phase: 'closed', hadError, at: new Date().toISOString(),
+    }] });
+  });
 });
 await new Promise<void>((resolve, reject) => {
   server.once('error', reject);

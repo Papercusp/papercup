@@ -51,7 +51,7 @@ const result = await runHarness({
     const type = (selector: string, text: string) => ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing report field');const prototype=e instanceof HTMLInputElement?HTMLInputElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
     const capture = (name: string) => {
       writeFileSync(join(ctx.evidenceDir, `${name}.json`), ev('JSON.stringify({url:location.href,body:document.body.innerText})'));
-      native('screenshot', '--output', join(ctx.evidenceDir, `${name}.png`));
+      native('screenshot', '--selector', 'html', '--output', join(ctx.evidenceDir, `${name}.png`));
     };
     try {
       // The maintained ready seed provisions onboarding/principals, not joined
