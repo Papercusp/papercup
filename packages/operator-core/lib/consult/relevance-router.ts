@@ -509,12 +509,15 @@ export function subjectContrasts(subject: string, text: string, contracts: reado
 
 /** A relevance score is not a probability of expertise. Require the named
  * contract to beat the strongest competing system as well as the original
- * evidence floor. The midpoint preserves the preregistered 0.5 decision
- * boundary; this changes evidence, never transcript similarity floors. */
+ * evidence floor. Equal contracts leave attribution unmeasured. The midpoint
+ * preserves the preregistered 0.5 decision boundary; this changes evidence,
+ * never transcript similarity floors. */
 export function contrastedSubjectScore(target: number | null, contrasts: readonly (number | null)[]): number | null {
   if (target === null || !Number.isFinite(target) || target < 0 || target > 1 || !contrasts.length ||
     contrasts.some(s => s === null || !Number.isFinite(s) || s < 0 || s > 1)) return null;
-  return Math.min(target, 0.5 + (target - Math.max(...contrasts as number[])) / 2);
+  const strongest = Math.max(...contrasts as number[]);
+  if (target === strongest) return null;
+  return Math.min(target, 0.5 + (target - strongest) / 2);
 }
 
 let subjectScorer: Promise<RerankScoreFn> | null = null;
