@@ -482,7 +482,7 @@ describe('keyed resume applied receipt retention (real PG)', () => {
         if (receiptSource === 'current') {
           // Model a successful receipt committed before retention was deployed.
           // Replaying that key must repair identity without a second resurrection.
-          await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${admin.json(oldRecord)} WHERE id = ${retainedId}`;
+          await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify(oldRecord)}::text::jsonb WHERE id = ${retainedId}`;
           expect(await finalizeAdvSessionResume(retainedId, key)).toBe(true);
           expect(resolveIdentityArtifact((await readRetained()).launch_spec, applied)).toMatchObject({
             kind: 'governed', artifact: appliedRecord.specificationArtifact,
@@ -597,16 +597,16 @@ describe('control activation receipt concurrency', () => {
       let signalReceiptReadReturned!: () => void;
       const receiptReadReturned = new Promise<void>((resolve) => { signalReceiptReadReturned = resolve; });
       refresh = admin.begin(async (tx) => {
-        const observedTx = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const observedTx = async (strings: TemplateStringsArray, ...values: postgres.ParameterOrFragment<never>[]) => {
           const statement = strings.join(' ');
           const isReceiptRead = statement.includes("SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec");
           if (isReceiptRead) {
             signalReceiptReadStarted();
             await receiptReadAllowed;
           }
-          const rows = await tx(strings, ...values);
+          const rows = await tx<Array<{ id: number | string; launch_spec: Record<string, unknown> }>>(strings, ...values);
           if (isReceiptRead) {
-            const [row] = rows as Array<{ id: number | string; launch_spec: Record<string, unknown> }>;
+            const [row] = rows;
             receiptReadSnapshot = {
               id: row?.id,
               specificationRevision: row?.launch_spec?.specificationRevision,
