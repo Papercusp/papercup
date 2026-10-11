@@ -330,6 +330,34 @@ describe('source BAR registered test files', () => {
     expect(result.ratings['correct-layer'].evidence).toContain(requiredFiles[1]!);
   });
 
+  it('deduplicates overlapping correct-layer evidence and explains excluded mutation proof', () => {
+    const first = fileRun(requiredFiles[0]!, 35282);
+    first.id = 35282;
+    const second = fileRun(requiredFiles[1]!, 35627);
+    second.id = 35627;
+    const mutation = evidence({
+      id: 35586,
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation:35586',
+      testRunId: 35586,
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ sourceBar, requiredTestLayers: ['integration'] }),
+      evidence: [first, second, mutation],
+      classRef: 'plan-class-feature-ship',
+      sourceBarTestRequirements: { status: 'required', files: requiredFiles },
+    });
+    const explanation = result.ratings['correct-layer'].evidence;
+    const boundIds = [...explanation.matchAll(/id=(\d+), kind=/g)].map((match) => Number(match[1]));
+
+    expect(result.ratings['correct-layer'].rating).toBe('pass');
+    expect(boundIds).toHaveLength(2);
+    expect(boundIds).toEqual(expect.arrayContaining([35282, 35627]));
+    expect(explanation).toContain(
+      'Mutation binding(s) id=35586 are excluded because mutation outcomes establish falsifiability, not correct-layer path reachability.',
+    );
+  });
+
   it('keeps missing and stale registered-file evidence unknown', () => {
     const missing = grade([fileRun(requiredFiles[0]!, 103)]);
     expect(missing.ratings['correct-layer'].rating).toBe('unknown');
