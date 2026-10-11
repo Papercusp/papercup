@@ -8073,7 +8073,154 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "voiceP005EvidenceQualification": {
+    "status": "retained-current-acceptance-and-foundation-settlement-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004761",
+    "auditProofs": [
+     "WI-10005820#comment:1174538",
+     "WI-10005820#comment:1174552",
+     "WI-10005820#comment:1174576"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "planState": "ready",
+     "item": "P-005",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "workItemState": "blocked",
+     "assignee": null,
+     "hasCompletionEvidence": false,
+     "dependencies": [
+      "P-002",
+      "P-003",
+      "P-004"
+     ],
+     "provenanceLimit": "The original version23 fields remain historical provenance. These dated reads do not change the child claim, state, hold or acceptance authority. Subject prior-attempt prose was not fully reviewed."
+    },
+    "specification": {
+     "specId": "AUTO-BAR-R-5-P-005",
+     "revision": 3,
+     "lifecycleStatus": "accepted",
+     "contentHash": "f166ee7b4fe45e44b842c0dd29fc1c061ecb7b9de02f879b65d64072db4ecbaa",
+     "rubric": "acceptance-voice-final-public-release-2026-10-01",
+     "rubricRevision": 2,
+     "barHash": "7b6a951b7792a4abd186d6941de93b59768476a5a464dd9e17a463132b28197b",
+     "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+     "behavior": "non-automated",
+     "evidencePlane": "tree",
+     "testLayers": [],
+     "mutationRequired": false,
+     "methodQualification": "Requires current foundation evidence, current independent acceptance grading outside author/implementer/sole-vetting-critic lineage, the required author verdict, mandatory bars without waiver and retained physical-microphone/owner outcomes. Construction vetting and this audit do not perform that acceptance rerun."
+    },
+    "bindingQualification": {
+     "scope": "Independent exact specIds=[AUTO-BAR-R-5-P-005] and workItemIds=[WI-10004761] reads, each limit50; source1174552 retains complete receipts without CLI degradation.",
+     "clauseEvidence": [],
+     "workItemEvidence": [],
+     "clauseCount": 0,
+     "workItemCount": 0,
+     "truncatedByLimit": false,
+     "limitation": "Empty registered binding sets establish only the returned planes at the dated read. They do not establish universal artifact absence or an executed product failure."
+    },
+    "rubricQualification": {
+     "criteriaHash": "55f16cabe304b655d018b0d40e39b4dc2c159dfa759400744144e0be83f62af7",
+     "vetting": "current-vetted",
+     "attestation": "EI-25261530158703845",
+     "constructionAudit": "EI-25261908634043923",
+     "constructionAuditVerdict": "passed",
+     "criterionEvidenceRead": "All six indexed attestation criteria were read completely; evidenceRead.complete=true on each page. Existing tested-source and explicit spend/live-method limits are retained in source1174552.",
+     "eligibleScorecardIds": [],
+     "limitation": "The passed current construction audit vets rubric construction. It is separate from release acceptance grading."
+    },
+    "foundationQualification": {
+     "plan": "portal-voice-parity-and-release-2026-09-08",
+     "version": 69,
+     "contentHash": "691f39cfbca4fe9be0a701a228437395c8120f5c1b85c58c9245b01375bac77e",
+     "planState": "draft",
+     "item": "P-031",
+     "storedStatus": "todo",
+     "effectiveStatus": "todo",
+     "workItem": "WI-10001112",
+     "workItemState": "open",
+     "assignee": null,
+     "hasCompletionEvidence": false,
+     "checkpointChars": 12821,
+     "checkpointChecksRead": 7,
+     "authoredReviewProofs": [
+      "WI-10001112#comment:1153748",
+      "WI-10001112#comment:1153761",
+      "WI-10001112#comment:1153812"
+     ],
+     "currentRubricRevision": 10,
+     "currentCriteriaHash": "b6e936fdaf1f09c9c97d92728005e83e25c9243770a757c99f2a31808403fcc7",
+     "rubricQualification": "The full current rubric read is unvetted/rejected-attestation; readiness reports stale vetting. EI-23151397366060028 targets revision8, with a stale criteria-hash grading stamp.",
+     "historicalScorecards": [
+      "EI-23095051330830113",
+      "EI-23095330082214648"
+     ],
+     "historicalScorecardRevision": 7,
+     "historicalScorecardCriteriaHash": "f61bb77b99923e4f829d740e82b81a5d79735a1fa3d4726adfad5e6108c3ed6a",
+     "historicalScorecardGenerationFreshness": "stale",
+     "completionAuditQualification": "Latest emitted completion audit6 is dated September9, auditedShabbc94975f917c661ccf4466d8372a591de63b721 and auditedPlanRevision=null. Its P001..P010 coverage omits P031. It does not establish current P031 completion.",
+     "authorityLimit": "Current P031 eligibility does not establish acceptance. Its text retains incomplete review, denied Portal source authority, authorized detector repair and complete independent construction coverage before acceptance. Portal R5 requires the six named observables including Off, actual authenticated Portal and real microphone evidence."
+    },
+    "readinessQualification": {
+     "snapshotBuildSha": "d740fc3802",
+     "snapshotBuildVersion": "0.0.0",
+     "snapshotReceiptSha256": "833572e550c1c116ab8957503bec263bc6c0ae505c9a2f9b01d96b536ad9fae8",
+     "snapshotReceiptBytes": 375354,
+     "readCompleteness": "Both selected snapshots report completeness.complete=true, truncated=false and problems=[]; emitted bounded tables are untruncated.",
+     "finalPlanSatisfied": false,
+     "portalPlanSatisfied": false,
+     "code": "acceptance_bar_contract_not_ready",
+     "skipped": null,
+     "forcedPast": null,
+     "vettedUnderWaiver": null,
+     "unavailableReason": null,
+     "finalR5": "Current proof and grading are missing; current/stale/superseded/uncertainEvidence each0, sourceRevisions.scorecardIds=[], authoritativeScorecardId=null and authorVerdict.state=missing. First resolver repair is R2 current evidence-plane binding, before grading.",
+     "portalR5": "Blocked by evidence_plane_unmet, clause_not_accepted and grading_stale. The primitive authorVerdict.state=accepted refers to the retained revision7 card and does not attest current rubric10. Current rubric vetting precedes binding and grading.",
+     "completionAuditLimit": "Final latestAudit was not returned. getLatestPlanAudit filters completion audits and catches errors to null; this does not prove universal audit absence or absent activation authority. Current final completion coverage was not established."
+    },
+    "finiteSourceQualification": {
+     "scope": "Source1174576 inspects plans/get.ts verdict delegation outside the cache, canonical resolver failure/skip/waiver/build preservation, completion-only audit reading and conventional resolver tests for subject harness, current cohort, build and failure preservation.",
+     "testExecution": "No tests rerun; no fresh product runtime or acceptance outcome claimed.",
+     "sourcePins": [
+      {
+       "path": "packages/operator-core/lib/agent-tools/plans/get.ts",
+       "reviewSha256": "f91501a3a8f658db0690e75b80d4b75431aa47e18aaab3d1422b6f32bab8dd54",
+       "additionSha256": "8a10992f799295ecf76f41dd7cb6e14bcf3cbf01b38b16b950acfac2cc6d26d5",
+       "currentMatchesOwnHead": false,
+       "qualification": "The review pin still matches ownHEAD; the shared working file changed before addition. Its complete scoped diff adds Now state reconciliation, including a heading warning, without changing the inspected verdict-delegation or completion-audit paths. These changed bytes were not tested or claimed loaded."
+      },
+      {
+       "path": "packages/operator-core/lib/sync-resolver/plan-acceptance-gate-verdict.ts",
+       "sha256": "a9b5b400ab6b133972d47f53bc79ac6276d1376bac298b96228fea2a5d9b262f",
+       "reviewAndAdditionMatchOwnHead": true
+      },
+      {
+       "path": "packages/operator-core/lib/sync-resolver/plan-acceptance-gate-verdict.test.ts",
+       "sha256": "1b5250e509b022c3f7f0e581ea35cdda521cde49c310eaff611457e63c4b0c3d",
+       "reviewAndAdditionMatchOwnHead": true
+      },
+      {
+       "path": "packages/operator-core/lib/plan-audits.ts",
+       "sha256": "5733f57d21c9a4da3307d4e05e6a6cd44b4c0c4e4711b8aa972b0f2f259b32f5",
+       "reviewAndAdditionMatchOwnHead": true
+      }
+     ],
+     "servingBoundary": "Inspected staging bytes and snapshot build identity remain separate. A source pin does not establish the bytes loaded by a service."
+    },
+    "remainingAcceptance": [
+     "Current independent acceptance proof, grading and author verdict for the final plan remain unestablished.",
+     "Portal P031/WI10001112 foundation settlement remains unestablished.",
+     "Retained physical microphone and guided owner requirements remain unestablished; synthetic workspace-less refusal does not prove the hosted spoken round trip or microphone denial.",
+     "R6 final-artifact smoke and shipment are separate from P005; D010 holds final P006 until voice-two-tier-elevenlabs-agent-2026-10-06 P009 passes."
+    ],
+    "operationBoundary": "Evidence qualification only. All prior audit values, population, exclusions and peer claims remain. Whole PERSONAL audit and200/172 reconciliation, separate Phone9/R68, repair05218, all12loop+1itemchecks and two already-asked Avi walls remain open. No child claim/state/hold, product-source/test/native/provider/Actions/LIVE_GATE_OPS/killed-goal/shipment action."
+   }
   },
   {
    "id": "WI-10004762",
@@ -8107,7 +8254,188 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "voiceP006EvidenceQualification": {
+    "status": "retained-current-acceptance-and-shipment-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004762",
+    "auditProofs": [
+     "WI-10005820#comment:1174604",
+     "WI-10005820#comment:1174624",
+     "WI-10005820#comment:1174650",
+     "WI-10005820#comment:1174662"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "planState": "ready",
+     "item": "P-006",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "workItemState": "blocked",
+     "assignee": null,
+     "hasCompletionEvidence": false,
+     "dependencies": [
+      "P-005"
+     ],
+     "provenanceLimit": "The original version23 fields remain historical provenance. These dated reads do not change the child claim, state, hold or acceptance authority. Omitted subject or plan prose is not adopted."
+    },
+    "specification": {
+     "specId": "AUTO-BAR-R-6-P-006",
+     "revision": 3,
+     "lifecycleStatus": "accepted",
+     "contentHash": "27990fa7e717794b2d4172bca62f507935a96bdd7749387d0247bf331f7bf91b",
+     "rubric": "acceptance-voice-final-public-release-2026-10-01",
+     "rubricRevision": 2,
+     "barHash": "e0f67d1d4753f84c76ac4c13f3802812a335ca5296593758fb2511ca3acc909a",
+     "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+     "behavior": "non-automated",
+     "evidencePlane": "deployed",
+     "testLayers": [],
+     "mutationRequired": false,
+     "methodQualification": "R6 requires exact public artifact/runtime/package identifiers after the release owner's promotion/deploy, accepted fixes in the portal and required desktop/TUI packages, final public voice smoke, and release notes checked against the accepted scope before shipped status. Missing identifiers or smoke are unknown; omitted fixes, overclaims or premature shipped status are broken. Forced-red deployment and undocumented default-off features cannot bypass readiness. The requirement's instrumentKey none is not an executed check."
+    },
+    "releaseHold": {
+     "decision": "voice-final-public-release-2026-10-01#D-010",
+     "authority": "Avi's owner-typed directive1489, 2026-10-06",
+     "requirement": "Final shipment P-006 waits until voice-two-tier-elevenlabs-agent-2026-10-06 P-009 passes.",
+     "acceptancePlan": "voice-two-tier-elevenlabs-agent-2026-10-06",
+     "version": 43,
+     "contentHash": "c53129cdf79d5a83a0bec7b030019d59b233747d52754aa4f9f51093fb3d9953",
+     "acceptanceItem": "P-009",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "unresolvedBlockers": [
+      "P-006",
+      "P-008"
+     ],
+     "outcome": "Avi's real-microphone session on desktop and cloud, the acceptance rubric with an independent grade, then ship.",
+     "backendDecision": "voice-two-tier-elevenlabs-agent-2026-10-06#D-003",
+     "backendQualification": "Every supported backend must work in cloud and desktop, enabled only with a working platform/BYOK key after a real call passes. D003's provider/key observations are explicitly dated October6 and are not new runtime or provider observations. D001/D002 remain operative."
+    },
+    "acceptanceClauses": [
+     {
+      "specId": "SPEC-P-009",
+      "revision": 1,
+      "lifecycleStatus": "active",
+      "contentHash": "6d806340c88441ecc3db3b0f93dcdebfbf1189a392b9e13fd136b36e39d1eccf",
+      "evidencePlane": "tree",
+      "testLayers": [
+       "integration"
+      ],
+      "outcome": "Avi completes a real-microphone cloud session with no failed or unanswered turn."
+     },
+     {
+      "specId": "AUTO-BAR-R-1-P-009",
+      "revision": 2,
+      "lifecycleStatus": "exempt",
+      "contentHash": "637cee9fff152aa4dab139896b15e6223eb7fd43c70f1ba38f0d5eeecf22330d",
+      "outcome": "Synthetic desktop round trip records first spoken reply less than2 seconds after the user stops speaking."
+     },
+     {
+      "specId": "AUTO-BAR-R-11-P-009",
+      "revision": 2,
+      "lifecycleStatus": "exempt",
+      "contentHash": "83b83b6a0a75f68bb2f10fd9430b00a75b4cc8679d5597279f1197edaa6adf34",
+      "outcome": "Voice settings offer a backend only after that backend passes a real call."
+     }
+    ],
+    "exemptionQualification": "The two AUTO-BAR exemptions explain preimplementation proof-file absence and future rubric test-file binding. They do not establish P009 pass or waive the owner microphone, independent grade or backend outcomes.",
+    "acceptanceRubric": {
+     "slug": "acceptance-voice-two-tier-elevenlabs-agent-2026-10-06",
+     "revision": 4,
+     "criteriaHash": "8141ee27bd62e7ce6b12e254b6274415a4e4d5a863285bf81f2df498f37ecf50",
+     "barSetHash": "c25a6b21a397af889e391c83e445260c305522f17ca1800af5aa113885fdf749",
+     "vetting": {
+      "required": true,
+      "satisfied": false,
+      "state": "unvetted",
+      "reason": "missing-attestation",
+      "attestedRevision": null,
+      "attestedCriteriaHash": null,
+      "attestationIssueId": null,
+      "workItemId": null,
+      "candidates": []
+     },
+     "criteriaReviewed": [
+      "synthetic first spoken reply less than2 seconds",
+      "spoken tool-timeout failure",
+      "voice-to-text conversation writes",
+      "secret-free session context",
+      "same-build slim/full first-token comparison",
+      "tutorial scope refusal",
+      "signed-out refusal",
+      "daily-limit refusal",
+      "kill-switch refusal",
+      "server-only user keys",
+      "real-call-qualified desktop/cloud backend offering"
+     ],
+     "methodQualification": "All11 complete criterion objects are mandatory outcome bars on the tree plane, passing only at healthy. Methods name future automated tests whose files bind after implementation; check.kind instrument/instrumentKey none is not executed proof. Active rubric status does not satisfy missing revision4 vetting or independent grading."
+    },
+    "registeredEvidencePlanes": {
+     "releaseSpec": {
+      "selector": "voice-final-public-release-2026-10-01 / AUTO-BAR-R-6-P-006",
+      "count": 0,
+      "truncatedByLimit": false
+     },
+     "releaseWorkItem": {
+      "selector": "voice-final-public-release-2026-10-01 / WI-10004762",
+      "count": 0,
+      "truncatedByLimit": false
+     },
+     "acceptanceSpecs": {
+      "selector": "voice-two-tier-elevenlabs-agent-2026-10-06 / exact three P009 clauses listed above",
+      "limit": 50,
+      "count": 0,
+      "truncatedByLimit": false
+     },
+     "acceptanceScorecards": {
+      "selector": "acceptance-voice-two-tier-elevenlabs-agent-2026-10-06",
+      "count": 0,
+      "hasMore": false,
+      "truncatedByLimit": false
+     },
+     "scopeLimit": "These empty returned registered binding/card planes do not establish universal artifact, provider or runtime evidence absence. No broader population or acceptance follows from them."
+    },
+    "readerQualification": "The get-spec-evidence handler asks for limit+1, computes truncatedByLimit before slicing, then reports selected-row counts/currentness/byClause. The store returns[] for an empty selected namespace; resolvePlanScope pins workspace/harness, SQL pins planSlugs plus optional exact workItemIds/specIds/evidenceRefs, joins clause revisions, excludes retracted bindings by default, sorts observed_at/id descending and applies LIMIT. The complete conventional reader test includes limit3/population4/storelimit4/count3/truncatedtrue and summary/full-body identity guards. Its store is mocked: source review is not an executed SQL integration or fresh test pass. No tests were rerun.",
+    "sourcePins": [
+     {
+      "path": "packages/operator-core/lib/agent-tools/plans/get-spec-evidence.ts",
+      "sha256": "0cf1ba6eff35c0979e9483b6dbf6301d8e65e0dcc431bc0cfbb0f893ca0610b9"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/plans/get-spec-evidence.test.ts",
+      "sha256": "89c9a15d3bbea1ccd02071620d7851c4ebb103ffaf72a27a503814a0c626bcea"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts",
+      "sha256": "3eafb77879eef3c75fd18c639aa5ddf1b7c304737bc7acfb2dd5f59835f36b0b"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/plans/get-specs.ts",
+      "sha256": "2a1e21f582c523ec48338e6d728350545d62ccbd1dfa956421a78ef0ebaaee7a"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/plans/get.ts",
+      "sha256": "8a10992f799295ecf76f41dd7cb6e14bcf3cbf01b38b16b950acfac2cc6d26d5"
+     },
+     {
+      "path": "packages/operator-core/lib/sync-resolver/plan-acceptance-gate-verdict.ts",
+      "sha256": "a9b5b400ab6b133972d47f53bc79ac6276d1376bac298b96228fea2a5d9b262f"
+     },
+     {
+      "path": "packages/operator-core/lib/sync-resolver/plan-acceptance-gate-verdict.test.ts",
+      "sha256": "1b5250e509b022c3f7f0e581ea35cdda521cde49c310eaff611457e63c4b0c3d"
+     },
+     {
+      "path": "packages/operator-core/lib/plan-audits.ts",
+      "sha256": "5733f57d21c9a4da3307d4e05e6a6cd44b4c0c4e4711b8aa972b0f2f259b32f5"
+     }
+    ],
+    "sourcePinQualification": "All8 selected working files match their ownHEAD blobs at qualification. Four resolver/audit/get files retain predecessor finite review without replay. These source pins do not establish loaded service bytes.",
+    "dispositionQualification": "Retain this current dependency and acceptance obligation. Final release R6 deployed proof and the D010/P009 hold remain unestablished. No child claim/state, product-source/test/runtime/provider/native/Actions/LIVE_GATE_OPS, killed-goal or shipment action was taken. Whole PERSONAL audit and original200/frozen172 reconciliation remain open."
+   }
   },
   {
    "id": "WI-10004770",
