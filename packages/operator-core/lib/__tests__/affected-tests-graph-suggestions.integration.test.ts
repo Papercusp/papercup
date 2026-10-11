@@ -15,12 +15,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildSnapshot } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
+import { refreshDependencySnapshot, type RefreshDependencySnapshotDeps } from '../harness/routines/gitnexus-reindex-action';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 /** Overridable so `scripts/mutation-probe.sh` can aim the selector-level cases at a COPY. */
@@ -82,6 +84,124 @@ const expectEqualToBaseline = (got: Set<string>, base: Set<string>) => {
   for (const n of base) expect(got.has(n), `baseline workspace ${n} lost`).toBe(true);
   for (const n of got) expect(base.has(n), `unexpected extra workspace ${n}`).toBe(true);
 };
+
+/** Real source files and producer, with only the tracked-file census and clock fixed. */
+function firstPartyFixture(name: string) {
+  const root = join(tmp, name);
+  mkdirSync(join(root, IMPORTER_DIR), { recursive: true });
+  mkdirSync(dirname(join(root, IMPORTED)), { recursive: true });
+  writeFileSync(join(root, IMPORTER), IMPORTER_SRC);
+  writeFileSync(join(root, IMPORTED), 'export const fixture = 1;\n');
+  return root;
+}
+
+function sourceProducer(now: number): NonNullable<RefreshDependencySnapshotDeps['produce']> {
+  return async (root, repoName, out, deps) => {
+    expect(repoName).toBe('papercusp');
+    expect(deps?.backend).toBe('first-party-imports');
+    const { snapshot } = produceSnapshotFromSource({
+      files: [IMPORTED, IMPORTER], headCommit: INDEX.lastCommit, now,
+      readSource: (path: string) => {
+        try { return readFileSync(join(root, path), 'utf8'); } catch { return null; }
+      },
+    });
+    writeSnapshotAtomic(out, snapshot);
+    return { exit: 0, line: `GRAPH_SNAPSHOT status=written edges=${snapshot.edges.length}`, at: now };
+  };
+}
+
+describe('native P-009 regular snapshot handover (source producer → refresh → real selector)', () => {
+  it('replaces a fresh legacy snapshot with the source-derived reference consumer and preserves baseline selection across an idle refresh', async () => {
+    const root = firstPartyFixture('native-positive');
+    const out = join(tmp, 'native-positive.json');
+    const now = Date.now();
+    const legacy = buildSnapshot({
+      edges: [{ importer: IMPORTER, imported: IMPORTED }], index: INDEX,
+      readSource: (path: string) => readFileSync(join(root, path), 'utf8'), now,
+    }).snapshot;
+    writeSnapshotAtomic(out, legacy);
+    let producerRuns = 0;
+    const nativeProducer = sourceProducer(now);
+    const deps = { out, now: () => now, produce: async (...args: Parameters<typeof nativeProducer>) => {
+      producerRuns++;
+      return nativeProducer(...args);
+    } };
+    const input = { root, repoName: 'papercusp', currentIndexCommit: INDEX.lastCommit, prev: null };
+    const refreshed = await refreshDependencySnapshot(input, deps);
+    expect(refreshed).toMatchObject({ ran: true, shouldAlert: false, next: { status: 'fresh', edges: 1 } });
+    const snapshot = JSON.parse(readFileSync(out, 'utf8'));
+    expect(snapshot.index).toMatchObject({ backend: 'first-party-imports', lastCommit: INDEX.lastCommit });
+    expect(snapshot.edges).toEqual([expect.objectContaining({ importer: IMPORTER, imported: IMPORTED })]);
+    const base = baseline();
+    expect(base.status, base.stderr).toBe(0);
+    expect(base.names.has(IMPORTER_WS), 'reference consumer must be outside the baseline').toBe(false);
+    const got = runSelector({
+      PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT: root,
+      PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: out,
+      PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '1',
+    });
+    expect(got.status, got.stderr).toBe(0);
+    for (const name of base.names) expect(got.names.has(name), `baseline workspace ${name} lost`).toBe(true);
+    expect(got.names.has(IMPORTER_WS)).toBe(true);
+    expect(got.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup/);
+    // A newer optional graph index cannot invalidate the source producer's own identity.
+    const idle = await refreshDependencySnapshot({ ...input, currentIndexCommit: 'a'.repeat(40), prev: refreshed.next }, deps);
+    expect(idle).toMatchObject({ ran: false, next: { status: 'fresh' } });
+    expect(producerRuns).toBe(1);
+  });
+
+  it('rejects the reference consumer after importer drift without losing a baseline workspace', async () => {
+    const root = firstPartyFixture('native-drift');
+    const out = join(tmp, 'native-drift.json');
+    const now = Date.now();
+    const refreshed = await refreshDependencySnapshot(
+      { root, repoName: 'papercusp', currentIndexCommit: null, prev: null },
+      { out, now: () => now, produce: sourceProducer(now) },
+    );
+    expect(refreshed.next.status).toBe('fresh');
+    writeFileSync(join(root, IMPORTER), 'export const x = 0;\n');
+    const got = runSelector({
+      PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT: root,
+      PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: out,
+      PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '1',
+    });
+    expect(got.status, got.stderr).toBe(0);
+    expectEqualToBaseline(got.names, baseline().names);
+    expect(got.names.has(IMPORTER_WS)).toBe(false);
+    expect(got.line).toMatch(/status=applied accepted=0 rejected=1 added=none/);
+  });
+
+  it('keeps the previous regular snapshot when source production refuses an empty corroborated set', async () => {
+    const root = firstPartyFixture('native-refusal');
+    const out = join(tmp, 'native-refusal.json');
+    const now = Date.now();
+    const nativeProducer = sourceProducer(now);
+    const first = await refreshDependencySnapshot(
+      { root, repoName: 'papercusp', currentIndexCommit: null, prev: null },
+      { out, now: () => now, produce: nativeProducer },
+    );
+    const previous = readFileSync(out, 'utf8');
+    writeFileSync(join(root, IMPORTER), 'export const x = 0;\n');
+    const refreshAt = now + 21 * 3_600_000;
+    const failed = await refreshDependencySnapshot(
+      { root, repoName: 'papercusp', currentIndexCommit: null, prev: first.next },
+      { out, now: () => refreshAt, produce: async (...args) => {
+        await expect(nativeProducer(...args)).rejects.toThrow(/empty|corroborated/);
+        return { exit: 3, line: 'GRAPH_SNAPSHOT status=not-written reason=empty', at: refreshAt };
+      } },
+    );
+    expect(failed).toMatchObject({ ran: true, next: { status: 'fresh', lastProducerExit: 3 } });
+    expect(readFileSync(out, 'utf8')).toBe(previous);
+    const got = runSelector({
+      PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT: root,
+      PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: out,
+      PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '1',
+    });
+    expect(got.status, got.stderr).toBe(0);
+    expectEqualToBaseline(got.names, baseline().names);
+    expect(got.line).toMatch(/status=applied accepted=0 rejected=1 added=none/);
+  });
+});
 
 describe('affected-tests selector ⟷ graph snapshot producer (integration, SUPERSET-ONLY)', () => {
   it('control: the baseline selects the changed workspace and NOT the importer workspace', () => {
