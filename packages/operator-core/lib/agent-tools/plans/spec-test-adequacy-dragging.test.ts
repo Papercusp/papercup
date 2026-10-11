@@ -147,6 +147,24 @@ function row(
 const counterexample = (id: number) =>
   row(id, { evidenceKind: 'counterexample', evidenceRef: `counterexample:${id}`, adequacy: { outcome: 'pass' } });
 
+// Since 076017374d a counterexample establishes execution-integrity only from a canonical
+// mutation-probe MUTANT run that failed (the test caught the defect): measuredExecutionVerdict
+// reads a plain counterexample whose run passed as 'unknown'. A positive control that must PASS
+// therefore needs this ledger shape, not the binder-shaped `counterexample` above (WI-6554700010008377).
+const killedCounterexample = (id: number): SpecEvidenceForAdequacy => {
+  const base = row(id, { evidenceKind: 'counterexample', evidenceRef: `counterexample:${id}`, adequacy: { outcome: 'caught' } });
+  return {
+    ...base,
+    testRunExecution: { status: 'fail', passed: 0, failed: 1, skipped: 0, collectionFailed: false, passedCaseTitles: [] },
+    testRunProvenance: {
+      ...base.testRunProvenance!,
+      source: 'mutation-probe',
+      mutationPhase: 'mutant',
+      mutationFailedCaseTitles: ['dragging binding control'],
+    },
+  };
+};
+
 describe('any-drags adequacy names the dragging binding (P-019)', () => {
   it('keeps a green counterexample unknown when its declared case is absent from the measured run', () => {
     const negative = counterexample(3);
@@ -161,7 +179,7 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
   it('names an older failing attempt as the row dragging execution-integrity, and the clause passes once it is withdrawn', () => {
     const olderFailing = row(1, { adequacy: { outcome: 'failed' } });
     const fresh = row(2);
-    const negative = counterexample(3);
+    const negative = killedCounterexample(3);
 
     const dragged = evaluateSpecTestAdequacy({
       clause: clause(),
