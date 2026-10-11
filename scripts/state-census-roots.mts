@@ -12,7 +12,7 @@ import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-di
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
-import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources } from '../packages/operator-core/lib/backup/state-census-producers';
+import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources, canonicalSqlMigrationCensusSources, type MigrationCensusSource } from '../packages/operator-core/lib/backup/state-census-producers';
 import { loadHarnessRegistry } from '../packages/operator-core/lib/harness-registry';
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
@@ -59,8 +59,9 @@ producers.declarations = withReapArchive.declarations;
 const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
 const catalogEntries: CensusEntry[] = [];
-const migrationSources: Array<{ producer: string; tables: string[] }> = [];
+const migrationSources: MigrationCensusSource[] = [];
 if (hostCatalogs) {
+  migrationSources.push(...await canonicalSqlMigrationCensusSources());
   for (const workspace of readRegistry().workspaces) {
     const registry = await loadHarnessRegistry(workspace.id, { fresh: true });
     migrationSources.push(...await registeredProjectMigrationSources(registry.projects));
@@ -257,9 +258,14 @@ if (hostCatalogs && migrationSources.length) {
     url.pathname = `/${encodeURIComponent(database.name)}`;
     const sql = postgres(url.toString(), { max: 1, connect_timeout: 5 });
     try {
-      const rows = await sql<{ table_name: string }[]>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name LIMIT 1001`;
-      if (rows.length > 1000) throw new Error('Database schema census bound exceeded');
-      declarations.push(...migrationDatabaseCensusDeclarations(database, rows.map(row => `public.${row.table_name}`), migrationSources));
+      const rows = await sql<{ table_schema: string; table_name: string; column_name: string; data_type: string }[]>`
+        SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY table_schema, table_name, ordinal_position LIMIT 20001`;
+      if (rows.length > 20000) throw new Error('Database schema census bound exceeded');
+      declarations.push(...migrationDatabaseCensusDeclarations(database,
+        [...new Set(rows.map(row => `${row.table_schema}.${row.table_name}`))], migrationSources,
+        rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type }))));
     } finally { await sql.end(); }
   }
 }

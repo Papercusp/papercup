@@ -22,6 +22,8 @@ import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
 import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
+import { resolveSqlDir } from '../migration-drift';
+import { stripCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -635,11 +637,67 @@ export async function registeredProjectMigrationSources(projects: readonly { slu
  * Older schemas stay exportable without claiming the latest migrations applied.
  * This identifies schema provenance, not live application identity or contents.
  */
-export function migrationDatabaseCensusDeclarations(entry: CensusEntry, observedTables: readonly string[], sources: readonly { producer: string; tables: readonly string[] }[]): CensusDeclaration[] {
+export interface MigrationCensusSource {
+  producer: string;
+  tables: readonly string[];
+  columns?: readonly { table: string; name: string; type: string }[];
+}
+
+/** SQL literals/comments cannot introduce schema evidence. Unsupported column
+ * syntax fails closed; later additive migrations need not erase older provenance.
+ */
+export function sqlMigrationCensusSource(source: string, producer: string): MigrationCensusSource | null {
+  const code = stripCommentsAndStrings(source, 'migration.sql');
+  const tables: string[] = [];
+  const columns: { table: string; name: string; type: string }[] = [];
+  const creates = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)\s*\(/gi;
+  for (const match of code.matchAll(creates)) {
+    const table = match[1].toLowerCase();
+    let depth = 1;
+    let start = match.index! + match[0].length;
+    const parts: string[] = [];
+    let end = start;
+    for (; end < code.length && depth; end++) {
+      if (code[end] === '(') depth++;
+      if (code[end] === ')') depth--;
+      if ((code[end] === ',' && depth === 1) || depth === 0) {
+        parts.push(code.slice(start, end).trim());
+        start = end + 1;
+      }
+    }
+    if (depth) return null;
+    const tableColumns: typeof columns = [];
+    for (const part of parts) {
+      if (/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(part)) continue;
+      const column = part.match(/^([a-z_][a-z0-9_]*)\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp\s+with\s+time\s+zone)\b/i);
+      if (!column) return null;
+      tableColumns.push({ table, name: column[1].toLowerCase(), type: /^(timestamptz|timestamp)/i.test(column[2]) ? 'timestamp with time zone' : column[2].toLowerCase() });
+    }
+    if (!tableColumns.length) return null;
+    tables.push(table);
+    columns.push(...tableColumns);
+  }
+  return tables.length >= 2 ? { producer, tables, columns } : null;
+}
+
+export async function canonicalSqlMigrationCensusSources(): Promise<MigrationCensusSource[]> {
+  const directory = resolveSqlDir();
+  if (!directory) return [];
+  const sources: MigrationCensusSource[] = [];
+  for (const name of (await readdir(directory)).filter(name => /^\d+.*\.sql$/.test(name)).sort()) {
+    const source = sqlMigrationCensusSource(await readFile(join(directory, name), 'utf8'), `canonical-sql-migration:${name}`);
+    if (source) sources.push(source);
+  }
+  return sources;
+}
+
+export function migrationDatabaseCensusDeclarations(entry: CensusEntry, observedTables: readonly string[], sources: readonly MigrationCensusSource[], observedColumns: readonly { table: string; name: string; type: string }[] = []): CensusDeclaration[] {
   if (entry.kind !== 'database' || !/^postgres-cluster:\d+$/.test(entry.root)) throw new Error('Missing physical migration database identity');
   return sources.flatMap(source => {
     let prefix = 0;
-    while (prefix < source.tables.length && observedTables.includes(source.tables[prefix])) prefix++;
+    while (prefix < source.tables.length && observedTables.includes(source.tables[prefix]) &&
+      (!source.columns || source.columns.filter(column => column.table === source.tables[prefix]).every(column =>
+        observedColumns.some(observed => observed.table === column.table && observed.name === column.name && observed.type === column.type)))) prefix++;
     return prefix < 2 ? [] : [{ ...entry, classification: 'state' as const,
       producer: prefix === source.tables.length ? source.producer : `${source.producer}:migration-prefix:${prefix}/${source.tables.length}` }];
   });
