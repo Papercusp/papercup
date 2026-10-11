@@ -22546,7 +22546,7 @@
           "POST"
         ]
       },
-      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision. Required before a plan reaches awaiting-acceptance and at ship.",
+      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision; op 'mint' launches a fresh confined reviewer. Required before a plan reaches awaiting-acceptance and at ship.",
       "capabilities": [
         "plans:write"
       ],
@@ -22565,7 +22565,7 @@
       "guidance": {
         "when": "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
         "notWhen": "Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.",
-        "chaining": "reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
+        "chaining": "author: op 'mint' { howToRun }. reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
       }
     },
     {

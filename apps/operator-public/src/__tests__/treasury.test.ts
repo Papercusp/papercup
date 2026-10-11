@@ -40,6 +40,7 @@ import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
 import { verifyLedgerStream, witnessLedgerStream } from '../ledger-chain-store.ts';
 import { readReconciliationInputs } from '../transfer-gate-store.ts';
+import { AuthError } from '../auth.ts';
 
 const auth = vi.hoisted(() => ({ resolveGithubBearer: vi.fn() }));
 vi.mock('../auth.ts', async (importOriginal) => {
@@ -797,9 +798,9 @@ describe('the P-043 reconciliation gate on DAO transfers', () => {
     const batchId = await settleToFinal(api, db, env);
     if (error !== 'safe_deployment_unrecorded') await recordDeployment(api, env);
     raw.prepare('UPDATE treasury_transfer_gate SET open = 0, reasons_json = ?').run('["seeded break"]');
-    if (error === 'unauthorized') auth.resolveGithubBearer.mockResolvedValue(null);
+    if (error === 'unauthorized') auth.resolveGithubBearer.mockRejectedValue(new AuthError('missing_bearer'));
     if (error === 'invalid-config') env.TREASURY_SAFE_THRESHOLD = '0';
-    if (error === 'batch_not_final') raw.prepare('UPDATE settlement_batches SET state = ? WHERE batch_id = ?').run('claimed', batchId);
+    if (error === 'batch_not_final') raw.prepare('UPDATE settlement_batches SET state = ?, finalized_at_ms = NULL WHERE batch_id = ?').run('claimed', batchId);
     if (error === 'reconciliation_failed') {
       const row = raw.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?').get(batchId) as { allocations_micros: string };
       const allocations = JSON.parse(row.allocations_micros) as Record<string, string>;
@@ -821,7 +822,7 @@ describe('the P-043 reconciliation gate on DAO transfers', () => {
     const batchId = await settleToFinal(api, db, env);
     const before = await readReconciliationInputs(db, Date.now());
     expect(before.finalSettlementBatches.map((batch) => batch.batchId)).toEqual([batchId]);
-    raw.prepare('UPDATE settlement_batches SET state = ? WHERE batch_id = ?').run(state, batchId);
+    raw.prepare('UPDATE settlement_batches SET state = ?, finalized_at_ms = NULL WHERE batch_id = ?').run(state, batchId);
     const after = await readReconciliationInputs(db, Date.now());
     expect(after.finalSettlementBatches).toEqual([]);
     expect(raw.prepare('SELECT state FROM settlement_batches WHERE batch_id = ?').get(batchId)).toMatchObject({ state });

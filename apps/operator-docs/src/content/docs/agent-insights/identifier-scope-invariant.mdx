@@ -13,6 +13,8 @@ status: active
 documents:
   - "packages/operator-core/lib/rubrics.ts"
   - "scripts/next-migration.mjs"
+  - "packages/operator-core/lib/work-items-physical-row.ts"
+  - "packages/operator-core/lib/db-schema-reference/harness-scoped-id-uniqueness.ts"
 plans:
   - "scope-unique-identifiers-2026-07-26"
 normative: true
@@ -23,6 +25,8 @@ normative: true
 > **Rule.** An identifier that appears in prose, a coord message, a carry note, a checkpoint, or an API that accepts it without its scope MUST be globally unique, or it MUST carry its scope. A lookup that is handed an id it cannot resolve to exactly one thing MUST refuse and name the candidates. It must never pick one.
 
 "Scope" is the narrowest scope inside which the database guarantees the id names one thing. The per-scheme census is [identifier schemes and their true uniqueness scope](/internal/docs/agent-insights/identifier-uniqueness-scopes).
+
+Every `P-NNN` on this page is an item of plan `scope-unique-identifiers-2026-07-26`.
 
 ## Why: three incidents with the same shape
 
@@ -42,8 +46,8 @@ In every case the writer and the reader each resolved the id correctly inside a 
 |---|---|
 | `EI-` + snowflake | Unique by construction. |
 | Owner and session ids (`su-` + uuid), memory ids | UUIDs. |
-| New `F-FIX` / `F-IDEA` ids | Time-plus-random tail from `lib/collision-resistant-id.ts` (P-005). |
-| `WI-` + number | Minted from per-database disjoint ranges (P-010); same-workspace twins removed by migration 1443 (P-011); `UNIQUE (workspace_id, feature_id)` is migration 1444, still a draft (P-012). |
+| New `F-FIX` / `F-IDEA` ids | Time-plus-random tail from `packages/operator-core/lib/collision-resistant-id.ts` (P-005). |
+| `WI-` + number | Minted from per-database disjoint ranges (P-010); same-workspace twins removed by migration 1443 (P-011); the database enforces `UNIQUE (workspace_id, feature_id)` on `harness_shared.work_items` through migration 1444 (P-012). |
 
 **2. Carry the scope.** When the id is only unique inside a scope, write the scope with it.
 
@@ -61,17 +65,20 @@ A bare `P-NNN`, `D-NNN` or `#1636` in a message to another plan, harness or host
 Some lookups must accept a scoped id bare: plan slugs and rubric refs are only unique per harness, and most tools take them without one. Those lookups must refuse when more than one row matches and name the candidates.
 
 - Plan slugs: a slug-only lookup that matches more than one plan refuses and names the candidates (P-006).
+- Rubric refs: a ref held by more than one harness of the workspace is refused with `rubric_ref_ambiguous` (`RubricRefAmbiguousError` in `packages/operator-core/lib/rubrics.ts`, WI-6554700010008395).
 - By-id work-item tools (`work_items:get`, the issue-family state writer, `resolveIssuePhysicalSlug`) address the one row in the workspace without a harness and report any remaining ambiguity (P-013).
+- Across workspaces: when the ambient workspace lacks an id, `getIssue` falls back only to the single other workspace that holds it (deliberate, EI-15486). If several other workspaces hold it, it refuses and names them (`assertWorkspaceChoice` in `packages/operator-core/lib/work-items-physical-row.ts`, WI-6554700010008365).
 
-Known gaps, each tracked:
-
-- Rubric reads resolve a rubric ref with `LIMIT 1` and no harness (WI-6554700010008395).
-- `getIssue` falls back across workspaces and returns the freshest foreign row when the ambient workspace lacks the id (WI-6554700010008365).
+The two gaps the inventory found (the rubric `LIMIT 1` read and the cross-workspace freshest-row fallback) are both closed by the refusals above.
 
 ## Designing a new id
 
-Before you add a table or tool whose text id is unique only together with `harness_slug` (or any other scope), ask whether the id will ever cross that scope: a citation in prose, an event key, a coord ref, a cross-harness tool. If it will, key it on `workspace_id` or make it globally unique. A recurrence guard that fails on a new harness-scoped text key unless it is allowlisted with a reason is planned as P-007.
+Before you add a table or tool whose text id is unique only together with `harness_slug` (or any other scope), ask whether the id will ever cross that scope: a citation in prose, an event key, a coord ref, a cross-harness tool. If it will, key it on `workspace_id` or make it globally unique. The recurrence guard `packages/operator-core/lib/db-schema-reference/harness-scoped-id-uniqueness.ts` (P-007) fails on a new `harness_shared` unique index that makes an id unique only together with `harness_slug`, unless it is allowlisted with a reason.
 
 ## Checking a citation
 
 To check whether a cited work item exists, use `work_items:get { id }` without a harness, or query `harness_shared.work_items` by `workspace_id` and `feature_id`. Adding a guessed `harness_slug` predicate turns a real citation into a false zero.
+
+## This page is pinned
+
+`packages/operator-core/lib/doc-claims/identifier-scope-invariant.test.ts` derives this page's enforcement claims from the code (the armed migration, the refusals, the recurrence guard) and fails when the page drifts from them.

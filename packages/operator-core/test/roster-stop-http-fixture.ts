@@ -316,6 +316,21 @@ async function coordCanary(health: unknown) {
         readonlyRepo: root, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() }, null, 2));
     }
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
+    let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
+    if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
+      const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
+      const harness = operatorHomeHarnessSlug();
+      const stem = `private-overview-${process.pid}`;
+      overviewPlans = { selectedSlug: stem + '-selected', neighborSlug: stem + '-neighbor', foreignSlug: stem + '-foreign', harness };
+      for (const [scope, slug] of [[workspace, overviewPlans.selectedSlug], [workspace, overviewPlans.neighborSlug],
+        [foreignWorkspace, overviewPlans.foreignSlug]]) {
+        const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: active\n---\n\n## Now\nPrivate Overview read canary.\n`;
+        await sql`INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, title, status, content, content_hash)
+          VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'active', ${content}, ${createHash('sha256').update(content).digest('hex')})`;
+      }
+      writeFileSync(join(evidence, 'portal-overview-seed.json'), JSON.stringify({ ...overviewPlans, workspace, foreignWorkspace }, null, 2));
+    }
     if (process.env.ROSTER_PLANS_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
       const harness = operatorHomeHarnessSlug();
@@ -363,6 +378,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
       ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
+      ...(overviewPlans ? { overview: true, overviewPlans } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

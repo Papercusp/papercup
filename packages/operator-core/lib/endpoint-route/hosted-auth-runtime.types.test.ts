@@ -11,6 +11,21 @@ const declaration = resolve(__dirname, 'hosted-auth-runtime.types.d.ts');
 const implementation = resolve(__dirname, 'hosted-auth-runtime.ts');
 
 describe('hosted auth prebundle compiler boundary', () => {
+  it('typechecks the hosted voice progress read for both curriculum versions', () => {
+    const route = resolve(__dirname, 'routes/hosted-tutorial-progress.ts');
+    const program = ts.createProgram([route], {
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler, strict: true,
+      skipLibCheck: true, esModuleInterop: true, resolveJsonModule: true,
+      allowImportingTsExtensions: true, noEmit: true, types: ['node'],
+    });
+    const source = program.getSourceFile(route);
+    expect(source).toBeDefined();
+    const diagnostics = program.getSemanticDiagnostics(source);
+    expect(diagnostics.map(diagnostic => ({ code: diagnostic.code,
+      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n') }))).toEqual([]);
+  });
+
   it('keeps the public implementation and declaration types equal', () => {
     // This assertion is also checked by the maintained operator-core typecheck.
     // Runtime tests exercise the implementation; a cast cannot conceal drift.
