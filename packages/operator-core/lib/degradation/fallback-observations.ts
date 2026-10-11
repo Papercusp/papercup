@@ -393,6 +393,52 @@ export async function readFallbackWindow(
   );
 }
 
+/** One scope's window: `scope` is null for observations recorded without one. */
+export interface ScopedFallbackWindow {
+  scope: string | null;
+  window: FallbackWindow;
+}
+
+/**
+ * Like {@link readFallbackWindow}, but one window PER SCOPE — for a mechanism whose
+ * observations carry a meaningful sub-scope (the gate's pass reuse records one per task,
+ * BAR R-3), where a collapse in one scope must not be averaged away by healthy siblings.
+ * Sorted by scope (nulls first) so callers get a stable order.
+ */
+export async function readFallbackWindowsByScope(
+  mechanism: string,
+  windowMs: number,
+  opts: { sql?: Sql; workspaceId?: string; now?: Date } = {},
+): Promise<ScopedFallbackWindow[]> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const since = new Date((opts.now ?? new Date()).getTime() - windowMs);
+  const ws = opts.workspaceId ?? null;
+  const name = mechanism.trim();
+  const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
+    SELECT scope,
+           reason,
+           count(*)::bigint      AS samples,
+           sum(eligible)::bigint AS eligible,
+           sum(applied)::bigint  AS applied
+      FROM harness_shared.fallback_observations
+     WHERE mechanism = ${name}
+       AND observed_at >= ${since}
+       AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
+     GROUP BY scope, reason
+  `;
+  const byScope = new Map<string | null, FallbackReasonAggregate[]>();
+  for (const r of rows) {
+    const key = r.scope ?? null;
+    const agg = { reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied) };
+    const list = byScope.get(key);
+    if (list) list.push(agg);
+    else byScope.set(key, [agg]);
+  }
+  return [...byScope.entries()]
+    .sort(([a], [b]) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a.localeCompare(b)))
+    .map(([scope, aggs]) => ({ scope, window: summarizeFallbackWindow(name, windowMs, aggs) }));
+}
+
 /**
  * Delete observations older than `retentionMs`, in bounded batches so a large
  * backlog never becomes one long-running DELETE. Returns rows deleted.

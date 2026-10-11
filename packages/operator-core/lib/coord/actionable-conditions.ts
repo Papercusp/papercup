@@ -58,6 +58,15 @@ export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-ag
 export const FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX = 'frozen-repair-convergence:';
 
 /**
+ * Stable condition namespace for a collapsed fail-open rate
+ * (degradation-signals-on-condition-rail-2026-10-11 P-003, BAR R-2). Keys are
+ * `degraded:<mechanism>[:<scope>]:<reason>`, emitted only by the generic degradation
+ * watchdog (system-health/degradation-watchdog.ts), which imports this constant so the
+ * emitted prefix and its opt-in entry cannot drift apart.
+ */
+export const DEGRADATION_CONDITION_PREFIX = 'degraded:';
+
+/**
  * The opt-in catalog. See {@link ActionableCondition.harnessFrom} for why the
  * harness derivation is explicit per-entry rather than parsed.
  */
@@ -93,6 +102,12 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // owner-gated bridge alarm so the same condition gets one ownable item and
   // does not page a human for a fix an agent can apply.
   { prefix: GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'major' },
+  // degradation-signals-on-condition-rail-2026-10-11 P-003 (R-2). A registered mechanism
+  // whose trailing fail-open window collapsed — e.g. gate pass reuse falling to 0 of ~7,689
+  // eligible tasks (run 762a13a6) with nothing alarmed. Durable by construction: the
+  // watchdog only opens after a minimum eligible count and resolves with hysteresis, so it
+  // cannot flap per tick. 'ambient' because the key carries a mechanism, never a harness.
+  { prefix: DEGRADATION_CONDITION_PREFIX, harnessFrom: 'ambient', severity: 'major' },
 ];
 
 /** The bare prefixes — derived, so the catalog stays the single source of truth. */

@@ -744,6 +744,13 @@ async function startDbosOnce(): Promise<void> {
     // FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (default ON), checked per tick.
     const { startRetrievalDegradationWatchdog } = await import('../system-health/retrieval-degradation-watchdog');
     startRetrievalDegradationWatchdog();
+    // degradation-signals-on-condition-rail-2026-10-11 P-003 (R-2): the GENERIC fail-open
+    // detector. Reads the durable fallback_observations table (written by many processes,
+    // so placement here is about running once per host, not about seeing local state),
+    // opens degraded:<mechanism>[:<scope>]:<reason> on the condition rail when a registered
+    // mechanism's applied rate collapses, resolves it on recovery, and prunes old rows hourly.
+    const { startDegradationWatchdog } = await import('../system-health/degradation-watchdog');
+    startDegradationWatchdog();
     // WI-10002031: alarm when ~/.papercusp/hooks/cc (the copy that actually
     // executes on every agent turn) diverges from the canonical hooks under the
     // integration root. The class has recurred twice and was caught both times

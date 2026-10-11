@@ -146,6 +146,13 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/db-tools/sanitize-baseline.ts': na(
     'developer tool that sanitizes the frozen schema baseline; the unknown-shape note is its own report to the operator running it',
   ),
+  // The P-002 primitive's own throttled write-failure warning. A failed fallback-observation write
+  // cannot be recorded through the same failing writer; its losses are counted instead by
+  // fallbackObservationCounters().failed (BAR R-14). Not part of the 307-row seed (review note 1,
+  // thread-post:1174718).
+  'log-only-fallback|packages/operator-core/lib/degradation/fallback-observations.ts': na(
+    'the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)',
+  ),
   'log-only-fallback|packages/operator-core/lib/dbos/bootstrap.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts': migrate('P-009'),
