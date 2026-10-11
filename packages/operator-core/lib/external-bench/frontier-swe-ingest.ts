@@ -274,6 +274,9 @@ export async function ingestFrontierSweCorpus(
       allowInternet: typeof env.allow_internet === 'boolean' ? env.allow_internet : networkAllowsInternet(networkMode),
       networkMode,
       verifierNetworkMode: str(verifierEnv.network_mode) ?? str(verifier.network_mode),
+      // The separate verifier's OWN accelerators (can differ from the agent's — multi-gpu-efficient-finetuning).
+      verifierGpus: num(verifierEnv.gpus) ?? 0,
+      verifierGpuTypes: strList(verifierEnv.gpu_types) ?? [],
       externalNeeds,
       verifierEnvironmentMode,
       verifierEnv: verifierEnvOf(verifier.env),

@@ -6,6 +6,7 @@ import {
   liveBuildVerifierCommand,
   liveReadReward,
   livePrepareSeparateVerifier,
+  verifierGpuCountOf,
   copyFrontierSweArtifact,
   preflightFrontierSwe,
   describeFrontierSweRun,
@@ -159,6 +160,39 @@ describe('livePrepareSeparateVerifier (v2, D-003 §1-2)', () => {
     const { exec, calls } = fakeDocker({ 'arm:/app/x': '1' });
     await livePrepareSeparateVerifier({ instanceId: 't', envRef: 'arm', task: v2Task({ verifierNetworkMode: 'no-network' }), exec });
     expect(calls.find((c) => c[0] === 'run')).toEqual(expect.arrayContaining(['--network', 'none']));
+  });
+
+  it("GPU verifiers get --gpus <the VERIFIER's count>, not the agent's (multi-gpu-efficient-finetuning: 2×T4 vs 4×H100)", async () => {
+    const { exec, calls } = fakeDocker({ 'arm:/app/x': '1' });
+    const task = v2Task({ gpus: 2, gpuTypes: ['T4'], verifierGpus: 4, verifierGpuTypes: ['H100'] });
+    await livePrepareSeparateVerifier({ instanceId: 'multi-gpu-efficient-finetuning', envRef: 'arm', task, exec });
+    const run = calls.find((c) => c[0] === 'run')!;
+    const at = run.indexOf('--gpus');
+    expect(run[at + 1]).toBe('4');
+    expect(run.filter((a) => a === '--gpus')).toHaveLength(1);
+    expect(at).toBeLessThan(run.indexOf('--entrypoint'));
+  });
+
+  it('a CPU verifier gets no --gpus, even when the agent had GPUs', async () => {
+    const { exec, calls } = fakeDocker({ 'arm:/app/x': '1' });
+    await livePrepareSeparateVerifier({ instanceId: 't', envRef: 'arm', task: v2Task({ gpus: 1, verifierGpus: 0 }), exec });
+    expect(calls.find((c) => c[0] === 'run')).not.toContain('--gpus');
+  });
+
+  it('refuses a GPU task whose corpus row predates verifier GPU ingest, before starting any container', async () => {
+    const { exec, calls } = fakeDocker({ 'arm:/app/x': '1' });
+    await expect(
+      livePrepareSeparateVerifier({ instanceId: 'optimizer-design', envRef: 'arm', task: v2Task({ gpus: 1 }), exec }),
+    ).rejects.toThrow(/re-run the FrontierSWE v2 ingest/);
+    expect(calls.some((c) => c[0] === 'run')).toBe(false);
+  });
+
+  it('a GPU-free row with no recorded verifier count still runs (without --gpus)', async () => {
+    const { exec, calls } = fakeDocker({ 'arm:/app/x': '1' });
+    await livePrepareSeparateVerifier({ instanceId: 't', envRef: 'arm', task: v2Task({ gpus: 0 }), exec });
+    expect(calls.find((c) => c[0] === 'run')).not.toContain('--gpus');
+    expect(verifierGpuCountOf('t', { verifierGpus: 3 })).toBe(3);
+    expect(() => verifierGpuCountOf('t', { verifierGpus: -1 })).toThrow(/invalid verifierGpus/);
   });
 
   it('refuses a verifier image that is not digest-pinned', async () => {

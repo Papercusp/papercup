@@ -8,6 +8,7 @@ import {
   frontierSwePilotSubset,
   frontierSweV2PilotStrata,
   frontierSweTaskSetVersion,
+  frontierSweCpuRunnable,
   isFrontierSweTaskSet,
   knownTaskSets,
   FRONTIER_SWE_TASK_SET_IDS,
@@ -159,6 +160,22 @@ describe('frontierSweRowToBenchTask', () => {
     expect(t.graderMeta.bucket).toBe('performance');
     expect(t.graderMeta.agentTimeoutSec).toBe(72000);
     expect(t.graderMeta.gpus).toBe(0);
+  });
+});
+
+describe('verifier GPUs (WI-6554700010008334)', () => {
+  it('a GPU-free agent with a GPU verifier is NOT CPU-runnable; a GPU-free pair is', () => {
+    expect(frontierSweCpuRunnable({ gpus: 0, verifierGpus: 1, externalNeeds: [] })).toBe(false);
+    expect(frontierSweCpuRunnable({ gpus: 1, verifierGpus: 0, externalNeeds: [] })).toBe(false);
+    expect(frontierSweCpuRunnable({ gpus: 0, verifierGpus: 0, externalNeeds: [] })).toBe(true);
+    expect(frontierSweCpuRunnable({ gpus: 0, externalNeeds: [] })).toBe(true);
+  });
+
+  it('graderMeta carries the verifier count, and null (unknown) for a row ingested before the field existed', () => {
+    const known = frontierSweRowToBenchTask(v2Row({ instanceId: 'm', suiteCategories: ['AI Research'], gpus: 2, verifierGpus: 4, verifierGpuTypes: ['H100'] }));
+    expect(known.graderMeta).toMatchObject({ gpus: 2, verifierGpus: 4, verifierGpuTypes: ['H100'] });
+    const stale = frontierSweRowToBenchTask(v2Row({ instanceId: 's', suiteCategories: ['AI Research'], gpus: 1 }));
+    expect(stale.graderMeta.verifierGpus).toBeNull();
   });
 });
 

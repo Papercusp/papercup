@@ -586,6 +586,13 @@ export interface FrontierSweTaskRow {
   /** v2 only: [verifier.environment] (or [verifier]) network_mode, e.g. 'no-network'. */
   verifierNetworkMode?: string;
   /**
+   * v2 only: [verifier.environment] gpus / gpu_types — the SEPARATE verifier container's own accelerator need. It
+   * can differ from the agent's (`gpus` above): at the pinned commit multi-gpu-efficient-finetuning runs its agent
+   * on 2×T4 but its verifier on 4×H100. Absent on a corpus ingested before this field existed (unknown, not 0).
+   */
+  verifierGpus?: number;
+  verifierGpuTypes?: string[];
+  /**
    * v2 only: external services the task needs beyond Docker + GPUs, from its job.yaml runtime profile — e.g.
    * 'modal-vm-runtime', 'modal-sandbox', 'registry-secret:px-evals-gcr-secret'. Empty when the task has none.
    */
@@ -622,10 +629,11 @@ export function frontierSweCorpusVersionOf(r: Pick<FrontierSweTaskRow, 'corpusVe
   return r.corpusVersion ?? 'v1';
 }
 
-/** True when a task runs on a plain CPU Docker host: no datacenter GPU and no external service (Modal VM/sandbox,
- *  private registry secret — D-002 §5). The `*-cpu` sets are exactly these rows. */
-export function frontierSweCpuRunnable(r: Pick<FrontierSweTaskRow, 'gpus' | 'externalNeeds'>): boolean {
-  return (r.gpus ?? 0) === 0 && (r.externalNeeds ?? []).length === 0;
+/** True when a task runs on a plain CPU Docker host: no datacenter GPU for the agent OR its separate verifier, and
+ *  no external service (Modal VM/sandbox, private registry secret — D-002 §5). The `*-cpu` sets are exactly these
+ *  rows. A task whose agent is GPU-free but whose verifier needs a GPU cannot be graded on a CPU host either. */
+export function frontierSweCpuRunnable(r: Pick<FrontierSweTaskRow, 'gpus' | 'verifierGpus' | 'externalNeeds'>): boolean {
+  return Math.max(r.gpus ?? 0, r.verifierGpus ?? 0) === 0 && (r.externalNeeds ?? []).length === 0;
 }
 
 /** Map one FrontierSWE row → a BenchTask. `in-container`: no repo/baseCommit; the runner pulls `dockerImage`,
@@ -662,6 +670,9 @@ export function frontierSweRowToBenchTask(r: FrontierSweTaskRow): BenchTask {
       storageMb: r.storageMb ?? null,
       gpus: r.gpus ?? 0,
       gpuTypes: r.gpuTypes ?? [],
+      // null = the corpus row predates verifier GPU ingest (unknown); the live verifier refuses rather than guess.
+      verifierGpus: r.verifierGpus ?? null,
+      verifierGpuTypes: r.verifierGpuTypes ?? [],
       allowInternet: r.allowInternet ?? false,
       verifierCmd: r.verifierCmd,
       rewardPath: r.rewardPath,

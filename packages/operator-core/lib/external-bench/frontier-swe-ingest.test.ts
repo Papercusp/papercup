@@ -281,6 +281,23 @@ describe('v2 grading contract fields (plan D-003, P-003)', () => {
     expect(zig.suiteCategories).toEqual(['Implementation']);
   });
 
+  it("records the separate verifier's OWN gpus/gpu_types from [verifier.environment], independent of the agent's", async () => {
+    // The multi-gpu-efficient-finetuning shape at the pinned commit: agent 2×T4, verifier 4×H100.
+    const multi = v2TaskToml('multi-gpu-efficient-finetuning')
+      .replace('[verifier.environment]', '[verifier.environment]\ngpus = 4\ngpu_types = ["H100"]')
+      .replace('gpus = 0', 'gpus = 2\ngpu_types = ["T4"]');
+    const fs = memFs({
+      [t('multi-gpu-efficient-finetuning', 'task.toml')]: multi,
+      [t('git-to-zig', 'task.toml')]: v2TaskToml('git-to-zig'),
+    });
+    const { rows } = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs);
+    const m = rows.find((r) => r.instanceId === 'multi-gpu-efficient-finetuning')!;
+    expect({ gpus: m.gpus, gpuTypes: m.gpuTypes }).toEqual({ gpus: 2, gpuTypes: ['T4'] });
+    expect({ verifierGpus: m.verifierGpus, verifierGpuTypes: m.verifierGpuTypes }).toEqual({ verifierGpus: 4, verifierGpuTypes: ['H100'] });
+    const zig = rows.find((r) => r.instanceId === 'git-to-zig')!;
+    expect({ verifierGpus: zig.verifierGpus, verifierGpuTypes: zig.verifierGpuTypes }).toEqual({ verifierGpus: 0, verifierGpuTypes: [] });
+  });
+
   it('refuses a task missing from a README that has a task table', async () => {
     const fs = memFs({
       [join(ROOT, 'README.md')]: readme(['| 01 | [Git to Zig](tasks/git-to-zig/) | Implementation |']),

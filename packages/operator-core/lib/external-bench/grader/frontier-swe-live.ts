@@ -162,9 +162,33 @@ export async function copyFrontierSweArtifact(
 }
 
 /**
+ * The separate verifier's GPU count, from [verifier.environment] gpus (graderMeta.verifierGpus) — NOT the agent's
+ * `gpus`, which can differ (multi-gpu-efficient-finetuning: agent 2×T4, verifier 4×H100). `null` means the corpus
+ * row predates verifier GPU ingest: for a GPU task that is refused (re-ingest) rather than guessed, since 0 would
+ * grade on a GPU-less verifier and the agent's count can be wrong. A GPU-free agent with an unknown verifier count
+ * runs without GPUs — at the pinned commit no task pairs a GPU-free agent with a GPU verifier (census, WI-6554700010008334).
+ */
+export function verifierGpuCountOf(instanceId: string, meta: Record<string, unknown>): number {
+  const raw = meta.verifierGpus;
+  if (raw === null || raw === undefined) {
+    if (Number(meta.gpus ?? 0) > 0) {
+      throw new Error(
+        `task ${instanceId} needs GPUs but its corpus row has no [verifier.environment] gpus (ingested before ` +
+          `verifier GPUs were recorded) — re-run the FrontierSWE v2 ingest`,
+      );
+    }
+    return 0;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`task ${instanceId} has an invalid verifierGpus '${String(raw)}'`);
+  return n;
+}
+
+/**
  * v2 SEPARATE verifier environment (D-003 §1-2): `docker run -d` the task's digest-pinned verifier image idle
- * (as root; `--network none` for a no-network verifier), copy every artifact from the arm container into it, and
- * return its name + a `docker rm -f` release. Any failure tears the half-built container down before throwing.
+ * (as root; `--network none` for a no-network verifier; `--gpus <n>` from [verifier.environment] gpus), copy every
+ * artifact from the arm container into it, and return its name + a `docker rm -f` release. Any failure tears the
+ * half-built container down before throwing.
  */
 export const livePrepareSeparateVerifier: NonNullable<FrontierSweGraderConfig['prepareVerifierEnv']> = async ({
   instanceId,
@@ -175,9 +199,13 @@ export const livePrepareSeparateVerifier: NonNullable<FrontierSweGraderConfig['p
   const meta = metaOf(task);
   const image = typeof meta.verifierDockerImage === 'string' ? meta.verifierDockerImage : '';
   if (!/@sha256:[0-9a-f]{64}$/.test(image)) throw new Error(`task ${instanceId} has no digest-pinned verifier image`);
+  const verifierGpus = verifierGpuCountOf(instanceId, meta);
   const name = `pc-fswe-verify-${instanceId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 40)}-${randomBytes(4).toString('hex')}`;
   const runArgs = ['run', '-d', '--name', name, '--user', 'root'];
   if (meta.verifierNetworkMode === 'no-network') runArgs.push('--network', 'none');
+  // A COUNT, never `all`: on a host with fewer GPUs docker refuses (a loud graderError) instead of the verifier
+  // silently running on fewer accelerators than [verifier.environment] declares and scoring the arm down.
+  if (verifierGpus > 0) runArgs.push('--gpus', String(verifierGpus));
   runArgs.push('--entrypoint', 'sleep', image, 'infinity');
   await docker(exec, runArgs, `start verifier container from ${image}`);
 
