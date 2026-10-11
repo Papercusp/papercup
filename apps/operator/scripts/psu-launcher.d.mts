@@ -1376,9 +1376,9 @@ export function ompCoreToolNames(env?: NodeJS.ProcessEnv): any[];
 export function ompCompactToolNames(env?: NodeJS.ProcessEnv): string[];
 /** Claude's advertised seed. DEFAULT = the DERIVED delivery map (see the block comment
  *  above `deliveryAdvertisedNames`).
- *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
- *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
- *  instant revert if the derived seed ever proves wrong. Both paths honor
+ *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras name set
+ *  while keeping per-name compact tiers from the generated delivery map. This escape hatch
+ *  restores the wide surface membership without disabling compact wire delivery. Both paths honor
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
  *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): any[];
@@ -1391,9 +1391,9 @@ export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): any[];
  *  reason the derived seed can carry ~90 names in the byte budget that a
  *  hand-curated 31-name list was already filling.
  *
- *  PAPERCUSP_CLAUDE_FULL_SEED=1 restores the historical spine+extras seed
- *  byte-for-byte, which by definition compacts NOTHING — so this returns the
- *  empty list on that path, and the escape hatch stays a true revert.
+ *  PAPERCUSP_CLAUDE_FULL_SEED=1 selects the historical spine+extras name set.
+ *  The generated compact tier still applies to names in that set, keeping the wide
+ *  escape hatch inside the live wire budget.
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE is honored here too: a tool that is not
  *  advertised must not be named as compact either. Exported for tests. */
 export function claudeCompactToolNames(env?: NodeJS.ProcessEnv): string[];

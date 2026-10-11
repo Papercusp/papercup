@@ -1,6 +1,6 @@
 /** Read-only, repeatable-read evidence capture for plan shared-vector-search-libraries P-008 R-11. */
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import type { getOrgPg } from '@papercusp/db-org';
@@ -18,6 +18,17 @@ import { resolveProseProfileSelection } from './prose-vector-dims';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Profile = Parameters<typeof resolveProseProfileSelection>[1];
+
+/** Preserve canonical defaults while allowing an admitted evidence volume. */
+export function r11PreservationRoots(repoRoot: string, primaryDirectory: string,
+  env: Record<string, string | undefined> = process.env) {
+  const recoveryRoot = env.R11_RECOVERY_ROOT ?? resolve(repoRoot, '.papercusp/evidence/r11-recovery');
+  const journalRoot = env.R11_JOURNAL_ROOT ?? resolve(repoRoot, '.papercusp/evidence/r11-journals');
+  // Both copies must survive removal of the entire primary directory.
+  r11JournalDirectory(primaryDirectory, recoveryRoot);
+  r11JournalDirectory(primaryDirectory, journalRoot);
+  return { recoveryRoot, journalRoot };
+}
 
 /** Key recovery bytes by the full frozen path, so separate windows cannot collide. */
 export function r11RecoveryPath(path: string, recoveryRoot: string): string {
@@ -40,6 +51,7 @@ function publishImmutableBytes(path: string, bytes: Buffer): void {
 
 /** A successful capture requires independent, durable bytes before primary publication. */
 export function publishR11SnapshotBytes(path: string, bytes: Buffer, recoveryRoot: string): string {
+  if (bytes.length > R11_JOURNAL_MAX_BYTES) throw new Error('Snapshot exceeds frozen evidence file cap');
   const recovery = r11RecoveryPath(path, recoveryRoot);
   mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 });
   publishImmutableBytes(recovery, bytes);
@@ -87,6 +99,35 @@ export interface R11TimerSpec {
 /** Bound each evidence file even if a frozen snapshot fails or its owner exits. */
 export const R11_JOURNAL_MAX_BYTES = 8 * 1024 ** 3;
 
+/** Four snapshots (preflight + three frozen stages), two durable copies, three journals.
+ * Immutable publication hard-links its temporary inode, so rename/link publication
+ * does not allocate another full file. Retained preflight is deliberately included.
+ */
+export function r11DiskAllocations(primaryDirectory: string,
+  preservation: { recoveryRoot: string; journalRoot: string }) {
+  return [
+    { path: primaryDirectory, bytes: 4 * R11_JOURNAL_MAX_BYTES },
+    { path: preservation.recoveryRoot, bytes: 4 * R11_JOURNAL_MAX_BYTES },
+    { path: preservation.journalRoot, bytes: 3 * R11_JOURNAL_MAX_BYTES },
+  ];
+}
+
+/** Resolve existing ancestors too: a not-yet-created child may sit behind a symlink. */
+function physicalDestination(path: string): string {
+  let ancestor = resolve(path);
+  const suffix: string[] = [];
+  for (;;) {
+    try { return resolve(realpathSync(ancestor), ...suffix); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      suffix.unshift(relative(parent, ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
 /** Journal streams must survive deletion of the primary snapshot directory. */
 export function r11JournalDirectory(primaryDirectory: string, preservationRoot: string): string {
   if (![primaryDirectory, preservationRoot].every(isAbsolute)) {
@@ -94,9 +135,11 @@ export function r11JournalDirectory(primaryDirectory: string, preservationRoot: 
   }
   const primary = resolve(primaryDirectory);
   const root = resolve(preservationRoot);
-  const withinPrimary = relative(primary, root);
-  if (!withinPrimary || (!withinPrimary.startsWith('../') && withinPrimary !== '..')) {
-    throw new Error('Journal preservation must be outside the primary directory');
+  for (const [parent, child] of [[primary, root], [physicalDestination(primary), physicalDestination(root)]]) {
+    const withinPrimary = relative(parent, child);
+    if (!withinPrimary || (!withinPrimary.startsWith('../') && withinPrimary !== '..')) {
+      throw new Error('Journal preservation must be outside the primary directory');
+    }
   }
   return join(root, createHash('sha256').update(primary).digest('hex'));
 }
@@ -106,11 +149,38 @@ export interface R11CaptureRuntime {
   tsx: string;
   script: string;
   journalDirectory?: string;
+  recoveryRoot?: string;
+  journalRoot?: string;
+  journalPreparation?: boolean;
+  journalSinceMs?: number;
+  preparedJournals?: R11PreparedJournals;
+  t0At?: string;
+}
+
+export interface R11PreparedJournals {
+  specs: R11TimerSpec[];
+  sinceMs: number;
+  captures: Array<{ unit: string; path: string; show: string }>;
+}
+
+const journalProperties = ['ActiveState', 'SubState', 'Result', 'NRestarts', 'MainPID',
+  'InvocationID', 'ExecMainStartTimestamp', 'ExecMainStartTimestampUSec', 'RuntimeMaxUSec', 'LimitFSIZE'];
+const property = (show: string, key: string) => show.split('\n').find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1);
+
+function verifyPreparedJournal(show: string, prior: string, t0At: string) {
+  const start = Date.parse(property(show, 'ExecMainStartTimestamp') ?? '');
+  if (property(show, 'ActiveState') !== 'active' || property(show, 'NRestarts') !== '0' ||
+      !Number.isFinite(start) || start > Date.parse(t0At) ||
+      !/^[1-9]\d*$/.test(property(show, 'MainPID') ?? '') ||
+      !/^[a-f0-9]{32}$/.test(property(show, 'InvocationID') ?? '') ||
+      ['MainPID', 'InvocationID', 'ExecMainStartTimestamp'].some((key) => property(show, key) !== property(prior, key))) {
+    throw new Error('Prepared journal identity changed or was not active before T0');
+  }
 }
 
 /** The expiry timer is independent of the database snapshot service. */
 export function buildR11JournalCapturePlan(
-  specs: readonly R11TimerSpec[], directory: string, nowMs = Date.now(),
+  specs: readonly R11TimerSpec[], directory: string, nowMs = Date.now(), sinceMs?: number,
 ) {
   const end = specs.find((spec) => spec.stage === 'T1');
   const deadline = end ? Date.parse(end.at) : NaN;
@@ -121,7 +191,7 @@ export function buildR11JournalCapturePlan(
     throw new Error('Journal capture requires an absolute output directory');
   }
   const remainingSec = Math.ceil((deadline - nowMs) / 1000);
-  const windowStartSec = Math.floor(deadline / 1000) - 24 * 60 * 60;
+  const windowStartSec = sinceMs === undefined ? Math.floor(deadline / 1000) - 24 * 60 * 60 : Math.floor(sinceMs / 1000);
   const stamp = end.unit.slice('r11-p008-t1-'.length);
   const captures = [
     { kind: 'bg', journalUnit: 'papercusp-bg-host.service', journalArgs: ['--no-tail', `--since=@${windowStartSec}`, '--grep=embed-backfill'] },
@@ -158,7 +228,10 @@ export function buildR11SystemdRunArgs(
     `--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`, '--property=UMask=0077',
     '--timer-property=AccuracySec=1s', `--working-directory=${runtime.repoRoot}`,
     '/usr/bin/bash', '-c', 'set -a; . ./apps/operator/.env.local; set +a; exec "$@"',
-    'r11-capture', runtime.tsx, runtime.script, ...args];
+    'r11-capture', ...(runtime.recoveryRoot || runtime.journalRoot ? ['/usr/bin/env'] : []),
+    ...(runtime.recoveryRoot ? [`R11_RECOVERY_ROOT=${runtime.recoveryRoot}`] : []),
+    ...(runtime.journalRoot ? [`R11_JOURNAL_ROOT=${runtime.journalRoot}`] : []),
+    runtime.tsx, runtime.script, ...args];
 }
 
 /** Freeze both one-shot deadlines from the database timestamp in the T0 receipt. */
@@ -198,7 +271,21 @@ export async function scheduleR11Timers(
   };
   try {
     if (runtime.journalDirectory) {
-      const capture = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+      const capture = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now(), runtime.journalSinceMs);
+      const prepared = runtime.preparedJournals;
+      if (prepared) {
+        if (!runtime.t0At || !Number.isFinite(Date.parse(runtime.t0At)) || prepared.sinceMs > Date.parse(runtime.t0At)) {
+          throw new Error('Prepared journals require the actual T0 timestamp');
+        }
+        const original = buildR11JournalCapturePlan(prepared.specs, runtime.journalDirectory, now(), prepared.sinceMs);
+        if (prepared.captures.length !== 3 || original.captures.some((follower, index) =>
+          follower.unit !== prepared.captures[index]?.unit || follower.path !== prepared.captures[index]?.path) ||
+          Date.parse(original.deadline) < Date.parse(capture.deadline)) {
+          throw new Error('Prepared journals do not cover the frozen window');
+        }
+        capture.captures = original.captures;
+        capture.expiryCommand.splice(-3, 3, ...original.captures.map(({ unit }) => `${unit}.service`));
+      }
       if (!dryRun) {
         // Arm the stop first: a failed Tcut/T1 service must not leave followers running.
         await run('systemd-run', capture.expiryCommand);
@@ -212,15 +299,19 @@ export async function scheduleR11Timers(
           at: capture.deadline, command: capture.expiryCommand, show: expiry });
         for (const follower of capture.captures) {
           if (now() >= Date.parse(capture.deadline)) throw new Error('Frozen T1 expired during journal admission');
-          await run('systemd-run', follower.command);
-          armed.push(`${follower.unit}.service`);
+          if (!prepared) {
+            await run('systemd-run', follower.command);
+            armed.push(`${follower.unit}.service`);
+          }
           const show = await run('systemctl', ['--user', 'show', `${follower.unit}.service`,
-            '-p', 'ActiveState', '-p', 'RuntimeMaxUSec', '-p', 'LimitFSIZE']);
+            ...journalProperties.flatMap((key) => ['-p', key])]);
           if (now() >= Date.parse(capture.deadline) || !show.includes('ActiveState=active') ||
               !/^RuntimeMaxUSec=(?!infinity|0(?:\s|$)).+/m.test(show) ||
               !show.includes(`LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`)) {
             throw new Error(`Journal capture ${follower.unit} was not bounded and active`);
           }
+          if (prepared) verifyPreparedJournal(show, prepared.captures.find(({ unit }) => unit === follower.unit)!.show, runtime.t0At!);
+          if (runtime.journalPreparation) verifyPreparedJournal(show, show, new Date(now()).toISOString());
           timers.push({ stage: 'T1', kind: 'journal', unit: follower.unit, path: follower.path,
             at: capture.deadline, command: follower.command, show });
         }
@@ -233,7 +324,7 @@ export async function scheduleR11Timers(
         }
       }
     }
-    for (const spec of specs) {
+    for (const spec of runtime.journalPreparation ? [] : specs) {
       const command = buildR11SystemdRunArgs(spec, paths, runtime);
       if (dryRun) {
         timers.push({ ...spec, command });

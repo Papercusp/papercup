@@ -126,6 +126,8 @@ From `BindSpecEvidenceRefusalCode` (`packages/operator-core/lib/agent-tools/plan
 | --- | --- |
 | `derived_binding_invalid` | A binding derived from a test run is not valid for the clause. |
 | `mutation_target_rejected` | The mutation target named for the binding was rejected. |
+| `declared_configuration_fingerprint_missing` | The clause's source bar declares a `productionConfiguration`, but the bound test run has no valid configuration snapshot (no run, a NULL `test_runs.configuration_snapshot`, or a snapshot whose fingerprint does not recompute) (P-011). |
+| `declared_configuration_fingerprint_mismatch` | The bound test run's configuration snapshot resolves a declared flag or env key differently from the bar's `productionConfiguration`; the refusal names the differing keys (P-011). |
 
 From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`), returned as the result `status` (P-008, D-005):
 

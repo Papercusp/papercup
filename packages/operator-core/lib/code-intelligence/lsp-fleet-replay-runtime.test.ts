@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
-  replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
+  replayPopulationFingerprint, replayProcessIdentity, replayRepositorySources, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { scopeUnitForTask } from '../task-manager/types';
@@ -13,6 +14,7 @@ import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { runSaturationCli } from './lsp-saturation-bench-cli';
 import { semanticCompletionPlugins } from './lsp-semantic-completion';
+import { resolveLspVendorDir, resolveTsserverPath, specForLanguage } from './lsp-adapter';
 
 vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must not load in independent replay mode'); });
 vi.mock('./lsp-daemon-client', () => ({ callLspDaemonRpc: vi.fn(), readLspDaemonAdmission: vi.fn() }));
@@ -124,6 +126,46 @@ describe('independently declared semantic graph', () => {
     expect(() => freezeCompilerReplayConfig(f.input, { onProgress: row => phases.push(row.phase) }))
       .toThrow('replay-semantic-project-references-unsupported');
     expect(phases).not.toContain('compiler-loaded');
+  });
+  it('uses the declared compiler and its own libraries instead of the freezer compiler', () => {
+    const f = fixture({ lib: ['es5'] });
+    const directory = join(f.root, 'compiler', 'lib');
+    cpSync(dirname(createRequire(import.meta.url).resolve('@typescript/old')), directory, { recursive: true });
+    const compilerEntry = join(directory, 'typescript.js');
+    const alias = join(f.root, 'compiler.cjs'); symlinkSync(compilerEntry, alias);
+    const frozen = freezeCompilerReplayConfig({ ...f.input, compilerEntry: alias });
+    const graph = assertReplaySemanticGraph(frozen);
+    expect(Object.keys(graph.compilerEntries)).toEqual([compilerEntry]);
+    expect(graph.projects[0].files).toContain(join(directory, 'lib.es5.d.ts'));
+    expect(graph.projects[0].files).not.toContain(join(dirname(ts.getDefaultLibFilePath({})), 'lib.es5.d.ts'));
+    expect(frozen.files[compilerEntry]).toBe(replayHash(readFileSync(compilerEntry)));
+    expect(frozen.corpus['hot-references'].oracle.sites).toEqual(
+      expect.arrayContaining([{ path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]));
+  });
+  it('refuses relative, directory and unsupported-version compiler entries before parsing', () => {
+    const f = fixture();
+    const phases: string[] = [];
+    const options = { onProgress: (row: { phase: string }) => phases.push(row.phase) };
+    expect(() => freezeCompilerReplayConfig({ ...f.input, compilerEntry: './compiler.cjs' }, options))
+      .toThrow('replay-semantic-compiler-entry-absolute');
+    expect(() => freezeCompilerReplayConfig({ ...f.input, compilerEntry: f.root }, options))
+      .toThrow('replay-semantic-compiler-entry-invalid');
+    const compilerEntry = join(f.root, 'compiler.cjs');
+    writeFileSync(compilerEntry, "module.exports = { version: '0.0.0' };");
+    expect(() => freezeCompilerReplayConfig({ ...f.input, compilerEntry }, options))
+      .toThrow('replay-semantic-compiler-version-unsupported');
+    expect(phases).toEqual([]);
+  });
+  it('refuses a canonical compiler escape before executing its entry', () => {
+    const f = fixture();
+    const external = mkdtempSync(join(tmpdir(), 'lsp-external-compiler-')); roots.push(external);
+    const marker = join(external, 'executed'); const entry = join(external, 'compiler.cjs');
+    writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');`);
+    const alias = join(f.root, 'compiler.cjs'); symlinkSync(entry, alias);
+    expect(() => freezeCompilerReplayConfig({ ...f.input, compilerEntry: alias,
+      sourceSnapshot: { manifestPath: join(f.root, 'snapshot.json'), sha256: '0'.repeat(64) } }))
+      .toThrow('snapshot-input-escape');
+    expect(existsSync(marker)).toBe(false);
   });
   it('refuses an unconfigured cursor instead of silently adding it to roots', () => {
     const f = fixture({ noLib: true });
@@ -352,6 +394,88 @@ describe('daemon replay readiness and runtime admission', () => {
     expect(rows(frozen, 'triplets.jsonl').every(row => row.qualification.qualified === false)).toBe(true);
   });
 });
+describe('replay Git source population', () => {
+  function repository() {
+    const root = mkdtempSync(join(tmpdir(), 'lsp-replay-git-')); roots.push(root);
+    execFileSync('git', ['init', '-q', root]);
+    return root;
+  }
+  it('retains tracked deletions, ordinary untracked files and initialized tracked submodules', () => {
+    const root = repository();
+    writeFileSync(join(root, 'deleted.ts'), 'tracked');
+    writeFileSync(join(root, '.gitignore'), 'ignored.ts\n');
+    execFileSync('git', ['-C', root, 'add', 'deleted.ts', '.gitignore']);
+    rmSync(join(root, 'deleted.ts'));
+    mkdirSync(join(root, 'new')); writeFileSync(join(root, 'new', 'source.ts'), 'new');
+    writeFileSync(join(root, 'ignored.ts'), 'ignored');
+    const child = join(root, 'child'); execFileSync('git', ['init', '-q', child]);
+    writeFileSync(join(child, 'source.ts'), 'child');
+    execFileSync('git', ['-C', child, 'add', 'source.ts']);
+    execFileSync('git', ['-C', root, 'update-index', '--add', '--cacheinfo',
+      '160000,0123456789012345678901234567890123456789,child']);
+    const excluded: string[] = [];
+    expect(replayRepositorySources(root, { onExcludedRepository: path => excluded.push(path) }))
+      .toEqual(['.gitignore', 'child/source.ts', 'deleted.ts', 'new/source.ts']);
+    expect(excluded).toEqual([]);
+  });
+  it.each(['repository', 'worktree'])('records an untracked embedded %s boundary without copying foreign files', kind => {
+    const root = repository();
+    writeFileSync(join(root, 'source.ts'), 'export const source = 1;');
+    writeFileSync(join(root, 'tsconfig.json'), '{"files":["source.ts"]}');
+    const foreign = join(root, 'foreign');
+    if (kind === 'repository') execFileSync('git', ['init', '-q', foreign]);
+    else {
+      const origin = repository();
+      execFileSync('git', ['-C', origin, '-c', 'user.name=Replay test', '-c',
+        'user.email=replay-test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'fixture']);
+      execFileSync('git', ['-C', origin, 'worktree', 'add', '-q', '--detach', foreign]);
+    }
+    writeFileSync(join(foreign, 'foreign.ts'), 'must not enter the product graph');
+    const excluded: string[] = [];
+    expect(replayRepositorySources(root, { onExcludedRepository: path => excluded.push(path) }))
+      .toEqual(['source.ts', 'tsconfig.json']);
+    expect(excluded).toEqual(['foreign']);
+    const parent = mkdtempSync(join(tmpdir(), 'lsp-replay-boundary-copy-')); roots.push(parent);
+    const copied = materializeReplaySource({ runId: 'boundary-copy', rootPath: root,
+      socketPath: join(parent, 'daemon.sock'), workspaceId: 'test', levels: [1], requestTimeoutMs: 1000,
+      tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 1, character: 1 },
+      references: { file: 'source.ts', line1: 1, character: 1 }, runtimeFiles: [], evidenceRef: 'git-boundary-fixture' },
+    join(parent, 'source'), { checkSourceHeadroom: () => {}, snapshotDependencies: (_root, out) =>
+      writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n') });
+    const manifest = readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8');
+    expect(JSON.parse(manifest).sourcePopulation).toEqual({ policy: 'git-root-and-tracked-submodules-v1',
+      excludedRepositories: ['foreign'] });
+    expect(JSON.parse(readFileSync(join(copied.rootPath, '.replay-source-capture.json'), 'utf8')).sourcePopulation)
+      .toEqual(JSON.parse(manifest).sourcePopulation);
+    expect(copied.sourceSnapshot!.sha256).toBe(replayHash(manifest));
+    expect(existsSync(join(copied.rootPath, 'foreign'))).toBe(false);
+    expect(readFileSync(join(copied.rootPath, 'source.ts'), 'utf8')).toContain('source = 1');
+  });
+  it('refuses an uninitialized tracked submodule rather than excluding it as foreign', () => {
+    const root = repository(); mkdirSync(join(root, 'child'));
+    execFileSync('git', ['-C', root, 'update-index', '--add', '--cacheinfo',
+      '160000,0123456789012345678901234567890123456789,child']);
+    expect(() => replayRepositorySources(root)).toThrow('uninitialized-replay-submodule');
+  });
+  it.each(['source', 'repository'])('refuses a new %s population member during capture', kind => {
+    const root = repository();
+    writeFileSync(join(root, 'source.ts'), 'export const source = 1;');
+    writeFileSync(join(root, 'tsconfig.json'), '{"files":["source.ts"]}');
+    const parent = mkdtempSync(join(tmpdir(), 'lsp-replay-population-drift-')); roots.push(parent);
+    const target = join(parent, 'source');
+    expect(() => materializeReplaySource({ runId: 'population-drift', rootPath: root,
+      socketPath: join(parent, 'daemon.sock'), workspaceId: 'test', levels: [1], requestTimeoutMs: 1000,
+      tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 1, character: 1 },
+      references: { file: 'source.ts', line1: 1, character: 1 }, runtimeFiles: [], evidenceRef: 'population-drift-fixture' },
+    target, { checkSourceHeadroom: () => {}, snapshotDependencies: (_root, out) => {
+      if (kind === 'source') writeFileSync(join(root, 'added.ts'), 'new source');
+      else execFileSync('git', ['init', '-q', join(root, 'foreign')]);
+      writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n');
+    } })).toThrow('changed-during-replay-source-population');
+    expect(existsSync(join(target, '.replay-source-capture.json'))).toBe(true);
+    expect(existsSync(join(target, '.replay-source-snapshot.json'))).toBe(false);
+  });
+});
 describe('independent replay source materialization', () => {
   function fixture() {
     const frozen = config();
@@ -367,6 +491,142 @@ describe('independent replay source materialization', () => {
       checkSourceHeadroom: vi.fn() };
     return { input, target, options, parent };
   }
+  it('relocates a declared in-root compiler entry with the independently copied sources', () => {
+    const f = fixture(); const compilerEntry = join(f.input.rootPath, 'compiler.cjs');
+    writeFileSync(compilerEntry, "module.exports = { version: '6.0.3' };");
+    const copied = materializeReplaySource({ ...f.input, compilerEntry }, f.target, { ...f.options,
+      enumerateSources: () => ['source.ts', 'tsconfig.json', 'compiler.cjs'] });
+    expect(copied.compilerEntry).toBe(join(f.target, 'compiler.cjs'));
+    expect(readFileSync(copied.compilerEntry!, 'utf8')).toBe(readFileSync(compilerEntry, 'utf8'));
+  });
+  it('refuses an external compiler or an escaping alias before creating the source copy', () => {
+    const f = fixture();
+    const entry = createRequire(import.meta.url).resolve('typescript');
+    expect(() => materializeReplaySource({ ...f.input, compilerEntry: entry }, f.target, f.options))
+      .toThrow('escaping-replay-compiler-entry');
+    const alias = join(f.input.rootPath, 'compiler.cjs'); symlinkSync(entry, alias);
+    expect(() => materializeReplaySource({ ...f.input, compilerEntry: alias }, f.target, f.options))
+      .toThrow('escaping-replay-compiler-entry');
+    expect(existsSync(f.target)).toBe(false);
+    expect(f.options.checkSourceHeadroom).not.toHaveBeenCalled();
+  });
+  function compilerPackageFixture() {
+    const f = fixture();
+    const root = mkdtempSync(join(tmpdir(), 'lsp-compiler-package-')); roots.push(root);
+    mkdirSync(join(root, 'lib'));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'declared-compiler', main: './lib/typescript.cjs' }));
+    writeFileSync(join(root, 'lib/typescript.cjs'), "module.exports = { version: '6.0.3' };");
+    writeFileSync(join(root, 'lib/lib.fixture.d.ts'), 'declare const fixtureLibrary: string;');
+    const input = { ...f.input, compilerEntry: join(root, 'lib/typescript.cjs'), compilerPackageRoot: root };
+    return { ...f, root, input };
+  }
+  it('preserves a standalone copied vendor installation for production server and compiler selection', () => {
+    const f = fixture();
+    const vendor = mkdtempSync(join(tmpdir(), 'lsp-declared-vendor-')); roots.push(vendor);
+    writeFileSync(join(vendor, 'package.json'), '{"name":"declared-lsp-installation"}');
+    const compiler = join(vendor, 'node_modules', '@typescript', 'old', 'lib');
+    mkdirSync(compiler, { recursive: true });
+    writeFileSync(join(compiler, 'typescript.js'), "module.exports = { version: '6.0.3' };");
+    writeFileSync(join(compiler, 'tsserver.js'), '// independently declared server entry');
+    const server = join(vendor, 'node_modules', 'typescript-language-server');
+    const dependency = join(server, 'node_modules', 'declared-dependency');
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(dependency, 'index.js'), "module.exports = 'copied dependency';");
+    writeFileSync(join(server, 'cli.js'), "module.exports = require('declared-dependency');");
+    mkdirSync(join(vendor, 'node_modules', '.bin'));
+    symlinkSync('../typescript-language-server/cli.js', join(vendor, 'node_modules', '.bin', 'typescript-language-server'));
+    const copied = materializeReplaySource({ ...f.input, compilerEntry: join(compiler, 'typescript.js'),
+      compilerPackageRoot: vendor }, f.target, f.options);
+    rmSync(vendor, { recursive: true });
+    const root = resolveLspVendorDir(copied.compilerPackageRoot);
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '8192');
+    const spec = specForLanguage('typescript');
+    const tsserver = resolveTsserverPath(root);
+    expect(copied.compilerEntry).toBe(join(root, 'node_modules', '@typescript', 'old', 'lib', 'typescript.js'));
+    expect(spec.initializationOptions(f.target, undefined, root)).toMatchObject({ tsserver: { path: tsserver } });
+    expect(spec.identityFiles!(root)).toEqual([tsserver]);
+    expect(createRequire(tsserver)('./typescript.js').version).toBe('6.0.3');
+    expect(createRequire(tsserver)(spec.resolveBin(root)!)).toBe('copied dependency');
+    for (const file of [copied.compilerEntry!, tsserver, spec.resolveBin(root)!,
+      join(root, 'node_modules', 'typescript-language-server', 'node_modules', 'declared-dependency', 'index.js')])
+      expect(copied.runtimeFiles).toContain(file);
+  });
+
+  it('copies every declared external compiler member with independent inodes and frozen hashes', () => {
+    const f = compilerPackageFixture();
+    const server = join(f.root, 'lib/tsserver.cjs'); writeFileSync(server, 'server executable'); chmodSync(server, 0o755);
+    const copied = materializeReplaySource({ ...f.input, runtimeFiles: [server] }, f.target, f.options);
+    const root = copied.compilerPackageRoot!;
+    expect(root.startsWith(join(f.target, '.replay-runtime/'))).toBe(true);
+    expect(copied.compilerEntry).toBe(join(root, 'lib/typescript.cjs'));
+    const manifest = JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8'));
+    for (const file of ['package.json', 'lib/typescript.cjs', 'lib/lib.fixture.d.ts', 'lib/tsserver.cjs']) {
+      const source = join(f.root, file); const out = join(root, file);
+      expect(readFileSync(out)).toEqual(readFileSync(source));
+      expect(statSync(out).ino).not.toBe(statSync(source).ino);
+      expect(copied.runtimeFiles).toContain(out);
+      expect(manifest.sourceFiles[out.slice(f.target.length + 1)]).toBe(replayHash(readFileSync(source)));
+    }
+    expect(statSync(join(root, 'lib/tsserver.cjs')).mode & 0o777).toBe(0o755);
+  });
+  it('freezes a real copied compiler and its library graph without consulting the external donor', () => {
+    const f = compilerPackageFixture();
+    const entry = createRequire(import.meta.url).resolve('@typescript/old');
+    cpSync(dirname(dirname(entry)), f.root, { recursive: true });
+    writeFileSync(join(f.input.rootPath, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { lib: ['es5'] } }));
+    const copied = materializeReplaySource({ ...f.input, compilerEntry: join(f.root, 'lib/typescript.js') }, f.target, f.options);
+    rmSync(f.root, { recursive: true });
+    const frozen = freezeCompilerReplayConfig(copied);
+    const graph = assertReplaySemanticGraph(frozen);
+    expect(graph.compilerVersion).toBe('6.0.3');
+    expect(graph.compilerEntries).toHaveProperty(copied.compilerEntry!);
+    expect(graph.projects[0].files).toContain(join(copied.compilerPackageRoot!, 'lib/lib.es5.d.ts'));
+    expect(Object.keys(frozen.files).every(file => file.startsWith(f.target + '/'))).toBe(true);
+    expect(frozen.sourceSnapshot).toEqual(copied.sourceSnapshot);
+  }, 30_000);
+  it('relocates package symlinks while preserving their independent targets', () => {
+    const f = compilerPackageFixture();
+    symlinkSync(join(f.root, 'lib/lib.fixture.d.ts'), join(f.root, 'absolute-lib'));
+    symlinkSync('lib', join(f.root, 'relative-libs'));
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    expect(realpathSync(join(copied.compilerPackageRoot!, 'absolute-lib'))).toBe(join(copied.compilerPackageRoot!, 'lib/lib.fixture.d.ts'));
+    expect(realpathSync(join(copied.compilerPackageRoot!, 'relative-libs/lib.fixture.d.ts'))).toBe(join(copied.compilerPackageRoot!, 'lib/lib.fixture.d.ts'));
+  });
+  it('refuses undeclared compiler packages, escaping members and alias roots before copying', () => {
+    const f = compilerPackageFixture();
+    const alias = join(f.parent, 'compiler-alias'); symlinkSync(f.root, alias);
+    expect(() => materializeReplaySource({ ...f.input, compilerPackageRoot: alias }, f.target, f.options))
+      .toThrow('replay-compiler-package-declaration-invalid');
+    expect(() => materializeReplaySource({ ...f.input, compilerEntry: join(f.input.rootPath, 'source.ts') }, f.target, f.options))
+      .toThrow('escaping-replay-compiler-entry');
+    symlinkSync(join(f.input.rootPath, 'source.ts'), join(f.root, 'outside'));
+    expect(() => materializeReplaySource(f.input, f.target, f.options)).toThrow('escaping-replay-compiler-package');
+    expect(existsSync(f.target)).toBe(false);
+    expect(f.options.checkSourceHeadroom).not.toHaveBeenCalled();
+  });
+  it('includes the complete compiler tree in admission and refuses mutation after admission', () => {
+    const f = compilerPackageFixture();
+    let admitted = 0;
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, checkSourceHeadroom: (_donor, _out, bytes) => {
+      admitted = bytes; writeFileSync(join(f.root, 'lib/lib.fixture.d.ts'), 'replacement library bytes');
+    } })).toThrow('changed-since-replay-admission');
+    expect(admitted).toBeGreaterThan(8192 + 3 * 4096);
+  });
+  it('refuses additions to a declared compiler tree during the dependency copy', () => {
+    const f = compilerPackageFixture();
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (donor, out) => {
+      f.options.snapshotDependencies(donor, out); writeFileSync(join(f.root, 'new-lib.d.ts'), 'added library');
+    } })).toThrow('changed-during-replay-compiler-copy');
+    expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+  });
+  it('refuses a dependency phase replacing predeclared compiler bytes', () => {
+    const f = compilerPackageFixture();
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (donor, out) => {
+      f.options.snapshotDependencies(donor, out);
+      const root = join(out, '.replay-runtime', replayHash(f.root)); mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/typescript.cjs'), 'replacement executable');
+    } })).toThrow('replay-compiler-copy-byte-mismatch');
+  });
   function realHeadroomFixture() {
     const f = fixture();
     const helper = join(f.input.rootPath, 'apps/operator/bin/release/dependency-generation.sh');

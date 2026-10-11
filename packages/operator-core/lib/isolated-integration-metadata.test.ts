@@ -16,7 +16,58 @@ import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/op
 import { Hono } from 'hono';
 import { chromium } from 'playwright-core';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport } from '../test/portal-roster-browser-fixture';
+import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport, verifyPrivateTestingReadScopes } from '../test/portal-roster-browser-fixture';
+
+const testingPots = { selected: 'testing-selected', neighbor: 'testing-neighbor', foreign: 'testing-foreign' };
+function testingScopeReads() {
+  const read = (slug: string, endpoint: string, status: number, body: object) => ({
+    url: `http://127.0.0.1/api/harness/${slug}/testing/${endpoint}`, status, body: JSON.stringify(body),
+  });
+  return [...(['selected', 'neighbor'] as const).flatMap(role => [
+    read(testingPots[role], 'domains?phase=staging', 200, { domains: [{ id: `private-${role}-tests` }] }),
+    read(testingPots[role], `domain-detail?domainId=private-${role}-tests`, 200,
+      { id: `private-${role}-tests`, totalFiles: 1, sections: [{ files: [{ path: `${role}/${role}.test.ts` }] }] }),
+    read(testingPots[role], 'domain-detail?domainId=private-foreign-tests', 404, { error: 'unknown_domain' }),
+  ]), read(testingPots.foreign, 'domains?phase=staging', 200, { domains: [{ id: 'private-foreign-tests' }] })];
+}
+
+it('accepts Testing pot isolation with deliberate named cross-workspace lookup', () => {
+  expect(() => verifyPrivateTestingReadScopes(testingScopeReads(), testingPots)).not.toThrow();
+});
+
+it('rejects Testing registries or file details contaminated by another pot', () => {
+  const reads = testingScopeReads();
+  for (const body of [{ domains: [{ id: 'private-selected-tests' }, { id: 'private-foreign-tests' }] },
+    { domains: [{ id: 'private-neighbor-tests' }] }]) {
+    expect(() => verifyPrivateTestingReadScopes([{ ...reads[0], body: JSON.stringify(body) }, ...reads.slice(1)], testingPots))
+      .toThrow('requested pot domain');
+  }
+  for (const body of [
+    { id: 'private-neighbor-tests', totalFiles: 1, sections: [{ files: [{ path: 'selected/selected.test.ts' }] }] },
+    { id: 'private-selected-tests', totalFiles: 1, sections: [{ files: [{ path: 'foreign/foreign.test.ts' }] }] },
+  ]) expect(() => verifyPrivateTestingReadScopes([reads[0], { ...reads[1], body: JSON.stringify(body) }, ...reads.slice(2)], testingPots))
+    .toThrow();
+});
+
+it('requires actual Testing foreign-domain rejection for each requested pot', () => {
+  const reads = testingScopeReads();
+  for (const index of [2, 5]) {
+    expect(() => verifyPrivateTestingReadScopes(reads.filter((_, i) => i !== index), testingPots))
+      .toThrow('actual foreign-domain rejection');
+    for (const replacement of [{ status: 200 }, { status: 403 }, { body: '{"error":"unknown project"}' }])
+      expect(() => verifyPrivateTestingReadScopes(reads.map((read, i) => i === index ? { ...read, ...replacement } : read), testingPots))
+        .toThrow();
+  }
+});
+
+it('requires Testing lookup receipts to correlate the exact slug and domain', () => {
+  const reads = testingScopeReads();
+  for (const index of [0, 1, 3, 4, 6])
+    expect(() => verifyPrivateTestingReadScopes(reads.filter((_, i) => i !== index), testingPots)).toThrow();
+  expect(() => verifyPrivateTestingReadScopes([...reads.slice(0, 6), { ...reads[6], status: 404 }], testingPots)).toThrow();
+  expect(() => verifyPrivateTestingReadScopes([...reads.slice(0, 6),
+    { ...reads[6], body: '{"domains":[{"id":"private-selected-tests"}]}' }], testingPots)).toThrow();
+});
 
 it('selects the exact Docs directory by keyboard when index labels repeat', async () => {
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });

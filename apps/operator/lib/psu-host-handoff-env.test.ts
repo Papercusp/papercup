@@ -110,9 +110,9 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
     expect(trio.some((k) => preFix.includes(k))).toBe(false);
   });
 
-  // WI-10005917: the derived compact list is "" under the full-seed hatch, and a runner that
-  // inherits PAPERCUSP_CLAUDE_FULL_SEED (the :3070 operator did) used to turn this red. Pin
-  // both settings so the contract is measured regardless of the runner's environment.
+  // WI-10005917: older full-seed handoffs could carry an empty compact list, while new
+  // handoffs derive the generated compact intersection. Pin both settings so the heal
+  // contract is measured regardless of the runner's environment.
   afterEach(() => {
     vi.unstubAllEnvs();
   });

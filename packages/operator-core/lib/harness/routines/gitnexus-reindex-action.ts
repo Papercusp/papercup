@@ -2873,6 +2873,18 @@ export async function refreshDependencySnapshot(
  * fail-soft — test selection without graph suggestions is the PRE-P-008 baseline, so this
  * must never cost the reindex tick itself.
  */
+/** Record healthy idle checks too: latest routine metadata alone cannot prove a freshness window. */
+export function logDependencySnapshotCheck(
+  update: DependencySnapshotHealthUpdate & { ran: boolean },
+  logger: Pick<Console, 'log' | 'warn'> = console,
+): void {
+  const s = update.next;
+  const age = s.ageMs == null ? 'n/a' : `${(s.ageMs / 3_600_000).toFixed(1)}h`;
+  const line = `[gitnexus-reindex] dependency snapshot ${s.status} (edges=${s.edges ?? 'n/a'} age=${age}${s.reason ? ` — ${s.reason}` : ''}) checkedAt=${s.checkedAt}${update.ran ? ` after producer: ${s.lastProducerLine ?? `exit ${s.lastProducerExit}`}` : ''}`;
+  if (dependencySnapshotUsable(s.status)) logger.log(line);
+  else logger.warn(line);
+}
+
 async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoName: string): Promise<void> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -2886,12 +2898,7 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
     const backend = dependencySnapshotBackend(ctx.triggerConfig?.snapshot_backend);
     const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null, backend });
     const s = update.next;
-    if (update.ran || !dependencySnapshotUsable(s.status)) {
-      const age = s.ageMs == null ? 'n/a' : `${(s.ageMs / 3_600_000).toFixed(1)}h`;
-      const line = `[gitnexus-reindex] dependency snapshot ${s.status} (edges=${s.edges ?? 'n/a'} age=${age}${s.reason ? ` — ${s.reason}` : ''})${update.ran ? ` after producer: ${s.lastProducerLine ?? `exit ${s.lastProducerExit}`}` : ''}`;
-      if (dependencySnapshotUsable(s.status)) console.log(line);
-      else console.warn(line);
-    }
+    logDependencySnapshotCheck(update);
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(

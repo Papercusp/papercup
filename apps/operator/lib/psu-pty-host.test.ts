@@ -7466,6 +7466,58 @@ describe('host handoff record (WI-38292 increment 2)', () => {
   });
 });
 
+describe('host-start pruneDead never reaps an in-flight adoption handoff (WI-6554700010008431)', () => {
+  // pruneDead() runs at EVERY host start. It globbed bare `.json`, read a handoff (no pid)
+  // as a dead host and unlinked it — so a host starting inside the ~1s window between a
+  // predecessor writing its orders and the re-exec'd launcher reading them turned that
+  // adoption into a silent, carry-less cold boot.
+  const mkDir = () => nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-pty-prune-'));
+  const DEAD_PID = 2 ** 22 + 11; // above pid_max: can never be alive
+
+  it('keeps a handoff (real writer shape) while still pruning a dead discovery record', () => {
+    const dir = mkDir();
+    try {
+      const handoffName = pathJoin(dir, `su-adopting${realHost.HOST_HANDOFF_FILE_SUFFIX}`);
+      nodeFs.writeFileSync(
+        handoffName,
+        JSON.stringify({ ownerId: 'su-adopting', fromPid: DEAD_PID, parentPid: process.ppid, createdAt: new Date().toISOString(), mode: 'carry-respawn', args: ['--x'] }),
+      );
+      const deadSock = pathJoin(dir, 'su-dead.sock');
+      nodeFs.writeFileSync(deadSock, '');
+      nodeFs.writeFileSync(pathJoin(dir, 'su-dead.json'), JSON.stringify({ ownerId: 'su-dead', pid: DEAD_PID, sock: deadSock }));
+
+      expect(realHost.listHosts(dir).map((h: { ownerId: string }) => h.ownerId)).toEqual(['su-dead']);
+      realHost.pruneDead(dir);
+      // control: the sweep is live — the dead record and its socket are gone …
+      expect(nodeFs.existsSync(pathJoin(dir, 'su-dead.json'))).toBe(false);
+      expect(nodeFs.existsSync(deadSock)).toBe(false);
+      // … and the successor's orders survived it.
+      expect(nodeFs.existsSync(handoffName)).toBe(true);
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves any parseable non-discovery JSON alone (shape rail)', () => {
+    const dir = mkDir();
+    try {
+      const sidecar = pathJoin(dir, 'su-x.future-sidecar.json');
+      nodeFs.writeFileSync(sidecar, JSON.stringify({ ownerId: 'su-x', note: 'no pid, no sock' }));
+      expect(realHost.listHosts(dir)).toEqual([]);
+      realHost.pruneDead(dir);
+      expect(nodeFs.existsSync(sidecar)).toBe(true);
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('handoffPathFor names a file the discovery predicate rejects', () => {
+    const name = realHost.handoffPathFor('su-any').split('/').pop();
+    expect(realHost.isDiscoveryRecordFileName(name)).toBe(false);
+    expect(realHost.isDiscoveryRecordFileName(realHost.metaPathFor('su-any').split('/').pop())).toBe(true);
+  });
+});
+
 describe('observeKickoffModelTurnStart (WI-2140591 — a marker proves SUBMISSION, not EXECUTION)', () => {
   /**
    * Drives the helper with a scripted output timeline instead of real timers:

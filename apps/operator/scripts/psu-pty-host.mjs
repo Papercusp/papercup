@@ -3279,7 +3279,39 @@ export function metaPathFor(ownerId) {
  *  orders. A FILE, not an env var: the successor is spawned by the shim's bash
  *  loop, not by us, so we cannot put anything in its environment. Pure. */
 export function handoffPathFor(ownerId) {
-  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.handoff.json`);
+  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}${HOST_HANDOFF_FILE_SUFFIX}`);
+}
+
+/** WI-6554700010008431: the handoff's file suffix. It ALSO ends in `.json`, so it
+ *  shares the directory with the `<key>.json` discovery records — see
+ *  isDiscoveryRecordFileName for why that matters. */
+export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';
+
+/**
+ * WI-6554700010008431: the ONE predicate for "is this psu-pty directory entry a host
+ * discovery record" (`metaPathFor` → `<key>.json`). Every lister and every sweeper of the
+ * directory must use it, never a bare `endsWith('.json')`.
+ *
+ * Measured 2026-10-11: `pruneDead()` (run at EVERY host start) took a just-written
+ * `<owner>.handoff.json` for a discovery record, found no `pid` in it, judged the "host"
+ * dead and unlinked it. When another host started inside the ~1s between a predecessor
+ * writing its handoff and the re-exec'd launcher reading it, the successor found no
+ * orders, logged nothing, and cold-booted without its carry (11 of 211 adoptions,
+ * clustered in adoption batches, where host starts are densest). The operator-side janitor
+ * (psu-pty-discovery.ts isDiscoveryRecordFileName) mirrors this; keep the two in lockstep —
+ * psu-pty-dir-async-sweeps.test.ts pins the mirror against `handoffPathFor`.
+ * @param {string} name a directory entry name (not a path)
+ */
+export function isDiscoveryRecordFileName(name) {
+  return typeof name === 'string' && name.endsWith('.json') && !name.endsWith(HOST_HANDOFF_FILE_SUFFIX);
+}
+
+/** WI-6554700010008431: second rail — a parsed record is a discovery record only if it
+ *  carries the discovery fields (`pid` / `sock`). Any other JSON that lands in the
+ *  directory (a future sidecar nobody added to the name predicate) is then left alone
+ *  instead of being "pruned" as a dead host. */
+export function looksLikeDiscoveryRecord(rec) {
+  return !!rec && typeof rec === 'object' && ('pid' in rec || 'sock' in rec);
 }
 
 /**
@@ -3646,20 +3678,22 @@ function ensureDir() {
 }
 
 /** Read every discovery file; annotate each with `alive`. Skips unreadable. */
-export function listHosts() {
+export function listHosts(dir = PSU_PTY_DIR) {
   const out = [];
   let names;
   try {
-    names = readdirSync(PSU_PTY_DIR);
+    names = readdirSync(dir);
   } catch {
     return out;
   }
   for (const f of names) {
-    if (!f.endsWith('.json')) continue;
+    // WI-6554700010008431: never a bare endsWith('.json') — the handoff sidecar matches it.
+    if (!isDiscoveryRecordFileName(f)) continue;
     try {
-      const meta = JSON.parse(readFileSync(join(PSU_PTY_DIR, f), 'utf8'));
+      const meta = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+      if (!looksLikeDiscoveryRecord(meta)) continue;
       meta.alive = pidAlive(meta.pid) && !!meta.sock && existsSync(meta.sock);
-      meta.metaPath = join(PSU_PTY_DIR, f);
+      meta.metaPath = join(dir, f);
       out.push(meta);
     } catch {
       /* skip unreadable */
@@ -3668,9 +3702,10 @@ export function listHosts() {
   return out;
 }
 
-/** Remove discovery files + sockets whose host process is gone. */
-export function pruneDead() {
-  for (const m of listHosts()) {
+/** Remove discovery files + sockets whose host process is gone. Only ever touches
+ *  what listHosts admits as a discovery record (WI-6554700010008431). */
+export function pruneDead(dir = PSU_PTY_DIR) {
+  for (const m of listHosts(dir)) {
     if (pidAlive(m.pid)) continue;
     for (const p of [m.sock, m.metaPath]) {
       try {

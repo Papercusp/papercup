@@ -2931,15 +2931,17 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
     expect(seed.size).toBeGreaterThan(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
   });
 
-  it("claudeCompactToolNames is a strict SUBSET of the advertised seed", () => {
+  it("claudeCompactToolNames follows the generated tier map for either advertised seed", () => {
     const advertised = new Set(claudeSeedToolNames(processEnv({})));
     const compact = claudeCompactToolNames(processEnv({}));
     expect(compact.length).toBeGreaterThan(0);
     for (const n of compact) expect(advertised.has(n)).toBe(true);
-    // The revert hatch compacts NOTHING — otherwise it would not be a true revert.
-    expect(
-      claudeCompactToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" })),
-    ).toEqual([]);
+    const fullSeed = claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" }));
+    const fullCompact = claudeCompactToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" }));
+    const expectedFullCompact = fullSeed.filter(
+      (name) => CLAUDE_TOOL_DELIVERY_ARTIFACT.tiers[name] === "compact",
+    );
+    expect([...fullCompact].sort()).toEqual([...expectedFullCompact].sort());
   });
 
   it("always seeds the reachability pair — the trim's load-bearing assumption", () => {

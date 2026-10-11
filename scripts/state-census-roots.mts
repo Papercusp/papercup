@@ -17,12 +17,14 @@ import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '..
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
 import { buildExpected } from './templates-mirror-sync.mjs';
+import { historicalGitBlobIdentityResolver } from '../packages/operator-core/lib/backup/state-census-producers';
+import { fileURLToPath } from 'node:url';
 
 const installed = installedRootCensusProducers();
 const affectedCache = await affectedTestCacheCensusProducer();
 const sidefiles = await runtimeSidefileCensusProducer();
 const setupHomes = await cliSetupHomeCensusProducer();
-const templateStore = await templateStoreCensusProducer(undefined, (await buildExpected()).expected);
+const templateStore = await templateStoreCensusProducer(undefined, (await buildExpected()).expected, historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url))));
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = process.argv.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs ? (await loadAccountPool()).accounts : []);

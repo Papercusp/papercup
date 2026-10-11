@@ -299,11 +299,13 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }: {
  *   runCommand?: (command: string, args: string[], options: {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
  *   }) => { status?: number | null, error?: Error },
+ *   acquireReadMutex?: typeof withFsMutexRead,
+ *   log?: (line: string) => void,
  *   env?: NodeJS.ProcessEnv,
  *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
  * }} [options]
  */
-export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, env, cacheRead, }?: {
+export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, acquireReadMutex, log, env, cacheRead, }?: {
     repoRoot?: string;
     commandArgs?: string[];
     runCommand?: (command: string, args: string[], options: {
@@ -314,6 +316,8 @@ export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand,
         status?: number | null;
         error?: Error;
     };
+    acquireReadMutex?: typeof withFsMutexRead;
+    log?: (line: string) => void;
     env?: NodeJS.ProcessEnv;
     cacheRead?: boolean;
 }): Promise<any>;
@@ -333,3 +337,4 @@ export const RESOLUTION_STALE_ATTEMPTS_DEFAULT: 3;
 import { spawnSync } from "node:child_process";
 import { withFsMutex } from "./lib/fs-mutex.mjs";
 import { spawn } from "node:child_process";
+import { withFsMutexRead } from "./lib/fs-mutex.mjs";

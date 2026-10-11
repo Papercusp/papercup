@@ -847,13 +847,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts: its finite sandbox drill subprocess is finite diagnostic/correlation state, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight workload and start no independent resident work.",
   },
   {
-    path: "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/checkpoint-qualification-transaction.ts: its only detected start is a `systemctl --user is-active <unit>` status probe that is bounded, awaited, and read for release/checkpoint control metadata; it spawns no worker, creates no resident queue, and must stay runnable while productive capacity is pressured.",
-  },
-  {
     path: "packages/operator-core/lib/release/checkpoint-required-ancestor.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2041,6 +2034,18 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("if (args.print || selection.selected.length === 0) return 0;"),
   },
   {
+    path: "scripts/provision-lsp.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for provision-lsp.ts: a manually invoked, foreground provisioning CLI (`tsx scripts/provision-lsp.ts python go`) that installs the pinned pyright/gopls versions into the LSP adapter's versioned vendor directories. Its three children (an `npm install --prefix <vendor dir>` of the exact pyright pin, a `go install` of the exact gopls pin with GOTOOLCHAIN=local, and a `gopls version` check) run synchronously with inherited stdio and exit before the command returns. It never runs inside the operator, a routine, or a test, and leaves no service, worker, or resident process behind.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("execFileSync('npm', ['install', '--prefix', dir, '--save-exact', `pyright@${PYRIGHT_VERSION}`], { stdio: 'inherit' })") &&
+      source.includes("execFileSync(go, ['install', `golang.org/x/tools/gopls@${GOPLS_VERSION}`], {") &&
+      source.includes("execFileSync(join(bin, 'gopls'), ['version'], { stdio: 'inherit' })") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
     path: "scripts/gen-asana-openapi-subset.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2120,10 +2125,11 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for reviewer-operator-assert.mjs: ptool and gh calls use explicit 60-second/65-minute deadlines and 2 MiB output bounds; the only resident child is a loopback socat relay on the verifier's reserved port, readiness is limited to five seconds, and finally terminates the relay. Its launcher runs the assertion inside the disposable Tauri verifier.",
+      "P-016 reviewed bypass disposition for reviewer-operator-assert.mjs: the isolated ptool seed call has a 60-second deadline and the native-capture transport (an awaited `ssh -o BatchMode=yes -o ConnectTimeout=20` into the explicitly named mobile host, which replaced the earlier `gh run watch` path in d2956e100b) has a 65-minute deadline; both cap output at 2 MiB. The only resident child is a loopback socat relay on the verifier's reserved port; readiness is limited to five seconds, and finally terminates the relay. Its launcher runs the assertion inside the disposable Tauri verifier.",
     matchesSource: (source) => resourceStartCallCount(source) === 3 &&
       source.includes("timeout: 60_000, maxBuffer: 2_000_000") &&
-      source.includes("65 * 60_000 : 60_000") &&
+      source.includes("timeout: 65 * 60_000 });") &&
+      source.includes("'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20'") &&
       source.includes("TCP-LISTEN:${relayPort},bind=127.0.0.1,fork,reuseaddr") &&
       source.includes("const deadline = Date.now() + 5000;") &&
       source.includes("} finally { stop(); }"),
@@ -2168,6 +2174,59 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/endpoint-route/routes/transport/pgbouncer-pool-sample.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for pgbouncer-pool-sample.mjs (WI-10006055): a deadline diagnostic shared by the MCP host and the MCP proxy watchdog. Each sample runs at most two `psql` children through an injectable execFile alias: a PgBouncer `SHOW POOLS` admin query (5-second timeout) and a direct pg_stat_activity snapshot (1.5-second timeout). Both use killSignal SIGKILL and a 32 KiB output ceiling. A per-process debounce (MIN_SAMPLE_INTERVAL_MS, 20 s by default) refuses overlapping samples. It must stay runnable when the pool or PgBouncer is the thing being diagnosed, so admission behind that same capacity would defeat it. It creates no worker, queue or resident process.",
+      matchesSource: (source) => resourceStartCallCount(source) === 0 &&
+        source.includes("execFileImpl = execFile,") &&
+        source.includes("timeout: timeoutMs,") &&
+        source.includes("killSignal: 'SIGKILL',") &&
+        source.includes("maxBuffer: MAX_PSQL_BUFFER_BYTES,") &&
+        source.includes("const ACTIVITY_TIMEOUT_MS = 1_500;") &&
+        source.includes("if (requestedAtMs - lastSampleAt < MIN_SAMPLE_INTERVAL_MS) {") &&
+        !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for spec-test-adequacy.ts (WI-10006055): in metadataCoverageLimitations, pending is a function-local depth-first stack over one evidence details object. It is seeded with that object alone, consumed synchronously by pop, and each object is expanded at most once per disclosure mode (three modes) because the seen WeakMap skips any revisit at the same or a lower mode, so cycles terminate. It starts no work, holds no handle, and is discarded when the function returns. The source predicate requires that single writer, the pop consumption and the seen dedup, and rejects any additional queue writer.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return writers.length === 1 && writers[0][1] === "pending" &&
+          code.includes("const seen = new WeakMap<object, number>();") &&
+          code.includes("while (pending.length > 0) {") &&
+          code.includes("pending.pop()!") &&
+          code.includes("if ((seen.get(value) ?? -1) >= mode) continue;") &&
+          code.includes("seen.set(value, mode);") &&
+          code.includes("pending.push({ value: child,");
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for hosted-workspace-session.ts (WI-10006055): in authorizeHostSession, pending is the per-connector-socket set of in-flight authority request IDs, not queued work. A request is refused once 64 are in flight or when its ID is already present; each ID is removed in the finally that also clears the 15-second authority timer; and the set lives in a WeakMap keyed by the socket, so it is released with the connection. The authority read it guards is a single awaited principal lookup per request, not a started worker. The source predicate requires the 64 ceiling, the dedup, the finally removal and the WeakMap owner, and rejects any additional queue writer.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return writers.length === 1 && writers[0][1] === "pending" &&
+          code.includes("private readonly authorityRequests = new WeakMap<HostedWorkspaceRelaySocket, Set<string>>();") &&
+          code.includes("const pending = this.authorityRequests.get(socket) ?? new Set<string>();") &&
+          code.includes("if (pending.size >= 64 || pending.has(requestId)) return;") &&
+          code.includes("pending.add(requestId);") &&
+          code.includes("finally { if (timer) clearTimeout(timer); pending.delete(requestId); }");
+      },
+    },
+  ],
   ["apps/operator/scripts/psu-terminal-diagnostics.mjs::resource-start-outside-admission", {
     disposition: "bypass",
     reason:

@@ -42,6 +42,8 @@ import { FIRST_PARTY_CALLERS_DEFAULT_LIMIT } from '../../code-intelligence/first
 import { firstPartyCallersOffthread } from '../../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
+import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -117,6 +119,8 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
+  // Compiler workers and nested runtime probes do not need an ambient DB transaction.
+  skipWorkspaceTx: true,
   // The bridge keeps a resident child per workspace, but a COLD first call pays
   // graph load on a multi-GiB index. Declared so the dispatch stack's budget
   // matches the backend's real worst case instead of timing out mid-load.
@@ -174,6 +178,10 @@ export default defineTool({
       .max(50)
       .optional()
       .describe('Native symbol/context/callers/callees: repo-relative search files/dirs. Default: whole repo.'),
+    runtime: z.enum(SERVING_RUNTIME_IDS).optional()
+      .describe('Native operations: join captured source versions to the selected runtime artifact via existing pipeline evidence. Unknown measurements remain explicit.'),
+    runtime_limit: z.number().int().min(1).max(8).optional()
+      .describe('Maximum supporting files compared to the selected runtime; default 4. Omitted files remain unmeasured.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;
@@ -237,7 +245,13 @@ export default defineTool({
       if (refusal) return { data: scoped(refusal) };
     }
 
-    if (native) return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
+    if (native) {
+      const answer = scoped(await firstPartyCallersAnswer(args, ctx));
+      if (!args.runtime) return { data: answer };
+      const runtimeProvenance = await sourceRuntimeProvenance(answer, args.runtime,
+        resolveAgentWorkspaceRoot(ctx), ctx.dispatchTool, args.runtime_limit);
+      return { data: { ...answer, runtimeProvenance } };
+    }
 
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling

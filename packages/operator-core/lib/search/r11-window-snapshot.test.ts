@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { publishR11SnapshotBytes, readR11SnapshotBytes, r11JournalDirectory, r11PreservationRoots, r11DiskAllocations } from './r11-window-snapshot';
 import { inspectGovernorSource } from '../../../../scripts/check-resource-governor-enforcement.mjs';
 import { buildR11JournalCapturePlan, buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, R11_JOURNAL_MAX_BYTES, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
@@ -11,6 +14,102 @@ const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ k
 });
 const cut = (24 * 60 - 10) * 60_000;
 const end = 24 * 60 * 60_000;
+
+describe('R-11 snapshot recovery', () => {
+  it('budgets preflight and frozen captures in both copies plus all journal streams', () => {
+    expect(r11DiskAllocations('/primary', { recoveryRoot: '/recovery', journalRoot: '/journals' }))
+      .toEqual([{ path: '/primary', bytes: 32 * 1024 ** 3 },
+        { path: '/recovery', bytes: 32 * 1024 ** 3 },
+        { path: '/journals', bytes: 24 * 1024 ** 3 }]);
+  });
+  it('refuses an oversized snapshot before creating recovery or primary bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'r11-cap-'));
+    try {
+      expect(() => publishR11SnapshotBytes(join(root, 'snapshot'),
+        { length: R11_JOURNAL_MAX_BYTES + 1 } as Buffer, join(root, 'recovery'))).toThrow('cap');
+      expect(() => readFileSync(join(root, 'snapshot'))).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('rejects preservation aliases into primary, including children that do not exist yet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'r11-physical-'));
+    try {
+      const primary = join(root, 'primary');
+      mkdirSync(primary);
+      const alias = join(root, 'alias');
+      symlinkSync(primary, alias, 'dir');
+      for (const key of ['R11_RECOVERY_ROOT', 'R11_JOURNAL_ROOT']) {
+        for (const destination of [alias, join(alias, 'missing', 'child')]) {
+          expect(() => r11PreservationRoots(root, primary, { [key]: destination })).toThrow('outside');
+        }
+      }
+      expect(() => r11JournalDirectory(alias, join(primary, 'missing'))).toThrow('outside');
+      expect(() => r11JournalDirectory(primary, join(root, 'independent', 'missing'))).not.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('defaults to canonical preservation and rejects destinations inside primary', () => {
+    expect(r11PreservationRoots('/repo', '/backup/window', {})).toEqual({
+      recoveryRoot: '/repo/.papercusp/evidence/r11-recovery', journalRoot: '/repo/.papercusp/evidence/r11-journals',
+    });
+    expect(r11PreservationRoots('/repo', '/backup/window', {
+      R11_RECOVERY_ROOT: '/backup/recovery', R11_JOURNAL_ROOT: '/backup/journals',
+    })).toEqual({ recoveryRoot: '/backup/recovery', journalRoot: '/backup/journals' });
+    for (const key of ['R11_RECOVERY_ROOT', 'R11_JOURNAL_ROOT']) {
+      expect(() => r11PreservationRoots('/repo', '/backup/window', { [key]: '/backup/window/nested' })).toThrow('outside');
+      expect(() => r11PreservationRoots('/repo', '/backup/window', { [key]: 'relative' })).toThrow('absolute');
+    }
+  });
+  it('retains bounded journal streams when the primary capture directory is removed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'r11-journal-preservation-'));
+    try {
+      const primary = join(root, 'primary');
+      mkdirSync(primary);
+      const preserved = r11JournalDirectory(primary, join(root, 'preserved'));
+      mkdirSync(preserved, { recursive: true });
+      const plan = buildR11JournalCapturePlan(buildR11TimerSpecs(snapshot('T0', 0, [])), preserved, Date.parse(at));
+      for (const capture of plan.captures) {
+        writeFileSync(capture.path, '{"before":true}\n');
+        expect(capture.command).toContain(`--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`);
+      }
+      rmSync(primary, { recursive: true });
+      for (const capture of plan.captures) {
+        writeFileSync(capture.path, '{"after":true}\n', { flag: 'a' });
+        expect(readFileSync(capture.path, 'utf8')).toBe('{"before":true}\n{"after":true}\n');
+      }
+      expect(r11JournalDirectory(primary + '/', join(root, 'preserved'))).toBe(preserved);
+      expect(r11JournalDirectory(join(root, 'other'), join(root, 'preserved'))).not.toBe(preserved);
+      expect(() => r11JournalDirectory(primary, primary)).toThrow('outside');
+      expect(() => r11JournalDirectory(primary, join(primary, 'nested'))).toThrow('outside');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers exact frozen bytes after the primary directory is deleted', () => {
+    const root = mkdtempSync(join(tmpdir(), 'r11-recovery-'));
+    try {
+      const primaryDir = join(root, 'primary');
+      mkdirSync(primaryDir);
+      const primary = join(primaryDir, 't0.json.gz');
+      const bytes = Buffer.from('original frozen snapshot');
+      const recoveryRoot = join(root, 'recovery');
+      const recovery = publishR11SnapshotBytes(primary, bytes, recoveryRoot);
+      expect(readFileSync(recovery)).toEqual(bytes);
+      rmSync(primaryDir, { recursive: true });
+      expect(readR11SnapshotBytes(primary, recoveryRoot)).toEqual(bytes);
+      expect(() => publishR11SnapshotBytes(primary, Buffer.from('replacement'), recoveryRoot)).toThrow();
+      expect(readFileSync(recovery)).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses conflicting primary bytes rather than concealing corruption', () => {
+    const root = mkdtempSync(join(tmpdir(), 'r11-recovery-'));
+    try {
+      const primary = join(root, 't0.json.gz');
+      const recoveryRoot = join(root, 'recovery');
+      publishR11SnapshotBytes(primary, Buffer.from('original'), recoveryRoot);
+      writeFileSync(primary, 'changed');
+      expect(() => readR11SnapshotBytes(primary, recoveryRoot)).toThrow('disagree');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('R-11 admitted timer commands', () => {
   const specs = buildR11TimerSpecs(snapshot('T0', 0, []));
@@ -25,6 +124,15 @@ describe('R-11 admitted timer commands', () => {
       expect(command).toContain(`--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`);
       expect(command).toContain('--property=UMask=0077');
     }
+  });
+
+  it('passes frozen preservation roots as literal arguments after loading the runtime environment', () => {
+    const command = buildR11SystemdRunArgs(specs[1], paths, { ...runtime,
+      recoveryRoot: '/backup/recovery space', journalRoot: '/backup/journal $literal' });
+    expect(command.slice(command.indexOf('r11-capture') + 1, -4)).toEqual([
+      '/usr/bin/env', 'R11_RECOVERY_ROOT=/backup/recovery space', 'R11_JOURNAL_ROOT=/backup/journal $literal',
+      runtime.tsx, runtime.script,
+    ]);
   });
 
   it('awaits the admitted start and verification for each timer', async () => {
@@ -75,9 +183,12 @@ describe('R-11 admitted timer commands', () => {
   it('keeps the canonical CLI free of unadmitted starts and detects a reintroduced start', () => {
     const source = readFileSync(new URL('../../../../scripts/r11-window-snapshot.mts', import.meta.url), 'utf8');
     expect(source).toContain('await scheduleR11Timers(');
-    expect(source).toContain('journalDirectory: dirname(path)');
+    expect(source).toContain('r11PreservationRoots(repoRoot, dirname(path))');
+    expect(source).toContain('r11JournalDirectory(dirname(path), preservation.journalRoot)');
+    expect(source).toContain('preparedJournals, t0At: t0.capturedAt');
     expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
-    expect(inspectGovernorSource(source + "\nexecFileSync('systemd-run', []);"))
+    expect(source).toContain('await runGovernedTestProcess(');
+    expect(inspectGovernorSource(source.replaceAll('runGovernedTestProcess', 'unadmittedProcess')))
       .toContain('resource-start-outside-admission');
   });
 });
@@ -88,6 +199,48 @@ describe('R-11 journal producer bounds', () => {
   const runtime = { repoRoot: '/repo', tsx: '/repo/tsx', script: '/repo/capture.mts', journalDirectory: '/evidence/100%' };
   const now = () => Date.parse(at);
   const success = { status: 0, signal: null, stdout: '', stderr: '', actualDemand: {} };
+
+  it('prepares three bounded producers before T0 and adopts them without starting replacements', async () => {
+    const preparationSpecs = buildR11TimerSpecs(snapshot('T0', 2 * 3600_000, []));
+    const identity = `SubState=running\nResult=success\nNRestarts=0\nMainPID=123\nInvocationID=${'a'.repeat(32)}\nExecMainStartTimestamp=${new Date(now() - 1000).toISOString()}\n`;
+    const execute = vi.fn(async (command: string, args: string[]) => {
+      if (command === 'systemctl' && args.includes('show')) {
+        const unit = args[2]!;
+        return { ...success, stdout: unit.endsWith('.timer')
+          ? `ActiveState=active\nUnit=${unit.replace('.timer', '.service')}\n`
+          : `ActiveState=active\nRuntimeMaxUSec=1d 2h\nLimitFSIZE=${R11_JOURNAL_MAX_BYTES}\n${identity}` };
+      }
+      return success;
+    });
+    const prepared = await scheduleR11Timers(preparationSpecs, paths,
+      { ...runtime, journalPreparation: true, journalSinceMs: now() }, false, execute, now);
+    expect(prepared).toHaveLength(4);
+    expect(execute.mock.calls.filter(([command]) => command === 'systemd-run')).toHaveLength(4);
+    const receipt = { specs: preparationSpecs, sinceMs: now(), captures: prepared.filter(({ kind }) => kind === 'journal')
+      .map(({ unit, path, show }) => ({ unit, path: path!, show: show! })) };
+    execute.mockClear();
+    const adopted = await scheduleR11Timers(specs, paths,
+      { ...runtime, preparedJournals: receipt, t0At: at }, false, execute, now);
+    expect(adopted.filter(({ kind }) => kind === 'journal').map(({ unit }) => unit)).toEqual(receipt.captures.map(({ unit }) => unit));
+    expect(execute.mock.calls.filter(([command]) => command === 'systemd-run')).toHaveLength(3);
+    expect(adopted[0].command?.slice(-3)).toEqual(receipt.captures.map(({ unit }) => `${unit}.service`));
+    for (const defect of ['changed', 'late', 'restarted']) {
+      const broken = structuredClone(receipt);
+      if (defect === 'changed') broken.captures[0]!.show = identity.replace('MainPID=123', 'MainPID=999');
+      const badExecute = vi.fn(async (command: string, args: string[]) => {
+        const result = await execute(command, args);
+        if (command === 'systemctl' && args.includes(`${receipt.captures[0]!.unit}.service`) && args.includes('show')) {
+          result.stdout = result.stdout.replace(defect === 'late' ? new Date(now() - 1000).toISOString() : 'NRestarts=0',
+            defect === 'late' ? new Date(now() + 1000).toISOString() : defect === 'restarted' ? 'NRestarts=1' : 'NRestarts=0');
+        }
+        return result;
+      });
+      await expect(scheduleR11Timers(specs, paths, { ...runtime, preparedJournals: broken, t0At: at },
+        false, badExecute, now)).rejects.toThrow('identity changed');
+      expect(badExecute.mock.calls.filter(([command, args]) => command === 'systemctl' && args.includes('stop'))
+        .every(([, args]) => !args.some((arg) => /journal-.*\.service$/.test(arg)))).toBe(true);
+    }
+  });
 
   it('uses an independent frozen stop timer plus time and file-size limits for every follower', () => {
     const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());

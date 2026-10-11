@@ -2350,7 +2350,19 @@ log "mutant applied: ${ORIG_SUM:0:8} -> changed ($TARGET_MODE)"
 CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
 run_guard mutant "mutant guard" "$CMD" "$MUTANT_LOG"
 TEST_RC=$?
+BASELINE_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file baseline)")"
+COPY_BASELINE_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file copy-baseline)")"
 MUTANT_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file mutant)")"
+# A caught mutant still needs its passing controls to be ledger-backed. Preserve
+# each control's write outcome before finish removes the scratch receipts.
+for phase in baseline copy-baseline; do
+  phase_ledger="$BASELINE_LEDGER"
+  [ "$phase" != "copy-baseline" ] || phase_ledger="$COPY_BASELINE_LEDGER"
+  case "$phase_ledger" in
+    missing:*|partial:*|unreadable)
+      log "⚠️  $phase ledger: $phase_ledger — the passing control has incomplete test_runs evidence; do not claim ledger-backed baseline proof from its exit status." ;;
+  esac
+done
 case "$MUTANT_LEDGER" in
   missing:*|partial:*|unreadable)
     log "⚠️  mutant ledger: $MUTANT_LEDGER — the guard ran, but its test_runs row did not land (WI-10006245). There is no mutant FAIL row to bind as evidence: re-run the probe, or bind from a row that exists." ;;
@@ -2469,11 +2481,10 @@ fi
 # as evidence. 'ok' means the mutant was confirmed to still be a loadable
 # program, so a caught verdict is about the assertions; 'unchecked*' means no
 # checker applied to this subject and the caught verdict carries that caveat.
-# mutant_ledger says whether the mutant's test_runs row exists (see
-# summarize_ledger_receipts): a caught verdict with missing:* is a real catch
-# that left nothing to bind.
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s mutant_ledger=%s\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED" "$MUTANT_LEDGER"
+# Each phase's ledger summary survives scratch cleanup. The mutation verdict
+# describes assertions; missing ledger evidence remains a separate limitation.
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s baseline_ledger=%s copy_baseline_ledger=%s mutant_ledger=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED" "$BASELINE_LEDGER" "$COPY_BASELINE_LEDGER" "$MUTANT_LEDGER"
 
 # One JSON record per probe, copyable into an operational evidence artifact's
 # `mutationProbes` array. argv is the exact vector received by this invocation;
@@ -2491,6 +2502,8 @@ REPLAY_RECORD="$(
   MUTATION_PROBE_MUTANT_PARSE="$MUTANT_PARSE" \
   MUTATION_PROBE_ASSERTION_EVIDENCE="$MUTANT_ASSERTION_EVIDENCE" \
   MUTATION_PROBE_RELOCATION="$RELOCATION_USED" \
+  MUTATION_PROBE_BASELINE_LEDGER="$BASELINE_LEDGER" \
+  MUTATION_PROBE_COPY_BASELINE_LEDGER="$COPY_BASELINE_LEDGER" \
   MUTATION_PROBE_MUTANT_LEDGER="$MUTANT_LEDGER" \
   perl -MJSON::PP -e '
     print encode_json({
@@ -2509,6 +2522,8 @@ REPLAY_RECORD="$(
         mutantParse => $ENV{MUTATION_PROBE_MUTANT_PARSE},
         assertionEvidence => $ENV{MUTATION_PROBE_ASSERTION_EVIDENCE},
         relocation => $ENV{MUTATION_PROBE_RELOCATION},
+        baselineLedger => $ENV{MUTATION_PROBE_BASELINE_LEDGER},
+        copyBaselineLedger => $ENV{MUTATION_PROBE_COPY_BASELINE_LEDGER},
         mutantLedger => $ENV{MUTATION_PROBE_MUTANT_LEDGER},
       },
     });

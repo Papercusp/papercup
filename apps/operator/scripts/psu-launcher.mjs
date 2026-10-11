@@ -5292,9 +5292,9 @@ export const CLAUDE_MINIMAL_SEED_TOOL_NAMES = [
 
 /** Claude's advertised seed. DEFAULT = the DERIVED delivery map (see the block comment
  *  above `deliveryAdvertisedNames`).
- *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras seed byte-for-byte
- *  — the escape hatch for a session that genuinely needs the wide surface up front, and the
- *  instant revert if the derived seed ever proves wrong. Both paths honor
+ *  Set PAPERCUSP_CLAUDE_FULL_SEED=1 to restore the historical spine+extras name set
+ *  while keeping per-name compact tiers from the generated delivery map. This escape hatch
+ *  restores the wide surface membership without disabling compact wire delivery. Both paths honor
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE (a tool the target operator currently serves BROKEN should not
  *  be advertised on either). Exported for tests. */
 export function claudeSeedToolNames(env = process.env) {
@@ -5323,15 +5323,12 @@ export function claudeSeedToolNames(env = process.env) {
  *  reason the derived seed can carry ~90 names in the byte budget that a
  *  hand-curated 31-name list was already filling.
  *
- *  PAPERCUSP_CLAUDE_FULL_SEED=1 restores the historical spine+extras seed
- *  byte-for-byte, which by definition compacts NOTHING — so this returns the
- *  empty list on that path, and the escape hatch stays a true revert.
+ *  PAPERCUSP_CLAUDE_FULL_SEED=1 selects the historical spine+extras name set.
+ *  The generated compact tier still applies to names in that set, keeping the wide
+ *  escape hatch inside the live wire budget.
  *  PAPERCUSP_OMP_TOOLS_EXCLUDE is honored here too: a tool that is not
  *  advertised must not be named as compact either. Exported for tests. */
 export function claudeCompactToolNames(env = process.env) {
-  const full = String(env.PAPERCUSP_CLAUDE_FULL_SEED || "").trim();
-  const wantsFull = full !== "" && full !== "0" && full.toLowerCase() !== "false";
-  if (wantsFull) return [];
   const advertised = new Set(claudeSeedToolNames(env));
   return deliveryCompactNames("claude").filter((n) => advertised.has(n));
 }
@@ -5390,8 +5387,8 @@ export function healContextTrimmingEnv(env, agent = env?.PAPERCUSP_AGENT) {
   const filled = [];
   for (const [k, v] of Object.entries(contextTrimmingEnv(agent))) {
     // An empty value counts as absent only when the derived value is not itself
-    // empty: under PAPERCUSP_CLAUDE_FULL_SEED the compact list is legitimately "",
-    // and refilling "" over "" would make the heal report it forever (WI-10005917).
+    // empty. This also heals legacy full-seed handoffs that carried an empty compact
+    // list; current full-seed launches receive the generated compact intersection.
     if (env[k] === undefined || (env[k] === "" && v !== "")) {
       env[k] = v;
       filled.push(k);
@@ -17113,10 +17110,14 @@ async function main() {
   // WI-6554700010008431: a refused handoff is CONSUMED, and the event below is
   // keyed by the handoff's own ownerId — so without this sink a refusal on a
   // shim whose env carries no PAPERCUSP_SID left no event at all.
+  // WI-6554700010008431: headless fleet shims carry the owner as `--owner-id=`, not
+  // PAPERCUSP_SID, so the env-only fallback was null for exactly the population that
+  // lost its handoff — and an ambiguous or MISSING handoff then logged no event at all.
+  const adoptionEventOwnerId = adoptionOwnerId || args.ownerId || null;
   const hostHandoff = isHostAdoptionReexec
     ? readHostHandoffForParentPid(process.ppid, {
         onReject: (rejection) => {
-          const rejectedOwnerId = rejection?.ownerId || adoptionOwnerId;
+          const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
           if (!rejectedOwnerId) return;
           const { path: _path, ownerId: _ownerId, ...detail } = rejection;
           appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
@@ -17128,7 +17129,7 @@ async function main() {
       })
     : null;
   if (isHostAdoptionReexec) {
-    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionOwnerId;
+    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
     if (ownerIdForHandoff) {
       const firstTurnText = hostHandoff?.firstTurnText;
       appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {

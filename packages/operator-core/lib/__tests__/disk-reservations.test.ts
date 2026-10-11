@@ -13,8 +13,8 @@
  * indistinguishable from "no other builds are running". That is the failure mode
  * worth a test, because it disables the guard while every test still passes.
  */
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,7 @@ import {
 } from '../../../../scripts/lib/cargo-result.mjs';
 import {
   mountKeyForPath,
+  assessAllocationDiskAdmission,
   readReservedGb,
   reservationDir,
   // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
@@ -60,6 +61,67 @@ function seedReservation(
 }
 
 describe('disk reservation ledger — Node reader', () => {
+  it('R11 CLI dry-run groups all destinations and preserves the full window budget without reserving', () => {
+    const root = scratch();
+    const ledger = join(root, 'ledger');
+    const primary = join(root, 'primary');
+    const recovery = join(root, 'recovery');
+    const journals = join(root, 'journals');
+    const result = spawnSync(join(REPO_ROOT, 'node_modules/.bin/tsx'), [
+      join(REPO_ROOT, 'scripts/r11-window-snapshot.mts'), 'reserve', join(primary, 'T0.json.gz'), '--dry-run',
+    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env,
+      R11_RECOVERY_ROOT: recovery, R11_JOURNAL_ROOT: journals, PAPERCUSP_DISK_RESERVATION_DIR: ledger } });
+    expect(result.error).toBeUndefined();
+    const report = JSON.parse(result.stdout.trim());
+    expect(report.lifetimeSec).toBe(93600);
+    expect(report.admission.devices).toHaveLength(1);
+    expect(report.admission.devices[0]).toMatchObject({ paths: [primary, recovery, journals],
+      allocationBytes: 88 * GIB, protectedBytes: 36 * GIB, requiredBytes: 124 * GIB });
+    expect(result.status, result.stderr).toBe(report.admission.admitted ? 0 : 2);
+    expect(existsSync(ledger)).toBe(false);
+  }, 35_000);
+  it('strict evidence admission rejects measure-only success and verifies a long-lived receipt', () => {
+    const ledger = scratch();
+    const target = scratch();
+    const command = (override: string) => execFileSync('bash', ['-c',
+      'source "$1"; export PAPERCUSP_DISK_RESERVATION_DIR="$2" PAPERCUSP_DISK_RESERVATION_TTL_SEC=100800; ' +
+      override + '; papercusp_require_disk_reservation "$3" 1 evidence',
+      'strict-test', SHELL_LIB, ledger, target], { encoding: 'utf8', stdio: 'pipe' });
+    expect(() => command('papercusp_free_gb() { printf 100; }')).not.toThrow();
+    expect(() => command('papercusp_free_gb() { :; }')).toThrow();
+    expect(() => command('papercusp_free_gb() { printf 100; }; papercusp_ledger_lock() { return 1; }')).toThrow();
+    expect(() => command('papercusp_require_free_gb() { return 0; }')).toThrow();
+  });
+  it('rejects collectively oversized evidence destinations on one physical device', () => {
+    const paths = [scratch(), scratch(), scratch()];
+    const allocations = paths.map((path, i) => ({ path, bytes: [25, 24, 24][i] * GIB }));
+    const options = { protectedBytes: 36 * GIB,
+      availableBytesForPath: () => 100 * GIB, reservedBytesForPath: () => 5 * GIB };
+    // Every destination individually fits; collectively 73 + 36 exceeds 95.
+    for (const allocation of allocations) {
+      expect(assessAllocationDiskAdmission([allocation], options).admitted).toBe(true);
+    }
+    const result = assessAllocationDiskAdmission(allocations, options);
+    expect(result.admitted).toBe(false);
+    expect(result.devices).toHaveLength(1);
+    expect(result.devices[0]).toMatchObject({ allocationBytes: 73 * GIB,
+      requiredBytes: 109 * GIB, effectiveBytes: 95 * GIB });
+    expect(assessAllocationDiskAdmission(allocations, {
+      ...options, availableBytesForPath: () => 114 * GIB,
+    }).admitted).toBe(true);
+  });
+  it('keeps distinct devices separate and refuses unknown evidence capacity', () => {
+    const allocations = [{ path: '/a', bytes: 24 * GIB }, { path: '/b', bytes: 24 * GIB }];
+    const options = { keyForPath: (path: string) => path, protectedBytes: 36 * GIB,
+      availableBytesForPath: () => 60 * GIB, reservedBytesForPath: () => 0 };
+    expect(assessAllocationDiskAdmission(allocations, options).admitted).toBe(true);
+    expect(() => assessAllocationDiskAdmission(allocations, {
+      ...options, keyForPath: () => '',
+    })).toThrow('unknown');
+    expect(() => assessAllocationDiskAdmission(allocations, {
+      ...options, availableBytesForPath: () => NaN,
+    })).toThrow('unknown');
+  });
   it('counts live legacy claims across mount aliases before admitting another build', () => {
     const ledger = scratch();
     const a = scratch();

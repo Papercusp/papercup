@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fastGlob from 'fast-glob';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
 import {
   __resetCommittedBlobDigestsForTest,
@@ -23,6 +23,12 @@ import {
   resolveMeasurementCommit,
   type BlobBatchReader,
 } from './committed-tree-reader';
+
+// Real fixture Git stays local, independent of the operator's shared sidecar.
+vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => false,
+}));
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], {

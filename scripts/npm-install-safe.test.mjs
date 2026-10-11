@@ -47,6 +47,7 @@ import {
   resolveFsMutexTimeoutMs,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
+import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
 
 // npm run exports its own prefix and can carry user config. These fixtures
 // model local installs in a disposable repo; each case sets its routing options.
@@ -1466,6 +1467,34 @@ test("verifyNpmCacheExclusive reports verify's own failure instead of treating i
       log: () => {},
     }),
     /verify crashed/,
+  );
+});
+
+test("test:file reader-lock acquisition failure is NOT MEASURED before the child starts", async () => {
+  const events = [];
+  let childStarted = false;
+  const lockFailure = Object.assign(new Error("ENOSPC creating reader lock"), { code: "ENOSPC" });
+  const result = await runCommandUnderInstallMutex({
+    commandArgs: ["node", "--import", "./scripts/lib/committed-source-loader.mjs", "scripts/test-files.mjs", "packages/operator-core/lib/example.test.ts"],
+    acquireReadMutex: async () => { throw lockFailure; },
+    runCommand: () => { childStarted = true; return { status: 0 }; },
+    env: {},
+    log: (line) => events.push(line),
+  });
+
+  assert.equal(childStarted, false);
+  assert.equal(result, TEST_FILE_EXIT_NOT_MEASURED);
+  assert.match(events.join("\n"), /NPM_INSTALL_SAFE_ERROR ENOSPC/);
+  assert.match(events.join("\n"), /TEST_FILE_NOT_MEASURED reason=install-reader-lock-acquisition/);
+
+  await assert.rejects(
+    runCommandUnderInstallMutex({
+      commandArgs: ["node", "scripts/build.mjs"],
+      acquireReadMutex: async () => { throw lockFailure; },
+      env: {},
+      log: () => {},
+    }),
+    /ENOSPC creating reader lock/,
   );
 });
 

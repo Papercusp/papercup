@@ -24,7 +24,7 @@
  * other by executing both, so drift fails a test instead of disabling the guard.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, statfsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const GIB = 1024 * 1024 * 1024;
@@ -158,4 +158,55 @@ export function readReservedGb(path, { env = process.env, now = Date.now() } = {
 /** Same, in bytes — the unit assessCargoDiskAdmission takes. */
 export function readReservedBytes(path, opts) {
   return readReservedGb(path, opts) * GIB;
+}
+
+/** Strict evidence admission: combine every destination spending the same device.
+ * This is a measurement, not a reservation receipt; callers must still reserve.
+ * Unlike the build reader, unknown capacity cannot qualify an evidence window.
+ */
+export function assessAllocationDiskAdmission(allocations, {
+  protectedBytes = 0,
+  keyForPath = mountKeyForPath,
+  reservedBytesForPath = readReservedBytes,
+  availableBytesForPath = (path) => {
+    for (;;) {
+      try {
+        const fs = statfsSync(path, { bigint: true });
+        return Number(fs.bavail * fs.bsize);
+      } catch (error) {
+        if (error.code !== 'ENOENT' || dirname(path) === path) throw error;
+        path = dirname(path);
+      }
+    }
+  },
+} = {}) {
+  if (!Number.isSafeInteger(protectedBytes) || protectedBytes < 0 || !allocations.length) {
+    throw new Error('A non-empty allocation and nonnegative byte budgets are required');
+  }
+  const devices = new Map();
+  for (const { path, bytes } of allocations) {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid allocation bytes');
+    const key = keyForPath(path);
+    if (!key) throw new Error(`Physical filesystem is unknown: ${path}`);
+    const available = availableBytesForPath(path);
+    const reserved = reservedBytesForPath(path);
+    if (![available, reserved].every((n) => Number.isSafeInteger(n) && n >= 0)) {
+      throw new Error(`Filesystem capacity is unknown: ${path}`);
+    }
+    const device = devices.get(key) ?? { key, paths: [], allocationBytes: 0,
+      availableBytes: available, reservedBytes: reserved, protectedBytes };
+    device.paths.push(path);
+    device.allocationBytes += bytes;
+    if (!Number.isSafeInteger(device.allocationBytes)) throw new Error('Allocation exceeds safe byte range');
+    // Conservative if measurements change between destinations on one device.
+    device.availableBytes = Math.min(device.availableBytes, available);
+    device.reservedBytes = Math.max(device.reservedBytes, reserved);
+    devices.set(key, device);
+  }
+  const budgets = [...devices.values()].map((device) => ({ ...device,
+    requiredBytes: device.allocationBytes + device.protectedBytes,
+    effectiveBytes: device.availableBytes - device.reservedBytes,
+    admitted: device.availableBytes - device.reservedBytes >= device.allocationBytes + device.protectedBytes,
+  }));
+  return { admitted: budgets.every((device) => device.admitted), devices: budgets };
 }

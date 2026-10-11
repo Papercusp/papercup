@@ -54,6 +54,7 @@ describe('unit census executable exit contract', () => {
             PAPERCUSP_DB_ENCRYPTION_KEY_FILE: join(directory, 'db-key') },
         });
       expect(result.status, result.stderr).toBe(1);
+      expect(result.stdout.trim(), result.stderr).not.toBe('');
       const report = JSON.parse(result.stdout);
       expect(report.wholeInstallVerified).toBe(false);
       expect(report.scope).toBe('implemented-writer-filesystem-roots-only');

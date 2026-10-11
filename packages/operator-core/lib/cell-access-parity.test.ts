@@ -664,7 +664,14 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // covers its oracle/get/list parity; this census also binds that new row's visibility.
     // workspace 16 → 18: `lsp.warmServers` and `lsp.readiness` reuse the daemon lens
     // while exposing their distinct runtime and per-intent verdicts to the workspace.
-    ).toEqual({ workspace: 18, harness: 12 });
+    // harness 12 → 11, workspace 18 → 19: `gate.greenCheckpoint.ownership` WIDENED from
+    // OPERATOR_PIPELINE_VISIBILITY to workspace (committed c3451c17b1). Unlike its gate
+    // siblings its resolver reads the CALLER's own harness, so a target-pot fixer must be
+    // able to read its own gate's owner; leg E now walks it on the workspace arm.
+    // workspace 19 → 20: `verification.health` (verification-system-improvements-2026-10-10
+    // P-002, registered 2026-10-11) is workspace-visible: its resolver is whole-workspace by
+    // construction, so every reader sees the same value.
+    ).toEqual({ workspace: 20, harness: 11 });
     const attribution = BUILTIN_CELLS.find((spec) => spec.cell === 'memory.cgroupAttribution');
     expect(attribution, 'the added cell must remain in the real parity walk').toBeDefined();
     expect(attribution!.visibility).toEqual({ kind: 'workspace' });

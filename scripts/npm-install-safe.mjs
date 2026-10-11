@@ -77,6 +77,7 @@ import {
   withFsMutexRead,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
+import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
 import { envWithInstallMutex, installLockNameForRoot, installMutexIsHeld } from "./lib/install-lock-name.mjs";
 export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 import {
@@ -1494,14 +1495,18 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
  *   runCommand?: (command: string, args: string[], options: {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
  *   }) => { status?: number | null, error?: Error },
+ *   acquireReadMutex?: typeof withFsMutexRead,
+ *   log?: (line: string) => void,
  *   env?: NodeJS.ProcessEnv,
  *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
  * }} [options]
  */
-export function runCommandUnderInstallMutex({
+export async function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
   runCommand = spawnSync,
+  acquireReadMutex = withFsMutexRead,
+  log = console.error,
   env = process.env,
   cacheRead = false,
 } = {}) {
@@ -1512,8 +1517,10 @@ export function runCommandUnderInstallMutex({
   const lockName = repoLockName(repoRoot);
   const mutexAlreadyHeld = installMutexIsHeld(lockName, env);
   const childEnv = cacheRead ? env : envWithInstallMutex(lockName, env);
+  let childStarted = false;
 
   const executeReader = async () => {
+    childStarted = true;
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
     console.error(
@@ -1537,18 +1544,33 @@ export function runCommandUnderInstallMutex({
   if (cacheRead) return withPackageCacheReadLease(executeReader);
   if (mutexAlreadyHeld) return executeReader();
 
-  return withFsMutexRead(lockName, executeReader, {
-    // Reader diagnostics stay on stderr (see executeReader).
-    ...installLockWaitReporter({
-      lock: "reader",
-      describe: (owner, elapsedMs) =>
-        `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
-      log: (line) => console.error(line),
-      // The budget withFsMutexRead itself applies (it resolves from process.env).
-      budgetMs: resolveFsMutexTimeoutMs(),
-    }),
-    waitingNoticeIntervalMs: 30_000,
-  });
+  try {
+    return await acquireReadMutex(lockName, executeReader, {
+      // Reader diagnostics stay on stderr (see executeReader).
+      ...installLockWaitReporter({
+        lock: "reader",
+        describe: (owner, elapsedMs) =>
+          `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
+        log,
+        // The budget withFsMutexRead itself applies (it resolves from process.env).
+        budgetMs: resolveFsMutexTimeoutMs(),
+      }),
+      waitingNoticeIntervalMs: 30_000,
+    });
+  } catch (error) {
+    const testFileRouter = resolve(repoRoot, "scripts/test-files.mjs");
+    const invokesTestFileRouter = commandArgs.some(
+      (arg) => typeof arg === "string" && resolve(repoRoot, arg) === testFileRouter,
+    );
+    if (childStarted || !invokesTestFileRouter) throw error;
+
+    const message = error instanceof Error ? error.message : String(error);
+    log(`NPM_INSTALL_SAFE_ERROR ${message}`);
+    log(
+      `TEST_FILE_NOT_MEASURED reason=install-reader-lock-acquisition — test child never started (${message})`,
+    );
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
 }
 
 /** Printed for `--help` / `-h`; never takes the install mutex. */

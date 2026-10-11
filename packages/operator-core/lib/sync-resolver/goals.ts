@@ -1308,6 +1308,38 @@ export async function resolveGoalDetail(args: {
   } & Record<string, unknown>;
   if (!shaped.goal) return detail;
 
+  const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
+  const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
+  const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
+  const legacyWorklist = declaration.success ? declaration.data.worklist : undefined;
+  const workOnEverything = shaped.goal.goalPackage?.ref === 'work-on-everything' ||
+    (!shaped.goal.goalPackage && legacyWorklist?.datatype === 'plan-ref-list' &&
+      legacyWorklist.collection?.source === 'active-workspace-plans' &&
+      legacyWorklist.collection.policy === 'worklist_policy' && legacyWorklist.collection.selectable);
+  // These evidence reads depend only on the saved goal, not on its portfolio
+  // projection. Serial composition charged both complete reads to one 10s
+  // deadline (measured portfolio 6.7s + stewardship 4.1s, before base SQL).
+  const enrichmentRead = (async () => {
+    if (!workOnEverything) return { rubricStewardship: null, worklistHistory: [], historyError: null };
+    const [rubricStewardship, history] = await Promise.all([
+      traceNamedQueryStage('goal-stewardship', async () => {
+        const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+        return readGoalRubricStewardship({ workspaceId, goalId }, { sql });
+      }),
+      traceNamedQueryStage('goal-worklist-history', async () => {
+        const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
+          import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
+        ]);
+        return { worklistHistory: projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
+          events: ['property_changed'], limit: 40 })), historyError: null };
+      }).catch(() => ({ worklistHistory: [], historyError: 'Worklist change history could not be read.' })),
+    ]);
+    return { rubricStewardship, ...history };
+  })();
+  // Keep a fast enrichment failure handled while its sibling reads finish;
+  // awaiting the original promise below still propagates the same failure.
+  void enrichmentRead.catch(() => undefined);
+
   // The optional agenda may time out without cancelling its portfolio read.
   // Keep that promise for the collection fallback instead of starting a second
   // copy. Each declared property still owns its independent saved policy.
@@ -1336,9 +1368,6 @@ export async function resolveGoalDetail(args: {
     deps: { goalPortfolio: () => readPortfolio('worklist') },
     });
   });
-  const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
-  const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
-  const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
   const portfolios = new Map<string, NonNullable<typeof goalModeState.portfolio>>();
   const collectionReadErrors = new Map<string, string>();
   // An owner can inspect/steer a paused or unheld goal too. Its collection is
@@ -1385,28 +1414,7 @@ export async function resolveGoalDetail(args: {
       }) : [];
       return [property, { selection, rows }];
     }));
-  let worklistHistory: unknown[] = [], historyError: string | null = null;
-  let rubricStewardship: import('../goal-rubric-stewardship').GoalRubricStewardship | null = null;
-  const legacyWorklist = declaration.success ? declaration.data.worklist : undefined;
-  const workOnEverything = shaped.goal.goalPackage?.ref === 'work-on-everything' ||
-    (!shaped.goal.goalPackage && legacyWorklist?.datatype === 'plan-ref-list' &&
-      legacyWorklist.collection?.source === 'active-workspace-plans' &&
-      legacyWorklist.collection.policy === 'worklist_policy' && legacyWorklist.collection.selectable);
-  if (workOnEverything) {
-    rubricStewardship = await traceNamedQueryStage('goal-stewardship', async () => {
-      const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
-      return readGoalRubricStewardship({ workspaceId, goalId }, { sql });
-    });
-    try {
-      worklistHistory = await traceNamedQueryStage('goal-worklist-history', async () => {
-        const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
-          import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
-        ]);
-        return projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
-          events: ['property_changed'], limit: 40 }));
-      });
-    } catch { historyError = 'Worklist change history could not be read.'; }
-  }
+  const { rubricStewardship, worklistHistory, historyError } = await enrichmentRead;
   return { ...shaped, goalModeState, rubricStewardship, goalData: { ...rawData, collections, worklistHistory, historyError,
     error: declaration.success ? null : 'Goal data declarations could not be read.' } };
 }

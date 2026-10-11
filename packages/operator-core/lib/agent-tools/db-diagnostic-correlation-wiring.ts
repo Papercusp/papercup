@@ -23,7 +23,7 @@ import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log'
 type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-holder-liveness' |
   'goal-mode-state' | 'goal-portfolio' | 'goal-stewardship' | 'goal-worklist-history' |
   'stewardship-dependencies' | 'stewardship-scorecards' | 'stewardship-rubrics' |
-  'stewardship-repairs' | 'stewardship-lineage';
+  'stewardship-repairs' | 'stewardship-lineage' | 'scorecards-generation' | 'scorecards-rubric';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;
   startedAt: number;
@@ -33,7 +33,9 @@ interface NamedQueryStageTiming {
 
 const REQUEST_CONTEXT = pinModuleState(
   'operator-core.db-diagnostic-correlation.request-context',
-  () => new AsyncLocalStorage<PgResultDiagnosticCorrelation & { stages: NamedQueryStageTiming[] }>(),
+  () => new AsyncLocalStorage<PgResultDiagnosticCorrelation & {
+    diagnostics: { stages: NamedQueryStageTiming[]; omittedStages: number };
+  }>(),
 );
 
 /** The route passes only a registry-confirmed name, or null for an unknown operation. */
@@ -56,7 +58,7 @@ export function withNamedQueryDiagnosticContext<T>(
     stage: null,
     boundary: null,
     requestId,
-    stages: [],
+    diagnostics: { stages: [], omittedStages: 0 },
     ...(operation ? { operation } : {}),
   }), () => fn(requestId));
 }
@@ -71,9 +73,13 @@ export function withNamedQueryDiagnosticLeg<T>(queryLeg: PgDiagnosticQueryLeg, f
 /** Retain pending boundaries too: a timeout must name work that never settled. */
 export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () => PromiseLike<T>): Promise<T> {
   const context = REQUEST_CONTEXT.getStore();
-  if (!context || context.stages.length >= 32) return await run();
+  if (!context) return await run();
+  if (context.diagnostics.stages.length >= 32) {
+    context.diagnostics.omittedStages++;
+    return await run();
+  }
   const timing: NamedQueryStageTiming = { stage, startedAt: performance.now(), elapsedMs: null, outcome: 'pending' };
-  context.stages.push(timing);
+  context.diagnostics.stages.push(timing);
   try {
     const value = await run();
     timing.outcome = 'fulfilled';
@@ -89,11 +95,12 @@ export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () =>
 /** Snapshot the current request only; overlapping stages are not additive. */
 export function namedQueryStageTimings(): {
   requestId: string | undefined;
+  omittedStages: number;
   stages: Array<{ stage: NamedQueryStage; elapsedMs: number; outcome: NamedQueryStageTiming['outcome'] }>;
 } | null {
   const context = REQUEST_CONTEXT.getStore();
-  if (!context?.stages.length) return null;
-  return { requestId: context.requestId, stages: context.stages.map(timing => ({
+  if (!context?.diagnostics.stages.length) return null;
+  return { requestId: context.requestId, omittedStages: context.diagnostics.omittedStages, stages: context.diagnostics.stages.map(timing => ({
     stage: timing.stage,
     elapsedMs: Math.round(timing.elapsedMs ?? Math.max(0, performance.now() - timing.startedAt)),
     outcome: timing.outcome,

@@ -251,8 +251,9 @@ describe('resource governor enforcement lint', () => {
       source + "\nnew Worker('resident-worker');",
       // WI-10007542: the third start is only the committed test:file run (governed by
       // runGovernedTestProcess); retargeting it, or dropping either phase's isolation
-      // assert, must re-flag the file.
-      source.replace("'lint:as-committed', '--', 'test:file'", "'test:affected', '--'"),
+      // assert, must re-flag the file. bfaf34ee moved the call from lint:as-committed to a
+      // direct `npm run test:file`, so the mutation targets that literal call shape.
+      source.replace("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],", "execFileSync('npm', ['run', 'test:affected', '--', ...testFiles],"),
       source.replace(/assert\.equal\(process\.env\.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Fixture publication/, "assert.ok(true, 'Fixture publication"),
     ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
@@ -500,6 +501,10 @@ describe('resource governor enforcement lint', () => {
         'if (seen.has(name)) continue;', 'if (name.length < 0) continue;', true],
       ['scripts/npm-install-safe.mjs', 'unbounded-resident-queue',
         'if (!inputPaths.has(targetRelative)) {', 'if (targetRelative) {', true],
+      ['packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.ts', 'unbounded-resident-queue',
+        'if ((seen.get(value) ?? -1) >= mode) continue;', 'if (mode < 0) continue;', false],
+      ['packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts', 'unbounded-resident-queue',
+        'if (pending.size >= 64 || pending.has(requestId)) return;', 'if (pending.has(requestId)) return;', false],
     ];
     for (const [path, code, before, after, p016] of queuePins) {
       const source = readFileSync(ROOT + path, 'utf8');

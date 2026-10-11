@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 961,
+  "count": 962,
   "tools": [
     {
       "name": "ablation:report",
@@ -10819,7 +10819,7 @@
           "POST"
         ]
       },
-      "description": "PostgreSQL version + connection counts and bounded completed-query diagnostics, including a separate recent-failure ring, from this process. localOnly skips the database health query.",
+      "description": "PostgreSQL version + connection counts, bounded completed-query diagnostics and separate registered acquisition snapshots from this process. localOnly skips the database health query.",
       "capabilities": [
         "intel:read"
       ],
@@ -10831,7 +10831,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results without a health query; this does not measure in-flight queries or other processes.",
+        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results and registered acquisition tickets without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.",
         "notWhen": "For application-level health, use `harness:health`. pg_health is the database layer."
       }
     },
@@ -31666,7 +31666,8 @@
         "mug",
         "documenter",
         "curator",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "At the moment you ACT on a value that can change under you — a deploy position, a holder's goal, a queue depth. Also whenever you are about to quote such a value into a message or a plan: read it, do not copy it.",
@@ -31697,7 +31698,8 @@
         "mug",
         "documenter",
         "curator",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.",
@@ -32874,6 +32876,39 @@
         "when": "The gate is red and you need to know which of those reds are YOURS: a candidate red decomposes into newly-failing vs inherited. Also for the blast radius of a repo-wide change, where a grep only finds a failure shape you already know.",
         "notWhen": "The failing files at ONE commit or run is testing:runs. Whether a red is a known flake is testing:flakiness. Running tests is testing:run. \"Is my change live\" is dev:pipeline_position.",
         "chaining": "testing:verdict_diff → newlyFailing is the candidate's own blast radius → testing:runs { runGroup, filePath } for the full output tail → testing:flakiness on a file before treating its red as a genuine regression."
+      }
+    },
+    {
+      "name": "ticket:file",
+      "http": {
+        "path": "/api/agent-tools/ticket/file",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "File one ticket for your trigger-pack plan run at the destination its installation chose. You supply text only; the server picks the source and project, quotes the triggering message as untrusted evidence, and replays never file twice.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A trigger-pack workflow (e.g. bug-triage) decided a ticket is warranted, with your own planRunId.",
+        "notWhen": "Choosing or changing the destination, ad-hoc tickets outside a trigger-pack run, or re-filing after a pending result.",
+        "chaining": "Keep externalRef as proof. pendingReconciliation means retry later with the same planRunId; it never re-creates."
       }
     },
     {

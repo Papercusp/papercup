@@ -25,6 +25,16 @@ afterEach(() => {
 });
 
 describe('db diagnostic correlation wiring', () => {
+  it('discloses the bounded stage window while continuing every business read', async () => {
+    await withNamedQueryDiagnosticContext('goals.detail', async () => {
+      const results = await Promise.all(Array.from({ length: 35 }, (_, index) =>
+        traceNamedQueryStage('scorecards-rubric', async () => index)));
+      expect(results).toHaveLength(35);
+      expect(namedQueryStageTimings()).toMatchObject({ omittedStages: 3, stages: expect.any(Array) });
+      expect(namedQueryStageTimings()?.stages).toHaveLength(32);
+    });
+  });
+
   it('retains a pending goal stage at the deadline and isolates overlapping requests', async () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });

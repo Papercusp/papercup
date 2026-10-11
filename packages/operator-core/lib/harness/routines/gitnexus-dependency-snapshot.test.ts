@@ -24,6 +24,7 @@ import {
   dependencySnapshotProducerArgv,
   dependencySnapshotUsable,
   judgeDependencySnapshot,
+  logDependencySnapshotCheck,
   parseProducerLine,
   refreshDependencySnapshot,
   runDependencySnapshotProducer,
@@ -284,6 +285,21 @@ describe('refreshDependencySnapshot', () => {
 describe('wiring — the routine refreshes on BOTH the analyze path and the idle path', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
   const CALL = 'await trackDependencySnapshot(ctx, root, repoName);';
+
+  it('records a healthy idle freshness check without requiring a producer run', async () => {
+    const update = await refreshDependencySnapshot(
+      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null, backend: 'gitnexus' },
+      { out: '/out.json', now: () => NOW, readText: () => snapshotText(), produce: async () => { throw new Error('healthy snapshot must not regenerate'); } },
+    );
+    expect(update.ran).toBe(false);
+    const lines: string[] = [];
+    logDependencySnapshotCheck(update, { log: line => lines.push(line), warn: () => { throw new Error('healthy check must not warn'); } });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('dependency snapshot fresh');
+    expect(lines[0]).toContain(`checkedAt=${NOW}`);
+    expect(lines[0]).not.toContain('after producer:');
+    expect(src).toContain('logDependencySnapshotCheck(update);');
+  });
 
   it('refreshes source-only snapshots before optional graph writer admission, while retaining legacy skip and finish paths', () => {
     expect(src.split(CALL).length - 1).toBe(3);

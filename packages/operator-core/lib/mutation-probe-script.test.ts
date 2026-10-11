@@ -256,7 +256,8 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     const resultOf = (out: string) => {
       const line = out.match(/^MUTATION_PROBE_RESULT .+$/m)?.[0] ?? '';
       const evidence = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
-      return { line, ledger: evidence ? JSON.parse(evidence).result.mutantLedger : undefined };
+      const result = evidence ? JSON.parse(evidence).result : undefined;
+      return { line, ledger: result?.mutantLedger, result };
     };
 
     it('reports a caught mutant whose row never landed as missing, with the reason', () => {
@@ -274,7 +275,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       expect(read()).toBe(ORIGINAL);
     });
 
-    it('names the landed row id, preferring a late insert over an earlier timeout, and ignores baseline receipts', () => {
+    it('preserves a lost baseline receipt while preferring the mutant late insert over its earlier timeout', () => {
       const { code, out } = runProbeIO([
         '--file', subject, '--mutate', 's/beta/BETA/',
         '--test', guardWritingReceipts({
@@ -288,7 +289,30 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       expect(code, out).toBe(0);
       expect(resultOf(out).line).toMatch(/ mutant_ledger=test_runs:4242$/);
       expect(resultOf(out).ledger).toBe('test_runs:4242');
+      expect(resultOf(out).line).toContain('baseline_ledger=missing:failed_pg_unavailable');
+      expect(resultOf(out).result.baselineLedger).toBe('missing:failed_pg_unavailable');
+      expect(out).toContain('baseline ledger: missing:failed_pg_unavailable');
       expect(out).not.toMatch(/mutant ledger: /);
+    });
+
+    it('preserves a missing copy baseline separately from the landed original and mutant receipts', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          baseline: [{ filePath: 'a.test.ts', status: 'pass', outcome: 'inserted', id: '11' }],
+          'copy-baseline': [{ filePath: 'a.test.ts', status: 'pass', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' }],
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '42' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toContain('baseline_ledger=test_runs:11 copy_baseline_ledger=missing:timeout_pg_insert_timeout_15000ms mutant_ledger=test_runs:42');
+      expect(resultOf(out).result).toMatchObject({
+        baselineLedger: 'test_runs:11',
+        copyBaselineLedger: 'missing:timeout_pg_insert_timeout_15000ms',
+        mutantLedger: 'test_runs:42',
+      });
+      expect(out).toContain('copy-baseline ledger: missing:timeout_pg_insert_timeout_15000ms');
+      expect(read()).toBe(ORIGINAL);
     });
 
     it('reports partial when only some mutant rows landed', () => {
