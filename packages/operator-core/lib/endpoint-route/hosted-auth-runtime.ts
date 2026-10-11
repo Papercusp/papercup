@@ -36,7 +36,7 @@ import {
   createHostedAuthRoutes,
 } from './routes/hosted-auth';
 import { createHostedTutorialProgressRoutes } from './routes/hosted-tutorial-progress-routes';
-import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
+import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, HOSTED_BROWSER_TUTORIAL_VOICE_TOKEN_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 
 // The billing runtime rides in this module's portal prebundle (one bundle, one
 // dynamic import). It mounts its own pinned surface; the four auth routes below
@@ -237,7 +237,8 @@ export async function createHostedAuthRuntime(
     ...createHostedTutorialProgressRoutes(tutorialRouteOptions),
     ...createHostedTutorialAssistanceRoutes({ ...tutorialRouteOptions, dependencies: dependencies.tutorialAssistance })
       .filter(route => route.path === HOSTED_BROWSER_TUTORIAL_HELP_PATH
-        || (route.path === HOSTED_BROWSER_TUTORIAL_SPEECH_PATH && dependencies.tutorialAssistance?.speech)),
+        || (route.path === HOSTED_BROWSER_TUTORIAL_SPEECH_PATH && dependencies.tutorialAssistance?.speech)
+        || (route.path === HOSTED_BROWSER_TUTORIAL_VOICE_TOKEN_PATH && dependencies.tutorialAssistance?.voiceToken)),
   ];
   const tutorial = new Hono().basePath('/api');
   for (const route of tutorialMounted) {

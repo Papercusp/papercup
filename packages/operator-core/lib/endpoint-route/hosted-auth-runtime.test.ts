@@ -30,6 +30,19 @@ function serviceRunner(currentUser = 'hosted_service', bootOrder?: string[]): Ho
 }
 
 describe('narrow hosted auth runtime', () => {
+  it('mounts an injected tutorial token issuer behind hosted session authority without eager provider calls', async () => {
+    const voiceToken = { disabled: vi.fn(), issue: vi.fn() };
+    const runtime = await createHostedAuthRuntime(configuration, {
+      resolveSecret: async () => 'hosted-auth-runtime-cookie-secret-more-than-32-bytes',
+      runService: serviceRunner(), tutorialAssistance: { voiceToken },
+    });
+    expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`))
+      .toContain('POST /hosted/browser/onboarding/tutorial-voice-token');
+    const response = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-voice-token', { method: 'POST' });
+    expect(response.status).toBe(401);
+    expect(voiceToken.disabled).not.toHaveBeenCalled();
+    expect(voiceToken.issue).not.toHaveBeenCalled();
+  });
   it('mounts only canonical auth routes and resolves only the cookie secret at boot', async () => {
     const bootOrder: string[] = [];
     const resolveSecret = vi.fn(async (reference: string) => {
