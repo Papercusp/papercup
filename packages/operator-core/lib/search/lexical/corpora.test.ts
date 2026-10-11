@@ -38,6 +38,30 @@ describe('BM25 corpus registry ↔ migration', () => {
   });
 });
 
+/**
+ * The newest migration that (re)defines bm25_legacy_tsv_columns() (plan decisions D-011,
+ * D-012): the retirement list must name exactly the registry's legacy columns, or a corpus
+ * would keep its stored column (and its GIN index) forever.
+ */
+describe('BM25 legacy-column retirement list ↔ registry', () => {
+  const LEGACY = 'FUNCTION harness_shared.bm25_legacy_tsv_columns()';
+  const pick = (suffix: string) =>
+    readdirSync(SQL_DIR)
+      .filter(f => f.endsWith(suffix) && /^\d+-/.test(f))
+      .map(f => ({ file: f, n: Number(f.split('-')[0]), sql: readFileSync(path.join(SQL_DIR, f), 'utf8') }))
+      .filter(m => m.sql.includes(LEGACY))
+      .sort((a, b) => b.n - a.n)[0];
+  const m = pick('.sql') ?? pick('.sql.DRAFT');
+
+  it(`names exactly the registry's (table, legacyTsvColumn) pairs`, () => {
+    expect(m, `no migration defines ${LEGACY}`).toBeDefined();
+    const start = m!.sql.indexOf(LEGACY);
+    const body = m!.sql.slice(start, m!.sql.indexOf('$fn$;', start));
+    const pairs = [...body.matchAll(/\('([a-z0-9_]+)', '([a-z0-9_]+)', /g)].map(r => `${r[1]}.${r[2]}`);
+    expect(pairs.sort()).toEqual(BM25_CORPORA.map(c => `${c.table}.${c.legacyTsvColumn}`).sort());
+  });
+});
+
 describe('BM25 corpus registry', () => {
   it('has one entry per table and per index name, each named <table>_bm25', () => {
     expect(new Set(BM25_CORPORA.map(c => c.table)).size).toBe(BM25_CORPORA.length);
