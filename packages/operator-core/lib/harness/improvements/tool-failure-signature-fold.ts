@@ -163,6 +163,7 @@ const PROMOTED_CANDIDATES_SQL = `
        AND payload->>'watchdogKey' IS NOT NULL
        AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
        AND COALESCE(admission, '') <> 'pending'
+       AND COALESCE(payload->'admissionReview'->>'state', '') <> 'pending'
        AND COALESCE(payload->'agentReview'->>'status', '') NOT IN ('pending', 'revision-requested')
      ORDER BY updated_ts DESC NULLS LAST, feature_id
      LIMIT $2`;

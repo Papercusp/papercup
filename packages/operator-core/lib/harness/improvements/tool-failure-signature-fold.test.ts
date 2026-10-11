@@ -169,6 +169,7 @@ describe('foldLegacyToolFailureRows scope=promoted (WI-10004648)', () => {
       "->>'state' = 'promoted'", "COALESCE(admission, '') <> 'pending'",
       // A row legacySignatureOf cannot read would be re-scanned every tick and could starve foldable ones.
       "'toolFailureProbation'->>'class' IS NOT NULL", "->'report'->>'toolName' IS NOT NULL",
+      "COALESCE(payload->'admissionReview'->>'state', '') <> 'pending'",
       "NOT IN ('pending', 'revision-requested')", "NOT LIKE 'tool-failure-signature:%'"]) {
       expect(text).toContain(predicate);
     }
