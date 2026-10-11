@@ -16,7 +16,7 @@
  * database and the launched one cannot silently diverge again.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -133,7 +133,8 @@ describe('WI-10007640 — a verifier snapshot launches against the same DB the p
 
   it('leaves no launcher site sourcing a hard-coded ./.env.local', () => {
     expect(LAUNCHER).not.toMatch(/\.\s+\.\/\.env\.local/);
-    const sites = LAUNCHER.split('\n').filter((l) => /set -a && if \[ -f .*DEV_ENV_FILE/.test(l));
+    // The PG probe also checks that DEV_ENV_FILE is nonempty before sourcing it.
+    const sites = LAUNCHER.split('\n').filter((l) => /set -a && if .*DEV_ENV_FILE/.test(l));
     expect(sites.length).toBe(3);
   });
 });
@@ -181,7 +182,7 @@ describe('WI-10007640 — the verifier hands the launcher the preflight env file
     expect(BLOCK).toContain('PAPERCUSP_DEV_ENV_FILE=\\"$REPO_DIR/apps/operator/.env.local\\"');
   });
 
-  it('passes the probed shared connection to assertions without exposing credentials', () => {
+  function sharedAssertionPreflight(probeExit = 0) {
     tmp = mkdtempSync(join(tmpdir(), 'verifier-shared-assertion-env-'));
     const operator = join(tmp, 'apps/operator');
     const desktop = join(tmp, 'desktop');
@@ -193,22 +194,40 @@ describe('WI-10007640 — the verifier hands the launcher the preflight env file
     writeFileSync(join(operator, '.env.local'), `DATABASE_URL='${url}'\n`);
     writeFileSync(join(desktop, 'bin/dev-operator-pg-probe.mjs'), `
       export function resolveDevPgUrl() { return { url: process.env.DATABASE_URL }; }
-      if (process.argv.includes('--require-applied-schema')) console.log('schema-ready');
+      if (process.argv.includes('--require-applied-schema')) {
+        console.log('schema-ready');
+        process.exit(${probeExit});
+      }
     `);
     const preflight = sliceLines(VERIFIER, 'shared_schema_readiness_preflight() {', '}');
     const result = spawnSync('bash', ['-c', [
       'set -euo pipefail',
-      'unset DATABASE_URL HARNESS_ADMIN_DATABASE_URL; VERIFY_TAURI_ISOLATED_DB=0',
+      // This preflight runs before the verifier allocates its bulk WORK dir.
+      'unset WORK DATABASE_URL HARNESS_ADMIN_DATABASE_URL; VERIFY_TAURI_ISOLATED_DB=0',
       preflight,
       'shared_schema_readiness_preflight',
       'test "$HARNESS_ADMIN_DATABASE_URL" = "$EXPECTED_URL"',
-      'test ! -e "$WORK/shared-database-url"',
       'node -e "if (process.env.HARNESS_ADMIN_DATABASE_URL !== process.env.EXPECTED_URL) process.exit(1)"',
     ].join('\n')], { encoding: 'utf8', env: { ...process.env,
-      REPO_DIR: tmp, DESKTOP_DIR: desktop, WORK: work, EXPECTED_URL: url,
+      REPO_DIR: tmp, DESKTOP_DIR: desktop, TMPDIR: work, EXPECTED_URL: url,
     } });
+    return { result, work };
+  }
+
+  it('passes the probed shared connection before WORK exists without exposing credentials', () => {
+    const { result, work } = sharedAssertionPreflight();
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toBe('schema-ready\n');
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('schema-ready\n');
     expect(result.stdout + result.stderr).not.toContain('private-password');
+    expect(readdirSync(work)).toEqual([]);
+  });
+
+  it('leaves no private assertion context when the shared schema probe fails', () => {
+    const { result, work } = sharedAssertionPreflight(79);
+    expect(result.status, result.stderr).toBe(79);
+    expect(result.stderr).toContain('VERIFY_TAURI_SHARED_SCHEMA_NOT_READY probe_exit=79');
+    expect(result.stdout + result.stderr).not.toContain('private-password');
+    expect(readdirSync(work)).toEqual([]);
   });
 });

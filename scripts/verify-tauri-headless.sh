@@ -1017,27 +1017,25 @@ fi
 # its own fully migrated DB later and has no shared target to inspect here.
 shared_schema_readiness_preflight() {
   [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ] || return 0
-  local status=0
-  (
+  local status=0 shared_database_url
+  shared_database_url="$(
     cd "$REPO_DIR/apps/operator" || exit 74
     set -a
     if [ -f .env.local ]; then . ./.env.local || exit 74; fi
     set +a
-    timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema || exit $?
+    timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema >&2 || exit $?
     # Assertions need the same resolved connection as this successful probe.
-    # Keep credentials in the private run directory, never diagnostic output.
-    umask 077
+    # Capture credentials only in this shell; WORK is allocated after preflight.
+    # Probe diagnostics go to stderr so they cannot enter the connection value.
     VERIFY_TAURI_PG_PROBE_PATH="$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" \
-      node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { resolveDevPgUrl } = await import(pathToFileURL(process.env.VERIFY_TAURI_PG_PROBE_PATH)); process.stdout.write(resolveDevPgUrl().url + "\n");' \
-      > "$WORK/shared-database-url" || exit $?
-  ) || status=$?
+      node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { resolveDevPgUrl } = await import(pathToFileURL(process.env.VERIFY_TAURI_PG_PROBE_PATH)); process.stdout.write(resolveDevPgUrl().url + "\n");' || exit $?
+  )" || status=$?
   if [ "$status" -ne 0 ]; then
     echo "VERIFY_TAURI_SHARED_SCHEMA_NOT_READY probe_exit=$status — refusing before source/dependency preparation; no migrations applied. Use the maintained guarded migration path or VERIFY_TAURI_ISOLATED_DB=1 for a disposable DB." >&2
     return "$status"
   fi
-  IFS= read -r HARNESS_ADMIN_DATABASE_URL < "$WORK/shared-database-url" || return 74
-  rm -f -- "$WORK/shared-database-url"
-  [ -n "$HARNESS_ADMIN_DATABASE_URL" ] || return 74
+  [ -n "$shared_database_url" ] || return 74
+  HARNESS_ADMIN_DATABASE_URL="$shared_database_url"
   export HARNESS_ADMIN_DATABASE_URL
 }
 vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
