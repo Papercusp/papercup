@@ -8,11 +8,15 @@
  * unbounded score fuses exactly like ts_rank's [0,1) one; and (D-016) the exact list
  * recovers the verbatim-fragment target BM25 alone ranks out of the top results.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { bm25Leg, mergeExactAndBm25, rrfTerm } from './rank';
+import { bm25Leg, boundedExactTopK, lexicalEngine, mergeExactAndBm25, resetBm25Availability, rrfTerm } from './rank';
 import { bm25Corpus } from './corpora';
 import { seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from './test-pg/bm25-test-db';
+import { applyDisclosureLedgerForTest } from '../../../test/_pg-helpers';
+import { SEARCH_SOURCES } from '../../agent-tools/search/sources';
+import { FLAGS, flagEnvVarName } from '@papercusp/flags';
+import type { PgHandle } from '@papercusp/search';
 
 let db: Bm25TestDb;
 let sql: Sql;
@@ -106,3 +110,104 @@ describe('rank fusion with a BM25 leg (plan D-004)', () => {
     expect(await fused(1_000_000)).toEqual(await fused(1));
   });
 });
+
+describe('one bounded exact candidate scan (R-18, D-033)', () => {
+  const tsv = () => sql`to_tsvector('english', coalesce(w.title, '') || ' ' || coalesce(w.summary, '') || ' ' || coalesce(w.notes, ''))`;
+  const top = (query: string, maxMatches: number, limit = 10) => boundedExactTopK(sql, {
+    columns: sql`w.id`, from: sql`harness_shared.work_items w`, where: sql`w.ws = 'w9'`,
+    tsv: tsv(), query, limit, maxMatches,
+  });
+
+  it('preserves the full AND list ranks and scoped identities at the cap boundary', async () => {
+    const query = 'third consecutive wake';
+    const expected = await sql`
+      SELECT w.id, ts_rank_cd(${tsv()}, plainto_tsquery('english', ${query})) AS rank
+        FROM harness_shared.work_items w
+       WHERE w.ws = 'w9' AND ${tsv()} @@ plainto_tsquery('english', ${query})
+    ORDER BY rank DESC`;
+    expect(expected).toHaveLength(41);
+    const got = await sql`SELECT id, exact_rank AS rank FROM (${top(query, expected.length, 50)}) e`;
+    expect(got.map(r => ({ id: r.id, rank: r.rank })).sort((a, b) => a.id - b.id))
+      .toEqual(expected.map(r => ({ id: r.id, rank: r.rank })).sort((a, b) => a.id - b.id));
+    const limited = await sql`SELECT exact_rank AS rank FROM (${top(query, expected.length, 5)}) e`;
+    expect(limited.map(r => r.rank)).toEqual(expected.slice(0, 5).map(r => r.rank));
+  });
+
+  it('returns no truncated exact list above the cap, and does not scan the corpus twice', async () => {
+    expect(await sql`${top('third consecutive wake', 40)}`).toHaveLength(0);
+    expect(await sql`${top('unfindablequokka', 40)}`).toHaveLength(0);
+    const [ex] = await sql`EXPLAIN (ANALYZE, FORMAT JSON) ${top('third consecutive wake', 40)}`;
+    const nodes: Record<string, unknown>[] = [];
+    const walk = (n: Record<string, unknown>) => {
+      nodes.push(n);
+      for (const child of (n.Plans ?? []) as Record<string, unknown>[]) walk(child);
+    };
+    walk(ex['QUERY PLAN'][0].Plan);
+    const scans = nodes.filter(n => n['Relation Name'] === 'work_items');
+    expect(scans).toHaveLength(1);
+    expect(scans[0]!['Actual Loops']).toBe(1);
+    expect(scans[0]!['Actual Rows']).toBeLessThanOrEqual(41);
+    const ranked = nodes.find(n => n['Node Type'] === 'Result' && String(n['One-Time Filter']).includes('40'));
+    expect(ranked).toBeDefined();
+    expect(ranked!['Actual Rows']).toBe(0);
+  });
+});
+
+it('the production exact session list hydrates the full workspace key, including an exact-only target', async () => {
+  // Same logical turn in another tenant is deliberately inserted first. The target is too
+  // long for BM25's top two, so only the exact-list hydration can recover its own text.
+  await sql.unsafe(`CREATE TABLE harness_shared.session_turns (
+    workspace_id text NOT NULL, source_kind text NOT NULL, session_id text NOT NULL, turn_idx int NOT NULL,
+    speaker text NOT NULL, owner text, harness_slug text, text text NOT NULL, ts timestamptz,
+    ingested_at timestamptz NOT NULL DEFAULT now(), turn_origin_verdict text,
+    text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
+    PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx));
+    CREATE INDEX session_turns_bm25 ON harness_shared.session_turns
+      USING bm25 ((left(coalesce(text, ''), 20000))) WITH (text_config='english', compaction='manual')`);
+  await applyDisclosureLedgerForTest(sql);
+  const fragment = "third consecutive wake where the carry-note's";
+  const filler = Array.from({ length: 400 }, (_, i) => `ledger${i % 37} harbour${i % 23}`).join(' ');
+  const turns = [
+    { workspace_id: 'foreign', source_kind: 'claude', session_id: 'same', turn_idx: 0, speaker: 'user', text: 'FOREIGNMARKER' },
+    { workspace_id: 'mine', source_kind: 'claude', session_id: 'same', turn_idx: 0, speaker: 'user', text: `OWNMARKER ${filler} ${fragment} pointer was stale. ${filler}` },
+    ...Array.from({ length: 400 }, (_, i) => ({ workspace_id: 'mine', source_kind: 'claude', session_id: 'short', turn_idx: i,
+      speaker: 'user', text: 'third consecutive wake wake consecutive note note wake' })),
+  ];
+  await sql`INSERT INTO harness_shared.session_turns ${sql(turns)}`;
+  const envKey = flagEnvVarName(FLAGS.BM25_LEXICAL_RANKING);
+  const saved = process.env[envKey];
+  process.env[envKey] = '1';
+  resetBm25Availability();
+  try {
+    expect(await lexicalEngine(sql, 'session_turns')).toBe('bm25');
+    const leg = bm25Leg(sql, bm25Corpus('session_turns'), fragment);
+    const before = await sql`SELECT session_id, ${leg.score} AS score FROM harness_shared.session_turns
+      WHERE workspace_id='mine' AND ${leg.match} ORDER BY ${leg.order} LIMIT 2`;
+    // BM25's document frequencies span tenants. Without a neutral corpus, almost every
+    // document contains the distractor terms and the target's rare compound dominates.
+    const neutral = Array.from({ length: 400 }, (_, i) => ({ workspace_id: 'padding', source_kind: 'claude',
+      session_id: 'neutral', turn_idx: i, speaker: 'user', text: 'routine ledger harbour plain summary' }));
+    await sql`INSERT INTO harness_shared.session_turns ${sql(neutral)}`;
+    const primary = await sql`SELECT session_id, ${leg.score} AS score FROM harness_shared.session_turns
+      WHERE workspace_id='mine' AND ${leg.match} ORDER BY ${leg.order} LIMIT 2`;
+    expect(primary.map(r => r.session_id), JSON.stringify({ before, after: primary })).not.toContain('same');
+    const sources = process.env.PAPERCUSP_SOURCES_SUBJECT
+      ? (await import(process.env.PAPERCUSP_SOURCES_SUBJECT)).SEARCH_SOURCES as typeof SEARCH_SOURCES
+      : SEARCH_SOURCES;
+    const source = sources.find(s => s.name === 'session_turn')!;
+    // A small corpus may choose a sequential scan. The existing scan-score guard then
+    // warns and reruns with standalone scores; that expected path must stay observable.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rows = await source.lexical({ sql: sql as unknown as PgHandle, query: fragment,
+        workspaceId: 'mine', scopeFilter: null, limit: 2, wantHighlight: false });
+      for (const args of warn.mock.calls) expect(args.join(' ')).toMatch(/bm25_get_current_score\(\) disagreed.*no BM25 index scan drove the list/);
+      expect(rows).toHaveLength(2);
+      expect(rows.find(r => r.row.source_id === 'claude:same:0')?.row.excerpt).toContain('OWNMARKER');
+      expect(rows.map(r => r.row.excerpt).join('\n')).not.toContain('FOREIGNMARKER');
+    } finally { warn.mockRestore(); }
+  } finally {
+    if (saved === undefined) delete process.env[envKey]; else process.env[envKey] = saved;
+    resetBm25Availability();
+  }
+}, 120_000);
