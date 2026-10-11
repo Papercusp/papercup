@@ -5,6 +5,7 @@
  * The controls always run; the read-only live check requires an explicit opt-in:
  *
  * PAPERCUSP_PARKED_AUDIT_LIVE=1 PAPERCUSP_SKIP_PG_DISCOVERY=1
+ * PAPERCUSP_APP_OPERATION_LIVE_PROFILE=packages/operator-core/test/parked-agent-audit.live-profile.json
  *   npm run test:file -- <this file>
  *
  * Uses the maintained vitest.e2e.config.ts for measured e2e layer attribution.
@@ -283,7 +284,17 @@ allowRealPgForLiveSuite(LIVE_REQUESTED);
 describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partition', () => {
   let sql: postgres.Sql;
   beforeAll(async () => {
-    sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5, idle_timeout: 5 });
+    // Reuse the e2e reporter's runtime-vintage witness. The live subject here is
+    // the canonical artifact-store PostgreSQL, rather than an API host that this
+    // read-only census never calls. Refuse a mismatched route before reading it.
+    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(
+      'packages/operator-core/test/parked-agent-audit.live-profile.json',
+    );
+    const adminUrl = getHarnessAdminUrl();
+    const address = new URL(adminUrl);
+    expect(['localhost', '127.0.0.1', '::1', '[::1]']).toContain(address.hostname);
+    expect(address.port || '5432').toBe('5432');
+    sql = postgres(adminUrl, { max: 1, connect_timeout: 5, idle_timeout: 5 });
     await sql`SELECT 1`;
   });
   afterAll(async () => { await sql?.end({ timeout: 5 }); });
