@@ -186,6 +186,7 @@ type SessionPortRequestBody = {
   transformVersion?: unknown;
   workspace?: unknown;
   sourceAdvSessionId?: unknown;
+  sourceNativeSessionId?: unknown;
   targetBackend?: unknown;
   targetModel?: unknown;
   targetAccount?: unknown;
@@ -255,11 +256,20 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
   service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
   // The row whose transcript this port reads. Normally the tracked row itself;
-  // for an evidence span in an earlier carry-respawn incarnation, the same row
+  // for a selected native session or evidence span in an earlier incarnation, the same row
   // re-pointed at that incarnation's native session (see
   // evidenceIncarnationOwnedBy). Identity, workspace and plan stay the row's.
   const sourceNativeId = trackedRow.agent === 'omp' ? trackedRow.ompThreadId ?? trackedRow.sessionId : trackedRow.sessionId;
   let sourceRow = { ...trackedRow, sessionId: sourceNativeId };
+  if (body.sourceNativeSessionId !== undefined) {
+    const selectedId = typeof body.sourceNativeSessionId === 'string' ? body.sourceNativeSessionId.trim() : '';
+    if (!selectedId || (selectedId !== sourceNativeId &&
+        (!RESUMABLE_NATIVE_SESSION_ID_RE.test(selectedId) ||
+         !(await evidenceIncarnationOwnedBy(getOrgPg().sql as unknown as import('postgres').Sql, trackedRow, selectedId))))) {
+      return { response: json({ ok: false, error: 'sourceNativeSessionId must name the current source session or an earlier incarnation of its owner and backend' }, 400) } as const;
+    }
+    sourceRow = { ...sourceRow, sessionId: selectedId, ...(trackedRow.agent === 'omp' ? { ompThreadId: selectedId } : {}) };
+  }
   let evidenceSpan: import('../../../session-port/service').SessionPortEvidenceSpan | undefined;
   if (body.consultEvidenceSpan != null) {
     const raw = body.consultEvidenceSpan;
@@ -268,6 +278,9 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     }
     const value = raw as { sessionId?: unknown; turnIndices?: unknown; contextTurns?: unknown };
     const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : '';
+    if (body.sourceNativeSessionId !== undefined && sessionId !== sourceRow.sessionId) {
+      return { response: json({ ok: false, error: 'consultEvidenceSpan must match sourceNativeSessionId' }, 400) } as const;
+    }
     const turnIndices = Array.isArray(value.turnIndices) ? [...new Set(value.turnIndices)] : [];
     const contextTurns = value.contextTurns;
     if (!sessionId || turnIndices.length < 1 || turnIndices.length > 12 ||
