@@ -5,8 +5,9 @@
 > **Consumer:** `current-benchmark-modernization-2026-10-09` P-007, which cross-checks runtime and official-grader
 > readiness before calling a suite runnable (boundary: `benchmark-coverage-frontierswe-v2-2026-10-10#D-004`).
 > **Refreshes:** [`external-bench-grader-feasibility-2026-06-15.md`](./external-bench-grader-feasibility-2026-06-15.md).
-> **Scope:** the nine suites P-008 names. `metr-hcast`, `agentsnet` and `swarmbench` are also in
-> `REPORT_ON_SUITES` (`packages/operator-core/lib/gym/report-set-firewall.ts`) but are outside this item.
+> **Scope:** the nine suites P-008 names, surveyed in full. `metr-hcast`, `agentsnet` and `swarmbench` are also in
+> `REPORT_ON_SUITES` (`packages/operator-core/lib/gym/report-set-firewall.ts`); section 2a gives them a shorter
+> pin-and-adapter review so that every registry entry has a disposition (section 2b).
 
 Every fact below is tagged. **[measured]** means read on 2026-10-11 between 03:15Z and 03:35Z from the GitHub
 API, the Hugging Face Hub API, the Harbor registry, or this repository and host. **[upstream claim]** means
@@ -65,6 +66,43 @@ next, not a decision.
 | **swe-lancer** | `openai/frontier-evals@51052cede8cc` (2026-04-21), `project/swelancer`; old `openai/SWELancer-Benchmark` archived (last push 2025-07-18) | MIT | Harbor registry `swe-lancer-diamond@ic` **198**, `@manager` 265, `@all` 463 [measured]; upstream task list `all_swelancer_tasks.csv` | Playwright E2E inside a per-task image; each image takes 10–20 min to build and is ~14 GB [upstream claim: README] | `grader/swe-lancer.ts` structure built; its `buildEvalCommand` was never wired; no arm | Unmeasured | Not runnable. Disk is the binding constraint (`/` is 96% used, 82 GB free [measured]). The Harbor `swe-lancer-diamond@ic` route avoids local image builds |
 | **harness-bench** | `Qihoo360/harness-bench@1025086a4466` (2026-06-23) | **None** | **106** task dirs [measured] | Oracle validators plus an LLM-weighted quality rubric (`grading/default_rubric.py`) [measured: file; upstream claim: README] | `getOfficialGrader` throws "M2 … not built yet"; June design targeted the wrong upstream | Unmeasured | **Blocked on license** for any published claim. The LLM-judged component conflicts with oracle-only grading. Keep at most as an internal diagnostic |
 | **frontier-swe** | `Proximal-Labs/frontier-swe-v2@da83f84f8fbc` (commit 2026-09-19), release v2.0.0 (2026-09-21); v1 `Proximal-Labs/frontier-swe` (17 tasks) | No license file; README: "provided for evaluation purposes" | **34** [measured: ingested corpus `~/.papercusp/bench-results/frontier-swe-v2/tasks.jsonl`, 25 categories; upstream CHANGELOG agrees] | Harbor `task.toml` 1.3, separate verifier image, digest-pinned (D-002, D-003) | Corpus ingested and grader built (P-002, P-003 done); arm default still v1 (WI-6554700010008374); gold/empty controls pending (P-007, owner placement question on WI-10008254) | Unmeasured; P-012 smoke test is the first source | Closest to runnable. Waits on the P-007 control placement and P-012 spend approval |
+
+### 2a. The three report-on suites outside the nine
+
+Added 2026-10-11 ~03:45Z for the registry dispositions below. All three already have adapters in
+`packages/operator-core/lib/external-bench/` [measured: file list]. Their runtime readiness was not measured.
+
+| Suite | Upstream pin | License | Our adapter today | Verdict |
+|---|---|---|---|---|
+| **metr-hcast** | Tasks `METR/public-tasks@5418666a1b02` (2026-06-10); `METR/task-standard` and `METR/vivaria` both **archived**, last push 2026-10-07 [measured] | NOASSERTION on GitHub for `public-tasks`; MIT for `task-standard` [measured] | `metr-hcast-live.ts` vendors Task-Standard `drivers/taskhelper.py` from `~/.papercusp/bench-harnesses/metr/task-standard`, which is **absent on this host** [measured] | Migrate. The `task-standard` README says METR no longer maintains it and uses Inspect, and the `public-tasks` README points to the METR Inspect Task Bridge (`metr/inspect-metr-task-bridge`) [measured: READMEs] |
+| **agentsnet** | `floriangroetschla/AgentsNet@269f576e966f` (2025-07-16), not archived [measured] | MIT [measured] | `agentsnet-ingest.ts` keys its grader version to the arXiv id (`agentsnet@arxiv-2507.08616`), not a commit [measured] | Verify. Pin the commit, then re-verify the adapter |
+| **swarmbench** | `RUC-GSAI/YuLan-SwarmIntell@c164678ff851` (2025-05-21), not archived [measured] | MIT [measured] | `swarmbench-live.ts` runs `swarmbench_run.py` from `~/.papercusp/bench-harnesses/swarmbench`, which is **absent on this host** [measured]; no commit pin | Verify. Pin, install and re-verify |
+
+### 2b. Registry dispositions
+
+Each `REPORT_ON_SUITES` entry in `packages/operator-core/lib/gym/report-set-firewall.ts` carries one of these as its
+`portfolio.disposition`, with `reviewedAt: 2026-10-11` and this file as its evidence. The unit test
+`report-set-firewall.test.ts` fails if a row here and the registry disagree.
+
+| Suite | Disposition |
+|---|---|
+| `swe-bench-pro` | `migrate-upstream` |
+| `terminal-bench` | `build-adapter` |
+| `swe-rebench` | `build-adapter` |
+| `swe-bench-live` | `build-adapter` |
+| `swe-evo` | `build-adapter` |
+| `roadmapbench` | `build-adapter` |
+| `swe-lancer` | `build-adapter` |
+| `harness-bench` | `blocked` |
+| `metr-hcast` | `migrate-upstream` |
+| `agentsnet` | `verify-adapter` |
+| `swarmbench` | `verify-adapter` |
+| `frontier-swe` | `awaiting-gate` |
+
+`migrate-upstream`: an adapter exists but targets a superseded upstream population or framework.
+`build-adapter`: no adapter, and a viable official-grader route exists. `verify-adapter`: an adapter exists but
+its runtime readiness is unmeasured. `awaiting-gate`: an adapter exists and waits on a named gate. `blocked`: a
+named blocker prevents any published claim.
 
 ## 3. Capability coverage matrix
 

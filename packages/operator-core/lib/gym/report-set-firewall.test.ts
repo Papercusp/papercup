@@ -6,8 +6,15 @@
  * (no PG, no network).
  */
 import { describe, it, expect } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   REPORT_ON_SUITES,
+  PORTFOLIO_DISPOSITIONS,
+  PORTFOLIO_REVIEW_FLOOR,
+  assertPortfolioReviewed,
+  type ReportOnSuite,
   GYM_OPTIMIZE_ON_SETS,
   BENCH_SET_REGISTRY,
   ReportSetFirewallError,
@@ -219,5 +226,102 @@ describe('task-level disjointness (Layer 2)', () => {
     expect('17 ultra-long-horizon tasks (5 implementation / 9 performance / 3 ML-research)').toMatch(countClaim);
     expect(fs.rationale).not.toMatch(countClaim);
     expect(fs.title).not.toMatch(countClaim);
+  });
+});
+
+describe('portfolio review on every report-on suite (plan benchmark-coverage-frontierswe-v2-2026-10-10 R-7 / P-008)', () => {
+  // The clause: each REPORT_ON_SUITES entry records a portfolio disposition with a review date on or
+  // after 2026-10-01. The literal is restated here on purpose, so bumping PORTFOLIO_REVIEW_FLOOR backwards
+  // cannot quietly weaken this test.
+  const CLAUSE_FLOOR = '2026-10-01';
+  const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+
+  const wellFormed = (id: string, over: Partial<ReportOnSuite['portfolio']> = {}): ReportOnSuite => ({
+    id,
+    usage: 'report-on',
+    title: `${id} fixture`,
+    rationale: 'fixture',
+    portfolio: {
+      disposition: 'build-adapter',
+      reviewedAt: '2026-10-11',
+      note: 'fixture note',
+      evidence: 'apps/operator/docs/benchmark-suite-portfolio-2026-10-11.md',
+      ...over,
+    },
+  });
+
+  it('every live entry has a disposition from the closed set, reviewed on or after 2026-10-01', () => {
+    expect(REPORT_ON_SUITES.length).toBeGreaterThan(0);
+    expect(PORTFOLIO_REVIEW_FLOOR >= CLAUSE_FLOOR).toBe(true);
+    for (const s of REPORT_ON_SUITES) {
+      expect(PORTFOLIO_DISPOSITIONS, s.id).toContain(s.portfolio.disposition);
+      expect(s.portfolio.reviewedAt, s.id).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(s.portfolio.reviewedAt >= CLAUSE_FLOOR, `${s.id} reviewedAt ${s.portfolio.reviewedAt}`).toBe(true);
+      expect(s.portfolio.note.trim(), s.id).not.toBe('');
+    }
+    expect(() => assertPortfolioReviewed()).not.toThrow();
+  });
+
+  it('every evidence path exists, and its disposition table agrees with the registry row for row', () => {
+    const rowRe = /^\| `([a-z0-9-]+)` \| `([a-z-]+)` \|$/;
+    for (const evidence of new Set(REPORT_ON_SUITES.map((s) => s.portfolio.evidence))) {
+      const abs = resolve(repoRoot, evidence);
+      expect(existsSync(abs), evidence).toBe(true);
+      const table = new Map<string, string>();
+      for (const line of readFileSync(abs, 'utf8').split('\n')) {
+        const m = rowRe.exec(line.trim());
+        if (m) table.set(m[1]!, m[2]!);
+      }
+      const cited = REPORT_ON_SUITES.filter((s) => s.portfolio.evidence === evidence);
+      expect(Object.fromEntries(table)).toEqual(
+        Object.fromEntries(cited.map((s) => [s.id, s.portfolio.disposition])),
+      );
+    }
+  });
+
+  // Calibration: the guard must accept a correct registry, or every refusal below proves nothing.
+  it('accepts a well-formed doctored registry (calibration)', () => {
+    expect(() => assertPortfolioReviewed([wellFormed('a'), wellFormed('b', { disposition: 'blocked' })])).not.toThrow();
+    expect(() => assertPortfolioReviewed([wellFormed('a', { reviewedAt: CLAUSE_FLOOR })])).not.toThrow();
+  });
+
+  it('refuses an entry with no portfolio review at all', () => {
+    const bare: BenchSet = { id: 'bare', usage: 'report-on', title: 'bare', rationale: 'no review' };
+    expect(() => assertPortfolioReviewed([wellFormed('ok'), bare])).toThrow(/bare: no portfolio review/);
+  });
+
+  it('refuses a disposition outside the closed set', () => {
+    const odd = wellFormed('odd', { disposition: 'keep-forever' as never });
+    expect(() => assertPortfolioReviewed([odd])).toThrow(/odd: unknown disposition 'keep-forever'/);
+  });
+
+  it('refuses a review dated before 2026-10-01, and a date that is not a real calendar day', () => {
+    expect(() => assertPortfolioReviewed([wellFormed('stale', { reviewedAt: '2026-09-30' })])).toThrow(
+      /stale: reviewed 2026-09-30, before the 2026-10-01 floor/,
+    );
+    for (const bad of ['2026-02-30', '2026-13-01', '11/10/2026', '']) {
+      expect(() => assertPortfolioReviewed([wellFormed('bad', { reviewedAt: bad })]), bad).toThrow(
+        /is not a YYYY-MM-DD date/,
+      );
+    }
+  });
+
+  it('refuses an empty note or evidence path', () => {
+    expect(() => assertPortfolioReviewed([wellFormed('n', { note: '  ' })])).toThrow(/n: empty note/);
+    expect(() => assertPortfolioReviewed([wellFormed('e', { evidence: '' })])).toThrow(/e: empty evidence path/);
+  });
+
+  it('names every offender in one error, and refuses a list with no report-on suite instead of passing vacuously', () => {
+    let message = '';
+    try {
+      assertPortfolioReviewed([wellFormed('x', { reviewedAt: '2025-01-01' }), wellFormed('y', { note: '' })]);
+    } catch (e) {
+      expect(e).toBeInstanceOf(ReportSetFirewallError);
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/x: reviewed 2025-01-01/);
+    expect(message).toMatch(/y: empty note/);
+    expect(() => assertPortfolioReviewed(GYM_OPTIMIZE_ON_SETS)).toThrow(/no report-on suite/);
+    expect(() => assertPortfolioReviewed([wellFormed('a')], '2026-1-1')).toThrow(/floor '2026-1-1'/);
   });
 });
