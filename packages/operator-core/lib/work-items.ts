@@ -6095,6 +6095,22 @@ export function releaseCooldownSec(): number {
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 300;
 }
 
+/** WI-6554700010008444 — release DAMPING: how many DISTINCT agents may release one item with
+ *  no new evidence before self-selection stops offering it to the next one. Env-overridable;
+ *  0 disables the leg. Governing parameters: bug-queue-legitimacy-and-actionable-validation-
+ *  2026-10-10#D-020. */
+export function releaseDampingReleasers(): number {
+  const v = Number(process.env.PAPERCUSP_RELEASE_DAMPING_RELEASERS ?? 3);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 3;
+}
+
+/** WI-6554700010008444 — release DAMPING window (seconds): only releases this recent count, so
+ *  a damped item is re-offered once its releases age out. Env-overridable; 0 disables. */
+export function releaseDampingWindowSec(): number {
+  const v = Number(process.env.PAPERCUSP_RELEASE_DAMPING_WINDOW_SEC ?? 14400);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 14400;
+}
+
 /** WI-5939 — FILING-GRACE window (seconds): how long a newly-filed issue-family row is held
  *  back from EVERY agent EXCEPT its filer. Env-overridable; 0 disables the leg entirely.
  *
@@ -6125,8 +6141,19 @@ export function filingGraceSec(): number {
  * migration 759's function or the `work_items_claimable` view: that view answers "claimable by
  * SOMEONE", and a claimant-relative floor there would be wrong for every reader.
  *
+ *   (c) RELEASE DAMPING (WI-6554700010008444, BQL#D-012/#D-020) — the ONE item-level leg:
+ *       when `dampingReleasers` DISTINCT agents released the row within `dampingWindowSec`
+ *       and after its last new evidence (`payload.evidenceAdvancedAt`, stamped by capture-core
+ *       when a tool-failure row gains a reporter it never had), self-selection stops handing it
+ *       to the next member. Measured churn it stops: ~16 members took and released one row in
+ *       31 minutes, each finding nothing new. It counts the per-agent release sidecar (one row
+ *       per agent, so count = distinct releasers). Bounded twice: new evidence re-admits at
+ *       once, and the window ages the releases out. By-id claims never read this fragment.
+ *
  * FAIL-OPEN in every unknown: no assignee, no filer recorded, or no `created_ts` all ADMIT the
- * row. The failure mode being avoided is a permanently unclaimable item nobody can diagnose.
+ * row; an absent or unparsable `evidenceAdvancedAt` counts every in-window release (the epoch
+ * is -infinity), never throws. The failure mode being avoided is a permanently unclaimable
+ * item nobody can diagnose.
  * The filer's id lives at `payload->'_ei'->>'created_by'` — the base table has no `created_by`
  * column at all; the `engineer_issues` VIEW derives it from that same `_ei` fold (mig 374).
  */
@@ -6135,6 +6162,8 @@ export function issueCooldownExclusionSql(
   assignee: string | undefined,
   cooldownSec: number = releaseCooldownSec(),
   graceSec: number = filingGraceSec(),
+  dampingReleasers: number = releaseDampingReleasers(),
+  dampingWindowSec: number = releaseDampingWindowSec(),
 ) {
   const legacyReleaseLeg =
     assignee && cooldownSec > 0
@@ -6166,7 +6195,22 @@ export function issueCooldownExclusionSql(
              OR wi.created_ts IS NULL
              OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec}))`
       : sql`TRUE`;
-  return sql`(${releaseLeg} AND ${filingGraceLeg})`;
+  // (c) Item-level, so it applies with or without an assignee.
+  const dampingLeg =
+    dampingReleasers > 0 && dampingWindowSec > 0
+      ? sql`(SELECT count(*)
+               FROM harness_shared.work_item_release_cooldowns rd
+              WHERE rd.workspace_id = wi.workspace_id
+                AND rd.harness_slug = wi.harness_slug
+                AND rd.feature_id = wi.feature_id
+                AND rd.released_at >= now() - make_interval(secs => ${dampingWindowSec})
+                AND rd.released_at > COALESCE(
+                      CASE WHEN pg_input_is_valid(wi.payload ->> 'evidenceAdvancedAt', 'timestamp with time zone')
+                           THEN (wi.payload ->> 'evidenceAdvancedAt')::timestamptz END,
+                      '-infinity'::timestamptz)
+            ) < ${dampingReleasers}`
+      : sql`TRUE`;
+  return sql`(${releaseLeg} AND ${filingGraceLeg} AND ${dampingLeg})`;
 }
 
 /**
