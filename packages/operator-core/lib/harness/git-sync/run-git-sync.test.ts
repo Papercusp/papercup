@@ -2110,7 +2110,10 @@ describe('runGitSync (real git, no submodule)', () => {
       expect.objectContaining({
         file: importerPath,
         detectorKey: 'quarantined-importer',
-        error: expect.stringContaining('live-lock exclusion'),
+        // WI-6554700010008496: names the holder, not just the generic exclusion phase.
+        error: expect.stringContaining('held by su-peer — PreToolUse:Write'),
+        excludedRoot: dependencyPath,
+        excludedRootReason: 'held by su-peer — PreToolUse:Write',
       }),
     ]);
     expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toMatch(
@@ -2157,7 +2160,9 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(first.contentErrors).toContainEqual(expect.objectContaining({
       file: importerPath,
       detectorKey: 'quarantined-importer',
-      error: expect.stringContaining('live-lock exclusion'),
+      error: expect.stringContaining('held by '),
+      excludedRoot: exporterPath,
+      excludedRootReason: expect.stringMatching(/^held by /),
     }));
     expect(git(originDir, 'show', `main:${exporterPath}`)).not.toContain('newValue');
     expect(git(originDir, 'show', `main:${importerPath}`)).not.toContain('newValue');
@@ -3239,6 +3244,11 @@ describe('runGitSync (real git, no submodule)', () => {
     const importerOffender = out.contentErrors.find((c) => c.file === 'watchdog.test.ts');
     expect(importerOffender?.detectorKey).toBe('quarantined-importer');
     expect(importerOffender?.error).toContain('watchdog.md');
+    // WI-6554700010008496: the finding names its root and WHY the root was excluded.
+    expect(importerOffender).toMatchObject({
+      excludedRoot: 'watchdog.md',
+      excludedRootReason: 'content guard: fake-broken',
+    });
 
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     expect(originFiles).toContain('good.txt');
@@ -3269,6 +3279,27 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:watchdog.md')).toBe('initial and committed');
     expect(git(repo, 'status', '--porcelain')).toContain('watchdog.md');
     expect(git(repo, 'status', '--porcelain')).not.toContain('watchdog.test.ts');
+  });
+
+  it('WI-6554700010008496: an importer two hops behind a live-lock root names that root and its holder', async () => {
+    writeFileSync(join(repo, 'held-root.ts'), 'export const existing = 1;\n');
+    git(repo, 'add', 'held-root.ts');
+    git(repo, 'commit', '--no-verify', '-m', 'seed held root');
+    git(repo, 'push', 'origin', 'HEAD:main');
+    writeFileSync(join(repo, 'held-root.ts'), 'export const existing = 1;\nexport const added = 2;\n');
+    writeFileSync(join(repo, 'held-middle.ts'), "import { added } from './held-root';\nexport const middle = added;\n");
+    writeFileSync(join(repo, 'held-leaf.ts'), "import { middle } from './held-middle';\nexport const leaf = middle;\n");
+    const holding = { path: 'held-root.ts', owner: 'su-turn', intent: 'turn-scoped hold: edited this turn', goalRef: 'WI-1' };
+
+    const out = await runGitSync('test', {
+      repoPath: repo, config: cfg, excludePaths: [holding.path], liveLockHoldings: [holding],
+    });
+
+    const leaf = out.contentErrors.find((c) => c.file === 'held-leaf.ts');
+    expect(leaf).toMatchObject({ detectorKey: 'quarantined-importer', excludedRoot: 'held-root.ts' });
+    expect(leaf?.excludedRootReason).toBe('held by su-turn for WI-1 — turn-scoped hold: edited this turn');
+    expect(leaf?.error).toContain(`→ 'held-middle.ts'`);
+    expect(git(repo, 'status', '--porcelain')).toContain('held-leaf.ts');
   });
 
   it('EI-25437238223518184: commits a named package consumer only with its changed provider', async () => {

@@ -28,6 +28,8 @@ describe('detectQuarantineImporters', () => {
         detectorKey: 'quarantined-importer',
         error: expect.stringContaining('lib/cup-spawn-health-watchdog.ts'),
         fixerRole: 'content-fixer',
+        excludedRoot: 'lib/cup-spawn-health-watchdog.ts',
+        excludedRootReason: 'content/deletion guard',
       },
     ]);
   });
@@ -198,6 +200,8 @@ describe('detectQuarantineImporters', () => {
         detectorKey: 'quarantined-importer',
         error: expect.stringContaining('feature/index.ts'),
         fixerRole: 'content-fixer',
+        excludedRoot: 'feature/index.ts',
+        excludedRootReason: 'content/deletion guard',
       },
     ]);
   });
@@ -301,5 +305,45 @@ describe('extractSideEffectOnlySpecifiers', () => {
       `export * from './e';`,
     ].join('\n');
     expect([...extractSideEffectOnlySpecifiers(text)].sort()).toEqual(['./a', './d']);
+  });
+});
+
+// WI-6554700010008496: two agents each spent 30+ min walking imports by hand because a
+// held importer named only its direct neighbour, never the excluded file at the bottom
+// of the chain, and never WHY that file was excluded.
+describe('detectQuarantineImporters — every finding names its chain root and the root\'s reason', () => {
+  const files: Record<string, string> = {
+    'lib/root.ts': `export const v = 1;`,
+    'lib/middle.ts': `import { v } from './root';\nexport const w = v;`,
+    'lib/leaf.ts': `import { w } from './middle';\nexport const x = w;`,
+  };
+  const scan = (exclusionReasonFor?: (p: string) => string | undefined) =>
+    detectQuarantineImporters({
+      readText: async (rel) => files[rel] ?? null,
+      dirtyFiles: ['lib/root.ts', 'lib/middle.ts', 'lib/leaf.ts'],
+      alreadyQuarantined: ['lib/root.ts'],
+      exclusionLabel: 'live-lock exclusion',
+      ...(exclusionReasonFor ? { exclusionReasonFor } : {}),
+    });
+
+  it('a transitive importer names the ROOT, not the intermediate importer it imports directly', async () => {
+    const byFile = new Map((await scan()).map((o) => [o.file, o]));
+    expect(byFile.get('lib/middle.ts')).toMatchObject({ excludedRoot: 'lib/root.ts' });
+    const leaf = byFile.get('lib/leaf.ts');
+    expect(leaf).toMatchObject({ excludedRoot: 'lib/root.ts', excludedRootReason: 'live-lock exclusion' });
+    // The direct edge is still reported, and the message now also names the root.
+    expect(leaf?.error).toContain(`→ 'lib/middle.ts'`);
+    expect(leaf?.error).toContain(`'lib/root.ts'`);
+    expect(leaf?.error).toContain(`until 'lib/root.ts' is resolved`);
+  });
+
+  it('carries the per-root reason the caller supplies, falling back to the label for an unknown path', async () => {
+    const reasonFor = (p: string) => (p === 'lib/root.ts' ? 'turn hold by su-abc (WI-1)' : undefined);
+    const leaf = (await scan(reasonFor)).find((o) => o.file === 'lib/leaf.ts');
+    expect(leaf).toMatchObject({ excludedRoot: 'lib/root.ts', excludedRootReason: 'turn hold by su-abc (WI-1)' });
+    expect(leaf?.error).toContain('turn hold by su-abc (WI-1)');
+
+    const blank = (await scan(() => '  ')).find((o) => o.file === 'lib/leaf.ts');
+    expect(blank?.excludedRootReason).toBe('live-lock exclusion');
   });
 });

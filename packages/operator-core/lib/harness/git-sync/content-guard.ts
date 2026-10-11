@@ -41,6 +41,15 @@ export interface ContentOffender {
    * following a detector whose verdict changed while the work was queued.
    */
   detectorResultHash?: string;
+  /**
+   * WI-6554700010008496: for a `quarantined-importer` finding, the EXCLUDED path
+   * at the bottom of the import chain — not the intermediate importer this file
+   * imports directly. Without it, a held file names only its neighbour, and
+   * finding the file that actually blocks the chain meant walking imports by hand.
+   */
+  excludedRoot?: string;
+  /** Why `excludedRoot` itself was excluded (turn hold, live lock, content error, …). */
+  excludedRootReason?: string;
 }
 
 /** Stable content CAS token shared by the guard and action-layer revalidation. */

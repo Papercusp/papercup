@@ -73,6 +73,10 @@ export interface QuarantineImportGuardDeps {
   /** Human-readable source of the exclusion for the diagnostic; defaults to the
    *  historical content/deletion guard wording. */
   exclusionLabel?: string;
+  /** WI-6554700010008496: why one seeded path was excluded (e.g. "turn hold by
+   *  su-ab12 …"). Each importer finding carries its chain root's reason; a path
+   *  this does not answer falls back to `exclusionLabel`. */
+  exclusionReasonFor?: (relPath: string) => string | undefined;
   log?: (m: string) => void;
 }
 
@@ -176,6 +180,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     isResolvableAtHead,
     sideEffectTargetAtHead,
     exclusionLabel = 'content/deletion guard',
+    exclusionReasonFor,
     log,
   } = deps;
   if (alreadyQuarantined.length === 0) return [];
@@ -243,6 +248,14 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     const n = normalizeModulePath(p);
     if (!actualPathByNormalized.has(n)) actualPathByNormalized.set(n, p);
   }
+  // WI-6554700010008496: the excluded path at the bottom of each chain. A seeded path
+  // is its own root; an importer held below inherits the root of the file it imports,
+  // so a finding three hops down still names the one file that actually blocks it.
+  const rootByPath = new Map<string, string>(infectiousPaths.map((p) => [p, p]));
+  const rootReason = (root: string): string => {
+    const reason = exclusionReasonFor?.(root)?.trim();
+    return reason ? reason : exclusionLabel;
+  };
   const headPresence = new Map<string, Promise<boolean>>();
   const targetPresentAtHead = (path: string): Promise<boolean> => {
     let cached = headPresence.get(path);
@@ -283,14 +296,21 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
         const fileNormalized = normalizeModulePath(file);
         quarantinedNormalized.add(fileNormalized);
         if (!actualPathByNormalized.has(fileNormalized)) actualPathByNormalized.set(fileNormalized, file);
+        const root = rootByPath.get(target) ?? target;
+        rootByPath.set(file, root);
+        const reason = rootReason(root);
+        const exclusion =
+          root === target ? reason : `held back because it imports, via its own chain, '${root}' — ${reason}`;
         offenders.push({
           file,
           detectorKey: 'quarantined-importer',
           error:
-            `imports '${spec}' → '${target}', which is EXCLUDED from this commit (${exclusionLabel}). ` +
+            `imports '${spec}' → '${target}', which is EXCLUDED from this commit (${exclusion}). ` +
             `Committing this file alone could leave HEAD without the dependency changes its import needs — ` +
-            `holding it back until '${target}' is resolved.`,
+            `holding it back until '${root}' is resolved.`,
           fixerRole: 'content-fixer',
+          excludedRoot: root,
+          excludedRootReason: reason,
         });
         changed = true;
         break; // one match is enough to quarantine this file; move to the next candidate

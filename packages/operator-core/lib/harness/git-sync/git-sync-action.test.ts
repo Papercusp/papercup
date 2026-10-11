@@ -665,6 +665,7 @@ import {
   runBootstrapLeg,
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
   computeConflictAuthorship,
+  gitSyncContentErrorKey,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -1848,9 +1849,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         local_sync_status: 'skipped',
         last_skip_reason: 'held by agent:peer',
         last_skipped_at: expect.any(Number),
-        last_skipped_paths: [],
       }),
     ]);
+    // WI-6554700010008496: a skipped tick ran no sweep, so it must not erase the last
+    // completed sweep's per-path exclusion record.
+    expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
     expect(captureHeadShaMock).not.toHaveBeenCalled();
     // …and the refused resource gets an owner-scoped late-grant cleanup before
@@ -2215,9 +2218,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
           local_sync_status: 'skipped',
           last_skip_reason: 'lock_contended',
           last_skipped_at: expect.any(Number),
-          last_skipped_paths: [],
         }),
       ]);
+      expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
       expect(releasedResources()).toEqual([]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock contended after retries'));
       warn.mockRestore();
@@ -3802,9 +3805,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         local_sync_status: 'skipped',
         last_skip_reason: 'unknown_resource',
         last_skipped_at: expect.any(Number),
-        last_skipped_paths: [],
       }),
     ]);
+    expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
     // the deliberate, human-registered surface: warned about, not auto-registered
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));
@@ -5398,6 +5401,22 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       }),
     );
     warn.mockRestore();
+  });
+
+  it('WI-6554700010008496: a persisted importer entry names its excluded root and the root\'s reason', () => {
+    const base = { scope: 'superproject', error: 'x', fixerRole: 'content-fixer' };
+    expect(gitSyncContentErrorKey({
+      ...base,
+      file: 'lib/leaf.ts',
+      detectorKey: 'quarantined-importer',
+      excludedRoot: 'lib/root.ts',
+      excludedRootReason: 'held by su-turn for WI-1 — turn-scoped hold',
+    })).toBe('superproject/lib/leaf.ts [quarantined-importer of superproject/lib/root.ts (held by su-turn for WI-1 — turn-scoped hold)]');
+    // A root without a reason, and every other detector, keep the established shape.
+    expect(gitSyncContentErrorKey({
+      ...base, file: 'lib/leaf.ts', detectorKey: 'quarantined-importer', excludedRoot: 'lib/root.ts',
+    })).toBe('superproject/lib/leaf.ts [quarantined-importer of superproject/lib/root.ts]');
+    expect(gitSyncContentErrorKey({ ...base, file: 'a.md', detectorKey: 'mdx' })).toBe('superproject/a.md [mdx]');
   });
 
   it('a lock-only quarantined importer stays reported but never consumes fixer attempts or alerts a human', async () => {

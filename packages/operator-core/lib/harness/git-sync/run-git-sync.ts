@@ -1500,6 +1500,35 @@ export function expandAtomicLiveLockExclusions(
 }
 
 /**
+ * WI-6554700010008496: why each live-lock-excluded path is held, for the importer
+ * findings queued behind it. A path covered by a holding names its holder, work-item
+ * and intent (a turn hold's intent says it is one); a path pulled in only because a
+ * dirty file shares a held work-item names that work-item and its holder.
+ */
+export function describeLiveLockExclusions(
+  exclusions: {
+    paths: readonly string[];
+    groups: ReadonlyArray<{ owner: string; goalRef: string; paths: readonly string[] }>;
+  },
+  holdings: readonly GitSyncLockHolding[],
+): Map<string, string> {
+  const reasons = new Map<string, string>();
+  for (const path of exclusions.paths) {
+    const holding = holdings.find((h) => h.path.trim().length > 0 && gitSyncPathsOverlap(path, h.path.trim()));
+    if (holding) {
+      const intent = holding.intent.trim().replace(/\s+/g, ' ');
+      const clipped = intent.length > 120 ? `${intent.slice(0, 119)}…` : intent;
+      const goal = holding.goalRef?.trim() ? ` for ${holding.goalRef.trim()}` : '';
+      reasons.set(path, `held by ${holding.owner}${goal}${clipped ? ` — ${clipped}` : ''}`);
+      continue;
+    }
+    const group = exclusions.groups.find((g) => g.paths.includes(path));
+    if (group) reasons.set(path, `same work-item ${group.goalRef} as a path held by ${group.owner}`);
+  }
+  return reasons;
+}
+
+/**
  * A lock on one Rust source file must withhold the rest of that dirty Cargo package.
  *
  * Goal attribution is useful when it exists, but it is optional metadata and cannot
@@ -3998,6 +4027,8 @@ export async function guardStagedIndexBeforeCommit(opts: {
   readText: (relPath: string) => Promise<string | null>;
   /** Paths excluded before staging (content/deletion/size guards, explicit exclusions, and package closures). */
   excludedDependencies?: readonly string[];
+  /** WI-6554700010008496: why each `excludedDependencies` path is excluded, keyed by path. */
+  excludedDependencyReasons?: ReadonlyMap<string, string>;
   /** Live-lock/cohort paths remain infectious even when an older copy exists in HEAD. */
   alwaysInfectiousDependencies?: readonly string[];
   log: (message: string) => void;
@@ -4132,7 +4163,35 @@ export async function guardStagedIndexBeforeCommit(opts: {
   const absent = await untrackedModulesAbsentFromIndex(runGit, repoPath);
   if (!absent.ok) return { ok: false, error: `post-stage guard ${absent.error}` };
   const absentFromIndex = new Set(absent.paths);
-  const importerDependencies = [...new Set([...excludedDependencies, ...absentFromIndex])];
+  // EI-25671755634126843: an ignored, untracked dependency (e.g. an edited gitignored
+  // node_modules file held as a protected path) is in no commit and never in HEAD, so a staged
+  // importer of it loses nothing by committing: every checkout resolves the installed copy.
+  // Treating it as infectious withheld every dirty importer of the package. check-ignore
+  // without --no-index never reports a TRACKED path, so a tracked module under an ignore rule
+  // stays infectious; on any check-ignore failure the classifier returns an empty set and every
+  // dependency stays infectious, as before.
+  const { ignoredUntracked } = await classifyProtectedPathExclusions(runGit, repoPath, excludedDependencies);
+  if (ignoredUntracked.size > 0) {
+    log(
+      `[git-sync] ${scope}: post-stage guard: not holding importers of ${ignoredUntracked.size} ignored ` +
+        `untracked dependency path(s), which no commit can contain: [${[...ignoredUntracked].join(', ')}]`,
+    );
+  }
+  const importerDependencies = [...new Set([...excludedDependencies, ...absentFromIndex])].filter(
+    (path) => !ignoredUntracked.has(path),
+  );
+  // WI-6554700010008496: name WHY each root was excluded, so a held importer's finding
+  // points at the blocking file and its cause instead of a generic phase label.
+  const postStageReasons = new Map<string, string>(opts.excludedDependencyReasons ?? []);
+  const notePostStage = (paths: Iterable<string>, reason: string) => {
+    for (const path of paths) if (!postStageReasons.has(path)) postStageReasons.set(path, reason);
+  };
+  notePostStage(lateLocked, 'locked after staging');
+  notePostStage(drifted, 'changed on disk after staging');
+  notePostStage(gitlinkGuard.paths, 'gitlink guard');
+  notePostStage(packageClosure.paths, 'package-closure exclusion');
+  notePostStage(changedTrackedModulesOutsideIndex, 'changed tracked module outside this commit\'s index');
+  notePostStage(absentFromIndex, 'untracked and absent from this commit');
   const importerOffenders = importerDependencies.length > 0
     ? await detectQuarantineImporters({
         readText: opts.readText,
@@ -4143,6 +4202,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
           return isModuleResolvableAtHead(runGit, repoPath, path, log);
         },
         exclusionLabel: 'post-stage exclusion, or untracked and absent from this commit',
+        exclusionReasonFor: (path) => postStageReasons.get(path),
         log,
       })
     : [];
@@ -5367,6 +5427,15 @@ async function commitOneRepoWithScratch(
       if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
       noteSlowPhase('unsafe deletion guard');
     }
+    // WI-6554700010008496: why each path this pass excludes was excluded, so every
+    // importer held behind it (here, at the live-lock guard, and post-stage) can name
+    // its root's cause. First reason recorded for a path wins.
+    const exclusionReasons = new Map<string, string>();
+    const noteExclusion = (path: string, reason: string) => {
+      if (!exclusionReasons.has(path)) exclusionReasons.set(path, reason);
+    };
+    for (const f of oversized) noteExclusion(f.path, 'oversized blob');
+    for (const c of contentErrors) noteExclusion(c.file, `content guard: ${c.detectorKey}`);
     if (preDeletionQuarantined.length > 0) {
       const dirtyForScan = await dirtyFiles(runGit, repoPath);
       const importerErrors = await detectQuarantineImporters({
@@ -5374,6 +5443,7 @@ async function commitOneRepoWithScratch(
         dirtyFiles: dirtyForScan,
         alreadyQuarantined: preDeletionQuarantined,
         isResolvableAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
+        exclusionReasonFor: (rel) => exclusionReasons.get(rel),
         log: o.log,
       });
       if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
@@ -5467,6 +5537,9 @@ async function commitOneRepoWithScratch(
     // consumes no symbols, so it holds only when its target is absent from HEAD
     // (WI-10006940: otherwise a registration hub bridges any peer lock into
     // every route that imports the hub).
+    for (const [path, reason] of describeLiveLockExclusions(atomicExclusions, protectedHoldings)) {
+      noteExclusion(path, reason);
+    }
     if (atomicExclusions.paths.length > 0) {
       const liveLockImporterErrors = await detectQuarantineImporters({
         readText: (rel) => o.readText(repoPath, rel),
@@ -5474,6 +5547,7 @@ async function commitOneRepoWithScratch(
         alreadyQuarantined: atomicExclusions.paths,
         sideEffectTargetAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
         exclusionLabel: 'live-lock exclusion',
+        exclusionReasonFor: (rel) => exclusionReasons.get(rel),
         log: o.log,
       });
       if (liveLockImporterErrors.length > 0) contentErrors = [...contentErrors, ...liveLockImporterErrors];
@@ -5566,6 +5640,7 @@ async function commitOneRepoWithScratch(
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
         readText: (rel) => o.readText(repoPath, rel),
         excludedDependencies: excludePaths,
+        excludedDependencyReasons: exclusionReasons,
         alwaysInfectiousDependencies: [
           ...protectedHoldings.map((holding) => holding.path),
           ...atomicExclusions.paths,

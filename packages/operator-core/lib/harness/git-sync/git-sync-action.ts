@@ -2094,6 +2094,16 @@ function contentFixerSignature(contentErrors: readonly ScopedContentError[]): st
     .join('\u001e');
 }
 
+/** One `last_content_errors` entry: `<scope>/<file> [<detector>]`. WI-6554700010008496: a
+ *  held importer also names the excluded root its chain waits on and why that root was
+ *  excluded, so a reader never has to walk the dirty tree's imports to find the blocker. */
+export function gitSyncContentErrorKey(c: ScopedContentError): string {
+  const key = `${c.scope}/${c.file}`;
+  if (c.detectorKey !== 'quarantined-importer' || !c.excludedRoot) return `${key} [${c.detectorKey}]`;
+  const reason = c.excludedRootReason ? ` (${c.excludedRootReason})` : '';
+  return `${key} [quarantined-importer of ${c.scope}/${c.excludedRoot}${reason}]`;
+}
+
 /** Persist human-actionable quarantine work through the existing condition-key upsert. */
 async function upsertGitSyncContentHumanWorkItem(
   slug: string,
@@ -2682,7 +2692,7 @@ async function recordOutcome(
       last_publish_blocked_at: publishBlockedAtCommit,
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
-      last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
+      last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
       last_content_error_signature:
         fixerContentErrors.length > 0 ? contentFixerSignature(fixerContentErrors) : null,
       // A measured-clean pass invalidates the prior dispatch identity. This is
@@ -3650,7 +3660,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         local_sync_status: 'skipped',
         last_skip_reason: `replay_abandoned:${reason}`,
         last_skipped_at: Date.now(),
-        last_skipped_paths: [],
+        // last_skipped_paths is left alone: see SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS.
       });
       return {
         status: 'skipped',
@@ -3683,7 +3693,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       local_sync_status: 'skipped',
       last_skip_reason: reason,
       last_skipped_at: skippedAt,
-      last_skipped_paths: [],
+      // SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS (WI-6554700010008496): a skipped tick ran no
+      // sweep, so it must not touch `last_skipped_paths`. That field is the per-path record of
+      // the last COMPLETED sweep (routines:list reports it as such, stamped by
+      // last_exclusions_at like last_oversized). git-sync runs back to back, so resetting it on
+      // every held_exclusive skip left it reading [] almost always, and a file held for hours
+      // had no visible reason anywhere.
     });
     return {
       status: 'skipped',
@@ -4028,7 +4043,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             local_sync_status: 'skipped',
             last_skip_reason: 'live-lock-read-failed',
             last_skipped_at: skippedAt,
-            last_skipped_paths: [],
+            // last_skipped_paths is left alone: see SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS.
             last_lock_read_error: detail,
             last_error: `live lock read failed (fail-closed): ${detail}`,
             last_errors: [`live-lock-read: ${detail}`],
@@ -8113,9 +8128,7 @@ async function recordAndEscalateTick(a: {
     if (outcome.contentErrors.length > 0) {
       await patchRoutineMetadata(slug, workspaceId, {
         consecutive_content_error_ticks: 0,
-        last_content_errors: outcome.contentErrors.map((contentError) =>
-          `${contentError.scope}/${contentError.file} [${contentError.detectorKey}]`,
-        ),
+        last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
         last_content_error_signature: null,
         last_content_fixer: null,
       });
