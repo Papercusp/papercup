@@ -112,6 +112,8 @@ export interface CensusRoot {
   /** Stable producer identity, independent of machine-specific absolute path. */
   id: string;
   path: string;
+  /** External file references select exact direct children; absent means full traversal. */
+  fileNames?: string[];
 }
 
 /**
@@ -179,8 +181,14 @@ export async function collectStateCensus(input: {
   const representedSubtrees: Array<CensusEntry & { evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   const representedUnknown: Array<CensusEntry & { disposition: 'unclassified-subtree' }> = [];
   async function walk(root: CensusRoot, parent: string): Promise<void> {
+    if (root.fileNames !== undefined && root.fileNames.some(name => !name ||
+      name === '.' || name === '..' || name.includes('/') || name.includes('\\'))) {
+      throw new Error('Non-canonical census file selection');
+    }
     const children = await readdir(join(root.path, parent), { withFileTypes: true });
     for (const child of children) {
+      if (root.fileNames !== undefined && !root.fileNames.includes(child.name)) continue;
+      if (root.fileNames !== undefined && child.isDirectory()) throw new Error('Census file selection contains a directory');
       const name = parent ? `${parent}/${child.name}` : child.name;
       entries.push({ kind: 'path', root: root.id, name });
       if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}; root=${root.id}; path=${name}`);

@@ -107,6 +107,20 @@ describe('producer-derived state census', () => {
       expect(census.ok).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it('validates external file selections while preserving full-root drift checks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'selected-census-'));
+    try {
+      await writeFile(join(root, 'token'), 'opaque');
+      await mkdir(join(root, 'other'));
+      const input = { roots: [{ id: 'external', path: root, fileNames: ['token'] }],
+        declarations: [], readCatalogs: async () => [] };
+      expect((await collectStateCensus(input)).residue.map(entry => entry.name)).toEqual(['token']);
+      await expect(collectStateCensus({ ...input, roots: [{ ...input.roots[0], fileNames: ['../token'] }] }))
+        .rejects.toThrow('Non-canonical');
+      await expect(collectStateCensus({ ...input, roots: [{ ...input.roots[0], fileNames: ['other'] }] }))
+        .rejects.toThrow('directory');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('represents measured database storage as preserved state, not a disposable cache', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pg-census-'));
     try {

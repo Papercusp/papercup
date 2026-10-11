@@ -26,6 +26,7 @@
 
 import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 
 const EL_API = 'https://api.elevenlabs.io/v1/convai';
 
@@ -257,6 +258,68 @@ export async function readElevenLabsImmutableProfile(def: ElevenLabsAgentDefinit
         || !isDeepStrictEqual(tool.tool_config, def.tools[index])) return null;
     }
     return deps.signal.aborted ? null : duration;
+  } catch { return null; }
+}
+
+/** Server-owned provisioning receipt, stored outside the repository alongside
+ * the secret reference. keyId and secretSha256 must be captured from the SAME
+ * authenticated create-key response. This local digest is deliberately unrelated
+ * to ElevenLabs' undocumented hashed_xi_api_key format. Never accept a browser
+ * receipt or reconstruct one from a key name/hint or a list response.
+ */
+export interface ElevenLabsCredentialReceipt {
+  secretRef: string;
+  secretSha256: string;
+  keyId: string;
+  serviceAccountUserId: string;
+}
+
+/** Fresh restricted-key metadata, bound to the resolved issuance secret by its
+ * trusted creation receipt. Metadata credentials are separate from issuance.
+ * Credit limits are billing-period limits, NOT seconds or daily quota authority.
+ * The host must supply reviewed permissions and verify the immutable agent too.
+ */
+export async function readElevenLabsRestrictedCredential(options: {
+  receipt: ElevenLabsCredentialReceipt;
+  secretRef: string;
+  apiKey: string;
+  metadataApiKey: string;
+  allowedPermissions: readonly string[];
+  maximumCredits: number;
+  fetch: typeof fetch;
+  signal: AbortSignal;
+}): Promise<{ keyId: string; serviceAccountUserId: string; maximumCredits: number } | null> {
+  // Snapshot trusted policy before awaiting a remote read.
+  const receipt = { ...options.receipt };
+  const permissions = [...options.allowedPermissions];
+  const maximumCredits = options.maximumCredits;
+  if (options.signal.aborted || !options.apiKey || !options.metadataApiKey
+    || !receipt.secretRef || receipt.secretRef !== options.secretRef
+    || !receipt.keyId?.trim() || !receipt.serviceAccountUserId?.trim()
+    || !/^[a-f0-9]{64}$/.test(receipt.secretSha256)
+    || createHash('sha256').update(options.apiKey).digest('hex') !== receipt.secretSha256
+    || !Number.isSafeInteger(maximumCredits) || maximumCredits <= 0
+    || permissions.length === 0 || permissions.some(p => typeof p !== 'string' || !p.trim())
+    || new Set(permissions).size !== permissions.length) return null;
+  try {
+    const response = await options.fetch(
+      `https://api.elevenlabs.io/v1/service-accounts/${encodeURIComponent(receipt.serviceAccountUserId)}/api-keys`,
+      { headers: { 'xi-api-key': options.metadataApiKey }, signal: options.signal, redirect: 'error' });
+    if (!response.ok || options.signal.aborted) return null;
+    const body = await response.json();
+    if (options.signal.aborted || !Array.isArray(body?.['api-keys'])) return null;
+    const matches = body['api-keys'].filter((key: any) => key?.key_id === receipt.keyId);
+    if (matches.length !== 1) return null;
+    const key = matches[0];
+    if (key.service_account_user_id !== receipt.serviceAccountUserId || key.is_disabled !== false
+      || key.disable_reason != null || !Array.isArray(key.permissions)
+      || !isDeepStrictEqual([...key.permissions].sort(), permissions.sort())
+      || !Number.isSafeInteger(key.character_limit) || key.character_limit <= 0
+      || key.character_limit > maximumCredits
+      || !Number.isSafeInteger(key.character_count) || key.character_count < 0
+      || key.character_count >= key.character_limit) return null;
+    return { keyId: receipt.keyId, serviceAccountUserId: receipt.serviceAccountUserId,
+      maximumCredits: key.character_limit };
   } catch { return null; }
 }
 

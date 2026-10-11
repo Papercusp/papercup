@@ -4,6 +4,7 @@
  * missing or gone, never duplicates tools, and never leaks the key.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
 import {
   ASK_PAPERCUP_TOOL,
@@ -13,10 +14,75 @@ import {
   syncElevenLabsAgent,
   readElevenLabsAgentDuration,
   readElevenLabsImmutableProfile,
+  readElevenLabsRestrictedCredential,
   type ElevenLabsAgentSyncDeps,
 } from './elevenlabs-agent-sync';
 
 const KEY = 'sk_test_secret_key_value_1234';
+
+describe('restricted credential creation-receipt binding', () => {
+  const receipt = () => ({ secretRef: 'integration:TUTORIAL_KEY', keyId: 'created-key',
+    serviceAccountUserId: 'service-account', secretSha256: createHash('sha256').update(KEY).digest('hex') });
+  const metadata = () => ({ key_id: 'created-key', service_account_user_id: 'service-account',
+    is_disabled: false, disable_reason: null, permissions: ['convai_read'], character_limit: 1000,
+    character_count: 0, hashed_xi_api_key: 'opaque-provider-hash' });
+  const options = (fetchImpl: typeof fetch) => ({ receipt: receipt(), secretRef: 'integration:TUTORIAL_KEY',
+    apiKey: KEY, metadataApiKey: 'metadata-only-secret', allowedPermissions: ['convai_read'],
+    maximumCredits: 1000, fetch: fetchImpl, signal: new AbortController().signal });
+  const read = (keys: unknown[]) => readElevenLabsRestrictedCredential(options(
+    vi.fn<typeof fetch>().mockResolvedValue(Response.json({ 'api-keys': keys }))));
+
+  it('binds live restrictions to the created key and uses only the metadata credential for the read', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ 'api-keys': [metadata()] }));
+    expect(await readElevenLabsRestrictedCredential(options(fetchImpl))).toEqual({ keyId: 'created-key',
+      serviceAccountUserId: 'service-account', maximumCredits: 1000 });
+    expect(fetchImpl.mock.calls[0]).toEqual(['https://api.elevenlabs.io/v1/service-accounts/service-account/api-keys',
+      expect.objectContaining({ headers: { 'xi-api-key': 'metadata-only-secret' }, redirect: 'error' })]);
+  });
+  it('refuses rotated secrets or another reference before any metadata request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    for (const override of [{ apiKey: 'rotated' }, { secretRef: 'integration:OTHER_KEY' },
+      { receipt: { ...receipt(), secretSha256: 'opaque-provider-hash' } }]) {
+      expect(await readElevenLabsRestrictedCredential({ ...options(fetchImpl), ...override })).toBeNull();
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it('refuses missing, duplicated, disabled, unrestricted, exhausted and wrong-account metadata', async () => {
+    expect(await read([])).toBeNull();
+    expect(await read([metadata(), metadata()])).toBeNull();
+    for (const change of [{ key_id: 'other' }, { service_account_user_id: 'other' },
+      { is_disabled: true }, { is_disabled: undefined }, { disable_reason: 'locked' },
+      { permissions: null }, { permissions: ['convai_read', 'convai_write'] },
+      { permissions: ['convai_read', 'convai_read'] }, { character_limit: null },
+      { character_limit: 1001 }, { character_limit: 0 }, { character_count: 1000 },
+      { character_count: -1 }, { character_count: null }]) {
+      expect(await read([{ ...metadata(), ...change }]), JSON.stringify(change)).toBeNull();
+    }
+  });
+  it('re-reads revocation every time and suppresses private transport errors', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ 'api-keys': [metadata()] }))
+      .mockResolvedValueOnce(Response.json({ 'api-keys': [{ ...metadata(), is_disabled: true }] }))
+      .mockRejectedValueOnce(new Error(KEY));
+    expect(await readElevenLabsRestrictedCredential(options(fetchImpl))).not.toBeNull();
+    expect(await readElevenLabsRestrictedCredential(options(fetchImpl))).toBeNull();
+    expect(await readElevenLabsRestrictedCredential(options(fetchImpl))).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+  it('refuses cancellation and does not adopt receipt or policy mutation during a read', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<typeof fetch>();
+    controller.abort();
+    expect(await readElevenLabsRestrictedCredential({ ...options(fetchImpl), signal: controller.signal })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const opts = options(fetchImpl);
+    fetchImpl.mockImplementation(async () => {
+      opts.receipt.keyId = 'other'; opts.maximumCredits = 5000; opts.allowedPermissions.push('convai_write');
+      return Response.json({ 'api-keys': [{ ...metadata(), key_id: 'other', character_limit: 5000,
+        permissions: ['convai_read', 'convai_write'] }] });
+    });
+    expect(await readElevenLabsRestrictedCredential(opts)).toBeNull();
+  });
+});
 
 describe('provider duration evidence for tutorial admission', () => {
   const valid = () => ({ agent_id: 'tutorial', conversation_config: { conversation: { max_duration_seconds: 60 } },
