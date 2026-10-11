@@ -3301,7 +3301,15 @@ export async function getNextWorkItem(
 
   if (!claimed) return null;
   resolutionStep('candidate-holder-interests');
-  claimed.interestWatch = await armWorkItemHolderInterests(claimed, bee.assignee);
+  // The claim has committed, so this optional best-effort registration must not consume
+  // the bounded claim promise's remaining budget. Track the complete side-effect promise
+  // (including the arm call) so test teardown can drain it before the environment closes.
+  const claimedWorkItem = claimed;
+  void trackDetached(
+    armWorkItemHolderInterests(claimedWorkItem, bee.assignee).then((interestWatch) => {
+      claimedWorkItem.interestWatch = interestWatch;
+    }),
+  ).catch(() => {});
   // Same claimed-event as the legacy claim path (best-effort fanout).
   void trackDetached(import('../work-items-events'))
     .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
