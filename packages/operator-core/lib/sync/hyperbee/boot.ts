@@ -617,8 +617,13 @@ export interface BootHarnessOpts {
    * which routes ops to THIS harness's own projection set) is used. Tests
    * inject a capturing apply to assert which ops merge, without the real PG
    * projections or the (collision-prone) global registry.
+   *
+   * `ctx.ownLogKeyHex` is THIS peer's own-log key, known before the first merge pass.
+   * Use it instead of reaching through the returned handle: a merge pass can run while
+   * `bootHarnessSubstrate` is still pending (a rejoining peer already holds admitted
+   * logs), when that handle is not assigned yet (WI-6554700010008561).
    */
-  applyOverride?: (op: OpEnvelope) => Promise<boolean>;
+  applyOverride?: (op: OpEnvelope, ctx: { readonly ownLogKeyHex: string }) => Promise<boolean>;
   /**
    * Test seam — override how THIS peer's signed announce identity is resolved
    * and signed. Production leaves this undefined: the announce identity is
@@ -1682,7 +1687,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // A-003: `let` (not `const`) so `rekey` can rebind the two hive projections when a
   // first-join re-keys this member onto the Hive topic (mergeOnePass reads the
   // CURRENT scopedApply each pass). An `applyOverride` (the rigs) is never rebuilt.
-  let scopedApply = opts.applyOverride ?? buildScopedApply(hiveHomeProjectionSlug);
+  const applyOverride = opts.applyOverride;
+  const applyOverrideCtx = { ownLogKeyHex: ownLog.keyHex } as const;
+  let scopedApply = applyOverride
+    ? (op: OpEnvelope) => applyOverride(op, applyOverrideCtx)
+    : buildScopedApply(hiveHomeProjectionSlug);
 
   // ── Owner-enforcement rate limiter (EN-2) ── STATEFUL across merge passes (its
   // per-(author,class) tumbling windows persist), so it is created ONCE here and

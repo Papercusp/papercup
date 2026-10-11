@@ -411,8 +411,10 @@ async function bootHivePeer(opts: {
     swarmBinding: BINDING,
     swarmOverride: rawSwarm,
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
-    applyOverride: (op) => {
-      apply ??= buildHivePeerApply(opts.pg, handle!.ownLog.keyHex);
+    // ctx, not `handle`: a merge pass can run before bootHarnessSubstrate returns
+    // (a rejoining peer already holds admitted logs) — WI-6554700010008561.
+    applyOverride: (op, ctx) => {
+      apply ??= buildHivePeerApply(opts.pg, ctx.ownLogKeyHex);
       return apply(op);
     },
     mergePollMs: 0,
