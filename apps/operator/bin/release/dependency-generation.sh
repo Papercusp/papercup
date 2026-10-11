@@ -2823,6 +2823,29 @@ dependency_generation_ensure() {
   done
 }
 
+# Lock-vs-tree completeness audit (WI-6554700010008514): every installed lock entry of
+# every input lockfile must be present in `tree` at its locked version. Lockfiles are read
+# from `lock_root` (the build's integration root, whose inputs key the generation). Logs
+# the helper's summary + defect lines; returns 0 complete, non-zero otherwise.
+dependency_generation_audit_lock_tree() {
+  local tree="$1" lock_root="$2" manifest_file rc=0 output line
+  local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
+  manifest_file="$(mktemp)" || return 1
+  dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
+    rm -f -- "$manifest_file"
+    return 1
+  }
+  output="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file")" || rc=$?
+  rm -f -- "$manifest_file"
+  while IFS= read -r line; do
+    case "$line" in
+      LOCK_TREE_AUDIT*|LOCK_TREE_DEFECT*) dependency_generation_log "$line" ;;
+    esac
+  done <<< "$output"
+  return "$rc"
+}
+
 dependency_generation_ensure_once() {
   local integration_root="$1"
   local generation_root="${2:-$(dependency_generation_resolve_root "$integration_root")}"
@@ -3098,6 +3121,26 @@ dependency_generation_ensure_once() {
       dependency_generation_remove_build "$build"
       return 1
     }
+  fi
+  # A generation is indexed under its INPUT key (lockfile + patch digests), so its trees
+  # must realise those lockfiles. Nothing used to check that: a hand-built root missing
+  # node_modules/sharp/node_modules/semver was published as v1-7c590a4e under input
+  # 8f48c4a6 and every gate verify sharing the key failed `npm ls` (WI-6554700010008514).
+  # Exit 75 = infra-inconclusive: an incompletely installed source tree is an install-state
+  # fault, not a verdict on the candidate under test.
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    phase_started_ms="$(dependency_generation_now_ms)"
+    if ! dependency_generation_audit_lock_tree "$tree" "$integration_root"; then
+      dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" failed
+      dependency_generation_emit_summary \
+        lock-tree-incomplete "$total_started_ms" "$source_after" "$identity" \
+        "$predecessor_identity" "$tree_total" "$tree_reused" "$tree_copied" "$tree_removed"
+      dependency_generation_log \
+        'FATAL: copied dependency trees do not realise their lockfiles; refusing to publish (repair the source install, e.g. npm run install:safe)'
+      dependency_generation_remove_build "$build"
+      return 75
+    fi
+    dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
   fi
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
