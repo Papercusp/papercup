@@ -105,7 +105,9 @@ async function findBuildStrandedPendingCard(
   if (pending.length !== 1) return null;
   const card = pending[0]!;
   const recorded = card.rerunRecipe?.evaluatorBuild;
-  if (!recorded) return null;
+  // A card with no issue id cannot be named in `supersedes`, and one with no recorded build
+  // sha cannot be proven to sit on a retired build, so neither is ours to replace.
+  if (!recorded?.sha || !card.issueId) return null;
   const live = getBuildInfo();
   if (recorded.sha === live.sha && recorded.version === live.version) return null;
   const reservedAt = Date.parse(card.gradingAudit?.dispatchReservation?.reservedAt ?? '');
