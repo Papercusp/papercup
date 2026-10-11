@@ -39,10 +39,13 @@ import {
   type SelfWakeSource,
 } from '../agent-tools/coordination/presence-selfwake';
 import {
+  applyHostCondition,
   deriveVerdict,
+  judgeHostCondition,
   resolveSessionStates,
   type LivenessSubject,
 } from '../agent-tools/coordination/liveness-oracle';
+import type { HostTailEvent, PickupRecoverable } from '../events/await/turn-proof';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import {
@@ -120,6 +123,11 @@ export interface FleetRosterEntry extends AgentAssignment {
    *  longer masks an `ended` (dead) session behind a still-warm heartbeat. null for a
    *  federated peer / when the wakeability read is unavailable (state unknown). */
   sessionState: SessionState | null;
+  /** P-011(a) / D-011: why a member with a live psu host still cannot take a turn
+   *  (dead auth, quota wall, unbound successor, stuck pending delivery). Non-null
+   *  exactly when the host-condition judge moved this member to `suspect`; `null`
+   *  = no condition found, or the host-conditions leg was degraded. */
+  wedged: PickupRecoverable | null;
   /** Terminal device from the visible psu launcher; null/absent means headless or
    *  pre-tty tracking and is not a psu-host-cohort signal. */
   tty?: string | null;
@@ -212,6 +220,12 @@ export function foldFleetRoster(
   selfWake: Map<string, SelfWakeSignals> = new Map(),
   recordedEnded: ReadonlySet<string> = new Set<string>(),
   psuHosts?: ReadonlyMap<string, unknown | null>,
+  /** P-011(a) / D-011: per-owner host conditions, precomputed by the async caller
+   *  with the oracle's `judgeHostCondition` (this fold is pure, so it cannot read
+   *  host tails itself). Positive host authority below rescues a member to
+   *  parked/recorded; a member whose host cannot take a turn is then moved to
+   *  `suspect` by `applyHostCondition`. Absent = not judged (plain derivation). */
+  hostConditions?: ReadonlyMap<string, PickupRecoverable | null>,
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -235,7 +249,7 @@ export function foldFleetRoster(
       base.load > 0 ||
       (tier?.claimedItems?.length ?? 0) > 0 ||
       (tier?.workItemClaims?.length ?? 0) > 0;
-    const v = w
+    const derived = w
       ? deriveVerdict(
           {
             ownerId: id,
@@ -265,6 +279,12 @@ export function foldFleetRoster(
           recordedEnded,
         )
       : null;
+    // Same subject filter as the oracle's applyHostConditionLeg: a cup (or a row
+    // with no role) is never judged by its host; applyHostCondition itself only
+    // moves a WEDGE_ELIGIBLE state.
+    const condition =
+      p?.agentRole != null && p.agentRole !== 'cup' ? hostConditions?.get(id) ?? null : null;
+    const v = derived && condition ? applyHostCondition(derived, condition) : derived;
     const sessionState: SessionState | null = v?.sessionState ?? null;
     const alive =
       sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining'
@@ -289,6 +309,7 @@ export function foldFleetRoster(
       // the verdict (a warm-dead session is heartbeatFresh:true + ended).
       heartbeatFresh: v?.heartbeatFresh ?? !stale,
       sessionState,
+      wedged: v?.wedged ?? null,
       // EI-19407725333778711: `?? null` is UNKNOWN, deliberately not `'none'` —
       // a degraded leg must not manufacture a stranded-member alarm.
       selfWake: v?.selfWake ?? null,
@@ -341,6 +362,38 @@ export interface ListFleetRosterOpts {
   /** DI seam: the presence source (already enriched with the fleet label). Defaults to
    *  listPresence + fetchPresenceFleet (LOCAL rows). */
   readPresence?: (opts: { workspaceId?: string | null }) => Promise<FleetFoldPresence[]>;
+  /** DI seam (P-011): the host event-tail reader the host-conditions leg judges
+   *  with. Defaults to the oracle's real reader (`readHostEventTailAsync`). */
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+}
+
+/**
+ * P-011(a) / D-011: judge every LIVE host in `hosts` with the oracle's one judge
+ * (`judgeHostCondition`), 16 at a time. A host that cannot be judged maps to
+ * `null` (no condition), never to a fabricated wedge. Members without a live
+ * host are absent from the result.
+ */
+async function judgeFleetHostConditions(
+  hosts: ReadonlyMap<string, unknown | null>,
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>,
+): Promise<Map<string, PickupRecoverable | null>> {
+  const out = new Map<string, PickupRecoverable | null>();
+  const live = [...hosts].filter(([, host]) => host != null && typeof host === 'object');
+  const nowMs = Date.now();
+  for (let i = 0; i < live.length; i += 16) {
+    await Promise.all(
+      live.slice(i, i + 16).map(async ([ownerId, host]) => {
+        out.set(
+          ownerId,
+          await judgeHostCondition(ownerId, host, {
+            nowMs,
+            ...(readHostTailFn ? { readHostTailFn } : {}),
+          }).catch(() => null),
+        );
+      }),
+    );
+  }
+  return out;
 }
 
 /** The session-presence fields foldFederatedSessionPresence needs — structural
@@ -449,7 +502,8 @@ export type FleetRosterDegradedLeg =
   | 'wakeability'
   | 'recorded'
   | 'selfwake'
-  | 'psuHosts';
+  | 'psuHosts'
+  | 'hostConditions';
 
 export interface ListFleetRosterResult {
   entries: FleetRosterEntry[];
@@ -547,7 +601,27 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     ]),
   ];
 
-  const [tier1Result, wakeabilityResult, recordedResult, selfWakeResult, hostResult, rowsResult] = await Promise.all([
+  // psu host lookups, shared by the host leg and the host-conditions leg below.
+  // Per-host failures are caught, so this promise never rejects.
+  const hostsPromise = (async () => {
+    const hosts = new Map<string, unknown | null>();
+    for (let i = 0; i < enrichmentIds.length; i += 16) {
+      await Promise.all(enrichmentIds.slice(i, i + 16).map(async (ownerId) => {
+        hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+      }));
+    }
+    return hosts;
+  })();
+
+  const [
+    tier1Result,
+    wakeabilityResult,
+    recordedResult,
+    selfWakeResult,
+    hostResult,
+    hostConditionResult,
+    rowsResult,
+  ] = await Promise.all([
     withBoundedTimeout(fetchPresenceTier1(enrichmentIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
@@ -587,19 +661,23 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:selfwake',
     }),
-    withBoundedTimeout((async () => {
-      const hosts = new Map<string, unknown | null>();
-      for (let i = 0; i < enrichmentIds.length; i += 16) {
-        await Promise.all(enrichmentIds.slice(i, i + 16).map(async (ownerId) => {
-          hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
-        }));
-      }
-      return hosts;
-    })(), {
+    withBoundedTimeout(hostsPromise, {
       fallback: new Map<string, unknown | null>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:psu-hosts',
     }),
+    // P-011(a) / D-011: a live host is positive proof of life in the fold, so ask
+    // whether each live host can actually take a turn (the oracle's one judge).
+    // Chained off the host lookups but bounded on its own, so a slow tail read
+    // degrades only this leg: unjudged members keep their plain derivation.
+    withBoundedTimeout(
+      hostsPromise.then((hosts) => judgeFleetHostConditions(hosts, opts.readHostTailFn)),
+      {
+        fallback: new Map<string, PickupRecoverable | null>(),
+        timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+        label: 'fleet-roster:host-conditions',
+      },
+    ),
     rowsResultPromise,
   ]);
   if (tier1Result.degraded) degradedLegs.push('tier1');
@@ -608,6 +686,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   if (recordedResult.degraded) degradedLegs.push('recorded');
   if (selfWakeResult.degraded) degradedLegs.push('selfwake');
   if (hostResult.degraded) degradedLegs.push('psuHosts');
+  if (hostConditionResult.degraded) degradedLegs.push('hostConditions');
 
   // A degraded `assignments` leg naturally drops the heaviest per-member detail
   // first (WI-3818's "drop queued detail first" fallback): foldFleetRoster
@@ -626,6 +705,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     selfWakeResult.value,
     recordedResult.value.ended,
     hostResult.value,
+    hostConditionResult.value,
   );
   let leaderEntry: FleetRosterEntry | null | undefined;
   if (leaderOwnerId != null) {
@@ -643,6 +723,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
           selfWakeResult.value,
           recordedResult.value.ended,
           hostResult.value,
+          hostConditionResult.value,
         ).find((entry) => entry.agentId === leaderOwnerId) ?? null;
     } else {
       leaderEntry = null;

@@ -252,6 +252,51 @@ describe('foldFleetRoster', () => {
     expect(hostless.alive).toBe(false);
   });
 
+  // P-011(a) / D-011 (EI-25695434826164414 class): a live host rescues a member to
+  // `parked`, but a host that cannot take a turn must not be reported as parked.
+  describe('host conditions (P-011)', () => {
+    const p = pres({
+      ownerId: 'su-host-member',
+      agentRole: 'su',
+      heartbeatAt: new Date(NOW - 5_000).toISOString(),
+    });
+    const w = { wakeable: true, liveTurn: false, wakeAttemptMiss: true };
+    const hosts = new Map<string, unknown | null>([[p.ownerId, { pid: 12345 }]]);
+    const fold = (conditions?: Map<string, 'auth-blocked' | null>, presence = p) =>
+      foldFleetRoster(
+        [presence], [asg({ agentId: presence.ownerId, load: 1 })], tier1({}), NOW,
+        new Map([[presence.ownerId, w]]), new Set(), new Map(), new Set(), hosts, conditions,
+      )[0];
+
+    it('control: a healthy live host keeps the rescued parked state with wedged null', () => {
+      const member = fold(new Map([[p.ownerId, null]]));
+      expect(member.sessionState).toBe('parked');
+      expect(member.alive).toBe(true);
+      expect(member.wedged).toBeNull();
+      // No judged map at all (leg degraded) is the same plain derivation.
+      expect(fold(undefined).sessionState).toBe('parked');
+    });
+
+    it('a dead-auth live host reads suspect, not alive, with its class in wedged', () => {
+      const member = fold(new Map([[p.ownerId, 'auth-blocked']]));
+      expect(member.sessionState).toBe('suspect');
+      expect(member.alive).toBe(false);
+      expect(member.wedged).toBe('auth-blocked');
+      expect(member.confirmLiveness).toBe(true);
+    });
+
+    it('never judges a cup by a host condition', () => {
+      const cup = pres({ ownerId: 'cup-x', agentRole: 'cup', heartbeatAt: p.heartbeatAt });
+      const member = foldFleetRoster(
+        [cup], [asg({ agentId: cup.ownerId, load: 0 })], tier1({}), NOW,
+        new Map([[cup.ownerId, { wakeable: true, liveTurn: false }]]), new Set(), new Map(), new Set(),
+        new Map([[cup.ownerId, { pid: 1 }]]), new Map([[cup.ownerId, 'auth-blocked' as const]]),
+      )[0];
+      expect(member.wedged).toBeNull();
+      expect(member.sessionState).not.toBe('suspect');
+    });
+  });
+
   it.each(['cup', null])('does not rescue an unverified native role %s', (agentRole) => {
     const p = pres({ ownerId: 'unverified-role', agentRole, heartbeatAt: new Date(NOW - 5_000).toISOString() });
     findLiveHostMock.mockReturnValue({ pid: 12345 });

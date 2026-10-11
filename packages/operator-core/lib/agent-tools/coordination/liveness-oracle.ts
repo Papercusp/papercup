@@ -851,7 +851,6 @@ export async function applyHostConditionLeg(
   subjects: readonly { ownerId: string; agentRole?: string | null }[],
   deps: HostConditionLegDeps,
 ): Promise<void> {
-  const readTail = deps.readHostTailFn ?? ((ownerId: string) => readHostEventTailAsync(ownerId));
   const candidates = subjects.filter((s) => {
     const v = verdicts.get(s.ownerId);
     return (
@@ -869,19 +868,38 @@ export async function applyHostConditionLeg(
           host = await deps.findHostAsyncFn(s.ownerId).catch(() => null);
         }
         if (host == null || typeof host !== 'object') return;
-        // Best-effort like the pickup sweep: an unreadable tail is "no tail
-        // reading", which can still surface the record's own auth/quota flags
-        // but never invents an unbound or stuck verdict.
-        const tail = await readTail(s.ownerId).catch(() => [] as HostTailEvent[]);
-        // A host record without `authBlocked` predates P-004: corroborate from the codex
-        // rollout rather than read the missing field as healthy (WI-6554700010008461).
-        const judged = await corroborateHostAuth(host as AuthCorroborationHost, deps.readProviderErrorFn);
-        const condition = hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, deps.nowMs));
+        const condition = await judgeHostCondition(s.ownerId, host, deps);
         const v = verdicts.get(s.ownerId);
         if (v) verdicts.set(s.ownerId, applyHostCondition(v, condition));
       }),
     );
   }
+}
+
+/**
+ * P-011(a) / D-011: judge ONE live host's turn-taking condition — the per-subject
+ * step of {@link applyHostConditionLeg}, exported so a PURE fold (fleet-roster's
+ * `foldFleetRoster`) can have its async caller precompute the condition and then
+ * apply it with {@link applyHostCondition}. One judge, so every surface that
+ * trusts a live host agrees on what "cannot take a turn" means.
+ *
+ * Returns `null` for a host that can take a turn (or a non-object host record).
+ */
+export async function judgeHostCondition(
+  ownerId: string,
+  host: unknown,
+  deps: Pick<HostConditionLegDeps, 'nowMs' | 'readHostTailFn' | 'readProviderErrorFn'>,
+): Promise<PickupRecoverable | null> {
+  if (host == null || typeof host !== 'object') return null;
+  const readTail = deps.readHostTailFn ?? ((id: string) => readHostEventTailAsync(id));
+  // Best-effort like the pickup sweep: an unreadable tail is "no tail
+  // reading", which can still surface the record's own auth/quota flags
+  // but never invents an unbound or stuck verdict.
+  const tail = await readTail(ownerId).catch(() => [] as HostTailEvent[]);
+  // A host record without `authBlocked` predates P-004: corroborate from the codex
+  // rollout rather than read the missing field as healthy (WI-6554700010008461).
+  const judged = await corroborateHostAuth(host as AuthCorroborationHost, deps.readProviderErrorFn);
+  return hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, deps.nowMs));
 }
 
 /**
