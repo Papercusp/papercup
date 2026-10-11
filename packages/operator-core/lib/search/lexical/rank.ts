@@ -267,12 +267,15 @@ export function fuseByPosition<T>(lists: ReadonlyArray<PositionedList<T>>): Arra
  * terms) ranks the same targets 1, 1, 2, 2, 1. A BM25 top-K rerank cannot repair it
  * affordably: a top-1000 index scan alone costs 124-232 ms against R-2's 50 ms p95.
  *
- * Why a cap: ranking the AND set reads every match's tsvector. The five losses had
- * AND sets of 8, 9, 35, 609 and 1,656 rows; 2,000 admits all of them, and a capped
- * GIN probe plus the ranking measured 5-66 ms warm. A larger AND set is a
- * non-selective query, where cover density adds little and BM25 + cosine carry it.
+ * Why a cap: ranking the AND set reads every match's tsvector, so the cap bounds the
+ * cost; below it, the exact list is legacy's ranking exactly. Measured 2026-10-11: the
+ * five work-item losses had AND sets of 8, 9, 35, 609 and 1,656 rows (5-66 ms warm);
+ * the one session-turn loss left at a 2,000 cap had 3,925 (gate probe 21-25 ms, list
+ * 73-80 ms warm), so the cap is 5,000. The gate probe costs about the same at 2,000
+ * and 5,000; a non-selective query ('the gate is red': over 10,000) is skipped, and
+ * BM25 + cosine carry it.
  */
-export const EXACT_LIST_MAX_AND_ROWS = 2000;
+export const EXACT_LIST_MAX_AND_ROWS = 5000;
 
 /**
  * Merge a source's EXACT list (legacy AND + `ts_rank_cd`) with its BM25 list for the
