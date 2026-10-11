@@ -94,6 +94,20 @@ describe('scriptRunsZeroFilesAsPass', () => {
   });
 });
 
+describe('proof-backed empty runs for plain Vitest commands', () => {
+  it('allows a fully reused plain command, keeping partial and unproven runs strict', () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, 'a.test.ts'), '');
+    writeFileSync(join(dir, 'b.test.ts'), '');
+    const input = { scriptText: 'vitest run', wsAbsDir: dir, script: 'test' };
+    expect(emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual(['--passWithNoTests']);
+    expect(emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts'] })).toEqual([]);
+    expect(emptySuiteGuardArgs(input)).toEqual([]);
+    expect(emptySuiteGuardArgs({ ...input, scriptText: 'node --test', reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual([]);
+    expect(emptySuiteGuardArgs({ ...input, scriptText: 'astro check && vitest run', reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual([]);
+  });
+});
+
 describe('hasMatchingTestFilesOnDisk', () => {
   it('finds a plain *.test.ts file for the unit `test` script', () => {
     const dir = makeTmpDir();
@@ -293,12 +307,23 @@ describe('the --no-passWithNoTests override against the REAL installed vitest bi
   const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const VITEST_BIN = resolve(REPO_ROOT, 'node_modules/.bin/vitest');
 
-  function runVitest(fixtureDir: string, extraArgs: string[]) {
-    return spawnSync(VITEST_BIN, ['run', '--root', fixtureDir, '--passWithNoTests', ...extraArgs], {
+  function runVitest(fixtureDir: string, extraArgs: string[], lenient = true) {
+    return spawnSync(VITEST_BIN, ['run', '--root', fixtureDir, ...(lenient ? ['--passWithNoTests'] : []), ...extraArgs], {
       encoding: 'utf8',
       timeout: 30_000,
     });
   }
+
+  it.skipIf(!existsSync(VITEST_BIN))('passes a proof-covered empty run but rejects an accidental empty run with the real CLI', () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, 'vitest.config.mjs'), "export default { test: { include: ['missing/**/*.test.ts'] } };\n");
+    writeFileSync(join(dir, 'a.test.ts'), '');
+    const input = { scriptText: 'vitest run', wsAbsDir: dir, script: 'test' };
+    const reused = runVitest(dir, emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts'] }), false);
+    expect(reused.status, reused.stdout + reused.stderr).toBe(0);
+    const unproven = runVitest(dir, emptySuiteGuardArgs(input), false);
+    expect(unproven.status, unproven.stdout + unproven.stderr).toBe(1);
+  });
 
   it.skipIf(!existsSync(VITEST_BIN))(
     'a zero-match workspace exits 0 under --passWithNoTests alone, and 1 once --no-passWithNoTests is appended after it',

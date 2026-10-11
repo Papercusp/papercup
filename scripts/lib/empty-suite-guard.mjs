@@ -29,6 +29,7 @@
 // side-effecting top-level CLI flow.
 
 import { execSync } from 'node:child_process';
+import { scriptCommandWords } from './executed-source-map.mjs';
 
 /** Does this exact script string invoke vitest with --passWithNoTests? */
 export function scriptUsesPassWithNoTests(scriptText) {
@@ -49,6 +50,14 @@ const PURE_LANE_RUNNER = /(?:^|[\s/])run-vitest-pure-lane\.mjs(?=\s|$)/;
  */
 export function scriptRunsZeroFilesAsPass(scriptText) {
   return scriptUsesPassWithNoTests(scriptText) || PURE_LANE_RUNNER.test(scriptText ?? '');
+}
+
+/** Direct Vitest commands can receive an empty-run flag after proof coverage is checked.
+ * Unknown wrappers and compound commands cannot safely receive Vitest CLI arguments. */
+export function scriptSupportsPassReuse(scriptText) {
+  if (/[;&|`]|\$\(/.test(String(scriptText ?? ''))) return false;
+  return scriptRunsZeroFilesAsPass(scriptText) ||
+    /(?:^|\/)vitest(?:\.cmd)?$/.test(scriptCommandWords(scriptText)[0] ?? '');
 }
 
 // Mirrors libs/test-config/src/vitest-config.ts's baseExclude — directories
@@ -158,7 +167,12 @@ export function reuseSkipCoversRun({ wsAbsDir, script, reuseSkipped = null, sele
  * @returns {string[]}
  */
 export function emptySuiteGuardArgs({ scriptText, wsAbsDir, script, reuseSkipped = null, selectedFiles = null }) {
-  if (!scriptUsesPassWithNoTests(scriptText)) return [];
+  if (!scriptUsesPassWithNoTests(scriptText)) {
+    // Plain Vitest remains strict unless every selected file has a valid pass proof.
+    return scriptSupportsPassReuse(scriptText) && !PURE_LANE_RUNNER.test(scriptText ?? '') &&
+      reuseSkipCoversRun({ wsAbsDir, script, reuseSkipped, selectedFiles })
+      ? ['--passWithNoTests'] : [];
+  }
   if (!hasMatchingTestFilesOnDisk(wsAbsDir, script)) return [];
   if (reuseSkipCoversRun({ wsAbsDir, script, reuseSkipped, selectedFiles })) return [];
   return ['--no-passWithNoTests'];
