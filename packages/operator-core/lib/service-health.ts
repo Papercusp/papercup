@@ -28,6 +28,7 @@ import {
   PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
   PG_READ_TXN_DEFAULT_TIMEOUT_MS,
 } from './pg-read-query';
+import { bm25Health, measureBm25Latency, type Bm25Health, type Bm25Latency } from './search/lexical/rank';
 
 export interface EndpointSpec {
   name: string;
@@ -763,6 +764,8 @@ export const PORTLESS_PROBE_NAMES = {
   embedSidecar: 'embed-sidecar',
   /** See {@link probeJournalCanary} (EI-15810, EI-2434 follow-up). */
   journalCanary: 'journal-canary',
+  /** See {@link probeBm25Lexical} (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-004). */
+  bm25Lexical: 'bm25-lexical',
 } as const;
 
 /** Flat lookup for "is this name a portless probe target?" */
@@ -2352,6 +2355,61 @@ export function supervisedProcesses(filter?: { layer?: SupervisionLayer; autoRes
   );
 }
 
+/**
+ * How long one BM25 latency measurement stands. The canary set is eight top-10 queries;
+ * re-running it every service-health tick would add that load to the shared database for
+ * no new information, so the probe re-measures at most this often.
+ */
+export const BM25_LATENCY_REMEASURE_MS = 5 * 60_000;
+
+let lastBm25Latency: Bm25Latency | null = null;
+
+/** Test seam: forget the remembered latency measurement. */
+export function __resetBm25LatencyForTests(): void {
+  lastBm25Latency = null;
+}
+
+/** Map a BM25 health verdict onto a probe result (pure, so the mapping is unit-tested). */
+export function evaluateBm25Health(health: Bm25Health, latencyMs: number): ProbeResult {
+  const name = PORTLESS_PROBE_NAMES.bm25Lexical;
+  if (health.status === 'off') {
+    return { name, up: true, status: null, latencyMs, present: false, note: 'BM25_LEXICAL_RANKING is off: lexical search uses ts_rank by configuration' };
+  }
+  if (health.status === 'degraded') {
+    return { name, up: false, status: null, latencyMs, note: `BM25 degraded, lexical search is falling back to ts_rank: ${health.reason ?? 'unknown reason'}` };
+  }
+  const p95 = health.latency ? `, work-item p95 ${health.latency.p95Ms.toFixed(1)}ms of ${health.latency.budgetMs}ms` : '';
+  return { name, up: true, status: null, latencyMs, note: `BM25 ok: ${health.presentIndexes.length} index(es) present${p95}` };
+}
+
+/**
+ * The BM25 lexical-search health check (plan bm25-lexical-search-evoke-adoption-2026-10-10,
+ * P-004 / R-4): DOWN when the flag is on and pg_textsearch is not preloaded, the extension
+ * is not installed, a registered corpus has no valid BM25 index, or the work-item p95
+ * exceeds its budget. Fail-soft: a failed read is `present:false`, never a fabricated DOWN.
+ */
+export async function probeBm25Lexical(
+  deps: { read?: (latency: Bm25Latency | null) => Promise<{ health: Bm25Health; latency: Bm25Latency | null }>; now?: () => number } = {},
+): Promise<ProbeResult> {
+  const start = Date.now();
+  const now = deps.now ?? Date.now;
+  const remembered = lastBm25Latency && now() - lastBm25Latency.measuredAt < BM25_LATENCY_REMEASURE_MS ? lastBm25Latency : null;
+  const read = deps.read ?? ((cached: Bm25Latency | null) => boundedPgReadTxn(
+    async (tx) => {
+      const latency = cached ?? (await measureBm25Latency(tx));
+      return { health: await bm25Health(tx, { latency }), latency };
+    },
+    { timeoutMs: PG_READ_TXN_DEFAULT_TIMEOUT_MS, acquireTimeoutMs: PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS },
+  ));
+  try {
+    const { health, latency } = await read(remembered);
+    lastBm25Latency = latency;
+    return evaluateBm25Health(health, Date.now() - start);
+  } catch {
+    return { name: PORTLESS_PROBE_NAMES.bm25Lexical, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'BM25 health unknown (database read failed)' };
+  }
+}
+
 export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
@@ -2360,7 +2418,7 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
   const probeSpecs = specs ?? resolveHealthEndpoints();
-  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary, bm25Lexical] = await Promise.all([
     Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
@@ -2370,8 +2428,9 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
     probeSubstrateSidecar(),
     probeEmbedSidecar(),
     probeJournalCanary(),
+    probeBm25Lexical(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary];
+  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary, bm25Lexical];
 }
 
 /**
@@ -2404,6 +2463,8 @@ export async function probeNamedService(name: string): Promise<ProbeResult | nul
       return probeEmbedSidecar();
     case PORTLESS_PROBE_NAMES.journalCanary:
       return probeJournalCanary();
+    case PORTLESS_PROBE_NAMES.bm25Lexical:
+      return probeBm25Lexical();
     default:
       return null;
   }

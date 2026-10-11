@@ -257,6 +257,71 @@ export function fuseByPosition<T>(lists: ReadonlyArray<PositionedList<T>>): Arra
 
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
 
+/** R-2's p95 budget for a lexical query on the work-item corpus. */
+export const BM25_P95_BUDGET_MS = 50;
+
+/**
+ * Canary queries for the latency measurement: ordinary words with long posting lists, so
+ * the probe sees a realistic slow case rather than a rare-term fast one. Fixed, so two
+ * measurements are comparable.
+ */
+export const BM25_LATENCY_CANARY_QUERIES = [
+  'search ranking', 'test failure', 'plan item', 'agent session',
+  'migration index', 'release gate', 'memory recall', 'work item',
+] as const;
+
+export interface Bm25Latency {
+  corpusIndex: string;
+  samplesMs: number[];
+  p50Ms: number;
+  p95Ms: number;
+  budgetMs: number;
+  measuredAt: number;
+}
+
+/** Nearest-rank percentile; `samples` need not be sorted. */
+export function percentileMs(samples: readonly number[], p: number): number {
+  if (!samples.length) return 0;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const rank = Math.ceil((p / 100) * sorted.length);
+  return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1]!;
+}
+
+/**
+ * Time the canary queries through the seam's own BM25 fragments (top-10, as callers run
+ * them). `null` when the corpus has no usable BM25 index here, so there is nothing to time.
+ */
+export async function measureBm25Latency(
+  sql: Sql,
+  table: Bm25CorpusTable = 'work_items',
+  queries: readonly string[] = BM25_LATENCY_CANARY_QUERIES,
+): Promise<Bm25Latency | null> {
+  const corpus = bm25Corpus(table);
+  if (!(await readBm25Indexes(sql)).has(corpus.indexName)) return null;
+  const from = sql.unsafe(`${SCHEMA}.${corpus.table}`);
+  const run = (query: string) => {
+    const leg = bm25Leg(sql, corpus, query);
+    return sql`SELECT ${leg.score} AS score FROM ${from} WHERE ${leg.match} ORDER BY ${leg.order} LIMIT 10`;
+  };
+  // One untimed query first: with eight samples p95 is the slowest one, and a cold first
+  // query (planning, index metapage reads) would otherwise be judged as steady-state latency.
+  if (queries[0] !== undefined) await run(queries[0]);
+  const samplesMs: number[] = [];
+  for (const query of queries) {
+    const started = performance.now();
+    await run(query);
+    samplesMs.push(performance.now() - started);
+  }
+  return {
+    corpusIndex: corpus.indexName,
+    samplesMs,
+    p50Ms: percentileMs(samplesMs, 50),
+    p95Ms: percentileMs(samplesMs, 95),
+    budgetMs: BM25_P95_BUDGET_MS,
+    measuredAt: Date.now(),
+  };
+}
+
 export interface Bm25Health {
   status: Bm25HealthStatus;
   flagOn: boolean;
@@ -265,16 +330,19 @@ export interface Bm25Health {
   /** Registered corpora whose table exists here but whose BM25 index is missing or invalid. */
   missingIndexes: string[];
   presentIndexes: string[];
+  /** The latency measurement judged against the budget, when the caller supplied one. */
+  latency: Bm25Latency | null;
   /** One line naming what is wrong, for the health surface. */
   reason: string | null;
 }
 
 /**
- * The BM25 health verdict (D-003 §4): `degraded` when the flag is on but lexical search is
- * (partly) falling back to ts_rank — the library is not loaded, the extension is not
- * installed, or a registered corpus whose table exists has no valid BM25 index.
+ * The BM25 health verdict (D-003 §4, plan item P-004): `degraded` when the flag is on but
+ * lexical search is (partly) falling back to ts_rank — the library is not loaded, the
+ * extension is not installed, or a registered corpus whose table exists has no valid BM25
+ * index — or when a supplied latency measurement's p95 exceeds its budget (R-2).
  */
-export async function bm25Health(sql: Sql): Promise<Bm25Health> {
+export async function bm25Health(sql: Sql, opts: { latency?: Bm25Latency | null } = {}): Promise<Bm25Health> {
   const flagOn = await bm25FlagOn();
   const [probe] = await sql<{ library: boolean; extension: boolean; tables: string[] }[]>`
     SELECT current_setting('pg_textsearch.library_version', true) IS NOT NULL AS library,
@@ -295,6 +363,10 @@ export async function bm25Health(sql: Sql): Promise<Bm25Health> {
   if (!libraryLoaded) reason = 'pg_textsearch is not in shared_preload_libraries';
   else if (!extensionInstalled) reason = 'the pg_textsearch extension is not installed (run harness_shared.bm25_ensure_indexes())';
   else if (missingIndexes.length) reason = `BM25 index missing: ${missingIndexes.join(', ')}`;
+  const latency = opts.latency ?? null;
+  if (!reason && latency && latency.p95Ms > latency.budgetMs) {
+    reason = `lexical p95 ${latency.p95Ms.toFixed(1)}ms on ${latency.corpusIndex} exceeds the ${latency.budgetMs}ms budget`;
+  }
   const status: Bm25HealthStatus = !flagOn ? 'off' : reason ? 'degraded' : 'ok';
-  return { status, flagOn, libraryLoaded, extensionInstalled, missingIndexes, presentIndexes, reason };
+  return { status, flagOn, libraryLoaded, extensionInstalled, missingIndexes, presentIndexes, latency, reason };
 }
