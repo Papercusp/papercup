@@ -11,10 +11,11 @@ import { build } from 'esbuild';
 import { chromium, request as apiRequest, type BrowserContext, type Page } from 'playwright-core';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMessageById, readAckedMsgIds, readInbox } from '../lib/agent-tools/coordination/messages';
-import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
+import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt, verifyPrivateInsightsDenialCoverage } from './private-coord-receipt';
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
 import type { PrRowData } from '../lib/pr-host/pr-row-data';
 import type { PrViewerDetails } from '../lib/pr-host/pr-viewer';
+import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-insights/card-types';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -123,6 +124,8 @@ type PortalRosterBrowserInput = {
   health?: boolean;
   brainstorm?: boolean;
   prs?: boolean;
+  insights?: boolean;
+  insightsHarnesses?: { selected: string; neighbor: string; foreign: string };
   brainstormHarnesses?: { selected: string; neighbor: string; foreign: string };
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
@@ -141,7 +144,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -229,7 +232,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
-  ` : input.docs || input.brainstorm || input.prs ? `
+  ` : input.docs || input.brainstorm || input.prs || input.insights ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -239,11 +242,17 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const panel = React.createElement(React.Fragment, null,
-      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
+      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.insights ? 'insights' : input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
       ${input.brainstorm || input.prs ? 'React.createElement(Toaster)' : 'null'},
       ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'});
+    function Fixture() {
+      const [open, setOpen] = React.useState(true);
+      return React.createElement(React.Fragment, null,
+        ${input.insights ? "React.createElement('button', { onClick: () => setOpen(!open) }, open ? 'Close Insights' : 'Open Insights')," : ''}
+        open ? panel : null);
+    }
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      ${input.brainstorm || input.prs ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, panel)" : 'panel'}) });
+      ${input.brainstorm || input.prs || input.insights ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -340,8 +349,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.prs || input.overview || input.hud || input.health || input.harnesses
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.prs || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.prs || input.insights || input.overview || input.hud || input.health || input.harnesses
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -388,7 +397,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
     ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.brainstorm
     ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.prs
-    ? '/apps/operator/app/harness/PrsTab.tsx' : input.docs
+    ? '/apps/operator/app/harness/PrsTab.tsx' : input.insights
+    ? '/apps/operator/app/harness/insights/InsightsTab.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -434,9 +444,10 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 }
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
-  options: { brainstormHydration?: boolean; prsRead?: boolean } = {}) {
+  options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
+  assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const writes: Array<{ surface: string; body: any }> = [];
@@ -463,6 +474,25 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   let prsFail = false;
   let detailsFail = false;
   const prWrites: string[] = [];
+  let insightsFail = true;
+  let tokensFail = false;
+  const overview = (slug: string): InsightsTabProps => ({
+    project: { name: `preflight-${slug}-project`, description: 'Explicit component fixture',
+      ownerDisplayName: 'fixture-viewer', claimStatus: 'unclaimed', githubUrl: 'https://example.invalid/fixture' },
+    activity: { events: [] }, people: { people: [] },
+    yourPlace: { queue: { queued: 0, working: 0, shipped_this_week: 0 },
+      role: { pr_reviewer_enabled: false, is_provisional_owner: false, is_claimant: false },
+      trust: { trusted_authors_count: 0, trusted_by_count: 0 } },
+    howItWorks: { harnessName: slug, config: { has_orchestrator: false, pr_reviewer_role_enabled: false,
+      auto_review: false, auto_merge: false, merge_method: 'squash', branch_policy: 'main-fast-forward' } },
+    spend: { harnessTotalUsdThisWeek: slug === input.selected ? 1.25 : 9,
+      estimatedUsdThisWeek: 0, tokensThisWeek: 42, runsThisWeek: 1 },
+  });
+  const tokens = (slug: string): TokensDashboardSnapshot => ({ windowMs: 604_800_000,
+    totals: { tokens: 42, costUsd: slug === input.selected ? 1.25 : 9, estimatedUsd: 0, runs: 1,
+      inputTokens: 10, outputTokens: 2, cacheReadTokens: 25, cacheCreationTokens: 5 },
+    byModel: [{ key: `preflight-${slug}-model`, tokens: 42, costUsd: 1.25, runs: 1 }],
+    byRole: [], byAccount: [], byDay: [], accountAttributionAvailable: false });
   let releaseHydration!: () => void;
   const hydration = new Promise<void>(done => { releaseHydration = done; });
   const savedMap = 'preflight-saved-map';
@@ -478,8 +508,20 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.prsRead && request.method !== 'GET') {
+    if ((options.prsRead || options.insightsRead) && request.method !== 'GET') {
       prWrites.push(pathname); response.writeHead(405); response.end();
+    } else if (options.insightsRead && pathname.startsWith('/api/harness/') && pathname.endsWith('/insights')) {
+      const slug = decodeURIComponent(pathname.split('/')[3]);
+      reads.push({ name: 'insights.overview', args: { harness: slug } });
+      response.writeHead(insightsFail ? 503 : 200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(insightsFail ? { error: 'fixture Insights read unavailable' } : { insights: overview(slug) }));
+    } else if (options.insightsRead && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
+      reads.push({ name, args });
+      response.writeHead(tokensFail && name === 'insights.tokens' ? 500 : 200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(tokensFail && name === 'insights.tokens' ? { error: 'fixture token read unavailable' }
+        : { rows: name === 'insights.tokens' ? [tokens(args.harness)] : [] }));
     } else if (options.prsRead && pathname === '/api/zero-harness/rest-query') {
       const name = requestUrl.searchParams.get('name');
       const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
@@ -569,15 +611,58 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     // replaceState even when the component itself initialized correctly.
     const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
       ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
-    if (options.brainstormHydration || options.prsRead) url.searchParams.set('slug', input.selected);
-    if (options.prsRead) {
-      url.searchParams.set('app', 'prs'); url.searchParams.set('q', 'preflight-search');
+    if (options.brainstormHydration || options.prsRead || options.insightsRead) url.searchParams.set('slug', input.selected);
+    if (options.prsRead || options.insightsRead) {
+      url.searchParams.set('app', options.insightsRead ? 'insights' : 'prs'); url.searchParams.set('q', 'preflight-search');
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
     try { await (input.harnesses ? page.getByTestId('pot-workspace-cards')
-      : page.getByRole('region', { name: input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
+      : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.insightsRead) {
+      await page.getByRole('alert').filter({ hasText: 'Could not load insights: HTTP 503' }).waitFor();
+      insightsFail = false;
+      await page.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
+      const selectedProject = page.getByTestId('insights-overview').getByText(overview(input.selected).project.name, { exact: true });
+      await selectedProject.waitFor();
+      const tabs = page.getByRole('tablist', { name: 'Insights view' });
+      await tabs.getByRole('tab', { name: 'Tokens', exact: true }).focus(); await page.keyboard.press('Enter');
+      await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor();
+      await page.getByText(`preflight-${input.selected}-model`, { exact: true }).waitFor();
+      const assertQuery = (slug: string) => {
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'insights'); assert.equal(params.get('slug'), slug);
+        assert.equal(params.get('q'), 'preflight-search'); assert.equal(params.get('ws'), 'preflight-workspace');
+        assert.equal(params.get('insightView'), 'tokens');
+      };
+      assertQuery(input.selected); await page.reload();
+      await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor();
+      assertQuery(input.selected);
+      tokensFail = true;
+      await page.getByRole('button', { name: 'Reload token spend' }).focus(); await page.keyboard.press('Enter');
+      await page.getByText(/Token spend unavailable:/).waitFor();
+      tokensFail = false; await page.getByRole('button', { name: 'Reload token spend' }).click();
+      await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor();
+      await tabs.getByRole('tab', { name: 'Overview', exact: true }).click(); await selectedProject.waitFor();
+      insightsFail = true;
+      await page.getByRole('button', { name: 'Close Insights', exact: true }).click();
+      await page.getByRole('button', { name: 'Open Insights', exact: true }).click();
+      await page.getByRole('alert').filter({ hasText: 'Could not refresh insights' }).waitFor();
+      await selectedProject.waitFor();
+      insightsFail = false; await page.getByRole('button', { name: 'Retry', exact: true }).click();
+      await page.getByRole('alert').waitFor({ state: 'detached' });
+      const neighborUrl = new URL(url); neighborUrl.searchParams.set('slug', input.neighbor);
+      neighborUrl.searchParams.set('insightView', 'tokens');
+      await page.goto(neighborUrl.href);
+      await page.getByTestId('tokens-stat-cost').getByText('$9.0', { exact: true }).waitFor();
+      assertQuery(input.neighbor);
+      assert.ok(reads.some(r => r.name === 'insights.tokens' && r.args.harness === input.selected));
+      assert.ok(reads.some(r => r.name === 'insights.tokens' && r.args.harness === input.neighbor));
+      assert.ok(reads.filter(r => ['insights.overview', 'insights.tokens'].includes(r.name ?? ''))
+        .every(r => [input.selected, input.neighbor].includes(r.args.harness)), 'Insights reads must use the current pot');
+      assert.deepEqual(prWrites, [], 'Insights journey must send no writes');
+    }
     if (options.prsRead) {
       await page.getByText(prRows[0].title, { exact: true }).waitFor();
       await page.getByText(prRows[1].title, { exact: true }).waitFor();
@@ -704,7 +789,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (!input.harnesses && !options.brainstormHydration && !options.prsRead) assert.match(await page.locator('body').innerText(), /Select a /);
+    if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) assert.match(await page.locator('body').innerText(), /Select a /);
     if (input.brainstorm) {
       // Both preflights compile the real lazy editor graph. The selected-row
       // variant supplies an HTTP response, not private API persistence proof.
@@ -716,9 +801,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     return { sourceCount: built.originals.size, mounted: true, ...(options.brainstormHydration
       ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}),
       ...(options.prsRead ? { prsRead: true, filterKeyboard: true, detailReload: true, readRecovery: true,
-        subjectPreserved: true, noOutwardWrites: true, providerUsed: false } : {}) };
+        subjectPreserved: true, noOutwardWrites: true, providerUsed: false } : {}),
+      ...(options.insightsRead ? { insightsRead: true, keyboardTabs: true, tokensReload: true,
+        coldRetry: true, warmRetry: true, tokenRetry: true, subjectPreserved: true,
+        neighborDistinct: true, noOutwardWrites: true, providerUsed: false } : {}) };
   } catch (error) {
-    if (page && (options.brainstormHydration || options.prsRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence, error, errors);
       console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);
@@ -791,6 +879,91 @@ export async function verifyPortalOverviewNavigation(portalSourceRoot: string) {
   }
 }
 
+async function runPrivateInsightsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const { selected, neighbor, foreign } = input.insightsHarnesses!;
+  const { workspace, evidence, base } = input;
+  let overviewDenied = true;
+  let tokensDenied = false;
+  let denialControl = 'cold-overview';
+  const denials: Array<{ control: string; url: string; status: number; body: string }> = [];
+  const retainDenials = () => writeFileSync(join(evidence, 'portal-insights-denials.json'), JSON.stringify(denials, null, 2));
+  const refuse = async (route: import('playwright-core').Route) => {
+    const control = denialControl;
+    const response = await route.fetch({ headers: { ...route.request().headers(), host: 'foreign-insights.invalid' } });
+    const body = await response.text();
+    denials.push({ control, url: route.request().url(), status: response.status(), body });
+    retainDenials();
+    verifyPrivateHudHostDenial(response.status(), body);
+    await route.fulfill({ response });
+  };
+  await context.route('**/api/harness/*/insights', route => overviewDenied ? refuse(route) : route.continue());
+  await context.route(url => url.pathname === '/api/zero-harness/rest-query', route =>
+    tokensDenied && new URL(route.request().url()).searchParams.get('name') === 'insights.tokens'
+      ? refuse(route) : route.continue());
+  await page.goto(url.href);
+  await page.getByRole('alert').filter({ hasText: 'Could not load insights: HTTP 403' }).waitFor();
+  overviewDenied = false;
+  await page.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
+  const project = page.getByTestId('insights-overview').getByText(selected, { exact: true });
+  await project.waitFor();
+  const overviewRead = await context.request.get(new URL(`/api/harness/${encodeURIComponent(selected)}/insights`, base).href);
+  assert.equal(overviewRead.status(), 200);
+  const overview = (await overviewRead.json()).insights as InsightsTabProps;
+  assert.equal(overview.project.name, selected);
+  assert.equal(overview.spend.harnessTotalUsdThisWeek, 1.25, 'overview must exclude neighbor and foreign workspace samples');
+  const tabs = page.getByRole('tablist', { name: 'Insights view' });
+  await tabs.getByRole('tab', { name: 'Tokens', exact: true }).focus(); await page.keyboard.press('Enter');
+  await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor();
+  const tokensUrl = new URL('/api/zero-harness/rest-query', base);
+  tokensUrl.searchParams.set('name', 'insights.tokens');
+  tokensUrl.searchParams.set('args', JSON.stringify({ harness: selected }));
+  tokensUrl.searchParams.set('ws', workspace);
+  const response = await context.request.get(tokensUrl.href);
+  assert.equal(response.status(), 200);
+  const snapshot = (await response.json()).rows[0] as TokensDashboardSnapshot;
+  assert.equal(snapshot.totals.costUsd, 1.25);
+  assert.equal(snapshot.totals.tokens, 42, 'cache-inclusive tokens must equal all four seeded classes');
+  assert.equal(snapshot.totals.runs, 1);
+  const assertQuery = (slug: string) => {
+    const params = new URL(page.url()).searchParams;
+    assert.equal(params.get('app'), 'insights'); assert.equal(params.get('slug'), slug);
+    assert.equal(params.get('q'), 'retained-shell-search'); assert.equal(params.get('ws'), workspace);
+    assert.equal(params.get('insightView'), 'tokens');
+  };
+  assertQuery(selected); await page.reload();
+  await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor(); assertQuery(selected);
+  denialControl = 'token-refresh';
+  tokensDenied = true; await page.getByRole('button', { name: 'Reload token spend' }).click();
+  await page.getByText(/Token spend unavailable:/).waitFor();
+  tokensDenied = false; await page.getByRole('button', { name: 'Reload token spend' }).click();
+  await page.getByTestId('tokens-stat-cost').getByText('$1.3', { exact: true }).waitFor();
+  await tabs.getByRole('tab', { name: 'Overview', exact: true }).click(); await project.waitFor();
+  overviewDenied = true;
+  denialControl = 'warm-overview';
+  await page.getByRole('button', { name: 'Close Insights', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Insights', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Could not refresh insights' }).waitFor(); await project.waitFor();
+  overviewDenied = false; await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByRole('alert').waitFor({ state: 'detached' });
+  const neighborUrl = new URL(url); neighborUrl.searchParams.set('slug', neighbor); neighborUrl.searchParams.set('insightView', 'tokens');
+  await page.goto(neighborUrl.href);
+  await page.getByTestId('tokens-stat-cost').getByText('$9.0', { exact: true }).waitFor(); assertQuery(neighbor);
+  const { sql } = getOrgPg();
+  const rows = await sql`SELECT workspace_id, harness_slug, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+    FROM harness_shared.agent_usage_samples WHERE source = 'private-insights-fixture' ORDER BY workspace_id, harness_slug`;
+  assert.equal(rows.length, 3);
+  assert.equal(Number(rows.find(row => row.workspace_id === workspace && row.harness_slug === selected)?.cost_usd), snapshot.totals.costUsd);
+  assert.equal(Number(rows.find(row => row.workspace_id === workspace && row.harness_slug === neighbor)?.cost_usd), 9);
+  assert.equal(Number(rows.find(row => row.workspace_id === workspace + '-foreign' && row.harness_slug === foreign)?.cost_usd), 99);
+  writeFileSync(join(evidence, 'portal-insights-reads.json'), JSON.stringify({ selected, neighbor, foreign,
+    overview, snapshot, denials, samples: rows, denialTransport: 'actual operator Host guard response relayed into native browser reads' }, null, 2));
+  const denialCoverage = verifyPrivateInsightsDenialCoverage(denials);
+  return { workspace, authMethod: 'private-loopback-insights-with-cookie', selected, neighbor, foreign,
+    overviewPgAgreement: true, tokensPgAgreement: true, keyboardTabs: true, tokensReload: true,
+    coldRetry: true, warmRetry: true, tokenRetry: true, shellQueryPreserved: true, neighborDistinct: true,
+    foreignExcluded: true, ...denialCoverage, providerUsed: false };
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
@@ -855,6 +1028,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     const url = new URL(input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
       : input.brainstorm ? '/?app=brainstorm&q=retained-shell-search'
+      : input.insights ? '/?app=insights&q=retained-shell-search'
       : input.docs ? '/?app=docs&q=retained-shell-search'
       : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
@@ -865,6 +1039,14 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
+    if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.insights) {
+      const receipt = await runPrivateInsightsPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'real Insights controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     // Observe before navigation; a fast mount can save before its caller
     // starts waiting. The response proves the API applied the initial scene.
     const initialBrainstormSaves = input.brainstormHarnesses ? Promise.all(['brainstorm-mindmap', 'brainstorm-canvas']
@@ -1427,12 +1609,25 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
     scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector. Initial snapshot/history population and destination geometry are supplied; other collector accuracy, hosted tenant authorization and full Portal acceptance remain unmeasured' };
 }
 
+/** Preserve the complete grouped-nav identity when filenames repeat. */
+export function privateDocsNavButton(page: Page, docPath: string) {
+  const slash = docPath.lastIndexOf('/');
+  const dir = slash < 0 ? '/' : docPath.slice(0, slash);
+  const name = docPath.slice(slash + 1).replace(/\.(md|mdx)$/, '');
+  const directory = page.getByText(dir, { exact: true }).and(page.locator('.pc-adv-docs__navdir'));
+  return page.locator('.pc-adv-docs__navgroup').filter({ has: directory })
+    .getByRole('button', { name, exact: true });
+}
+
 /** Actual ADV panel, merged docs read and anchored manual verification. */
 async function runPrivateDocsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
   const docs = input.docs!;
   const endpoint = `/api/harness/${encodeURIComponent(docs.harness)}/docs`;
   const article = page.locator('.pc-adv-docs__article');
   const writes: Array<{ status: number; target: string; body: any }> = [];
+  const readDenials: Array<{ control: string; url: string; status: number; body: string }> = [];
+  let deniedRead: 'cold-read' | 'warm-refresh' | null = 'cold-read';
+  const readRoute = (url: URL) => url.pathname === endpoint;
   const states: unknown[] = [];
   const assertState = async (verifiedSha: string | null) => {
     const rows = await getOrgPg().sql<{ doc_id: string; status: string; last_verified_sha: string | null }[]>`
@@ -1449,14 +1644,55 @@ async function runPrivateDocsPage(page: Page, context: BrowserContext, input: Po
   };
   await page.getByRole('region', { name: 'ADV Docs workspace' }).waitFor();
   await article.getByRole('heading', { name: docs.neighborHeading, exact: true }).waitFor();
-  const selectedName = docs.selectedDoc.split('/').pop()!.replace(/\.(md|mdx)$/, '');
-  const select = page.getByRole('button', { name: selectedName, exact: true });
+  await assertState(null);
+  // Reload starts a new browser realm with no Docs cache. Forward the real
+  // private Host refusal, retaining every response before any assertion.
+  await context.route(readRoute, async route => {
+    const control = deniedRead;
+    if (!control) return route.continue();
+    const response = await route.fetch({ headers: { ...route.request().headers(), host: 'foreign-docs.invalid' } });
+    const body = await response.text();
+    readDenials.push({ control, url: route.request().url(), status: response.status(), body });
+    writeFileSync(join(input.evidence, 'portal-docs-read-denials.json'), JSON.stringify(readDenials, null, 2));
+    verifyPrivateHudHostDenial(response.status(), body);
+    await route.fulfill({ response });
+  });
+  const coldUrl = page.url();
+  await page.reload();
+  await page.getByRole('alert').filter({ hasText: 'Could not load docs: HTTP 403' }).waitFor();
+  assert.equal(page.url(), coldUrl);
+  await assertState(null);
+  deniedRead = null;
+  await page.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
+  await article.getByRole('heading', { name: docs.neighborHeading, exact: true }).waitFor();
+  assert.equal(page.url(), coldUrl);
+  assert.equal(await page.getByRole('alert').count(), 0);
+  const select = privateDocsNavButton(page, docs.selectedDoc);
   await select.focus(); await page.keyboard.press('Enter');
   await page.waitForURL(url => url.searchParams.get('docpath') === docs.selectedDoc);
   await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
   assert.equal(await select.getAttribute('aria-current'), 'page');
   const selectedUrl = page.url();
   assert.equal(new URL(selectedUrl).searchParams.get('q'), 'retained-shell-search');
+  await privateDocsNavButton(page, docs.neighborDoc).focus(); await page.keyboard.press('Enter');
+  await article.getByRole('heading', { name: docs.neighborHeading, exact: true }).waitFor();
+  deniedRead = 'warm-refresh';
+  await select.focus(); await page.keyboard.press('Enter');
+  await page.getByRole('alert').filter({ hasText: 'Could not refresh docs: HTTP 403' }).waitFor();
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  assert.equal(page.url(), selectedUrl);
+  await assertState(null);
+  deniedRead = null;
+  await page.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
+  await page.getByRole('alert').waitFor({ state: 'detached' });
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  assert.equal(page.url(), selectedUrl);
+  await context.unroute(readRoute);
+  for (const control of ['cold-read', 'warm-refresh']) {
+    const denials = readDenials.filter(row => row.control === control);
+    assert.ok(denials.length > 0, `Docs must retain the actual ${control} refusal`);
+    for (const denial of denials) verifyPrivateHudHostDenial(denial.status, denial.body);
+  }
   await page.reload();
   await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
   assert.equal(page.url(), selectedUrl);
@@ -1511,8 +1747,10 @@ async function runPrivateDocsPage(page: Page, context: BrowserContext, input: Po
     selectedDoc: docs.selectedDoc, neighborDoc: docs.neighborDoc, keyboardSelection: true, deepLinkReload: true,
     shellQueryPreserved: true, denialStatus: 403, articleRetained: true, deniedWriteIsolated: true,
     retryPersisted: true, neighborIsolated: true, verifiedSha: accepted.body.verifiedSha, writes,
+    coldReadRetry: true, warmReadRetry: true, cachedArticleRetained: true, deniedReadNoWrite: true,
+    readDenialControls: ['cold-read', 'warm-refresh'], readDenials,
     denialTransport: 'real-upstream-response-forwarded',
-    scope: 'Actual maintained ADV Docs panel and private merged-read/manual-verify API/PG effects; canonical repo read only, no whole Portal, hosted authorization, provider, warm-remount or shipment acceptance' };
+    scope: 'Actual maintained ADV Docs panel and private merged-read/manual-verify API/PG effects, cold realm read recovery and selected-doc cached revalidation recovery; canonical repo read only, no whole Portal, hosted authorization, provider, cross-tab warm-remount or shipment acceptance' };
 }
 
 /** Actual workspace prompts outline and its production sync/write clients. */

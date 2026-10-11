@@ -11,11 +11,54 @@ import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
 import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
 import { PANEL_ORDER } from './system-health/types';
-import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
+import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt, verifyPrivateInsightsDenialCoverage } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
+import { chromium } from 'playwright-core';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport } from '../test/portal-roster-browser-fixture';
+import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport } from '../test/portal-roster-browser-fixture';
+
+it('selects the exact Docs directory by keyboard when index labels repeat', async () => {
+  const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<aside class="pc-adv-docs__nav">
+      <section class="pc-adv-docs__navgroup"><div class="pc-adv-docs__navdir">/</div>
+        <button onclick="document.querySelector('output').textContent='index.mdx'">index</button>
+        <button>guides</button></section>
+      <section class="pc-adv-docs__navgroup"><div class="pc-adv-docs__navdir">guides</div>
+        <button onclick="document.querySelector('output').textContent='guides/index.mdx'">index</button></section>
+      <section class="pc-adv-docs__navgroup"><div class="pc-adv-docs__navdir">guides/deep</div>
+        <button onclick="document.querySelector('output').textContent='guides/deep/index.mdx'">index</button></section>
+      </aside><output></output>`);
+    expect(await page.getByRole('button', { name: 'index', exact: true }).count()).toBe(3);
+    for (const path of ['index.mdx', 'guides/index.mdx', 'guides/deep/index.mdx']) {
+      const selected = privateDocsNavButton(page, path);
+      expect(await selected.count()).toBe(1);
+      await selected.focus(); await page.keyboard.press('Enter');
+      expect(await page.locator('output').textContent()).toBe(path);
+    }
+  } finally { await browser.close(); }
+});
+
+it('accepts repeated actual Insights refusals while requiring each distinct UI control', () => {
+  const denial = (control: string) => ({ control, status: 403, body: '{"error":{"code":"host_not_allowed"}}' });
+  const records = ['cold-overview', 'token-refresh', 'token-refresh', 'token-refresh', 'token-refresh', 'token-refresh', 'warm-overview'].map(denial);
+  expect(verifyPrivateInsightsDenialCoverage(records)).toEqual({ hostDenials: 7,
+    denialControls: ['cold-overview', 'token-refresh', 'warm-overview'] });
+  for (const missing of ['cold-overview', 'token-refresh', 'warm-overview']) {
+    expect(() => verifyPrivateInsightsDenialCoverage(records.filter(record => record.control !== missing)))
+      .toThrow(`missing actual Host denial for ${missing}`);
+  }
+});
+
+it('rejects a successful, unrelated or uncorrelated Insights denial receipt', () => {
+  const records = ['cold-overview', 'token-refresh', 'warm-overview']
+    .map(control => ({ control, status: 403, body: '{"error":{"code":"host_not_allowed"}}' }));
+  expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], status: 200 }, ...records.slice(1)])).toThrow();
+  expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], body: '{"error":{"code":"unrelated"}}' }, ...records.slice(1)])).toThrow();
+  expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], control: 'unknown' }, ...records.slice(1)])).toThrow('intended UI control');
+});
 
 it('records submodule source at the original superproject pin even after its checkout moves', async () => {
   const fixture = mkdtempSync(join(tmpdir(), 'isolated-source-gitlink-'));
