@@ -59,6 +59,8 @@ export interface ElevenLabsAgentDefinition {
   };
   /** Seconds; ElevenLabs ends the call after this. Tutorial profile caps it (P-011). */
   maxDurationSeconds: number;
+  /** Tutorial sessions must keep the server-owned prompt immutable. */
+  allowSessionOverrides?: boolean;
 }
 
 export const ASK_PAPERCUP_TOOL: ElevenLabsClientTool = {
@@ -114,6 +116,7 @@ export const PAPERCUP_FRONT_AGENT: ElevenLabsAgentDefinition = {
 
 /** The agent body ElevenLabs stores. Tools are attached by id, never inline. */
 export function buildAgentConfig(def: ElevenLabsAgentDefinition, toolIds: string[]): Record<string, unknown> {
+  const allowSessionOverrides = def.allowSessionOverrides ?? true;
   return {
     name: def.name,
     conversation_config: {
@@ -137,7 +140,7 @@ export function buildAgentConfig(def: ElevenLabsAgentDefinition, toolIds: string
       // voice stay fixed by this definition.
       overrides: {
         conversation_config_override: {
-          agent: { prompt: { prompt: true }, first_message: true, language: true },
+          agent: { prompt: { prompt: allowSessionOverrides }, first_message: allowSessionOverrides, language: allowSessionOverrides },
           tts: { voice_id: false },
         },
       },

@@ -170,6 +170,22 @@ describe('syncElevenLabsAgent', () => {
 });
 
 describe('buildAgentConfig', () => {
+  it('persists an immutable tutorial profile through the actual agent sync', async () => {
+    const fake = fakeElevenLabs();
+    const { d } = deps(fake, null);
+    const result = await syncElevenLabsAgent({ ...PAPERCUP_FRONT_AGENT,
+      name: 'Papercup tutorial', allowSessionOverrides: false, maxDurationSeconds: 180,
+    }, d);
+    const agent = fake.agents.get(result.agentId)! as {
+      platform_settings: { overrides: { conversation_config_override: Record<string, unknown> } };
+      conversation_config: { conversation: { max_duration_seconds: number } };
+    };
+    expect(agent.platform_settings.overrides.conversation_config_override).toEqual({
+      agent: { prompt: { prompt: false }, first_message: false, language: false },
+      tts: { voice_id: false },
+    });
+    expect(agent.conversation_config.conversation.max_duration_seconds).toBe(180);
+  });
   it('attaches tools by id only and lets sessions override the prompt and first message but not tools or voice', () => {
     const cfg = buildAgentConfig(PAPERCUP_FRONT_AGENT, ['tool_x']) as {
       conversation_config: { agent: { prompt: Record<string, unknown> }; conversation: { max_duration_seconds: number } };
