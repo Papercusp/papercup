@@ -82,6 +82,7 @@ import {
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { previewProductShaping } from './product-shaping';
 import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
@@ -199,7 +200,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
     'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
   ),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
-    'Activation phase only: the exact PlanClassRubricRef used by plans:evaluate-spec-quality. Required; never infer it from plan prose.',
+    'Activation: the plans:evaluate-spec-quality class; derived when omitted; must match the acceptance class. Ignored at completion.',
   ),
   items: z.array(itemSchema).min(1).max(200).optional().describe('Completion phase only: one entry per plan item audited.'),
   findings: z.array(findingSchema).max(50).optional().describe('Completion phase only: out-of-scope discoveries.'),
@@ -225,14 +226,8 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   if (args.phase === 'activation') {
     // Whether coverage is required depends on whether this is the first audit.
     // The prior-audit lookup is async and belongs in the handler, so the input
-    // schema must admit omitted/empty arrays for carry-forward re-audits.
-    if (args.classRef === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['classRef'],
-        message: 'classRef is required for activation and must be the exact prior spec-quality evaluation class',
-      });
-    }
+    // schema must admit omitted/empty arrays for carry-forward re-audits. An omitted
+    // classRef is derived in the handler from the latest spec-quality evaluation (P-003).
     if (args.mappings && new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
     }
@@ -249,7 +244,8 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
     if (!args.items) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
     }
-    for (const field of ['sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+    // classRef is accepted and ignored here (with a result note) rather than refused (P-003).
+    for (const field of ['sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers'] as const) {
       if (args[field] !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is activation-phase only` });
       }
@@ -257,7 +253,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   }
 }).meta({
   'x-papercusp-call-constraint':
-    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef required; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef, sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
+    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {
@@ -360,6 +356,13 @@ export default defineTool({
       barSeedPendingAmendment: z.unknown().optional(),
       barSeedPendingRepair: z.unknown().optional(),
       activationReadiness: z.object({ consult: z.unknown() }).optional(),
+      // P-003: which class seeded the BARs, and whether the caller supplied it or it was
+      // derived from the plan's latest plans:evaluate-spec-quality card.
+      classRefResolution: z.object({
+        classRef: z.enum(PLAN_CLASS_RUBRIC_REFS),
+        source: z.enum(['supplied', 'derived']),
+        evaluationScorecardId: z.string().optional(),
+      }).optional(),
       // WI-10008137: outcome of the plans:start run that follows a recorded
       // activation audit on a draft plan (started, or plans:start's refusal).
       autoStart: z.unknown().optional(),
@@ -413,19 +416,23 @@ export default defineTool({
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
-      if (!args.classRef) {
+      const classResolution = await resolveActivationClassRef({
+        planSlug: args.slug, harnessSlug: harnessSlug ?? '', suppliedClassRef: args.classRef,
+      });
+      if (!classResolution.ok) {
         return { data: {
           ok: false as const,
           slug: args.slug,
           phase: 'activation' as const,
           error: 'activation_audit_invalid',
           problems: [{
-            code: 'class_ref_required',
-            detail: 'classRef must be the exact PlanClassRubricRef used by plans:evaluate-spec-quality; do not infer it from plan prose',
+            code: classResolution.code,
+            detail: classResolution.detail,
           }],
           message: 'Activation audits require the exact evaluated PlanClassRubricRef so the acceptance BAR seed preserves plan-class provenance.',
         } };
       }
+      const activationClassRef = classResolution.classRef;
       const submittedActivation: ActivationAuditPayload = {
         sourceRanges: (args.sourceRanges ?? []).map((range) => {
           // `sessions:list` exposes both the raw session id and the convenient
@@ -795,7 +802,7 @@ export default defineTool({
           const seedPreview = await previewCurrentActivationAudit({
             workspaceId, harnessSlug: harnessSlug ?? '', planSlug: args.slug,
             createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-            classRef: args.classRef, activation,
+            classRef: activationClassRef, activation,
           });
           if (!seedPreview.ok) return { data: {
             ...seedPreview, slug: args.slug, phase: 'activation' as const,
@@ -829,7 +836,7 @@ export default defineTool({
         planSlug: args.slug,
         harnessSlug: harnessSlug ?? '',
         createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-        classRef: args.classRef,
+        classRef: activationClassRef,
         activation,
         summary: args.summary ?? null,
       });
@@ -1069,6 +1076,13 @@ export default defineTool({
         itemProvenance: itemProvenanceResult,
         derivedSpecClauses,
         activationReadiness,
+        classRefResolution: {
+          classRef: classResolution.classRef,
+          source: classResolution.source,
+          ...(classResolution.evaluationScorecardId
+            ? { evaluationScorecardId: classResolution.evaluationScorecardId }
+            : {}),
+        },
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
         ...(recorded.barSeedPendingAmendment
           ? { barSeedPendingAmendment: recorded.barSeedPendingAmendment }
@@ -1412,7 +1426,11 @@ export default defineTool({
         `committed bytes at auditedSha; the citations' line/symbol checks read the working tree. If the ` +
         `uncommitted edits matter to these items, re-audit them after the edits are committed.`
       : null;
-    const resultNote = [partialNote, uncoveredNote, driftNote].filter((note): note is string => Boolean(note)).join(' ');
+    const classRefIgnoredNote = args.classRef
+      ? `classRef '${args.classRef}' was ignored: it applies only to phase:'activation'.`
+      : null;
+    const resultNote = [partialNote, uncoveredNote, driftNote, classRefIgnoredNote]
+      .filter((note): note is string => Boolean(note)).join(' ');
 
     if (dryRun) {
       return { data: {

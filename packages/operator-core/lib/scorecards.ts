@@ -3035,6 +3035,12 @@ export interface ListScorecardsFilter {
    */
   subjectKind?: string;
   /**
+   * Internal-only SQL LIKE pattern over the subject ref, for refs whose middle segments
+   * the caller cannot know (e.g. a plan's spec-quality cards across classes and spec-set
+   * hashes). The caller owns escaping; not exposed by `scorecards:list`.
+   */
+  subjectRefLike?: string;
+  /**
    * Restrict to scorecards grading ANY of these subjects. The batched form of
    * `subjectRef`: one scan of the rubric's cards instead of one scan per subject.
    * The newest-first limit applies to the union, so a caller that needs a
@@ -3189,6 +3195,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
        AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
        AND ${filter.subjectKind ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'kind' = ${filter.subjectKind}` : tx`TRUE`}
+       AND ${filter.subjectRefLike ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' LIKE ${filter.subjectRefLike}` : tx`TRUE`}
        AND ${
          filter.subjectRefs
            ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ANY(${[...filter.subjectRefs]}::text[])`

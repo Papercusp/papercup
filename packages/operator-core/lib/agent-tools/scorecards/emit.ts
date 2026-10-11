@@ -594,6 +594,12 @@ const scorecardEmitBaseShape = {
       .describe(
         "Subject plan/repository hive; directs deterministic checks to that tree. Independent of sourceHive.",
       ),
+    harness: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe("Subject plan's harness, as in every plans tool: sets targetHive. Refused if it disagrees with targetHive."),
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z
@@ -1407,7 +1413,7 @@ type DeterministicCheckScope =
       };
     };
 
-async function resolveDeterministicCheckScope(
+export async function resolveDeterministicCheckScope(
   args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
   input: {
     ctxHarness?: string;
@@ -3798,10 +3804,40 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    const data = await emitScorecardForToolContext(args, ctx);
+    const resolved = resolveHarnessTargetHive(args);
+    if (!resolved.ok) return { data: attachScorecardCompletionReceipt(resolved) };
+    const data = await emitScorecardForToolContext(resolved.args, ctx);
     return { data: attachScorecardCompletionReceipt(data) };
   },
 });
+
+/**
+ * plan-verification-friction-reduction-2026-10-11 P-005 (R-6): `harness` names the subject
+ * plan's harness, as in every plans tool, so it maps to `targetHive` (the subject hive that
+ * directs deterministic checks) — never to `sourceHive` (the grader's hive). A call naming
+ * both with different values is ambiguous about which tree is graded, so it is refused.
+ */
+export function resolveHarnessTargetHive<A extends { harness?: string; targetHive?: string }>(
+  args: A,
+):
+  // Distributive: the emit args are a union of vetting-channel branches, and a plain Omit
+  // would collapse them into one shape the handler cannot accept.
+  | { ok: true; args: A extends unknown ? Omit<A, 'harness'> : never }
+  | { ok: false; code: 'harness_target_hive_mismatch'; error: string } {
+  const { harness, ...rest } = args;
+  type Resolved = A extends unknown ? Omit<A, 'harness'> : never;
+  if (harness === undefined) return { ok: true, args: rest as Resolved };
+  if (rest.targetHive !== undefined && rest.targetHive !== harness) {
+    return {
+      ok: false,
+      code: 'harness_target_hive_mismatch',
+      error:
+        `harness '${harness}' and targetHive '${rest.targetHive}' disagree. Both name the subject ` +
+        "plan's hive; pass one, or pass the same value in both.",
+    };
+  }
+  return { ok: true, args: { ...rest, targetHive: harness } as Resolved };
+}
 
 type ScorecardCompletionData = {
   ok: boolean;

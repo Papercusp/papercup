@@ -3,6 +3,8 @@ import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } fr
 import scorecardEmitTool, {
   attachScorecardCompletionReceipt,
   cleanupAcceptanceGraderTasks,
+  resolveDeterministicCheckScope,
+  resolveHarnessTargetHive,
   scorecardAbortCompletionReceipt,
 } from './emit';
 import { COORD_ROLES } from '../coordination/roles';
@@ -264,5 +266,45 @@ describe('scorecard abort completion receipts', () => {
       status: 'recovery-incomplete',
       failures: ['missing-completion-receipt'],
     });
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-005 (R-6): `harness` names the subject
+// plan's harness, as in every plans tool, so it maps to targetHive — never to sourceHive.
+describe('scorecards:emit harness alias (P-005)', () => {
+  it('accepts harness and resolves the subject target hive from it', async () => {
+    const parsed = scorecardEmitTool.args.safeParse({
+      rubricRef: 'acceptance-friction-plan',
+      harness: 'papercusp',
+      sourceHive: 'grader-hive',
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const resolved = resolveHarnessTargetHive(parsed.data);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.args).toMatchObject({ targetHive: 'papercusp', sourceHive: 'grader-hive' });
+    expect(resolved.args).not.toHaveProperty('harness');
+    // The resolved targetHive is what scopes the card's deterministic checks to the subject tree.
+    const scope = await resolveDeterministicCheckScope(resolved.args, {
+      ctxHarness: 'papercusp',
+      workspaceId: 'ws-test',
+      checkRoot: '/tmp/subject-tree',
+    });
+    expect(scope).toMatchObject({ root: '/tmp/subject-tree', workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+    // A matching targetHive is the same instruction, not a conflict.
+    expect(resolveHarnessTargetHive({ harness: 'papercusp', targetHive: 'papercusp' }))
+      .toEqual({ ok: true, args: { targetHive: 'papercusp' } });
+  });
+
+  it('refuses a call whose harness disagrees with targetHive', async () => {
+    const args = { rubricRef: 'acceptance-friction-plan', harness: 'papercusp', targetHive: 'portal' };
+    expect(scorecardEmitTool.args.safeParse(args).success).toBe(true);
+    const refused = resolveHarnessTargetHive(args);
+    expect(refused).toMatchObject({ ok: false, code: 'harness_target_hive_mismatch' });
+    // The public handler refuses before any read or write, with a not-recorded receipt.
+    const result = (await scorecardEmitTool.handler(args as never, {} as never)) as { data: unknown };
+    expect(result.data).toMatchObject({ ok: false, code: 'harness_target_hive_mismatch' });
+    expect(JSON.stringify(result.data)).toContain('not-recorded');
   });
 });
