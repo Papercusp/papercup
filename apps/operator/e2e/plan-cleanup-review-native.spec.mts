@@ -109,7 +109,9 @@ test('native cleanup review selector opens an older packet with its actual findi
     await ready(`!!document.querySelector(${JSON.stringify(selector)})`);
     await native('click', selector, '--json');
     await ready(`document.querySelectorAll('[role="option"]').length === ${inventory.length}`);
-    const optionId = await measure(`document.querySelectorAll('[role="option"]')[${inventory.length - 1}].id`);
+    // Radix options need not carry an id. Give only the measured target a
+    // test-local selector so the native click still exercises the real item.
+    const optionId = await measure(`(document.querySelectorAll('[role="option"]')[${inventory.length - 1}].id = 'e2e-older-cleanup-review')`);
     expect(typeof optionId).toBe('string');
     expect(optionId).not.toBe('');
     await native('click', `[id=${JSON.stringify(optionId)}]`, '--json');
