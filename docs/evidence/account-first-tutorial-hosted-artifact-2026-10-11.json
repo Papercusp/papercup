@@ -102,6 +102,36 @@
     { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.log", "sha256": "f306b5a51e77820b2d417e5ee17fac9da2a2ee64cc5f88d92b8481c579bddf0a" },
     { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.receipts.jsonl", "sha256": "978ed93ec1c2712c714afc261be676926d58a5780670049c07d93e7ecc3005ac" }
   ],
+  "sourceCustodyRecovery": {
+    "schemaVersion": 1,
+    "workItem": "EI-25707158668505432",
+    "observedAt": "2026-10-11T18:16:36Z",
+    "originalSourceRoots": "Both original recorded roots were absent at the 18:04 custody preflight. The original source and artifact records above remain historical and unchanged.",
+    "restoredCoreRoot": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/papercusp-lint-as-committed-9d60d682b3-F4Qe2B",
+    "restoredPortalRoot": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/papercusp-lint-as-committed-0e88e2e67b-02CSKO",
+    "completePortalFingerprint": {
+      "procedure": "Remap the restored Portal workspace links to retained core9d60 with maintained remapRetainedWorkspaceLinks; copy the existing exact release's public docs through copyPublicDocsBundle without rebuilding. Compute the maintained fingerprintReleaseSource rootManifest, normalizing only restored core/Portal symlink targets to their recorded original path geometry.",
+      "remappedCoreLinks": 299,
+      "rootRecords": 493,
+      "publicDocsRecords": 62,
+      "restoredRootDigest": "47dc19c350c62de08f2981f91c1ab75312eb9a9ff4561f6a4077dcbed4b362dc",
+      "originalGeometryDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0",
+      "matchesOriginalArtifactSourceRootDigest": true,
+      "scope": "Complete Portal root-local content matches under documented path relocation. This does not assert equality of out-of-root dependency fingerprints or restore original directory identity."
+    },
+    "restoredVerifier": {
+      "root": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/tutorial-verifier-0e88-9d60-recovered-20261011T1828",
+      "procedure": "Maintained prepareVerifierSource from the restored original Portal commit, followed by verifyVerifierSource against the original receipt. Every receipt field and all 587 archived file records match. No test was run.",
+      "filesMatched": 587,
+      "recoveryReceipt": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.json",
+      "log": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.log"
+    },
+    "procedure": "Maintained lint-as-committed --materialize-only at the original full core and Portal commits, with --retain-for set to the existing exact release. verifyCommittedWorkRoot checked each commit, all required manifest paths and the exact dependent artifact hold; every manifest input SHA256 matched and both Git trees were clean.",
+    "taskId": "0mv456110481ijyrlpq",
+    "log": "/tmp/tutorial-d047-source-rematerialize-20261011T1817.log",
+    "result": "Source-only restoration completed with exit 0. No artifact rebuild or test replay occurred. The existing .papercusp-release.json exactly matches the original releaseMetadata record above.",
+    "limits": "This restores retained committed inputs for subsequent work; it does not identify the historical deletion actor, reproduce the original checkout identity, prove current runtime acceptance, or establish shipment. The deletion cause remains open on the owned work item."
+  },
   "limitations": [
     "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
     "Catalogue observation attachments retain partial-onfailure diagnostic scope even on PASS; final verdict and actual assertions are the acceptance evidence.",
