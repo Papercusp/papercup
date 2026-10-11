@@ -21,7 +21,7 @@ import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer
 import { fileURLToPath } from 'node:url';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
-import { historicalHostedProfileCensusProducer, type HostedProfileWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
+import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 
 /** Reuse the setup writer's exact ownership rules across workspace homes. */
@@ -69,26 +69,35 @@ export async function runRootCensus(options: { args?: string[]; checkpointLogDir
 const args = options.args ?? [];
 const installed = installedRootCensusProducers();
 let hostedEvidence = options.hostedProfileEvidence ?? [];
+let playwrightEvidence: PlaywrightStateWriterEvidence[] = [];
 if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefined) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     // Bound the writer dialect, not its filenames. A new destination is derived
     // from the retained command AST and must still pass installed-content proof.
-    hostedEvidence = await sql<HostedProfileWriterEvidence[]>`
+    const indexedEvidence = await sql<IndexedCensusWriterEvidence[]>`
       SELECT 'session-part:' || writer.source_kind || ':' || writer.session_id || ':' || writer.part_idx AS ref,
-        writer.text AS "toolInput", writer.ts::text AS "startedAt", receipt.ts::text AS "finishedAt"
+        writer.session_id AS "sessionId", writer.text AS "toolInput", writer.ts::text AS "startedAt", receipt.ts::text AS "finishedAt"
       FROM harness_shared.session_turn_parts writer
       JOIN harness_shared.session_turn_parts receipt USING (workspace_id, source_kind, session_id)
       WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
-        AND writer.text LIKE '%writeFileSync(destination,encrypt(%'
+        AND (writer.text LIKE '%writeFileSync(destination,encrypt(%'
+          OR (writer.text LIKE '%chromium%' AND writer.text LIKE '%statePath%'))
         AND receipt.part_idx = writer.part_idx + 1 AND receipt.part_kind = 'tool_result'
       LIMIT 101
     `;
+    const recovered = await recoverHistoricalCensusWriterEvidence(indexedEvidence);
+    // Full index entries remain usable if their archive was never retained;
+    // truncated entries still fail the whole-program validator. Browser state
+    // always needs a canonical call-id-paired receipt as well as its writer.
+    hostedEvidence = [...indexedEvidence.filter(indexed => !recovered.some(record => record.indexedRef === indexed.ref)), ...recovered];
+    playwrightEvidence = recovered;
   } finally { await sql.end(); }
 }
 const historicalHosted = await historicalHostedProfileCensusProducer(hostedEvidence);
-const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots],
-  declarations: [...installed.declarations, ...historicalHosted.declarations] });
+const historicalPlaywright = await historicalPlaywrightStateCensusProducer(playwrightEvidence);
+const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots, ...historicalPlaywright.roots],
+  declarations: [...installed.declarations, ...historicalHosted.declarations, ...historicalPlaywright.declarations] });
 installed.roots = combinedHosted.roots;
 installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller

@@ -603,6 +603,185 @@ export function historicalHostedProfileConstruction(toolInput: string, home = ho
 
 export interface HostedProfileWriterEvidence { ref: string; toolInput: string; startedAt: string; finishedAt: string }
 
+// Archived call_dQMd66bJTVYVPiteJs6wlHg9, 2026-09-05. Only path literals vary.
+// This program is evidence to parse, never a command to execute.
+const playwrightStateWriter = String.raw`const { chromium }=require('./node_modules/@playwright/test');
+const fs=require('fs');
+const identity=JSON.parse(fs.readFileSync('IDENTITY','utf8'));
+const password=fs.readFileSync('PASSWORD','utf8').trim();
+const statePath='DESTINATION';
+(async()=>{
+  const browser=await chromium.launch({headless:true,proxy:{server:'socks5://127.0.0.1:18029'}});
+  const c=await browser.newContext({serviceWorkers:'block'});const p=await c.newPage();
+  await p.goto('https://app.papercusp.com/api/hosted/auth/sign-in?returnTo=%2Fcloud-workspaces',{waitUntil:'domcontentloaded',timeout:60000});
+  for(let i=0;i<3;i++){
+    const pw=p.locator('input[type=password],input[name=password]').first();if(await pw.isVisible().catch(()=>false))break;
+    const em=p.locator('input[name=email],input[type=email]').first();await em.waitFor({state:'visible',timeout:30000});await em.fill(identity.email);
+    await p.getByRole('button',{name:/continue with email|continue|sign in/i}).first().click();await p.waitForTimeout(2500);
+  }
+  const pw=p.locator('input[type=password],input[name=password]').first();await pw.waitFor({state:'visible',timeout:30000});await pw.fill(password);
+  await p.getByRole('button',{name:/sign in|continue/i}).first().click();
+  await p.waitForURL(u=>u.hostname==='app.papercusp.com'&&u.pathname!=='/api/hosted/auth/callback',{timeout:60000,waitUntil:'domcontentloaded'});
+  const session=await p.evaluate(async()=>{const r=await fetch('/api/hosted/auth/session',{cache:'no-store'});const b=await r.json().catch(()=>null);return{status:r.status,ok:b?.ok===true,session:b?.session?{workspaceId:b.session.workspaceId??null,organizationId:b.session.organizationId??null,expiresAtMs:b.session.expiresAtMs??null,sessionVersion:b.session.sessionVersion??null}:null,error:b?.error??null}});
+  await c.storageState({path:statePath});fs.chmodSync(statePath,0o600);const st=fs.statSync(statePath);
+  console.log(JSON.stringify({final:{host:new URL(p.url()).host,path:new URL(p.url()).pathname},session,storageState:{path:statePath,mode:(st.mode&0o777).toString(8),bytes:st.size}},null,2));
+  await browser.close();
+})().catch(e=>{console.error(JSON.stringify({error:String(e),name:e?.name||null}));process.exit(1)});`;
+
+export function historicalPlaywrightStateConstruction(toolInput: string, home = homedir()) {
+  if (toolInput.length > 65_536) return null;
+  const outer = ts.createSourceFile('tool.js', toolInput, ts.ScriptTarget.Latest, true);
+  const commands: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(outer) === 'tools.exec_command' &&
+      node.arguments.length === 1 && ts.isObjectLiteralExpression(node.arguments[0])) {
+      for (const property of node.arguments[0].properties) {
+        if (ts.isPropertyAssignment(property) && property.name.getText(outer) === 'cmd' && ts.isStringLiteralLike(property.initializer)) commands.push(property.initializer.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(outer);
+  if (commands.length !== 1) return null;
+  const match = commands[0].match(/^node - <<'NODE'\n([\s\S]*)\nNODE$/);
+  if (!match) return null;
+  const program = ts.createSourceFile('writer.js', match[1], ts.ScriptTarget.Latest, true);
+  const paths = new Map<string, string>();
+  const findPaths = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      if (node.name.text === 'statePath' && ts.isStringLiteral(node.initializer)) paths.set('DESTINATION', node.initializer.text);
+      if (['identity', 'password'].includes(node.name.text)) {
+        const literals: string[] = [];
+        const findRead = (child: ts.Node) => {
+          if (ts.isCallExpression(child) && child.expression.getText(program) === 'fs.readFileSync' &&
+            child.arguments[0] && ts.isStringLiteral(child.arguments[0])) literals.push(child.arguments[0].text);
+          ts.forEachChild(child, findRead);
+        };
+        findRead(node.initializer);
+        if (literals.length === 1) paths.set(node.name.text.toUpperCase(), literals[0]);
+      }
+    }
+    ts.forEachChild(node, findPaths);
+  };
+  findPaths(program);
+  const output = paths.get('DESTINATION'); const identity = paths.get('IDENTITY'); const password = paths.get('PASSWORD');
+  if (!output || !identity || !password || new Set(paths.values()).size !== 3 ||
+    dirname(output) !== join(home, '.config', 'papercusp') ||
+    !/^\/run\/user\/\d+\//.test(identity) || dirname(identity) !== dirname(password)) return null;
+  if (sourceTokens(match[1], new Map([...paths].map(([key, value]) => [value, key]))) !== sourceTokens(playwrightStateWriter)) return null;
+  return { output };
+}
+
+export interface PlaywrightStateWriterEvidence extends HostedProfileWriterEvidence { receipt: string; indexedRef?: string }
+
+export interface IndexedCensusWriterEvidence extends HostedProfileWriterEvidence { sessionId: string }
+
+/** The search index locates a session/time; it is not the complete source.
+ * Reuse the session-port reader's manifest, bounded decompression and SHA checks.
+ * Pair calls by call_id, never by adjacent lines/parts (outputs can interleave).
+ */
+export async function recoverHistoricalCensusWriterEvidence(candidates: readonly IndexedCensusWriterEvidence[],
+  readArchive: (sessionId: string) => Promise<{ bytes: Buffer; sha256: string }> = async sessionId => {
+    const { readCanonicalNativeArchive } = await import('../session-port/source');
+    const { pgSessionArchiveStore } = await import('../session-archive');
+    return readCanonicalNativeArchive({ backend: 'codex', sessionId }, pgSessionArchiveStore());
+  }): Promise<PlaywrightStateWriterEvidence[]> {
+  if (candidates.length > 100) throw new Error('Historical census evidence bound exceeded');
+  const result: PlaywrightStateWriterEvidence[] = [];
+  for (const sessionId of new Set(candidates.map(candidate => candidate.sessionId))) {
+    let source;
+    try { source = await readArchive(sessionId); }
+    catch (error) {
+      if (error instanceof Error && error.message === 'canonical codex archive not found') continue;
+      throw error;
+    }
+    if (source.bytes.length > 64 * 1024 * 1024 || createHash('sha256').update(source.bytes).digest('hex') !== source.sha256) throw new Error('Historical census archive SHA/size mismatch');
+    const selected = candidates.filter(candidate => candidate.sessionId === sessionId);
+    const calls = new Map<string, { input: string; timestamp: string; line: number }>();
+    const outputs = new Map<string, { output: unknown; timestamp: string }>();
+    const duplicate = new Set<string>();
+    let line = 0;
+    for (const raw of source.bytes.toString('utf8').split('\n')) {
+      line++;
+      if (!raw.trim()) continue;
+      let record;
+      try { record = JSON.parse(raw); } catch { throw new Error('Historical census archive JSONL malformed'); }
+      const payload = record?.payload;
+      if (record?.type !== 'response_item' || typeof payload?.call_id !== 'string') continue;
+      if (['custom_tool_call', 'function_call'].includes(payload.type) && payload.name === 'exec' &&
+        selected.some(candidate => Date.parse(candidate.startedAt) === Date.parse(record.timestamp))) {
+        let input = payload.input ?? payload.arguments;
+        if (payload.type === 'function_call' && typeof input === 'string') {
+          try { const args = JSON.parse(input); if (typeof args.code === 'string') input = args.code; } catch { /* Raw code is also a native dialect. */ }
+        }
+        if (typeof input !== 'string' || input.length > 65_536) continue;
+        if (calls.has(payload.call_id)) duplicate.add(payload.call_id);
+        calls.set(payload.call_id, { input, timestamp: record.timestamp, line });
+      }
+      if (['custom_tool_call_output', 'function_call_output'].includes(payload.type)) {
+        if (outputs.has(payload.call_id)) duplicate.add(payload.call_id);
+        outputs.set(payload.call_id, { output: payload.output, timestamp: record.timestamp });
+      }
+    }
+    for (const [callId, call] of calls) {
+      const output = outputs.get(callId);
+      if (!output || duplicate.has(callId)) continue;
+      const texts = typeof output.output === 'string' ? [output.output] : Array.isArray(output.output)
+        ? output.output.flatMap(block => typeof block?.text === 'string' ? [block.text] : []) : [];
+      const receipts = texts.filter(text => { try { return JSON.parse(text)?.storageState !== undefined; } catch { return false; } });
+      if (result.length >= 100) throw new Error('Historical census recovered call bound exceeded');
+      result.push({ ref: `archive:codex:${sessionId}:sha256:${source.sha256}:line:${call.line}:call:${callId}`,
+        indexedRef: selected.find(candidate => Date.parse(candidate.startedAt) === Date.parse(call.timestamp))?.ref,
+        toolInput: call.input, startedAt: call.timestamp, finishedAt: output.timestamp,
+        receipt: receipts.length === 1 ? receipts[0] : '' });
+    }
+  }
+  return result;
+}
+
+/** Receipt, complete writer, private file metadata and storage-state schema must
+ * agree. A filename or an indexed/truncated command alone proves nothing.
+ */
+export async function historicalPlaywrightStateCensusProducer(evidence: readonly PlaywrightStateWriterEvidence[], home = homedir()) {
+  const roots: CensusRoot[] = []; const declarations: CensusDeclaration[] = [];
+  if (evidence.length > 100) throw new Error('Playwright state evidence bound exceeded');
+  for (const record of evidence) {
+    const construction = historicalPlaywrightStateConstruction(record.toolInput, home);
+    const from = Date.parse(record.startedAt); const to = Date.parse(record.finishedAt);
+    if (!construction || !record.ref || !Number.isFinite(from) || !Number.isFinite(to) || to < from || to - from > 300_000) continue;
+    let receipt;
+    try { receipt = JSON.parse(record.receipt); } catch { continue; }
+    if (!receipt || typeof receipt !== 'object' || receipt.final?.host !== 'app.papercusp.com' || receipt.final?.path !== '/cloud-workspaces' ||
+      receipt.session?.status !== 200 || receipt.session?.ok !== true || receipt.session?.error !== null ||
+      receipt.storageState?.path !== construction.output || receipt.storageState?.mode !== '600' ||
+      !Number.isSafeInteger(receipt.storageState?.bytes) || receipt.storageState.bytes <= 0 || receipt.storageState.bytes > 1_048_576) continue;
+    let handle;
+    try {
+      if (await realpath(dirname(construction.output)) !== dirname(construction.output)) continue;
+      handle = await open(construction.output, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size !== receipt.storageState.bytes || (stat.mode & 0o777) !== 0o600 ||
+        stat.mtimeMs < from || stat.mtimeMs > to) continue;
+      const state = JSON.parse(await handle.readFile('utf8'));
+      if (!state || typeof state !== 'object' || Object.keys(state).sort().join() !== 'cookies,origins' || !Array.isArray(state.cookies) || !state.cookies.length || !Array.isArray(state.origins)) continue;
+      if (!state.cookies.every((cookie: Record<string, unknown>) => cookie && typeof cookie === 'object' && typeof cookie.name === 'string' && typeof cookie.value === 'string' &&
+        typeof cookie.domain === 'string' && typeof cookie.path === 'string' && typeof cookie.expires === 'number' && Number.isFinite(cookie.expires) &&
+        typeof cookie.httpOnly === 'boolean' && typeof cookie.secure === 'boolean' && ['Strict', 'Lax', 'None'].includes(String(cookie.sameSite)))) continue;
+      if (!state.cookies.some((cookie: { domain: string }) => ['app.papercusp.com', '.papercusp.com'].includes(cookie.domain))) continue;
+      if (!state.origins.every((origin: { origin?: unknown; localStorage?: unknown }) => origin && typeof origin === 'object' && typeof origin.origin === 'string' &&
+        Array.isArray(origin.localStorage) && origin.localStorage.every(value => typeof value?.name === 'string' && typeof value?.value === 'string'))) continue;
+      const after = await handle.stat();
+      if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || (after.mode & 0o777) !== 0o600) continue;
+      const root: CensusRoot = { id: `playwright-state-${roots.length}`, path: dirname(construction.output) };
+      roots.push(root); declarations.push({ kind: 'path', root: root.id, name: basename(construction.output),
+        classification: 'secret', producer: `historical-playwright-storage-state:${record.ref}` });
+    } catch (error) {
+      if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '') && !(error instanceof SyntaxError)) throw error;
+    } finally { await handle?.close(); }
+  }
+  return { roots, declarations };
+}
+
 /** Extend the hosted surface with content-proven historical destinations only.
  * The input's own provenance remains independent: consuming it is not creating it.
  * Decrypted values never leave this function or appear in the census manifest.

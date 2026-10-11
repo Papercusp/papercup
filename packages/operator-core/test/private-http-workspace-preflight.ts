@@ -65,6 +65,11 @@ export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
 /** Compile the native API before allocating PG, retaining the exact artifact
  * that the private worker will run instead of reading the shared graph again. */
 export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string) {
+  // Match the child runtime's fail-closed evidence prerequisite before paying
+  // for compilation. A missing reporter sink must not become a late PG failure.
+  assert.ok(!(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
+    || process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) || process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim(),
+  'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
   const path = join(evidenceDir, 'hono-host.mjs');
   try {
     const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],

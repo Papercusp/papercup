@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import childProcess from 'node:child_process';
@@ -104,6 +104,9 @@ describe('native DAO viewport launch contract', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dao-native-launch-'));
     const script = join(dir, 'verifier.sh'), log = join(dir, 'boots.log');
     const imports = join(dir, 'imports.log');
+    const dependencyDonor = join(dir, 'dependency-donor');
+    mkdirSync(join(dependencyDonor, 'node_modules', 'fixture'), { recursive: true });
+    writeFileSync(join(dependencyDonor, 'node_modules', 'fixture', 'package.json'), '{"name":"fixture","version":"1.0.0"}');
     // This unit measures shell ordering and viewport arguments. The real module
     // graph is preflighted by the maintained native journey; running that graph
     // in every stubbed launch made this unit expire before its first boot.
@@ -112,9 +115,10 @@ describe('native DAO viewport launch contract', () => {
       + 'if [ "$#" -eq 4 ] && [ "$1" = --import ] && [ "$2" = tsx ] && [ "$3" = "$DAO_NATIVE_IMPORT_ENTRY" ] && [ "$4" = --check-imports ]; then\n'
       + '  printf "%s|%s\\n" "$3" "$4" >> "$DAO_NATIVE_IMPORT_LOG"\n  exit ' + importsExitCode + '\nfi\n'
       + 'exec "$DAO_NATIVE_REAL_NODE" "$@"\n', { mode: 0o700 });
-    writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" "$PAPERCUSP_TEST_RUN_WORKSPACE" "$PAPERCUSP_TEST_RUN_HARNESS" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
+    writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" "$PAPERCUSP_TEST_RUN_WORKSPACE" "$PAPERCUSP_TEST_RUN_HARNESS" "$PAPERCUSP_REPO_DIR" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
     cleanup = () => rmSync(dir, { recursive: true, force: true });
-    return { log, imports, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+    return { log, imports, dependencyDonor, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+      PAPERCUSP_REPO_DIR: dependencyDonor,
       PATH: dir + ':' + process.env.PATH, DAO_NATIVE_REAL_NODE: process.execPath,
       DAO_NATIVE_IMPORT_ENTRY: join(root, 'scripts/tauri-surface-verify-dao-workbench.mts'), DAO_NATIVE_IMPORT_LOG: imports,
       DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT: join(dir, 'evidence'),
@@ -134,9 +138,21 @@ describe('native DAO viewport launch contract', () => {
     expect(boots[1]).toContain('--viewport-only');
     expect(boots[1]).toContain('--e2e');
     expect(boots[1]).toContain('|dao-native-ledger-fixture|papercusp');
+    for (const boot of boots) expect(boot.endsWith('|' + fixture.dependencyDonor)).toBe(true);
     const manifest = JSON.parse(readFileSync(join(fixture.env.DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT, 'latest/result.json'), 'utf8'));
     expect(manifest.verdict).toBe('pass');
     expect(manifest.phases.map((phase: { status: string }) => phase.status)).toEqual(['passed', 'passed', 'passed']);
+  }, 50_000);
+  it('rejects linked clone dependencies before imports or either native boot and names the supported donor override', async () => {
+    const fixture = verifier();
+    symlinkSync(join(fixture.dependencyDonor, 'node_modules', 'fixture'), join(fixture.dependencyDonor, 'node_modules', '.astro'));
+    const failure = await launch(fixture.env).catch(error => error);
+    expect(failure).toMatchObject({ code: 2,
+      stderr: expect.stringContaining('absolute-pinned-dependency-link:node_modules/.astro') });
+    expect(failure).toMatchObject({
+      stderr: expect.stringContaining('set PAPERCUSP_REPO_DIR to the canonical dependency donor') });
+    expect(existsSync(fixture.imports)).toBe(false);
+    expect(existsSync(fixture.log)).toBe(false);
   }, 50_000);
   it('stops before the narrow boot when desktop acceptance fails', async () => {
     const fixture = verifier(17);
