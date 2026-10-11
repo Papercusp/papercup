@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   roleHome: vi.fn(),
   funding: vi.fn(),
   allowsAmbient: vi.fn(),
+  presence: vi.fn(),
+  presenceRows: vi.fn(),
+  fleetMemberships: vi.fn(),
+  resumableSessions: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -35,6 +39,16 @@ vi.mock('../../../adv-sessions', async (original) => ({
   readSuLaunchSpecByOwner: mocks.readRecord,
   getAdvSession: mocks.sessionRow,
   recordSuLaunchSpec: mocks.recordLaunchSpec,
+  listResumableSessions: mocks.resumableSessions,
+}));
+vi.mock('../../../agent-tools/coordination/presence', async (original) => ({
+  ...(await original<typeof import('../../../agent-tools/coordination/presence')>()),
+  getPresence: mocks.presence,
+  listPresence: mocks.presenceRows,
+}));
+vi.mock('../../../agent-tools/coordination/presence-fleet', async (original) => ({
+  ...(await original<typeof import('../../../agent-tools/coordination/presence-fleet')>()),
+  fetchPresenceFleet: mocks.fleetMemberships,
 }));
 vi.mock('../../../su-persona-render', async (original) => ({
   ...(await original<typeof import('../../../su-persona-render')>()),
@@ -50,7 +64,7 @@ vi.mock('../../../role-codex-home', async (original) => ({
   ...(await original<typeof import('../../../role-codex-home')>()),
   ensureSuCodexHomeConfig: mocks.ensureHome,
   ensureSuCodexHomeConfigAsync: mocks.ensureHome,
-  writeRoleCodexHome: mocks.roleHome,
+  writeRoleCodexHomeAsync: mocks.roleHome,
 }));
 vi.mock('../../../blueprint/operation-worker-binding', async (original) => ({
   ...(await original<typeof import('../../../blueprint/operation-worker-binding')>()),
@@ -78,6 +92,7 @@ vi.mock('../../../capability-envelope/session-confinement-port', async (original
 }));
 
 let ensureCodexHome: (req: Request) => Promise<Response>;
+let resumableSessions: (req: Request) => Promise<Response>;
 beforeAll(async () => {
   const routes = (await import('./sessions')).default;
   const db = await import('@papercusp/db-org');
@@ -85,6 +100,7 @@ beforeAll(async () => {
   const route = routes.find((entry) => entry.path === '/adv/sessions/ensure-codex-home');
   if (!route) throw new Error('ensure-codex-home route is absent');
   ensureCodexHome = route.handler as typeof ensureCodexHome;
+  resumableSessions = routes.find((entry) => entry.path === '/adv/sessions/resumable')!.handler as typeof resumableSessions;
 }, 45_000);
 
 beforeEach(() => {
@@ -99,6 +115,10 @@ beforeEach(() => {
   mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true,
     codexHome: '/tmp/p006-home' });
   mocks.allowsAmbient.mockResolvedValue(true);
+  mocks.presence.mockResolvedValue(null);
+  mocks.presenceRows.mockResolvedValue([]);
+  mocks.fleetMemberships.mockResolvedValue(new Map());
+  mocks.resumableSessions.mockResolvedValue([]);
 });
 
 async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
@@ -108,6 +128,42 @@ async function call(model?: string, extra: { requireGatewayProvider?: boolean } 
 }
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it('retains a later owner budget when repairing a home with an older launch flag', async () => {
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', launchArgv: ['psu', '--compaction-limit=250000'] });
+    mocks.presence.mockResolvedValue({ compactionLimit: 200_000, fleetRole: 'member' });
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    expect((await call()).status).toBe(200);
+    expect(mocks.presence).toHaveBeenCalledWith(OWNER);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({ compactionLimit: 200_000 }));
+  });
+
+  it.each([200_000, null])('exports the current or derived member budget to the resume client (%s)', async (compactionLimit) => {
+    mocks.presenceRows.mockResolvedValue([{ ownerId: OWNER, compactionLimit }]);
+    mocks.fleetMemberships.mockResolvedValue(new Map([[OWNER, { fleetSlug: 'fixture-fleet', fleetRole: 'member' }]]));
+    mocks.resumableSessions.mockResolvedValue([{ id: ADV_SESSION_ID, coordOwnerId: OWNER, agent: 'codex', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh'] }]);
+    const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable'));
+    expect(response.status).toBe(200);
+    expect((await response.json()).sessions[0].compactionLimit).toBe(compactionLimit ?? 250_000);
+    expect(mocks.presenceRows).toHaveBeenCalledExactlyOnceWith({ ownerIds: [OWNER] });
+    expect(mocks.presence).not.toHaveBeenCalled();
+    expect(mocks.fleetMemberships).toHaveBeenCalledExactlyOnceWith([OWNER]);
+  });
+
+  it.each([
+    { fleetRole: 'member', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--compaction-limit=900000'], expected: 250_000 },
+    { fleetRole: 'leader', launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--fleet=fixture'], expected: 450_000 },
+    { fleetRole: null, launchArgv: ['psu', '--model=gpt-6.1-sol:xhigh', '--fleet=former-fleet'], expected: 450_000 },
+  ])('resolves legacy defaults and limits against current membership ($fleetRole)', async ({ fleetRole, launchArgv, expected }) => {
+    mocks.fleetMemberships.mockResolvedValue(fleetRole ? new Map([[OWNER, { fleetSlug: 'fixture-fleet', fleetRole }]]) : new Map());
+    mocks.resumableSessions.mockResolvedValue([{ id: ADV_SESSION_ID, coordOwnerId: OWNER, agent: 'codex', launchArgv }]);
+    const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable'));
+    expect((await response.json()).sessions[0].compactionLimit).toBe(expected);
+  });
+
   it.each([
     { allowed: true, pinnedRecovery: false },
     { allowed: false, pinnedRecovery: false },
