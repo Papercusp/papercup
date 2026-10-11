@@ -1435,6 +1435,10 @@ snapshot_committed_operator_source() {
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
     input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
+  # Reject stale tested paths before disk admission or snapshot allocation.
+  # verifier-prepare repeats this check after export as the race guard.
+  node "$REPO_DIR/scripts/source-preview.mjs" verifier-inputs-check \
+    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
   source_bytes="$(node "$REPO_DIR/scripts/source-preview.mjs" verifier-measure \
     --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in

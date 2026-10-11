@@ -72,6 +72,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
       expect(order).toContain('scripts/verify-tauri-headless.sh,scripts/source-preview.mjs');
+      expect(order.indexOf('verifier-inputs-check')).toBeLessThan(order.indexOf('verifier-measure'));
       expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
       expect(order.indexOf('\ndeps\n')).toBeGreaterThan(order.indexOf('verifier-verify'));
       expect(readFileSync(inputsFile, 'utf8')).toBe(JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
@@ -140,9 +141,37 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       } else {
         expect(result.status).toBe(mode === 'capacity-refusal' ? 7 : 1);
         expect(order).not.toContain('verifier-prepare');
-        expect(order).not.toContain('deps');
+        expect(order).not.toContain('\ndeps\n');
         expect(readdirSync(fixture).some(name => name.startsWith('verify-tauri-headless.'))).toBe(false);
       }
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('rejects stale tested inputs before measuring or reserving snapshot space', () => {
+    const start = src.indexOf('snapshot_committed_operator_source() {');
+    const end = operatorSnapshotCallIdx;
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-input-refusal-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+        'write_run_marker() { :; }; log() { :; }',
+        'node() { echo "$*" >> "$WORK/order"; [[ "$*" != *verifier-inputs-check* ]]; }',
+        'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; }',
+        'cp() { echo mutation-after-refusal >&2; return 99; }',
+        src.slice(start, end),
+        'status=0; snapshot_committed_operator_source || status=$?',
+        'printf "status=%s\\n" "$status" >> "$WORK/order"',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
+      expect(result.status, result.stderr).toBe(0);
+      const order = readFileSync(resolve(fixture, 'order'), 'utf8');
+      expect(order).toContain('verifier-inputs-check');
+      expect(order).toContain('status=1');
+      expect(order).not.toContain('verifier-measure');
+      expect(order).not.toContain('reserve:');
+      expect(order).not.toContain('verifier-prepare');
+      expect(readdirSync(fixture).some(name => name.startsWith('verify-tauri-headless.'))).toBe(false);
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 
