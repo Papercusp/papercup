@@ -628,10 +628,32 @@ const statePath='DESTINATION';
   await browser.close();
 })().catch(e=>{console.error(JSON.stringify({error:String(e),name:e?.name||null}));process.exit(1)});`;
 
+// Exact inner program from SHA-verified codex archive 01a07742, line 614.
+// Authentication metadata is a receipt, not a digest of the complete saved file.
+const playwrightStateWriterSept6 = "const { chromium } = require('./node_modules/@playwright/test');\nconst fs = require('fs');\nconst crypto = require('crypto');\nconst identity = JSON.parse(fs.readFileSync('IDENTITY', 'utf8'));\nconst password = fs.readFileSync('PASSWORD', 'utf8').trim();\nconst statePath = 'DESTINATION';\n(async () => {\n  const startedAt = Date.now();\n  const browser = await chromium.launch({ headless: true, proxy: { server: 'socks5://127.0.0.1:18029' } });\n  try {\n    const context = await browser.newContext({ serviceWorkers: 'block' });\n    const page = await context.newPage();\n    await page.goto('https://app.papercusp.com/api/hosted/auth/sign-in?returnTo=%2Fcloud-workspaces', { waitUntil: 'domcontentloaded', timeout: 60000 });\n    const editableEmail = page.locator('input[name=email]:not([readonly]),input[type=email]:not([readonly])').first();\n    const passwordInput = page.locator('input[type=password],input[name=password]').first();\n    await Promise.race([editableEmail.waitFor({ state: 'visible', timeout: 30000 }), passwordInput.waitFor({ state: 'visible', timeout: 30000 })]);\n    if (await editableEmail.isVisible().catch(() => false)) {\n      await editableEmail.fill(identity.email);\n      await page.getByRole('button', { name: /continue with email|continue|sign in/i }).first().click();\n    }\n    await passwordInput.waitFor({ state: 'visible', timeout: 30000 });\n    await passwordInput.fill(password);\n    await page.getByRole('button', { name: /sign in|continue/i }).first().click();\n    await page.waitForURL((url) => url.hostname === 'app.papercusp.com', { timeout: 60000 });\n    let session = null;\n    for (let attempt = 0; attempt < 30; attempt += 1) {\n      const response = await context.request.get('https://app.papercusp.com/api/hosted/auth/session', { failOnStatusCode: false });\n      const body = await response.json().catch(() => null);\n      if (response.status() === 200 && body?.ok === true && body?.session?.sessionId && body?.session?.userId && body?.session?.organizationId) {\n        session = body.session;\n        break;\n      }\n      await page.waitForTimeout(1000);\n    }\n    if (!session) throw new Error('authenticated session metadata did not become available');\n    await context.storageState({ path: statePath });\n    fs.chmodSync(statePath, 0o600);\n    const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));\n    const appCookie = saved.cookies.find((cookie) => cookie.name === '__Host-papercusp_session');\n    console.log(JSON.stringify({\n      ok: true,\n      statePath,\n      mode: (fs.statSync(statePath).mode & 0o777).toString(8),\n      sessionHash: crypto.createHash('sha256').update(session.sessionId).digest('hex').slice(0, 12),\n      userPresent: Boolean(session.userId),\n      organizationPresent: Boolean(session.organizationId),\n      workspaceBound: Boolean(session.workspaceId),\n      cookiePresent: Boolean(appCookie),\n      cookieExpires: appCookie?.expires ?? null,\n      durationMs: Date.now() - startedAt,\n    }));\n  } finally {\n    await browser.close();\n  }\n})().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });";
+
 export function historicalPlaywrightStateConstruction(toolInput: string, home = homedir()) {
   if (toolInput.length > 65_536) return null;
   const outer = ts.createSourceFile('tool.js', toolInput, ts.ScriptTarget.Latest, true);
   const commands: string[] = [];
+  // September 6 uses a top-level const and prints the terminal envelope. Resolve
+  // that binding only for the complete measured wrapper, never arbitrary JS.
+  const commandDeclaration = outer.statements[0];
+  if (commandDeclaration && ts.isVariableStatement(commandDeclaration) &&
+    (commandDeclaration.declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+    commandDeclaration.declarationList.declarations.length === 1) {
+    const declaration = commandDeclaration.declarationList.declarations[0];
+    if (ts.isIdentifier(declaration.name) && declaration.name.text === 'cmd' &&
+      declaration.initializer && ts.isStringLiteral(declaration.initializer)) {
+      const wrapper = `const cmd = 'COMMAND';
+let r=await tools.exec_command({cmd,workdir:'WORKDIR',yield_time_ms:30000,max_output_tokens:3000});
+while('session_id'in r&&!Object.prototype.hasOwnProperty.call(r,'exit_code'))r=await tools.write_stdin({session_id:r.session_id,chars:'',yield_time_ms:30000,max_output_tokens:3000});
+text(r);`;
+      if (sourceTokens(toolInput, new Map([[declaration.initializer.text, 'COMMAND'],
+        [join(home, 'papercupai-workspace', 'papercusp'), 'WORKDIR']])) !== sourceTokens(wrapper)) return null;
+      commands.push(declaration.initializer.text);
+    }
+  }
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node) && node.expression.getText(outer) === 'tools.exec_command' &&
       node.arguments.length === 1 && ts.isObjectLiteralExpression(node.arguments[0])) {
@@ -668,7 +690,8 @@ export function historicalPlaywrightStateConstruction(toolInput: string, home = 
   if (!output || !identity || !password || new Set(paths.values()).size !== 3 ||
     dirname(output) !== join(home, '.config', 'papercusp') ||
     !/^\/run\/user\/\d+\//.test(identity) || dirname(identity) !== dirname(password)) return null;
-  if (sourceTokens(match[1], new Map([...paths].map(([key, value]) => [value, key]))) !== sourceTokens(playwrightStateWriter)) return null;
+  const normalized = sourceTokens(match[1], new Map([...paths].map(([key, value]) => [value, key])));
+  if (![playwrightStateWriter, playwrightStateWriterSept6].some(writer => normalized === sourceTokens(writer))) return null;
   return { output };
 }
 
