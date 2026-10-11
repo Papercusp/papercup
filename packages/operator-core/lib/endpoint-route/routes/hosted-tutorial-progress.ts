@@ -97,7 +97,14 @@ export function createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorksp
         // accidentally serialized by spreading a provider result.
         // Fail closed if an old/misconfigured host still returns a WebRTC
         // token. The browser must not guess the SDK's default transport.
-        if (result.connectionType !== 'websocket' || typeof result.signedUrl !== 'string' || !result.signedUrl) {
+        const signedUrl = typeof result.signedUrl === 'string' ? new URL(result.signedUrl) : null;
+        if (result.connectionType !== 'websocket' || !signedUrl
+          || signedUrl.protocol !== 'wss:' || signedUrl.host !== 'api.elevenlabs.io'
+          || signedUrl.pathname !== '/v1/convai/conversation' || signedUrl.username || signedUrl.password
+          || signedUrl.hash || !signedUrl.searchParams.get('conversation_signature')
+          || typeof result.sessionId !== 'string' || !result.sessionId || result.sessionId.length > 256
+          || !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= Date.now()
+          || !Number.isSafeInteger(result.maximumSeconds) || result.maximumSeconds < 1 || result.maximumSeconds > 7200) {
           return jsonError('tutorial_voice_unavailable', 503);
         }
         return Response.json({ connectionType: result.connectionType, signedUrl: result.signedUrl,

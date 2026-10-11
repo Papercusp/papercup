@@ -8,6 +8,7 @@ vi.mock('./cloud-tutorial-progress', () => ({ readAccountTutorialProgress: vi.fn
 import { readAccountTutorialProgress, readTutorialProgress } from './cloud-tutorial-progress';
 
 const origin = 'https://app.papercusp.com';
+const expiresAt = Date.now() + 900_000;
 const scope = { tenantId: 'org-a', userId: 'user-a' };
 const body = { expectedScope: scope, context: { version: 3, step: 'welcome', status: 'ready' } };
 const enrolled = { scope, version: 3 as const, revision: 0, mutationId: null,
@@ -20,7 +21,7 @@ function setup(withProvider = true) {
   const disabled = vi.fn(async () => false);
   const issue = vi.fn<TutorialVoiceTokenProvider['issue']>(async () => ({ ok: true, connectionType: 'websocket',
     signedUrl: 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=single-use',
-    sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 }));
+    sessionId: 'reservation', expiresAt, maximumSeconds: 60 }));
   const runTenant = vi.fn(async <T>(_context: unknown, callback: (tx: Sql) => Promise<T>) => callback({} as Sql));
   const route = createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorkspaceId: 'control',
     runTenant: (context, callback) => runTenant(context, callback), provider: withProvider ? { disabled, issue } : undefined });
@@ -44,7 +45,7 @@ describe('hosted tutorial conversation token boundary', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(await response.json()).toEqual({ connectionType: 'websocket',
       signedUrl: 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=single-use',
-      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 });
+      sessionId: 'reservation', expiresAt, maximumSeconds: 60 });
     expect(issue).toHaveBeenCalledWith({ controlWorkspaceId: 'control', organizationId: scope.tenantId,
       userId: scope.userId, sessionId: 'session', sessionVersion: 1,
       customerWorkspaceId: null, lesson: body.context }, expect.any(AbortSignal));
@@ -122,11 +123,33 @@ describe('hosted tutorial conversation token boundary', () => {
   });
   it('allowlists the signed session receipt without exposing server credential or remote ledger fields', async () => {
     const { call, issue } = setup();
-    issue.mockResolvedValueOnce({ ok: true, connectionType: 'websocket', signedUrl: 'signed-session-url',
-      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60, apiKey: 'private-key',
+    const signedUrl = 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=single-use';
+    issue.mockResolvedValueOnce({ ok: true, connectionType: 'websocket', signedUrl,
+      sessionId: 'reservation', expiresAt, maximumSeconds: 60, apiKey: 'private-key',
       providerConversationId: 'server-only', issuanceAttemptId: 'server-only' } as Awaited<ReturnType<TutorialVoiceTokenProvider['issue']>>);
-    expect(await (await call()).json()).toEqual({ connectionType: 'websocket', signedUrl: 'signed-session-url',
-      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 });
+    expect(await (await call()).json()).toEqual({ connectionType: 'websocket', signedUrl,
+      sessionId: 'reservation', expiresAt, maximumSeconds: 60 });
+  });
+  it('refuses unsafe URLs and malformed or expired session receipts', async () => {
+    const { call, issue } = setup();
+    const valid = await issue({} as never, new AbortController().signal);
+    issue.mockClear();
+    for (const patch of [
+      ...['not-a-url', 'https://api.elevenlabs.io/v1/convai/conversation?conversation_signature=x',
+        'wss://evil.example/v1/convai/conversation?conversation_signature=x',
+        'wss://api.elevenlabs.io/other?conversation_signature=x',
+        'wss://secret@api.elevenlabs.io/v1/convai/conversation?conversation_signature=x',
+        'wss://api.elevenlabs.io/v1/convai/conversation',
+        'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=x#fragment']
+        .map(signedUrl => ({ signedUrl })),
+      { sessionId: '' }, { expiresAt: Date.now() - 1 }, { expiresAt: Infinity },
+      { maximumSeconds: 0 }, { maximumSeconds: 7201 }, { maximumSeconds: 1.5 },
+    ]) {
+      issue.mockResolvedValueOnce({ ...valid, ...patch } as Awaited<ReturnType<TutorialVoiceTokenProvider['issue']>>);
+      const response = await call();
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, error: 'tutorial_voice_unavailable', message: 'tutorial_voice_unavailable' });
+    }
   });
   it('requires selected authorized workspace and persisted legacy progress', async () => {
     const { call, issue } = setup();
