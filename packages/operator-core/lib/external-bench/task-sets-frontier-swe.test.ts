@@ -34,6 +34,7 @@ const v2Row = (o: Partial<FrontierSweTaskRow> & Pick<FrontierSweTaskRow, 'instan
   externalNeeds: [],
   artifacts: [{ source: '/app/', exclude: ['.git'] }],
   corpusVersion: 'v2',
+  networkMode: 'allowlist',
   upstreamCommit: V2_COMMIT,
   ...o,
 });
@@ -132,7 +133,8 @@ const control = (
   row: FrontierSweTaskRow,
   mode: 'gold' | 'empty',
   score: number | null,
-  o: { graderStatus?: string; finishedAt?: string; corpusCommit?: string; dockerImage?: string } = {},
+  o: { graderStatus?: string; finishedAt?: string; corpusCommit?: string; dockerImage?: string;
+    networkPolicy?: { declaredMode: string; agentNetworkMode: string } } = {},
 ) => ({
   instanceId: row.instanceId,
   mode,
@@ -140,7 +142,8 @@ const control = (
   score,
   finishedAt: o.finishedAt ?? '2026-10-11T16:00:00.000Z',
   corpusCommit: o.corpusCommit ?? row.upstreamCommit,
-  dockerImage: o.dockerImage ?? row.dockerImage,
+  dockerImage: 'dockerImage' in o ? o.dockerImage : row.dockerImage,
+  networkPolicy: 'networkPolicy' in o ? o.networkPolicy : { declaredMode: row.networkMode ?? 'allowlist', agentNetworkMode: 'none' },
 });
 const passingControls = (rows: FrontierSweTaskRow[]) => rows.flatMap((r) => [control(r, 'gold', 1), control(r, 'empty', 0)]);
 const writeControls = (rows: unknown[]) => {
@@ -382,6 +385,26 @@ describe('FrontierSWE v2 control gating (P-007: FSWE-P007-GOLD@1, FSWE-P007-EMPT
   const [A, B, C] = V2_ROWS; // vis-impl, impl-only, sci — all CPU-runnable
   const others = V2_ROWS.slice(3);
   const ids = (setId = 'frontier-swe-v2') => loadFrontierSweTaskSet(setId).map((t) => t.instanceId);
+
+  it('historical, open or mismatched network evidence cannot admit a task with otherwise passing controls', () => {
+    for (const networkPolicy of [undefined, { declaredMode: 'allowlist', agentNetworkMode: 'bridge' },
+      { declaredMode: 'no-network', agentNetworkMode: 'none' }]) {
+      writeControls([...passingControls([B, C, ...others]), control(A, 'gold', 1, { networkPolicy }), control(A, 'empty', 0)]);
+      expect(ids()).not.toContain(A.instanceId);
+      expect(() => loadFrontierSweTaskSet('frontier-swe-v2-custom', [A.instanceId])).toThrow(/gold-network-unverified/);
+    }
+    writeControls([...passingControls([B, C, ...others]), control(A, 'gold', 1), control(A, 'empty', 0, { networkPolicy: undefined })]);
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2-custom', [A.instanceId])).toThrow(/empty-network-unverified/);
+  });
+
+  it('missing image pins and out-of-range rewards are unusable evidence', () => {
+    for (const badGold of [control(A, 'gold', 1, { dockerImage: undefined }), control(A, 'gold', 1.1)]) {
+      writeControls([...passingControls([B, C, ...others]), badGold, control(A, 'empty', 0)]);
+      expect(ids()).not.toContain(A.instanceId);
+    }
+    writeControls([...passingControls([B, C, ...others]), control(A, 'gold', 1), control(A, 'empty', -0.01)]);
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2-custom', [A.instanceId])).toThrow(/empty-control-error/);
+  });
 
   it('FSWE-P007-GOLD: a task whose gold control scores below full reward is not in any scored v2 set', () => {
     writeControls([...passingControls(others), ...passingControls([B, C]), control(A, 'gold', 0.98), control(A, 'empty', 0)]);

@@ -30,6 +30,8 @@ export interface FrontierSweControlLedgerRow {
   finishedAt?: string;
   corpusCommit?: string | null;
   dockerImage?: string | null;
+  /** Absent on the historical open-egress campaign; those rows remain provisional. */
+  networkPolicy?: { declaredMode: string; agentNetworkMode: string };
 }
 
 /** Why a task is out of the scored set. A task can carry several (e.g. no gold AND a positive empty). */
@@ -38,6 +40,8 @@ export type FrontierSweControlExclusion =
   | 'no-empty-control'
   | 'gold-control-error'
   | 'empty-control-error'
+  | 'gold-network-unverified'
+  | 'empty-network-unverified'
   | 'gold-below-full'
   | 'empty-above-zero';
 
@@ -92,7 +96,7 @@ export function readFrontierSweControlLedger(path: string): FrontierSweControlLe
   return rows;
 }
 
-type ControlRead = { kind: 'missing' } | { kind: 'error' } | { kind: 'scored'; score: number };
+type ControlRead = { kind: 'missing' } | { kind: 'error' } | { kind: 'scored'; score: number; networkVerified: boolean };
 
 /** The latest row for (task, mode) measured at the task's own version. */
 function readControl(task: BenchTask, mode: 'gold' | 'empty', ledger: FrontierSweControlLedgerRow[]): ControlRead {
@@ -103,13 +107,18 @@ function readControl(task: BenchTask, mode: 'gold' | 'empty', ledger: FrontierSw
   for (const row of ledger) {
     if (row.instanceId !== task.instanceId || row.mode !== mode) continue;
     if (row.corpusCommit !== commit) continue;
-    if (row.dockerImage != null && row.dockerImage !== image) continue;
+    if (row.dockerImage !== image) continue;
     if (!latest || (row.finishedAt ?? '') >= (latest.finishedAt ?? '')) latest = row;
   }
   if (!latest) return { kind: 'missing' };
   const scored = latest.graderStatus === 'passed' || latest.graderStatus === 'failed';
-  if (!scored || typeof latest.score !== 'number' || !Number.isFinite(latest.score)) return { kind: 'error' };
-  return { kind: 'scored', score: latest.score };
+  if (!scored || typeof latest.score !== 'number' || !Number.isFinite(latest.score) || latest.score < 0 || latest.score > 1) {
+    return { kind: 'error' };
+  }
+  const declaredMode = typeof task.graderMeta?.['networkMode'] === 'string' ? task.graderMeta['networkMode'].trim() : '';
+  const networkVerified = ['allowlist', 'no-network', 'none'].includes(declaredMode) &&
+    latest.networkPolicy?.declaredMode === declaredMode && latest.networkPolicy.agentNetworkMode === 'none';
+  return { kind: 'scored', score: latest.score, networkVerified };
 }
 
 /**
@@ -125,10 +134,16 @@ export function admitByFrontierSweControls(tasks: BenchTask[], ledger: FrontierS
     const reasons: FrontierSweControlExclusion[] = [];
     if (gold.kind === 'missing') reasons.push('no-gold-control');
     else if (gold.kind === 'error') reasons.push('gold-control-error');
-    else if (gold.score < FULL_REWARD) reasons.push('gold-below-full');
+    else {
+      if (gold.score !== FULL_REWARD) reasons.push('gold-below-full');
+      if (!gold.networkVerified) reasons.push('gold-network-unverified');
+    }
     if (empty.kind === 'missing') reasons.push('no-empty-control');
     else if (empty.kind === 'error') reasons.push('empty-control-error');
-    else if (empty.score > 0) reasons.push('empty-above-zero');
+    else {
+      if (empty.score !== 0) reasons.push('empty-above-zero');
+      if (!empty.networkVerified) reasons.push('empty-network-unverified');
+    }
     if (reasons.length === 0) admitted.push(task);
     else {
       excluded.push({
