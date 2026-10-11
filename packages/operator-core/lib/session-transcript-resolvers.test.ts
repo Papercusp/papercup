@@ -21,6 +21,7 @@ import {
   readClosedCodexSessionUsage,
   readClosedCodexRuntimeUsage,
   readClosedCodexTurnInput,
+  readClosedCodexTurnToolResult,
 } from './session-transcript-resolvers';
 
 afterEach(() => __resetTranscriptResolverCaches());
@@ -86,6 +87,86 @@ describe('source-bound closed Codex input', () => {
       for (const changed of [{ nativeTurnId: 'another-turn' }, { recordIndex: 3 }, { contentIndex: 99 },
         { recordIndex: -1 }, { contentIndex: 1.5 }])
         expect(await readClosedCodexTurnInput(f.sql, { ...f.binding, ...changed })).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+});
+
+describe('source-bound closed Codex tool results', () => {
+  const session = '11111111-2222-3333-4444-555555555555', turn = 'private-tool-turn', callId = 'private-call';
+  const args = '{"paths":["private/task.txt"],"intent":"exact π"}', output = '{"ok":false,"busy":["private/task.txt"]}';
+  async function fixture(fault?: string) {
+    const rows: any[] = [
+      { type: 'session_meta', payload: { id: session } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+      { timestamp: '2026-10-11T00:00:01Z', type: 'response_item', payload: { type: 'function_call',
+        name: 'locks_acquire', namespace: 'mcp', call_id: callId, arguments: args } },
+      { timestamp: '2026-10-11T00:00:02Z', type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output } },
+      { type: 'turn_context', payload: { turn_id: turn, model: 'configured-alias' } },
+      { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
+    ];
+    if (fault === 'custom') {
+      rows[2].payload.type = 'custom_tool_call'; rows[2].payload.input = rows[2].payload.arguments; delete rows[2].payload.arguments;
+      rows[3].payload.type = 'custom_tool_call_output'; rows[3].payload.output = [{ type: 'input_text', text: output }];
+      rows[3].payload.is_error = true;
+    }
+    if (fault === 'wrapper') { rows[2].payload.name = 'exec'; rows[2].payload.namespace = 'functions'; }
+    if (fault === 'foreign-session') rows[0].payload.id = 'foreign-session';
+    if (fault === 'foreign-start') rows[1].payload.turn_id = 'foreign-turn';
+    if (fault === 'missing-start') rows[1].payload.type = 'unrelated';
+    if (fault === 'call-id') rows[3].payload.call_id = 'foreign-call';
+    if (fault === 'foreign-explicit-turn') rows[3].payload.turn_id = 'foreign-turn';
+    if (fault === 'output-kind') rows[3].payload.type = 'custom_tool_call_output';
+    if (fault === 'name') delete rows[2].payload.name;
+    if (fault === 'namespace') rows[2].payload.namespace = {};
+    if (fault === 'args') rows[2].payload.arguments = {};
+    if (fault === 'output') rows[3].payload.output = {};
+    if (fault === 'is-error') rows[3].payload.is_error = 'false';
+    if (fault === 'timestamp') rows[3].timestamp = 'unmeasured';
+    if (fault === 'reversed-time') rows[3].timestamp = '2026-10-11T00:00:00Z';
+    if (fault === 'duplicate-call') rows.splice(4, 0, rows[2]);
+    if (fault === 'duplicate-output') rows.splice(4, 0, rows[3]);
+    if (fault === 'interrupted') rows.splice(3, 0, { type: 'turn_context', payload: { turn_id: 'foreign-turn' } });
+    if (fault === 'after-close') rows.push(rows.splice(3, 1)[0]);
+    if (fault === 'open-turn') rows.pop();
+    const transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-source-tool-'));
+    const dir = join(home, 'sessions', '2026', '10', '11'); await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-11T00-00-00-${session}.jsonl`); await fs.writeFile(file, transcript);
+    const sql = (async () => {
+      if (fault === 'source-mutated') await fs.appendFile(file, '{}\n');
+      return fault === 'missing-frontier' ? [] : [{ byte_offset: String(Buffer.byteLength(transcript) - (fault === 'partial-frontier' ? 1 : 0)),
+        parser_state: { initialized: true, fileGeneration: 0 } }];
+    }) as unknown as Sql;
+    const resultRecordIndex = fault === 'interrupted' ? 4 : fault === 'after-close' ? rows.length - 1 : 3;
+    return { home, file, transcript, sql, binding: { workspaceId: 'private-tool-workspace', nativeSessionId: session, codexHome: home,
+      nativeTurnId: turn, callRecordIndex: 2, resultRecordIndex } };
+  }
+  it.each(['function', 'custom', 'wrapper'])('preserves exact %s call identity, raw arguments and result', async kind => {
+    const f = await fixture(kind);
+    try {
+      expect(await readClosedCodexTurnToolResult(f.sql, f.binding)).toEqual({ file: f.file,
+        sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session, nativeTurnId: turn,
+        callRecordIndex: 2, resultRecordIndex: 3, callId, name: kind === 'wrapper' ? 'functions.exec' : 'mcp.locks_acquire',
+        arguments: args, output: kind === 'custom' ? [{ type: 'input_text', text: output }] : output,
+        isError: kind === 'custom' ? true : null, calledAt: '2026-10-11T00:00:01.000Z', at: '2026-10-11T00:00:02.000Z' });
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it.each(['foreign-session', 'foreign-start', 'missing-start', 'call-id', 'foreign-explicit-turn', 'output-kind',
+    'name', 'namespace', 'args', 'output', 'is-error', 'timestamp', 'reversed-time', 'duplicate-call', 'duplicate-output',
+    'interrupted', 'after-close', 'open-turn', 'source-mutated', 'missing-frontier', 'partial-frontier'])
+  ('rejects %s tool-result authority', async fault => {
+    const f = await fixture(fault);
+    try { expect(await readClosedCodexTurnToolResult(f.sql, f.binding)).toBeNull(); }
+    finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it('refuses foreign turns, reordered and unallocated source ordinals', async () => {
+    const f = await fixture();
+    try {
+      for (const changed of [{ nativeTurnId: 'foreign-turn' }, { callRecordIndex: -1 }, { resultRecordIndex: 3.5 },
+        { callRecordIndex: 3 }, { resultRecordIndex: 2 }, { resultRecordIndex: 99 }])
+        expect(await readClosedCodexTurnToolResult(f.sql, { ...f.binding, ...changed })).toBeNull();
     } finally { await fs.rm(f.home, { recursive: true, force: true }); }
   });
 });

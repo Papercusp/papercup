@@ -26,6 +26,7 @@ import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-d
 import type { Sql } from 'postgres';
 import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
 import type { ClosedCodexSessionPopulation } from './interactive-usage/ingest-adapters';
+import { codexToolCallArgsRaw } from './transcript-wire';
 
 class CodexSourceProofError extends Error {
   constructor(readonly code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string) { super(detail); }
@@ -162,6 +163,73 @@ export async function readClosedCodexTurnInput(sql: Sql, input: {
     return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
       nativeTurnId: binding.nativeTurnId, recordIndex: binding.recordIndex, contentIndex: binding.contentIndex,
       at: new Date(record.timestamp).toISOString(), text: content.text };
+  } catch { return null; }
+}
+
+/** Exact call/result pair in one completed native turn. Preserve the native
+ * tool name and raw arguments: a functions.exec wrapper is not evidence that
+ * any particular nested platform invocation succeeded. Semantic/tool-specific
+ * authority must be joined separately, without guessing from timestamps. */
+export async function readClosedCodexTurnToolResult(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+  readonly nativeTurnId: string; readonly callRecordIndex: number; readonly resultRecordIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeTurnId: string;
+  callRecordIndex: number; resultRecordIndex: number; callId: string; name: string;
+  arguments: string; output: string | unknown[]; isError: boolean | null; calledAt: string; at: string } | null> {
+  const binding = { ...input };
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome, binding.nativeTurnId].some(v => typeof v !== 'string' || !v.trim()) ||
+      ![binding.callRecordIndex, binding.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
+      binding.callRecordIndex >= binding.resultRecordIndex) return null;
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const population = await readClosedCodexSessionUsage(sql, binding);
+    if (!population.ok || population.sourceSha256 !== source.sourceSha256 || population.file !== source.file ||
+        !population.nativeTurnIds.includes(binding.nativeTurnId)) return null;
+    const records = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    const call = records[binding.callRecordIndex], result = records[binding.resultRecordIndex];
+    const request = call?.payload, response = result?.payload;
+    const outputType = request?.type === 'function_call' ? 'function_call_output' :
+      request?.type === 'custom_tool_call' ? 'custom_tool_call_output' : null;
+    const args = request && codexToolCallArgsRaw(request);
+    if (!outputType || call?.type !== 'response_item' || result?.type !== 'response_item' ||
+        response?.type !== outputType || typeof request.call_id !== 'string' || !request.call_id.trim() ||
+        response.call_id !== request.call_id || typeof request.name !== 'string' || !request.name.trim() ||
+        request.namespace !== undefined && (typeof request.namespace !== 'string' || !request.namespace.trim()) ||
+        typeof args !== 'string' || !(typeof response.output === 'string' || Array.isArray(response.output)) ||
+        response.is_error !== undefined && typeof response.is_error !== 'boolean' ||
+        [request, response].some(row => row.turn_id !== undefined && row.turn_id !== binding.nativeTurnId)) return null;
+    // Reject duplicate IDs anywhere in this source, including earlier turns.
+    const pairs = records.filter(row => row.type === 'response_item' && row.payload?.call_id === request.call_id &&
+      ['function_call', 'custom_tool_call', 'function_call_output', 'custom_tool_call_output'].includes(row.payload.type));
+    if (pairs.length !== 2) return null;
+    let active: string | null = null, startIndex: number | null = null;
+    let callStart: number | null = null, resultStart: number | null = null;
+    for (let index = 0; index <= binding.resultRecordIndex; index++) {
+      const row = records[index];
+      if (index === binding.callRecordIndex && active === binding.nativeTurnId) callStart = startIndex;
+      if (index === binding.resultRecordIndex && active === binding.nativeTurnId) resultStart = startIndex;
+      if (row.type === 'event_msg' && row.payload?.type === 'task_started') {
+        active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+        startIndex = index;
+      }
+      if (row.type === 'turn_context') {
+        const turn = typeof row.payload?.turn_id === 'string' ? row.payload.turn_id : null;
+        if (turn !== active) startIndex = null;
+        active = turn;
+      }
+      if (row.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(row.payload?.type)) {
+        active = null; startIndex = null;
+      }
+    }
+    const calledAt = typeof call.timestamp === 'string' ? Date.parse(call.timestamp) : NaN;
+    const at = typeof result.timestamp === 'string' ? Date.parse(result.timestamp) : NaN;
+    if (callStart === null || callStart !== resultStart || !Number.isFinite(calledAt) || !Number.isFinite(at) || at < calledAt ||
+        !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeTurnId: binding.nativeTurnId, callRecordIndex: binding.callRecordIndex, resultRecordIndex: binding.resultRecordIndex,
+      callId: request.call_id, name: `${request.namespace ? request.namespace + '.' : ''}${request.name}`,
+      arguments: args, output: response.output, isError: response.is_error ?? null,
+      calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
   } catch { return null; }
 }
 
