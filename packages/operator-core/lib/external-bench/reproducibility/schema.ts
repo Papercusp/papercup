@@ -81,6 +81,14 @@ export const currentBenchmarkProtocolSchema = z.object({
     isolation: z.literal('fresh-per-assignment'), forbiddenSources: z.array(pin).min(1),
   }).strict(),
   exclusions: z.array(pin),
+  // Earlier protocol-v1 records remain readable. New executions must freeze
+  // this policy; reports without it explicitly withhold inferential intervals.
+  sampling: z.object({
+    unit: z.literal('repository'), taskRepositories: z.record(pin, pin),
+    ci: z.union([z.literal(0.9), z.literal(0.95), z.literal(0.99)]),
+    bootstrapSeed: z.number().int().nonnegative().max(0xffffffff),
+    bootstrapIterations: z.number().int().min(1000).max(1_000_000),
+  }).strict().optional(),
   stopping: z.object({
     maxAttemptsPerAssignment: z.number().int().positive(),
     budgetAction: z.literal('record-cap-outcome'), graderOutage: z.literal('repair-or-inconclusive'),
@@ -107,6 +115,13 @@ export const currentBenchmarkProtocolSchema = z.object({
   });
   if (protocol.confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
   if (protocol.confirmation.plannedPairedTasks > protocol.confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
+  if (protocol.sampling) {
+    const taskIds = new Set([...protocol.taskIds, ...protocol.confirmation.taskIds]);
+    const mapping = protocol.sampling.taskRepositories;
+    if (Object.keys(mapping).length !== taskIds.size || [...taskIds].some(id => !Object.hasOwn(mapping, id))) {
+      issue(['sampling', 'taskRepositories'], 'Repository mapping must cover exactly pilot and withheld confirmation tasks.');
+    }
+  }
 });
 export type CurrentBenchmarkProtocol = z.infer<typeof currentBenchmarkProtocolSchema>;
 
@@ -147,6 +162,7 @@ export function requireCurrentBenchmarkAssignment(config: unknown, execution: {
   const parsed = currentBenchmarkProtocolSchema.safeParse(config);
   if (!parsed.success) throw new Error(`Current benchmark requires a complete frozen protocol: ${parsed.error.message}`);
   const protocol = parsed.data;
+  if (!protocol.sampling) throw new Error('Current benchmark launch requires a frozen repository sampling policy.');
   const arm = protocol.arms.find(candidate => candidate.id === execution.armId);
   if (protocol.runId !== execution.runId || !arm || !protocol.taskIds.includes(execution.taskId) || !protocol.seeds.includes(execution.seed)) {
     throw new Error('Current benchmark assignment is not in the frozen protocol.');
