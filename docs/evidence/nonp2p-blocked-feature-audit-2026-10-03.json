@@ -6170,7 +6170,173 @@
      "summary": "plan lane iphone-public-release-2026-08-11#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "iphoneP011EvidenceQualification": {
+    "status": "retained-current-packet-and-reviewer-evidence-requirement",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004738",
+    "auditProofs": [
+     "WI-10005820#comment:1174151",
+     "WI-10005820#comment:1174187"
+    ],
+    "sourceAuthority": {
+     "plan": "iphone-public-release-2026-08-11",
+     "item": "P-011",
+     "version": 86,
+     "contentHash": "6192e3634380dddea809f42953af4bd80f7ca4deec86fcbafae52bf09ce6069c",
+     "planState": "active",
+     "storedStatus": "todo",
+     "effectiveStatus": "todo",
+     "unresolvedBlockers": [],
+     "decisions": [
+      "D-017",
+      "D-019",
+      "D-021",
+      "D-023",
+      "D-024",
+      "D-025"
+     ],
+     "dependencyQualification": "The original version52/P-008 blocker is dated provenance. D-025 removes P-008 only as a start blocker and retains actual candidate evidence for completion; the saved revision86 P-011 read has no unresolved blockers.",
+     "rightsQualification": "D-017 records copyright and distribution permission. That authority resolves the rights checklist but does not establish binary, export or reviewer acceptance.",
+     "candidateQualification": "D-019 requires exact-commit declared-input equality and immutable-source qualification before isolated reviewer controls. D-023 requires clean exact source and a signed IPA bound by bytes/hash through the existing candidate manifest. D-024 separates manual-download preparation from final store milestones; D-021 prohibits future Actions."
+    },
+    "specs": [
+     {
+      "id": "AUTO-BAR-R-5-P-011",
+      "revision": 2,
+      "contentHash": "ea5cff1ceac2653fa8f9a6cea865ecbb0c87e87af3a1e08435ba69a7e49bafa8",
+      "lifecycle": "draft",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [
+       "integration",
+       "manual-review"
+      ]
+     },
+     {
+      "id": "AUTO-REQ-M-001-P-011",
+      "revision": 2,
+      "contentHash": "e6512938a704afcf2c5102f560a031855a87228de9caaaea664f1eedeadde5db",
+      "lifecycle": "active",
+      "requiredEvidence": [
+       "current source and executed result receipts",
+       "source-bound outcome comparison"
+      ],
+      "requiredTestLayers": [
+       "live"
+      ]
+     }
+    ],
+    "bindingQualification": {
+     "scope": "Saved work-item-filter and independent exact-two-clause binding reads on auditProof1174151.",
+     "evidenceCount": 0,
+     "truncatedByLimit": false,
+     "qualification": "Only the returned registered binding plane was observed. Empty bindings do not establish universal absence of candidate, native or reviewer artifacts. The independent exact-clause read corroborated the first after its transport warning.",
+     "rubric": {
+      "revision": 3,
+      "barSetHash": "efc662fdcb7294964c8f6525cdde5dd06dd8ed0e81627e322730c1c604bc562f",
+      "barKey": "app-store-packet-review-access",
+      "barHash": "e43696085c25ad1f330fb76bd8e2efa551d1f74845373127e50d0c49de48ae10",
+      "vetting": "unvetted",
+      "pendingAudit": "EI-24782775335411324"
+     },
+     "requiredOutcome": "Exact-candidate screenshots, archive privacy and SDK reconciliation, independently resolved public policy/support URLs, rights evidence and sanitized internet reviewer access throughout the review window verified from a clean install. Missing evidence rates unknown."
+    },
+    "subjectQualification": {
+     "state": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHash": "2488d7da5747",
+     "currentSubjectSha256": "36a852b7624864b42cbcf3d883bd23d0e07fbe5e8bd212ced37151f4b13f7239",
+     "qualification": "Dated complete subject/checkpoint read on1174151 and completed inspection on1174187. The older checkpoint and exact-ad3 refusal1162772 are historical preparation; old lane blocker was cleared. Prior-attempt fields were truncated, so this is not a universal history census."
+    },
+    "implementationQualification": {
+     "sourceHarness": "papercup-rust-mobile",
+     "sourceRegistryReference": "WI-10005820#comment:1174074",
+     "sourceProof": "WI-10005820#comment:1174187",
+     "scope": "Four complete store worksheets and the maintained reviewer wrapper, assertion, conventional test source and draft projected runbook.",
+     "observations": [
+      "Store documents are packet preparation and privacy/archive reconciliation worksheets. They do not establish an executed current archive privacy export, Apple-form comparison or public-policy URL check.",
+      "APP-STORE-REVIEW.md forbids advance short-lived one-use tokens and requires sanitized internet access throughout review, exercised from a clean install. It records D-017 rights permission and separates actual signing/hardware results.",
+      "Future cloud/BYOC copy remains pending exact P-015 candidate proof. Source prose does not establish provider retention, legal correctness or loaded runtime equivalence.",
+      "Maintained reviewer controls require a verified disposable workspace and explicit private input. Real local health/mint/admin success precedes remote health200/device401/mint403/admin403; separate seeded Plans/Inbox/chat readback does not consume the native QR.",
+      "Native mode requires an explicit clean SDK26 Mac host/root/mobile SHA, fresh paired execution/fingerprint, retained regular-file sizes/hashes, paired phase/xcresult/PNG and exactly1pass/0fail/0skip. Private input is removed in finally; accepted receipt creation follows verification.",
+      "Conventional test source covers refusal, controls, readback, candidate identity, artifact verification and cleanup. Source inspection and the runbook's dated54-test dirty-worktree proof are not current executed controls or clean candidate acceptance.",
+      "The screenshot fixture and tunnel end when the command exits. Their temporary operation does not establish durable reviewer access throughout Apple's review window."
+     ],
+     "reuseBoundary": "Existing isolated Tauri verifier, seed/readback, D-019 qualification and immutable-source receipt, maintained named-Mac tools/ios-ci.py and retained artifact verification; no parallel reviewer system.",
+     "limits": "Source and test-source inspection only. No new test/control/native capture, screenshot run or public URL re-probe."
+    },
+    "currentFilePins": [
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "store/APP-STORE-REVIEW.md",
+      "bytes": 5624,
+      "sha256": "084d7e3555e28514d56a6c5142f40a06893c6314bdc658956571e8d5c95898c0"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "store/LISTING.md",
+      "bytes": 4696,
+      "sha256": "3e842cc0f3cba2d0fa5ee1541dc94237e4a95c426d58b73535ebd17e432a7bc4"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "store/APP-STORE-PRIVACY.md",
+      "bytes": 4650,
+      "sha256": "b7996e54a8c69331abd93faa87caf38c077a1fbbded1e9d4ec7e9401ebedd282"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "store/PRIVACY-POLICY.md",
+      "bytes": 6805,
+      "sha256": "095cfa031fd6eed010a18a6271f7fe6e696bd621a4e00ca66a0429272d6e14f8"
+     },
+     {
+      "harness": "papercusp",
+      "path": "scripts/reviewer-operator.sh",
+      "bytes": 3050,
+      "sha256": "aff893f944bb94d1d34eee4a69d04b3424b0f0845bf155666f2a94cde6584da9"
+     },
+     {
+      "harness": "papercusp",
+      "path": "scripts/reviewer-operator-assert.mjs",
+      "bytes": 22083,
+      "sha256": "fcab9f42f9109c022ccf54ebf583da5530d70f3e2bc49bd90dbc3414b8004f74"
+     },
+     {
+      "harness": "papercusp",
+      "path": "apps/operator/lib/reviewer-operator-fixture.test.ts",
+      "bytes": 16927,
+      "sha256": "c706885964c5f4eda75a4befcc97a5558b4fb5ac09e02df4c426d56e2636afa1"
+     },
+     {
+      "harness": "papercusp",
+      "path": "apps/operator-docs/src/content/docs/agent-insights/iphone-sanitized-reviewer-capture-runbook.mdx",
+      "bytes": 9706,
+      "sha256": "f5bbd711c936e2a412efe510c252f2e7a1739f3d7b41377271787c52f6b6a135"
+     }
+    ],
+    "reviewerQualification": {
+     "workItem": "WI-10007029",
+     "state": "blocked",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHash": "c5e9ed16bfc3",
+     "currentSubjectSha256": "15cb31ca5ac45461ec77be7fdf19f589c6ac1e8525c86d66255a1899f58ae298",
+     "activeBlocker": "D-025 reviewer-native-candidate",
+     "qualification": "Two dated D-019 source blockers were cleared. The registered next predicate remains native-producer nomination of a clean SDK26 Mac host/root/mobile SHA and leader-scoped operator candidate, followed by exact D-019 qualification. Reachability is unknown/unmeasured; historical refusal1162772 is not a new attempt."
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version52 fields, prior qualifications, population and exclusions are preserved.",
+     "actualAcceptance": "Current exact-candidate packet, clean-install and durable reviewer acceptance are not established by this finite audit. Retain the requirement; no duplicate, obsolete, superseded or accepted disposition.",
+     "historicalPhone9Reference": "Phone9/R68/WI-10005203#comment:1156678 remains separately unresolved; carry echoes are not evidence.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain open.",
+     "ownerWalls": "Existing residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "No child claims/state/holds, native/Actions/provider execution, LIVE_GATE_OPS, killed-goal revival, release acceptance or shipment."
+    }
+   }
   },
   {
    "id": "WI-10004739",
