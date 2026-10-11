@@ -1437,6 +1437,53 @@ describe('durable detached snapshot lifecycle', () => {
     });
   });
 
+  it('keeps a unit PASS from finalizing while a requested integration file is still running', async () => {
+    const runId = 'unit-pass-integration-running';
+    const requestedFiles = ['run-launcher.test.ts', 'run-launcher.integration.test.ts'];
+    const ledgerRows = [
+      {
+        file_path: requestedFiles[0]!,
+        status: 'pass',
+        finished_at: new Date(1_700_000_001_000),
+        output_tail: null,
+        execution_details: measuredPass(requestedFiles[0]!, runId),
+      },
+      { file_path: requestedFiles[1]!, status: 'running', finished_at: null, output_tail: null },
+    ];
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          run_id: runId,
+          task_id: 'task-unit-pass-integration-running',
+          kind: 'vitest',
+          label: 'unit and integration',
+          file_path: null,
+          command: ['node', 'scripts/test-files.mjs'],
+          status: 'running',
+          exit_code: null,
+          started_at: new Date(1_700_000_000_000),
+          finished_at: null,
+          output: '',
+          truncated: false,
+          task_state: 'running',
+          task_deadline_at: null,
+          task_exit_code: null,
+          task_ended_at: null,
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({ runId, status: 'running', exitCode: null, finishedAt: null });
+    expect(recovered?.requestedFiles).toEqual(requestedFiles);
+    expect(recovered?.output).not.toContain('recovered pass');
+  });
+
   it.each([
     { name: 'while the linked router is still running', taskState: 'running', taskExitCode: null, expected: 'running' },
     { name: 'after the linked router exits cleanly with one requested file missing', taskState: 'exited', taskExitCode: 0, expected: 'error' },
