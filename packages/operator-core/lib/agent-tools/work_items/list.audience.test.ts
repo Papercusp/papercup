@@ -78,6 +78,15 @@ describe('work_items:list default agent audience (D-041)', () => {
     expect(r.denominator).toBeUndefined();
   });
 
+  it('includeObservations opts a title query out of the default agent audience while preserving an explicit audience', async () => {
+    await call({ harness: 'papercusp', includeObservations: true, q: 'captured title' });
+    expect(audiencePassed()).toBeUndefined();
+    expect(h.countWorkItems).not.toHaveBeenCalled();
+
+    await call({ harness: 'papercusp', includeObservations: true, audience: 'agent', q: 'captured title' });
+    expect(audiencePassed()).toBe('agent');
+  });
+
   it('a q search under the default reports an unknown population rather than a wrong count', async () => {
     const r = await call({ harness: 'papercusp', q: 'renewal' });
     expect(audiencePassed()).toBe('agent');

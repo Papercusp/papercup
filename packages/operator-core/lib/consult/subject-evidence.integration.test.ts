@@ -147,6 +147,7 @@ describe('registered subject evidence with the real local scorer', () => {
     expect(negatives[0].selected).toEqual([]);
     expect(summary.topChoicePrecision).toBeGreaterThanOrEqual(2 / 3);
     expect(summary.recallAt1).toBeGreaterThanOrEqual(2 / 3);
+    expect(summary.falseExpertSelections, 'irrelevant alternatives must not enter the responder menu').toBe(0);
     expect(negatives.filter(r => r.selected.length)).toEqual([]);
   }, 60_000);
 });

@@ -498,9 +498,13 @@ export default defineTool({
     // predicate). S36 measured the failure this closes: the default list showed a
     // human-audience row, the model attempted to close it, and the D-035 door refused.
     // The owner's own Queue UI (D-038) and any caller that names kind/natures/audience
-    // keep the unfiltered read, mirroring the natures default ("unless kind is named").
+    // or explicitly asks for observations keep the unfiltered read, mirroring the
+    // natures default ("unless kind is named").
     const audienceExplicit =
-      args.audience !== undefined || (args.natures?.length ?? 0) > 0 || args.kind !== undefined;
+      args.audience !== undefined ||
+      (args.natures?.length ?? 0) > 0 ||
+      args.kind !== undefined ||
+      args.includeObservations === true;
     const audience =
       args.audience ??
       (audienceExplicit || isOwnerUiCaller(ctx as AgentWorkDoorCaller) ? undefined : "agent");

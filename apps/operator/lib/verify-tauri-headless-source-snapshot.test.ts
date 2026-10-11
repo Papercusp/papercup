@@ -49,6 +49,89 @@ const operatorSnapshotSource = src.slice(
   operatorSnapshotCallIdx,
 );
 
+describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown', () => {
+  function finishFixture(exitCode: number, options: { copyFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-retained-artifacts-'));
+    const source = resolve(fixture, 'source snapshot/operator-source');
+    const work = resolve(fixture, 'work');
+    const evidence = options.noHarness ? work : resolve(fixture, 'retained evidence');
+    const attachment = 'apps/operator/test-results/native-statements/attachments/unavailable.json';
+    mkdirSync(source, { recursive: true });
+    mkdirSync(work);
+    if (!options.noArtifacts) {
+      mkdirSync(resolve(source, 'apps/operator/test-results/native-statements/attachments'), { recursive: true });
+      mkdirSync(resolve(source, 'apps/operator/playwright-report'), { recursive: true });
+      writeFileSync(resolve(source, attachment), '{"before":null,"after":null}\n');
+      writeFileSync(resolve(source, 'apps/operator/playwright-report/index.html'), '<html>passed</html>');
+      writeFileSync(resolve(source, 'apps/operator/junit-e2e.xml'), '<testsuite failures="0"/>');
+    }
+    const retention = src.match(/retain_assertion_artifacts\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    const cleanup = src.match(/cleanup_operator_source_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    const teardown = src.match(/teardown\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    const result = spawnSync('bash', ['-c', [
+      'set -uo pipefail',
+      'WORK="$TEST_WORK"; OPERATOR_SOURCE_ROOT="$TEST_SOURCE"; OPERATOR_SOURCE_WORK="$(dirname "$TEST_SOURCE")"',
+      'VH_RUN_DIR="$TEST_EVIDENCE"; ASSERTION_MODE=1; SIGNAL_EXIT_CODE=0; ISOLATED_PG_PID=""; BRIDGE_PID=""',
+      'release_verifier_disk_reservations() { :; }; log() { echo "$*" >&2; }',
+      'vh_capture_phase_stop() { :; }; vh_step() { :; }; vh_exit() { echo "verdict:$1"; }',
+      'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
+      'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
+      'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
+      options.copyFails ? 'cp() { return 1; }' : '',
+      retention, cleanup, teardown, `(exit ${exitCode}); teardown`,
+    ].join('\n')], {
+      encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
+    });
+    return { fixture, source, evidence, attachment, result };
+  }
+
+  it.each([0, 23])('retains exact Playwright attachments and reports before deleting source (exit=%s)', exitCode => {
+    const run = finishFixture(exitCode);
+    try {
+      expect(run.result.status, run.result.stderr).toBe(exitCode);
+      expect(run.result.stdout).toContain(`verdict:${exitCode}`);
+      expect(existsSync(run.source)).toBe(false);
+      const retained = resolve(run.evidence, 'phases/assert/artifacts');
+      expect(readFileSync(resolve(retained, run.attachment), 'utf8')).toBe('{"before":null,"after":null}\n');
+      expect(readFileSync(resolve(retained, 'apps/operator/playwright-report/index.html'), 'utf8')).toBe('<html>passed</html>');
+      expect(readFileSync(resolve(retained, 'apps/operator/junit-e2e.xml'), 'utf8')).toBe('<testsuite failures="0"/>');
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
+  it.each([0, 23])('keeps the original evidence and fails a successful run when copying fails (exit=%s)', exitCode => {
+    const run = finishFixture(exitCode, { copyFails: true });
+    try {
+      expect(run.result.status).toBe(exitCode || 1);
+      expect(existsSync(run.source)).toBe(true);
+      expect(readFileSync(resolve(run.source, run.attachment), 'utf8')).toBe('{"before":null,"after":null}\n');
+      expect(run.result.stderr).toContain('assertion artifact retention failed');
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
+  it('retains artifacts with instrumentation disabled in the surviving work directory', () => {
+    const run = finishFixture(0, { noHarness: true });
+    try {
+      expect(run.result.status, run.result.stderr).toBe(0);
+      expect(readFileSync(resolve(run.evidence, 'phases/assert/artifacts', run.attachment), 'utf8')).toBe('{"before":null,"after":null}\n');
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
+  it('does not create an empty artifact tree when assertions produce no report', () => {
+    const run = finishFixture(0, { noArtifacts: true });
+    try {
+      expect(run.result.status, run.result.stderr).toBe(0);
+      expect(existsSync(resolve(run.evidence, 'phases/assert/artifacts'))).toBe(false);
+      expect(existsSync(run.source)).toBe(false);
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
+  it('leaves assertion-mode source cleanup to teardown rather than the generated stop script', () => {
+    const stop = src.slice(src.indexOf('write_stop_script() {'), src.indexOf('# let the one EXIT trap own cleanup.'));
+    expect(stop).toContain('[ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK"');
+  });
+});
+
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
   it.each([false, true])('preserves the invoked source repository through re-exec while keeping the dependency donor separate (distinct=%s)', distinct => {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-donor-contract-'));

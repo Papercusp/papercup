@@ -53,12 +53,17 @@ export function evaluateSubjectCases(
   const positives = cases.filter(c => c.relevant.length);
   const negatives = cases.filter(c => !c.relevant.length);
   const unavailable = cases.flatMap(c => c.scores).filter(s => s === null).length;
+  const selectedCount = cases.reduce((sum, c) => sum + c.selected.length, 0);
+  const falseExpertSelections = cases.reduce((sum, c) => sum +
+    c.selected.filter(id => !c.relevant.includes(id)).length, 0);
   return {
     cases,
     summary: {
       population: cases.length, positiveCases: positives.length, noExpertCases: negatives.length,
       topChoicePrecision: unavailable ? null : positives.filter(c => c.relevant.includes(c.selected[0])).length / positives.length,
       recallAt1: unavailable ? null : positives.reduce((sum, c) => sum + (c.metrics.recallAtK ?? 0), 0) / positives.length,
+      selectionPrecision: unavailable || !selectedCount ? null : (selectedCount - falseExpertSelections) / selectedCount,
+      falseExpertSelections,
       falseExpertCases: negatives.filter(c => c.selected.length).length, unavailable,
     },
   };
