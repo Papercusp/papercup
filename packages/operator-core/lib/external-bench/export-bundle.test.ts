@@ -84,4 +84,28 @@ describe('buildExportBundle', () => {
     expect(b.readme).toContain('Primary assigned outcome: inconclusive');
     expect(b.readme).toContain('Recorded source model: unknown');
   });
+
+  it('keeps the primary headline inconclusive when only some submissions are graded', () => {
+    const dir = join(baseDir, 'partially-graded');
+    mkdirSync(join(dir, 'grade-current', 'out'), { recursive: true });
+    writeFileSync(join(dir, 'current.json'), JSON.stringify({
+      arm: 'current', config: { taskIds: ['a', 'b', 'c'] },
+      perTask: [
+        { instanceId: 'a', stopReason: 'end_turn' },
+        { instanceId: 'b', stopReason: 'end_turn' },
+      ],
+    }));
+    writeFileSync(join(dir, 'grade-current', 'out', 'eval_results.json'), JSON.stringify({ a: true }));
+
+    const b = buildExportBundle('partially-graded', { baseDir })!;
+    expect(b.summary).toMatchObject({
+      taskCount: 3, attemptedCount: 2, absentCount: 1,
+      resolvedCount: 1, gradedCount: 1, missingGradeCount: 1,
+      resolvedPct: null, conditionalResolvedPct: 1,
+    });
+    expect(b.readme).toContain('Primary assigned outcome: inconclusive');
+    expect(b.readme).not.toContain('Primary assigned outcome: 1/3');
+    expect(b.readme).toContain('Conditional graded quality: 1/1');
+    expect(b.readme).toContain('Assigned: 3; attempted: 2; absent: 1; missing grader measurements: 1.');
+  });
 });
