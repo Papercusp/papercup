@@ -2770,6 +2770,23 @@
   "retainedIntervalAssessment": {
     "workItem": "WI-6554700010008406",
     "decision": "D-013",
+    "committedVerification": {
+      "commitSha": "71a2dcea11200a83af47d88d0df5b9c3f5cecee4",
+      "command": "npm run lint:as-committed -- --ref=71a2dcea11200a83af47d88d0df5b9c3f5cecee4 test:file --any -- packages/operator-core/lib/storage/retention-interval-evidence.test.ts",
+      "testRunId": 21083342,
+      "finishedAt": "2026-10-11T15:18:55.442Z",
+      "terminalExit": 0,
+      "passed": 20,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "ledgerWorkspace": "papercusp-workspace",
+      "ledgerHarness": null,
+      "limits": [
+        "The authoritative ledger row has no harness label; its workspace, exact file, clean commit and terminal test output were verified.",
+        "The assessor and importing test bytes match the retained replay hashes. The historical replay preceded publication; its sampler provenance is unchanged.",
+        "This verifies the assessor, not full R5, continuous capacity or final shipment."
+      ]
+    },
     "taskId": "0mv3avr1drhn8oc1okv",
     "logPath": ".papercusp/scratch/bash-7e866263-cc6.log",
     "logSha256": "34fd41f27eff9b6e24175527c3f1023a1fca4f8c3f6afbd147e4bd0d7490a5c0",
