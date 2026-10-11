@@ -44,6 +44,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { recordedTestLayer, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
   type RecordedTestLayer } from '@papercusp/test-config/execution-details';
+import { parseMutationDescriptor, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
@@ -134,6 +135,9 @@ export const FROM_TEST_RUN_MAX_SOURCE_PATHS = 32;
 /** Run sources that are harness-NULL BY DESIGN and must never be re-attributed. */
 const NEVER_ADOPTED_SOURCES: ReadonlySet<string> = new Set(['ci', 'admin-ui']);
 
+/** Upper bound on surviving mutants one re-aim check loads and one justification may name. */
+export const MUTATION_REAIM_MAX_SURVIVORS = 50;
+
 export const testRunBindingSchema = z
   .object({
     workItemId: z.string().trim().min(1).max(200),
@@ -162,13 +166,14 @@ export const testRunBindingSchema = z
       .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
     details: z.record(z.string(), z.unknown()).optional(),
     reaimJustification: z
-      .string()
-      .trim()
-      .min(1)
-      .max(2000)
+      .object({
+        survivorTestRunIds: z.array(z.number().int().positive()).min(1).max(MUTATION_REAIM_MAX_SURVIVORS),
+        reason: z.string().trim().min(1).max(2000),
+      })
+      .strict()
       .optional()
       .describe(
-        'Required to bind a caught mutant when the same unchanged test file had a surviving mutant in the preceding 4 h (a re-aimed mutation). Persisted on the binding as details.reaim.',
+        'Required to bind a caught mutant when another probe invocation left a surviving mutant on the same test file at the same testFileSha256 (a re-aimed mutation). Name every such survivor test-run id plus why this catch is still sound; a survivor whose mutation equals the catch\'s own cannot be justified. Persisted on the binding as details.reaim.',
       ),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -969,62 +974,99 @@ export interface TestRunBindingDeps {
   ): Promise<SiblingCheckout | null>;
   git?: GitRunner;
   /**
-   * Surviving mutant rows (source mutation-probe, phase mutant, status pass) for any of
-   * `filePaths` that started in [before - windowMs, before). Absent = re-aim detection off.
+   * Surviving mutants of the same guard: mutation-probe rows that PASSED on a mutant leg
+   * (execution_details.mutation.leg = 'mutant') for any of `filePaths`, whose descriptor
+   * records `testFileSha256` and a probeInvocationId other than `excludeProbeInvocationId`.
+   * Ordered by started_at, at most MUTATION_REAIM_MAX_SURVIVORS. Absent = re-aim detection off.
    */
   loadMutationSurvivors?(
     scope: TestRunBindingScope,
     filePaths: readonly string[],
-    before: Date,
-    windowMs: number,
+    testFileSha256: string,
+    excludeProbeInvocationId: string,
   ): Promise<MutationSurvivor[]>;
 }
 
 export interface MutationSurvivor {
   id: number;
-  startedAt: string;
+  probeInvocationId: string;
+  mutateExpression: string | null;
+  againstCommit: string | null;
 }
 
-/** An earlier surviving mutant of the same test file inside this window makes a catch a re-aim. */
-export const MUTATION_REAIM_WINDOW_MS = 4 * 3_600_000;
-
-export interface MutationReaimRecord {
-  justification: string;
+export interface MutationReaimJustification {
   survivorTestRunIds: number[];
+  reason: string;
+}
+
+export interface UnjustifiedMutationSurvivor {
+  testRunId: number;
+  /** The survivor's literal mutation expression, or `againstCommit:<sha>` for a historical leg. */
+  mutation: string;
+  why: 'not-named' | 'same-mutation-as-catch';
+}
+
+/** One comparable label per mutation: the literal expression, or the historical commit. */
+export function mutationLabel(m: { mutateExpression: string | null; againstCommit: string | null }): string {
+  return m.mutateExpression ?? `againstCommit:${m.againstCommit ?? ''}`;
 }
 
 /**
- * Re-aiming a mutation until it is caught, with the test file unchanged, proves the
- * MUTATION moved, not that the guard got stronger. The catch is still bindable, but
- * only with a stated reason, and that reason travels on the binding so a grader sees
- * the re-aim instead of a clean first-try catch. A test file modified since the latest
- * survivor is a strengthened guard, not a re-aim.
+ * A catch is only evidence that the GUARD is strong if no other mutation of the subject
+ * slipped past the very same test bytes. So a caught mutant whose test file, at the same
+ * testFileSha256, let a mutant pass in another probe invocation is a re-aim: the mutation
+ * moved until something failed, the guard did not get stronger. Editing the test file
+ * changes its sha256, which is what separates a strengthened guard from a re-aim; time
+ * does not enter into it (plan mutation-probe-evidence-value-2026-10-11 D-003).
+ *
+ * The catch still binds when `justification` names EVERY such survivor and none of them
+ * ran the catch's own mutation (an identical mutation that both passed and failed against
+ * identical test bytes is a flaky guard, which no reason can make sound). The record then
+ * travels on the binding so a grader sees the re-aim instead of a clean first-try catch.
+ * A row without a descriptor is not checked: there is nothing to scope survivors by.
  */
 export function decideMutationReaim(args: {
   testRunId: number;
-  caughtMutant: boolean;
+  caught: { mutateExpression: string | null; againstCommit: string | null } | null;
   survivors: readonly MutationSurvivor[];
-  testFileChangedSinceSurvivor: boolean;
-  justification: string | undefined;
+  justification: MutationReaimJustification | undefined;
 }):
-  | { ok: false; error: 'mutation_reaim_unjustified'; testRunId: number; message: string }
-  | { ok: true; record: MutationReaimRecord | null } {
-  const survivorIds = args.survivors.map((s) => s.id);
-  const reaim = args.caughtMutant && survivorIds.length > 0 && !args.testFileChangedSinceSurvivor;
-  if (reaim && !args.justification) {
+  | {
+    ok: false;
+    error: 'mutation_reaim_unjustified';
+    testRunId: number;
+    unjustifiedSurvivors: UnjustifiedMutationSurvivor[];
+    message: string;
+  }
+  | { ok: true; record: MutationReaimJustification | null } {
+  if (!args.caught || args.survivors.length === 0) {
+    return { ok: true, record: args.justification ? { ...args.justification } : null };
+  }
+  const named = new Set(args.justification?.survivorTestRunIds ?? []);
+  const catchLabel = mutationLabel(args.caught);
+  const unjustified: UnjustifiedMutationSurvivor[] = [];
+  for (const s of args.survivors) {
+    const mutation = mutationLabel(s);
+    if (mutation === catchLabel) unjustified.push({ testRunId: s.id, mutation, why: 'same-mutation-as-catch' });
+    else if (!named.has(s.id)) unjustified.push({ testRunId: s.id, mutation, why: 'not-named' });
+  }
+  if (unjustified.length > 0) {
+    const list = unjustified
+      .map((u) => `${u.testRunId} (${JSON.stringify(u.mutation)}${u.why === 'same-mutation-as-catch' ? ', the same mutation as this catch' : ''})`)
+      .join('; ');
     return {
       ok: false,
       error: 'mutation_reaim_unjustified',
       testRunId: args.testRunId,
+      unjustifiedSurvivors: unjustified,
       message:
-        `test-run ${args.testRunId} is a caught mutant, but the same test file had surviving mutant run(s) ` +
-        `${survivorIds.join(', ')} in the preceding 4 h and has not changed since. That is a re-aimed mutation, ` +
-        'not a stronger guard. Pass reaimJustification explaining why this catch is still sound evidence, or ' +
-        'strengthen the test and re-run the probe.',
+        `test-run ${args.testRunId} is a caught mutant, but the same test file at the same testFileSha256 let a mutant ` +
+        `pass in another probe invocation: ${list}. That is a re-aimed mutation, not a stronger guard. Strengthen the ` +
+        'test and re-run the probe, or pass reaimJustification { survivorTestRunIds, reason } naming every survivor ' +
+        'with a different mutation and why this catch is still sound evidence.',
     };
   }
-  if (!args.justification) return { ok: true, record: null };
-  return { ok: true, record: { justification: args.justification, survivorTestRunIds: reaim ? survivorIds : [] } };
+  return { ok: true, record: args.justification ? { ...args.justification } : null };
 }
 
 export interface SiblingCheckout {
@@ -1102,26 +1144,28 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
       return { ...row, root: typeof recordedRoot === 'string' ? recordedRoot : null };
     });
   },
-  async loadMutationSurvivors(scope, filePaths, before, windowMs) {
+  async loadMutationSurvivors(scope, filePaths, testFileSha256, excludeProbeInvocationId) {
     if (!filePaths.length) return [];
-    const since = new Date(before.getTime() - windowMs);
     return withWorkspace(scope.workspaceId, async (tx) => {
-      const rows = await tx<{ id: string | number; started_at: Date | string }[]>`
-        SELECT id, started_at
+      const rows = await tx<{ id: string | number; mutation: unknown }[]>`
+        SELECT id, execution_details->'mutation' AS mutation
           FROM harness_shared.test_runs
          WHERE source = 'mutation-probe'
            AND status = 'pass'
-           AND execution_details->>'mutationPhase' = 'mutant'
+           AND execution_details->'mutation'->>'leg' = 'mutant'
+           AND execution_details->'mutation'->>'testFileSha256' = ${testFileSha256}
+           AND execution_details->'mutation'->>'probeInvocationId' <> ${excludeProbeInvocationId}
            AND file_path = ANY(${[...filePaths]}::text[])
            AND (workspace_id IS NULL OR workspace_id = ${scope.workspaceId})
-           AND started_at >= ${since.toISOString()}::timestamptz
-           AND started_at < ${before.toISOString()}::timestamptz
-         ORDER BY started_at
-         LIMIT 20`;
-      return rows.map((r) => ({
-        id: Number(r.id),
-        startedAt: (r.started_at instanceof Date ? r.started_at : new Date(r.started_at)).toISOString(),
-      }));
+         ORDER BY started_at, id
+         LIMIT ${MUTATION_REAIM_MAX_SURVIVORS}`;
+      return rows.flatMap((r) => {
+        const m = parseMutationDescriptor(r.mutation);
+        return m
+          ? [{ id: Number(r.id), probeInvocationId: m.probeInvocationId,
+            mutateExpression: m.mutateExpression, againstCommit: m.againstCommit }]
+          : [];
+      });
     });
   },
   async adoptRun(scope, testRunId) {
@@ -1397,19 +1441,23 @@ export async function expandTestRunBinding(
   }
   if (result.ok && deps.loadMutationSurvivors) {
     const caughtMutant = (input.evidenceKind ?? deriveKind(row)) === 'mutation' && row.status === 'fail';
-    const before = measurementLowerBound(row.started_at, row.execution_details);
-    const survivors = caughtMutant && before
-      ? await deps.loadMutationSurvivors(scope, [...new Set([row.file_path ?? testPath, testPath])], before, MUTATION_REAIM_WINDOW_MS)
+    const descriptor: MutationDescriptor | undefined = caughtMutant
+      ? parseMutationDescriptor(executionDetails(row.execution_details).mutation)
+      : undefined;
+    const testFileSha256 = descriptor?.leg === 'mutant' ? descriptor.testFileSha256 : null;
+    const caught = descriptor && testFileSha256 ? descriptor : null;
+    const survivors = caught && testFileSha256
+      ? await deps.loadMutationSurvivors(
+        scope,
+        [...new Set([row.file_path ?? testPath, testPath])],
+        testFileSha256,
+        caught.probeInvocationId,
+      )
       : [];
-    const latest = survivors.at(-1);
-    const testFileChangedSinceSurvivor = latest
-      ? (await measuredFileModifiedAfterRun(root, [testPath], latest.startedAt)) != null
-      : false;
     const reaim = decideMutationReaim({
       testRunId: Number(row.id),
-      caughtMutant,
+      caught,
       survivors,
-      testFileChangedSinceSurvivor,
       justification: input.reaimJustification,
     });
     if (!reaim.ok) return reaim;
