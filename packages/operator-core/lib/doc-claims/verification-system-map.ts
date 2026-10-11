@@ -33,7 +33,12 @@
 /** One typed code union that a contract gate emits from. */
 export interface ContractGateCodeType {
   /** The door the agent calls when it meets this refusal. */
-  readonly door: 'plans:set-plan-status' | 'plans:start' | 'plans:bind-spec-evidence' | 'plans:acceptance-disposition';
+  readonly door:
+    | 'plans:set-plan-status'
+    | 'plans:start'
+    | 'plans:bind-spec-evidence'
+    | 'plans:acceptance-disposition'
+    | 'plans:promote';
   /** Repo-relative module (from packages/operator-core/lib) that declares the type. */
   readonly module: string;
   /** Exported type (or interface) name. */
@@ -66,6 +71,9 @@ export const CONTRACT_GATE_CODE_TYPES: readonly ContractGateCodeType[] = [
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/instrument-provenance.ts', type: 'InstrumentRefusalCode' },
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/bind-spec-evidence.ts', type: 'BindSpecEvidenceRefusalCode' },
   { door: 'plans:acceptance-disposition', module: 'agent-tools/plans/acceptance-drain-disposition.ts', type: 'AcceptanceDispositionRefusalCode' },
+  // P-003: the VAL-* retirement. plans:promote returns 'val-block-retired'; the other two
+  // members are returned by the retired VAL write/read paths.
+  { door: 'plans:promote', module: 'agent-tools/plans/val-retirement.ts', type: 'ValRetirementRefusalCode' },
 ];
 
 /**
@@ -92,6 +100,7 @@ export const OPERATIONAL_DOOR_CODES: Readonly<Record<string, string>> = {
   consult_available: 'routing advice: a critique consult can still be opened',
   admission_refused: 'stop-the-line claim floors (who may claim), not the contract',
   custom: 'zod issue code, not a refusal',
+  adequacy_attestation_unchecked: 'advisory attached to a SUCCESSFUL bind, not a refusal',
 };
 
 export interface MapCodeFacts {

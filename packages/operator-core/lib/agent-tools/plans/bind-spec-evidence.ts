@@ -413,6 +413,14 @@ async function supersedeSiblings(input: {
   return outcomes;
 }
 
+/**
+ * Requirement-contract refusals bind-spec-evidence returns itself (instrument
+ * provenance has its own union in instrument-provenance.ts). Registered in
+ * doc-claims/verification-system-map.ts, whose test demands a map entry and a
+ * triggering test for every member.
+ */
+export type BindSpecEvidenceRefusalCode = 'derived_binding_invalid' | 'mutation_target_rejected';
+
 export interface MutationTargetRefusal {
   clause: string;
   targeted: unknown;
@@ -662,7 +670,7 @@ export default defineTool({
             if (!parsed.success) {
               return {
                 ok: false,
-                error: 'derived_binding_invalid',
+                error: 'derived_binding_invalid' satisfies BindSpecEvidenceRefusalCode,
                 testRunId: item.fromTestRun,
                 message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
               };
@@ -721,7 +729,7 @@ export default defineTool({
               return {
                 ok: false as const,
                 slug: reportedSlug,
-                error: 'mutation_target_rejected' as const,
+                error: 'mutation_target_rejected' as const satisfies BindSpecEvidenceRefusalCode,
                 ...derived,
                 ...targetingRefusal,
               };
