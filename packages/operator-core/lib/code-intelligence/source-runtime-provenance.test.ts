@@ -31,7 +31,9 @@ describe('native P017 captured source to selected runtime join', () => {
     expect(result).toMatchObject({ repositoryId: 'private-repo', sourceFingerprint: captured,
       files: [{ capturedSourceSha256: captured, editedSourceSha256: captured,
         artifact: { buildSha: artifact }, containsCapturedSource: false }] });
-    expect(dispatch).toHaveBeenCalledWith('dev:pipeline_position', expect.objectContaining({ path: 'source0.ts', expectedSourceSha256: captured }));
+    expect(dispatch).toHaveBeenCalledWith('dev:pipeline_position', expect.objectContaining({ path: 'source0.ts', expectedSourceSha256: captured,
+      sourceRuntimeOnly: true }));
+    expect(dispatch).not.toHaveBeenCalledWith('dev:pipeline_position', expect.objectContaining({ view: expect.anything() }));
     expect(result.files[0]!.artifact.buildSha).not.toBe(result.sourceFingerprint);
     expect((await sourceRuntimeProvenance(answer(), 'staging-operator', root, dispatch)).files[0]!.containsCapturedSource).toBe(true);
   });

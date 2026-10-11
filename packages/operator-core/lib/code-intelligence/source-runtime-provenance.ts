@@ -51,7 +51,7 @@ export async function sourceRuntimeProvenance(answer: CodeIntelAnswer, runtime: 
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
-        dispatch('dev:pipeline_position', { path: source.path, expectedSourceSha256: source.contentHash, view: 'source-runtime',
+        dispatch('dev:pipeline_position', { path: source.path, expectedSourceSha256: source.contentHash, sourceRuntimeOnly: true,
           projection: { pick: ['repoRoot', 'submodule', 'acceptedSource', 'servingRuntimes'] } }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Runtime probe budget elapsed.')), budgetMs); }),
       ]);

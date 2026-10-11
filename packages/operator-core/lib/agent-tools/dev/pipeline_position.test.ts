@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS, shapePipelinePosition } from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
+import { takeNamedViewFromArgs } from '../../result-projection';
 /**
  * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
  * this wiring module (agent-tools/index.ts). A test importing only the tool would see an
@@ -52,7 +53,12 @@ describe('dev:pipeline_position accepted-source contract (WI-10007982)', () => {
   });
 });
 
-describe('native P017 pipeline source-runtime view', () => {
+describe('native P017 pipeline source-runtime measurement selector', () => {
+  it('survives the actual named-view extraction boundary and catches the reserved-key control', () => {
+    const args = tool.args.parse({ path: 'target.ts', sourceRuntimeOnly: true });
+    expect(takeNamedViewFromArgs(args, 'dev:pipeline_position')).toEqual({ kind: 'none', args });
+    expect(takeNamedViewFromArgs({ path: 'target.ts', view: 'source-runtime' }, 'dev:pipeline_position').kind).toBe('error');
+  });
   it('preserves exact repository and bound source/runtime identity without the large pipeline digest', async () => {
     const digest = 'a'.repeat(64);
     const acceptedSource = { expectedSha256: digest, observedSha256: digest, matches: true,
@@ -61,7 +67,7 @@ describe('native P017 pipeline source-runtime view', () => {
       { runtime: 'staging-operator', buildSha: 'c'.repeat(40), containsChange: true }];
     vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
       acceptedSource, servingRuntimes, gate: { ownerBrief: 'x'.repeat(20_000) } } as unknown as PipelinePosition);
-    const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest, view: 'source-runtime' });
+    const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest, sourceRuntimeOnly: true });
     const result = await tool.handler(args, {} as never) as { data: Record<string, unknown> };
     expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
     expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));

@@ -831,7 +831,7 @@ export default defineTool({
   ],
   args: z.object({
     path: z.string().min(1).max(400).optional(),
-    view: z.enum(['source-runtime']).optional()
+    sourceRuntimeOnly: z.boolean().optional()
       .describe('Return exact repository, accepted-source and runtime measurements for a bounded graph-source join.'),
     sha: z.string().min(4).max(64).optional(),
     expectedSourceSha256: z.string().regex(/^[0-9a-f]{64}$/).optional()
@@ -899,7 +899,7 @@ export default defineTool({
      * not depend on a path.
      */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker, expectedSourceSha256: args.expectedSourceSha256 });
-    if (args.view === 'source-runtime') {
+    if (args.sourceRuntimeOnly) {
       // Native graph joins need exact source/runtime identity; the ordinary bounded
       // pipeline digest can omit the root or clip nested containment fields.
       return { data: { repoRoot: result.repoRoot, submodule: result.submodule,
