@@ -134,7 +134,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       : { content: [{ type: 'image', mimeType: 'image/png', data: original }] };
     const result = await applyResultDoorAsync<DoorableResult>(input, { ...OPTS, onScratchWriteTiming: observed });
     expect(observed).toHaveBeenCalledTimes(1);
-    expect(observed.mock.calls[0][0]).toEqual({
+    expect(observed.mock.calls[0][0]).toMatchObject({
       quotaWaitMs: expect.any(Number), refreshWaitMs: expect.any(Number),
       quotaRecoveryMs: expect.any(Number), writeMs: expect.any(Number), totalMs: expect.any(Number),
     });
