@@ -103,7 +103,7 @@ describe('unit census executable exit contract', () => {
       expect(report.representedSubtrees.some((entry: { name: string }) => entry.name === 'checkpoint-history')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name.endsWith('.next-build-123-456-abcd')).classification).toBe('cache');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'unknown')).toBe(true);
-      expect(report.residue.some((entry: { name: string }) => entry.name === 'unowned-cache-entry')).toBe(true);
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'affected-cache/unowned-cache-entry')).toBe(true);
       expect(report.representedGit.some((entry: { name: string }) => entry.name === 'registry/clones/owned')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name === 'registry/clones').classification).toBe('state');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/owned/uncommitted-state')).toBe(false);
