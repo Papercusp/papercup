@@ -2,14 +2,47 @@
 // VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,PAPERCUSP_TEST_RUN_WORKSPACE
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 import { verifyVerifierSourceSync } from '../packages/operator-core/lib/verifier-source';
+
+export interface NativeLiveProfile {
+  tauriPID: number;
+  nativeTmpDir: string;
+  workspaceId: string;
+}
+
+/** Restore only the owned private context after the worker's hermetic scrub. */
+export function nativeChildEnvironment(profile: NativeLiveProfile, env = process.env): NodeJS.ProcessEnv {
+  assert.equal(env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
+  assert.ok(Number.isSafeInteger(profile.tauriPID) && profile.tauriPID > 0
+    && profile.tauriPID === Number(env.VERIFY_TAURI_PID), 'Native profile PID must match the owned rig');
+  assert.ok(typeof profile.workspaceId === 'string' && /^verify-tauri-isolated-\d+$/.test(profile.workspaceId),
+    'Native profile requires an explicit private workspace');
+  assert.ok(typeof profile.nativeTmpDir === 'string' && isAbsolute(profile.nativeTmpDir),
+    'Native profile requires an absolute discovery directory');
+  return { ...env, TMPDIR: profile.nativeTmpDir,
+    PAPERCUSP_WORKSPACE_ID: profile.workspaceId, PAPERCUSP_WORKSPACE: profile.workspaceId };
+}
+
+/** Preserve startup stdout/stderr and the original stack in the test failure. */
+export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, script: string, args: string[] = []) {
+  const env = nativeChildEnvironment(profile);
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(process.execPath, ['--import', 'tsx', join(sourceRoot, script), ...args], {
+      cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      if (!error) { resolve({ stdout, stderr }); return; }
+      reject(new Error(`Native child ${script} failed (workspace=${profile.workspaceId}, pid=${profile.tauriPID}):\n`
+        + `${error.stack ?? error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error }));
+    });
+  });
+}
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
 export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts'],
@@ -29,6 +62,8 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   const tauriPID = Number(process.env.VERIFY_TAURI_PID);
   assert.ok(Number.isSafeInteger(tauriPID) && tauriPID > 0, 'Owned native PID required');
   const nativeTmpDir = tmpdir();
+  const profile = { runtimeUnits: [] as string[], tauriPID, nativeTmpDir, workspaceId: process.env.PAPERCUSP_WORKSPACE_ID! };
+  nativeChildEnvironment(profile);
   const token = JSON.parse(readFileSync(join(nativeTmpDir, `tauri-dev-bridge-${tauriPID}.token`), 'utf8'));
   assert.equal(token.pid, tauriPID);
   const authenticated = await bridgeEval({ tauriPID, bridgePort: token.port, bridgeToken: token.token }, 'true');
@@ -62,13 +97,15 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
 
   const profileDir = mkdtempSync(join(nativeTmpDir, 'reports-native-profile-'));
   const profilePath = join(profileDir, 'profile.json');
-  writeFileSync(profilePath, JSON.stringify({ runtimeUnits, tauriPID, nativeTmpDir }), { mode: 0o600 });
+  profile.runtimeUnits = runtimeUnits;
+  writeFileSync(profilePath, JSON.stringify(profile), { mode: 0o600 });
   try {
     // The archive is already verified against its independent commit receipt.
     // Its maintained recorder checks source integrity at both test boundaries;
     // lint:as-committed would wrongly require Git inside this archive.
     execFileSync('npm', ['run', 'test:file', '--', ...testFiles],
-    { cwd: sourceRoot, stdio: 'inherit', env: { ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
+    { cwd: sourceRoot, stdio: 'inherit', env: { ...process.env,
+      PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
 }
 
