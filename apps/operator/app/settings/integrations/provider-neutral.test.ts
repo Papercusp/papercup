@@ -5,11 +5,11 @@
  * removing one leaves nothing behind.
  *
  * The scan reads the page and its components with comments removed by the TypeScript compiler
- * (design notes may cite providers; shipped code and UI text may not). The one allowed reference
- * is the built-in `SlackSetupCard`, which P-008 deletes once the Slack drill moves to the package
- * (D-001); this test then loses that exception.
+ * (design notes may cite providers; shipped code and UI text may not). There is no exception:
+ * the built-in Slack setup card was deleted by P-008 (D-019), and a new Slack connection is made
+ * through the slack package's generic card like any other provider.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -26,9 +26,6 @@ const SCANNED = [
   'ticket-integrations-client.ts',
 ];
 
-/** Until P-008 removes the built-in Slack path (D-001). */
-const ALLOWED_TOKENS = ['SlackSetupCard'];
-
 const PROVIDER_NAMES = /\b(slack|asana|linear|jira|github|gitlab|discord|notion|trello|zendesk|intercom|gmail|google|outlook|microsoft|facebook|twitter|instagram|linkedin|telegram|whatsapp)\b/i;
 
 function codeWithoutComments(fileName: string, text: string): string {
@@ -38,12 +35,15 @@ function codeWithoutComments(fileName: string, text: string): string {
   }).outputText;
 }
 
+/** Splits camelCase/PascalCase identifiers so `SlackSetupCard` reads as `Slack Setup Card`. */
+function identifierWords(line: string): string {
+  return line.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
+}
+
 function providerMentions(fileName: string, text: string): string[] {
-  let code = codeWithoutComments(fileName, text);
-  for (const token of ALLOWED_TOKENS) code = code.split(token).join('');
-  return code
+  return codeWithoutComments(fileName, text)
     .split('\n')
-    .filter((line) => PROVIDER_NAMES.test(line))
+    .filter((line) => PROVIDER_NAMES.test(identifierWords(line)))
     .map((line) => line.trim());
 }
 
@@ -56,10 +56,14 @@ describe('Settings → Integrations is provider-neutral', () => {
     expect(providerMentions('x.tsx', 'export const A = () => <b>Connect Asana</b>;')).toHaveLength(1);
     expect(providerMentions('x.ts', "export const id = 'linear';")).toHaveLength(1);
     expect(providerMentions('x.ts', '// Linear decides\nexport const id = 1;')).toEqual([]);
+    // A provider name inside an identifier counts: re-adding the retired built-in card fails the scan.
+    expect(providerMentions('x.tsx', 'export const A = () => <SlackSetupCard />;')).toHaveLength(1);
+    expect(providerMentions('x.ts', 'export const useAsanaToken = 1;')).toHaveLength(1);
+    // ...but a word that merely contains a provider name does not.
+    expect(providerMentions('x.ts', 'export const slackness = 1;')).toEqual([]);
   });
 
-  it('the built-in card it excuses really is provider-specific, so the exception is still needed', () => {
-    const card = readFileSync(join(DIR, 'SlackSetupCard.tsx'), 'utf8');
-    expect(providerMentions('SlackSetupCard.tsx', card).length).toBeGreaterThan(0);
+  it('the built-in Slack setup card is gone (P-008, D-019)', () => {
+    expect(existsSync(join(DIR, 'SlackSetupCard.tsx'))).toBe(false);
   });
 });
