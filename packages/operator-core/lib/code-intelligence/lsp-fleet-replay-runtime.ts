@@ -453,15 +453,22 @@ export function replayRepositorySources(root: string, options: {
 /** Workspace launchers/exports can name ignored build output. The verifier's
  * broad source mirror preserves those inputs; a Git-only census must add them
  * from the existing package declarations rather than silently drop them. */
-function replayPackageRuntimeSources(root: string, sources: string[]): string[] {
+function replayPackageRuntimeSources(root: string, sources: string[], requiredTargets?: Set<string>): string[] {
   const files = new Set(sources);
-  const visit = (path: string) => {
+  const recordedSources = new Set(sources);
+  const visit = (path: string, matches?: (path: string) => boolean, required = false) => {
     if (!insideReplayRoot(root, path)) throw new Error(`escaping-replay-package-input:${path}`);
     const info = lstatSync(path);
-    if (!info.isDirectory()) { files.add(relative(root, path)); return; }
+    if (!info.isDirectory()) {
+      if (!matches || matches(path)) {
+        files.add(relative(root, path));
+        if (required) requiredTargets?.add(relative(root, path));
+      }
+      return;
+    }
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       if (['.git', '.papercusp', 'node_modules'].includes(entry.name) || entry.name === '.env' || entry.name.startsWith('.env.')) continue;
-      visit(join(path, entry.name));
+      visit(join(path, entry.name), matches, required);
     }
   };
   const targets = (value: unknown): string[] => typeof value === 'string' ? [value] :
@@ -475,10 +482,33 @@ function replayPackageRuntimeSources(root: string, sources: string[]): string[] 
       // Node package targets are relative to their package; dependency names and
       // condition labels are not filesystem inputs.
       if (isAbsolute(target) || target.startsWith('#')) continue;
-      const first = target.replace(/^\.\//, '').split('/')[0];
-      const path = first.includes('*') ? dirname(file) : resolve(dirname(file), first);
-      if (!insideReplayRoot(dirname(file), path)) throw new Error(`escaping-replay-package-input:${target}`);
-      if (existsSync(path)) visit(path);
+      const packageRoot = dirname(file);
+      const normalized = target.replace(/^\.\//, '');
+      const declaredPath = resolve(packageRoot, normalized);
+      if (!insideReplayRoot(packageRoot, declaredPath)) throw new Error(`escaping-replay-package-input:${target}`);
+      if (normalized.includes('*')) {
+        // Node export substitutions may span path separators. Restrict the
+        // census to the declared pattern, rather than its first path component.
+        const pattern = new RegExp(`^${normalized.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+        const prefix = normalized.slice(0, normalized.indexOf('*'));
+        const directory = resolve(packageRoot, prefix.slice(0, prefix.lastIndexOf('/') + 1));
+        if (existsSync(directory)) visit(directory, path => pattern.test(relative(packageRoot, path)));
+      } else {
+        const path = relative(root, declaredPath);
+        // All recorded source comes from the immutable archive. A source
+        // entry must not sweep newer live siblings into its output population.
+        if (requiredTargets && recordedSources.has(path)) continue;
+        if (!existsSync(declaredPath)) continue;
+        requiredTargets?.add(path);
+        if (requiredTargets && lstatSync(declaredPath).isDirectory()) {
+          visit(declaredPath, undefined, true);
+          continue;
+        }
+        // Preserve a build entry's sibling dependency closure. A root-level
+        // entry names only itself, never the entire package directory.
+        visit(dirname(declaredPath) === packageRoot || lstatSync(declaredPath).isDirectory() ?
+          declaredPath : dirname(declaredPath));
+      }
     }
   }
   return [...files].sort();
@@ -593,7 +623,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     'git-root-and-tracked-submodules-v1', excludedRepositories: excludedRepositories.sort(),
     ...(archive ? { sourceCommit: archive.receipt.sourceCommit, submodules: archive.receipt.submodules ?? [],
       receiptSha256: replayHash(readFileSync(join(donor, '.verifier-source.json'))),
-      runtimeOutputPolicy: 'declared-package-ignored-inputs-v1', dependencyDonor } : {}) };
+      runtimeOutputPolicy: 'declared-package-ignored-inputs-v2', dependencyDonor } : {}) };
   const recordedSources = new Set(repositorySources);
   const packageDeclarations = repositorySources.filter(path => basename(path) === 'package.json');
   const archiveOutputPaths = () => {
@@ -601,11 +631,14 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
       if (replayHash(readFileSync(resolve(dependencyDonor, path))) !== replayHash(readFileSync(resolve(donor, path))))
         throw new Error(`replay-archive-package-declaration-drift:${path}`);
     }
-    const outputs = replayPackageRuntimeSources(dependencyDonor, repositorySources).filter(path => !recordedSources.has(path));
-    // A package's first target directory can also contain uncommitted source.
-    // Admit only Git-ignored additions; recorded source always comes from the archive.
+    const requiredTargets = new Set<string>();
+    const candidates = replayPackageRuntimeSources(dependencyDonor, repositorySources, requiredTargets)
+      .filter(path => !recordedSources.has(path));
+    // Export patterns may cover newer live source. Only ignored build inputs
+    // extend the archive; an exact unrecorded nonignored target still refuses.
+    const outputs: string[] = [];
     const groups = new Map<string, string[]>();
-    for (const path of outputs) {
+    for (const path of candidates) {
       const submodule = [...(archive!.receipt.submodules ?? [])].sort((a, b) => b.path.length - a.path.length)
         .find(row => path.startsWith(`${row.path}/`))?.path ?? '';
       const group = groups.get(submodule) ?? []; group.push(path); groups.set(submodule, group);
@@ -618,10 +651,11 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
       if (result.error || result.status !== 0 && result.status !== 1)
         throw new Error(`replay-archive-output-ignore-unmeasured:${result.error ?? result.stderr}`);
       const ignored = new Set(result.stdout.split('\0').filter(Boolean));
-      const unexpected = relativePaths.find(path => !ignored.has(path));
+      const unexpected = relativePaths.find(path => !ignored.has(path) && requiredTargets.has(join(submodule, path)));
       if (unexpected) throw new Error(`replay-archive-unrecorded-source:${join(submodule, unexpected)}`);
+      outputs.push(...paths.filter((_path, index) => ignored.has(relativePaths[index])));
     }
-    return outputs;
+    return outputs.sort();
   };
   const outputPaths = archive ? archiveOutputPaths() : [];
   const outputSources = new Map(outputPaths.map(path => [path, resolve(dependencyDonor, path)]));

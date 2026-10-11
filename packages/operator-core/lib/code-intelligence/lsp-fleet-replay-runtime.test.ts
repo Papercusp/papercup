@@ -478,14 +478,14 @@ describe('replay Git source population', () => {
   });
 });
 describe('committed replay archive and canonical runtime inputs', () => {
-  function fixture() {
+  function fixture(pkg: Record<string, unknown> = { name: 'workspace', main: './dist/index.js' }) {
     const parent = mkdtempSync(join(tmpdir(), 'lsp-replay-archive-')); roots.push(parent);
     const donor = join(parent, 'canonical'); const archive = join(parent, 'archive');
     const target = join(parent, 'captured'); mkdirSync(donor); mkdirSync(archive);
     execFileSync('git', ['init', '-q', donor]);
     for (const root of [donor, archive]) {
       writeFileSync(join(root, '.gitignore'), 'dist/\n');
-      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'workspace', main: './dist/index.js' }));
+      writeFileSync(join(root, 'package.json'), JSON.stringify(pkg));
       writeFileSync(join(root, 'source.ts'), 'export const original = 1;');
       writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'] }));
     }
@@ -516,10 +516,59 @@ describe('committed replay archive and canonical runtime inputs', () => {
     expect(f.options.checkSourceHeadroom).toHaveBeenCalledWith(f.donor, f.target, expect.any(Number));
     const manifest = JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8'));
     expect(manifest.sourcePopulation).toMatchObject({ policy: 'verifier-source-v1', sourceCommit: f.receipt.sourceCommit,
-      runtimeOutputPolicy: 'declared-package-ignored-inputs-v1', dependencyDonor: f.donor });
+      runtimeOutputPolicy: 'declared-package-ignored-inputs-v2', dependencyDonor: f.donor });
     for (const file of f.receipt.files) expect(manifest.sourceFiles[file.path]).toBe(file.sha256);
     expect(manifest.sourceFiles['dist/index.js']).toBe(replayHash('module.exports = 1;'));
     expect(manifest.loadedRuntime).toBe('unmeasured');
+  });
+  it('keeps source exports bound to the archive despite new matching and unrelated live siblings', () => {
+    const f = fixture({ main: './source.ts', exports: { './lib/*': './lib/*.ts', './generated': './dist/index.js' } });
+    mkdirSync(join(f.donor, 'lib')); mkdirSync(join(f.donor, 'lib/nested'));
+    writeFileSync(join(f.donor, 'lib/new.test.ts'), 'new nonignored source matching the wildcard');
+    writeFileSync(join(f.donor, 'lib/nested/new.ts'), 'nested source matching the wildcard');
+    writeFileSync(join(f.donor, 'new.ts'), 'unrelated sibling of exact source entry');
+    const copied = materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (root, out) => {
+      f.dependencies(root, out);
+      writeFileSync(join(root, 'lib/added.ts'), 'new source during capture');
+    } });
+    expect(readFileSync(join(f.target, 'source.ts'), 'utf8')).toBe('export const original = 1;');
+    expect(existsSync(join(f.target, 'lib'))).toBe(false);
+    expect(existsSync(join(f.target, 'new.ts'))).toBe(false);
+    expect(readFileSync(join(f.target, 'dist/index.js'), 'utf8')).toBe('module.exports = 1;');
+    expect(JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8')).loadedRuntime).toBe('unmeasured');
+  });
+  it('refuses an exact nonignored runtime target while excluding unrelated wildcard source', () => {
+    const f = fixture({ exports: { './lib/*': './lib/*.ts', './required': './lib/required.ts' } });
+    mkdirSync(join(f.donor, 'lib'));
+    writeFileSync(join(f.donor, 'lib/new.test.ts'), 'unrelated source');
+    writeFileSync(join(f.donor, 'lib/required.ts'), 'required unrecorded runtime');
+    expect(() => materializeReplaySource(f.input, f.target, f.options))
+      .toThrow('replay-archive-unrecorded-source:lib/required.ts');
+    expect(existsSync(f.target)).toBe(false); expect(f.dependencies).not.toHaveBeenCalled();
+  });
+  it('copies nested ignored wildcard outputs and exact-entry sibling dependencies without sweeping other source', () => {
+    const f = fixture({ module: './build/nested/entry.js', exports: { './generated/*': './dist/*.js' } });
+    writeFileSync(join(f.donor, '.gitignore'), 'dist/\nbuild/\n');
+    mkdirSync(join(f.donor, 'build/nested'), { recursive: true });
+    writeFileSync(join(f.donor, 'build/nested/entry.js'), 'import "./dependency.js";');
+    writeFileSync(join(f.donor, 'build/nested/dependency.js'), 'export const dependency = 1;');
+    mkdirSync(join(f.donor, 'dist/nested'));
+    writeFileSync(join(f.donor, 'dist/nested/generated.js'), 'nested generated output');
+    writeFileSync(join(f.donor, 'dist/unrelated.txt'), 'does not match the export pattern');
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    expect(readFileSync(join(f.target, 'build/nested/dependency.js'), 'utf8')).toContain('dependency = 1');
+    expect(readFileSync(join(f.target, 'dist/nested/generated.js'), 'utf8')).toBe('nested generated output');
+    expect(existsSync(join(f.target, 'dist/unrelated.txt'))).toBe(false);
+    const manifest = JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8'));
+    expect(manifest.sourceFiles['dist/nested/generated.js']).toBe(replayHash('nested generated output'));
+  });
+  it('refuses an unrecorded nonignored member of an explicit directory target', () => {
+    const f = fixture({ exports: { './lib/*': './lib/*.ts' }, main: './lib' });
+    mkdirSync(join(f.donor, 'lib'));
+    writeFileSync(join(f.donor, 'lib/required.ts'), 'required directory member also matching wildcard');
+    expect(() => materializeReplaySource(f.input, f.target, f.options))
+      .toThrow('replay-archive-unrecorded-source:lib/required.ts');
+    expect(existsSync(f.target)).toBe(false); expect(f.dependencies).not.toHaveBeenCalled();
   });
   it.each(['archive', 'declaration', 'unrecorded-source', 'custom-population', 'git-checkout'])
     ('refuses an invalid archive input before creating a capture: %s', kind => {
