@@ -50,6 +50,59 @@ const operatorSnapshotSource = src.slice(
 );
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
+  it.each([false, true])('preserves the invoked source repository through re-exec while keeping the dependency donor separate (distinct=%s)', distinct => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-donor-contract-'));
+    const sourceRepo = resolve(fixture, 'tested source');
+    const donor = distinct ? resolve(fixture, 'live donor') : sourceRepo;
+    const scripts = resolve(sourceRepo, 'scripts');
+    const temp = resolve(fixture, 'temporary wrapper');
+    const inputsFile = resolve(fixture, 'complete inputs.json');
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(donor, { recursive: true });
+    mkdirSync(temp);
+    writeFileSync(inputsFile, JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
+    const paths = src.slice(src.indexOf('SCRIPT_DIR="'), src.indexOf('DESKTOP_DIR="$REPO_DIR/papercusp-desktop"'));
+    const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+    const runner = resolve(scripts, 'verify-tauri-headless.sh');
+    // Execute the production startup/re-exec and snapshot functions. Substitute
+    // only the exporter and dependency copy: a dirty donor must fail if it is
+    // accidentally used as the tested source, before allocation or export.
+    writeFileSync(runner, [
+      '#!/usr/bin/env bash', 'set -euo pipefail',
+      src.slice(snapshotGuardIdx, argumentParserIdx), paths,
+      'WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+      'VERIFY_TAURI_SOURCE_REF=commit; unset VERIFY_TAURI_SOURCE_INPUTS',
+      'VERIFY_TAURI_SOURCE_INPUTS_FILE="$TEST_INPUTS_FILE"',
+      'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+      'node() { printf "%s\\n" "$@" >> "$WORK/order"; if [[ "$*" == *verifier-inputs-check* && "$*" == *"--repo $TEST_DONOR"* && "$TEST_DISTINCT" = 1 ]]; then echo "dirty tested-input mismatch: apps/operator/ui.ts" >&2; return 2; fi; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
+      'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { printf "deps:%s\\n" "$1" >> "$WORK/order"; }\' > "${!#}"; }',
+      dependencySnapshotSource, committed,
+      'snapshot_committed_operator_source',
+      'printf "donor:%s\\n" "$REPO_DIR" >> "$WORK/order"',
+    ].join('\n'));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env, TMPDIR: temp, PAPERCUSP_REPO_DIR: donor,
+      TEST_ROOT: fixture, TEST_DONOR: donor, TEST_DISTINCT: distinct ? '1' : '0', TEST_INPUTS_FILE: inputsFile,
+    };
+    delete env.VERIFY_TAURI_SOURCE_SNAPSHOT_PATH;
+    delete env.VERIFY_TAURI_ORIGINAL_REPO_DIR;
+    delete env.VERIFY_TAURI_SOURCE_REPO_DIR;
+    try {
+      const result = spawnSync('bash', [runner], { env, encoding: 'utf8', timeout: 10_000 });
+      expect(result.status, result.stderr).toBe(0);
+      const order = readFileSync(resolve(fixture, 'order'), 'utf8');
+      for (const command of ['verifier-inputs-check', 'verifier-measure', 'verifier-prepare']) {
+        expect(order).toContain(`${sourceRepo}/scripts/source-preview.mjs\n${command}\n--repo\n${sourceRepo}\n--ref\ncommit\n`);
+      }
+      expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
+      expect(order).toContain('--tauri-inputs\n');
+      expect(order).toContain(`deps:${donor}\n`);
+      expect(order).toContain(`donor:${donor}\n`);
+      expect(readFileSync(inputsFile, 'utf8')).toBe(JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
+      expect(readdirSync(temp)).toEqual([]);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   it('passes file-backed inputs intact alongside mandatory tooling, before receipt verification and dependencies', () => {
     const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = operatorSnapshotCallIdx;

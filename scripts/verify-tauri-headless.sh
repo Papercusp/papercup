@@ -399,6 +399,13 @@ else
     echo "FATAL: could not resolve verifier source directory" >&2
     exit 1
   }
+  # Preserve the invoked script's repository independently of PAPERCUSP_REPO_DIR.
+  # A committed-source caller can execute this wrapper from its tested clone
+  # while retaining the canonical tree as the dependency/coordination donor.
+  VERIFY_TAURI_SOURCE_REPO_DIR="$(cd "$VERIFY_TAURI_SOURCE_DIR/.." 2>/dev/null && pwd -P)" || {
+    echo "FATAL: could not resolve verifier source repository directory" >&2
+    exit 1
+  }
   VERIFY_TAURI_ORIGINAL_REPO_DIR="${PAPERCUSP_REPO_DIR:-$(cd "$VERIFY_TAURI_SOURCE_DIR/.." 2>/dev/null && pwd -P)}" || {
     echo "FATAL: could not resolve verifier repository directory" >&2
     exit 1
@@ -420,7 +427,7 @@ else
     echo "       Re-run after the shared scripts/verify-tauri-headless.sh save is complete." >&2
     exit 1
   fi
-  export VERIFY_TAURI_SOURCE_SNAPSHOT_PATH VERIFY_TAURI_ORIGINAL_REPO_DIR
+  export VERIFY_TAURI_SOURCE_SNAPSHOT_PATH VERIFY_TAURI_ORIGINAL_REPO_DIR VERIFY_TAURI_SOURCE_REPO_DIR
   exec bash "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "$@"
 fi
 
@@ -1439,6 +1446,10 @@ snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
   local snapshot_root receipt source_bytes
+  # Validate and export the source that supplied this wrapper, rather than the
+  # donor's mutable acceptance/tooling files. The fallback preserves callers
+  # that invoke this function without the startup snapshot/re-exec.
+  local source_repo="${VERIFY_TAURI_SOURCE_REPO_DIR:-$REPO_DIR}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
@@ -1453,10 +1464,10 @@ snapshot_committed_operator_source() {
   fi
   # Reject stale tested paths before disk admission or snapshot allocation.
   # verifier-prepare repeats this check after export as the race guard.
-  node "$REPO_DIR/scripts/source-preview.mjs" verifier-inputs-check \
-    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
-  source_bytes="$(node "$REPO_DIR/scripts/source-preview.mjs" verifier-measure \
-    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
+  node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
+    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
+  source_bytes="$(node "$source_repo/scripts/source-preview.mjs" verifier-measure \
+    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in
     ''|*[!0-9]*|0) echo 'FATAL: committed verifier source size is unmeasured or empty' >&2; return 1 ;;
   esac
@@ -1466,8 +1477,8 @@ snapshot_committed_operator_source() {
   receipt="$WORK/verifier-source-receipt.json"
   OPERATOR_SOURCE_ROOT="$snapshot_root"
   write_run_marker "$$" || return 1
-  node "$REPO_DIR/scripts/source-preview.mjs" verifier-prepare \
-    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
+  node "$source_repo/scripts/source-preview.mjs" verifier-prepare \
+    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
     "${input_args[@]}" --receipt "$receipt" || return 1
   # Caller receipt is outside the archive; verify before loading any exported helper.
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-verify \
