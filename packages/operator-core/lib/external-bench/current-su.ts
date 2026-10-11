@@ -1,5 +1,6 @@
 /** Current native su execution over the existing benchmark lifecycle and task ledger. */
 import { createHash } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import type launchAgentTool from '../agent-tools/capability/launch-agent';
 import { snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -27,7 +28,7 @@ import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
 import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
 import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
-import { restoreBenchmarkContext, readRestoredBenchmarkContext, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
+import { restoreBenchmarkContext, readRestoredBenchmarkContext, readContainedBenchmarkFile, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 
@@ -1365,6 +1366,246 @@ export function currentBenchWorkloadTransitionReader(options: DbScope & {
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
         durableTransition: { id: receipt.transitionId,
           subjectRef: `work-item:${frozen.harnessSlug}:${receipt.subjectId}`, from: payload.prevState, to: payload.state } } }];
+  };
+}
+
+/** The execution host allocates refs and paths before candidate generation.
+ * A candidate ref cannot select a filesystem path, workspace or subject. Byte
+ * integrity is checked by replayResolvedWorkloadEvidence, separately from this
+ * private membership/path read. */
+export function currentBenchWorkloadArtifactReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; checkoutRoot: string;
+  artifacts: Array<{ ref: string; subjectId: string; path: string; maxBytes: number }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readArtifact'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId);
+  const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId, frozen.checkoutRoot].every(present) ||
+      !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !frozen.artifacts.length ||
+      frozen.artifacts.some(row => ![row.ref, row.subjectId, row.path].every(present) ||
+        !Number.isSafeInteger(row.maxBytes) || row.maxBytes < 1 || row.maxBytes > 16 * 1024 * 1024) ||
+      new Set(frozen.artifacts.map(row => row.ref)).size !== frozen.artifacts.length ||
+      new Set(frozen.artifacts.map(row => row.path)).size !== frozen.artifacts.length)
+    throw new Error('Workload artifact reader requires an explicit private allocation and unique bounded artifacts.');
+  const root = lstatSync(frozen.checkoutRoot, { bigint: true });
+  if (!root.isDirectory() || realpathSync(frozen.checkoutRoot) !== frozen.checkoutRoot ||
+      frozen.checkoutRoot === realpathSync(REPO_ROOT))
+    throw new Error('Workload artifact reader requires a canonical private checkout root.');
+  const unchangedRoot = () => {
+    const current = lstatSync(frozen.checkoutRoot, { bigint: true });
+    return current.isDirectory() && current.dev === root.dev && current.ino === root.ino &&
+      realpathSync(frozen.checkoutRoot) === frozen.checkoutRoot;
+  };
+  const allowed = new Map(frozen.artifacts.map(row => [row.ref, row]));
+  return async (ref, binding) => {
+    const artifact = allowed.get(ref);
+    if (!artifact || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const { resolveDb } = await import('./reproducibility/db');
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const rows = await sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${frozen.harnessSlug}
+         AND feature_id = ${artifact.subjectId}
+    `;
+    if (rows.length !== 1) return null;
+    try {
+      if (!unchangedRoot()) return null;
+      const bytes = readContainedBenchmarkFile(frozen.checkoutRoot, artifact.path, artifact.maxBytes);
+      return unchangedRoot() ? bytes : null;
+    }
+    catch { return null; }
+  };
+}
+
+/** Capture the exact authored checkpoint before the next checkpoint write.
+ * The journal's note may be truncated; only its hash-bound latest-update span
+ * in the complete current note proves the authored bytes. Old/evicted journal
+ * entries cannot be reconstructed as current checkpoint authority. */
+export function currentBenchWorkloadCheckpointReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; notBefore: string;
+  receipts: Array<{ receiptRef: string; subjectId: string; transitionId: string; index: number;
+    at: number; checkpointSha256: string; fromState: string;
+    subjectFingerprint: import('../carry-note').WorkItemSubjectFingerprint }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId), start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
+      !digest(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
+      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.transitionId, row.fromState].every(present) ||
+        !Number.isSafeInteger(row.index) || row.index < 0 || !Number.isSafeInteger(row.at) || row.at < start ||
+        !Number.isFinite(new Date(row.at).getTime()) || row.fromState === 'checkpointed' ||
+        !digest(row.checkpointSha256) || row.subjectFingerprint?.version !== 1 || !digest(row.subjectFingerprint.sha256)) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => `${row.subjectId}@${row.at}`)).size !== frozen.receipts.length)
+    throw new Error('Workload checkpoint reader requires an explicit private allocation and unique exact checkpoints.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { readCarryLatestUpdate, normalizeWorkItemSubjectFingerprint }] = await Promise.all([
+      import('./reproducibility/db'), import('../carry-note'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const scope = `workitem:${frozen.harnessSlug}:${receipt.subjectId}`;
+    const rows = await sql<{ note: string | null; journal: unknown; updated_ts: string | number }[]>`
+      SELECT note, journal, updated_ts FROM harness_shared.carry_notes
+       WHERE workspace_id = ${workspaceId} AND scope = ${scope}
+         AND (SELECT count(*) FROM harness_shared.work_items
+               WHERE workspace_id = ${workspaceId} AND harness_slug = ${frozen.harnessSlug}
+                 AND feature_id = ${receipt.subjectId}) = 1
+    `;
+    const row = rows[0];
+    if (rows.length !== 1 || typeof row.note !== 'string' || !Array.isArray(row.journal) ||
+        Number(row.updated_ts) !== receipt.at) return null;
+    const entries = row.journal as import('../carry-note').CarryJournalEntry[];
+    const entry = entries.at(-1);
+    if (!entry || entry.at !== receipt.at || entries.filter(value => value?.at === receipt.at).length !== 1) return null;
+    const subject = normalizeWorkItemSubjectFingerprint(entry.subjectFingerprint);
+    const update = readCarryLatestUpdate(row.note, entry.latestUpdate);
+    if (!subject || subject.sha256 !== receipt.subjectFingerprint.sha256 || update?.status !== 'available' ||
+        typeof update.text !== 'string' || !update.text.trim() ||
+        createHash('sha256').update(update.text).digest('hex') !== receipt.checkpointSha256) return null;
+    return [{ index: receipt.index, kind: 'tool-result', name: 'work-item:checkpoint',
+      at: new Date(receipt.at).toISOString(), content: update.text,
+      metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+        durableTransition: { id: receipt.transitionId,
+          subjectRef: `work-item:${frozen.harnessSlug}:${receipt.subjectId}`, from: receipt.fromState, to: 'checkpointed' },
+        checkpointSource: { basis: 'hash-bound-work-item-latest-update', scope, journalAt: receipt.at,
+          checkpointSha256: receipt.checkpointSha256, subjectFingerprint: subject } } }];
+  };
+}
+
+/** Resolve the private offer and its exact acceptance, independently of wake
+ * counts. Pin both stored envelopes: the generic event store supports upserts,
+ * so message identity alone is insufficient to preserve receipt bytes. */
+export function currentBenchWorkloadHandoffReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; notBefore: string;
+  receipts: Array<{ receiptRef: string; subjectId: string; transitionId: string; index: number; planSlug: string;
+    offerMsgId: string; acceptanceMsgId: string; producerOwnerId: string; consumerOwnerId: string;
+    offerSha256: string; acceptanceSha256: string }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId), start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
+      !digest(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
+      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.transitionId, row.planSlug, row.offerMsgId,
+        row.acceptanceMsgId, row.producerOwnerId, row.consumerOwnerId].every(present) ||
+        !Number.isSafeInteger(row.index) || row.index < 0 || row.offerMsgId === row.acceptanceMsgId ||
+        row.producerOwnerId === row.consumerOwnerId || !digest(row.offerSha256) || !digest(row.acceptanceSha256)) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.offerMsgId)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.acceptanceMsgId)).size !== frozen.receipts.length)
+    throw new Error('Workload handoff reader requires an explicit private allocation and unique exact handoffs.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { isHandoffRecord }] = await Promise.all([
+      import('./reproducibility/db'), import('@papercusp/coordination/core'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const rows = await sql<{ msg_id: string; ts: Date; harness_slug: string | null;
+      body: import('@papercusp/coordination/core').HandoffRecord }[]>`
+      SELECT msg_id, ts, harness_slug, body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND surface = 'handoffs'
+         AND msg_id IN (${receipt.offerMsgId}, ${receipt.acceptanceMsgId})
+         AND (SELECT count(*) FROM harness_shared.work_items
+               WHERE workspace_id = ${workspaceId} AND harness_slug = ${frozen.harnessSlug}
+                 AND feature_id = ${receipt.subjectId}) = 1
+    `;
+    const offers = rows.filter(row => row.msg_id === receipt.offerMsgId);
+    const accepts = rows.filter(row => row.msg_id === receipt.acceptanceMsgId);
+    if (rows.length !== 2 || offers.length !== 1 || accepts.length !== 1) return null;
+    const offerRow = offers[0], acceptRow = accepts[0], offer = offerRow.body, accept = acceptRow.body;
+    if (!isHandoffRecord(offer) || !isHandoffRecord(accept) || offer.kind !== 'handoff' || accept.kind !== 'handoff_accepted' ||
+        offer.msg_id !== receipt.offerMsgId || accept.msg_id !== receipt.acceptanceMsgId ||
+        offer.from !== receipt.producerOwnerId || accept.from !== receipt.consumerOwnerId ||
+        !Array.isArray(offer.to) || offer.to.length !== 1 || offer.to[0] !== receipt.consumerOwnerId ||
+        !Array.isArray(accept.to) || accept.to.length !== 1 || accept.to[0] !== receipt.producerOwnerId ||
+        accept.related_msg_id !== receipt.offerMsgId || offer.plan_slug !== receipt.planSlug || accept.plan_slug !== receipt.planSlug ||
+        offer.harness_slug !== frozen.harnessSlug || offerRow.harness_slug !== frozen.harnessSlug ||
+        (accept.harness_slug ?? null) !== acceptRow.harness_slug ||
+        accept.harness_slug !== undefined && accept.harness_slug !== frozen.harnessSlug ||
+        typeof offer.body !== 'string' || !offer.body.trim() ||
+        createHash('sha256').update(canonicalJson(offer)).digest('hex') !== receipt.offerSha256 ||
+        createHash('sha256').update(canonicalJson(accept)).digest('hex') !== receipt.acceptanceSha256) return null;
+    const offeredAt = Date.parse(offer.ts), acceptedAt = Date.parse(accept.ts);
+    if (!Number.isFinite(offeredAt) || !Number.isFinite(acceptedAt) || offeredAt < start || acceptedAt < offeredAt ||
+        !(offerRow.ts instanceof Date) || offerRow.ts.getTime() !== offeredAt ||
+        !(acceptRow.ts instanceof Date) || acceptRow.ts.getTime() !== acceptedAt) return null;
+    return [{ index: receipt.index, kind: 'tool-result', name: 'coord:handoff',
+      at: new Date(acceptedAt).toISOString(), content: canonicalJson({ offer, acceptance: accept }),
+      metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+        durableTransition: { id: receipt.transitionId, subjectRef: `handoff:${receipt.offerMsgId}`, from: 'offered', to: 'accepted' },
+        handoffSource: { offerMsgId: receipt.offerMsgId, acceptanceMsgId: receipt.acceptanceMsgId,
+          producerOwnerId: receipt.producerOwnerId, consumerOwnerId: receipt.consumerOwnerId,
+          offerSha256: receipt.offerSha256, acceptanceSha256: receipt.acceptanceSha256 } } }];
+  };
+}
+
+/** Resolve a host-selected text block from the exact private native task.
+ * Native input recording is distinct from provider consumption; a provider
+ * send proof must be composed separately when the workload requires it. */
+export function currentBenchWorkloadContextReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; notBefore: string;
+  receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+    codexHome: string; nativeSessionId: string; nativeTurnId: string; recordIndex: number; contentIndex: number;
+    contextId: string; consumer: string; index: number }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId), start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
+      !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
+      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
+        row.nativeSessionId, row.nativeTurnId, row.contextId, row.consumer].every(present) ||
+        ![row.index, row.recordIndex, row.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload context reader requires an explicit private allocation and unique native input receipts.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnInput }] = await Promise.all([
+      import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const rows = await sql<{ adv_id: number; started_at: Date; ended_at: Date; native_started_at: Date }[]>`
+      SELECT a.id AS adv_id, t.started_at, t.ended_at, a.started_at AS native_started_at
+        FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
+          ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
+       WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
+         AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
+         AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND EXISTS (SELECT 1 FROM harness_shared.work_items item
+                      WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
+                        AND item.feature_id = ${receipt.subjectId})
+    `;
+    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
+    const observed = await readClosedCodexTurnInput(sql, { workspaceId, codexHome: receipt.codexHome,
+      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+      recordIndex: receipt.recordIndex, contentIndex: receipt.contentIndex });
+    if (!observed) return null;
+    const at = Date.parse(observed.at), row = rows[0];
+    const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
+    if (!times.every(Number.isFinite) || at < start || at < times[0] || at > times[1] || at < times[2]) return null;
+    return [{ index: receipt.index, kind: 'input', role: receipt.consumer, at: observed.at, content: observed.text,
+      metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref, contextId: receipt.contextId,
+        nativeInputSource: { basis: 'closed-native-recorded-input', nativeSessionId: observed.nativeSessionId,
+          nativeTurnId: observed.nativeTurnId, recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
+          sourceSha256: observed.sourceSha256 } } }];
   };
 }
 

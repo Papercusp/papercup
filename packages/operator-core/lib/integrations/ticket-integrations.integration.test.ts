@@ -335,7 +335,9 @@ describe('the providers Settings → Integrations offers (D-014.1, D-014.2)', ()
   it('connects through the existing OAuth start route and returns to this page', async () => {
     const { providers } = await ticketIntegrationsOverview(sql, ALICE(), { registry });
     for (const provider of providers) {
-      const href = new URL(provider.connectHref, 'http://operator.local');
+      // Every fixture provider here declares OAuth, so each one offers a Connect link.
+      expect(provider.connectHref).toEqual(expect.any(String));
+      const href = new URL(provider.connectHref ?? '', 'http://operator.local');
       expect(href.pathname).toBe('/api/oauth/start');
       const plugin = descriptorOAuthPlugin(registry.get(provider.id)!.descriptor);
       expect(Object.fromEntries(href.searchParams)).toEqual({

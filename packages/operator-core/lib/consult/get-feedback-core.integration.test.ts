@@ -1056,6 +1056,51 @@ describe('recoverable interactive feedback requests', () => {
     },
   );
 
+  it.each(['terminal', 'refill-launched', 'refill-exhausted'] as const)(
+    'retains accepted request identity and outcome through initial cascade %s', async (scenario) => {
+      const candidates = [cand('accepted-head'), cand('accepted-next'),
+        ...(scenario === 'terminal' ? [] : [cand('accepted-refill')])];
+      const fixture = makeDeps(routeOf(candidates));
+      const reach = fixture.deps.reach;
+      fixture.deps.reach = async (opts) => {
+        if (scenario === 'refill-launched' && opts.responder === 'accepted-refill') return reach(opts);
+        fixture.reached.push(opts);
+        return { queued: 0, pickupConfirmed: false };
+      };
+      const request = { ...baseReq, requestKey: `recoverable-cascade-${scenario}`,
+        minResponders: 2, maxResponders: 2 };
+      const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in accepted) throw new Error(accepted.error);
+      expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, now: () => NOW,
+        execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+      })).toBe(true);
+      const stored = await stateRow(accepted.conversation_id);
+      expect(stored.routing).toMatchObject({ request: {
+        key: request.requestKey, payload: request, leaseToken: null, leaseUntil: null,
+        result: { verdict: scenario === 'refill-launched' ? 'routed' : 'no_qualified_responder' },
+      } });
+      if (scenario === 'refill-launched') {
+        expect(stored.routing).toMatchObject({ selection: { selected: [
+          { ownerId: 'accepted-head' }, { ownerId: 'accepted-next' },
+          { ownerId: 'accepted-refill', answeringOwnerId: 'accepted-refill-fork' },
+        ] } });
+      } else {
+        expect(stored.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2 } } });
+      }
+      const dispatches = fixture.reached.length;
+      const retry = await acceptFeedbackRequestCore(request, fixture.deps);
+      expect(retry).toMatchObject({ conversation_id: accepted.conversation_id, pending: false,
+        result: (stored.routing as { request: { result: unknown } }).request.result });
+      expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, now: () => NOW,
+        execute: async () => { throw new Error('a completed request must not dispatch again'); },
+      })).toBe(false);
+      expect(fixture.reached).toHaveLength(dispatches);
+      expect(fixture.routeCalls).toHaveLength(1);
+    },
+  );
+
   it('accepts one identity before routing and deduplicates concurrent transport retries', async () => {
     const fixture = makeDeps(routeOf([cand('recoverable-expert')]));
     const request = { ...baseReq, requestKey: 'recoverable-concurrent', question: 'recoverable concurrent request' };
@@ -1855,6 +1900,40 @@ describe('getFeedbackCore — origin_task_ref default', () => {
     const { deps } = makeDeps(routeOf([cand('agent-a')]));
     const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.origin_task_ref).toBeNull();
+  });
+});
+
+describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-CRITIQUE-REF)', () => {
+  it('stores the plan slug as origin_task_ref and the policy on the persisted routing', async () => {
+    const { deps } = makeDeps(routeOf([cand('agent-a')]));
+    const r = asOk(await getFeedbackCore({ ...baseReq, policy: 'bar-critique', originTaskRef: 'plan-under-critique' }, deps));
+    expect(r.origin_task_ref).toBe('plan-under-critique');
+    const [row] = (await rootSql`
+      SELECT origin_task_ref, routing->>'policy' AS policy
+        FROM harness_shared.consult_state WHERE conversation_id = ${r.conversation_id}
+    `) as unknown as Array<{ origin_task_ref: string | null; policy: string | null }>;
+    expect(row).toEqual({ origin_task_ref: 'plan-under-critique', policy: 'bar-critique' });
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['null', null],
+    ['blank', '  '],
+  ] as const)('refuses a bar-critique whose origin_task_ref is %s, writing no consult row', async (_label, ref) => {
+    // A wip work-item exists, so the omitted case would otherwise DEFAULT to it —
+    // exactly the wrong-reference outcome the clause's falsifier names.
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, taken_by, status, taken_at)
+      VALUES ('WI-WIP', ${baseReq.requesterId}, 'wip', ${NOW.toISOString()}::timestamptz)
+      ON CONFLICT DO NOTHING`;
+    const { originTaskRef: _omit, ...reqNoRef } = baseReq;
+    const req = ref === undefined ? reqNoRef : { ...reqNoRef, originTaskRef: ref };
+    const { deps } = makeDeps(routeOf([cand('agent-a')]));
+    const [{ n: before }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
+    const r = await getFeedbackCore({ ...req, policy: 'bar-critique' }, deps);
+    expect('error' in r ? r.error : null).toBe('bar_critique_requires_plan');
+    const [{ n: after }] = (await rootSql`SELECT count(*)::int AS n FROM harness_shared.consult_state`) as unknown as Array<{ n: number }>;
+    expect(after).toBe(before);
   });
 });
 

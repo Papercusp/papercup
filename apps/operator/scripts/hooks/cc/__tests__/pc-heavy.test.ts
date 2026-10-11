@@ -2381,7 +2381,28 @@ describe('pc-heavy.sh — per-class headroom admission (WI-10005334)', () => {
     ).join('\n') + '\n');
   }
 
-  /** Spawn `jobs` probes that hold their admission until `release()`; resolves once each is admitted or queued. */
+  // "memory admission lock busy" is a TRANSIENT refusal by design: _try_acquire_slot
+  // (pc-heavy.sh) counts a 2 s flock miss on mem-admission.lock as "not yet" and the
+  // next 0.5 s sweep retries. Ten simultaneous arrivals serialize on that lock, so under
+  // load the last one can miss it. Counting that line as settled snapshotted `admitted`
+  // mid-admission (8 or 9 of 10, measured 2026-10-11, WI-6554700010008342). Only an
+  // admission or a queue line naming a real reason (headroom shortfall, all slots busy)
+  // settles a probe.
+  const QUEUED_FOR_A_SETTLED_REASON =
+    /\[pc-heavy\] (?:queued for a heavy slot \((?!memory headroom: memory admission lock busy\))|still queued \((?:[^;)]*\)|[^)]*; memory headroom: (?!memory admission lock busy\))))/;
+
+  it('the cohort settle predicate ignores the transient lock-busy refusal and accepts real queue reasons', () => {
+    const shortfall = 'memory headroom: 10240 MiB free after 10 running reserve(s), 14336 MiB needed';
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] queued for a heavy slot (memory headroom: memory admission lock busy) — pid 1, waiting up to 900s')).toBe(false);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] still queued (3s elapsed, pid 1, slots=12; memory headroom: memory admission lock busy)')).toBe(false);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test(`[pc-heavy] queued for a heavy slot (${shortfall}) — pid 1, waiting up to 900s`)).toBe(true);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test(`[pc-heavy] still queued (3s elapsed, pid 1, slots=12; ${shortfall})`)).toBe(true);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] queued for a heavy slot (all 12 slot(s) busy) — pid 1, waiting up to 900s')).toBe(true);
+    // A lock-busy probe that then finds every slot busy only heartbeats, with no memory note.
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] still queued (3s elapsed, pid 1, slots=12)')).toBe(true);
+  });
+
+  /** Spawn `jobs` probes that hold their admission until `release()`; resolves once each is admitted or queued for a settled reason. */
   async function holdCohort(jobs: number, env: Record<string, string>) {
     const cohortDir = mkdtempSync(join(dir, 'held-cohort-'));
     const releaseFile = join(cohortDir, 'release');
@@ -2398,7 +2419,7 @@ describe('pc-heavy.sh — per-class headroom admission (WI-10005334)', () => {
     await waitFor('every held probe being admitted or observably queued', () =>
       probes.every(({ child, ready, stderr }) => {
         if (existsSync(ready)) return true;
-        if (stderr.peek().includes('[pc-heavy] queued for a heavy slot')) return true;
+        if (QUEUED_FOR_A_SETTLED_REASON.test(stderr.peek())) return true;
         if (child.exitCode !== null || child.signalCode !== null) {
           throw new Error(`held probe exited ${child.exitCode ?? child.signalCode} before admission or queueing`);
         }

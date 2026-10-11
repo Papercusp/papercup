@@ -14,6 +14,7 @@
  * (DEFAULT_SOURCE_TOKEN_HARNESS), the same one the OAuth connect link writes. Every write
  * invalidates `integrations.tickets`, whose provider summaries carry the same status.
  */
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -25,6 +26,7 @@ import {
   clearProviderCredential,
   providerCredentialStatus,
   saveProviderCredentials,
+  syncProviderCredentialSource,
   ProviderCredentialError,
   type ProviderCredentialErrorCode,
 } from '../../../integrations/provider-credentials';
@@ -74,6 +76,12 @@ async function provider(providerId: string | undefined): Promise<RegisteredProvi
   return entry;
 }
 
+/** Connect or disable the signed-in owner's source for this provider to match what is now stored. */
+async function syncSource(req: Request, entry: RegisteredProvider, credentials: Parameters<typeof syncProviderCredentialSource>[3]): Promise<void> {
+  const user = await getSessionUserOrDefault(req.headers);
+  await syncProviderCredentialSource(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: user.id }, entry.descriptor, credentials);
+}
+
 async function invalidate(req: Request): Promise<void> {
   const user = await getSessionUserOrDefault(req.headers).catch(() => null);
   if (user) void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY, { workspaceId: activeWorkspaceId(), userId: user.id }).catch(() => {});
@@ -109,6 +117,7 @@ const save = defineTool({
     try {
       const entry = await provider(ctx.params.providerId);
       const credentials = await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, body.values);
+      await syncSource(req, entry, credentials);
       await invalidate(req);
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {
@@ -127,6 +136,7 @@ const clear = defineTool({
     try {
       const entry = await provider(ctx.params.providerId);
       const credentials = await clearProviderCredential(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, ctx.params.key ?? '');
+      await syncSource(req, entry, credentials);
       await invalidate(req);
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {

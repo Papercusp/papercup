@@ -2166,6 +2166,246 @@
       },
       "verdict": "OPEN: native step and endpoint/pinned-custody proof recorded; R5 candidate demand and allocation coverage plus independent final proof remain separate."
   },
+  "currentCandidateDemandAndAllocation": {
+    "demandTaskId": "0mv38mq5gz6wuhanj0e",
+    "demandLogPath": ".papercusp/scratch/bash-84d069dc-2bf.log",
+    "demandTerminalExit": 0,
+    "candidateGenerationDemand": {
+      "kind": "r5-candidate-generation-demand",
+      "at": "2026-10-11T03:02:53.127240+00:00",
+      "candidateSha": "bbbf6cc363aeaefa0eede5571eaf180e044ca95a",
+      "inputFingerprint": "66dfab64aaf71e23264f75996d348de6d618de8a9321e6ab2a4d9fc60de52ca3",
+      "generation": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+      "physicalStore": "/mnt/data/papercusp-dependency-generations",
+      "device": 66304,
+      "treeBytesSha256": "716b8dc2c92ac8aa29eaef6a4b2b985c11a26dfecce1d098c1762e00f5fe7536",
+      "recordedTreeCount": 97,
+      "recordedDemandSumBytes": 8374775808,
+      "rootNodeModulesRecord": [
+        {
+          "relativePath": "node_modules",
+          "recordedBytes": 7192342528
+        }
+      ],
+      "limits": [
+        "Maintained immutable-ref fingerprint and prevalidated selector used; no rebuild or native gate operation.",
+        "Publish-time recorded tree sizes bound named copies; not current exclusive allocation or measured reclaim.",
+        "Final native candidate target/admission receipt remains separate."
+      ]
+    },
+    "allocationTaskId": "0mv38mrki1v7os6vtif",
+    "allocationLogPath": ".papercusp/scratch/bash-665451af-306.log",
+    "allocationTerminalExit": 0,
+    "allocationReceipts": [
+      {
+        "schemaVersion": 1,
+        "kind": "r5-current-published-allocation-custody",
+        "root": "/mnt/data/papercusp-dependency-generations",
+        "physicalRoot": "/mnt/data/papercusp-dependency-generations",
+        "device": 66304,
+        "startedAt": "2026-10-11T03:02:40.417554+00:00",
+        "completedAt": "2026-10-11T03:03:36.384238+00:00",
+        "population": {
+          "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+            "device": 66304,
+            "inode": 2418438880,
+            "markerInode": 2418441858,
+            "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a"
+          },
+          "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+            "device": 66304,
+            "inode": 1549392526,
+            "markerInode": 2416566183,
+            "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476"
+          },
+          "v1-461701dd01e5e8688d419df22479bf9cba4fef0e8b18a3fd6c07a8086d6685df": {
+            "device": 66304,
+            "inode": 2684603868,
+            "markerInode": 2754470763,
+            "markerSha256": "ed8453609969cfe3ca9a6a7e5d3e3c66839e82b4e1fead7440e71e136f67cb18"
+          },
+          "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+            "device": 66304,
+            "inode": 5913877200,
+            "markerInode": 5913877206,
+            "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa"
+          },
+          "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b": {
+            "device": 66304,
+            "inode": 4925358744,
+            "markerInode": 4925785537,
+            "markerSha256": "947dc3774cd5ecf105baee14eb080e6be876fc978e1164d25dd740faee2a89ea"
+          },
+          "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+            "device": 66304,
+            "inode": 9126884355,
+            "markerInode": 9158387524,
+            "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca"
+          },
+          "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41": {
+            "device": 66304,
+            "inode": 4294977544,
+            "markerInode": 4382929692,
+            "markerSha256": "f252f4c82d099861bc8119b71b76d4b74a05bf6bc8c3c5719c2c2c3b96712425"
+          },
+          "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673": {
+            "device": 66304,
+            "inode": 2506218259,
+            "markerInode": 6198630492,
+            "markerSha256": "cb854b671a94178f417e3b1e9aa21151b792158d947a44eb0ac3e70207bca535"
+          },
+          "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+            "device": 66304,
+            "inode": 3278127850,
+            "markerInode": 3270734824,
+            "markerSha256": "65e693fe0a164108e2e211e94c8f901c7f8c73f859aea26739ab875c323ec685"
+          },
+          "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0": {
+            "device": 66304,
+            "inode": 16134055834,
+            "markerInode": 16134472097,
+            "markerSha256": "550f59e8e5ae78effc51f0d9ef4a317dfe40808eef3f6caa862acfb913ad6f4e"
+          }
+        },
+        "populationAfter": {
+          "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+            "device": 66304,
+            "inode": 2418438880,
+            "markerInode": 2418441858,
+            "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a"
+          },
+          "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+            "device": 66304,
+            "inode": 1549392526,
+            "markerInode": 2416566183,
+            "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476"
+          },
+          "v1-461701dd01e5e8688d419df22479bf9cba4fef0e8b18a3fd6c07a8086d6685df": {
+            "device": 66304,
+            "inode": 2684603868,
+            "markerInode": 2754470763,
+            "markerSha256": "ed8453609969cfe3ca9a6a7e5d3e3c66839e82b4e1fead7440e71e136f67cb18"
+          },
+          "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+            "device": 66304,
+            "inode": 5913877200,
+            "markerInode": 5913877206,
+            "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa"
+          },
+          "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b": {
+            "device": 66304,
+            "inode": 4925358744,
+            "markerInode": 4925785537,
+            "markerSha256": "947dc3774cd5ecf105baee14eb080e6be876fc978e1164d25dd740faee2a89ea"
+          },
+          "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+            "device": 66304,
+            "inode": 9126884355,
+            "markerInode": 9158387524,
+            "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca"
+          },
+          "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41": {
+            "device": 66304,
+            "inode": 4294977544,
+            "markerInode": 4382929692,
+            "markerSha256": "f252f4c82d099861bc8119b71b76d4b74a05bf6bc8c3c5719c2c2c3b96712425"
+          },
+          "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673": {
+            "device": 66304,
+            "inode": 2506218259,
+            "markerInode": 6198630492,
+            "markerSha256": "cb854b671a94178f417e3b1e9aa21151b792158d947a44eb0ac3e70207bca535"
+          },
+          "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+            "device": 66304,
+            "inode": 3278127850,
+            "markerInode": 3270734824,
+            "markerSha256": "65e693fe0a164108e2e211e94c8f901c7f8c73f859aea26739ab875c323ec685"
+          },
+          "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0": {
+            "device": 66304,
+            "inode": 16134055834,
+            "markerInode": 16134472097,
+            "markerSha256": "550f59e8e5ae78effc51f0d9ef4a317dfe40808eef3f6caa862acfb913ad6f4e"
+          }
+        },
+        "populationStable": true,
+        "publisherLockHeld": true,
+        "duExitCode": 0,
+        "allocatedPublishedBytes": 72653312000,
+        "completeCapturedPublishedPopulation": true,
+        "stdout": "518356992\t/mnt/data/papercusp-dependency-generations/v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1\n1274417152\t/mnt/data/papercusp-dependency-generations/v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c\n924311552\t/mnt/data/papercusp-dependency-generations/v1-461701dd01e5e8688d419df22479bf9cba4fef0e8b18a3fd6c07a8086d6685df\n4096\t/mnt/data/papercusp-dependency-generations/v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249\n1483046912\t/mnt/data/papercusp-dependency-generations/v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b\n759873536\t/mnt/data/papercusp-dependency-generations/v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0\n19780546560\t/mnt/data/papercusp-dependency-generations/v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41\n26041700352\t/mnt/data/papercusp-dependency-generations/v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673\n8384790528\t/mnt/data/papercusp-dependency-generations/v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703\n13486264320\t/mnt/data/papercusp-dependency-generations/v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0\n72653312000\ttotal\n",
+        "stderr": "",
+        "stderrTruncated": false,
+        "exclusiveReclaim": false,
+        "excluded": [
+          "mutable pending/inflight/control metadata"
+        ],
+        "auditRef": "WI-10007602 checkpoint472ce195c197",
+        "limits": [
+          "Existing maintained publish lock serializes population read; no generation payload modified.",
+          "Retained stdout and explicit incomplete disposition on failure.",
+          "Per-store allocated block totals may include shared hardlinks or reflinks; not exclusive reclaim."
+        ]
+      },
+      {
+        "schemaVersion": 1,
+        "kind": "r5-current-published-allocation-custody",
+        "root": "/mnt/data/dependency-generations/papercusp",
+        "physicalRoot": "/mnt/data/dependency-generations/papercusp",
+        "device": 66304,
+        "startedAt": "2026-10-11T03:03:40.587051+00:00",
+        "completedAt": "2026-10-11T03:04:02.446005+00:00",
+        "population": {
+          "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95": {
+            "device": 66304,
+            "inode": 14496208966,
+            "markerInode": 14542120109,
+            "markerSha256": "3351c34f4418f2a1717b3b946c5a2569fd7db6c446c195b8d4a296fc76a76c00"
+          },
+          "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb": {
+            "device": 66304,
+            "inode": 15579104355,
+            "markerInode": 15695234339,
+            "markerSha256": "8fc48bbf81e0a400b112ef4c2696685e5657efd43c6040382cb8f42dcd4b1239"
+          }
+        },
+        "populationAfter": {
+          "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95": {
+            "device": 66304,
+            "inode": 14496208966,
+            "markerInode": 14542120109,
+            "markerSha256": "3351c34f4418f2a1717b3b946c5a2569fd7db6c446c195b8d4a296fc76a76c00"
+          },
+          "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb": {
+            "device": 66304,
+            "inode": 15579104355,
+            "markerInode": 15695234339,
+            "markerSha256": "8fc48bbf81e0a400b112ef4c2696685e5657efd43c6040382cb8f42dcd4b1239"
+          }
+        },
+        "populationStable": true,
+        "publisherLockHeld": true,
+        "duExitCode": 0,
+        "allocatedPublishedBytes": 33380065280,
+        "completeCapturedPublishedPopulation": true,
+        "stdout": "12593741824\t/mnt/data/dependency-generations/papercusp/v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95\n20786323456\t/mnt/data/dependency-generations/papercusp/v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb\n33380065280\ttotal\n",
+        "stderr": "",
+        "stderrTruncated": false,
+        "exclusiveReclaim": false,
+        "excluded": [
+          "mutable pending/inflight/control metadata"
+        ],
+        "auditRef": "WI-10007602 checkpoint472ce195c197",
+        "limits": [
+          "Existing maintained publish lock serializes population read; no generation payload modified.",
+          "Retained stdout and explicit incomplete disposition on failure.",
+          "Per-store allocated block totals may include shared hardlinks or reflinks; not exclusive reclaim."
+        ]
+      }
+    ],
+    "scope": "Stable guarded published-generation population measured after native02:50; mutable/control paths excluded. Current candidate dependency demand recorded from maintained immutable input selector. Final native candidate target remains separate."
+  },
   "remaining": [
     "Consume the next complete native registered interval on the measured D012 bundle and compare same-device capacity and actual per-store removal/preservation receipts.",
     "Calibrate current candidate allocation demand from its maintained writer; the historical recorded generation demand is not a universal candidate demand estimate.",

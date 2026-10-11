@@ -87,6 +87,17 @@ vi.mock('./goals/plan-closure-observations', async (orig) => ({
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
+// P-008's independent-verification door issues its own SQL against the real schema;
+// this suite's getOrgPg mock answers the gate's queries only. The door has its own
+// integration suite (plan-acceptance-gate-independent-evidence.integration.test.ts).
+vi.mock('./independent-verification-gate', () => ({
+  evaluateIndependentVerificationGate: vi.fn(async () => ({
+    satisfied: true,
+    applicable: false,
+    inScope: 0,
+    gaps: [],
+  })),
+}));
 // P-004: only the DURABLE READ is stubbed. The ranking kernel it feeds
 // (pickAuthoritativeGrading/gradingViaOf) stays real, so these cases exercise
 // the gate's actual ordering rather than a re-implementation of it — the read

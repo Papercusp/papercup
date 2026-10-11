@@ -681,6 +681,17 @@ export async function advanceCascade(
             (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
         ).toISOString();
         const willAttempt = Boolean(dispatch);
+        // The creation caller's snapshot predates accepted-request persistence
+        // and answering-owner stamps. Change only the selection fields owned
+        // by this advance, using the current row as the routing base.
+        const persistedRouting = sql`(CASE WHEN jsonb_typeof(routing) = 'string'
+          THEN (routing #>> '{}')::jsonb ELSE routing END)`;
+        const refillRouting = sql`jsonb_set(${persistedRouting}, '{selection}',
+          COALESCE(${persistedRouting}->'selection', ${sql.json(sel as never)}) ||
+          jsonb_build_object(
+            'selected', COALESCE(${persistedRouting} #> '{selection,selected}',
+              ${sql.json(rawSelected as never)}) || ${sql.json(add as never)},
+            'refill', ${sql.json(updatedSnap.selection.refill as never)}))`;
         const wrote = (await sql`
           UPDATE harness_shared.consult_state
              SET cascade_cursor = ${cursorIdx},
@@ -691,8 +702,8 @@ export async function advanceCascade(
                  cascade_digest = ${sql.json(digest as never)},
                  routing = CASE
                    WHEN ${clearFailedAnsweringOwner}::boolean
-                     THEN ${sql.json(updatedSnap as never)} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
-                   ELSE ${sql.json(updatedSnap as never)}
+                     THEN ${refillRouting} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
+                   ELSE ${refillRouting}
                  END,
                  updated_at = ${params.nowIso}::timestamptz
            WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
@@ -766,17 +777,18 @@ export async function advanceCascade(
           AdvanceCascadeResult['underFilled']
         >['reason'],
       };
-      const terminalSnap = {
-        ...snap,
-        selection: { ...sel, underFilled: { at: params.nowIso, ...underFilled } },
-      };
+      const persistedRouting = sql`(CASE WHEN jsonb_typeof(routing) = 'string'
+        THEN (routing #>> '{}')::jsonb ELSE routing END)`;
+      const terminalRouting = sql`jsonb_set(${persistedRouting}, '{selection}',
+        COALESCE(${persistedRouting}->'selection', ${sql.json(sel as never)}) ||
+        ${sql.json({ underFilled: { at: params.nowIso, ...underFilled } } as never)})`;
       const wroteTerminal = ((await sql`
             UPDATE harness_shared.consult_state
                SET cascade_digest = ${sql.json(digest as never)},
                    routing = CASE
                      WHEN ${clearFailedAnsweringOwner}::boolean
-                       THEN ${sql.json(terminalSnap as never)} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
-                     ELSE ${sql.json(terminalSnap as never)}
+                       THEN ${terminalRouting} #- ARRAY['selection', 'selected', ${failedAnsweringCursor}, 'answeringOwnerId']
+                     ELSE ${terminalRouting}
                    END,
                    updated_at = ${params.nowIso}::timestamptz
              WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}

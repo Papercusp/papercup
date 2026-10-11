@@ -20,8 +20,13 @@ import {
   type ProviderCredentialField,
   type ProviderDescriptor,
 } from '@papercusp/plugin-sdk';
+import type postgres from 'postgres';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import type { TokenStorage } from '../oauth/token';
+import {
+  disconnectOwnedExternalTriggerSources,
+  upsertOwnedExternalTriggerSource,
+} from '../external-triggers/source-store';
 
 const STORE_PREFIX = 'provider-setup:';
 const SAVED_AT_SUFFIX = '__saved_at';
@@ -139,6 +144,44 @@ export async function clearProviderCredential(
   }
   await storage.update(providerSetupStoreKey(descriptor.id), harness, { [key]: null, [`${key}${SAVED_AT_SUFFIX}`]: null });
   return providerCredentialStatus(descriptor, harness, storage);
+}
+
+/** Whose source a pasted credential connects: the signed-in owner, in the active workspace. */
+export interface ProviderCredentialSourceOwner {
+  workspaceId: string;
+  ownerUserId: string;
+}
+
+/**
+ * Keep the owner's source for a credentials provider in step with what is stored (P-005).
+ *
+ * The host reaches a provider through an owned source everywhere — capability invocation, the
+ * option pickers on workflow settings, ingress — and an OAuth connect creates that source. A
+ * pasted credential is the same step for a provider without OAuth: once every declared field is
+ * set, the owner has a connected source of the provider's kind whose credential ref is the
+ * credential store entry (so it is one source per owner per provider); once any field is cleared,
+ * that source is disabled. The value itself still reaches the provider only through host.fetch.
+ */
+export async function syncProviderCredentialSource(
+  sql: postgres.Sql,
+  owner: ProviderCredentialSourceOwner,
+  descriptor: Pick<ProviderDescriptor, 'id'>,
+  credentials: readonly ProviderCredentialStatus[],
+): Promise<'connected' | 'disconnected'> {
+  const credentialRef = providerSetupStoreKey(descriptor.id);
+  if (credentials.length > 0 && credentials.every((field) => field.configured)) {
+    await upsertOwnedExternalTriggerSource(sql, {
+      workspaceId: owner.workspaceId,
+      kind: descriptor.id,
+      ownerUserId: owner.ownerUserId,
+      credentialRef,
+      status: 'connected',
+      createdBy: owner.ownerUserId,
+    });
+    return 'connected';
+  }
+  await disconnectOwnedExternalTriggerSources(sql, owner.workspaceId, owner.ownerUserId, [descriptor.id], credentialRef);
+  return 'disconnected';
 }
 
 /**

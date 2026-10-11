@@ -86,6 +86,7 @@ import { citationDeploymentForPaths, type CitationDeployment } from './deploymen
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
+import { evaluateIndependentVerificationGate } from './independent-verification-gate';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { beginPlanClosureObservation, isCanonicalClosureGateCall } from './goals/plan-closure-observations';
 
@@ -145,6 +146,11 @@ export type PlanAcceptanceGateCode =
   // of the plan's acceptance rubric, so its revision counter is not the one the
   // authoring node's cards were graded against. Ship and grade from the authoring node.
   | 'acceptance_authored_on_other_node'
+  // verification-system-improvements-2026-10-10 P-008 (D-005, D-015 pt4) — a live/deployed
+  // mandatory outcome bar with no binding from outside the implementer lineage.
+  | 'independent_verification_missing'
+  // The same door could not READ its scope, bindings or lineage, and refused rather than guess.
+  | 'independent_verification_unavailable'
   /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
   | 'spec_coverage_unavailable';
 
@@ -1224,6 +1230,26 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           specCoverage,
         };
       }
+    }
+  }
+
+  // ── INDEPENDENT VERIFICATION (verification-system-improvements-2026-10-10 P-008) ──
+  // A live/deployed mandatory outcome bar must carry a binding from OUTSIDE the
+  // implementers' lineage that re-observed the implementer's evidence (D-005). Placed
+  // after spec proof (no point asking for re-observation of unproven clauses) and NOT
+  // waivable by force: it is an independence check, the same class as independent
+  // grading, which force never waives.
+  if (planHarnessSlug) {
+    const independentVerification = await evaluateIndependentVerificationGate({
+      planSlug,
+      harnessSlug: planHarnessSlug,
+    });
+    if (!independentVerification.satisfied) {
+      return {
+        satisfied: false,
+        code: independentVerification.code ?? 'independent_verification_missing',
+        message: independentVerification.message ?? `plan '${planSlug}' lacks independent verification of live evidence.`,
+      };
     }
   }
 

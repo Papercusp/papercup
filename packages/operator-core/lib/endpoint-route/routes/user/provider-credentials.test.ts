@@ -16,9 +16,20 @@ const mocks = vi.hoisted(() => {
     getUser: vi.fn(),
     invalidate: vi.fn(),
     registryGet: vi.fn(),
+    upsertSource: vi.fn(),
+    disconnectSources: vi.fn(),
   };
 });
 
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: 'org-sql' }),
+}));
+vi.mock('../../../external-triggers/source-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../external-triggers/source-store')>()),
+  upsertOwnedExternalTriggerSource: mocks.upsertSource,
+  disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
+}));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: mocks.getUser }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: mocks.invalidate }));
@@ -80,6 +91,8 @@ beforeEach(() => {
   mocks.store.clear();
   mocks.getUser.mockResolvedValue({ id: 'user-1' });
   mocks.invalidate.mockResolvedValue(undefined);
+  mocks.upsertSource.mockResolvedValue({ id: 'source-1' });
+  mocks.disconnectSources.mockResolvedValue({ sources: 0, credentialRefs: [] });
   mocks.registryGet.mockImplementation((id: string) => (id === descriptor.id ? { descriptor } : undefined));
 });
 
@@ -163,5 +176,45 @@ describe('provider credential routes', () => {
     ]);
     expect(Object.values(mocks.store.get('papercusp/provider-setup:fixture-chat') ?? {})).not.toContain(STORED_VALUE);
     expect(mocks.invalidate).toHaveBeenCalled();
+  });
+
+  // P-005: a pasted credential connects the owner the way an OAuth connect does, so pickers,
+  // capability calls and ingress reach the provider through an owned source.
+  it('connects the owner\'s source once every declared field is set, and not before', async () => {
+    await invoke('PUT', BASE, put({ botToken: STORED_VALUE }), { providerId: 'fixture-chat' });
+    expect(mocks.upsertSource).not.toHaveBeenCalled();
+    expect(mocks.disconnectSources).toHaveBeenCalledWith('org-sql', 'ws-test', 'user-1', ['fixture-chat'], 'provider-setup:fixture-chat');
+
+    await invoke('PUT', BASE, put({ appToken: 'app-value' }), { providerId: 'fixture-chat' });
+    expect(mocks.upsertSource).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertSource).toHaveBeenCalledWith('org-sql', {
+      workspaceId: 'ws-test',
+      kind: 'fixture-chat',
+      ownerUserId: 'user-1',
+      credentialRef: 'provider-setup:fixture-chat',
+      status: 'connected',
+      createdBy: 'user-1',
+    });
+    // The source row carries a reference to the store entry, never the value.
+    expect(JSON.stringify(mocks.upsertSource.mock.calls)).not.toContain(STORED_VALUE);
+  });
+
+  it('disables the owner\'s source when a field is cleared', async () => {
+    await invoke('PUT', BASE, put({ botToken: STORED_VALUE, appToken: 'app-value' }), { providerId: 'fixture-chat' });
+    expect(mocks.upsertSource).toHaveBeenCalledTimes(1);
+    mocks.disconnectSources.mockClear();
+    await invoke('DELETE', `${BASE}/:key`, new Request('http://127.0.0.1/x', { method: 'DELETE' }), {
+      providerId: 'fixture-chat',
+      key: 'appToken',
+    });
+    expect(mocks.disconnectSources).toHaveBeenCalledWith('org-sql', 'ws-test', 'user-1', ['fixture-chat'], 'provider-setup:fixture-chat');
+    expect(mocks.upsertSource).toHaveBeenCalledTimes(1);
+  });
+
+  it('touches no source when a value is refused', async () => {
+    const res = await invoke('PUT', BASE, put({ botToken: 'not-the-format' }), { providerId: 'fixture-chat' });
+    expect(res.status).toBe(422);
+    expect(mocks.upsertSource).not.toHaveBeenCalled();
+    expect(mocks.disconnectSources).not.toHaveBeenCalled();
   });
 });

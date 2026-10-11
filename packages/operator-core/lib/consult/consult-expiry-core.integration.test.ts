@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
+import { continueCascadeDispatchCore } from './cascade-core';
 import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
@@ -628,6 +629,60 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     });
     expect(reachCalls).toHaveLength(1);
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
+  });
+
+  it.each(['resp-prior-fork', 'resp-prior'])('recovers a reserved cascade answerer after a thrown launch with prior replies from %s', async (priorAuthor) => {
+    const id = await seedConsult({
+      expiresAt: FUTURE,
+      cascadeCursor: 1,
+      updatedAt: new Date(NOW.getTime() - 60_000).toISOString(),
+      routing: {
+        ...menuSnapshot(['resp-prior', 'resp-1', 'resp-2'], ['resp-prior-fork']),
+        cascadeDispatch: { version: 1, cursor: 1, responder: 'resp-1', summary: 's', body: 'b', attempts: 0 },
+      },
+    });
+    const continuation = {
+      getSql: () => rootSql,
+      now: () => NOW,
+      dispatch: () => async (opts: { onAnsweringOwner?: (owner: string) => void | Promise<void> }) => {
+        await opts.onAnsweringOwner?.('reserved-fork');
+        throw new Error('failed after reservation');
+      },
+    };
+    await expect(continueCascadeDispatchCore(WS, id, continuation)).rejects.toThrow('failed after reservation');
+    const recoveryAt = new Date(NOW.getTime() + 30_001);
+    expect(await continueCascadeDispatchCore(WS, id, {
+      ...continuation, now: () => recoveryAt,
+    })).toBe(false);
+    const [reservation] = await rootSql`
+      SELECT routing #>> '{cascadeDispatch,leaseUntil}' AS backoff,
+             routing #>> '{selection,selected,1,answeringOwnerId}' AS answerer
+      FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(reservation.answerer).toBe('reserved-fork');
+    expect(Date.parse(reservation.backoff)).toBeLessThan(recoveryAt.getTime());
+
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.now = () => recoveryAt;
+    const detector = consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map([['reserved-fork', { sessionState: 'ended' }]]),
+      getThreadStore: () => ({
+        getThreadByParent: async () => ({ thread_id: 'prior-decline' }) as never,
+        listRecentPosts: async () => ({ total: 1, posts: [{ author_id: priorAuthor }] }),
+      }),
+      now: () => recoveryAt,
+    });
+    deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+
+    await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder', closed_at: null, responder_id: 'resp-2', cascade_cursor: 2,
+      cascade_digest: [{ ownerId: 'resp-1', kind: 'dispatch_failed' }],
+    });
+    expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([
+      expect.objectContaining({ responder: 'resp-2', conversationId: id }),
+    ]);
   });
 
   it('does not treat a parked knowledge source as silent while its forked answerer is live', async () => {

@@ -2361,6 +2361,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           attempts: 1,
           postConnectRetries: 0,
           klass: "keyed",
+          connected: true,
           forwardingResult: "outcome_unknown",
           rpcMethods: ["tools/call"],
         });

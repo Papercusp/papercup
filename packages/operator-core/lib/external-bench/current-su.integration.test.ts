@@ -12,7 +12,8 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
   currentBenchAssignmentId, currentBenchGatewayController,
-  currentBenchWorkloadTransitionReader,
+  currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
+  currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -29,6 +30,8 @@ import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptR
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import { startGatewayService } from '../inference-gateway/launch';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
+import { shortCarryHash, computeWorkItemSubjectFingerprint } from '../carry-note';
+import { canonicalJson } from './reproducibility/canonical-json';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 // Goal admission is an independent boundary. Its production service binding
@@ -128,6 +131,8 @@ beforeAll(async () => {
       UNIQUE (workspace_id, run_id));
     CREATE TABLE harness_shared.benchmark_run_result (run_id text, workspace_id text, created_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
+    CREATE TABLE harness_shared.carry_notes (workspace_id text, scope text, note text, journal jsonb, updated_ts bigint);
+    CREATE TABLE harness_shared.coord_event_log (workspace_id text, surface text, msg_id text, ts timestamptz, harness_slug text, body jsonb);
     CREATE TABLE harness_shared.event_key_fires (workspace_id text, event_key text, first_fired_at timestamptz,
       last_fired_at timestamptz, last_fired_by text, last_payload jsonb, fire_count bigint,
       PRIMARY KEY (workspace_id, event_key));
@@ -162,7 +167,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
-  await sql`TRUNCATE harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
+  await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
     harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
     harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
@@ -223,6 +228,304 @@ describe('private workload status authority', () => {
   it('refuses production allocation and ambiguous receipt mappings before reading', () => {
     expect(() => currentBenchWorkloadTransitionReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
     expect(() => currentBenchWorkloadTransitionReader({ ...options(), receipts: [...options().receipts, ...options().receipts] })).toThrow(/unique exact receipts/);
+  });
+});
+
+describe('private workload artifact authority', () => {
+  const binding = { runId: 'private-artifact-run', trialBindingHash: 'a'.repeat(64) };
+  const subjectId = 'private-artifact-subject', harnessSlug = 'private-artifact-harness', ref = 'artifact:private-result';
+  const content = Buffer.from('resolved private output π\n');
+  const options = () => ({ sql, workspaceId, harnessSlug, ...binding, checkoutRoot: repoRoot,
+    artifacts: [{ ref, subjectId, path: 'output/result.txt', maxBytes: 1024 }] });
+  async function populate() {
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'wip')`;
+    mkdirSync(join(repoRoot, 'output')); writeFileSync(join(repoRoot, 'output/result.txt'), content);
+  }
+  it('reads actual private artifact bytes through the existing context path boundary', async () => {
+    await populate();
+    expect(await currentBenchWorkloadArtifactReader(options())(ref, binding)).toEqual(content);
+  });
+  it.each(['workspace', 'harness', 'subject', 'missing', 'duplicate'])('refuses %s subject membership', async fault => {
+    await populate();
+    if (fault === 'workspace') await sql`UPDATE harness_shared.work_items SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'subject') await sql`UPDATE harness_shared.work_items SET feature_id = 'foreign-subject'`;
+    if (fault === 'missing') await sql`DELETE FROM harness_shared.work_items`;
+    if (fault === 'duplicate') await sql`INSERT INTO harness_shared.work_items SELECT * FROM harness_shared.work_items`;
+    expect(await currentBenchWorkloadArtifactReader(options())(ref, binding)).toBeNull();
+  });
+  it.each(['missing', 'empty', 'oversize', 'directory', 'file-link', 'parent-link', 'traversal', 'absolute'])
+  ('refuses %s filesystem substitution', async fault => {
+    await populate();
+    const allocation = options();
+    if (fault === 'missing') rmSync(join(repoRoot, 'output/result.txt'));
+    if (fault === 'empty') writeFileSync(join(repoRoot, 'output/result.txt'), '');
+    if (fault === 'oversize') writeFileSync(join(repoRoot, 'output/result.txt'), Buffer.alloc(1025));
+    if (fault === 'directory') { rmSync(join(repoRoot, 'output/result.txt')); mkdirSync(join(repoRoot, 'output/result.txt')); }
+    if (fault === 'file-link') { rmSync(join(repoRoot, 'output/result.txt')); symlinkSync(join(repoRoot, 'foreign.txt'), join(repoRoot, 'output/result.txt')); }
+    if (fault === 'parent-link') { rmSync(join(repoRoot, 'output'), { recursive: true }); symlinkSync(tmpdir(), join(repoRoot, 'output')); }
+    if (fault === 'traversal') allocation.artifacts[0].path = '../foreign.txt';
+    if (fault === 'absolute') allocation.artifacts[0].path = join(repoRoot, 'output/result.txt');
+    expect(await currentBenchWorkloadArtifactReader(allocation)(ref, binding)).toBeNull();
+  });
+  it('freezes host allocation and refuses a foreign run, binding or unallocated ref', async () => {
+    await populate();
+    const allocation = options(), reader = currentBenchWorkloadArtifactReader(allocation);
+    allocation.checkoutRoot = tmpdir(); allocation.artifacts[0].path = 'foreign.txt';
+    expect(await reader(ref, binding)).toEqual(content);
+    expect(await reader(ref, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(ref, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-chosen-path', binding)).toBeNull();
+  });
+  it('refuses replacement of the allocated checkout with another directory at the same path', async () => {
+    await populate();
+    const reader = currentBenchWorkloadArtifactReader(options());
+    const moved = repoRoot + '-moved'; roots.push(moved); renameSync(repoRoot, moved);
+    mkdirSync(repoRoot); mkdirSync(join(repoRoot, 'output'));
+    writeFileSync(join(repoRoot, 'output/result.txt'), content);
+    expect(await reader(ref, binding)).toBeNull();
+  });
+  it('refuses a symbolic checkout root even when its target contains the artifact', async () => {
+    await populate();
+    const linked = repoRoot + '-link'; roots.push(linked); symlinkSync(repoRoot, linked);
+    expect(() => currentBenchWorkloadArtifactReader({ ...options(), checkoutRoot: linked })).toThrow(/private checkout root/);
+  });
+  it('refuses production allocation, repeated refs/paths and invalid read bounds', () => {
+    expect(() => currentBenchWorkloadArtifactReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    const allocation = options();
+    expect(() => currentBenchWorkloadArtifactReader({ ...allocation, artifacts: [...allocation.artifacts, ...allocation.artifacts] })).toThrow(/unique bounded artifacts/);
+    expect(() => currentBenchWorkloadArtifactReader({ ...allocation, artifacts: [allocation.artifacts[0], { ...allocation.artifacts[0], ref: 'another-ref' }] })).toThrow(/unique bounded artifacts/);
+    expect(() => currentBenchWorkloadArtifactReader({ ...allocation, artifacts: [{ ...allocation.artifacts[0], maxBytes: 0 }] })).toThrow(/bounded artifacts/);
+  });
+});
+
+describe('private workload checkpoint authority', () => {
+  const binding = { runId: 'private-checkpoint-run', trialBindingHash: 'a'.repeat(64) };
+  const harnessSlug = 'private-checkpoint-harness', subjectId = 'private-checkpoint-subject';
+  const scope = `workitem:${harnessSlug}:${subjectId}`;
+  const at = Date.parse('2026-10-11T00:00:01Z');
+  const checkpoint = 'Preserve partial output π\nResume with exact whitespace.';
+  // The journal stores only a prefix; the full current note contains the update.
+  const note = 'Older preparation\n'.repeat(100) + checkpoint;
+  const subjectFingerprint = computeWorkItemSubjectFingerprint({ id: subjectId, harness: harnessSlug,
+    kind: 'feature', title: 'Private recovery', summary: 'Preserve partial work', state: 'wip' });
+  const entry = () => ({ at, note: note.slice(0, 500), subjectFingerprint,
+    latestUpdate: { noteHash: shortCarryHash(note), offset: note.indexOf(checkpoint), length: checkpoint.length } });
+  const options = () => ({ sql, workspaceId, harnessSlug, ...binding, notBefore: '2026-10-11T00:00:00Z',
+    receipts: [{ receiptRef: 'checkpoint:private-recovery', subjectId, transitionId: 'partial-checkpoint',
+      index: 2, at, checkpointSha256: createHash('sha256').update(checkpoint).digest('hex'), fromState: 'wip', subjectFingerprint: { ...subjectFingerprint } }] });
+  async function populate() {
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'wip')`;
+    await sql`INSERT INTO harness_shared.carry_notes VALUES (${workspaceId}, ${scope}, ${note}, ${sql.json([entry()])}, ${at})`;
+  }
+  it('resolves exact authored bytes through the writer span despite a truncated journal prefix', async () => {
+    await populate();
+    const receipt = options().receipts[0];
+    expect(await currentBenchWorkloadCheckpointReader(options())(receipt.receiptRef, binding)).toEqual([
+      { index: 2, kind: 'tool-result', name: 'work-item:checkpoint', at: new Date(at).toISOString(), content: checkpoint,
+        metadata: { ...binding, receiptRef: receipt.receiptRef,
+          durableTransition: { id: 'partial-checkpoint', subjectRef: `work-item:${harnessSlug}:${subjectId}`, from: 'wip', to: 'checkpointed' },
+          checkpointSource: { basis: 'hash-bound-work-item-latest-update', scope, journalAt: at,
+            checkpointSha256: receipt.checkpointSha256, subjectFingerprint } } },
+    ]);
+  });
+  it.each(['workspace', 'harness', 'subject', 'duplicate-subject', 'missing-note', 'foreign-scope',
+    'advanced', 'evicted', 'duplicate-entry', 'legacy-subject', 'foreign-subject', 'missing-span',
+    'wrong-note-hash', 'bad-span', 'changed-bytes'])('refuses %s checkpoint substitution', async fault => {
+    await populate();
+    const journal: Array<Record<string, unknown>> = [entry()];
+    if (fault === 'workspace') await sql`UPDATE harness_shared.carry_notes SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'subject') await sql`UPDATE harness_shared.work_items SET feature_id = 'foreign-subject'`;
+    if (fault === 'duplicate-subject') await sql`INSERT INTO harness_shared.work_items SELECT * FROM harness_shared.work_items`;
+    if (fault === 'missing-note') await sql`DELETE FROM harness_shared.carry_notes`;
+    if (fault === 'foreign-scope') await sql`UPDATE harness_shared.carry_notes SET scope = 'workitem:foreign:foreign'`;
+    if (fault === 'advanced') {
+      journal.push({ ...entry(), at: at + 1 });
+      await sql`UPDATE harness_shared.carry_notes SET updated_ts = ${at + 1}`;
+    }
+    if (fault === 'evicted') journal.length = 0;
+    if (fault === 'duplicate-entry') journal.push(entry());
+    if (fault === 'legacy-subject') delete journal[0].subjectFingerprint;
+    if (fault === 'foreign-subject') journal[0].subjectFingerprint = { version: 1, sha256: 'b'.repeat(64) };
+    if (fault === 'missing-span') delete journal[0].latestUpdate;
+    if (fault === 'wrong-note-hash') journal[0].latestUpdate = { ...entry().latestUpdate, noteHash: 'wrong' };
+    if (fault === 'bad-span') journal[0].latestUpdate = { ...entry().latestUpdate, length: note.length + 1 };
+    if (fault === 'changed-bytes') {
+      const changed = note.replace(checkpoint, 'X'.repeat(checkpoint.length));
+      await sql`UPDATE harness_shared.carry_notes SET note = ${changed}`;
+      journal[0].latestUpdate = { ...entry().latestUpdate, noteHash: shortCarryHash(changed) };
+    }
+    await sql`UPDATE harness_shared.carry_notes SET journal = ${sql.json(journal)}`;
+    expect(await currentBenchWorkloadCheckpointReader(options())(options().receipts[0].receiptRef, binding)).toBeNull();
+  });
+  it('freezes host allocation and refuses other runs, bindings and candidate refs', async () => {
+    await populate();
+    const allocation = options(), receipt = allocation.receipts[0], reader = currentBenchWorkloadCheckpointReader(allocation);
+    allocation.harnessSlug = 'foreign-harness'; receipt.fromState = 'done'; receipt.subjectFingerprint.sha256 = 'b'.repeat(64);
+    expect((await reader(receipt.receiptRef, binding))?.[0].metadata?.durableTransition).toMatchObject({ from: 'wip' });
+    expect(await reader(receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-chosen-ref', binding)).toBeNull();
+  });
+  it('refuses production, old checkpoints and ambiguous allocation before reads', () => {
+    expect(() => currentBenchWorkloadCheckpointReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    expect(() => currentBenchWorkloadCheckpointReader({ ...options(), notBefore: '2026-10-11T00:00:02Z' })).toThrow(/unique exact checkpoints/);
+    const allocation = options();
+    expect(() => currentBenchWorkloadCheckpointReader({ ...allocation, receipts: [...allocation.receipts, ...allocation.receipts] })).toThrow(/unique exact checkpoints/);
+    expect(() => currentBenchWorkloadCheckpointReader({ ...allocation, receipts: [allocation.receipts[0],
+      { ...allocation.receipts[0], receiptRef: 'different-ref', index: 3 }] })).toThrow(/unique exact checkpoints/);
+  });
+});
+
+describe('private workload handoff authority', () => {
+  const binding = { runId: 'private-handoff-run', trialBindingHash: 'a'.repeat(64) };
+  const harnessSlug = 'private-handoff-harness', subjectId = 'private-handoff-subject';
+  const offer = { msg_id: 'private-offer', ts: '2026-10-11T00:00:01Z', kind: 'handoff',
+    from: 'private-producer', to: ['private-consumer'], plan_slug: 'private-plan', harness_slug: harnessSlug,
+    summary: 'Private brief', body: 'Preserve the partial output π\nand complete the declared transformation.' };
+  const acceptance = { msg_id: 'private-acceptance', ts: '2026-10-11T00:00:02Z', kind: 'handoff_accepted',
+    from: 'private-consumer', to: ['private-producer'], plan_slug: 'private-plan', related_msg_id: offer.msg_id,
+    summary: 'Accepted private brief' };
+  const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  const options = () => ({ sql, workspaceId, harnessSlug, ...binding, notBefore: '2026-10-11T00:00:00Z',
+    receipts: [{ receiptRef: 'handoff:private-receipt', subjectId, transitionId: 'brief-accepted', index: 2,
+      planSlug: 'private-plan', offerMsgId: offer.msg_id, acceptanceMsgId: acceptance.msg_id,
+      producerOwnerId: offer.from, consumerOwnerId: acceptance.from, offerSha256: hash(offer), acceptanceSha256: hash(acceptance) }] });
+  async function populate() {
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'wip')`;
+    await sql`INSERT INTO harness_shared.coord_event_log VALUES
+      (${workspaceId}, 'handoffs', ${offer.msg_id}, ${offer.ts}, ${harnessSlug}, ${sql.json(offer)}),
+      (${workspaceId}, 'handoffs', ${acceptance.msg_id}, ${acceptance.ts}, NULL, ${sql.json(acceptance)})`;
+  }
+  it('projects the exact stored offer and linked acceptance by the declared private consumer', async () => {
+    await populate();
+    const receipt = options().receipts[0];
+    expect(await currentBenchWorkloadHandoffReader(options())(receipt.receiptRef, binding)).toEqual([
+      { index: 2, kind: 'tool-result', name: 'coord:handoff', at: '2026-10-11T00:00:02.000Z',
+        content: canonicalJson({ offer, acceptance }), metadata: { ...binding, receiptRef: receipt.receiptRef,
+          durableTransition: { id: 'brief-accepted', subjectRef: 'handoff:private-offer', from: 'offered', to: 'accepted' },
+          handoffSource: { offerMsgId: offer.msg_id, acceptanceMsgId: acceptance.msg_id,
+            producerOwnerId: offer.from, consumerOwnerId: acceptance.from,
+            offerSha256: receipt.offerSha256, acceptanceSha256: receipt.acceptanceSha256 } } },
+    ]);
+  });
+  it.each(['workspace', 'surface', 'harness', 'subject', 'duplicate-subject', 'missing-acceptance', 'duplicate-acceptance',
+    'foreign-actor', 'foreign-recipient', 'foreign-link', 'foreign-plan', 'wrong-kind', 'changed-brief',
+    'body-identity', 'column-harness', 'column-time', 'before-offer', 'old'])('refuses %s handoff substitution', async fault => {
+    await populate();
+    const changedOffer = structuredClone(offer), changedAccept = structuredClone(acceptance);
+    if (fault === 'workspace') await sql`UPDATE harness_shared.coord_event_log SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'surface') await sql`UPDATE harness_shared.coord_event_log SET surface = 'messages'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'subject') await sql`UPDATE harness_shared.work_items SET feature_id = 'foreign-subject'`;
+    if (fault === 'duplicate-subject') await sql`INSERT INTO harness_shared.work_items SELECT * FROM harness_shared.work_items`;
+    if (fault === 'missing-acceptance') await sql`DELETE FROM harness_shared.coord_event_log WHERE msg_id = ${acceptance.msg_id}`;
+    if (fault === 'duplicate-acceptance') await sql`INSERT INTO harness_shared.coord_event_log SELECT * FROM harness_shared.coord_event_log WHERE msg_id = ${acceptance.msg_id}`;
+    if (fault === 'foreign-actor') changedAccept.from = 'foreign-consumer';
+    if (fault === 'foreign-recipient') changedOffer.to = ['foreign-consumer'];
+    if (fault === 'foreign-link') changedAccept.related_msg_id = 'foreign-offer';
+    if (fault === 'foreign-plan') changedAccept.plan_slug = 'foreign-plan';
+    if (fault === 'wrong-kind') changedAccept.kind = 'message';
+    if (fault === 'changed-brief') changedOffer.body = 'Candidate replacement';
+    if (fault === 'body-identity') changedAccept.msg_id = 'foreign-acceptance';
+    if (fault === 'column-harness') await sql`UPDATE harness_shared.coord_event_log SET harness_slug = 'foreign-harness' WHERE msg_id = ${offer.msg_id}`;
+    if (fault === 'column-time') await sql`UPDATE harness_shared.coord_event_log SET ts = ts + interval '1 second'`;
+    if (fault === 'before-offer') changedAccept.ts = '2026-10-11T00:00:00Z';
+    const allocation = options();
+    if (fault === 'old') allocation.notBefore = '2026-10-11T00:00:02Z';
+    await sql`UPDATE harness_shared.coord_event_log SET body = ${sql.json(changedOffer)} WHERE msg_id = ${offer.msg_id}`;
+    await sql`UPDATE harness_shared.coord_event_log SET body = ${sql.json(changedAccept)} WHERE msg_id = ${acceptance.msg_id}`;
+    // Re-pin changed envelope hashes to isolate structural/timing checks from
+    // the byte-substitution guard. The changed-brief control retains its old pin.
+    if (fault !== 'changed-brief') {
+      allocation.receipts[0].offerSha256 = hash(changedOffer);
+      allocation.receipts[0].acceptanceSha256 = hash(changedAccept);
+    }
+    expect(await currentBenchWorkloadHandoffReader(allocation)(allocation.receipts[0].receiptRef, binding)).toBeNull();
+  });
+  it('keeps host allocation fixed and refuses foreign bindings and candidate refs', async () => {
+    await populate();
+    const allocation = options(), receipt = allocation.receipts[0], reader = currentBenchWorkloadHandoffReader(allocation);
+    allocation.harnessSlug = 'foreign-harness'; receipt.consumerOwnerId = 'foreign-consumer';
+    expect((await reader(receipt.receiptRef, binding))?.[0].metadata?.handoffSource).toMatchObject({ consumerOwnerId: 'private-consumer' });
+    expect(await reader(receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-chosen-ref', binding)).toBeNull();
+  });
+  it('refuses production and ambiguous mappings before authority reads', () => {
+    expect(() => currentBenchWorkloadHandoffReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    const allocation = options();
+    expect(() => currentBenchWorkloadHandoffReader({ ...allocation, receipts: [...allocation.receipts, ...allocation.receipts] })).toThrow(/unique exact handoffs/);
+    expect(() => currentBenchWorkloadHandoffReader({ ...allocation, receipts: [{ ...allocation.receipts[0], consumerOwnerId: offer.from }] })).toThrow(/unique exact handoffs/);
+  });
+});
+
+describe('private workload context authority', () => {
+  const binding = { runId: 'private-context-run', trialBindingHash: 'a'.repeat(64) };
+  async function fixture() {
+    const home = mkdtempSync(join(tmpdir(), 'private-context-source-')); roots.push(home);
+    const nativeSessionId = randomUUID(), nativeTurnId = 'private-context-turn';
+    const text = 'Resolved dependency output π\nwith exact whitespace.';
+    const transcript = [
+      { type: 'session_meta', payload: { id: nativeSessionId } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: nativeTurnId } },
+      { timestamp: '2026-10-11T00:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } },
+      { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias' } },
+      { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: nativeTurnId } },
+    ].map(row => JSON.stringify(row) + '\n').join('');
+    const dir = join(home, 'sessions', '2026', '10', '11'); mkdirSync(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-11T00-00-00-${nativeSessionId}.jsonl`); writeFileSync(file, transcript);
+    const receipt = { receiptRef: 'native-input:private-context', subjectId: 'private-context-subject', taskId: 'private-context-task',
+      ownerId: 'private-context-owner', label: 'private-context-label', codexHome: home, nativeSessionId, nativeTurnId,
+      recordIndex: 2, contentIndex: 0, contextId: 'dependency-context', consumer: 'dependent-solver', index: 3 };
+    const harnessSlug = 'private-context-harness';
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${receipt.subjectId}, 'wip')`;
+    await sql`INSERT INTO harness_shared.task_ledger (workspace_id, task_id, detail, started_at, ended_at)
+      VALUES (${workspaceId}, ${receipt.taskId}, ${sql.json({ coordOwnerId: receipt.ownerId, label: receipt.label })},
+        '2026-10-11T00:00:00Z', '2026-10-11T00:00:02Z')`;
+    const [adv] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent, started_at)
+      VALUES (${workspaceId}, ${receipt.ownerId}, ${nativeSessionId}, 'codex', '2026-10-11T00:00:00Z') RETURNING id`;
+    hostHome.byId.set(Number(adv.id), home);
+    await sql`INSERT INTO harness_shared.interactive_usage_files VALUES (${workspaceId}, ${file}, ${Buffer.byteLength(transcript)},
+      ${sql.json({ initialized: true, fileGeneration: 0 })})`;
+    return { text, transcript, receipt, options: { sql, workspaceId, harnessSlug, ...binding,
+      notBefore: '2026-10-11T00:00:00Z', receipts: [receipt] } };
+  }
+  it('projects source-defined input bytes under the exact private task, native home and trial binding', async () => {
+    const f = await fixture();
+    expect(await currentBenchWorkloadContextReader(f.options)(f.receipt.receiptRef, binding)).toEqual([
+      { index: 3, kind: 'input', role: 'dependent-solver', at: '2026-10-11T00:00:01.000Z', content: f.text,
+        metadata: { ...binding, receiptRef: f.receipt.receiptRef, contextId: 'dependency-context', nativeInputSource: {
+          basis: 'closed-native-recorded-input', nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId,
+          recordIndex: 2, contentIndex: 0, sourceSha256: createHash('sha256').update(f.transcript).digest('hex') } } },
+    ]);
+  });
+  it.each(['workspace', 'harness', 'owner', 'label', 'native-session', 'native-home', 'live-task', 'missing-end', 'before-launch', 'after-end', 'old'])
+  ('rejects %s native input borrowing', async fault => {
+    const f = await fixture();
+    if (fault === 'workspace') await sql`UPDATE harness_shared.task_ledger SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'owner') await sql`UPDATE harness_shared.adv_sessions SET coord_owner_id = 'foreign-owner'`;
+    if (fault === 'label') await sql`UPDATE harness_shared.task_ledger SET detail = ${sql.json({ coordOwnerId: f.receipt.ownerId, label: 'foreign-label' })}`;
+    if (fault === 'native-session') await sql`UPDATE harness_shared.adv_sessions SET session_id = ${randomUUID()}`;
+    if (fault === 'native-home') hostHome.byId.clear();
+    if (fault === 'live-task') await sql`UPDATE harness_shared.task_ledger SET state = 'running'`;
+    if (fault === 'missing-end') await sql`UPDATE harness_shared.task_ledger SET ended_at = NULL`;
+    if (fault === 'before-launch') await sql`UPDATE harness_shared.adv_sessions SET started_at = '2026-10-11T00:00:02Z'`;
+    if (fault === 'after-end') await sql`UPDATE harness_shared.task_ledger SET ended_at = '2026-10-11T00:00:00Z'`;
+    if (fault === 'old') f.options.notBefore = '2026-10-11T00:00:02Z';
+    expect(await currentBenchWorkloadContextReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('keeps the host context allocation fixed and refuses foreign bindings or candidate refs', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadContextReader(f.options);
+    f.options.receipts[0].consumer = 'foreign-consumer'; f.options.receipts[0].contentIndex = 99;
+    expect((await reader(f.receipt.receiptRef, binding))?.[0].role).toBe('dependent-solver');
+    expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-chosen-ref', binding)).toBeNull();
   });
 });
 

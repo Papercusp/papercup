@@ -56,6 +56,10 @@ export const SPEC_EVIDENCE_KINDS = [
   'check',
   'manual',
   'operational',
+  // verification-system-improvements-2026-10-10 P-008 (D-005): a non-implementer's
+  // re-observation of an implementer binding. Always cites that binding
+  // (verifiesBindingId) and must match its source + environment fingerprints.
+  'independent-verification',
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
@@ -1039,6 +1043,11 @@ export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   evidenceRef: string;
   coverageEvidenceRef?: number | null;
   testRunId?: number | null;
+  /**
+   * P-008: the implementer binding an `independent-verification` row re-observed.
+   * Required for that kind, refused for every other kind.
+   */
+  verifiesBindingId?: number | null;
   details?: Record<string, unknown>;
   observedAt?: string;
   actorId: string;
@@ -1060,6 +1069,15 @@ export type BindSpecEvidenceResult =
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
+  // P-008 (D-005): independent-verification refusals.
+  | { status: 'verified_binding_required' | 'verified_binding_not_allowed'; message: string }
+  | { status: 'verified_binding_not_found'; verifiesBindingId: number; message: string }
+  | {
+      status: 'independent_fingerprint_mismatch';
+      verifiesBindingId: number;
+      mismatched: Array<'source' | 'environment'>;
+      message: string;
+    }
   | {
       status: 'test_cases_not_in_run';
       testRunId: number;
@@ -1127,6 +1145,8 @@ interface CanonicalBinding {
   environmentFingerprint: string | null;
   coverageEvidenceRef: number | null;
   testRunId: number | null;
+  /** P-008: present ONLY for independent-verification rows, so legacy fingerprints are unchanged. */
+  verifiesBindingId?: number;
   details: Record<string, unknown>;
 }
 
@@ -1425,7 +1445,63 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
     }
 
+    // P-008 (D-005): an independent-verification row is a non-implementer re-observing the
+    // SAME thing the implementer bound. It must cite a live, non-independent binding on the
+    // same clause, and both fingerprints must match that row exactly — a re-observation of a
+    // different source tree or a different environment verifies nothing about the cited proof.
+    const verifiesBindingId = input.verifiesBindingId ?? null;
+    if (input.evidenceKind === 'independent-verification' && verifiesBindingId == null) {
+      return {
+        status: 'verified_binding_required',
+        message: "evidenceKind 'independent-verification' requires verifiesBindingId: the implementer binding it re-observed.",
+      };
+    }
+    if (input.evidenceKind !== 'independent-verification' && verifiesBindingId != null) {
+      return {
+        status: 'verified_binding_not_allowed',
+        message: "verifiesBindingId is only valid with evidenceKind 'independent-verification'.",
+      };
+    }
+    if (verifiesBindingId != null) {
+      const cited = (
+        await tx<{ source_fingerprint: string; environment_fingerprint: string | null }[]>`
+          SELECT source_fingerprint, environment_fingerprint
+            FROM harness_shared.spec_evidence_bindings
+           WHERE id = ${verifiesBindingId}
+             AND workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${planSlug}
+             AND spec_id = ${identity.spec_id}
+             AND retracted_at IS NULL
+             AND evidence_kind <> 'independent-verification'`
+      )[0];
+      if (!cited) {
+        return {
+          status: 'verified_binding_not_found',
+          verifiesBindingId,
+          message:
+            `verifiesBindingId ${verifiesBindingId} is not a live, non-independent binding on clause ` +
+            `${identity.spec_id} of ${planSlug}. Cite the implementer binding you re-observed.`,
+        };
+      }
+      const mismatched: Array<'source' | 'environment'> = [];
+      if (cited.source_fingerprint !== sourceFingerprint) mismatched.push('source');
+      if ((cited.environment_fingerprint ?? null) !== (environmentFingerprint ?? null)) mismatched.push('environment');
+      if (mismatched.length > 0) {
+        return {
+          status: 'independent_fingerprint_mismatch',
+          verifiesBindingId,
+          mismatched,
+          message:
+            `independent-verification refused: ${mismatched.join(' and ')} fingerprint differs from cited binding ` +
+            `${verifiesBindingId}. Re-observe the same source and environment the implementer bound, or re-bind ` +
+            'the implementer proof first.',
+        };
+      }
+    }
+
     const canonical: CanonicalBinding = {
+      ...(verifiesBindingId != null ? { verifiesBindingId } : {}),
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
       workItemId: input.workItemId,
@@ -1462,7 +1538,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         spec_revision, spec_fingerprint, evidence_kind, evidence_ref,
         source_fingerprint, test_fingerprint, fixture_fingerprint,
         rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
-        test_run_id, details, observed_at, binding_fingerprint, created_by
+        test_run_id, details, observed_at, binding_fingerprint, created_by,
+        verifies_binding_id
       ) VALUES (
         ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${planSlug},
         ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.evidenceKind},
@@ -1470,7 +1547,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         ${canonical.fixtureFingerprint}, ${canonical.rubricFingerprint},
         ${canonical.environmentFingerprint}, ${canonical.coverageEvidenceRef},
         ${canonical.testRunId}, ${JSON.stringify(canonical.details)}::text::jsonb,
-        ${observedAt}, ${bindingFingerprint}, ${input.actorId}
+        ${observedAt}, ${bindingFingerprint}, ${input.actorId},
+        ${verifiesBindingId}
       ) ON CONFLICT (
         workspace_id, harness_slug, work_item_id,
         plan_slug, spec_id, spec_revision, binding_fingerprint

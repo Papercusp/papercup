@@ -60,7 +60,7 @@ describe('native baseline exposed semantic and packing handlers', () => {
   it('enumerates every admitted exposed operation even if the inventory omits one', () => {
     expect([...graphQuery.args.shape.op.options].sort()).toEqual([
       'callers', 'callees', 'context', 'diagnostics', 'health', 'impact', 'implementations', 'references',
-      'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search',
+      'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search', 'trace',
     ].sort());
     expect(graphOperations.map(row => row.op).sort()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].sort());
     expect(semantic.map(row => row.op).sort()).toEqual([...lspQuery.args.shape.op.options].sort());
@@ -82,8 +82,8 @@ describe('native baseline against the exposed graph handler', () => {
     expect(calls.indexed).not.toHaveBeenCalled();
   });
 
-  it('refuses indexed edges with unknown versions instead of assigning current-source identities', async () => {
-    calls.indexed.mockResolvedValue({ backend: 'gitnexus', intent: 'callees', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
+  it('refuses compiler edges with unknown versions instead of assigning current-source identities', async () => {
+    calls.compiler.mockResolvedValue({ backend: 'typescript-service', intent: 'impact', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
       error: null, freshness: { health: 'healthy', indexedAt: null, indexedCommit: 'older-index', staleVsDisk: true } });
     const out = await graphQuery.handler(graphQuery.args.parse({ op: 'impact', name: 'target' }),
       { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
@@ -109,7 +109,7 @@ describe('native baseline against the exposed graph handler', () => {
     const out = await graphQuery.handler(args, { projectDir: '/baseline-repo' } as never) as {
       data: { backend: string };
     };
-    const native = ['callers', 'symbol', 'callees'].includes(op);
+    const native = ['callers', 'symbol', 'callees', 'impact'].includes(op);
     expect(out.data.backend).toBe(native ? 'typescript-service' : backend);
     expect(calls.compiler).toHaveBeenCalledTimes(native ? 1 : 0);
     expect(calls.indexed).toHaveBeenCalledTimes(native ? 0 : 1);
@@ -160,6 +160,44 @@ describe('native baseline against the exposed graph handler', () => {
     expect(out.data.evidence!.sourceScope.sourceFingerprint).toBeNull();
     expect(calls.compiler).not.toHaveBeenCalled();
     expect(calls.indexed).not.toHaveBeenCalled();
+  });
+
+  it('validates path direction, continuity, limits and source endpoints before exposing compiler traversal', async () => {
+    const contentHash = 'b'.repeat(64);
+    const source = { path: 'src/path.ts', contentHash, language: 'typescript', representation: 'full-source' as const };
+    const startSite = { path: source.path, line1: 1, kind: 'function', name: 'origin' };
+    const targetSite = { path: source.path, line1: 3, kind: 'function', name: 'target' };
+    const callSite = { path: source.path, line1: 2, kind: 'call', name: 'target' };
+    const endpoint = (site: typeof startSite) => ({ site, contentHash, versionedSymbolId: versionedSymbolIdentity('fixture', site, source) });
+    const start = endpoint(startSite);
+    const target = endpoint(targetSite);
+    const answer = { backend: 'typescript-service', intent: 'trace', query: 'origin', error: null, sites: [callSite],
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false },
+      traversal: { direction: 'forward', maxDepth: 1, maxPaths: 1, start, target, paths: [{ siteIndices: [0], walk: 'forward' }], truncationReasons: [], outcome: 'found' },
+      evidence: { schemaVersion: 1, sourceScope: { repositoryId: 'fixture', identityKind: 'registry', sourceFingerprint: contentHash, paths: ['src'], supportingFiles: [source] },
+        graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [] }, languageCapabilities: [],
+        siteIdentities: [{ siteIndex: 0, sourcePath: source.path, contentHash, versionedSymbolId: versionedSymbolIdentity('fixture', callSite, source) }],
+        relationships: [{ siteIndex: 0, kind: 'callees', origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown', source: start, target }] } };
+    const run = async () => (await graphQuery.handler(graphQuery.args.parse({ op: 'trace', name: 'origin', target: 'target', max_depth: 1, max_paths: 1 }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer }).data;
+    calls.compiler.mockResolvedValue(answer);
+    expect((await run()).traversal!.paths).toHaveLength(1);
+    for (const traversal of [
+      { ...answer.traversal, start: { ...start, contentHash: 'c'.repeat(64) } },
+      { ...answer.traversal, paths: [{ siteIndices: [1], walk: 'forward' }] },
+      { ...answer.traversal, paths: [{ siteIndices: [0], walk: 'reverse' }] },
+      { ...answer.traversal, paths: [{ siteIndices: [0, 0], walk: 'forward' }] },
+      { ...answer.traversal, paths: [{ siteIndices: [], walk: 'forward' }] },
+    ]) {
+      calls.compiler.mockResolvedValue({ ...answer, traversal });
+      const refused = await run();
+      expect(refused.error).toContain('source versions are unavailable');
+      expect(refused.sites).toEqual([]);
+      expect(refused.traversal).toBeUndefined();
+    }
+    calls.compiler.mockResolvedValue({ ...answer, evidence: { ...answer.evidence,
+      relationships: [{ ...answer.evidence.relationships[0], source: target, target: start }] } });
+    expect((await run()).traversal).toBeUndefined();
   });
 
   it('reports a compiler failure through the same first-party route without substituting indexed evidence', async () => {

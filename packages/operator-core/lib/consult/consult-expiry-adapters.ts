@@ -274,13 +274,16 @@ export function consultExpiryFindSilentResponders(
         if (history.total === 0) {
           silent.add(row.conversationId);
         } else if (
-          row.answeringOwnerId === null &&
           history.total <= SILENT_THREAD_POST_LIMIT &&
           history.posts?.length === history.total &&
-          history.posts.every((post) => post.author_id != null && row.priorResponderIds?.includes(post.author_id))
+          history.posts.every((post) =>
+            post.author_id != null &&
+            post.author_id !== row.answeringOwnerId &&
+            row.priorResponderIds?.includes(post.author_id))
         ) {
           // A prior selectee's decline caused this route. Its post is not a
-          // pickup by the unstamped current selection.
+          // pickup by the current selection, including a reserved answerer.
+          // Keep the current answerer's posts even if prior identities overlap.
           silent.add(row.conversationId);
         }
       }),

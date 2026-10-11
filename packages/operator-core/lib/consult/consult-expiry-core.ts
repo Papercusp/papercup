@@ -146,7 +146,10 @@ function currentSelectionAnswerer(
     const ownerId = selected.answeringOwnerId;
     return {
       answeringOwnerId: typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : null,
-      priorResponderIds: selections.slice(0, cursor).map((entry) => entry.ownerId),
+      priorResponderIds: [...new Set(selections.slice(0, cursor).flatMap((entry) => {
+        const answerer = typeof entry.answeringOwnerId === 'string' ? entry.answeringOwnerId.trim() : '';
+        return answerer ? [entry.ownerId, answerer] : [entry.ownerId];
+      }))],
     };
   } catch {
     return null;

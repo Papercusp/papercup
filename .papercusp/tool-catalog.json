@@ -14823,7 +14823,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation. Context joins outgoing calls, used imports, declared inheritance/implements, members, overrides and typed field reads/writes with source versions. Structural implementations use lsp:query. Callers retains labelled unresolved calls. Index edges without measured repository/content versions are refused. Other languages and selectors receive explicit unsupported results.",
+      "description": "Code topology: symbol | context | callers | callees | impact | trace | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. Impact walks dependents downstream or callees upstream; trace follows directed calls to target. max_depth/max_paths/limit bound traversal, with per-hop source versions, explicit truncation and unknown runtime execution. Context joins calls/imports/heritage/members/overrides/field accesses. Other languages and selectors receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],
@@ -14886,7 +14886,7 @@
       "guidance": {
         "when": "You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.",
         "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
-        "chaining": "op:\"symbol\" to locate the symbol → op:\"callers\"/\"callees\" for its edges → op:\"impact\" for the change radius. If results look stale, op:\"health\" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect."
+        "chaining": "op:\"context\" → op:\"impact\" for the change radius → op:\"trace\", target:\"name\" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:\"health\" reports index freshness; lsp:query handles references/diagnostics."
       }
     },
     {

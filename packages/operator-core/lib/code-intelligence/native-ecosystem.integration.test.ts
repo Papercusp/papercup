@@ -177,7 +177,7 @@ describe('native baseline admitted operation inventory across real interfaces', 
   const operations = (tool: string) => baseline.routes.filter(row => row.tool === tool)
     .flatMap(row => row.operations.map(op => ({ op, backend: row.backend })));
 
-  it.each(operations('graph:query').filter(row => ['impact', 'health'].includes(row.op)))(
+  it.each(operations('graph:query').filter(row => row.op === 'health'))(
     'graph $op reaches the recorded $backend provider through the actual facade', async ({ op, backend }) => {
       const dispatched: string[] = [];
       const result = await graphQuery.handler(graphQuery.args.parse({ op, name: 'baselineTarget' }), {

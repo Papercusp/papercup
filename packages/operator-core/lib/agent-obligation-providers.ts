@@ -1048,6 +1048,10 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_bar_contract_not_ready: 'author',
   acceptance_bar_not_met: 'author',
   design_evidence_unsatisfied: 'author',
+  // verification-system-improvements P-008: the author arranges the re-observation by an
+  // agent outside the implementer lineage. Not 'grader': the recruiter is not widened to
+  // this code, and it does not recruit a verifier.
+  independent_verification_missing: 'author',
 
   // --- the gate could not measure the plan ----------------------------------
   // A failed measurement is not a repair. Ranking these as author work would send
@@ -1055,6 +1059,7 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_lineage_unreadable: 'unmeasured',
   design_evidence_unavailable: 'unmeasured',
   spec_coverage_unavailable: 'unmeasured',
+  independent_verification_unavailable: 'unmeasured',
 
   // --- the repair belongs to another node -----------------------------------
   // WI-10004178 / endgame D-095: a federated receiver cannot grade or ship; the

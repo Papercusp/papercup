@@ -79,7 +79,12 @@ export const MAX_CONSULT_DEPTH = 2;
  * Imported AND re-exported: a bare `export … from` would satisfy downstream
  * importers while leaving no local binding for the selection site below. */
 import { selectionPolicy } from '@papercusp/ranked-selection';
-import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RUBRIC_VETTING_POLICY } from './selection-policies';
+import {
+  BAR_CRITIQUE_POLICY,
+  DEFAULT_MIN_RESPONDERS,
+  DEFAULT_MAX_RESPONDERS,
+  RUBRIC_VETTING_POLICY,
+} from './selection-policies';
 export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
 
 /** The latched park/reply key for a consult conversation — the ONE format every
@@ -164,7 +169,8 @@ export interface GetFeedbackRequest {
 export type GetFeedbackError =
   | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
-  | { error: 'consult_cycle'; lineage: string[]; hint: string };
+  | { error: 'consult_cycle'; lineage: string[]; hint: string }
+  | { error: 'bar_critique_requires_plan'; hint: string };
 
 export interface GetFeedbackDeps {
   /** Internal recovery context, never an externally supplied conversation id. */
@@ -1040,6 +1046,16 @@ export async function getFeedbackCore(
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
 
+  // P-007 / SPEC-P-007-CRITIQUE-REF: plans:start finds a plan's critiques by
+  // origin_task_ref = plan slug, so a bar-critique without one could never count.
+  // Refuse it here instead of letting it default to the requester's wip item.
+  if (req.policy === BAR_CRITIQUE_POLICY && !(typeof req.originTaskRef === 'string' && req.originTaskRef.trim())) {
+    return {
+      error: 'bar_critique_requires_plan',
+      hint: `policy:'${BAR_CRITIQUE_POLICY}' critiques one plan's bars: pass origin_task_ref:'<plan slug>' so plans:start can count it.`,
+    };
+  }
+
   // 0) Recursion lineage (P-005, D-005 / D-007 §7): a consult opened from
   //    within a consult carries parent depth+1 (structural refusal past the
   //    ceiling — never let the DB CHECK be the error surface), and its
@@ -1189,7 +1205,9 @@ export async function getFeedbackCore(
         (candidate) =>
           Number(candidate.sim) >= archiveFloor && archiveSubjectsMatch(req.question, candidate.question),
       );
-      if (top) archiveHit = { ...top, sim: Number(top.sim) };
+      // A bar critique must be a fresh reading of THIS plan's current bars; an
+      // archived answer to a similar question cannot pin them (P-007).
+      if (top && req.policy !== BAR_CRITIQUE_POLICY) archiveHit = { ...top, sim: Number(top.sim) };
     } catch {
       embeddingColumnOk = false;
     }

@@ -52,13 +52,14 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
  * GitNexus selectors (kind, file_path, uid, repo) do not apply to it.
  */
 async function firstPartyCallersAnswer(
-  args: { op?: string; name?: string; kind?: string; file_path?: string; line1?: number; uid?: string; repo?: string; limit?: number; paths?: string[] },
+  args: { op?: string; name?: string; kind?: string; file_path?: string; line1?: number; uid?: string; repo?: string; limit?: number; paths?: string[];
+    target?: string; target_file_path?: string; target_line1?: number; direction?: 'upstream' | 'downstream' | 'both'; max_depth?: number; max_paths?: number },
   ctx: { projectDir?: string },
 ): Promise<CodeIntelAnswer> {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
-  const nativeOp = args.op === 'symbol' || args.op === 'callees' || args.op === 'context' ? args.op : 'callers';
+  const nativeOp = args.op === 'symbol' || args.op === 'callees' || args.op === 'context' || args.op === 'impact' || args.op === 'trace' ? args.op : 'callers';
   if (nativeOp !== 'callers' && (args.uid || args.repo)) return {
-    backend: 'typescript-service', intent: nativeOp === 'callees' ? 'callees' : 'definition', query: args.name ?? '', sites: [],
+    backend: 'typescript-service', intent: nativeOp === 'impact' || nativeOp === 'trace' ? nativeOp : nativeOp === 'callees' ? 'callees' : 'definition', query: args.name ?? '', sites: [],
     truncation: { truncated: false, totalAvailable: null, continuation: null },
     freshness: { health: 'unknown', indexedAt: null, indexedCommit: null, staleVsDisk: null }, latencyMs: 0,
     error: 'Native symbol queries use the current workspace and file_path/line1/kind; GitNexus uid/repo selectors are unsupported.',
@@ -68,6 +69,8 @@ async function firstPartyCallersAnswer(
     root: resolveAgentWorkspaceRoot(ctx),
     name: args.name ?? '',
     ...(nativeOp !== 'callers' ? { op: nativeOp, filePath: args.file_path, line1: args.line1, kind: args.kind } : {}),
+    ...(nativeOp === 'impact' || nativeOp === 'trace' ? { target: args.target, targetFilePath: args.target_file_path,
+      targetLine1: args.target_line1, direction: args.direction, maxDepth: args.max_depth, maxPaths: args.max_paths } : {}),
     limit,
     ...(args.paths && args.paths.length > 0 ? { paths: args.paths } : {}),
   });
@@ -96,6 +99,7 @@ async function firstPartyCallersAnswer(
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
   'context',
+  'trace',
   ...GITNEXUS_FACADE_OPS,
   ...Object.keys(GITNEXUS_NOT_ROUTABLE),
 ] as [string, ...string[]];
@@ -103,13 +107,13 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation. Context joins outgoing calls, used imports, declared inheritance/implements, members, overrides and typed field reads/writes with source versions. Structural implementations use lsp:query. Callers retains labelled unresolved calls. Index edges without measured repository/content versions are refused. Other languages and selectors receive explicit unsupported results.',
+    'Code topology: symbol | context | callers | callees | impact | trace | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. Impact walks dependents downstream or callees upstream; trace follows directed calls to target. max_depth/max_paths/limit bound traversal, with per-hop source versions, explicit truncation and unknown runtime execution. Context joins calls/imports/heritage/members/overrides/field accesses. Other languages and selectors receive explicit unsupported results.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
       'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
     chaining:
-    'op:"symbol" to locate the symbol → op:"callers"/"callees" for its edges → op:"impact" for the change radius. If results look stale, op:"health" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect.',
+    'op:"context" → op:"impact" for the change radius → op:"trace", target:"name" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:"health" reports index freshness; lsp:query handles references/diagnostics.',
   },
   capability: 'intel:read',
   requirePrincipal: false,
@@ -138,6 +142,11 @@ export default defineTool({
       .optional()
       .describe('symbol/context/callees: defining file; picks one of several same-name symbols.'),
     line1: z.number().int().min(1).optional().describe('Native symbol/context/callees: defining line to distinguish same-name declarations in one file.'),
+    target: z.string().min(1).optional().describe('trace: exact destination symbol name.'),
+    target_file_path: z.string().min(1).optional().describe('trace: destination defining file to disambiguate homonyms.'),
+    target_line1: z.number().int().min(1).optional().describe('trace: destination defining line.'),
+    max_depth: z.number().int().min(0).max(16).optional().describe('impact/trace: maximum call hops; default 5.'),
+    max_paths: z.number().int().min(1).max(100).optional().describe('impact/trace: maximum reported paths; default 20.'),
     uid: z
       .string()
       .min(1)
@@ -168,7 +177,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
-    const native = ['callers', 'symbol', 'callees', 'context'].includes(op);
+    const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace'].includes(op);
     const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
       const measured = answer.evidence ? answer : { ...answer,
       evidence: unmeasuredSourceEvidence(answer, { repositoryId: null, identityKind: 'unknown',
@@ -180,26 +189,48 @@ export default defineTool({
       const evidence = measured.evidence!;
       const sourceByPath = new Map(evidence.sourceScope.supportingFiles.map(source => [source.path, source]));
       const hash = (value: string | null | undefined) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-      const sourceBacked = measured.sites.length === 0 || (Boolean(evidence.sourceScope.repositoryId) &&
+      const endpointBacked = (endpoint: import('../../code-intelligence/contracts').CodeIntelVersionedSite) =>
+        hash(endpoint.contentHash) && Boolean(endpoint.versionedSymbolId) &&
+        endpoint.contentHash === sourceByPath.get(endpoint.site.path)?.contentHash &&
+        endpoint.versionedSymbolId === versionedSymbolIdentity(evidence.sourceScope.repositoryId,
+          endpoint.site, sourceByPath.get(endpoint.site.path));
+      const traversal = measured.traversal;
+      const pathsBacked = !traversal ? (!['impact', 'trace'].includes(op) || measured.error !== null) :
+        (traversal.maxDepth === (args.max_depth ?? 5) && traversal.maxPaths === (args.max_paths ?? 20) &&
+        traversal.direction === (op === 'trace' ? 'forward' : args.direction ?? 'downstream') &&
+        (op !== 'trace' || (Boolean(traversal.target) && (traversal.outcome !== 'found' || traversal.paths.length > 0))) &&
+        endpointBacked(traversal.start) && (!traversal.target || endpointBacked(traversal.target)) &&
+        traversal.paths.length <= traversal.maxPaths && traversal.paths.every(path => {
+          if (path.siteIndices.length > traversal.maxDepth || (op === 'trace' && path.walk !== 'forward')) return false;
+          let previous = traversal.start.versionedSymbolId;
+          for (const index of path.siteIndices) {
+            if (!Number.isInteger(index) || index < 0 || index >= measured.sites.length) return false;
+            const edge = evidence.relationships.find(row => row.siteIndex === index);
+            if (!edge?.source || !edge.target || edge.knowledge !== 'observed') return false;
+            const from = path.walk === 'forward' ? edge.source : edge.target;
+            const to = path.walk === 'forward' ? edge.target : edge.source;
+            if (!endpointBacked(from) || !endpointBacked(to) || from.versionedSymbolId !== previous) return false;
+            previous = to.versionedSymbolId;
+          }
+          return op !== 'trace' || (Boolean(traversal.target) && previous === traversal.target!.versionedSymbolId);
+        }));
+      const sourceBacked = pathsBacked && (measured.sites.length === 0 || (Boolean(evidence.sourceScope.repositoryId) &&
         hash(evidence.sourceScope.sourceFingerprint) && measured.sites.every((site, index) => {
           const identity = evidence.siteIdentities.find(row => row.siteIndex === index);
           return identity?.sourcePath === site.path && hash(identity.contentHash) && Boolean(identity.versionedSymbolId) &&
             identity.contentHash === sourceByPath.get(site.path)?.contentHash &&
             identity.versionedSymbolId === versionedSymbolIdentity(evidence.sourceScope.repositoryId, site, sourceByPath.get(site.path));
-        }) && evidence.relationships.every(relation => !relation.target || (
-          hash(relation.target.contentHash) && Boolean(relation.target.versionedSymbolId) &&
-          relation.target.contentHash === sourceByPath.get(relation.target.site.path)?.contentHash &&
-          relation.target.versionedSymbolId === versionedSymbolIdentity(evidence.sourceScope.repositoryId,
-            relation.target.site, sourceByPath.get(relation.target.site.path)))));
+        }) && evidence.relationships.every(relation => (!relation.source || endpointBacked(relation.source)) &&
+          (!relation.target || endpointBacked(relation.target)))));
       if (sourceBacked) return measured;
       const reason = 'Graph source versions are unavailable: refusing sites whose repository/content snapshot cannot be determined. Re-query through an admitted current compiler route.';
-      return { ...measured, sites: [], error: [measured.error, reason].filter(Boolean).join(' '),
+      return { ...measured, sites: [], traversal: undefined, error: [measured.error, reason].filter(Boolean).join(' '),
         freshness: { ...measured.freshness, health: 'unknown' },
         truncation: { truncated: false, totalAvailable: null, continuation: null },
         evidence: { ...evidence, siteIdentities: [], relationships: [],
           graphScope: { ...evidence.graphScope, limitations: [...evidence.graphScope.limitations, reason] } } };
     };
-    if (!GITNEXUS_FACADE_OPS.includes(op as GitnexusFacadeOp)) {
+    if (!native && !GITNEXUS_FACADE_OPS.includes(op as GitnexusFacadeOp)) {
       // OP_VALUES admits these intentionally so the refusal map is reachable
       // through the actual agent-facing tool, not just through unit imports.
       const refusal = gitnexusRefusal(op as CodeIntelIntent, args.name ?? '');

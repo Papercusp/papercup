@@ -38,6 +38,17 @@ import {
   type TestRunBindingError,
   type TestRunBindingInput,
 } from './bind-from-test-run';
+import {
+  defaultInstrumentProvenanceDeps,
+  instrumentProvenanceRefusal,
+  INSTRUMENT_EVIDENCE_KINDS,
+  type InstrumentProvenanceDeps,
+} from './instrument-provenance';
+
+/** Test seam: substitute the git/registry deps of the P-010 instrument-provenance check. */
+export const bindSpecEvidenceTestSeams: {
+  instrumentDeps?: (harnessSlug: string) => InstrumentProvenanceDeps;
+} = {};
 
 const fingerprint = z.string().trim().min(1).max(256);
 const proofCoverageIds = z
@@ -154,6 +165,19 @@ export const bindingSchema = z
       ),
     details: bindingDetailsSchema.optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
+    verifiesBindingId: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
+      .describe(
+        "Required for evidenceKind 'independent-verification' and refused for every other kind: the id of the implementer's live binding on the same spec that this observation independently reproduces. Its source and environment fingerprints must match yours.",
+      ),
+  })
+  .refine((b) => (b.evidenceKind === 'independent-verification') === (b.verifiesBindingId != null), {
+    message: "verifiesBindingId is required for evidenceKind 'independent-verification' and refused for every other kind",
+    path: ['verifiesBindingId'],
   })
   .refine((b) => Boolean(b.specId) !== Boolean(b.sourceValId), {
     message: 'pass exactly one of specId or sourceValId (legacy coversVALs resolve through sourceValId)',
@@ -667,6 +691,14 @@ export default defineTool({
       // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
       // result echoing `slug: undefined` would hide which scope now owns the evidence.
       const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
+      let instrumentDepsMemo: InstrumentProvenanceDeps | undefined;
+      const instrumentDeps = () =>
+        (instrumentDepsMemo ??=
+          bindSpecEvidenceTestSeams.instrumentDeps?.(harnessSlug) ??
+          defaultInstrumentProvenanceDeps(
+            async () => (measurementScope ?? (await resolvePlanScope({ harnessSlug }))).workspaceId,
+            harnessSlug,
+          ));
       const env = await timing.phase('bindRows', () =>
         runBulk(
           resolved,
@@ -693,6 +725,17 @@ export default defineTool({
                 ...derived,
                 ...targetingRefusal,
               };
+            }
+            // P-010 (verification-system-improvements-2026-10-10): measurement-kind evidence must
+            // name a committed, tested instrument or declare it used none. BIND TIME ONLY — the
+            // store and every re-measure path never call this, so pre-rule rows are not re-judged.
+            const provenance = INSTRUMENT_EVIDENCE_KINDS.has(binding.evidenceKind)
+              ? await timing.phase('instrumentProvenance', () =>
+                  instrumentProvenanceRefusal(binding, entry.asCommitted, instrumentDeps()),
+                )
+              : null;
+            if (provenance) {
+              return { ok: false as const, slug: reportedSlug, ...derived, ...provenance };
             }
             const { measurement, ...declared } = binding;
             const measured = !measurement

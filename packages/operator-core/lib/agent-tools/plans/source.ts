@@ -954,8 +954,8 @@ export async function planSlugExistsInWorkspace(
  * lane) can never be discharged against either shape, so nagging an agent
  * that declared one forever is pure noise. Slug-only lookup mirroring
  * `planSlugExistsInWorkspace` (a presence row carries no reliable harnessSlug);
- * resolves the owning harness the same deterministic way
- * (`resolvePlanHarnessSlug` — most-recently-updated row on ambiguity) then
+ * resolves the owning harness through `resolvePlanHarnessSlug` (null on an
+ * ambiguous slug, so this answers "unknown" rather than another plan's) then
  * reuses `getPlanRow` + `planItemsForRow` rather than re-deriving item-status
  * parsing here. Null when the slug isn't store-backed in this workspace —
  * callers should treat that as "unknown" (fail open), not "terminal".
@@ -974,28 +974,47 @@ export async function planTerminalityInWorkspace(
   return { status: row.status, hasOpenItems };
 }
 
+/** Outcome of a slug-only plan → harness lookup in one workspace. */
+export type PlanHarnessResolution =
+  | { status: 'resolved'; harnessSlug: string }
+  | { status: 'missing' }
+  /** Store-backed in more than one harness: different plans sharing a slug.
+   *  `candidates` is most recently updated first. */
+  | { status: 'ambiguous'; candidates: string[] };
+
 /**
- * The harness (pot) slug that owns a plan slug in this workspace — a
- * slug-only lookup for callers that have a plan slug but no reliable harness
- * to scope it to (mirrors planSlugExistsInWorkspace; P-004, resolving "the
- * pot" for a cross-machine spawn-request's plan). Null when the slug isn't
- * store-backed in this workspace, or is ambiguous across harnesses (picks
- * the most recently updated row deterministically rather than guessing).
+ * The harness (pot) that owns a plan slug in this workspace, for callers that
+ * hold a plan slug but no reliable harness to scope it to.
+ *
+ * A slug present in more than one harness is `ambiguous`; this never picks one
+ * (plan scope-unique-identifiers-2026-07-26 P-006). It used to return the most
+ * recently updated row, which silently answered about whichever same-slug plan
+ * was touched last. A caller that can refuse with the candidates should use
+ * this; {@link resolvePlanHarnessSlug} collapses ambiguity to null.
+ */
+export async function resolvePlanHarness(
+  workspaceId: string,
+  slug: string,
+): Promise<PlanHarnessResolution> {
+  const list = (await planHarnessesForSlugs(workspaceId, [slug])).get(slug) ?? [];
+  if (list.length === 0) return { status: 'missing' };
+  if (list.length > 1) return { status: 'ambiguous', candidates: list };
+  return { status: 'resolved', harnessSlug: list[0] };
+}
+
+/**
+ * {@link resolvePlanHarness} for callers whose only safe fallback is "no
+ * harness" (mirrors planSlugExistsInWorkspace; P-004, resolving "the pot" for a
+ * cross-machine spawn-request's plan). Null when the slug isn't store-backed in
+ * this workspace OR is ambiguous across harnesses: a guessed pot would route
+ * seats, checks or waits to an unrelated plan's harness.
  */
 export async function resolvePlanHarnessSlug(
   workspaceId: string,
   slug: string,
 ): Promise<string | null> {
-  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<{ harness_slug: string }[]>`
-      SELECT harness_slug FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
-       ORDER BY updated_at DESC
-       LIMIT 1
-    `;
-  });
-  return rows[0]?.harness_slug ?? null;
+  const resolution = await resolvePlanHarness(workspaceId, slug);
+  return resolution.status === 'resolved' ? resolution.harnessSlug : null;
 }
 
 
@@ -1005,10 +1024,10 @@ export async function resolvePlanHarnessSlug(
  * plan slugs but NO harness to scope them to asks which harnesses own them
  * (the plans:get / plans:items omit-harness recovery path). Returns, per
  * requested slug, every harness in this workspace holding a store-backed row,
- * most-recently-updated first — index 0 is the same deterministic pick
- * {@link resolvePlanHarnessSlug} makes. Requested slugs absent from the map
- * are not store-backed anywhere in this workspace. One query; never throws;
- * invalid slugs simply come back absent.
+ * most-recently-updated first. More than one entry means the slug is
+ * ambiguous; callers refuse rather than take index 0 (P-006). Requested slugs
+ * absent from the map are not store-backed anywhere in this workspace. One
+ * query; invalid slugs simply come back absent (a DB error still throws).
  */
 export async function planHarnessesForSlugs(
   workspaceId: string,

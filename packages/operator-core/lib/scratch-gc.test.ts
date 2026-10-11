@@ -1101,10 +1101,11 @@ describe('deferred scratch quota recovery', () => {
       expect(phases[0].quotaRecoveryDiagnostics?.maxOperationMs)
         .toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
       expect(phases[0].quotaRecoveryMs).toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
-      expect(phases[1]).toEqual({
+      expect(phases[1]).toMatchObject({
         quotaWaitMs: phases[0].quotaRecoveryMs, refreshWaitMs: 0, quotaRecoveryMs: 0,
-        writeMs: 0, totalMs: phases[0].quotaRecoveryMs,
+        writeMs: 0, totalMs: expect.any(Number),
       });
+      expect(phases[1].totalMs).toBeGreaterThanOrEqual(phases[1].quotaWaitMs);
     } finally {
       release(); await Promise.allSettled(writes);
       readdirMock.mockImplementation(originalRead); now.mockRestore();

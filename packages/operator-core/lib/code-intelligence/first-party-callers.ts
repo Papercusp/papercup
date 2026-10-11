@@ -51,6 +51,7 @@ import {
   type TsDeclaration,
   type TsTree,
 } from './typescript-service.ts';
+import { compilerTraversal, traversalSourceFiles } from './first-party-traversal.ts';
 
 /** ripgrep glob for every extension the program takes (typescript-service TS_TREE_EXTENSIONS). */
 export const FIRST_PARTY_SOURCE_GLOB = '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
@@ -90,10 +91,16 @@ export interface FirstPartyCallersQuery {
   readonly repositoryId?: string;
   readonly name: string;
   /** Native graph operations share the existing bounded compiler worker. */
-  readonly op?: 'callers' | 'symbol' | 'callees' | 'context';
+  readonly op?: 'callers' | 'symbol' | 'callees' | 'context' | 'impact' | 'trace';
   readonly filePath?: string;
   readonly line1?: number;
   readonly kind?: string;
+  readonly target?: string;
+  readonly targetFilePath?: string;
+  readonly targetLine1?: number;
+  readonly direction?: 'upstream' | 'downstream' | 'both';
+  readonly maxDepth?: number;
+  readonly maxPaths?: number;
   readonly limit?: number;
   /**
    * Repository-relative files or directories to search (WI-10006543). Default: the
@@ -439,7 +446,8 @@ function buildAnswer(
 export function failedCallersAnswer(name: string, error: string, startedMs: number, nowMs: number = Date.now(),
   scope?: Pick<FirstPartyCallersQuery, 'root' | 'repositoryId' | 'paths' | 'op'>): FirstPartyCallersAnswer {
   const result = buildAnswer(name, startedMs, () => nowMs, { error,
-    intent: scope?.op === 'callees' ? 'callees' : scope?.op && scope.op !== 'callers' ? 'definition' : 'callers' });
+    intent: scope?.op === 'impact' || scope?.op === 'trace' ? scope.op
+      : scope?.op === 'callees' ? 'callees' : scope?.op && scope.op !== 'callers' ? 'definition' : 'callers' });
   return { ...result, evidence: unmeasuredCallersEvidence(result, scope) };
 }
 
@@ -464,13 +472,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   const now = q.now ?? (() => Date.now());
   const started = now();
   const op = q.op ?? 'callers';
-  const intent = op === 'callees' ? 'callees' : op === 'callers' ? 'callers' : 'definition';
+  const intent = op === 'impact' || op === 'trace' ? op : op === 'callees' ? 'callees' : op === 'callers' ? 'callers' : 'definition';
   const answer = (name: string, startedAt: number, clock: () => number, parts: Parameters<typeof buildAnswer>[3]) => {
     const result = buildAnswer(name, startedAt, clock, { ...parts, intent });
     return parts.evidence ? result : { ...result, evidence: unmeasuredCallersEvidence(result, q) };
   };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
-  if (!['callers', 'symbol', 'callees', 'context'].includes(op)) {
+  if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace'].includes(op)) {
     return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
   }
   if (op !== 'callers' && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
@@ -491,6 +499,15 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   const scope = resolveSearchPaths(q.root, q.paths);
   if (!scope.ok) return answer(q.name, started, now, { error: scope.error });
+  if (op === 'trace' && (!q.target || !IDENTIFIER.test(q.target))) {
+    return answer(q.name, started, now, { error: 'trace requires target: one exact symbol identifier' });
+  }
+  if (q.targetFilePath) {
+    const targetScope = resolveSearchPaths(q.root, [q.targetFilePath]);
+    if (!targetScope.ok) return answer(q.name, started, now, { error: targetScope.error });
+    const physical = posix(relative(realpathSync(q.root), realpathSync(join(q.root, targetScope.paths[0]!))));
+    if (isExternalPath(physical)) return answer(q.name, started, now, { error: 'target file resolves outside the repository' });
+  }
   let definingPath: string | undefined;
   if (op !== 'callers' && q.filePath) {
     const selected = resolveSearchPaths(q.root, [q.filePath]);
@@ -499,7 +516,10 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     const physical = posix(relative(realpathSync(q.root), realpathSync(join(q.root, definingPath!))));
     if (isExternalPath(physical)) return answer(q.name, started, now, { error: 'defining file resolves outside the repository' });
   }
-  const search = findCandidateFiles(q.root, q.name, rgPath, scope.paths);
+  // Transitive callers may never spell the initial name. Traverse a full scoped
+  // source program, instead of treating the single-name candidate set as a graph.
+  const search = op === 'impact' || op === 'trace' ? traversalSourceFiles(q.root, rgPath, scope.paths)
+    : findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = [
     ...(scope.scoped ? [`Searched only under: ${scope.paths.join(', ')}.`] : []),
@@ -532,6 +552,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       (tree.rootFiles.has(d.file) && (!definingPath || d.site.path === definingPath) &&
        (q.line1 === undefined || d.site.line1 === q.line1) &&
        (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase())));
+    if (op === 'impact' || op === 'trace') {
+      const result = compilerTraversal(q, tree, program, decls, scope.paths, partial, started, now);
+      return { ...result, attribution: { resolved: result.sites.length,
+        unattributed: { external: 0, 'other-in-repo': 0, unresolved: 0 },
+        declarations: decls.slice(0, 50).map(d => d.site), declarationCount: decls.length,
+        candidateFiles: search.files.length, stubbedFiles: tree.stubbedFiles() } };
+    }
     const nativeOutgoing: SymbolSite[] = [];
     const nativeRelations = new Map<SymbolSite, SourceRelationship>();
     let unsupportedTargets = 0;
