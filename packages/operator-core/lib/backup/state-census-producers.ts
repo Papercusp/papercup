@@ -5,6 +5,7 @@ import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { createHash, createDecipheriv, scryptSync } from 'node:crypto';
 import { constants } from 'node:fs';
 import { homedir, hostname, userInfo } from 'node:os';
@@ -24,6 +25,7 @@ import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
 import { resolveSqlDir } from '../migration-drift';
+import { resolveCliBin } from '../deployment/account-link-cli';
 import { stripCommentsAndStrings, stripSqlCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 /** Compose independent writers without traversing the same physical root twice. */
@@ -134,12 +136,38 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
 }
 
 /** account-link-cli preserves completed setup homes when registration fails. */
-export async function cliSetupHomeCensusProducer(path = papercuspRoot()) {
+export async function cliSetupHomeCensusProducer(path = papercuspRoot(), codexCli?: string | null) {
   const root: CensusRoot = { id: 'cli-setup-homes', path };
   const declarations: CensusDeclaration[] = [];
   let entries;
   try { entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  // Reuse the login writer's CLI selection. Resolve npm's native optional
+  // dependency without running a candidate helper or importing its launcher.
+  let nativeCodex: string | null = null;
+  try {
+    const cli = await realpath(codexCli === undefined ? resolveCliBin('codex') : codexCli ?? '');
+    const handle = await open(cli, 'r');
+    let header: Buffer;
+    try { header = Buffer.alloc(4); await handle.read(header, 0, 4, 0); }
+    finally { await handle.close(); }
+    if (header.subarray(0, 2).toString() !== '#!') nativeCodex = cli;
+    else if (basename(cli) === 'codex.js') {
+      const packageRoot = dirname(dirname(cli));
+      const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
+      if (manifest.name === '@openai/codex' && manifest.bin?.codex === 'bin/codex.js') {
+        const cpu = process.arch === 'x64' ? 'x86_64' : process.arch === 'arm64' ? 'aarch64' : null;
+        const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : process.platform === 'win32' ? 'pc-windows-msvc' : null;
+        if (cpu && os) {
+          let vendor = join(packageRoot, 'vendor');
+          try { vendor = join(dirname(createRequire(cli).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`)), 'vendor'); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error; }
+          nativeCodex = await realpath(join(vendor, `${cpu}-${os}`, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'));
+        }
+      }
+    }
+    if (nativeCodex && !(await lstat(nativeCodex)).isFile()) nativeCodex = null;
+  } catch { nativeCodex = null; } // Missing/unrecognized install leaves helpers visibly unclassified.
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^\.(?:codex-)?setup-[A-Za-z0-9._-]+-[0-9a-f]{8}$/.test(entry.name)) continue;
     const name = `deploy-credentials/${entry.name}`;
@@ -157,6 +185,34 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot()) {
       const logs = await readdir(join(path, name, 'log'), { withFileTypes: true });
       if (logs.some(file => file.name === 'codex-login.log' && file.isFile())) {
         declarations.push({ kind: 'path', root: root.id, name: `${name}/log/codex-login.log`, classification: 'state', producer: 'account-link-cli-device-auth-log' });
+      }
+    }
+    // Codex arg0 startup owns these exact directories and regular lock files.
+    // Helper symlinks need separate executable identity proof; do not claim
+    // them or arbitrary descendants merely because their parent is known.
+    if (files.some(file => file.name === 'tmp' && file.isDirectory())) {
+      const temporary = await readdir(join(path, name, 'tmp'), { withFileTypes: true });
+      declarations.push({ kind: 'path', root: root.id, name: `${name}/tmp`, classification: 'cache', producer: 'codex-arg0-dispatch' });
+      if (temporary.some(file => file.name === 'arg0' && file.isDirectory())) {
+        const arg0 = `${name}/tmp/arg0`;
+        declarations.push({ kind: 'path', root: root.id, name: arg0, classification: 'cache', producer: 'codex-arg0-dispatch' });
+        for (const directory of await readdir(join(path, arg0), { withFileTypes: true })) {
+          if (!directory.isDirectory() || !/^codex-arg0[A-Za-z0-9]{6}$/.test(directory.name)) continue;
+          const session = `${arg0}/${directory.name}`;
+          declarations.push({ kind: 'path', root: root.id, name: session, classification: 'cache', producer: 'codex-arg0-dispatch' });
+          const children = await readdir(join(path, session), { withFileTypes: true });
+          if (children.some(file => file.name === '.lock' && file.isFile())) {
+            declarations.push({ kind: 'path', root: root.id, name: `${session}/.lock`, classification: 'cache', producer: 'codex-arg0-dispatch' });
+          }
+          for (const child of children) {
+            if (!nativeCodex || !child.isSymbolicLink() || !['apply_patch', 'applypatch', 'codex-linux-sandbox', 'codex-execve-wrapper'].includes(child.name)) continue;
+            try {
+              if (await realpath(join(path, session, child.name)) === nativeCodex) {
+                declarations.push({ kind: 'path', root: root.id, name: `${session}/${child.name}`, classification: 'cache', producer: 'codex-arg0-dispatch' });
+              }
+            } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ELOOP') throw error; }
+          }
+        }
       }
     }
   }

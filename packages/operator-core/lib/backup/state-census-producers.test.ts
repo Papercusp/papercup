@@ -325,6 +325,63 @@ describe('secret census producer adapters', () => {
         .not.toContain(`deploy-credentials/${names[0]}/log`);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it('classifies exact Codex arg0 directories and locks without claiming helpers or foreign descendants', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arg0-census-'));
+    try {
+      const home = 'deploy-credentials/.codex-setup-acme-1234abcd';
+      const arg0 = `${home}/tmp/arg0`;
+      const session = `${arg0}/codex-arg0PSchFu`;
+      await mkdir(join(root, session), { recursive: true });
+      await mkdir(join(root, arg0, 'foreign'));
+      await writeFile(join(root, session, '.lock'), '');
+      await writeFile(join(root, session, 'foreign.txt'), 'foreign');
+      await symlink('/unverified/codex', join(root, session, 'apply_patch'));
+      await symlink(join(root, session), join(root, arg0, 'codex-arg0ABC123'));
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name)).toEqual([
+        home, `${home}/tmp`, arg0, session, `${session}/.lock`,
+      ]);
+      expect((await cliSetupHomeCensusProducer(root)).declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      await rm(join(root, session, '.lock'));
+      await symlink(join(root, session, 'foreign.txt'), join(root, session, '.lock'));
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name)).not.toContain(`${session}/.lock`);
+      await rm(join(root, home, 'tmp'), { recursive: true });
+      await symlink(root, join(root, home, 'tmp'));
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name)).toEqual([home]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('requires helper symlinks to resolve to the selected native Codex executable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arg0-identity-'));
+    try {
+      const session = 'deploy-credentials/.codex-setup-acme-1234abcd/tmp/arg0/codex-arg0ABC123';
+      await mkdir(join(root, session), { recursive: true });
+      const native = join(root, 'native-codex');
+      await writeFile(native, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      await writeFile(join(root, 'foreign-codex'), 'foreign');
+      await symlink(native, join(root, session, 'apply_patch'));
+      await symlink(native, join(root, session, 'applypatch'));
+      await symlink(join(root, 'foreign-codex'), join(root, session, 'codex-linux-sandbox'));
+      await symlink(join(root, 'missing'), join(root, session, 'codex-execve-wrapper'));
+      await symlink(native, join(root, session, 'foreign-helper'));
+      const names = (await cliSetupHomeCensusProducer(root, native)).declarations.map(entry => entry.name);
+      expect(names).toContain(`${session}/apply_patch`);
+      expect(names).toContain(`${session}/applypatch`);
+      for (const name of ['codex-linux-sandbox', 'codex-execve-wrapper', 'foreign-helper']) expect(names).not.toContain(`${session}/${name}`);
+      expect((await cliSetupHomeCensusProducer(root, null)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
+      const packageRoot = join(root, 'npm-codex');
+      await mkdir(join(packageRoot, 'bin'), { recursive: true });
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: '@openai/codex', bin: { codex: 'bin/codex.js' } }));
+      const launcher = join(packageRoot, 'bin/codex.js');
+      await writeFile(launcher, '#!/usr/bin/env node\nthrow new Error("must never execute");');
+      const cpu = process.arch === 'x64' ? 'x86_64' : 'aarch64';
+      const os = process.platform === 'linux' ? 'unknown-linux-musl' : process.platform === 'darwin' ? 'apple-darwin' : 'pc-windows-msvc';
+      const vendor = join(packageRoot, 'vendor', `${cpu}-${os}`, 'bin');
+      await mkdir(vendor, { recursive: true });
+      await symlink(native, join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex'));
+      expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).toContain(`${session}/apply_patch`);
+      await rm(join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex'));
+      expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {
     const home = await mkdtemp(join(tmpdir(), 'sidefile-census-'));
     try {
