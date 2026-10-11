@@ -25,6 +25,7 @@
  */
 
 import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
+import { isDeepStrictEqual } from 'node:util';
 
 const EL_API = 'https://api.elevenlabs.io/v1/convai';
 
@@ -209,6 +210,54 @@ export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefin
     // without relaying them to routes, logs, or stored reservation evidence.
     return null;
   }
+}
+
+/** Compare the immutable server-owned profile with a fresh provider read.
+ * Tool ids must come from the trusted sync receipt, never a client request.
+ * Exact tool equality deliberately fails closed on unreviewed provider fields.
+ * This remains profile evidence only: restricted-key attestation is separate.
+ */
+export async function readElevenLabsImmutableProfile(def: ElevenLabsAgentDefinition,
+  toolIds: string[], deps: { apiKey: string; agentId: string; fetch: typeof fetch; signal: AbortSignal }):
+  Promise<{ agentId: string; maximumSeconds: number } | null> {
+  if (def.allowSessionOverrides !== false || toolIds.length !== def.tools.length
+    || toolIds.some(id => !id.trim()) || new Set(toolIds).size !== toolIds.length) return null;
+  let profile: any;
+  // Reuse the authenticated duration/override reader while retaining its exact
+  // response; do not attest a profile from a second, potentially changed read.
+  const capture: typeof fetch = async (input, init) => {
+    const response = await deps.fetch(input, init);
+    if (response.ok) profile = await response.clone().json();
+    return response;
+  };
+  const duration = await readElevenLabsAgentDuration(def, { ...deps, fetch: capture });
+  if (!duration) return null;
+  try {
+    const agent = profile.conversation_config?.agent;
+    const prompt = agent?.prompt;
+    const tts = profile.conversation_config?.tts;
+    if (agent?.first_message !== def.firstMessage || agent?.language !== def.language
+      || prompt?.prompt !== def.prompt || !isDeepStrictEqual(prompt?.tool_ids, toolIds)
+      || (prompt?.tools != null && !isDeepStrictEqual(prompt.tools, []))
+      || (prompt?.knowledge_base != null && !isDeepStrictEqual(prompt.knowledge_base, []))
+      || (profile.workflow != null && !isDeepStrictEqual(profile.workflow, {}))
+      || (profile.conversation_config?.language_presets != null
+        && !isDeepStrictEqual(profile.conversation_config.language_presets, {}))
+      || tts?.voice_id !== def.tts.voiceId || tts?.model_id !== def.tts.modelId
+      || tts?.stability !== def.tts.stability || tts?.similarity_boost !== def.tts.similarityBoost
+      || tts?.speed !== def.tts.speed) return null;
+    for (const [index, id] of toolIds.entries()) {
+      if (deps.signal.aborted) return null;
+      const response = await deps.fetch(`${EL_API}/tools/${encodeURIComponent(id)}`, {
+        headers: { 'xi-api-key': deps.apiKey }, signal: deps.signal, redirect: 'error',
+      });
+      if (!response.ok) return null;
+      const tool = await response.json();
+      if (deps.signal.aborted || (tool.id ?? tool.tool_id) !== id
+        || !isDeepStrictEqual(tool.tool_config, def.tools[index])) return null;
+    }
+    return deps.signal.aborted ? null : duration;
+  } catch { return null; }
 }
 
 export class ElevenLabsAgentSyncError extends Error {
