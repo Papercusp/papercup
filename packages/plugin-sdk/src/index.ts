@@ -1129,6 +1129,9 @@ export interface ActionDefinition {
   paramsSchema?: Record<string, unknown>;
 }
 
+/** How a running app obtains a package — see {@link Plugin.distribution}. */
+export type PluginDistribution = 'bundled' | 'cupboard';
+
 export interface Plugin {
   /**
    * Manifest discriminator. Mirrors the `kind` field in papercusp.json so
@@ -1211,6 +1214,15 @@ export interface Plugin {
    * smuggle their plugin into "no consent needed" status; both wrong.
    */
   bundled?: boolean;
+
+  /**
+   * How a running app obtains this package (cupboard-distributable-integrations-2026-10-10
+   * D-015). Absent or `'bundled'`: a copy in a bundled plugin dir loads at boot, as before.
+   * `'cupboard'`: the source may live in a bundled dir (tests, mirror export), but the package
+   * loads ONLY from a Cupboard install. The bundled (`project`) root skips it, so it is never
+   * hardcoded into the app and never shadows the installed copy.
+   */
+  distribution?: PluginDistribution;
 
   /** When true, the plugin is hidden from the marketplace listing UI. The
    *  plugin still loads, enables, and runs — this only suppresses its

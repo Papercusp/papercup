@@ -715,6 +715,11 @@
       "type": "boolean",
       "description": "Hide from catalog surfaces; complements harness_shared.hidden_plugins."
     },
+    "distribution": {
+      "type": "string",
+      "enum": ["bundled", "cupboard"],
+      "description": "How a running app obtains the package. 'cupboard': loads only from a Cupboard install; the bundled plugin root never loads it (D-015). Absent = bundled."
+    },
     "hiddenReason": {
       "type": "string"
     },

@@ -219,6 +219,24 @@ interface ManifestShape {
   triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
   /** Integration provider descriptor (generalized-integrations D-006 / P-001). */
   provider?: import('@papercusp/plugin-sdk').ProviderDescriptor;
+  /** How a running app obtains the package; see `PluginManifest.distribution`. */
+  distribution?: import('@papercusp/plugin-sdk').PluginDistribution;
+}
+
+/**
+ * cupboard-distributable-integrations-2026-10-10 D-015: a `distribution: "cupboard"` package
+ * keeps its source in a bundled plugin dir (tests, mirror export) but reaches a running app
+ * ONLY through a Cupboard install. The `project` root is the bundled set (and ships in the
+ * desktop source tree), so it never loads one; the kernel checks this before its first-seen
+ * dedupe, so the bundled copy can't shadow the installed one either.
+ */
+export function cupboardDistributionExclusion(
+  manifest: Pick<ManifestShape, 'distribution'>,
+  source: string,
+): string | null {
+  return manifest.distribution === 'cupboard' && source === 'project'
+    ? 'distribution "cupboard": loads only from a Cupboard install, never from the bundled plugin root'
+    : null;
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -686,6 +704,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
  */
 const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
   readManifest,
+  admitManifest: cupboardDistributionExclusion,
   locateEntry,
   importEntry: importPluginEntry,
   runtimeDispatch,
@@ -697,7 +716,12 @@ const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
 });
 
 /** Load a single plugin from a known directory. */
-export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string } | { skipped: 'not-a-plugin'; path: string }> {
+export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<
+  | LoadedPlugin
+  | { error: string; path: string }
+  | { skipped: 'not-a-plugin'; path: string }
+  | { skipped: 'excluded'; path: string; reason: string }
+> {
   const r = await corePluginLoader.loadFromDir(dir, source);
   if ('skipped' in r) return r;
   if ('error' in r) return r;
