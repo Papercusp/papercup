@@ -2664,6 +2664,46 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-25664976151101287: tools:invoke-wrapped lsp:query retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"sites":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "lsp:query",
+            args: {
+              op: "workspace_symbols",
+              name: "prepareForward",
+              language: "typescript",
+            },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"sites":[]}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-24736474511290409: tools:invoke-wrapped release:cut status retries after a post-connect reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"ok":true,"op":"status","state":"running"}}',

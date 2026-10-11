@@ -1209,6 +1209,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "docs:outline",
   "search:fulltext",
   "search:semantic",
+  // LSP compiler intelligence is read-only and safe to replay after a socket reset.
+  "lsp:query",
   // Session reads refresh live transcripts into persistent index state; keep them
   // outside this pure-read retry allowlist so a reset cannot overlap ingestion.
   // memory recall (search ONLY — remember/forget mutate the store)
