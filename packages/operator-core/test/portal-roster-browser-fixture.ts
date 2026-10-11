@@ -133,6 +133,7 @@ type PortalRosterBrowserInput = {
   workflows?: boolean;
   workflowsSeed?: PrivateWorkflowsSeed;
   stats?: boolean;
+  git?: boolean;
   statsSeed?: PrivateStatsSeed;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
@@ -162,7 +163,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -174,7 +175,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.stats ? `
+  const entry = input.git ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvHarnessPanelPage, { panel: 'git' }))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.stats ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -435,7 +448,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -484,7 +497,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.stats
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.git
+    ? '/apps/operator/app/adv/harnesses/AdvGitWorkspace.tsx' : input.stats
     ? '/apps/operator-vite/src/components/adv/AdvStatsTab.tsx' : input.workflows
     ? '/apps/operator-vite/src/components/adv/AdvWorkflowsTab.tsx' : input.learning
     ? '/apps/operator-vite/src/components/adv/LearningTab.tsx' : input.calendar
