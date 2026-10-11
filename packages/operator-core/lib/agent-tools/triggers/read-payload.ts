@@ -32,7 +32,7 @@ export default defineTool({
     notWhen:
       'A run that did not originate from an external trigger, or to browse other runs — this returns only the event for the run you name, inside your own workspace.',
     chaining:
-      'triggers:read-payload → compose the response → mail:reply / slack:respond-in-thread with the SAME planRunId.',
+      'triggers:read-payload → compose the response → mail:reply / chat:reply with the SAME planRunId.',
     seeAlso: ['triggers:status (binding + run health)', 'mail:reply { planRunId } (the write half)'],
   },
   args: z

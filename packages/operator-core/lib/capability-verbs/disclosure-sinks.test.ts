@@ -121,8 +121,7 @@ async function providers() {
     mailDraftWrite: vi.fn(async (args: Args) => ({ draftId: 'd1', messageId: 'm1', threadId: String(args.threadId ?? 't1') })),
     mailDraftRead: vi.fn(async (args: Args) => ({ draftId: args.draftId, to: ['dana@draft.example'], cc: ['erin@draft.example'], subject: 'Draft' })),
     calendarWrite: vi.fn(async (_args: Args) => ({ id: 'e1', htmlLink: null, status: 'confirmed', attendees: [] })),
-    resolveCredentials: vi.fn(async () => ({ botToken: 'xoxb', appToken: 'xapp' })),
-    postThreadMessage: vi.fn(async () => ({ channelId: 'C1', messageTs: '1.0' })),
+    chatReply: vi.fn(async (args: Args) => ({ channelId: args.channelId, threadId: args.threadId, messageTs: '1.0' })),
   };
   const registry = createProviderRegistry();
   await registry.register({
@@ -144,6 +143,10 @@ async function providers() {
       async ({ args }) => seams.calendarWrite(args),
     ),
   });
+  // Chat posts through whichever installed chat package serves the source
+  // (cupboard-distributable-integrations-2026-10-10 P-008): here a Slack one.
+  const slack: ProviderDescriptor = { id: 'slack', contractVersion: 1, datatypes: ['chat-message'], capabilities: ['chat.channels', 'chat.reply'], egressHosts: ['slack.com'] };
+  await registry.register({ pluginName: 'slack', descriptor: slack, adapter: recorder(slack, async ({ args }) => seams.chatReply(args)) });
   const noHttp: HostFetch = async () => {
     throw new Error('provider recorders perform no HTTP');
   };
@@ -228,16 +231,16 @@ const CASES: SinkCase[] = [
     verb: 'chat:reply',
     recipients: null,
     sink: 'slack:C1',
-    document: doc('slack', 'message', ['U1'], { channelId: 'C1', threadId: '1.0' }),
+    document: { ...doc('slack', 'message', ['U1'], { channelId: 'C1', threadId: '1.0' }), datatypeId: 'chat-message', sourceId: 's3' },
     run: (p) => replyToCanonicalChat(sql, { workspaceId: WORKSPACE, userId: USER, messageId: 'ext-1', text: 'reply', agentOwnerId: AGENT }, p as never),
-    delivery: (p) => [p.resolveCredentials, p.postThreadMessage],
+    delivery: (p) => [p.chatReply],
   },
   {
     verb: 'chat:post',
     recipients: null,
     sink: 'slack:C2',
     run: (p) => postToChatChannel(sql, { workspaceId: WORKSPACE, userId: USER, channelId: 'C2', threadId: '2.0', text: 'post', provenance: OWNER, agentOwnerId: AGENT }, p as never),
-    delivery: (p) => [p.resolveCredentials, p.postThreadMessage],
+    delivery: (p) => [p.chatReply],
   },
   {
     verb: 'social:reply',
@@ -269,7 +272,7 @@ async function arrange(c: SinkCase): Promise<Providers> {
     return c.document;
   });
   resolve.resolveOutboundContext.mockReset();
-  sources.listOwnedExternalTriggerSources.mockReset().mockResolvedValue([sourceRow('s1', 'gmail'), sourceRow('s2', 'gcal')]);
+  sources.listOwnedExternalTriggerSources.mockReset().mockResolvedValue([sourceRow('s1', 'gmail'), sourceRow('s2', 'gcal'), sourceRow('s3', 'slack')]);
   if (c.verb.startsWith('social:')) resolve.resolveOutboundContext.mockRejectedValue(REACHED_CREDENTIALS);
   else resolve.resolveOutboundContext.mockResolvedValue(outboundContext());
   return providers();
