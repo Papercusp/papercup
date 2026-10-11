@@ -1668,6 +1668,8 @@ export async function reportOutcomes(input: {
 }): Promise<{
   updated: string[];
   unknown: string[];
+  /** Existing terminal rows that won a race with this stale report. */
+  preserved: BulkRunItemRow[];
   run: BulkRunRow | null;
   refused:
     | { reason: 'run_not_accepting_reports'; phase: BulkRunPhase | null }
@@ -1691,6 +1693,28 @@ export async function reportOutcomes(input: {
   return await sql.begin(async (tx) => {
     const updated: string[] = [];
     const unknown: string[] = [];
+    const preservedById = new Map<string, BulkRunItemRow>();
+    const preserveTerminalOutcome = async (itemId: string): Promise<BulkRunItemRow | null> => {
+      const rows = await tx<RawItemRow[]>`
+        SELECT ${tx.unsafe(ITEM_COLUMNS)}
+          FROM harness_shared.attention_bulk_run_items
+         WHERE workspace_id = ${ws}
+           AND run_id = ${input.runId}
+           AND item_id = ${itemId}
+           AND outcome IN ('auto_resolved', 'dismissed')
+         FOR UPDATE
+      `;
+      const row = rows[0] ? mapItem(rows[0]) : null;
+      if (row) preservedById.set(itemId, row);
+      return row;
+    };
+    const preserveTerminalOutcomes = async (): Promise<void> => {
+      for (const outcome of input.outcomes ?? []) {
+        if (outcome?.itemId && !preservedById.has(outcome.itemId)) {
+          await preserveTerminalOutcome(outcome.itemId);
+        }
+      }
+    };
     const runRows = await tx<RawRunRow[]>`
       SELECT ${tx.unsafe(RUN_COLUMNS)}
         FROM harness_shared.attention_bulk_runs
@@ -1702,14 +1726,17 @@ export async function reportOutcomes(input: {
       return {
         updated: [],
         unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        preserved: [],
         run: before,
         refused: { reason: 'resolver_owner_mismatch' as const, phase: before.phase },
       };
     }
     if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
+      await preserveTerminalOutcomes();
       return {
         updated: [],
         unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        preserved: [...preservedById.values()],
         run: before,
         refused: { reason: 'run_not_accepting_reports' as const, phase: before.phase },
       };
@@ -1758,10 +1785,11 @@ export async function reportOutcomes(input: {
              revert_note = CASE WHEN ${o.outcome} = 'auto_resolved' THEN NULL ELSE revert_note END,
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${o.itemId}
+         AND outcome NOT IN ('auto_resolved', 'dismissed')
       RETURNING item_id
     `;
       if (rows[0]) updated.push(rows[0].item_id);
-      else unknown.push(o.itemId);
+      else if (!(await preserveTerminalOutcome(o.itemId))) unknown.push(o.itemId);
     }
 
     await recomputeCounters(tx, input.runId, ws);
@@ -1770,7 +1798,13 @@ export async function reportOutcomes(input: {
         FROM harness_shared.attention_bulk_runs
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
     `;
-    return { updated, unknown, run: afterRows[0] ? mapRun(afterRows[0]) : null, refused: null };
+    return {
+      updated,
+      unknown,
+      preserved: [...preservedById.values()],
+      run: afterRows[0] ? mapRun(afterRows[0]) : null,
+      refused: null,
+    };
   });
 }
 

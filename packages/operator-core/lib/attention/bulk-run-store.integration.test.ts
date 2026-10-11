@@ -1232,6 +1232,67 @@ describe('attention bulk-run store (real PG)', () => {
     });
   });
 
+  it('returns a canonical terminal receipt when a late report is refused after Stop', async () => {
+    const ws = `ws-stopped-report-${Date.now()}`;
+    const [item] = seed('stopped-report');
+    const resolverOwner = 'su-stopped-report-resolver';
+    const run = await createRun({ items: [item!], workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner, workspaceId: ws });
+
+    await executeBulkRunAction({
+      runId: run.runId,
+      itemId: item!.itemId,
+      actionId: 'resolve',
+      rationale: 'Canonical action completed before Stop.',
+      resolverOwner,
+      workspaceId: ws,
+      execute: async () => ({ resolved: true }),
+      audit: async () => {},
+    });
+    await setRunPhase({ runId: run.runId, phase: 'review', resolverOwner, workspaceId: ws });
+
+    const reported = await reportOutcomes({
+      runId: run.runId,
+      resolverOwner,
+      workspaceId: ws,
+      outcomes: [
+        {
+          itemId: item!.itemId,
+          outcome: 'recommended',
+          actionId: 'retry',
+          rationale: 'Recommendation from the pre-action manifest.',
+        },
+      ],
+    });
+
+    expect(reported).toMatchObject({
+      updated: [],
+      unknown: [item!.itemId],
+      refused: { reason: 'run_not_accepting_reports', phase: 'review' },
+      preserved: [
+        expect.objectContaining({
+          itemId: item!.itemId,
+          outcome: 'auto_resolved',
+          disposition: 'auto_resolved',
+          actionId: 'resolve',
+          rationale: 'Canonical action completed before Stop.',
+          revertHandle: {
+            kind: 'attention-bulk-item',
+            version: 1,
+            workspaceId: ws,
+            runId: run.runId,
+            itemId: item!.itemId,
+          },
+        }),
+      ],
+    });
+    expect((await getRunItems(run.runId, ws))[0]).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed before Stop.',
+    });
+  });
+
   it('persists a typed bounded handle and appends one compensation without rewriting the action audit', async () => {
     const ws = `ws-reversal-${Date.now()}`;
     const [item] = seed('reversal');

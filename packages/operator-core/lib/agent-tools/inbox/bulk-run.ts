@@ -1178,7 +1178,7 @@ const OutcomeItem = z
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
   description:
-    'Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived. Intake inputs (manifest `intake`) need `intakeDecision` {disposition, reason, confidenceLevel on the item} or `failed` with an error.',
+    'Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting updates non-terminal rows, preserves existing terminal outcomes, and returns their canonical receipts in `preservedOutcomes`; counters remain derived. Intake inputs (manifest `intake`) need `intakeDecision` {disposition, reason, confidenceLevel on the item} or `failed` with an error.',
   guidance: {
     when: 'After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.',
     notWhen: 'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
@@ -1410,6 +1410,7 @@ export const bulkRunReport = defineTool({
     );
 
     let unknown: string[] = [];
+    let preservedOutcomes: Array<Record<string, unknown>> = [];
     let autoAccept = autoAcceptSummary({
       reportedRecommendations: 0,
       actionCandidates: 0,
@@ -1424,6 +1425,19 @@ export const bulkRunReport = defineTool({
         workspaceId: heartbeat.workspaceId,
       });
       unknown = res.unknown;
+      const preservedRows = res.preserved ?? [];
+      preservedOutcomes = preservedRows.map((row) => ({
+        itemId: row.itemId,
+        outcome: row.outcome,
+        actionId: row.actionId,
+        rationale: row.rationale,
+        disposition: row.disposition ?? null,
+        decidedAt: row.decidedAt,
+        revertHandle: row.revertHandle,
+        reversalWindowUntil: row.reversalWindowUntil,
+        revertedAt: row.revertedAt,
+        revertNote: row.revertNote,
+      }));
 
       // WI-41013 — the run was stopped (or settled) between your last read and
       // this report, so NOTHING was written. Return immediately and loudly:
@@ -1442,6 +1456,7 @@ export const bulkRunReport = defineTool({
                 phase: res.refused.phase,
                 runId,
                 wrote: 0,
+                preservedOutcomes,
                 message:
                   'This run is no longer accepting reports — the owner stopped it, or it has already settled. STOP: take no further action on any item in this run. Nothing from this report was written.',
               }),
@@ -1462,8 +1477,12 @@ export const bulkRunReport = defineTool({
       // Stop lock, fresh action check, terminal dispatcher, audit transaction,
       // and post-dispatch reconciliation rail single-sourced in bulkRunAct.
       const unknownIds = new Set(unknown);
+      const preservedIds = new Set(preservedRows.map((row) => row.itemId));
       const recommendations = accepted.filter(
-        (report) => report.outcome === 'recommended' && !unknownIds.has(report.itemId),
+        (report) =>
+          report.outcome === 'recommended' &&
+          !unknownIds.has(report.itemId) &&
+          !preservedIds.has(report.itemId),
       );
       const actionCandidates = recommendations.filter(
         (report): report is BulkOutcomeReport & { actionId: string } =>
@@ -1525,7 +1544,7 @@ export const bulkRunReport = defineTool({
     }
 
     if (unknown.length === 0) {
-      return bulkContent({ ...(env as unknown as Record<string, unknown>), autoAccept });
+      return bulkContent({ ...(env as unknown as Record<string, unknown>), autoAccept, preservedOutcomes });
     }
     // Unknown ids are surfaced BESIDE the bulk envelope rather than as failures:
     // each reported item that existed still landed, and the resolver needs to
@@ -1538,6 +1557,7 @@ export const bulkRunReport = defineTool({
         why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
       },
       autoAccept,
+      preservedOutcomes,
     });
   },
 });

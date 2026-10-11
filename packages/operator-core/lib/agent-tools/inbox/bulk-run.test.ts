@@ -112,7 +112,7 @@ beforeEach(() => {
   h.getRunItems.mockResolvedValue([item]);
   h.recordRunHeartbeat.mockResolvedValue(run);
   h.failRunIfExecuting.mockResolvedValue({ ...run, phase: 'failed' });
-  h.reportOutcomes.mockResolvedValue({ unknown: [], refused: null });
+  h.reportOutcomes.mockResolvedValue({ unknown: [], preserved: [], refused: null });
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
