@@ -19,7 +19,7 @@ import { loadAccountPool } from '../packages/operator-core/lib/deployment/accoun
 import { buildExpected } from './templates-mirror-sync.mjs';
 import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { fileURLToPath } from 'node:url';
-import { reapArchiveCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
+import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 
 const installed = installedRootCensusProducers();
@@ -66,6 +66,7 @@ if (process.argv.includes('--restore-events') || hostCatalogs) {
       const databases = await physicalDatabaseCensusEntries(sql);
       catalogEntries.push(...databases);
       declarations.push(...integrationBaselineCensusDeclarations(databases));
+      if (databases.length) declarations.push(...await maintenanceDatabaseCensusDeclarations(sql, databases[0].root));
       if (databases.length) declarations.push(...await templateDatabaseCensusDeclarations(sql, databases[0].root));
       if (databases.length) declarations.push(...configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl()));
       const unitDeclarations = [];

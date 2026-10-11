@@ -533,6 +533,24 @@ export async function physicalDatabaseCensusEntries(sql: Sql) {
   return databaseCensusEntries(sql, `postgres-cluster:${identity}`);
 }
 
+/** initdb's fixed PostgresDbOid and catalog comment identify its maintenance DB.
+ * Retain the entire database, including any application objects added later.
+ * Source: PostgreSQL src/bin/initdb/initdb.c make_postgres; pg_database_d.h.
+ */
+export async function maintenanceDatabaseCensusDeclarations(sql: Sql, clusterIdentity: string): Promise<CensusDeclaration[]> {
+  if (!/^postgres-cluster:\d+$/.test(clusterIdentity)) throw new Error('Missing physical maintenance cluster identity');
+  const identity = await sql<{ system_identifier: string }[]>`SELECT system_identifier::text FROM pg_control_system()`;
+  if (`postgres-cluster:${identity[0]?.system_identifier}` !== clusterIdentity) throw new Error('Maintenance database cluster identity mismatch');
+  const rows = await sql<{ oid: number; datname: string; datistemplate: boolean; marker: string }[]>`
+    SELECT oid, datname, datistemplate, shobj_description(oid, 'pg_database') AS marker
+    FROM pg_database WHERE oid = 5
+  `;
+  return rows.filter(row => row.oid === 5 && row.datname === 'postgres' && row.datistemplate === false &&
+    row.marker === 'default administrative connection database').map(row => ({
+      kind: 'database', root: clusterIdentity, name: row.datname, classification: 'state', producer: 'postgres-initdb-maintenance',
+    }));
+}
+
 /** Only the exact integration-baseline identity shape emitted by its producer. */
 export function integrationBaselineCensusDeclarations(entries: readonly CensusEntry[]): CensusDeclaration[] {
   return entries.filter(entry => entry.kind === 'database' &&

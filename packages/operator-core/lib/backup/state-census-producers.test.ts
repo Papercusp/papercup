@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
 import type { Sql } from 'postgres';
-import { templateDatabaseCensusDeclarations } from './state-census-producers';
+import { templateDatabaseCensusDeclarations, maintenanceDatabaseCensusDeclarations } from './state-census-producers';
 import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from './state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations } from './state-census-producers';
 import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer, accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer } from './state-census-producers';
@@ -371,6 +371,23 @@ describe('secret census producer adapters', () => {
       { kind: 'database', root: 'postgres-cluster:123', name: 'papercusp_su', classification: 'state', producer: 'su-lock-store' },
     ]);
     expect(() => configuredOperatorDatabaseCensusDeclarations('port:5432', 'postgresql://localhost/db')).toThrow('identity');
+  });
+  it('retains the initdb maintenance database only with fixed catalog identity on the measured cluster', async () => {
+    const marker = 'default administrative connection database';
+    const catalog = { oid: 5, datname: 'postgres', datistemplate: false, marker };
+    const sql = vi.fn().mockResolvedValueOnce([{ system_identifier: '123' }]).mockResolvedValueOnce([catalog]);
+    expect(await maintenanceDatabaseCensusDeclarations(sql as unknown as Sql, 'postgres-cluster:123')).toEqual([
+      { kind: 'database', root: 'postgres-cluster:123', name: 'postgres', classification: 'state', producer: 'postgres-initdb-maintenance' },
+    ]);
+    for (const impostor of [{ ...catalog, oid: 12345 }, { ...catalog, marker: null },
+      { ...catalog, datname: 'customer' }, { ...catalog, datistemplate: true }]) {
+      const other = vi.fn().mockResolvedValueOnce([{ system_identifier: '123' }]).mockResolvedValueOnce([impostor]);
+      expect(await maintenanceDatabaseCensusDeclarations(other as unknown as Sql, 'postgres-cluster:123')).toEqual([]);
+    }
+    const foreign = vi.fn().mockResolvedValue([{ system_identifier: '456' }]);
+    await expect(maintenanceDatabaseCensusDeclarations(foreign as unknown as Sql, 'postgres-cluster:123')).rejects.toThrow('mismatch');
+    expect(foreign).toHaveBeenCalledTimes(1);
+    await expect(maintenanceDatabaseCensusDeclarations(sql as unknown as Sql, 'port:5432')).rejects.toThrow('identity');
   });
   it('uses the template producer readiness marker rather than treating similar database names as disposable', async () => {
     const source = await readFile(new URL('../../../../libs/test-config/src/pg-migrate.ts', import.meta.url), 'utf8');
