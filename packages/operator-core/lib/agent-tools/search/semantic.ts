@@ -25,6 +25,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { describeSearchLegs } from './describe-leg';
 import { SEARCH_SOURCES } from './sources';
+import { SEARCH_SEMANTIC_DEFER_HIGHLIGHT } from './semantic-engine-options';
 import { createReportSearchSource } from './report-source';
 import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import { resolveViewer } from '../reports/_shared';
@@ -140,6 +141,8 @@ export default defineTool({
       mode,
       embedder,
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
+      // See SEARCH_SEMANTIC_DEFER_HIGHLIGHT: headlines for the final page only.
+      deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
       filters,
       // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
       // resolves them from the embedder instance via the policy installed by

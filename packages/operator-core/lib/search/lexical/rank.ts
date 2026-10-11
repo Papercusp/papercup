@@ -49,6 +49,11 @@ export interface LexicalLeg {
   match: SqlFragment;
   /** ORDER BY body, best first (append the caller's tie-breakers after it). */
   order: SqlFragment;
+  /**
+   * BM25 only: the raw `<@>` distance (negative = match, lower = better). Set by `bm25Leg`
+   * for `bm25TopK`, which evaluates it once per row; `score`/`match` re-evaluate it each.
+   */
+  distance?: SqlFragment;
 }
 
 /** The caller's existing ts_rank ranking, used verbatim when BM25 is unavailable. */
@@ -153,7 +158,49 @@ export function bm25Leg(sql: Sql, corpus: Bm25Corpus, query: string, alias?: str
     score: sql`(-(${distance()}))::float8`,
     match: sql`(${distance()}) < 0`,
     order: distance(),
+    distance: distance(),
   };
+}
+
+export interface Bm25TopKRequest {
+  /** The leg's `distance` (from `bm25Leg`). */
+  distance: SqlFragment;
+  /** Select-list body for the inner query, e.g. sql`w.id, w.title`. Must not use `bm25_d`. */
+  columns: SqlFragment;
+  /** FROM body, e.g. sql`harness_shared.work_items w`. */
+  from: SqlFragment;
+  /** Non-BM25 filters (scope, workspace). Do NOT pass the leg's `match`. */
+  where: SqlFragment;
+  limit: number;
+}
+
+/**
+ * The top-k BM25 matches as a subquery body: `columns` plus `bm25_d` (the distance), best
+ * first, matches only. Use it as `FROM (${bm25TopK(...)}) s ... ORDER BY s.bm25_d` and derive
+ * the score as `-s.bm25_d`.
+ *
+ * Why not `SELECT ${leg.score} ... WHERE ${leg.match} ORDER BY ${leg.order} LIMIT k`: that
+ * evaluates `<@>` twice per row on top of the index scan that orders by it (a per-row Filter
+ * and the select list; the operator re-scores the document, the scan's value is not reused).
+ * Here the distance is selected once, the inner query orders by that ALIAS (postgres.js gives
+ * each interpolation fresh `$n` params, so a second copy of the expression would be a
+ * separate target entry, evaluated again), and the match test runs on the computed value
+ * after the LIMIT. Same rows: every match has a negative distance and every non-match (a
+ * filtered scan returns them at distance 0) sorts after all matches, so limit-then-filter
+ * equals filter-then-limit. Measured on the R-18 tail query (work_items, plan
+ * bm25-lexical-search-evoke-adoption-2026-10-10 D-019): 234/282 ms vs 142/149 ms.
+ * Pinned by bm25-top-k.integration.test.ts.
+ */
+export function bm25TopK(sql: Sql, req: Bm25TopKRequest): SqlFragment {
+  return sql`
+    SELECT * FROM (
+      SELECT ${req.columns}, ${req.distance} AS bm25_d
+        FROM ${req.from}
+       WHERE ${req.where}
+    ORDER BY bm25_d
+       LIMIT ${req.limit}
+    ) bm25_top
+    WHERE bm25_top.bm25_d < 0`;
 }
 
 /**

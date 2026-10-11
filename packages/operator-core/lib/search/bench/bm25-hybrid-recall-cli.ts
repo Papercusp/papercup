@@ -101,6 +101,7 @@ async function main(): Promise<number> {
   if (!Number.isInteger(perSource) || perSource < 1) throw new Error('--pairs must be a positive integer');
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
 
+  const { SEARCH_SEMANTIC_DEFER_HIGHLIGHT } = await import('../../agent-tools/search/semantic-engine-options');
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }, flags, rank, canary] =
     await Promise.all([
       import('@papercusp/search'),
@@ -208,6 +209,9 @@ async function main(): Promise<number> {
           mode: 'hybrid',
           embedder: sharedEmbedder,
           embedTimeoutMs: 30_000,
+          // Mirrors search:semantic (SEARCH_SEMANTIC_DEFER_HIGHLIGHT), so R-18 times the
+          // tool's path; it includes the final-page highlight hydration.
+          deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
         });
         p.arms[arm] = {
           rank: rankOf(results, p.source, p.targetId),

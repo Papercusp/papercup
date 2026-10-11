@@ -31,6 +31,9 @@ import type { Sql, TransactionSql } from 'postgres';
 import {
   EXACT_LIST_MAX_AND_ROWS,
   bm25LegIfAvailable,
+  bm25TopK,
+  headlineTsQuery,
+  lexicalEngine,
   lexicalLeg,
   mergeExactAndBm25,
   type LexicalLeg,
@@ -282,6 +285,12 @@ function lexicalSql(
    * BM25 ranked five such targets 11, 60, 286, 402 and >500 where AND +
    * `ts_rank_cd` ranked them 1-2. So a source with a BM25 leg ALSO runs this
    * function's AND mode as an exact list and fuses the two (`mergeExactAndBm25`).
+   *
+   * ─── BM25_TOP_K_NOTE (R-18, D-019) ──────────────────────────────────────────
+   * The BM25 branch's `rank` and `match` each re-evaluate the `<@>` distance per row.
+   * The two BM25 callers below (work_item, session_turn) therefore splice neither: they
+   * read the top-k matches from `bm25TopK` (rank.ts, which documents the shape and the
+   * measurement) and derive `rank` as `-bm25_d`.
    */
   bm25?: LexicalLeg | null,
 ) {
@@ -805,6 +814,17 @@ const workItem: SearchSource = {
             JOIN harness_shared.work_items w
               ON w.harness_slug = ei.base_harness_slug AND w.feature_id = ei.issue_id`
       : sql`harness_shared.engineer_issues ei`;
+    // R-18 / D-019: the headline input is capped at 4000 chars (the session_turn source's
+    // cap) and skipped under the engine's highlight deferral (WI-4734, `hydrateHighlights`
+    // below). Measured on the R-18 tail query #35: ts_headline over the full title+body of
+    // 30 rows (bodies up to 59k chars) cost 170-270 ms of a 460-510 ms list.
+    // Declared BEFORE `rows`: `list` runs inside the transaction below.
+    const headline = (l: ReturnType<typeof lexicalSql>, title: typeof from, body: typeof from) =>
+      p.wantHighlight === false
+        ? sql`''`
+        : sql`ts_headline('english', left(coalesce(${title}, '') || E'\n' || coalesce(${body}, ''), 4000),
+               ${l.headlineQuery},
+               ${HEADLINE_OPTS})`;
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. This tool
     // runs `ctx.tx` = a bare `getOrgPg()` handle with no ambient bound, so the
     // bound must be installed HERE, per the readiness-reconcile.ts pattern
@@ -813,7 +833,7 @@ const workItem: SearchSource = {
     // whatever runs next on the same connection).
     const rows = (await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
-      const primary = (await list(tx, lex, from)) as unknown as Array<{ issue_id: string; rank: number }>;
+      const primary = (await list(tx, lex, from, bm25?.distance ?? null)) as unknown as Array<{ issue_id: string; rank: number }>;
       if (!exact) return primary;
       const [gate] = (await tx`
         SELECT count(*)::int AS n FROM (
@@ -838,16 +858,40 @@ const workItem: SearchSource = {
       rank: number;
       highlight: string;
     }>;
-    function list(tx: TransactionSql, l: ReturnType<typeof lexicalSql>, source: typeof from) {
+    function list(
+      tx: TransactionSql,
+      l: ReturnType<typeof lexicalSql>,
+      source: typeof from,
+      /** The BM25 distance when `l` is the BM25 leg: selects the top-k shape (BM25_TOP_K_NOTE). */
+      distance: LexicalLeg['order'] | null = null,
+    ) {
+      if (distance) {
+        // See BM25_TOP_K_NOTE / bm25TopK: distance computed once, match applied after the limit.
+        return tx`
+      ${l.with}
+      SELECT s.issue_id, s.scope, s.title, s.body, s.kind, s.state, s.severity, s.lane, s.updated_at,
+             1 AS coverage,
+             (-s.bm25_d)::float8 AS rank,
+             ${headline(l, sql`s.title`, sql`s.body`)} AS highlight
+        FROM (${bm25TopK(sql as unknown as Sql, {
+          distance,
+          columns: sql`ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+                       coalesce(ei.updated_at, ei.created_at) AS updated_at`,
+          from: source,
+          where: sql`ei.workspace_id = ${workspaceId}
+                 AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+          limit,
+        })}) s ${l.join}
+    ORDER BY s.bm25_d
+    `;
+      }
       return tx`
       ${l.with}
       SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
              coalesce(ei.updated_at, ei.created_at) AS updated_at,
              ${l.coverage} AS coverage,
              ${l.rank} AS rank,
-             ts_headline('english', coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''),
-               ${l.headlineQuery},
-               ${HEADLINE_OPTS}) AS highlight
+             ${headline(l, sql`ei.title`, sql`ei.body`)} AS highlight
         FROM ${source} ${l.join}
        WHERE ei.workspace_id = ${workspaceId}
          -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
@@ -920,9 +964,12 @@ const workItem: SearchSource = {
       SELECT e.issue_id, e.scope, e.title, e.body, e.kind, e.state, e.severity, e.lane,
              coalesce(e.updated_at, e.created_at) AS updated_at,
              1 - b.distance AS sim,
-             ts_headline('english', coalesce(e.title, '') || E'\n' || coalesce(e.body, ''),
-               plainto_tsquery('english', ${query}),
-               ${HEADLINE_OPTS}) AS highlight
+             -- Same cap and deferral as the lexical leg's headline (R-18).
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`ts_headline('english', left(coalesce(e.title, '') || E'\n' || coalesce(e.body, ''), 4000),
+                   plainto_tsquery('english', ${query}),
+                   ${HEADLINE_OPTS})`} AS highlight
         FROM best b
         JOIN harness_shared.engineer_issues e
           ON e.base_harness_slug = b.base_harness_slug AND e.issue_id = b.issue_id
@@ -961,6 +1008,26 @@ const workItem: SearchSource = {
         },
       };
     });
+  },
+  /** WI-4734 / R-18: batched ts_headline for the FINAL fused top-N only. The engine
+   *  calls this under `deferHighlight` after passing `wantHighlight: false` to both
+   *  legs above, so a deferring caller pays the headline for the hits it returns, not
+   *  for every row of each leg's over-fetch. Same input cap and query choice as the
+   *  inline headline: an OR of the terms when BM25 ranks work_items (its rows can match
+   *  only some terms), else the AND query (`headlineTsQuery`). One query, never per hit. */
+  async hydrateHighlights(p: SearchSourceParams, sourceIds: string[]): Promise<Map<string, string>> {
+    if (sourceIds.length === 0) return new Map();
+    const engine = await lexicalEngine(p.sql as unknown as Sql, 'work_items');
+    const hq = headlineTsQuery(p.sql as unknown as Sql, engine, p.query);
+    const rows = (await p.sql`
+      SELECT ei.issue_id,
+             ts_headline('english', left(coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''), 4000),
+               ${hq}, ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.engineer_issues ei
+       WHERE ei.workspace_id = ${p.workspaceId}
+         AND ei.issue_id = ANY(${sourceIds}::text[])
+    `) as unknown as Array<{ issue_id: string; highlight: string }>;
+    return new Map(rows.map((r) => [r.issue_id, r.highlight]));
   },
 };
 
@@ -1125,7 +1192,34 @@ const sessionTurn: SearchSource = {
       await tx.unsafe('SET LOCAL parallel_setup_cost = 0');
       await tx.unsafe('SET LOCAL parallel_tuple_cost = 0.01');
       // PRIMARY — index-served only (`lex.match` carries no substring arm).
-      const list = (l: ReturnType<typeof lexicalSql>) => tx`
+      const list = (
+        l: ReturnType<typeof lexicalSql>,
+        /** The BM25 distance when `l` is the BM25 leg: selects the top-k shape (BM25_TOP_K_NOTE). */
+        distance: LexicalLeg['order'] | null = null,
+      ) => distance
+        // See BM25_TOP_K_NOTE / bm25TopK: distance computed once, match applied after the
+        // limit. The BM25 leg's fallbackOnly is the constant FALSE, so its highlight is
+        // the plain headline.
+        ? tx`
+      ${l.with}
+      SELECT s.source_kind, s.session_id, s.turn_idx, s.speaker, s.owner, s.harness_slug, s.ts, s.text,
+             1 AS coverage,
+             (-s.bm25_d)::float8 AS rank,
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`ts_headline(${l.headlineConfig}, left(s.text, 4000),
+                         ${l.headlineQuery},
+                         ${HEADLINE_OPTS})`} AS highlight
+        FROM (${bm25TopK(p.sql as unknown as Sql, {
+          distance,
+          columns: p.sql`source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text`,
+          from: p.sql`harness_shared.session_turns`,
+          where: scoped(),
+          limit: p.limit,
+        })}) s ${l.join}
+    ORDER BY s.bm25_d
+    `
+        : tx`
       ${l.with}
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              ${l.coverage} AS coverage,
@@ -1143,7 +1237,7 @@ const sessionTurn: SearchSource = {
          AND ${l.match}
     ORDER BY ${l.order} LIMIT ${p.limit}
     `;
-      let primary = (await list(lex)) as unknown as SessionTurnLexicalRow[];
+      let primary = (await list(lex, bm25?.distance ?? null)) as unknown as SessionTurnLexicalRow[];
       if (exact) {
         const [gate] = (await tx`
           SELECT count(*)::int AS n FROM (
@@ -1320,12 +1414,17 @@ const sessionTurn: SearchSource = {
       idxs.push(turnIdx);
     }
     if (kinds.length === 0) return new Map();
+    // R-18: the headline query follows the lexical engine (`headlineTsQuery`). Under BM25 a
+    // hit can match only SOME query terms, so the AND query would miss it and fall through
+    // to the raw 4000-char head; the OR of its terms gives it the same headline the inline
+    // path (lexicalSql's `q.orq`) gave it before search:semantic deferred highlights.
+    const engine = await lexicalEngine(p.sql as unknown as Sql, 'session_turns');
+    const hq = headlineTsQuery(p.sql as unknown as Sql, engine, p.query);
     const rows = (await p.sql`
       SELECT st.source_kind, st.session_id, st.turn_idx,
              CASE
-               WHEN st.text_tsv @@ plainto_tsquery('english', ${p.query})
-               THEN ts_headline('english', left(st.text, 4000),
-                 plainto_tsquery('english', ${p.query}), ${HEADLINE_OPTS})
+               WHEN st.text_tsv @@ ${hq}
+               THEN ts_headline('english', left(st.text, 4000), ${hq}, ${HEADLINE_OPTS})
                ELSE left(st.text, 4000)
              END AS highlight
         FROM harness_shared.session_turns st
