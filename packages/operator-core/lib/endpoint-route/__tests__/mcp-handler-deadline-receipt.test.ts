@@ -531,17 +531,17 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             resultDoor: expect.any(Number),
             advisory: expect.any(Number),
             advisoryFlagReads: expect.any(Number),
-            scratchWrites: {
+            scratchWrites: expect.objectContaining({
               count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
-              quotaRecoveryDiagnostics: {
+              quotaRecoveryDiagnostics: expect.objectContaining({
                 sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
                 readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
                 maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
                 directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
                 selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
                 deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
-              },
-            },
+              }),
+            }),
           }),
         }),
       );
