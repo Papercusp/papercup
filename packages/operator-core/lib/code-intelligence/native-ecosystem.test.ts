@@ -14,6 +14,52 @@ import { suggestFromSnapshot, unionSuperset } from '../../../../scripts/lib/grap
 import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-tools/plans/code-dependency-evidence';
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { sourceRuntimeProvenance } from './source-runtime-provenance';
+import { nativeCliPlan, nativeCliResult, nativeCliTestTimeout } from './native-cli.fixture';
+import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS, PTOOL_LIST_TOOLS_TIMEOUT_MS,
+  ptoolConnectionRetryOptions, ptoolConnectAttemptTimeoutMs, timeoutForTool,
+  resolvePtoolInvocationCandidates } from '../../../../apps/operator/scripts/ptool.mjs';
+
+describe('native CLI fixture runtime and deadline guards', () => {
+  it('uses the maintained staging proxy without a green fallback and honors producer deadlines', () => {
+    const plan = nativeCliPlan('http://localhost:3170', 'graph:query', {}, {
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071', PAPERCUSP_MCP_PROXY_PORT: '9071',
+    });
+    expect(plan.cliUrl).toBe('http://127.0.0.1:9171');
+    expect(resolvePtoolInvocationCandidates({ url: plan.cliUrl }, plan.env)).toEqual([plan.cliUrl]);
+    expect(ptoolConnectAttemptTimeoutMs(plan.cliUrl, plan.env)).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+    expect(ptoolConnectionRetryOptions({ url: plan.cliUrl }, plan.env)).toEqual({ maxAttempts: 1 });
+    expect(timeoutForTool('tools:invoke', { name: 'graph:query', args: {} })).toBe(100_000);
+    expect(plan.timeoutMs).toBe(PTOOL_CONNECT_TIMEOUT_MS + PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS +
+      timeoutForTool('graph:query', {}) + PTOOL_LIST_TOOLS_TIMEOUT_MS);
+    expect(nativeCliTestTimeout(['graph:query', 'dev:pipeline_position'])).toBeGreaterThan(plan.timeoutMs);
+  });
+  it('keeps remote and alternate local pins despite inherited proxy settings', () => {
+    for (const base of ['https://runtime.example', 'http://127.0.0.1:55942', 'http://remote.example:3170']) {
+      const plan = nativeCliPlan(base, 'graph:query', {}, {
+        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071', PAPERCUSP_MCP_PROXY_PORT: '55942',
+      });
+      expect(plan.cliUrl).toBe(base);
+      expect(resolvePtoolInvocationCandidates({ url: plan.cliUrl }, plan.env)).toEqual([base]);
+      expect(plan.env.PAPERCUSP_MCP_PROXY_BASE).toBeUndefined();
+      expect(plan.env.PAPERCUSP_MCP_PROXY_PORT).toBeUndefined();
+    }
+    for (const port of ['3170', '3070', '9071']) {
+      expect(() => nativeCliPlan('http://127.0.0.1:3170', 'graph:query', {}, {
+        PAPERCUSP_MCP_STAGING_PROXY_PORT: port,
+      })).toThrow(/requires its maintained MCP proxy/);
+    }
+  });
+  it('preserves stdout, stderr and process failure evidence', () => {
+    expect(() => nativeCliResult({ status: 1, stdout: 'typed-worker-error', stderr: 'connection trace',
+      error: new Error('ETIMEDOUT'), signal: 'SIGTERM' })).toThrow(/ETIMEDOUT[\s\S]*typed-worker-error[\s\S]*connection trace/);
+    expect(() => nativeCliResult({ status: 0, stdout: '{"ok":false,"error":"typed refusal"}', stderr: '' })).toThrow(/typed refusal/);
+    expect(() => nativeCliResult({ status: 0, stdout: 'invalid', stderr: 'diagnostic' })).toThrow(/invalid[\s\S]*diagnostic/);
+    for (const stdout of ['null', '[]', 'true']) {
+      expect(() => nativeCliResult({ status: 0, stdout, stderr: 'shape diagnostic' })).toThrow(/invalid response shape[\s\S]*shape diagnostic/);
+    }
+    expect(nativeCliResult({ status: 0, stdout: '{"ok":true,"data":{"answer":1}}', stderr: '' })).toEqual({ answer: 1 });
+  });
+});
 
 describe('native P011 required BAR add-only validated test selection', () => {
   it('keeps baseline tests when a hashed dependency path is accepted, stale or unavailable', () => {

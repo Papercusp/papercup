@@ -3,11 +3,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
-const repoRoot = resolve(import.meta.dirname, '../../../..');
 
 describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime provenance', () => {
   it('identifies a containing current-build artifact and keeps a newer private source distinct', async () => {
@@ -68,19 +68,12 @@ describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime prov
       expect(after.evidence.siteIdentities[0].contentHash).toBe(afterHash);
       expect(after.runtimeProvenance.limitations.join(' ')).toMatch(/neither establishes runtime execution/);
     } finally { rmSync(project, { recursive: true, force: true }); }
-  }, 360_000);
+  }, nativeCliTestTimeout(['dev:pipeline_position', 'dev:pipeline_position', 'dev:pipeline_position',
+    'graph:query', 'graph:query', 'graph:query', 'dev:pipeline_position']));
 });
 
 function call(name: string, args: Record<string, unknown>) {
-  const result = spawnSync(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
-    'tools:invoke', `--url=${baseUrl}`, '--json', '-'], {
-    cwd: repoRoot, encoding: 'utf8', timeout: 120_000, input: JSON.stringify({ name, args }),
-    env: { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' },
-  });
-  expect(result.status, result.stderr).toBe(0);
-  const parsed = JSON.parse(result.stdout);
-  expect(parsed.ok).not.toBe(false);
-  return parsed.data ?? parsed;
+  return nativeCliCall(baseUrl!, name, args);
 }
 
 describe.runIf(Boolean(baseUrl))('native P010 required BAR real CLI change report', () => {
@@ -135,5 +128,5 @@ describe.runIf(Boolean(baseUrl))('native P010 required BAR real CLI change repor
       expect(edited.report.consumers.some((consumer: { path: string }) => consumer.path === 'first.ts')).toBe(false);
       expect(edited.report.limitations.some((line: string) => line.includes('runtime execution'))).toBe(true);
     } finally { rmSync(project, { recursive: true, force: true }); }
-  }, 360_000);
+  }, nativeCliTestTimeout(['dev:pipeline_position', 'code:pack', 'code:pack']) + 80_000);
 });

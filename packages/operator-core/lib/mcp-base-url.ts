@@ -27,10 +27,10 @@
  * `PAPERCUSP_MCP_PROXY_BASE` is set (deploy-restart-resilient), else the operator base unchanged.
  * Trailing slashes are normalized off so callers can append `/api/mcp` consistently.
  */
-export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
-  const proxy = process.env.PAPERCUSP_MCP_PROXY_BASE?.trim();
-  const proxyTargetPort = process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT?.trim();
-  const stagingProxyPort = process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT?.trim();
+export function resolveAgentMcpBaseUrl(operatorBaseUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  const proxy = env.PAPERCUSP_MCP_PROXY_BASE?.trim();
+  const proxyTargetPort = env.PAPERCUSP_MCP_PROXY_TARGET_PORT?.trim();
+  const stagingProxyPort = env.PAPERCUSP_MCP_STAGING_PROXY_PORT?.trim();
   let operatorPort = '';
   let isLocalHttpOperator = false;
   try {
@@ -71,7 +71,7 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   // it, so an explicit :3271 pin chosen from another host stays a pin. Blueprint/orchestrator
   // roles (release fixers) resolve through orchestrator spawn-mcp.ts and keep bg-host's build
   // (WI-212675 bootstrap-deadlock guard).
-  const bgHostAgentsBase = resolveBackgroundHostAgentsBase(process.env);
+  const bgHostAgentsBase = resolveBackgroundHostAgentsBase(env);
   const backgroundHostAgents = bgHostAgentsBase && isLocalHttpOperator &&
     (operatorPort === '3271' || operatorPort === '3070')
     ? bgHostAgentsBase
