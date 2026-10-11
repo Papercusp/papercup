@@ -858,7 +858,7 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
 
   it('admits a direct new Asana bug after activation once while history and later historical edits remain data', async () => {
     const sourceId = await createSource();
-    await syncOne(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'backfill', rejected: 0 });
     const { rule, backfill } = await setAdmissionRuleAndBackfill({
       workspaceId: WS, dataSourceId: sourceId, title: 'New Engineering bug reports',
       match: { provider: { eq: 'asana' }, projects: { contains: 'Engineering' }, state: { eq: 'open' },
@@ -876,7 +876,8 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     // A new completed task is outside this rule even though it passes the time boundary.
     const closed = task({ ...fresh, gid: 't-new-closed', name: 'Already resolved issue', completed: true });
     asana.tasks.push(closed); asana.stories.set(closed.gid!, []); taskChanged(closed, 'added');
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
     const expected = [{ record: recordOf(sourceId, fresh.gid!), via: 'rule', rule_id: rule.id,
       kind: 'bug', agent_work: true, about: 1 }];
     expect(await admitted(sourceId)).toEqual(expected);
@@ -891,15 +892,27 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     expect(work).toBeDefined();
     expect(work.admission).toBe('pending');
     expect(work.payload).not.toHaveProperty('implementationAcceptance');
+    const admissionIdentity = () => sql<Array<{ admission_id: string; work_item_id: string }>>`
+      SELECT a.id::text AS admission_id, a.work_item_id FROM harness_shared.work_admissions a
+      WHERE a.workspace_id = ${WS} AND a.data_source_id = ${sourceId}::uuid
+        AND a.source_key = ${recordOf(sourceId, fresh.gid!)}`;
+    const originalIdentity = await admissionIdentity();
+    expect(originalIdentity).toEqual([{ admission_id: expect.any(String), work_item_id: expect.any(String) }]);
     // Replay the provider event, then reconnect from a fresh crawl: the
-    // canonical admission link stays the same and history stays unadmitted.
+    // sync must succeed as well as retain the original admission and work item.
+    // A failed duplicate INSERT can leave the old row intact, so row presence
+    // alone does not prove that replay or reconnect worked.
     taskChanged(fresh, 'added');
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
+    expect(await admissionIdentity()).toEqual(originalIdentity);
     await sql`UPDATE harness_shared.data_sources SET cursor = '{}'::jsonb, status = 'connected'
       WHERE id = ${sourceId}::uuid AND workspace_id = ${WS}`;
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
+    expect(await admissionIdentity()).toEqual(originalIdentity);
   });
 
   // Chat-originated filing (one ticket at the installation's destination,
