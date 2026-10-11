@@ -782,6 +782,24 @@ export async function measureRepoFilesEvidence(
   });
 }
 
+/**
+ * Observe a live repo-files recipe's named runtimes NOW, exactly as the read path re-measures
+ * them, so a manual live probe stores the runtime it was observed against instead of NULL
+ * (WI-6554700010008521). A completedRuntime recipe belongs to a test run's execution witness,
+ * and bindSpecEvidence replaces any testRunId binding's input with that witness, so neither
+ * is restamped from the binding-time runtime here.
+ */
+async function liveRuntimeEnvironment(
+  workspaceId: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<{ environmentFingerprint?: string | null }> {
+  if (!measurement.runtimeUnits || measurement.completedRuntime) return {};
+  return {
+    environmentFingerprint: measureRuntimeVintageEnvironment(
+      await listRuntimeVintage(workspaceId), measurement.runtimeUnits),
+  };
+}
+
 /** Resolve both registered roots when fixture calibration lives outside the tested checkout. */
 export async function measureAndPinRepoFilesEvidence(
   workspaceId: string,
@@ -794,10 +812,12 @@ export async function measureAndPinRepoFilesEvidence(
     ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
     : root;
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug ?? measurement.rootHarnessSlug ?? harnessSlug;
-  return measureAndPinRepoFilesEvidenceAtRoot(root, measurement, {
+  const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, measurement, {
     ...options,
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
+  // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
+  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, measurement)) };
 }
 
 /**
