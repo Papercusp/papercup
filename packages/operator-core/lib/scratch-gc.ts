@@ -113,7 +113,11 @@ function withScratchWorkspaceMutex<T>(
   operation: string,
   run: () => Promise<T>,
   onWaiting?: (info: { owner: string; elapsedMs: number }) => void,
-  onAcquired?: (info: { waitedMs: number }) => void,
+  onAcquired?: (info: {
+    waitedMs: number;
+    localWaitMs: number;
+    fsMutexAdmissionMs: number;
+  }) => void,
   requestTraceId?: string,
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
@@ -188,7 +192,11 @@ function withScratchWorkspaceMutex<T>(
             const filesystemWaitMs = firstFilesystemWaitElapsedMs === undefined
               ? 0
               : Math.max(0, info.waitedMs - firstFilesystemWaitElapsedMs);
-            onAcquired({ waitedMs: localWaitMs + filesystemWaitMs });
+            onAcquired({
+              waitedMs: localWaitMs + filesystemWaitMs,
+              localWaitMs,
+              fsMutexAdmissionMs: info.waitedMs,
+            });
           }
           : undefined,
       });
@@ -1400,6 +1408,10 @@ export interface ScratchWriteTimings {
   quotaStatePublishMs?: number;
   /** Awaited workspace marker lstat probes used by the write path. */
   markerProbeMs?: number;
+  /** Time queued behind this process's scratch mutex before filesystem mutex admission. */
+  localMutexWaitMs?: number;
+  /** fs-mutex setup, queueing, and reader-drain time through its admission callback. */
+  fsMutexAdmissionMs?: number;
   /** Per-await details; these overlap their enclosing phase totals. Keys use bounded phase.subphase names. */
   awaitSubphaseTimingsMs?: Record<string, number>;
   writeMs: number;
@@ -1885,7 +1897,11 @@ export async function writeWithScratchQuota(
         }
         throw error;
       }
-    }, onMutexWaiting, ({ waitedMs }) => {
+    }, onMutexWaiting, ({ waitedMs, localWaitMs, fsMutexAdmissionMs }) => {
+      if (opts.captureSubphaseTimings) {
+        timings.localMutexWaitMs = localWaitMs;
+        timings.fsMutexAdmissionMs = fsMutexAdmissionMs;
+      }
       if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
       else timings.quotaWaitMs += waitedMs;
     }, opts.requestTraceId);
