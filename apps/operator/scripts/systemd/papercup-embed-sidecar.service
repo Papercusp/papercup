@@ -74,6 +74,10 @@ Environment=PAPERCUSP_EMBED_SIDECAR_PORT=3384
 Environment=PAPERCUSP_EMBED_SIDECAR_WARM=gemma,harrier,rerank
 # Anti-recursion belt: a sidecar process must never spawn sidecars.
 Environment=PAPERCUSP_EMBED_SIDECAR_MODE=1
+# This managed sidecar serves the native-PG operators. A desktop's mutable
+# embedded-PG discovery file must not redirect its durable admission ledger.
+# Explicit database URL / PG-port configuration still takes precedence.
+Environment=PAPERCUSP_SKIP_PG_DISCOVERY=1
 # GPU cross-encoder reranking (plan on-demand-local-inference-lifecycle-2026-08-17, P-004).
 #
 # OPT-IN by design — the engine never auto-selects a GPU, because a GPU that is

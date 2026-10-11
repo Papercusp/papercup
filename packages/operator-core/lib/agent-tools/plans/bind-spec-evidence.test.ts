@@ -1,5 +1,65 @@
 import { describe, expect, it } from 'vitest';
-import { asCommittedRunOf, bindingSchema, measureBindingForStore } from './bind-spec-evidence';
+import { asCommittedRunOf, bindingSchema, bindingStageDiagnostics, measureBindingForStore } from './bind-spec-evidence';
+
+describe('evidence-binding timeout diagnostics', () => {
+  it('retains confirmed writes and identifies an advisory failure after storage', async () => {
+    let clock = 0;
+    const published: Array<ReturnType<ReturnType<typeof bindingStageDiagnostics>['snapshot']>> = [];
+    const timing = bindingStageDiagnostics(
+      (metadata) => {
+        published.push(metadata.plansBindSpecEvidenceStageTimings as (typeof published)[number]);
+      },
+      () => clock,
+    );
+    await timing.phase('storeBinding', async () => {
+      clock = 5;
+    });
+    timing.stored({ status: 'created', id: 123 });
+    timing.stored({ status: 'unchanged', id: 123 });
+    timing.stored({ status: 'not_found', id: 456 });
+    const error = new Error('parent deadline');
+    await expect(
+      timing.phase('vettingAdvisory', async () => {
+        clock = 55_005;
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    expect(timing.snapshot()).toEqual({
+      schemaVersion: 'plans-bind-spec-evidence-stage-timings-v1',
+      totalMs: 55_005,
+      phaseMs: { storeBinding: 5, vettingAdvisory: 55_000 },
+      active: {},
+      storedBindingIds: [123],
+    });
+    expect(published.some((row) => row.active.vettingAdvisory === 1 && row.storedBindingIds[0] === 123)).toBe(true);
+    // Earlier ledger snapshots cannot mutate when the handler advances.
+    expect(published[0].active).toEqual({ storeBinding: 1 });
+    expect(published[0].storedBindingIds).toEqual([]);
+  });
+
+  it('tracks concurrent work and preserves results when the metadata sink fails', async () => {
+    const timing = bindingStageDiagnostics(() => {
+      throw new Error('metadata unavailable');
+    });
+    let finish!: () => void;
+    const first = timing.phase(
+      'measureAndPin',
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await timing.phase('measureAndPin', async () => {
+      expect(timing.snapshot().active.measureAndPin).toBe(2);
+    });
+    expect(timing.snapshot().active.measureAndPin).toBe(1);
+    finish();
+    await first;
+    timing.stored({ status: 'created', id: 789 });
+    expect(timing.snapshot().active).toEqual({});
+    expect(timing.snapshot().storedBindingIds).toEqual([789]);
+  });
+});
 
 const measuredBinding = {
   workItemId: 'WI-1',

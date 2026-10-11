@@ -325,6 +325,27 @@ async function writeToPg(
       await projectionStatementFailed();
     }
   }
+  // scope-unique-identifiers-2026-07-26 P-012 (D-002, D-012): a work-item id names ONE row per
+  // workspace (migration 1444's work_items_workspace_feature_id_uq). The upsert below
+  // arbitrates only the physical (harness_slug, feature_id) key, so an op whose id this
+  // workspace already keeps under ANOTHER harness would raise a deterministic 23505 there and
+  // pin this peer's merge cursor (WI-2142873 class). Such an op is a legacy peer's pre-1443
+  // twin, a retired-slug row, or a pre-P-010 WI- sequence collision, so it is refused, not
+  // landed: unlike engineer-issues' resident landing, a feature op carries no creation-time
+  // check that would stop it overwriting a DIFFERENT item that merely shares the id.
+  const resident = await sql<{ harness_slug: string }[]>`
+    SELECT harness_slug FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId} AND feature_id = ${row.feature_id}
+       AND harness_slug <> ${row.harness_slug}
+     LIMIT 1`;
+  if (resident.length > 0) {
+    console.warn(
+      `[harness-features projection] P-012 resident-row refusal: feature_id=${row.feature_id} ` +
+        `(harness_slug=${row.harness_slug}) is already held in workspace ${opts.workspaceId} by ` +
+        `${resident[0]!.harness_slug}; refusing the op instead of minting a twin`,
+    );
+    return;
+  }
   // WI-1612 (same class as WI-1572): ALWAYS write workspace_id explicitly from
   // opts.workspaceId (bound at projection-registration time, so it is already the
   // correct owning workspace for this harness) — never leave it NULL for the

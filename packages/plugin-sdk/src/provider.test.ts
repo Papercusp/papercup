@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeProviderOptions,
+  PROVIDER_OPTIONS_MAX,
+  providerOptionSourceOf,
   PROVIDER_APP_DEFINITION_MAX_LENGTH,
   PROVIDER_APP_DEFINITION_PLACEHOLDER,
   PROVIDER_CREDENTIAL_MAX_LENGTH,
@@ -312,5 +315,49 @@ describe('setup.appRegistration', () => {
     expect(withRegistration({ ...slackLike, definition: huge })).toContain(
       `provider.setup.appRegistration.definition is longer than ${PROVIDER_APP_DEFINITION_MAX_LENGTH} characters as JSON`,
     );
+  });
+});
+
+describe('provider option sources (P-004, D-005)', () => {
+  it('reads an x-options source off a schema property and ignores a malformed one', () => {
+    expect(providerOptionSourceOf({ type: 'string', 'x-options': { capability: 'chat.channels' } }))
+      .toEqual({ capability: 'chat.channels' });
+    expect(providerOptionSourceOf({ type: 'string', 'x-options': { capability: 'ticket.containers', args: { kind: 'project' } } }))
+      .toEqual({ capability: 'ticket.containers', args: { kind: 'project' } });
+    expect(providerOptionSourceOf({ type: 'string' })).toBeNull();
+    expect(providerOptionSourceOf({ type: 'string', 'x-options': { capability: 'chat.channels.list' } })).toBeNull();
+  });
+
+  it('keeps the documented option shape, dropping malformed and repeated entries', () => {
+    expect(normalizeProviderOptions({
+      options: [
+        { value: 'C1', label: '#general', description: 'Company-wide' },
+        { value: 'C2' },
+        { value: 'C1', label: 'duplicate' },
+        { label: 'no value' },
+        'not an object',
+      ],
+    })).toEqual({
+      options: [
+        { value: 'C1', label: '#general', description: 'Company-wide' },
+        { value: 'C2', label: 'C2' },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('reads the ticket.containers result as options without the provider changing', () => {
+    expect(normalizeProviderOptions({
+      containers: [{ id: '120', name: 'Bugs', kind: 'project', sections: [] }, { id: '121', kind: 'project' }],
+      truncated: true,
+    })).toEqual({ options: [{ value: '120', label: 'Bugs' }, { value: '121', label: '121' }], truncated: true });
+  });
+
+  it('caps the list and reports it as truncated', () => {
+    const many = Array.from({ length: PROVIDER_OPTIONS_MAX + 5 }, (_, i) => ({ value: `v${i}`, label: `L${i}` }));
+    const list = normalizeProviderOptions({ options: many });
+    expect(list.options).toHaveLength(PROVIDER_OPTIONS_MAX);
+    expect(list.truncated).toBe(true);
+    expect(normalizeProviderOptions(null)).toEqual({ options: [], truncated: false });
   });
 });

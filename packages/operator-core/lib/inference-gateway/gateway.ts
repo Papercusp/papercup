@@ -25,6 +25,7 @@ import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
+import { ONE_MILLION_MODEL_ALIASES, resolveGatewayModel, type GatewayModelResolution } from './model-aliases';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
@@ -956,17 +957,9 @@ export function rewriteRequestModel(bodyBuf: Buffer, newModel: string): Buffer |
   }
 }
 
-/** Claude CLI's `[1m]` marker is a client-side window selector, not an Anthropic API model id. */
-const ONE_MILLION_MODEL_ALIASES: Record<string, string> = {
-  opus: 'claude-opus-5',
-  sonnet: 'claude-sonnet-5',
-  fable: 'claude-fable-5',
-};
-
-export interface GatewayModelResolution {
-  model: string;
-  context1m: boolean;
-}
+// The `[1m]` alias table and its resolver live in a pure module so non-gateway consumers (the
+// benchmark model-registry snapshot, WI-10008259) can read them without loading this server.
+export { ONE_MILLION_MODEL_ALIASES, resolveGatewayModel, type GatewayModelResolution } from './model-aliases';
 
 /** Reasoning-effort ladder a fallback-lineup Codex model advertises (standard = low..xhigh, max adds max, ultra adds ultra). */
 export type CodexFallbackReasoningTier = 'standard' | 'max' | 'ultra';
@@ -1079,17 +1072,6 @@ export const CODEX_GATEWAY_FALLBACK_LINEUP: readonly CodexFallbackLineupEntry[] 
     priority: 10,
   },
 ];
-
-/** Resolve a CLI model marker to the real upstream model id and its beta requirement. */
-export function resolveGatewayModel(model: string): GatewayModelResolution {
-  if (!/\[1m\]/i.test(model)) return { model, context1m: false };
-  // The marker is inserted before an optional CLI effort suffix (e.g. opus[1m]:high).
-  const unmarked = model.replace(/\[1m\]/gi, '').replace(/:(?:low|medium|high|xhigh|max)$/i, '');
-  return {
-    model: ONE_MILLION_MODEL_ALIASES[unmarked.toLowerCase()] ?? unmarked,
-    context1m: true,
-  };
-}
 
 /** Normalize a buffered Anthropic request once, before admission and upstream forwarding. */
 export function normalizeGatewayRequestBody(bodyBuf: Buffer): {

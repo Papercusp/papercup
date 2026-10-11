@@ -22,6 +22,7 @@ import type {
   ProgressCallback,
   EmitCallback,
 } from '@papercusp/tooldef';
+import { PROVIDER_OPTIONS_KEY, providerOptionSourceIssues } from './provider';
 
 /* ─────────────────────────────────────────────────────────────────────
  * Capabilities — declarative permission strings.
@@ -852,6 +853,28 @@ function triggerPackScopes(value: unknown): string[] {
 }
 
 /**
+ * `x-options` on a pack input (cupboard-distributable-integrations-2026-10-10 P-004, D-005): the
+ * input's choices come from a connected provider's capability, so the input stores one choice
+ * (`type: 'string'`) or several (`type: 'array'` of strings), and the source itself is well formed.
+ */
+function triggerPackInputOptionIssues(inputs: unknown): string[] {
+  const properties = triggerPackObject(triggerPackObject(inputs).properties);
+  const issues: string[] = [];
+  for (const [name, raw] of Object.entries(properties)) {
+    const property = triggerPackObject(raw);
+    if (!(PROVIDER_OPTIONS_KEY in property)) continue;
+    const at = `triggerPack.inputs.properties.${name}.${PROVIDER_OPTIONS_KEY}`;
+    issues.push(...providerOptionSourceIssues(property[PROVIDER_OPTIONS_KEY], at));
+    const items = triggerPackObject(property.items);
+    const holdsChoices = property.type === 'string' || (property.type === 'array' && items.type === 'string');
+    if (!holdsChoices) {
+      issues.push(`${at} needs the input to be type "string" or an array of strings`);
+    }
+  }
+  return issues;
+}
+
+/**
  * Cross-field validation the JSON schema cannot express. The manifest schema
  * proves the local shapes; this proves the references agree, so a pack cannot
  * look installable while silently leaking its credential or requesting a
@@ -870,6 +893,7 @@ export function validateTriggerPackDeclaration(manifest: {
   if (manifest.kind === 'pack') {
     issues.push('triggerPack must ride kind "plugin" — kind "pack" is reserved for executable code-tool packs');
   }
+  issues.push(...triggerPackInputOptionIssues(pack.inputs));
 
   const targetById = new Map<string, PluginTriggerPackTarget>();
   for (const target of pack.targets ?? []) {
@@ -1746,8 +1770,16 @@ export {
   providerAppRegistrationUrl,
   providerAppDefinitionText,
   providerAppRegistrationView,
+  PROVIDER_OPTIONS_KEY,
+  PROVIDER_OPTIONS_MAX,
+  providerOptionSourceIssues,
+  providerOptionSourceOf,
+  normalizeProviderOptions,
 } from './provider';
 export type {
+  ProviderOptionSource,
+  ProviderOption,
+  ProviderOptionList,
   ProviderDestination,
   ProviderDaemonCallParams,
   ProviderDaemonFetchParams,

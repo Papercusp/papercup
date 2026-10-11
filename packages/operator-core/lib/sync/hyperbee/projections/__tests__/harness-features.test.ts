@@ -140,9 +140,10 @@ describe('harness_features projection', () => {
       harnessSlug: 'sheets', // own-slug op — member-content guard short-circuits to 'apply'
       sql: sql as never,
     });
-    await p.writeToPg(feature({ taken_by: 'unassigned' }), { origin: 'remote' });
-    expect(sql).toHaveBeenCalledTimes(1);
-    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    await p.writeToPg(feature({ taken_by: 'unassigned' }), { origin: 'remote', authorPubkey: '' });
+    // P-012: the resident-row read, then the INSERT.
+    expect(sql).toHaveBeenCalledTimes(2);
+    const values = insertValues(sql);
     // The invariant-violating placeholder never reaches the bound INSERT values —
     // EXCLUDED.taken_by (and thus the ON CONFLICT UPDATE + LWW digest) inherit NULL.
     expect(values).not.toContain('unassigned');
@@ -157,8 +158,8 @@ describe('harness_features projection', () => {
       harnessSlug: 'sheets',
       sql: sql as never,
     });
-    await p.writeToPg(feature({ taken_by: 'su-real-agent-7f3a' }), { origin: 'remote' });
-    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    await p.writeToPg(feature({ taken_by: 'su-real-agent-7f3a' }), { origin: 'remote', authorPubkey: '' });
+    const values = insertValues(sql);
     expect(values).toContain('su-real-agent-7f3a');
   });
 
@@ -171,10 +172,60 @@ describe('harness_features projection', () => {
       harnessSlug: 'sheets', // own-slug op — member-content guard short-circuits to 'apply'
       sql: sql as never,
     });
-    await p.writeToPg(feature(), { origin: 'local' });
-    expect(sql).toHaveBeenCalledTimes(1);
-    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    await p.writeToPg(feature(), { origin: 'local', authorPubkey: '' });
+    expect(sql).toHaveBeenCalledTimes(2);
+    const values = insertValues(sql);
     // workspace_id is the FIRST bound column in the INSERT (see writeToPg).
     expect(values[0]).toBe('papercusp-workspace');
   });
+
+  it('P-012: refuses an op whose id the workspace already keeps under another harness, instead of minting a twin', async () => {
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ..._a: unknown[]) =>
+        statementText(strings).includes('harness_slug <>') ? [{ harness_slug: 'papercusp' }] : [],
+      ),
+      { json: vi.fn((x: unknown) => ({ __json: x })) },
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = buildHarnessFeaturesProjection({
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'sheets',
+        sql: sql as never,
+      });
+      await p.writeToPg(feature({ feature_id: 'WI-385' }), { origin: 'remote', authorPubkey: '' });
+      expect(sql).toHaveBeenCalledTimes(1);
+      const [strings, ...values] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+      expect(statementText(strings)).not.toContain('INSERT');
+      // The read is scoped to this workspace and this id, under any OTHER harness.
+      expect(values).toEqual(['papercusp-workspace', 'WI-385', 'sheets']);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('P-012 resident-row refusal: feature_id=WI-385');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('P-012: an op whose id no other harness holds in the workspace is written', async () => {
+    const sql = Object.assign(vi.fn(async (..._a: unknown[]) => [] as unknown[]), {
+      json: vi.fn((x: unknown) => ({ __json: x })),
+    });
+    const p = buildHarnessFeaturesProjection({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'sheets',
+      sql: sql as never,
+    });
+    await p.writeToPg(feature({ feature_id: 'WI-386' }), { origin: 'remote', authorPubkey: '' });
+    expect(insertValues(sql)).toContain('WI-386');
+  });
 });
+
+function statementText(strings: TemplateStringsArray | unknown): string {
+  return Array.isArray(strings) ? (strings as readonly string[]).join('?') : String(strings);
+}
+
+/** Bound values of the one INSERT writeToPg issued (the resident-row read precedes it). */
+function insertValues(sql: { mock: { calls: unknown[][] } }): unknown[] {
+  const inserts = sql.mock.calls.filter((c) => statementText(c[0]).includes('INSERT INTO harness_shared.work_items'));
+  expect(inserts).toHaveLength(1);
+  return inserts[0]!.slice(1);
+}

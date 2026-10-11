@@ -523,6 +523,21 @@ describe('the P-012 wake-less autonomy guard', () => {
   });
 });
 
+// parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: the guidance used to list
+// "you are blocked on something external" as a stop reason and told AUTO sessions to pass
+// acknowledgeWakeLessAutonomy on the FIRST call. The guard below refuses both for a claim holder.
+describe('loop:end guidance (P-008)', () => {
+  it('names blocked as NOT a stop and scopes the acknowledgement to a claimless stop', () => {
+    const when = String((endTool as unknown as { guidance: { when: string } }).guidance.when);
+    expect(when).not.toContain('blocked on something external');
+    expect(when).not.toContain('first call');
+    expect(when).toContain('Blocked is NOT a stop');
+    expect(when).toContain('work_items:set_blocker');
+    expect(when).toContain('no claims? Pass `acknowledgeWakeLessAutonomy:true`');
+    expect(when).toContain('ownerStopDirectiveId');
+  });
+});
+
 describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
   const ME = 'su-caller-own-id';
   const held = (over: Record<string, unknown> = {}) => ({

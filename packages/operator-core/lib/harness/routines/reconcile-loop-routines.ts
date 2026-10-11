@@ -1695,16 +1695,16 @@ export async function reconcileLoopRoutines(
 
       // Resolve the re-arm time + provenance.
       const loopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
-      // A suppressed-redundant delivery is known not to have burned a loop turn. Fresh native
+      // These delivery channels are known not to have burned a loop turn. Fresh native
       // inference can belong to the unrelated turn that caused suppression (including a
       // self-compaction continuation), so it cannot prove that this fire started. Let the
       // channel-aware settle path below wait for that turn to go quiet, then re-arm the parked
       // loop so a later fire can produce strict loop-origin proof.
-      const suppressedWakeStillNeedsLoopTurn =
+      const nonTurnWakeStillNeedsLoopTurn =
         row.last_wake_status === 'delivered' &&
-        row.last_wake_channel === 'suppressed-redundant' &&
+        ['suppressed-redundant', 'coalesced', 'inbox'].includes(row.last_wake_channel ?? '') &&
         loopTurnAtMs == null;
-      const executionRecovery = suppressedWakeStillNeedsLoopTurn
+      const executionRecovery = nonTurnWakeStillNeedsLoopTurn
         ? { handled: false as const }
         : await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({
             sql: db,

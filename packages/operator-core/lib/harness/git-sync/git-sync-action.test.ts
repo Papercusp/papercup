@@ -1447,7 +1447,9 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       if (priorBudget === undefined) delete process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
       else process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = priorBudget;
     }
-  }, 2_000);
+    // The per-test cap bounds a whole mocked action(ctx) run, not the 35ms settlement budget
+    // this test asserts on. 2s was beaten under green-checkpoint load (WI-6554700010008342).
+  }, 15_000);
 
   it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);

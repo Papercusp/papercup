@@ -666,6 +666,34 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(p).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
   });
 
+  // parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: the wake prompts used to
+  // teach "blocked externally -> loop:end" and a reflexive acknowledgeWakeLessAutonomy. 100 of
+  // 140 self-stopped parkers passed that flag; 51 were AUTO, holding claims, with no wake source.
+  it('teaches blocked = set_blocker + bounded await + end turn, never loop:end (P-008)', () => {
+    const base = { ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' };
+    const work = buildLoopWakePrompt(base);
+    const monitor = buildLoopWakePrompt({ ...base, mode: 'monitor' });
+    const driven = buildLoopWakePrompt({ ...base, carry: 'cold', workItem: 'WI-123' });
+    for (const p of [work, monitor, driven]) {
+      expect(p).not.toContain('call `loop:end` and say why');
+      expect(p).not.toContain('(or you are blocked)');
+    }
+    for (const p of [work, driven]) {
+      expect(p).toContain('work_items:set_blocker');
+      expect(p).toContain("on_timeout:'wake'");
+    }
+    expect(work).toContain('work-item:unblocked:<id>');
+    expect(work).toContain('Being blocked is never a reason to call `loop:end`');
+    // The acknowledgement is scoped to a claimless stop; a claim holder follows the refusal's recovery.
+    expect(work).toContain('that acknowledgement covers a claimless stop only');
+    for (const p of [work, monitor]) {
+      expect(p).toContain('acknowledgeWakeLessAutonomy:true` for a claimless stop');
+      expect(p).toContain("follow the refusal's `recovery`");
+    }
+    expect(driven).toContain('you hold no other unfinished work-items');
+    expect(driven).toContain('do not loop:end');
+  });
+
   it('a WARM loop (default / absent carry) is byte-identical — no cold addendum (su-cold-auto P-002)', () => {
     const warmDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
     const warmExplicit = buildLoopWakePrompt({

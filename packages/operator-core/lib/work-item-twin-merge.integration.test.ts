@@ -18,9 +18,10 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
 
-function readMigration(file: string, marker: string): string {
-  // MIGRATION_1443_PATH lets scripts/mutation-probe.sh point the suite at a mutated COPY.
-  const override = process.env.MIGRATION_1443_PATH;
+function readMigration(file: string, marker: string, overrideEnv: string): string {
+  // MIGRATION_1443_PATH / MIGRATION_1444_PATH let scripts/mutation-probe.sh point the suite at a
+  // mutated COPY of that one migration.
+  const override = process.env[overrideEnv];
   if (override) return readFileSync(override, 'utf8');
   const armed = resolve(SQL_DIR, file);
   const draft = `${armed}.DRAFT`;
@@ -31,7 +32,13 @@ function readMigration(file: string, marker: string): string {
   return text;
 }
 
-const MIGRATION_1443 = readMigration('1443-merge-same-workspace-work-item-twins.sql', 'twin_1443');
+const MIGRATION_1443 = readMigration('1443-merge-same-workspace-work-item-twins.sql', 'twin_1443', 'MIGRATION_1443_PATH');
+// P-012: the index that keeps twins from coming back (a DRAFT until D-012's deploy gate clears).
+const MIGRATION_1444 = readMigration(
+  '1444-work-items-unique-workspace-feature-id.sql',
+  'work_items_workspace_feature_id_uq',
+  'MIGRATION_1444_PATH',
+);
 // The REAL endpoint-delete guard: a hand-rolled fixture without it let 1443's
 // first armed revision pass here and then abort on live data.
 const MIGRATION_988 = readFileSync(resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql'), 'utf8');
@@ -187,6 +194,7 @@ beforeEach(async () => {
       harness_shared.coord_links, harness_shared.work_item_claims, harness_shared.feature_claims,
       harness_shared.claim_audit, harness_shared.test_outbox, harness_shared.harness_plans,
       harness_shared.work_item_deps;
+    DROP INDEX IF EXISTS harness_shared.work_items_workspace_feature_id_uq;
     DELETE FROM harness_shared.work_items;
     TRUNCATE harness_shared.test_outbox;
   `).simple();
@@ -463,5 +471,51 @@ describe('migration 1443: same-workspace work-item twins', () => {
     await applyMigration();
     const after = await db.sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
     expect(after[0]!.n).toBe(before[0]!.n);
+  });
+});
+
+describe('migration 1444: UNIQUE (workspace_id, feature_id)', () => {
+  async function insertError(row: Row): Promise<{ code?: string; constraint_name?: string } | null> {
+    try {
+      await insert(row);
+      return null;
+    } catch (error) {
+      return error as { code?: string; constraint_name?: string };
+    }
+  }
+
+  it('after 1443, refuses a twin insert while the same id stays legal in another workspace and on its own row', async () => {
+    await insert({ harness: 'papercup', id: 'WI-950', title: 'dup' });
+    await insert({ harness: 'papercusp', id: 'WI-950', title: 'dup' });
+
+    await applyMigration();
+    await db.sql.unsafe(MIGRATION_1444).simple();
+
+    const twin = await insertError({ harness: 'papercup-hive', id: 'WI-950', title: 'dup' });
+    expect(twin?.code).toBe('23505');
+    expect(twin?.constraint_name).toBe('work_items_workspace_feature_id_uq');
+    expect((await rows('WI-950')).map((r) => r.harness_slug)).toEqual(['papercusp']);
+
+    expect(await insertError({ harness: 'papercup-hive', id: 'WI-950', title: 'dup', workspace: 'other-ws' })).toBeNull();
+    // The physical-key upsert every writer uses is unaffected for the row that holds the id.
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind)
+      VALUES (${WS}, 'papercusp', 'WI-950', 'dup', 'done', 'feature')
+      ON CONFLICT (harness_slug, feature_id) DO UPDATE SET status = EXCLUDED.status`;
+    expect((await rows('WI-950')).map((r) => r.status)).toEqual(['done']);
+
+    // Re-applying is a no-op.
+    await db.sql.unsafe(MIGRATION_1444).simple();
+  });
+
+  it('refuses to run while a twin remains, and names one', async () => {
+    await insert({ harness: 'papercup', id: 'WI-951', title: 'dup' });
+    await insert({ harness: 'papercusp', id: 'WI-951', title: 'dup' });
+
+    await expect(db.sql.unsafe(MIGRATION_1444).simple()).rejects.toThrow(
+      /1444: 1 same-workspace work-item twin set\(s\) remain \(e\.g\. papercusp-workspace\/WI-951\)/,
+    );
+    const idx = await db.sql`SELECT 1 FROM pg_indexes WHERE indexname = 'work_items_workspace_feature_id_uq'`;
+    expect(idx).toHaveLength(0);
   });
 });

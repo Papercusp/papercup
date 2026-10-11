@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, type AddressInfo, type Server } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,13 +27,22 @@ const STAGING_SYNC_SCRIPT = join(
   "apps/operator/bin/release/sync-staging-checkout.sh",
 );
 
-describe('managed staging database selection', () => {
+describe('managed service database selection', () => {
   let discoveryRoot: string;
+  let discoveryServer: Server;
+  let discoveryPort: number;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    discoveryServer = createServer();
+    await new Promise<void>((resolve, reject) => {
+      discoveryServer.once('error', reject);
+      discoveryServer.listen(0, '127.0.0.1', resolve);
+    });
+    discoveryPort = (discoveryServer.address() as AddressInfo).port;
     discoveryRoot = mkdtempSync(join(tmpdir(), 'staging-pg-discovery-'));
     writeFileSync(join(discoveryRoot, 'embedded-pg.json'), JSON.stringify({
-      url: 'postgresql://fixture:fixture@localhost:23325/papercusp',
+      url: `postgresql://fixture:fixture@127.0.0.1:${discoveryPort}/papercusp`,
+      pid: process.pid,
     }));
     for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL', 'PAPERCUSP_PG_PORT']) {
       vi.stubEnv(name, '');
@@ -42,15 +52,17 @@ describe('managed staging database selection', () => {
     _resetHarnessAdminUrlCacheForTests();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
     _resetHarnessAdminUrlCacheForTests();
     rmSync(discoveryRoot, { recursive: true, force: true });
+    await new Promise<void>((resolve) => discoveryServer.close(() => resolve()));
   });
 
   const managedDropIns = [
     join(DROPIN_ROOT, '50-staging-checkout.conf'),
     join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'),
+    join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-embed-sidecar.service'),
   ];
 
   function applyManagedDiscoveryPolicy(dropIn: string) {
@@ -63,7 +75,7 @@ describe('managed staging database selection', () => {
   it.each(managedDropIns)('keeps %s on native PG when desktop discovery names another database', (dropIn) => {
     const redirected = getHarnessAdminUrlWithSource();
     expect(redirected.source).toBe('discovery-file');
-    expect(new URL(redirected.url).port).toBe('23325');
+    expect(new URL(redirected.url).port).toBe(String(discoveryPort));
 
     applyManagedDiscoveryPolicy(dropIn);
     const managed = getHarnessAdminUrlWithSource();
@@ -103,7 +115,7 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
       "Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist",
     );
     expect(checkout).not.toMatch(
-      /papercupai-workspace\/papercusp\/apps\/operator/,
+      /^WorkingDirectory=.*papercupai-workspace\/papercusp\/apps\/operator/m,
     );
   });
 

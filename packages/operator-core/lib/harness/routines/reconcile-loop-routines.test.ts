@@ -3413,7 +3413,8 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
     const res = await reconcile({
       sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
-      nowMs: T0 + 110_000, // 70s of quiet — far short of the 30-min dwell
+      // Coalesced/inbox wakes retain their existing two-interval dispatch grace.
+      nowMs: T0 + (channel === 'suppressed-redundant' ? 110_000 : 130_000),
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
@@ -3440,6 +3441,15 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     });
     expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
     expect(res.rearmed).toBe(0);
+  });
+
+  it.each(['coalesced', 'inbox'])('keeps the existing dispatch grace for an unproved %s wake', async channel => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const result = await reconcile({ sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
+      nowMs: T0 + 110_000, readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD, recoverExpectedExecution });
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    expect(result.rearmed).toBe(0);
   });
 
   it('CONTROL — while the session is STILL BUSY (presence beat 20s old) it keeps waiting, unchanged', async () => {

@@ -18,11 +18,21 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Brainstorm selected editors wait for Sync and hydrate the saved map and canvas', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const result = await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', brainstorm: true }, { brainstormHydration: true });
+    expect(result).toMatchObject({ mounted: true, selectedHydration: true, noPendingWrites: true,
+      savedMapRetained: true, savedCanvasRetained: true });
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal Brainstorm editors persist independent fields and recover from denied writes across reload', async context => {
     preparePrivateRosterSocketRoot();
     await verifyPrivateHudReadPolicy();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
-    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'brainstorm-selected', neighbor: 'brainstorm-neighbor', brainstorm: true });
+    await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'brainstorm-selected', neighbor: 'brainstorm-neighbor', brainstorm: true }, { brainstormHydration: true });
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',

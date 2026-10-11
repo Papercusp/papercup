@@ -20,7 +20,7 @@ vi.mock('../../role-launch-spec', async (original) => ({
 }));
 vi.mock('../../role-codex-home', async (original) => ({
   ...(await original<typeof import('../../role-codex-home')>()),
-  ensureSuCodexHomeConfig: mocks.ensureHome,
+  ensureSuCodexHomeConfigAsync: mocks.ensureHome,
 }));
 vi.mock('../../superuser-token', async (original) => ({
   ...(await original<typeof import('../../superuser-token')>()),
@@ -62,6 +62,26 @@ beforeEach(() => {
 });
 
 describe('default Codex wake home repair', () => {
+  it.each(['error', 'string'])('redacts credentials in %s config-parser failures without dropping the wake', async (kind) => {
+    const bearer = 'opaque-test-bearer-value-for-wake-repair';
+    const diagnostic = `Invalid character, expected "=" at row 102\n103: http_headers = { Authorization = "Bearer ${bearer}" }`;
+    mocks.ensureHome.mockRejectedValueOnce(kind === 'error' ? new Error(diagnostic) : diagnostic);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await defaultEnsureCodexHomeForWake({ advSessionId: 123, owner: OWNER,
+        codexHome: '/tmp/codex-home', headless: true })).toEqual({
+        ok: false, repaired: false, reason: 'repair-failed',
+      });
+      expect(warning).toHaveBeenCalledOnce();
+      const message = warning.mock.calls[0][0];
+      expect(message).toContain('Invalid character, expected "=" at row 102');
+      expect(message).toContain('Authorization = "Bearer [redacted]"');
+      expect(message).not.toContain(bearer);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each([true, false])('preserves the authoritative ambient-context policy (%s) during wake repair', async (allowed) => {
     mocks.allowsAmbient.mockResolvedValue(allowed);
     mocks.getAdvSession.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex',

@@ -561,6 +561,50 @@
     },
     "limitations": "Committed component/observer/shell proofs and successful retained build do not establish new hosted/native/provider/novice/full-affected/full-product or production shipment acceptance. Attended review must end SKIP; ordinary automated acceptance uses a distinct fresh account and run. Prior failed20997335, failed20993954 and native2018 evidence is preserved."
   },
+  "hostedSettingsProviderRepair0150": {
+    "observedAt": "2026-10-11T01:50:00Z",
+    "workItemId": "EI-25631710033555454",
+    "portalCommit": "1344ca950b9b4941504723ddde7b79aa9c411cf0",
+    "coreCommit": "3f29d6b65503943fc8b995a120a50131d546878b",
+    "rootCause": "AccountProductTutorial mounted above the nested PortalShell host provider and inherited default local workspace location. The maintained cloud telemetry guard therefore received local context. Existing OperatorWorkspaceLocationProvider now covers the account guide before workspace selection.",
+    "recurrenceGuard": {
+      "file": "e2e/portal-product-tutorial.spec.ts",
+      "cases": "Both actual PortalEntry null/assigned-workspace cases assert consentReads is empty after start, Help and pause.",
+      "fullSuite": { "passed": 47, "failed": 0, "skipped": 0, "retries": 0, "testRunId": 21023604, "commitSha": "1344ca950b9b4941504723ddde7b79aa9c411cf0", "worktreeDirty": false },
+      "log": "/dev/shm/tutorial-mounted-guide-clean1344-01a128ab.log"
+    },
+    "preflight": {
+      "typecheck": "TYPECHECK_RESULT status=clean exit=0 errors=0 files=3050",
+      "typecheckLog": "/dev/shm/tutorial-typecheck-clean1344-01a128ab.log",
+      "verifierRoot": "/dev/shm/pcv/tutorial-verifier-1344-3f29-01a128ab",
+      "verifierReceipt": "/dev/shm/tutorial-verifier-1344-3f29-01a128ab.receipt.json",
+      "archivedFiles": 586,
+      "sourceManifest": "/home/marsh-office/.papercusp/launch-context/tutorial-candidate-01a128ab.manifest.json",
+      "custody": "Maintained runtimeArtifacts, actual core imports and assertTutorialSourceCustody pass; both retained source roots held against exact release."
+    },
+    "servedAcceptance": {
+      "buildId": "abVUpt_zdCS9wFGw9O9KQ",
+      "release": "/dev/shm/tutorial-candidate-runtime-1344-3f29-01a128ab/releases/abVUpt_zdCS9wFGw9O9KQ-20261011014830408-1202601-865ea88c",
+      "sourceRootDigest": "a99c4fee810ba5a7dcca5845951211df3e69a7a123931432372352744dc24b2c",
+      "publishedAt": "2026-10-11T01:48:30.408Z",
+      "log": "/dev/shm/tutorial-preference-served-1344-3f29-01a128ab.log",
+      "receipt": "/dev/shm/tutorial-preference-served-1344-3f29-01a128ab.receipts.jsonl",
+      "testRunId": 21024143,
+      "passed": 2, "failed": 0, "skipped": 0, "retries": 0,
+      "ledgerQualification": "Archived non-Git verifier reports commitSha null and worktreeDirty true. Exact committed serving source and fixture custody are independently verified; this row is not labeled a clean committed ledger proof.",
+      "traversals": ["named-control keyboard activation", "only Tab/arrow/Enter traversal"],
+      "settings": { "viewportWidth": 390, "rootFontPx": 32, "reducedMotion": true },
+      "desktopSettingsRequests": [],
+      "attachmentsRoot": "/dev/shm/tutorial-candidate-settings-results-01a128ab",
+      "attachmentSha256": {
+        "named-control": "1a92f645a5ab2fa5e482dabb0a4a97a80e10634d390663a43dca011e19125310",
+        "tab-and-arrows": "a6ff8efb08e496e4499c1249229a4008d9c23d657ce65015047052d0bc2c0503"
+      }
+    },
+    "runtimeQualification": "Private operator-api migrations plus maintained hosted-handler/host-handler. Independent health HTTP200 core3f29. Full Hono startup acceptance is excluded and EI-25644552827273063 remains open. All private processes stopped; cleanup removed PG and runtime state.",
+    "residue": ["WI-6554700010008344 owns Mail/Calendar summary503", "WI-10007627 owns selected-workspace refusal", "EI-25644552827273063 owns full startup delay"],
+    "limitations": "Scoped preference persistence/reload/Help and absence of desktop Settings probes only. No native screen-reader, human-heard/provider voice, novice, full-affected, wider full-product or production shipment claim. Prior failedYLeY21023502 is retained."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
     "The new partial native review records scoped Orca and native-key observations. Complete supported-runtime and wider full-product accessibility acceptance remain open; mounted Settings Tab proof20987694 and hosted pure Tab/arrow proof20988435 retain their stated narrow scopes.",

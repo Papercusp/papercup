@@ -69,6 +69,21 @@ describe('GOAL allocation in every member brief (P-020)', () => {
   });
 });
 
+// parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: this rule used to say
+// "loop:end … only when no claimable work remains or you are blocked", teaching a claim
+// holder to stop on a blocker. A blocked holder records it and keeps a bounded wake instead.
+describe('member baseline stay-alive rule (P-008)', () => {
+  it('never teaches loop:end while blocked on a held item', () => {
+    const rule = MEMBER_BASELINE_RULES.find((r) => r.head.startsWith('STAY ALIVE across turns'));
+    expect(rule?.body).toBeDefined();
+    expect(rule?.body).not.toContain('or you are blocked');
+    expect(rule?.body).toContain('you hold no claims');
+    expect(rule?.body).toContain('Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn.');
+    // The stop line comes AFTER the blocked recipe, and is scoped to a claimless session.
+    expect(rule!.body.indexOf('Blocked?')).toBeLessThan(rule!.body.indexOf('`loop:end {'));
+  });
+});
+
 describe('member baseline causal-evidence contract', () => {
   it('names every v2 field required by successful defect closes', () => {
     const completionRule = MEMBER_BASELINE_RULES.find((rule) => rule.head === 'Completion evidence is mandatory');

@@ -814,6 +814,99 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
   return issues;
 }
 
+/**
+ * Option sources (cupboard-distributable-integrations-2026-10-10 P-004, D-005).
+ *
+ * A workflow setting can take its choices from a connected provider: a trigger-pack `inputs`
+ * property declares `x-options: { capability, args? }`, and the host lists the choices by invoking
+ * that capability on each connected source whose provider declares it. A capability used this way
+ * returns `{ options: [{ value, label, description? }], truncated? }`. The host also reads the
+ * established `ticket.containers` result (`containers: [{ id, name }]`, D-014.3), so a ticket
+ * provider that already lists its projects serves as an option source unchanged.
+ */
+export const PROVIDER_OPTIONS_KEY = 'x-options';
+export const PROVIDER_OPTIONS_MAX = 1000;
+
+export interface ProviderOptionSource {
+  /** Capability that lists the choices, `<domain>.<verb>` (e.g. `chat.channels`, `ticket.containers`). */
+  capability: string;
+  /** Passed to the capability as `invoke({ args })`. */
+  args?: Record<string, unknown>;
+}
+
+export interface ProviderOption {
+  /** Stored as the setting's value. */
+  value: string;
+  /** Shown in the dropdown. */
+  label: string;
+  description?: string;
+}
+
+export interface ProviderOptionList {
+  options: ProviderOption[];
+  /** True when the provider listed only part of the choices (or more than PROVIDER_OPTIONS_MAX). */
+  truncated: boolean;
+}
+
+/** Problems with one `x-options` declaration; `at` names it in the messages. */
+export function providerOptionSourceIssues(source: unknown, at: string): string[] {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return [`${at} must be an object`];
+  const s = source as Record<string, unknown>;
+  const issues: string[] = [];
+  for (const key of Object.keys(s)) {
+    if (key !== 'capability' && key !== 'args') issues.push(`${at}.${key} is not a known option-source key`);
+  }
+  if (!isNonEmptyString(s.capability) || !PROVIDER_CAPABILITY_PATTERN.test(s.capability)) {
+    issues.push(`${at}.capability must be <domain>.<verb>`);
+  }
+  if (s.args !== undefined && (!s.args || typeof s.args !== 'object' || Array.isArray(s.args))) {
+    issues.push(`${at}.args must be an object`);
+  }
+  return issues;
+}
+
+/** The option source a JSON-schema property declares, or null (malformed declarations included). */
+export function providerOptionSourceOf(property: unknown): ProviderOptionSource | null {
+  if (!property || typeof property !== 'object' || Array.isArray(property)) return null;
+  const source = (property as Record<string, unknown>)[PROVIDER_OPTIONS_KEY];
+  if (providerOptionSourceIssues(source, PROVIDER_OPTIONS_KEY).length > 0) return null;
+  const s = source as { capability: string; args?: Record<string, unknown> };
+  return s.args === undefined ? { capability: s.capability } : { capability: s.capability, args: s.args };
+}
+
+/** A capability result kept to the documented option shape; malformed and repeated entries are dropped. */
+export function normalizeProviderOptions(raw: unknown): ProviderOptionList {
+  const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const options: ProviderOption[] = [];
+  const seen = new Set<string>();
+  let truncated = body.truncated === true;
+  const push = (value: unknown, label: unknown, description?: unknown) => {
+    if (!isNonEmptyString(value) || seen.has(value)) return;
+    if (options.length >= PROVIDER_OPTIONS_MAX) {
+      truncated = true;
+      return;
+    }
+    seen.add(value);
+    const option: ProviderOption = { value, label: isNonEmptyString(label) ? label : value };
+    if (isNonEmptyString(description)) option.description = description;
+    options.push(option);
+  };
+  if (Array.isArray(body.options)) {
+    for (const item of body.options) {
+      if (!item || typeof item !== 'object') continue;
+      const o = item as Record<string, unknown>;
+      push(o.value, o.label, o.description);
+    }
+  } else if (Array.isArray(body.containers)) {
+    for (const item of body.containers) {
+      if (!item || typeof item !== 'object') continue;
+      const c = item as Record<string, unknown>;
+      push(c.id, c.name);
+    }
+  }
+  return { options, truncated };
+}
+
 /** Manifest-level check run by the loader and the Cupboard installer. */
 export function validateProviderDeclaration(manifest: { provider?: unknown }): string[] {
   if (manifest.provider === undefined) return [];

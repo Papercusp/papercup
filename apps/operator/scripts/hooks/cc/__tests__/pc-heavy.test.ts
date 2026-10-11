@@ -569,9 +569,15 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const fakeBin = join(dir, 'slow-fuser-bin');
     mkdirSync(fakeBin);
     const fuserInvoked = join(dir, 'fuser-invoked');
+    // The elapsed bound only has to separate "never waited on the stalled fuser" from "waited
+    // FUSER_STALL_SEC for it"; 5s was beaten by bash startup alone under green-checkpoint load
+    // (WI-6554700010008342). The never-invoked marker below is the primary proof.
+    const FUSER_STALL_SEC = 60;
+    const NO_STALL_BUDGET_MS = 30_000;
+    expect(NO_STALL_BUDGET_MS).toBeLessThan(FUSER_STALL_SEC * 1_000);
     writeFileSync(
       join(fakeBin, 'fuser'),
-      `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep 60\n`,
+      `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep ${FUSER_STALL_SEC}\n`,
       { mode: 0o755 },
     );
 
@@ -592,7 +598,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
 
       expect(await barrierExit).toBe(75);
-      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(Date.now() - startedAt).toBeLessThan(NO_STALL_BUDGET_MS);
       expect(barrierErr.text()).toContain(`pid ${holder.pid}`);
       expect(barrierErr.text()).not.toContain('holder could not be identified');
       expect(existsSync(fuserInvoked)).toBe(false);
@@ -600,7 +606,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       killGroup(holder);
       if (barrier) killGroup(barrier);
     }
-  });
+  }, 45_000);
 
   it('WI-41318: every ordinary holder yields its whole child group to an exclusive materializer by default', async () => {
     const workloadPidFile = join(dir, 'preemptible-workload.pid');
@@ -745,8 +751,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
       PC_HEAVY_RETRY_PREEMPTIONS: '1',
-      PC_HEAVY_RETRY_INTENT_WAIT_SEC: '8',
-      PC_HEAVY_TIMEOUT_SEC: '8',
+      // Give-up timers far above the loaded sequence: the test releases the writer blocker
+      // itself, so nothing here needs to expire (8s was beaten under gate load, WI-6554700010008342).
+      PC_HEAVY_RETRY_INTENT_WAIT_SEC: '60',
+      PC_HEAVY_TIMEOUT_SEC: '60',
       PC_HEAVY_PREEMPT_GRACE_SEC: '0',
       PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
@@ -793,21 +801,21 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         barrierErr,
         (t) => t.includes('another exclusive materializer owns the writer lock — waiting before touching heavy slots'),
         'the materializer remaining pending on the writer lock',
-        4_000,
+        20_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry waiting for exclusive materializer intent to clear'),
         'the retry waiting for the materializer intent',
-        4_000,
+        20_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry still waiting for exclusive materializer intent'),
         'the retry emitting a progress heartbeat while the materializer remains pending',
-        4_000,
+        20_000,
       );
       // The regression is about re-admission ordering: while the materializer is
       // still intent-pending, no second workload attempt may have started. The
@@ -838,7 +846,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       if (barrier) killGroup(barrier);
       killGroup(writerBlocker);
     }
-  }, 15_000);
+  }, 90_000);
 
   it('keeps an opt-in run preemptible until it publishes the after-ready marker', async () => {
     const readyDir = join(dir, 'after-ready-before');

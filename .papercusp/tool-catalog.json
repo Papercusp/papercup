@@ -18522,7 +18522,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters; the call is owner-scoped and ignores `harness`. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` (first call; even for a finished goal). Still HOLDING work-items? That flag does not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, your claims are released/handed off, or the owner says stop. Blocked is NOT a stop: work_items:set_blocker + a bounded events:await (on_timeout:'wake'), then end the turn. Pass `reason` for a durable stop note; owner-scoped, ignores `harness`. GOAL mode with the goal active: also `disposition` (achieved | killed | handoff + `handoffTo`). AUTO on, no event await, no claims? Pass `acknowledgeWakeLessAutonomy:true`. Still HOLDING work-items? That flag does not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop."
       }

@@ -34,6 +34,10 @@ vi.mock('../../acceptance-rubric-vetting', async (orig) => ({
   ...(await orig<typeof import('../../acceptance-rubric-vetting')>()),
   getAcceptanceRubricVettingStatus: mocks.getAcceptanceRubricVettingStatus,
 }));
+vi.mock('./adequacy-attestation-gap', async (orig) => ({
+  ...(await orig<typeof import('./adequacy-attestation-gap')>()),
+  rebindAttestationAdvisory: vi.fn().mockResolvedValue(null),
+}));
 vi.mock('../coordination/identity', async (orig) => ({
   ...(await orig<typeof import('../coordination/identity')>()),
   // No concrete workspace: runWithWorkspaceIfConcrete then runs the read inline, so the
@@ -123,6 +127,42 @@ describe('plans:bind-spec-evidence — unvetted-rubric advisory at the tool door
     const body = await bind({ slug: PLAN, binding: binding('AUTO-BAR-R-2-P-004') });
     expect(mocks.bindSpecEvidence).toHaveBeenCalledTimes(1);
     expect(body.advisories).toBeUndefined();
+  });
+
+  it('publishes confirmed binding IDs while the post-write advisory is still pending', async () => {
+    let advisoryStarted!: () => void;
+    let rejectAdvisory!: (reason: Error) => void;
+    const started = new Promise<void>((resolve) => {
+      advisoryStarted = resolve;
+    });
+    mocks.bindSpecEvidence.mockResolvedValue({ status: 'created', id: 123 });
+    mocks.getAcceptanceRubricsForPlan.mockImplementation(() => {
+      advisoryStarted();
+      return new Promise((_, reject) => {
+        rejectAdvisory = reject;
+      });
+    });
+    let latest: Record<string, unknown> = {};
+    const ctx = {
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws-door-test',
+      metadata: (metadata: Record<string, unknown>) => {
+        latest = metadata;
+      },
+    };
+    const pending = tool.handler({ slug: PLAN, binding: binding('AUTO-BAR-R-2-P-004') } as never, ctx as never);
+    await started;
+    expect(latest.plansBindSpecEvidenceStageTimings).toMatchObject({
+      active: { vettingAdvisory: 1 },
+      storedBindingIds: [123],
+    });
+    rejectAdvisory(new Error('advisory read failed after commit'));
+    const out = (await pending) as { data: BindBody };
+    expect(out.data.results).toEqual([expect.objectContaining({ ok: true, id: 123 })]);
+    expect(latest.plansBindSpecEvidenceStageTimings).toMatchObject({
+      active: {},
+      storedBindingIds: [123],
+    });
   });
 
   it('returns no advisory for a REFUSED binding — only proof that actually landed counts', async () => {

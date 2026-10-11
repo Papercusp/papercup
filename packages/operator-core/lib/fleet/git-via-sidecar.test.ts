@@ -285,11 +285,14 @@ describe('spawner-sidecar process progress guard', () => {
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
     // The window must outlast a loaded node boot (WI-10004030), and the child must keep
     // producing output for well over one window — otherwise it finishes inside the first
-    // window and the test no longer proves the deadline was refreshed.
-    const IDLE_MS = 1_000;
+    // window and the test no longer proves the deadline was refreshed. The window must ALSO
+    // cover the child's own exit after its last write: under green-checkpoint load a 1s
+    // window was beaten by teardown alone, after all 26 writes had been observed
+    // (WI-6554700010008342).
+    const IDLE_MS = 2_500;
     const TICK_MS = 100;
-    const TICKS = 25;
-    const HARD_MS = 8_000;
+    const TICKS = 55;
+    const HARD_MS = 12_000;
     expect(TICK_MS).toBeLessThan(IDLE_MS);
     expect(TICKS * TICK_MS).toBeGreaterThan(2 * IDLE_MS);
     expect(TICKS * TICK_MS + IDLE_MS).toBeLessThan(HARD_MS);
@@ -308,7 +311,7 @@ describe('spawner-sidecar process progress guard', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(2 * IDLE_MS);
     expect(res.code, res.stderr).toBe(0);
     expect(res.stderr).toContain('progress');
-  });
+  }, 30_000);
 
   it('kills a silent child at the idle deadline instead of waiting for the hard ceiling', async () => {
     const res = await execProcess(
