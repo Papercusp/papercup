@@ -42,12 +42,23 @@ describe('newFeatureId / newCollisionResistantIdTail', () => {
     }
   });
 
-  it('does not repeat across a burst of mints in the same millisecond window', () => {
-    const ids = new Set(Array.from({ length: 2000 }, () => newFeatureId('FIX')));
-    // 20 random bits per millisecond: 2000 draws collide with probability ~2e-3
-    // even if they all land in one millisecond. A per-harness counter would
-    // produce exactly ONE distinct value per harness here.
-    expect(ids.size).toBeGreaterThanOrEqual(1998);
+  it('keeps a burst of mints in ONE millisecond distinct up to the 20-bit birthday bound', () => {
+    // Pin the clock so every draw really shares one millisecond; otherwise the
+    // burst spreads over a machine-dependent number of ms and the test measures
+    // the runner's speed instead of the id's entropy.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 11, 9, 0, 0));
+    try {
+      const ids = new Set(Array.from({ length: 2000 }, () => newFeatureId('FIX')));
+      // Birthday bound: 2000 draws from 2^20 values give C(2000,2)/2^20 ≈ 1.9
+      // expected colliding pairs, so a handful of repeats is NORMAL (a floor of
+      // 1998 failed ~30% of one-ms bursts — WI-6554700010008506). Losing 20+ ids
+      // has probability ≈ 1e-14. A per-harness counter or a zero-entropy tail
+      // produces exactly ONE distinct value here, so this floor still separates
+      // them by three orders of magnitude.
+      expect(ids.size).toBeGreaterThanOrEqual(1980);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('fits a signed 64-bit integer for two centuries and orders by time', () => {
