@@ -21,6 +21,7 @@ import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer
 import { fileURLToPath } from 'node:url';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
+import { historicalHostedProfileCensusProducer, type HostedProfileWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 
 /** Read only source-backed tables; unrelated schemas cannot exhaust this census. */
 export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres>, sources: readonly MigrationCensusSource[]) {
@@ -36,9 +37,32 @@ export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres
 }
 
 /** Importing this entry performs no census or host-catalog reads. */
-export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string } = {}) {
+export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string; hostedProfileEvidence?: HostedProfileWriterEvidence[] } = {}) {
 const args = options.args ?? [];
 const installed = installedRootCensusProducers();
+let hostedEvidence = options.hostedProfileEvidence ?? [];
+if (args.includes('--host-catalogs') && options.hostedProfileEvidence === undefined) {
+  const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
+  try {
+    // Bound the writer dialect, not its filenames. A new destination is derived
+    // from the retained command AST and must still pass installed-content proof.
+    hostedEvidence = await sql<HostedProfileWriterEvidence[]>`
+      SELECT 'session-part:' || writer.source_kind || ':' || writer.session_id || ':' || writer.part_idx AS ref,
+        writer.text AS "toolInput", writer.ts::text AS "startedAt", receipt.ts::text AS "finishedAt"
+      FROM harness_shared.session_turn_parts writer
+      JOIN harness_shared.session_turn_parts receipt USING (workspace_id, source_kind, session_id)
+      WHERE writer.workspace_id = 'default' AND writer.source_kind = 'codex' AND writer.part_kind = 'tool_use'
+        AND writer.text LIKE '%writeFileSync(destination,encrypt(%'
+        AND receipt.part_idx = writer.part_idx + 1 AND receipt.part_kind = 'tool_result'
+      LIMIT 101
+    `;
+  } finally { await sql.end(); }
+}
+const historicalHosted = await historicalHostedProfileCensusProducer(hostedEvidence);
+const combinedHosted = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalHosted.roots],
+  declarations: [...installed.declarations, ...historicalHosted.declarations] });
+installed.roots = combinedHosted.roots;
+installed.declarations = combinedHosted.declarations;
 // Query exact archive identities BEFORE the ledger limit; a batch is smaller
 // than the cap. Missing/GCed rows remain residue, never inferred from filenames.
 const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')

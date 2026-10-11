@@ -4,9 +4,10 @@ import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { createHash, createDecipheriv, scryptSync } from 'node:crypto';
 import { constants } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname, userInfo } from 'node:os';
 import { readdir, readFile, lstat, open, realpath } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
@@ -438,6 +439,162 @@ export function hostedConfigurationCensusProducers() {
     let root = roots.find(candidate => candidate.path === dirname(entry.path));
     if (!root) { root = { id: `hosted-config-${roots.length}`, path: dirname(entry.path) }; roots.push(root); }
     declarations.push({ kind: 'path', root: root.id, name: basename(entry.path), classification: entry.classification, producer: entry.producer });
+  }
+  return { roots, declarations };
+}
+
+/** One measured historical writer dialect. Whole-program matching prevents a
+ * later overwrite, reassignment or unrelated call from masquerading as proof.
+ * Only the three AST-derived path/URL literals may vary; nothing is evaluated.
+ */
+const hostedProfileWriter = `import {readFileSync,writeFileSync,existsSync,statSync} from 'node:fs';
+import {resolve,dirname} from 'node:path';
+import {createCipheriv,scryptSync,randomBytes} from 'node:crypto';
+import {hostname,userInfo} from 'node:os';
+import {runInNewContext} from 'node:vm';
+const fixture=resolve(userInfo().homedir,'FIXTURE');
+const destination=resolve(userInfo().homedir,'DESTINATION');
+if(existsSync(destination)) throw new Error('Destination exists: inspect before overwrite');
+if((statSync(fixture).mode&0o777)!==0o600) throw new Error('Fixture must remain private');
+const source=readFileSync('node_modules/verdict-cli/src/server.mjs','utf8');
+const start=source.indexOf('const MACHINE_KEY =');
+const end=source.indexOf('function decryptData',start);
+const encrypt=runInNewContext(source.slice(start,end)+'\\nencryptData;', {hostname,userInfo,scryptSync,randomBytes,createCipheriv,Buffer});
+const state=JSON.parse(readFileSync(fixture,'utf8'));
+writeFileSync(destination,encrypt({cookies:state.cookies,storage:{localStorage:{},sessionStorage:{}},url:'URL',savedAt:new Date().toISOString()}),{mode:0o600,flag:'wx'});
+console.log(JSON.stringify({profile:destination,mode:'0600',cookieCount:state.cookies.length,expirationPreserved:true,valuesPrinted:false}));`;
+
+function sourceTokens(source: string, replacements = new Map<string, string>()) {
+  const parsed = ts.createSourceFile('evidence.js', source, ts.ScriptTarget.Latest, true);
+  const transformed = ts.transform(parsed, [context => node => {
+    const visit: ts.Visitor = child => ts.isStringLiteral(child)
+      ? ts.factory.createStringLiteral(replacements.get(child.text) ?? child.text)
+      : ts.visitEachChild(child, visit, context);
+    return ts.visitNode(node, visit) as ts.SourceFile;
+  }]);
+  const normalized = ts.createPrinter({ removeComments: true }).printFile(transformed.transformed[0]);
+  transformed.dispose();
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, normalized);
+  const tokens: string[] = [];
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    const value = token === ts.SyntaxKind.StringLiteral ? scanner.getTokenValue() : scanner.getTokenText();
+    tokens.push(JSON.stringify([token, value]));
+  }
+  return tokens.join('|');
+}
+
+export function historicalHostedProfileConstruction(toolInput: string, home = homedir()) {
+  if (toolInput.length > 65_536) return null;
+  const outer = ts.createSourceFile('tool.js', toolInput, ts.ScriptTarget.Latest, true);
+  const commands: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(outer) === 'tools.exec_command' &&
+      node.arguments.length === 1 && ts.isObjectLiteralExpression(node.arguments[0])) {
+      for (const property of node.arguments[0].properties) {
+        if (ts.isPropertyAssignment(property) && property.name.getText(outer) === 'cmd' && ts.isStringLiteralLike(property.initializer)) commands.push(property.initializer.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(outer);
+  // A native exec input can batch the writer with a subsequent browser snapshot.
+  // Select the supported quoted program, not the last cmd property in the AST.
+  const candidates = commands.map(command => command.match(/^node --input-type=module <<'JS'\n([\s\S]*)\nJS$/)).filter(match => match !== null);
+  if (candidates.length !== 1) return null;
+  const match = candidates[0];
+  const program = ts.createSourceFile('writer.js', match[1], ts.ScriptTarget.Latest, true);
+  const literals = new Map<string, string>();
+  for (const statement of program.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !['fixture', 'destination'].includes(declaration.name.text) ||
+        !declaration.initializer || !ts.isCallExpression(declaration.initializer)) continue;
+      const value = declaration.initializer.arguments[1];
+      if (value && ts.isStringLiteralLike(value)) literals.set(declaration.name.text, value.text);
+    }
+  }
+  let url: string | undefined;
+  const findUrl = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node) && node.name.getText(program) === 'url' && ts.isStringLiteralLike(node.initializer)) url = node.initializer.text;
+    ts.forEachChild(node, findUrl);
+  };
+  findUrl(program);
+  const fixture = literals.get('fixture');
+  const destination = literals.get('destination');
+  if (!fixture || !destination || !url || new Set([fixture, destination, url]).size !== 3) return null;
+  if (commands.some(command => !command.match(/^node --input-type=module <<'JS'\n([\s\S]*)\nJS$/) &&
+    (command.includes(fixture) || command.includes(destination)))) return null;
+  const replacements = new Map([[fixture, 'FIXTURE'], [destination, 'DESTINATION'], [url, 'URL']]);
+  if (sourceTokens(match[1], replacements) !== sourceTokens(hostedProfileWriter)) return null;
+  // Historical evidence grants inspection of exact Papercusp configuration files,
+  // not arbitrary paths mentioned in a transcript or linked destinations.
+  const config = join(home, '.config', 'papercusp');
+  const input = resolve(home, fixture);
+  const output = resolve(home, destination);
+  if (dirname(input) !== config || dirname(output) !== config || input === output) return null;
+  return { input, output, url };
+}
+
+export interface HostedProfileWriterEvidence { ref: string; toolInput: string; startedAt: string; finishedAt: string }
+
+/** Extend the hosted surface with content-proven historical destinations only.
+ * The input's own provenance remains independent: consuming it is not creating it.
+ * Decrypted values never leave this function or appear in the census manifest.
+ */
+export async function historicalHostedProfileCensusProducer(evidence: readonly HostedProfileWriterEvidence[],
+  home = homedir(), readerPath = fileURLToPath(new URL('../../../../node_modules/verdict-cli/src/server.mjs', import.meta.url))) {
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  if (evidence.length > 100) throw new Error('Hosted profile evidence bound exceeded');
+  if (!evidence.length) return { roots, declarations };
+  let reader: string;
+  try { reader = await readFile(readerPath, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots, declarations }; throw error; }
+  const expectedReader = `const MACHINE_KEY = scryptSync(\
+    \`\${hostname()}-\${userInfo().username}-verdict-cli\`, 'verdict-cli-salt-v1', 32);
+function encryptData(data) { const iv = randomBytes(16); const cipher = createCipheriv('aes-256-cbc', MACHINE_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  return JSON.stringify({ iv: iv.toString('hex'), data: encrypted.toString('hex') }); }
+function decryptData(raw) { const { iv, data } = JSON.parse(raw);
+  const decipher = createDecipheriv('aes-256-cbc', MACHINE_KEY, Buffer.from(iv, 'hex'));
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(data, 'hex')), decipher.final()]);
+  return JSON.parse(decrypted.toString('utf8')); }`;
+  const start = reader.indexOf('const MACHINE_KEY =');
+  const end = reader.indexOf('function profilePath', start);
+  if (start < 0 || end < 0 || sourceTokens(reader.slice(start, end)) !== sourceTokens(expectedReader)) return { roots, declarations };
+  const privateFile = async (path: string) => {
+    let handle;
+    try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if (['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) return null; throw error; }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 1_048_576 || (stat.mode & 0o777) !== 0o600) return null;
+      return await handle.readFile('utf8');
+    } finally { await handle.close(); }
+  };
+  const key = scryptSync(`${hostname()}-${userInfo().username}-verdict-cli`, 'verdict-cli-salt-v1', 32);
+  for (const record of evidence) {
+    const construction = historicalHostedProfileConstruction(record.toolInput, home);
+    const from = Date.parse(record.startedAt); const to = Date.parse(record.finishedAt);
+    if (!construction || !record.ref || !Number.isFinite(from) || !Number.isFinite(to) || to < from || to - from > 300_000) continue;
+    try { if (await realpath(dirname(construction.output)) !== dirname(construction.output)) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const input = await privateFile(construction.input); const output = await privateFile(construction.output);
+    if (input === null || output === null) continue;
+    try {
+      const state = JSON.parse(input); const envelope = JSON.parse(output);
+      if (Object.keys(envelope).sort().join() !== 'data,iv' || typeof envelope.iv !== 'string' || !/^[0-9a-f]{32}$/.test(envelope.iv) ||
+        typeof envelope.data !== 'string' || !/^(?:[0-9a-f]{32})+$/.test(envelope.data)) continue;
+      const decipher = createDecipheriv('aes-256-cbc', key, Buffer.from(envelope.iv, 'hex'));
+      const value = JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, 'hex')), decipher.final()]).toString('utf8'));
+      const savedAt = Date.parse(value.savedAt);
+      if (Object.keys(value).sort().join() !== 'cookies,savedAt,storage,url' || !Array.isArray(state.cookies) ||
+        JSON.stringify(value.cookies) !== JSON.stringify(state.cookies) || value.url !== construction.url ||
+        JSON.stringify(value.storage) !== '{"localStorage":{},"sessionStorage":{}}' || !Number.isFinite(savedAt) || savedAt < from || savedAt > to) continue;
+      const root: CensusRoot = { id: `hosted-profile-${roots.length}`, path: dirname(construction.output) };
+      roots.push(root);
+      declarations.push({ kind: 'path', root: root.id, name: basename(construction.output), classification: 'secret', producer: `historical-hosted-profile:${record.ref}` });
+    } catch { /* Corrupt or nonmatching content supplies no ownership proof. */ }
   }
   return { roots, declarations };
 }

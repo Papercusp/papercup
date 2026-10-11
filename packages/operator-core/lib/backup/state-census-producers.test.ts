@@ -26,6 +26,79 @@ import { planTemplateStoreCensusProducer, historicalGitBlobIdentityResolver, wor
 import { execFileSync } from 'node:child_process';
 import { reapArchiveCensusProducer } from './state-census-producers';
 import { archiveReapTail, REAP_TAIL_MAX_BYTES } from '../task-manager/reap-archive';
+import { historicalHostedProfileConstruction, historicalHostedProfileCensusProducer } from './state-census-producers';
+import { createCipheriv, scryptSync, randomBytes } from 'node:crypto';
+import { hostname, userInfo } from 'node:os';
+
+describe('historical hosted profile construction proof', () => {
+  // The measured archived writer, with relocated names to prove that attribution
+  // depends on command semantics and current content, not a filename roster.
+  const program = `import {readFileSync,writeFileSync,existsSync,statSync} from 'node:fs';
+import {resolve,dirname} from 'node:path';
+import {createCipheriv,scryptSync,randomBytes} from 'node:crypto';
+import {hostname,userInfo} from 'node:os';
+import {runInNewContext} from 'node:vm';
+const fixture=resolve(userInfo().homedir,'.config/papercusp/arbitrary-input.json');
+const destination=resolve(userInfo().homedir,'.config/papercusp/arbitrary-profile.enc');
+if(existsSync(destination)) throw new Error('Destination exists: inspect before overwrite');
+if((statSync(fixture).mode&0o777)!==0o600) throw new Error('Fixture must remain private');
+const source=readFileSync('node_modules/verdict-cli/src/server.mjs','utf8');
+const start=source.indexOf('const MACHINE_KEY =');
+const end=source.indexOf('function decryptData',start);
+const encrypt=runInNewContext(source.slice(start,end)+'\\nencryptData;', {hostname,userInfo,scryptSync,randomBytes,createCipheriv,Buffer});
+const state=JSON.parse(readFileSync(fixture,'utf8'));
+writeFileSync(destination,encrypt({cookies:state.cookies,storage:{localStorage:{},sessionStorage:{}},url:'https://example.test/',savedAt:new Date().toISOString()}),{mode:0o600,flag:'wx'});
+console.log(JSON.stringify({profile:destination,mode:'0600',cookieCount:state.cookies.length,expirationPreserved:true,valuesPrinted:false}));`;
+  const input = (source = program) => `text(await tools.exec_command({cmd:${JSON.stringify("node --input-type=module <<'JS'\n" + source + '\nJS')},yield_time_ms:30000,max_output_tokens:1000}));`;
+  it('rejects altered programs, extra writes, unquoted heredocs and paths outside the configuration root', () => {
+    expect(historicalHostedProfileConstruction(input(), '/fixture')).toMatchObject({
+      input: '/fixture/.config/papercusp/arbitrary-input.json', output: '/fixture/.config/papercusp/arbitrary-profile.enc', url: 'https://example.test/',
+    });
+    for (const changed of [program + "\nwriteFileSync(destination,'other');", program.replace('cookies:state.cookies', 'cookies:[]'),
+      program.replace('arbitrary-profile.enc', '../../outside.enc'), program.replace("flag:'wx'", "flag:'w'")]) {
+      expect(historicalHostedProfileConstruction(input(changed), '/fixture')).toBeNull();
+    }
+    expect(historicalHostedProfileConstruction(input().replace("<<'JS'", '<<JS'), '/fixture')).toBeNull();
+    expect(historicalHostedProfileConstruction(input() + '\ntext(await tools.exec_command({cmd:"verdict --session pilot snapshot -i"}));', '/fixture')).not.toBeNull();
+    expect(historicalHostedProfileConstruction(input() + '\ntext(await tools.exec_command({cmd:"rm .config/papercusp/arbitrary-profile.enc"}));', '/fixture')).toBeNull();
+  });
+  it('qualifies only current private content matching the full historical transform and time window', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'hosted-profile-proof-'));
+    const config = join(home, '.config', 'papercusp');
+    const cookies = [{ name: 'session', value: 'private-value', expires: 1234 }];
+    const value = { cookies, storage: { localStorage: {}, sessionStorage: {} }, url: 'https://example.test/', savedAt: '2026-09-05T19:50:00Z' };
+    const evidence = [{ ref: 'fixture:writer:38', toolInput: input(), startedAt: '2026-09-05T19:49:59Z', finishedAt: '2026-09-05T19:50:01Z' }];
+    const output = join(config, 'arbitrary-profile.enc');
+    const writeProfile = async (profile: object) => {
+      const iv = randomBytes(16); const key = scryptSync(`${hostname()}-${userInfo().username}-verdict-cli`, 'verdict-cli-salt-v1', 32);
+      const cipher = createCipheriv('aes-256-cbc', key, iv);
+      const data = Buffer.concat([cipher.update(JSON.stringify(profile), 'utf8'), cipher.final()]);
+      await writeFile(output, JSON.stringify({ iv: iv.toString('hex'), data: data.toString('hex') }), { mode: 0o600 });
+    };
+    try {
+      await mkdir(config, { recursive: true });
+      await writeFile(join(config, 'arbitrary-input.json'), JSON.stringify({ cookies, origins: [{ origin: 'https://example.test/' }] }), { mode: 0o600 });
+      await writeFile(join(config, 'neighbor.enc'), 'unproven', { mode: 0o600 });
+      await writeProfile(value);
+      const result = await historicalHostedProfileCensusProducer(evidence, home);
+      expect(result.declarations).toEqual([{ kind: 'path', root: 'hosted-profile-0', name: 'arbitrary-profile.enc', classification: 'secret', producer: 'historical-hosted-profile:fixture:writer:38' }]);
+      expect(JSON.stringify(result)).not.toContain('private-value');
+      const manifest = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(manifest.residue.map(entry => entry.name)).toContain('neighbor.enc');
+      expect(manifest.residue.map(entry => entry.name)).toContain('arbitrary-input.json');
+      for (const changed of [{ ...value, cookies: [] }, { ...value, savedAt: '2026-09-06T00:00:00Z' },
+        { ...value, url: 'https://elsewhere.test/' }, { ...value, storage: { localStorage: { unexpected: 'value' }, sessionStorage: {} } },
+        { ...value, unexpected: true }]) {
+        await writeProfile(changed);
+        expect((await historicalHostedProfileCensusProducer(evidence, home)).declarations).toEqual([]);
+      }
+      await writeProfile(value); await chmod(output, 0o644);
+      expect((await historicalHostedProfileCensusProducer(evidence, home)).declarations).toEqual([]);
+      await rm(output); await symlink(join(config, 'neighbor.enc'), output);
+      expect((await historicalHostedProfileCensusProducer(evidence, home)).declarations).toEqual([]);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+});
 
 describe('reaper archive writer census', () => {
   it('looks up old archive identities in bounded exact batches and rejects unrelated returned ids', async () => {
