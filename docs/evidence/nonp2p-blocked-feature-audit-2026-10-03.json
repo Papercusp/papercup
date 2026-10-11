@@ -7336,7 +7336,690 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "voiceP004EvidenceQualification": {
+    "status": "registered-current-bindings-qualified-acoustic-and-runtime-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004760",
+    "auditProofs": [
+     "WI-10005820#comment:1174404",
+     "WI-10005820#comment:1174432",
+     "WI-10005820#comment:1174451",
+     "WI-10005820#comment:1174469",
+     "WI-10005820#comment:1174499"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "item": "P-004",
+     "planState": "ready",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "workItemState": "blocked",
+     "assignee": "su-d7c6542c-582d-44dc-a02b-6cca3ebc2352",
+     "checkpointContentHash": "6ccf1e7f8887",
+     "checkpointChars": 11056,
+     "savedCheckRows": 4,
+     "dependency": "P-001 remains unresolved. Version23 source fields remain historical provenance; no child claim, state or hold is changed.",
+     "ownerProvenanceReuse": "Retain existing D-005 real-microphone/self-audio requirement and final release constraints from row42/P-001 qualification; this addition does not independently requalify owner decisions."
+    },
+    "specs": [
+     {
+      "specId": "AUTO-BAR-R-4-P-004",
+      "revision": 3,
+      "lifecycleStatus": "accepted",
+      "contentHash": "14fcac2d3818dcf97701eb2329b1181aa233ed0c36eba2af7efb9511ec45cfe9",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [
+       "integration"
+      ],
+      "falsifier": {
+       "observation": "Any required interruption, mute/off/cleanup, denial, outage/reconnect/retry, self-audio or transcript-identity scenario fails, or hosted credential/tenant/spend isolation is bypassed. Each of interruption, output mute, off/navigation/unmount cleanup, permission denial, provider outage, reconnect/retry, self-audio and turn/transcript identity has a named scenario; a missing scenario is unknown and any failing scenario is broken."
+      },
+      "sourceBar": {
+       "barKey": "R-4",
+       "barHash": "a13abe6b5d662707bac10590a71f450ee1fde5e5e920f84aba534068d971bbd9",
+       "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+       "rubricSlug": "acceptance-voice-final-public-release-2026-10-01",
+       "rubricRevision": 2,
+       "evidencePlane": "live"
+      }
+     },
+     {
+      "specId": "AUTO-BAR-R-7-P-004",
+      "revision": 2,
+      "lifecycleStatus": "accepted",
+      "contentHash": "779ff7d5eb0a77e1bc443cd91d9384aea67ad433f6c4f46035dd482cbfa9a7e2",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [
+       "integration",
+       "unit"
+      ],
+      "falsifier": {
+       "observation": "A browser receives a provider secret, a tenant reaches another tenant's voice resources, an unavailable explicit engine silently substitutes, a spend limit is bypassed, or the hosted portal exposes the excluded desktop-local path; missing boundary evidence rates unknown."
+      },
+      "sourceBar": {
+       "barKey": "R-7",
+       "barHash": "bda100183f6c8ea91d9f6fc1381a810374c0f32536af1cee7ceeb24f2602d1f6",
+       "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+       "rubricSlug": "acceptance-voice-final-public-release-2026-10-01",
+       "rubricRevision": 2,
+       "evidencePlane": "live"
+      }
+     }
+    ],
+    "bindingQualification": {
+     "proof": "WI-10005820#comment:1174432",
+     "queryScope": "Separate exact R4, R7 and WI-10004760 registered evidence queries, detail full and limit100.",
+     "r4Count": 3,
+     "r7Count": 5,
+     "workItemCount": 8,
+     "truncatedByLimit": false,
+     "identityUnionEqualsWorkItem": true,
+     "serverMeasuredCurrent": 8,
+     "evidence": [
+      {
+       "id": 36648,
+       "specId": "AUTO-BAR-R-4-P-004",
+       "specRevision": 3,
+       "evidenceKind": "test",
+       "testRunId": 21045358,
+       "evidenceRef": "docs/evidence/voice-final-public-release-2026-10-01/r4-rig-run7-2026-10-11.json",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36533,
+       "specId": "AUTO-BAR-R-4-P-004",
+       "specRevision": 3,
+       "evidenceKind": "mutation",
+       "testRunId": 21044415,
+       "evidenceRef": "test-run 21044415 mutation-probe mutant fail apps/operator/app/_components/voice/voice-mode.test.ts @dcadea9a23bf+dirty",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36532,
+       "specId": "AUTO-BAR-R-4-P-004",
+       "specRevision": 3,
+       "evidenceKind": "test",
+       "testRunId": 21044402,
+       "evidenceRef": "apps/operator/app/_components/voice/voice-mode.test.ts",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36503,
+       "specId": "AUTO-BAR-R-7-P-004",
+       "specRevision": 2,
+       "evidenceKind": "operational",
+       "testRunId": 21044351,
+       "evidenceRef": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run6-2026-10-11.json",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36471,
+       "specId": "AUTO-BAR-R-7-P-004",
+       "specRevision": 2,
+       "evidenceKind": "mutation",
+       "testRunId": 21043705,
+       "evidenceRef": "tests/a-shared-mint-is-not-a-shared-token.test.ts",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36467,
+       "specId": "AUTO-BAR-R-7-P-004",
+       "specRevision": 2,
+       "evidenceKind": "test",
+       "testRunId": 21043725,
+       "evidenceRef": "tests/voice-public-release-readiness.test.ts",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36466,
+       "specId": "AUTO-BAR-R-7-P-004",
+       "specRevision": 2,
+       "evidenceKind": "test",
+       "testRunId": 21043726,
+       "evidenceRef": "tests/an-explicit-engine-is-not-a-fallback.test.ts",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      },
+      {
+       "id": 36465,
+       "specId": "AUTO-BAR-R-7-P-004",
+       "specRevision": 2,
+       "evidenceKind": "test",
+       "testRunId": 21043724,
+       "evidenceRef": "tests/a-shared-mint-is-not-a-shared-token.test.ts",
+       "currentness": {
+        "overall": "current",
+        "dimensions": {
+         "spec": "current",
+         "source": "current",
+         "test": "current",
+         "fixture": "not-applicable",
+         "rubric": "not-applicable",
+         "environment": "not-applicable",
+         "coverageEvidence": "not-applicable",
+         "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+       }
+      }
+     ],
+     "limitation": "Registered currentness is dated server metadata, not a new execution or independent certification of a loaded runtime."
+    },
+    "ledgerQualification": {
+     "proof": "WI-10005820#comment:1174469",
+     "captureSha256": "f681fc49d558ed88f754b4c2071e00ee3f2dae70cd27b74cdd4e07f467a68169",
+     "r4": {
+      "id": 21045358,
+      "status": "PASS",
+      "source": "local",
+      "commit": "f253aae19f49102212b454523d94ca760efbc4c2",
+      "executionDetails": null,
+      "root": null,
+      "outputTail": null,
+      "executionCounts": "unknown",
+      "independentTypedRead": "Exact testing:runs id21045358, limit1, untruncated preserves null execution/output.",
+      "cause": "Unknown. Current and exact f253 historical recorder source both supply row.execution and root. The stored null does not identify the loaded writer; no recovery executed."
+     },
+     "r7BoundRun6": {
+      "binding": 36503,
+      "id": 21044351,
+      "status": "PASS",
+      "source": "local",
+      "commit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+      "assertionRecordCounts": {
+       "passed": 19,
+       "failed": 0,
+       "skipped": 0
+      },
+      "receiptPortalSourceCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+      "playwrightTestCount": 4,
+      "populationBoundary": "Operational counts include harness-phase assertion records. Four Playwright tests and19 assertion records are distinct populations; source commits identify separate repositories."
+     },
+     "portalLocalBaselines": [
+      {
+       "id": 21043724,
+       "passed": 10,
+       "failed": 0,
+       "skipped": 0
+      },
+      {
+       "id": 21043725,
+       "passed": 14,
+       "failed": 0,
+       "skipped": 0
+      },
+      {
+       "id": 21043726,
+       "passed": 25,
+       "failed": 0,
+       "skipped": 0
+      }
+     ],
+     "portalBaselineCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+     "callerIsolationMutation": {
+      "id": 21043705,
+      "status": "FAIL",
+      "passed": 7,
+      "failed": 3,
+      "skipped": 0,
+      "observedFailures": [
+       "Separate callers within one organization",
+       "In-flight token isolation",
+       "Tenant cooldown isolation"
+      ]
+     },
+     "desktopLocalBaselines": [
+      {
+       "id": 21044402,
+       "passed": 44,
+       "failed": 0,
+       "skipped": 0
+      },
+      {
+       "id": 21044408,
+       "passed": 44,
+       "failed": 0,
+       "skipped": 0
+      }
+     ],
+     "desktopBaselineCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+     "desktopDirtyBeforeRun": true,
+     "cancellationMutation": {
+      "id": 21044415,
+      "status": "FAIL",
+      "passed": 43,
+      "failed": 1,
+      "skipped": 0,
+      "observedFailure": "Cancellation of a long adapter reply stops remaining synthesis chunks."
+     },
+     "scopeBoundary": "Historical local/mutation observations; collectionFailed false and runtime capture not-configured where recorded. No rerun, clean current-runtime acceptance or shipment evidence is inferred."
+    },
+    "receiptQualification": {
+     "r4Run7": "Synthetic lifecycle rig explicitly leaves real acoustic self-audio and hosted proof unexercised. Guided real-microphone session remains owed.",
+     "r7Run6AndRun7": "Both retained receipts report4 Playwright tests and19 assertion records using portal777c9257. Run6 uses a scratch launch command; separate run7 uses the canonical hosted-boundaries runner. Bound operational evidence remains run6/36503/21044351; run7 is separately reviewed, without an invented replacement binding.",
+     "hostedLimitation": "ElevenLabs hosted configuration is disclosed unconfigured/fail-closed; this does not establish a configured live provider path. Real microphone scope remains excluded.",
+     "pins": [
+      {
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r4-rig-run7-2026-10-11.json",
+       "checks": [
+        {
+         "path": "apps/operator/app/_components/voice/voice-mode.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": "apps/operator/e2e/voice-synthetic-roundtrip.spec.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": ".papercusp/scratch/r4-rig-run7-2026-10-11.log",
+         "exists": true,
+         "matchesReceipt": true
+        }
+       ]
+      },
+      {
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run6-2026-10-11.json",
+       "checks": [
+        {
+         "path": "e2e/portal-voice-hosted-boundaries.spec.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": "playwright.config.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": "apps/host/src/api.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": ".papercusp/scratch/r7-boundaries-run6-2026-10-11.log",
+         "exists": true,
+         "matchesReceipt": true
+        },
+        {
+         "path": ".papercusp/scratch/r7-boundaries-run6-2026-10-11-receipt.json",
+         "exists": true,
+         "matchesReceipt": true
+        }
+       ]
+      },
+      {
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run7-2026-10-11.json",
+       "checks": [
+        {
+         "path": "e2e/portal-voice-hosted-boundaries.spec.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": "playwright.config.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": "apps/host/src/api.ts",
+         "matchesReceipt": true
+        },
+        {
+         "path": ".papercusp/scratch/r7-boundaries-run7-2026-10-11.log",
+         "exists": true,
+         "matchesReceipt": true
+        },
+        {
+         "path": ".papercusp/scratch/r7-boundaries-run7-2026-10-11-receipt.json",
+         "exists": true,
+         "matchesReceipt": true
+        }
+       ]
+      }
+     ]
+    },
+    "finiteSourceQualification": {
+     "proof": "WI-10005820#comment:1174499",
+     "guardScope": [
+      "Desktop cancellation after first synthesis chunk asserts exactly one TTS/play call; audible intervals distinguish synthetic self-echo from later user speech and close on cancellation.",
+      "Synthetic lifecycle scenarios include stop, STT retry, mute/off, navigation and same-engine synthesis outage; no acoustic echo path is created.",
+      "Portal caller same-organization, in-flight and cooldown negatives; explicit-engine permanent fallback control.",
+      "Hosted engine keys scope by organization and owner; platform mint remains server-side. Engine fallback walks only auto choices, preserving unsupported explicit selection.",
+      "Operational recorder parser and original-preserving legacy-null recovery guards refuse malformed recovery and identity/archive mismatches. No recovery or new test pass was executed."
+     ],
+     "readinessFileBoundary": "The532-line readiness-file output was partly truncated. Only visible engine/gate/visibility and R5/R10 contract-negative sections were reviewed; no complete readiness-file review is asserted.",
+     "runtimeBoundary": "Committed source inspection and selected file hashes do not prove the current process loads that treatment."
+    },
+    "sourcePins": {
+     "branch": "staging",
+     "pins": [
+      {
+       "repository": "papercusp",
+       "path": "apps/operator/app/_components/voice/voice-mode.ts",
+       "bytes": 145651,
+       "sha256": "2b6340fbe5e9ea65c9c29a3fa48f5ee0f45d9290054f203bf66a44cf3d41da29",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "2b6340fbe5e9ea65c9c29a3fa48f5ee0f45d9290054f203bf66a44cf3d41da29",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "2b6340fbe5e9ea65c9c29a3fa48f5ee0f45d9290054f203bf66a44cf3d41da29",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "papercusp",
+       "path": "apps/operator/app/_components/voice/voice-mode.test.ts",
+       "bytes": 43162,
+       "sha256": "f1ae6e849829dcbaaad40a41ea2398c865ef91bbc13b26e60db4aad8e10fe67c",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "f1ae6e849829dcbaaad40a41ea2398c865ef91bbc13b26e60db4aad8e10fe67c",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "f1ae6e849829dcbaaad40a41ea2398c865ef91bbc13b26e60db4aad8e10fe67c",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "papercusp",
+       "path": "apps/operator/e2e/voice-synthetic-roundtrip.spec.ts",
+       "bytes": 29793,
+       "sha256": "d537d61a792b28af4571e8fa7fe209fa9e82a63cd1235077402ce31885e0a6ad",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "d537d61a792b28af4571e8fa7fe209fa9e82a63cd1235077402ce31885e0a6ad",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "d537d61a792b28af4571e8fa7fe209fa9e82a63cd1235077402ce31885e0a6ad",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "papercusp",
+       "path": "apps/operator/scripts/systemd/voice-hosted-boundaries-run.mjs",
+       "bytes": 4408,
+       "sha256": "59b491cff0a38daad70a15a91fe09db0e2709f2e1713875b6fba6943b9d9c9a2",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "59b491cff0a38daad70a15a91fe09db0e2709f2e1713875b6fba6943b9d9c9a2",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalBlobAvailable": false
+      },
+      {
+       "repository": "papercusp",
+       "path": "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+       "bytes": 39155,
+       "sha256": "2847e25ead4de447afda6e40e23bf14ab7dacb94651a00d16d63210c8943c1fb",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "2847e25ead4de447afda6e40e23bf14ab7dacb94651a00d16d63210c8943c1fb",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "2847e25ead4de447afda6e40e23bf14ab7dacb94651a00d16d63210c8943c1fb",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "papercusp",
+       "path": "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+       "bytes": 43983,
+       "sha256": "5c73e2bfbc9764e0c15f28b1b51676957559110e24112742c75968ae9ef688c8",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "5c73e2bfbc9764e0c15f28b1b51676957559110e24112742c75968ae9ef688c8",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "b52774f5e9fb086345517b3e99fa558f367dbfcd0f4fd89525344a964405dd52",
+       "equalsHistorical": false
+      },
+      {
+       "repository": "papercusp",
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r4-rig-run7-2026-10-11.json",
+       "bytes": 4869,
+       "sha256": "7c6cc8f88a3aa95490c62b6798585ce733417eb865ac5a4e2f048ed718124412",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "7c6cc8f88a3aa95490c62b6798585ce733417eb865ac5a4e2f048ed718124412",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalBlobAvailable": false
+      },
+      {
+       "repository": "papercusp",
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run6-2026-10-11.json",
+       "bytes": 8948,
+       "sha256": "9d4b07aef6c1337f105786dc70329604f8a38c93bfa63be2cc754abde20c4858",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "9d4b07aef6c1337f105786dc70329604f8a38c93bfa63be2cc754abde20c4858",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalSha256": "9d4b07aef6c1337f105786dc70329604f8a38c93bfa63be2cc754abde20c4858",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "papercusp",
+       "path": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run7-2026-10-11.json",
+       "bytes": 8971,
+       "sha256": "7eee500473c11199c0e1251b43681814764279420163f5b6a2a28fd68cbde667",
+       "ownHead": "4f991247708f12d9edc56af763f1f8fd94219773",
+       "ownHeadSha256": "7eee500473c11199c0e1251b43681814764279420163f5b6a2a28fd68cbde667",
+       "equalsOwnHead": true,
+       "historicalCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+       "historicalBlobAvailable": false
+      },
+      {
+       "repository": "portal",
+       "path": "tests/a-shared-mint-is-not-a-shared-token.test.ts",
+       "bytes": 9143,
+       "sha256": "823b74aa992d1a0453f6f53e6736697586b9cd61801f9015ba696c7eba45036c",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "823b74aa992d1a0453f6f53e6736697586b9cd61801f9015ba696c7eba45036c",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "823b74aa992d1a0453f6f53e6736697586b9cd61801f9015ba696c7eba45036c",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "tests/voice-public-release-readiness.test.ts",
+       "bytes": 18642,
+       "sha256": "9487f5ce1f561dbc5156f5df1e4c02dc04b89dd911b7868d3192397d6db12b29",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "9487f5ce1f561dbc5156f5df1e4c02dc04b89dd911b7868d3192397d6db12b29",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "9487f5ce1f561dbc5156f5df1e4c02dc04b89dd911b7868d3192397d6db12b29",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "tests/an-explicit-engine-is-not-a-fallback.test.ts",
+       "bytes": 12132,
+       "sha256": "2bb2ee9968fa8c3b0d2c90af2e157109c9a91fccd970d8a8a9de1ed98f5666aa",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "2bb2ee9968fa8c3b0d2c90af2e157109c9a91fccd970d8a8a9de1ed98f5666aa",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "2bb2ee9968fa8c3b0d2c90af2e157109c9a91fccd970d8a8a9de1ed98f5666aa",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "apps/host/src/voice-elevenlabs.ts",
+       "bytes": 11316,
+       "sha256": "71169622a686575818aca4e276d8ab26014c03800b0bc62d9cebc9d8d2647680",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "71169622a686575818aca4e276d8ab26014c03800b0bc62d9cebc9d8d2647680",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "71169622a686575818aca4e276d8ab26014c03800b0bc62d9cebc9d8d2647680",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "packages/ui/src/voice-engine-choice.ts",
+       "bytes": 10858,
+       "sha256": "fad9bdd7b0645eb710f989ca6921816b2cb5bc484a8c9b887fe14e0af9d324c4",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "fad9bdd7b0645eb710f989ca6921816b2cb5bc484a8c9b887fe14e0af9d324c4",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "fad9bdd7b0645eb710f989ca6921816b2cb5bc484a8c9b887fe14e0af9d324c4",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "e2e/portal-voice-hosted-boundaries.spec.ts",
+       "bytes": 20836,
+       "sha256": "f1d6152fab007aad9f836a582790d2ba5b68dcc8be32d8090890cd630ef13345",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "f1d6152fab007aad9f836a582790d2ba5b68dcc8be32d8090890cd630ef13345",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "f1d6152fab007aad9f836a582790d2ba5b68dcc8be32d8090890cd630ef13345",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "playwright.config.ts",
+       "bytes": 1889,
+       "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887",
+       "equalsHistorical": true
+      },
+      {
+       "repository": "portal",
+       "path": "apps/host/src/api.ts",
+       "bytes": 46813,
+       "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701",
+       "ownHead": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+       "ownHeadSha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701",
+       "equalsOwnHead": true,
+       "historicalCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+       "historicalSha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701",
+       "equalsHistorical": true
+      }
+     ]
+    },
+    "remainingAcceptance": [
+     "Real microphone and acoustic self-audio acceptance remains unestablished.",
+     "R4 original null execution details/counts remain unknown; recorder cause not proven and recovery not executed.",
+     "Configured hosted ElevenLabs/provider, current loaded runtime and whole-plan shipment are not established by these finite receipts/source reads.",
+     "Canonical P-001 dependency, peer claim and child blocked state remain unchanged."
+    ],
+    "operationBoundary": "PERSONAL additive audit qualification only. No child claim/state/hold, product-source edit, test/native/provider/Actions execution, LIVE_GATE_OPS, killed-goal revival or shipment action."
+   }
   },
   {
    "id": "WI-10004761",
