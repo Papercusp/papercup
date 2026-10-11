@@ -1505,6 +1505,54 @@ dependency_generation_register_pin() {
   return "$rc"
 }
 
+# WI-6554700010008481: a REF pin keeps alive the generation a gate is about to
+# judge, from its `--ensure-ref` until its later selection, with no checkout
+# marker involved. Recency retention alone (DEPENDENCY_GENERATION_RETAIN_COUNT,
+# default 2) let two staging prebuilds evict an open frozen repair queue's
+# repairHead generation within minutes, and its input selector with it, so the
+# next verify ended `dependency-prewarm-missing` with no verdict. One pin per
+# (integration root, label) bounds the extra retention to one generation per
+# gate. It expires DEPENDENCY_GENERATION_REF_PIN_TTL_SEC (default 24h) after its
+# last refresh, and every gate run re-ensures and so refreshes it.
+dependency_generation_ref_pin_path() {
+  local generation_root="$1" integration_root="$2" label="$3" key
+  key="$(printf '%s\n%s' "$integration_root" "$label" | dependency_generation_sha256)" || return 1
+  printf '%s/.pins/ref-%s\n' "$generation_root" "$key"
+}
+
+dependency_generation_write_ref_pin_locked() {
+  local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5"
+  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now
+  [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 2
+  [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
+  [[ "$ttl" =~ ^[0-9]+$ ]] || return 2
+  case "$integration_root$ref" in *$'\n'*) return 2 ;; esac
+  dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
+  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins"
+  pin="$(dependency_generation_ref_pin_path "$generation_root" "$integration_root" "$label")" || return 1
+  tmp="$pin.tmp.$$"
+  now="$(date +%s)"
+  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
+    "$(dependency_generation_host)" "$identity" "$label" "$integration_root" "$ref" \
+    "$now" "$((now + ttl))" > "$tmp"
+  mv "$tmp" "$pin"
+}
+
+# No-op without a label, so every existing `--ensure-ref` caller is unchanged.
+dependency_generation_retain_ensured_ref() {
+  local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5" rc=0
+  [ -n "$label" ] || return 0
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  dependency_generation_write_ref_pin_locked \
+    "$generation_root" "$integration_root" "$label" "$identity" "$ref" || rc=$?
+  dependency_generation_release_publish_lock
+  if [ "$rc" -ne 0 ]; then
+    dependency_generation_log "FATAL: could not register ref pin '$label' for $identity at $ref"
+    return "$rc"
+  fi
+  dependency_generation_log "retained $identity as ref pin '$label' for $ref"
+}
+
 # Refresh same-host pin/lease truth and import direct sibling checkout markers.
 # This runs only while .publish-lock is held, so pruning cannot race a pin that
 # is being registered or a selector that is being leased.
@@ -1623,7 +1671,7 @@ dependency_generation_independent_legacy_pin_is_retired() {
 
 dependency_generation_refresh_retention_state_locked() {
   local generation_root="$1" integration_root="$2" retire_independent_legacy="${3:-0}"
-  local host pin pin_host identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
+  local host pin pin_host pin_expires identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
   host="$(dependency_generation_host)"
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins" "$generation_root/.leases"
 
@@ -1632,6 +1680,18 @@ dependency_generation_refresh_retention_state_locked() {
     pin_host="$(dependency_generation_read_field "$pin" host)"
     identity="$(dependency_generation_read_field "$pin" identity)"
     checkout="$(dependency_generation_read_field "$pin" checkout)"
+    # WI-6554700010008481: a ref pin has no checkout marker to re-verify. It
+    # lives, on any host, until it expires or its generation is gone.
+    if [ "$(dependency_generation_read_field "$pin" kind)" = 'ref' ]; then
+      pin_expires="$(dependency_generation_read_field "$pin" expires)"
+      if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || [[ ! "$pin_expires" =~ ^[0-9]+$ ]] \
+        || [ "$pin_expires" -le "$(date +%s)" ] \
+        || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
+        dependency_generation_log "removing expired or stale ref pin $(basename "$pin") ($identity)"
+        rm -f -- "$pin"
+      fi
+      continue
+    fi
     # A foreign-host pin is intentionally retained: this host cannot prove the
     # other checkout disappeared. Same-host state must still match the checkout
     # marker and an extant published generation.
@@ -3390,7 +3450,7 @@ dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
   local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
-  local predict_ref='' predict_verdict='' predict_rc=0 line
+  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -3400,6 +3460,7 @@ dependency_generation_main() {
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
       --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
+      --retain-as) retain_as="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
@@ -3414,6 +3475,16 @@ dependency_generation_main() {
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
       dependency_generation_log '--predict-ref cannot be combined with another mode or --workspace-dir'
+      return 2
+    }
+  }
+  [ -z "$retain_as" ] || {
+    [ -n "$ensure_ref" ] || {
+      dependency_generation_log '--retain-as requires --ensure-ref'
+      return 2
+    }
+    [[ "$retain_as" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
+      dependency_generation_log "--retain-as label must match ^[a-z0-9][a-z0-9-]{0,63}\$: $retain_as"
       return 2
     }
   }
@@ -3618,6 +3689,8 @@ dependency_generation_main() {
       # not a cache miss to hide by republishing a replacement.
       dependency_generation_select_input_fingerprint \
         "$exact_input" "$generation_root" || return $?
+      dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+        "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
       printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
         "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
         "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
@@ -3646,6 +3719,8 @@ dependency_generation_main() {
         }
         dependency_generation_release_selector_lease
         dependency_generation_cleanup_exact_scratch
+        dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+          "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
         printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
           "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
           "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
@@ -3709,6 +3784,8 @@ dependency_generation_main() {
     # candidate key so incompatible live/candidate inputs remain a typed miss.
     dependency_generation_select_input_fingerprint \
       "$exact_input" "$generation_root" || return $?
+    dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
   fi
   dependency_generation_cleanup_exact_scratch
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \

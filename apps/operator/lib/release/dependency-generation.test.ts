@@ -197,10 +197,11 @@ function ensureRef(
   ref: string,
   env: NodeJS.ProcessEnv = {},
   generationRoot?: string,
+  extraArgs: string[] = [],
 ): ShellResult {
   const args = [SCRIPT, '--integration', integration];
   if (generationRoot) args.push('--generation-root', generationRoot);
-  args.push('--ensure-ref', ref);
+  args.push('--ensure-ref', ref, ...extraArgs);
   const result = spawnSync(
     'bash',
     args,
@@ -1047,6 +1048,98 @@ describe('immutable dependency generation', () => {
     expect(second.stderr).not.toContain('capturing live dependency manifest');
     expect(publishedIdentity(second.stdout)).toBe(publishedIdentity(first.stdout));
     expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
+  });
+
+  describe('WI-6554700010008481: --ensure-ref --retain-as ref pins', () => {
+    const LABEL = 'checkpoint-candidate';
+    const refPins = (generationRoot: string): string[] => {
+      const pins = join(generationRoot, '.pins');
+      if (!existsSync(pins)) return [];
+      return readdirSync(pins).filter((entry) => entry.startsWith('ref-') && !entry.includes('.tmp.'));
+    };
+    const readPin = (path: string): Record<string, string> =>
+      Object.fromEntries(
+        readFileSync(path, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+      );
+
+    it('pins the ensured identity once per integration and label, and refreshes it on a selector hit', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'candidate');
+
+      const first = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(first.status, first.stderr).toBe(0);
+      const pins = refPins(generationRoot);
+      expect(pins).toHaveLength(1);
+      const pin = readPin(join(generationRoot, '.pins', pins[0]));
+      expect(pin).toMatchObject({
+        kind: 'ref',
+        label: LABEL,
+        identity: publishedIdentity(first.stdout),
+        ref: candidate,
+      });
+      expect(Number(pin.expires)).toBeGreaterThan(Number(pin.updated));
+
+      const second = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(second.status, second.stderr).toBe(0);
+      expect(refPins(generationRoot)).toEqual(pins);
+      expect(second.stderr).toContain(
+        `retained ${publishedIdentity(second.stdout)} as ref pin '${LABEL}' for ${candidate}`,
+      );
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('keeps a ref-pinned generation through recency retention until the pin expires', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'candidate');
+      const ensured = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(ensured.status, ensured.stderr).toBe(0);
+      const pinned = join(generationRoot, publishedIdentity(ensured.stdout));
+      expect(existsSync(pinned)).toBe(true);
+
+      const newer: string[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        writeFileSync(join(integration, 'node_modules/pkg/index.js'), `root-v${i}\n`);
+        const result = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+        expect(result.status, result.stderr).toBe(0);
+        newer.push(join(generationRoot, publishedIdentity(result.stdout)));
+      }
+      // Control: recency retention ran and kept only the newest unpinned publish.
+      expect(existsSync(newer[0])).toBe(false);
+      expect(existsSync(newer[1])).toBe(false);
+      expect(existsSync(newer[2])).toBe(true);
+      // The ensured generation is older than all three and survives only by its pin.
+      expect(existsSync(pinned)).toBe(true);
+
+      const [pinName] = refPins(generationRoot);
+      const pinPath = join(generationRoot, '.pins', pinName);
+      writeFileSync(pinPath, readFileSync(pinPath, 'utf8').replace(/^expires=\d+$/m, 'expires=1'));
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-after-expiry\n');
+      const afterExpiry = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+      expect(afterExpiry.status, afterExpiry.stderr).toBe(0);
+      expect(afterExpiry.stderr).toContain(`removing expired or stale ref pin ${pinName}`);
+      expect(existsSync(pinPath)).toBe(false);
+      expect(existsSync(pinned)).toBe(false);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('refuses --retain-as without --ensure-ref or with a malformed label', () => {
+      const integration = makeIntegration();
+      const candidate = commitFixture(integration, 'candidate');
+      const orphan = spawnSync('bash', [SCRIPT, '--integration', integration, '--retain-as', LABEL], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      expect(orphan.status).toBe(2);
+      expect(String(orphan.stderr)).toContain('--retain-as requires --ensure-ref');
+
+      const malformed = ensureRef(integration, candidate, {}, undefined, ['--retain-as', 'Bad Label']);
+      expect(malformed.status).toBe(2);
+      expect(malformed.stderr).toContain('--retain-as label must match');
+      expect(refPins(join(integration, '.papercusp/dependency-generations'))).toEqual([]);
+    });
   });
 
   it('WI-10003403: direct --ensure-ref honors the environment generation root unless a CLI root is explicit', () => {
