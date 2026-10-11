@@ -2499,12 +2499,12 @@ export const FLAGS = {
   // default-on — additive + reversible; OFF ⇒ a byte-identical passthrough (ungoverned, the
   // pre-P-002 behaviour). The kill-switch if admission ever mis-paces a hot path.
   EMBED_ADMISSION: "papercusp-embed-admission",
-  // enforce-system-on-generic-work-2026-06-29 P-006: the TEST-COMPLETION GATE on
-  // work_items:complete — a feature work-item moved to a terminal state must have its plan-derived
-  // test-requiring VALs passing (reuses the harness-test-rollup). DEFAULT ON (graduated 2026-07-04,
-  // dark-flag-age review EI-7280: the done-without-test watchdog P-009 confirmed zero false-refusal
-  // signals across every tick since activation — not in DARK_FLAGS). OFF ⇒ completion is
-  // byte-identical to today (the gate is never consulted). FAIL-OPEN even when ON.
+  // RETIRED CONSUMER (verification-system-improvements-2026-10-10 P-003): the VAL-* test-completion
+  // gate this flag switched (enforce-system-on-generic-work-2026-06-29 P-006) is no longer called by
+  // work_items:complete — the requirement contract (acceptance bars + spec clauses) replaced inline
+  // VAL-* assertions. The only remaining reference is the dead module
+  // packages/operator-core/lib/harness-test-gate.ts, whose deletion is pending owner action; delete
+  // this key in the same change. Flipping it has NO effect on completion.
   TEST_COMPLETION_GATE: "papercusp-test-completion-gate",
   // ratified-mockup-implementation-validation-2026-08-24 P-007: the DESIGN-EVIDENCE gate on
   // work_items:complete. When a work-item's feature has a ratified design reference, every
