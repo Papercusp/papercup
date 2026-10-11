@@ -26,17 +26,20 @@
 import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
 import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { HEADLINE_OPTS } from './headline-options';
+export { HEADLINE_OPTS } from './headline-options';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
 import type { Sql, TransactionSql } from 'postgres';
 import {
   EXACT_LIST_MAX_AND_ROWS,
   bm25LegIfAvailable,
-  bm25TopK,
   headlineTsQuery,
   lexicalEngine,
   lexicalLeg,
   mergeExactAndBm25,
+  runBm25TopK,
   type LexicalLeg,
+  type SqlFragment,
 } from '../../search/lexical/rank';
 import type { Bm25CorpusTable } from '../../search/lexical/corpora';
 // WI-37603: every `embedding` leg below runs through this. Without it an HNSW
@@ -73,22 +76,6 @@ function proseProfileSql(
 ) {
   return PROSE_EMBEDDING_SPACE.sourceFilterSql(p, profileColumn, modeColumn);
 }
-
-/**
- * Standard ts_headline options for all four surfaces.
- *
- * EXPORTED so the RENDERERS can pin themselves to it instead of re-asserting
- * the delimiter from memory. `StartSel` overrides ts_headline's `<b>` default,
- * and a renderer that assumes the default silently stops highlighting: it looks
- * for a marker the engine never sends, finds none, and emits the whole headline
- * as plain text with the literal `<mark>` tags showing. Nothing throws, and a
- * renderer test written against the ASSUMED delimiter passes just as happily as
- * one written against the real one — which is exactly how
- * `GlobalSearchDialog.renderHighlight` sat splitting on `<b>` while every test
- * stayed green. Derive the marker from here; do not copy it.
- */
-export const HEADLINE_OPTS =
-  'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
 
@@ -289,8 +276,9 @@ function lexicalSql(
    * ─── BM25_TOP_K_NOTE (R-18, D-019) ──────────────────────────────────────────
    * The BM25 branch's `rank` and `match` each re-evaluate the `<@>` distance per row.
    * The two BM25 callers below (work_item, session_turn) therefore splice neither: they
-   * read the top-k matches from `bm25TopK` (rank.ts, which documents the shape and the
-   * measurement) and derive `rank` as `-bm25_d`.
+   * read the top-k matches from `bm25TopK` through `runBm25TopK` (rank.ts, which documents
+   * the shape, the measurement, and the scan-score check in BM25_SCAN_SCORE_NOTE) and
+   * derive `rank` as `-bm25_d`.
    */
   bm25?: LexicalLeg | null,
 ) {
@@ -833,7 +821,26 @@ const workItem: SearchSource = {
     // whatever runs next on the same connection).
     const rows = (await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
-      const primary = (await list(tx, lex, from, bm25?.distance ?? null)) as unknown as Array<{ issue_id: string; rank: number }>;
+      // BM25_TOP_K_NOTE / BM25_SCAN_SCORE_NOTE (rank.ts): the BM25 list is the top-k shape,
+      // scored by the index scan when the server allows it and checked by runBm25TopK.
+      const primary = (bm25?.distance
+        ? await runBm25TopK(
+            sql as unknown as Sql,
+            tx as unknown as Sql,
+            {
+              distance: bm25.distance,
+              scanScore: bm25.scanScore ?? null,
+              columns: sql`ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+                           coalesce(ei.updated_at, ei.created_at) AS updated_at`,
+              from,
+              where: sql`ei.workspace_id = ${workspaceId}
+                     AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+              limit,
+            },
+            async (topK) => (await list(tx, lex, from, topK)) as unknown as Array<{ issue_id: string; rank: number }>,
+            (r) => -r.rank,
+          )
+        : await list(tx, lex, from)) as unknown as Array<{ issue_id: string; rank: number }>;
       if (!exact) return primary;
       const [gate] = (await tx`
         SELECT count(*)::int AS n FROM (
@@ -862,26 +869,18 @@ const workItem: SearchSource = {
       tx: TransactionSql,
       l: ReturnType<typeof lexicalSql>,
       source: typeof from,
-      /** The BM25 distance when `l` is the BM25 leg: selects the top-k shape (BM25_TOP_K_NOTE). */
-      distance: LexicalLeg['order'] | null = null,
+      /** The BM25 leg's top-k subquery body (`bm25TopK`, via `runBm25TopK`): selects the top-k shape. */
+      topK: SqlFragment | null = null,
     ) {
-      if (distance) {
-        // See BM25_TOP_K_NOTE / bm25TopK: distance computed once, match applied after the limit.
+      if (topK) {
+        // See BM25_TOP_K_NOTE / bm25TopK: scored once, match applied after the limit.
         return tx`
       ${l.with}
       SELECT s.issue_id, s.scope, s.title, s.body, s.kind, s.state, s.severity, s.lane, s.updated_at,
              1 AS coverage,
              (-s.bm25_d)::float8 AS rank,
              ${headline(l, sql`s.title`, sql`s.body`)} AS highlight
-        FROM (${bm25TopK(sql as unknown as Sql, {
-          distance,
-          columns: sql`ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
-                       coalesce(ei.updated_at, ei.created_at) AS updated_at`,
-          from: source,
-          where: sql`ei.workspace_id = ${workspaceId}
-                 AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
-          limit,
-        })}) s ${l.join}
+        FROM (${topK}) s ${l.join}
     ORDER BY s.bm25_d
     `;
       }
@@ -1194,12 +1193,12 @@ const sessionTurn: SearchSource = {
       // PRIMARY — index-served only (`lex.match` carries no substring arm).
       const list = (
         l: ReturnType<typeof lexicalSql>,
-        /** The BM25 distance when `l` is the BM25 leg: selects the top-k shape (BM25_TOP_K_NOTE). */
-        distance: LexicalLeg['order'] | null = null,
-      ) => distance
-        // See BM25_TOP_K_NOTE / bm25TopK: distance computed once, match applied after the
-        // limit. The BM25 leg's fallbackOnly is the constant FALSE, so its highlight is
-        // the plain headline.
+        /** The BM25 leg's top-k subquery body (`bm25TopK`, via `runBm25TopK`): selects the top-k shape. */
+        topK: SqlFragment | null = null,
+      ) => topK
+        // See BM25_TOP_K_NOTE / bm25TopK: scored once, match applied after the limit.
+        // The BM25 leg's fallbackOnly is the constant FALSE, so its highlight is the plain
+        // headline.
         ? tx`
       ${l.with}
       SELECT s.source_kind, s.session_id, s.turn_idx, s.speaker, s.owner, s.harness_slug, s.ts, s.text,
@@ -1210,13 +1209,7 @@ const sessionTurn: SearchSource = {
                : p.sql`ts_headline(${l.headlineConfig}, left(s.text, 4000),
                          ${l.headlineQuery},
                          ${HEADLINE_OPTS})`} AS highlight
-        FROM (${bm25TopK(p.sql as unknown as Sql, {
-          distance,
-          columns: p.sql`source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text`,
-          from: p.sql`harness_shared.session_turns`,
-          where: scoped(),
-          limit: p.limit,
-        })}) s ${l.join}
+        FROM (${topK}) s ${l.join}
     ORDER BY s.bm25_d
     `
         : tx`
@@ -1237,7 +1230,24 @@ const sessionTurn: SearchSource = {
          AND ${l.match}
     ORDER BY ${l.order} LIMIT ${p.limit}
     `;
-      let primary = (await list(lex, bm25?.distance ?? null)) as unknown as SessionTurnLexicalRow[];
+      // BM25_SCAN_SCORE_NOTE (rank.ts): scored by the index scan when the server allows it,
+      // checked by runBm25TopK.
+      let primary = (bm25?.distance
+        ? await runBm25TopK(
+            p.sql as unknown as Sql,
+            tx as unknown as Sql,
+            {
+              distance: bm25.distance,
+              scanScore: bm25.scanScore ?? null,
+              columns: p.sql`source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text`,
+              from: p.sql`harness_shared.session_turns`,
+              where: scoped(),
+              limit: p.limit,
+            },
+            async (topK) => (await list(lex, topK)) as unknown as SessionTurnLexicalRow[],
+            (r) => -r.rank,
+          )
+        : await list(lex)) as unknown as SessionTurnLexicalRow[];
       if (exact) {
         const [gate] = (await tx`
           SELECT count(*)::int AS n FROM (
