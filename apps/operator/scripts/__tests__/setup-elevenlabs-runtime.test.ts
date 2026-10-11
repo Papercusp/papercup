@@ -1,4 +1,5 @@
 import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -53,6 +54,20 @@ describe('tutorial WebSocket local audio assets', () => {
     await writeFile(join(root, 'package.json'), '{}');
     await expect(setupElevenLabsRuntime(root)).rejects.toThrow();
     await expect(stat(join(root, 'public', 'elevenlabs-runtime'))).rejects.toThrow();
+  });
+
+  it('keeps every generated asset out of source dirtiness so gate pass proofs remain reusable', async () => {
+    const names = await setupElevenLabsRuntime(await fixture());
+    const paths = names.map(name => `apps/operator/public/elevenlabs-runtime/${name}`);
+    const ignored = execFileSync('git', ['-C', repository, 'check-ignore', '--no-index', '--verbose', '--stdin'], {
+      input: paths.join('\n') + '\n', encoding: 'utf8',
+    }).trim().split('\n');
+    // Require the repository rule, not an operator's machine-local global excludes.
+    expect(ignored).toHaveLength(paths.length);
+    for (const [index, file] of paths.entries()) {
+      expect(ignored[index]).toMatch(/^\.gitignore:\d+:apps\/operator\/public\/elevenlabs-runtime\/\t/);
+      expect(ignored[index]).toContain('\t' + file);
+    }
   });
 
   it('runs in install and Vite prebuild so clean source builds contain the assets', async () => {
