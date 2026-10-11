@@ -309,6 +309,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'nested tools:invoke wrapper preserves a deliberate checkpoint safety refusal in JSON error_message; it is caller-directed, not structural',
   },
   {
+    n: 1, errorCode: 'checkpoint_conflict', status: 'error',
+    message: 'The carry-note changed after the supplied contentHash was read; no note was written. Re-read the current carry-note and retry with its contentHash, or reconcile before writing.',
+    expectedClass: 'caller',
+    note: 'direct loop:checkpoint optimistic-CAS refusal: the caller must refresh/reconcile its stale expectedHash, not file a structural tool bug (EI-25276774946067116)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"error":"checkpoint_conflict","retryable":false,"expectedHash":"aaaaaaaaaaaa","currentHash":"bbbbbbbbbbbb"}',
+    expectedClass: 'caller',
+    note: 'nested tools:invoke wrapper preserves the expected loop:checkpoint CAS refusal in JSON error_message; classify the stale-state refusal as caller-side too',
+  },
+  {
     n: 14, errorCode: 'handler_error', status: 'error',
     message: '{"ok":false,"requested":false,"error":"flush-required","tripwires":[{"kind":"missing-checkpoint","subject":"WI-10004595"}]}',
     expectedClass: 'caller',
