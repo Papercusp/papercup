@@ -2,6 +2,7 @@
  * Phase 4 T2.3 scratch GC + quota unit tests.
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 // Pass-through spies on the SYNCHRONOUS fs calls, so a test can prove the reservation hot path
 // (WI-10004513) and the GC sweep (WI-10005135) never touch the disk synchronously. Behaviour is
@@ -40,7 +41,8 @@ import {
 } from 'node:fs';
 import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import {
   runScratchGc,
   reserveScratchSpace,
@@ -1622,6 +1624,64 @@ describe('deferred scratch quota recovery', () => {
     } finally {
       releaseHolder();
       vi.useRealTimers();
+      await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+    }
+  });
+
+  it('reports the request trace ID from a filesystem scratch mutex owner', async () => {
+    const workspaceId = 'ws-Q';
+    const holderTraceId = '5c881ab6-288d-429b-a2fb-d86d54341588';
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const mutexName = `papercusp-scratch-quota-${mutexDigest}`;
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(mutexName, async () => {
+      startedHolder();
+      await holderGate;
+    }, {
+      intent: {
+        subsystem: 'scratch-quota',
+        operation: 'write',
+        workspaceId,
+        requestTraceId: holderTraceId,
+      },
+      waitingNoticeIntervalMs: 5_000,
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let observedWait!: () => void;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const waiterObserved = new Promise<void>((resolveObserved, rejectObserved) => {
+      observedWait = resolveObserved;
+      timeout = setTimeout(() => rejectObserved(new Error('filesystem mutex waiter was not observed')), 2_000);
+    });
+    let waiter: Promise<void> | undefined;
+    try {
+      await holderStarted;
+      waiter = writeWithScratchQuota({
+        workspaceId,
+        filePath: join(makeRunDir(workspaceId, 'mutex', UUID(42), 16), 'waiter.bin'),
+        bytes: 1,
+        onTiming: (row) => {
+          timings.push(row);
+          if (row.progress?.mutexWaitOwner) observedWait();
+        },
+      }, async () => {});
+      await waiterObserved;
+      expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
+        layer: 'filesystem',
+        operation: 'write',
+        subsystem: 'scratch-quota',
+        requestTraceId: holderTraceId,
+      });
+      releaseHolder();
+      await holder;
+      await waiter;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseHolder();
       await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
     }
   });

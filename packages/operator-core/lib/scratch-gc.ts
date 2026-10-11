@@ -81,7 +81,7 @@ const scratchMutexState = pinModuleState('@papercusp/operator-core.scratch-gc.mu
   new Map<string, Promise<void>>(),
 );
 const scratchMutexWaiters = pinModuleState('@papercusp/operator-core.scratch-gc.mutex-waiters', () =>
-  new Map<string, Array<{ operation: string; startedAt: number }>>(),
+  new Map<string, Array<{ operation: string; startedAt: number; requestTraceId?: string }>>(),
 );
 
 interface SharedScratchQuotaState {
@@ -175,7 +175,12 @@ function withScratchWorkspaceMutex<T>(
       : undefined;
     try {
       return await withFsMutex(mutexName, run, {
-        intent: { subsystem: 'scratch-quota', operation, workspaceId },
+        intent: {
+          subsystem: 'scratch-quota',
+          operation,
+          workspaceId,
+          ...(requestTraceId ? { requestTraceId: requestTraceId.slice(0, 120) } : {}),
+        },
         waitingNoticeIntervalMs: 5_000,
         onWaiting: observedOnWaiting,
         onAcquired: onAcquired
@@ -1554,12 +1559,15 @@ function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
       : undefined;
     const operation = layer === 'process-local' ? parsed.operation : intent?.operation;
     const subsystem = intent?.subsystem;
+    const requestTraceId = typeof parsed.requestTraceId === 'string'
+      ? parsed.requestTraceId
+      : intent?.requestTraceId;
     return {
       layer,
       ...(typeof operation === 'string' ? { operation: operation.slice(0, 100) } : {}),
       ...(typeof subsystem === 'string' ? { subsystem: subsystem.slice(0, 100) } : {}),
-      ...(typeof parsed.requestTraceId === 'string'
-        ? { requestTraceId: parsed.requestTraceId.slice(0, 120) }
+      ...(typeof requestTraceId === 'string'
+        ? { requestTraceId: requestTraceId.slice(0, 120) }
         : {}),
       ...(Number.isSafeInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
       ...(typeof parsed.host === 'string' ? { host: parsed.host.slice(0, 120) } : {}),
