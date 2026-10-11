@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { readdir, readFile, lstat, open } from 'node:fs/promises';
+import { readdir, readFile, lstat, open, realpath } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
@@ -23,7 +23,7 @@ import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
 import { resolveSqlDir } from '../migration-drift';
-import { stripCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
+import { stripCommentsAndStrings, stripSqlCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -608,29 +608,89 @@ export function migrationProducerTables(source: string): string[] {
 }
 
 /** Read literal app migrations from canonical registered project paths without executing source. */
-export async function registeredProjectMigrationSources(projects: readonly { slug: string; path: string }[]): Promise<Array<{ producer: string; tables: string[] }>> {
-  const sources: Array<{ producer: string; tables: string[] }> = [];
+export async function registeredProjectMigrationSources(projects: readonly { slug: string; path: string }[], units: readonly CensusDeclaration[] = []): Promise<MigrationCensusSource[]> {
+  const sources: MigrationCensusSource[] = [];
+  const roots = [...projects];
+  // Installed definitions establish source locations; service names carry no
+  // classification authority. Never inspect EnvironmentFile credential values.
+  for (const unit of units) {
+    if (unit.kind !== 'unit' || !unit.name.endsWith('.service') || unit.name.includes('/') || !unit.producer.startsWith('unit-definition:')) continue;
+    const body = await boundedSource(join(unit.producer.slice('unit-definition:'.length), unit.name), 65_536);
+    if (!body) continue;
+    let section = '';
+    let workingDirectory: string | undefined;
+    for (const line of body.split('\n')) {
+      const heading = line.trim().match(/^\[([^\]]+)\]$/);
+      if (heading) { section = heading[1]; continue; }
+      const match = section === 'Service' && line.trim().match(/^WorkingDirectory=(.*)$/);
+      if (!match) continue;
+      const value = match[1].trim().replace(/^"([^"\n]*)"$/, '$1').replace(/%h/g, homedir());
+      workingDirectory = isAbsolute(value) && !/[\n%\\]/.test(value) ? value : undefined;
+    }
+    if (workingDirectory) roots.push({ slug: `unit:${unit.root}:${unit.name}`, path: workingDirectory });
+  }
   const seen = new Set<string>();
-  for (const project of projects) {
+  for (const project of roots) {
     if (seen.has(project.path)) continue;
     seen.add(project.path);
     const path = join(project.path, 'packages', 'data', 'src', 'migrations.ts');
-    let handle;
-    try {
-      if (!(await lstat(path)).isFile()) continue;
-      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    } catch (error) {
-      if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
-      throw error;
-    }
-    try {
-      const metadata = await handle.stat();
-      if (!metadata.isFile() || metadata.size > 1_048_576) continue;
-      const tables = migrationProducerTables(await handle.readFile('utf8'));
+    const literalMigrations = await boundedSource(path);
+    if (literalMigrations) {
+      const tables = migrationProducerTables(literalMigrations);
       if (tables.length >= 2) sources.push({ producer: `app-migrations:registry:${project.slug}:${project.path}`, tables });
-    } finally { await handle.close(); }
+    }
+    const config = await boundedSource(join(project.path, 'drizzle.config.ts'));
+    const output = config && literalDrizzleOutput(config);
+    if (!output) continue;
+    const directory = resolve(project.path, output);
+    const suffix = relative(project.path, directory);
+    if (!suffix || suffix === '..' || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) continue;
+    try {
+      if (await realpath(directory) !== directory) continue;
+      const names = await readdir(directory);
+      if (names.length > 1000) throw new Error('Project migration directory bound exceeded');
+      for (const name of names.filter(name => /^\d+[^/]*\.sql$/.test(name)).sort()) {
+        const sql = await boundedSource(join(directory, name));
+        const source = sql && sqlMigrationCensusSource(sql, `app-migrations:registry:${project.slug}:${project.path}:${output}/${name}`);
+        if (source) sources.push(source);
+      }
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
   }
   return sources;
+}
+
+async function boundedSource(path: string, bound = 1_048_576): Promise<string | null> {
+  let handle;
+  try {
+    if (await realpath(path) !== resolve(path)) return null;
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > bound) return null;
+    return await handle.readFile('utf8');
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
+    throw error;
+  } finally { await handle?.close(); }
+}
+
+/** Only a literal defineConfig export is evidence; never evaluate TS or imports. */
+function literalDrizzleOutput(source: string): string | null {
+  const file = ts.createSourceFile('drizzle.config.ts', source, ts.ScriptTarget.Latest, true);
+  for (const statement of file.statements) {
+    if (!ts.isExportAssignment(statement) || statement.isExportEquals) continue;
+    const call = statement.expression;
+    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.expression.text !== 'defineConfig' || call.arguments.length !== 1) continue;
+    const config = call.arguments[0];
+    if (!ts.isObjectLiteralExpression(config) || config.properties.some(property => !ts.isPropertyAssignment(property))) continue;
+    const outputs = config.properties.filter(property => ts.isPropertyAssignment(property) &&
+      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === 'out');
+    if (outputs.length !== 1 || !ts.isPropertyAssignment(outputs[0]) || !ts.isStringLiteral(outputs[0].initializer)) return null;
+    const output = outputs[0].initializer.text;
+    return !isAbsolute(output) && !/[\\%]/.test(output) ? output : null;
+  }
+  return null;
 }
 
 /** A producer's consecutive migration-table prefix establishes retained state.
@@ -647,12 +707,18 @@ export interface MigrationCensusSource {
  * syntax fails closed; later additive migrations need not erase older provenance.
  */
 export function sqlMigrationCensusSource(source: string, producer: string): MigrationCensusSource | null {
-  const code = stripCommentsAndStrings(source, 'migration.sql');
+  const keywords = stripCommentsAndStrings(source, 'migration.sql');
+  const code = stripSqlCommentsAndStrings(source, { preserveIdentifiers: true });
+  const identifier = '(?:[a-z_][a-z0-9_]*|"[a-z_][a-z0-9_]*")';
+  const normalize = (name: string) => name.startsWith('"') ? name.slice(1, -1) : name.toLowerCase();
   const tables: string[] = [];
   const columns: { table: string; name: string; type: string }[] = [];
-  const creates = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)\s*\(/gi;
+  const creates = new RegExp(`\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s*\\(`, 'gi');
   for (const match of code.matchAll(creates)) {
-    const table = match[1].toLowerCase();
+    // Preserved identifiers may themselves contain SQL-looking text. Only live
+    // keywords in the fully masked stream can introduce schema evidence.
+    if (!/^CREATE\s+TABLE\b/i.test(keywords.slice(match.index))) continue;
+    const table = match[2] ? `${normalize(match[1])}.${normalize(match[2])}` : `public.${normalize(match[1])}`;
     let depth = 1;
     let start = match.index! + match[0].length;
     const parts: string[] = [];
@@ -669,9 +735,9 @@ export function sqlMigrationCensusSource(source: string, producer: string): Migr
     const tableColumns: typeof columns = [];
     for (const part of parts) {
       if (/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(part)) continue;
-      const column = part.match(/^([a-z_][a-z0-9_]*)\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp\s+with\s+time\s+zone)\b/i);
+      const column = part.match(new RegExp(`^(${identifier})\\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp\\s+with\\s+time\\s+zone)\\b`, 'i'));
       if (!column) return null;
-      tableColumns.push({ table, name: column[1].toLowerCase(), type: /^(timestamptz|timestamp)/i.test(column[2]) ? 'timestamp with time zone' : column[2].toLowerCase() });
+      tableColumns.push({ table, name: normalize(column[1]), type: /^(timestamptz|timestamp)/i.test(column[2]) ? 'timestamp with time zone' : column[2].toLowerCase() });
     }
     if (!tableColumns.length) return null;
     tables.push(table);

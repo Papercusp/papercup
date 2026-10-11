@@ -352,6 +352,16 @@ describe('secret census producer adapters', () => {
     expect(sqlMigrationCensusSource('CREATE TABLE x.first (id text); CREATE TABLE x.second (id text', 'fixture')).toBeNull();
     expect(sqlMigrationCensusSource("CREATE TABLE x.first (id text DEFAULT 'a,b)'); CREATE TABLE x.second (id bigint, CHECK (id > 0));", 'fixture')?.tables).toEqual(['x.first', 'x.second']);
   });
+  it('preserves quoted identifier case while rejecting SQL-looking identifier prose', () => {
+    const source = sqlMigrationCensusSource('CREATE TABLE "Records" ("Id" text); CREATE TABLE public."Receipts" (id bigint);', 'quoted');
+    expect(source?.tables).toEqual(['public.Records', 'public.Receipts']);
+    expect(source?.columns).toEqual([{ table: 'public.Records', name: 'Id', type: 'text' }, { table: 'public.Receipts', name: 'id', type: 'bigint' }]);
+    const entry = { kind: 'database' as const, root: 'postgres-cluster:123', name: 'app' };
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns)).toHaveLength(1);
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables.map(name => name.toLowerCase()), [source!], source!.columns)).toEqual([]);
+    expect(sqlMigrationCensusSource('SELECT "CREATE TABLE x.first (id text); CREATE TABLE x.second (id text)";', 'spoof')).toBeNull();
+    expect(sqlMigrationCensusSource('/* outer /* CREATE TABLE x.first (id text) */ CREATE TABLE x.second (id text) */', 'spoof')).toBeNull();
+  });
   it('discovers registered sibling migrations while excluding linked and missing sources', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'registered-migration-census-'));
     try {
@@ -368,6 +378,34 @@ describe('secret census producer adapters', () => {
       expect(result).toEqual([{ producer: `app-migrations:registry:calendar:${app}`, tables: ['public.calendars', 'public.calendar_events'] }]);
       expect(migrationDatabaseCensusDeclarations({ kind: 'database', root: 'postgres-cluster:123', name: 'calendar_app' }, result[0].tables, result)[0])
         .toMatchObject({ classification: 'state', producer: result[0].producer });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it('discovers literal Drizzle SQL from registered and installed-unit roots without executing config', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'drizzle-census-'));
+    try {
+      const app = join(directory, 'app');
+      await mkdir(join(app, 'drizzle'), { recursive: true });
+      const config = join(app, 'drizzle.config.ts');
+      await writeFile(config, "export default defineConfig({ out: './drizzle' }); throw new Error('must not execute');");
+      await writeFile(join(app, 'drizzle/0000_init.sql'), 'CREATE TABLE "Records" ("Id" text); CREATE TABLE "Receipts" (id bigint);');
+      await writeFile(join(directory, 'app.service'), `[Unit]\nWorkingDirectory=/not/source\n[Service]\nWorkingDirectory=${app}\nEnvironmentFile=/must/not/read\n`);
+      const units = await unitCensusDeclarations(directory, 'user');
+      const registered = await registeredProjectMigrationSources([{ slug: 'app', path: app }]);
+      expect(registered[0]?.tables).toEqual(['public.Records', 'public.Receipts']);
+      const installed = await registeredProjectMigrationSources([], units);
+      expect(installed[0]?.tables).toEqual(registered[0].tables);
+      expect(installed[0]?.producer).toContain('unit:systemd-user:app.service');
+      for (const out of ["process.env.OUT", "'../outside'", "'./linked'", "'./drizzle', ...overrides"]) {
+        await writeFile(config, `export default defineConfig({ out: ${out} });`);
+        expect(await registeredProjectMigrationSources([], units)).toEqual([]);
+      }
+      await symlink(join(app, 'drizzle'), join(app, 'linked'));
+      await writeFile(config, "export default defineConfig({ out: './linked' });");
+      expect(await registeredProjectMigrationSources([], units)).toEqual([]);
+      await rm(config);
+      await writeFile(join(directory, 'external-config.ts'), "export default defineConfig({ out: './drizzle' });");
+      await symlink(join(directory, 'external-config.ts'), config);
+      expect(await registeredProjectMigrationSources([], units)).toEqual([]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it('joins local service database config with the measured catalogue and excludes remote endpoints', async () => {

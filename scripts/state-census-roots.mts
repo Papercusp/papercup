@@ -98,6 +98,7 @@ if (args.includes('--restore-events') || hostCatalogs) {
         catalogEntries.push(...await unitCensusEntries(scope));
         unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
       }
+      migrationSources.push(...await registeredProjectMigrationSources([], unitDeclarations));
       declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path)));
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
