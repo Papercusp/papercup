@@ -1955,6 +1955,56 @@ describe('routines:list', () => {
     expect(bare.routines[0]).toHaveProperty('lastFiredAt', null);
   });
 
+  it('EI-25418215735104183: bounds nested health strings, arrays, and the total trimmed routine rows', () => {
+    const lastError = 'spill evidence '.repeat(900);
+    const heldLocks = Array.from({ length: 35 }, (_, index) => `git-sync-lock-${index}`);
+    const routines = Array.from({ length: 12 }, (_, index) => ({
+      installSlug: 'papercusp',
+      name: `git-sync-${index}`,
+      cron: '0 */2 * * * *',
+      active: true,
+      nextFireAt: null,
+      group: 'release',
+      paused: null,
+      lastFiredAt: null,
+      lastFire: null,
+      health: {
+        last_error: lastError,
+        git_sync_freshness: {
+          execution: { holds_exclusive_locks: heldLocks },
+          safe_to_restart: false,
+        },
+      },
+    }));
+    const trimmed = listTool.shape!.trimmed!({ count: routines.length, routines }, { args: {} } as never) as {
+      count: number;
+      routines: Array<Record<string, unknown>>;
+    };
+    const firstHealth = trimmed.routines[0]!.health as {
+      last_error: string;
+      git_sync_freshness: {
+        execution: { holds_exclusive_locks: unknown[] };
+        safe_to_restart: boolean;
+      };
+    };
+    const locks = firstHealth.git_sync_freshness.execution.holds_exclusive_locks;
+
+    expect(firstHealth.last_error).toContain('[TRUNCATED +');
+    expect(firstHealth.last_error.length).toBeLessThanOrEqual(1_000);
+    expect(firstHealth.git_sync_freshness.safe_to_restart).toBe(false);
+    expect(locks).toHaveLength(21);
+    expect(locks.slice(0, 20)).toEqual(heldLocks.slice(0, 20));
+    expect(locks[20]).toMatchObject({ __papercusp_truncated__: true, reason: 'array-items', omitted: 15 });
+    expect(trimmed.routines.at(-1)).toMatchObject({
+      installSlug: '(truncated)',
+      name: expect.stringContaining('showing '),
+    });
+    expect(trimmed.count).toBe(routines.length);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_800);
+    expect(routines[0]!.health.last_error).toBe(lastError);
+    expect(routines[0]!.health.git_sync_freshness.execution.holds_exclusive_locks).toBe(heldLocks);
+  });
+
   it('CONTROL: the PRE-FIX allowlist is caught — proving the guard above can fail', async () => {
     // A guard that has never failed is a guard nobody has tested. Rather than mutate
     // production code in this shared tree to prove it (the sweep-race the repo

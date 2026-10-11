@@ -11,6 +11,7 @@ import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
+import { trimToByteBudget } from '../_bound-output';
 import { formatIdleAge } from '../../format/relative-time';
 // Pure, import-free module (see its header) — safe to pull into a tool without dragging the
 // validator's pg/system-action-registry dependencies along.
@@ -985,6 +986,138 @@ export function applyDerivedGitSyncHeadline(
   };
 }
 
+// Health blobs are free-form JSONB and can carry long error strings and nested
+// execution arrays. The default trimmed result must be bounded before the result
+// door attempts to spill it; the full tool tier still returns the original data.
+const TRIMMED_HEALTH_JSON_CHARS = 2_600;
+const TRIMMED_HEALTH_STRING_CHARS = 1_000;
+const TRIMMED_HEALTH_ARRAY_ITEMS = 20;
+const TRIMMED_HEALTH_OBJECT_ENTRIES = 40;
+const TRIMMED_HEALTH_MAX_DEPTH = 10;
+const TRIMMED_HEALTH_MARKER_RESERVE = 96;
+const TRIMMED_ROUTINE_ROWS_JSON_CHARS = 4_200;
+const HEALTH_TRUNCATION_KEY = '__papercusp_truncated__';
+
+function healthTruncationMarker(reason: string, omitted?: number): Record<string, unknown> {
+  return {
+    [HEALTH_TRUNCATION_KEY]: true,
+    reason,
+    ...(omitted === undefined ? {} : { omitted }),
+  };
+}
+
+function uniqueHealthTruncationKey(value: Record<string, unknown>): string {
+  let key = HEALTH_TRUNCATION_KEY;
+  let suffix = 2;
+  while (Object.prototype.hasOwnProperty.call(value, key)) {
+    key = `${HEALTH_TRUNCATION_KEY}_${suffix++}`;
+  }
+  return key;
+}
+
+function clipHealthString(value: string, maxJsonChars: number): string {
+  const marker = (kept: number) => `…[TRUNCATED +${value.length - kept} chars]`;
+  if (value.length <= TRIMMED_HEALTH_STRING_CHARS && JSON.stringify(value).length <= maxJsonChars) {
+    return value;
+  }
+
+  let kept = Math.max(0, Math.min(
+    TRIMMED_HEALTH_STRING_CHARS - marker(0).length,
+    maxJsonChars - marker(0).length - 2,
+  ));
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const clipped = `${value.slice(0, kept)}${marker(kept)}`;
+    const jsonLength = JSON.stringify(clipped).length;
+    if (clipped.length <= TRIMMED_HEALTH_STRING_CHARS && jsonLength <= maxJsonChars) return clipped;
+    if (kept === 0) break;
+    const excessChars = Math.max(0, clipped.length - TRIMMED_HEALTH_STRING_CHARS);
+    const excessJson = Math.max(0, jsonLength - maxJsonChars);
+    kept = Math.max(0, kept - Math.max(1, excessChars, excessJson));
+  }
+  return marker(0);
+}
+
+/** A private, agent-facing projection bound for nested routine health values. */
+function boundTrimmedHealth(value: unknown): unknown {
+  let remaining = TRIMMED_HEALTH_JSON_CHARS;
+
+  const visit = (current: unknown, depth: number): unknown => {
+    if (current === undefined) return null;
+
+    if (typeof current === 'string') {
+      const available = Math.max(0, remaining - TRIMMED_HEALTH_MARKER_RESERVE);
+      const clipped = clipHealthString(current, available);
+      remaining -= JSON.stringify(clipped).length;
+      return clipped;
+    }
+
+    if (current === null || typeof current !== 'object') {
+      const encoded = JSON.stringify(current);
+      const size = encoded?.length ?? 4;
+      if (size <= remaining - TRIMMED_HEALTH_MARKER_RESERVE) {
+        remaining -= size;
+        return current;
+      }
+      const clipped = '[TRUNCATED: health payload budget]';
+      remaining -= JSON.stringify(clipped).length;
+      return clipped;
+    }
+
+    if (depth >= TRIMMED_HEALTH_MAX_DEPTH) {
+      const marker = healthTruncationMarker('maximum-depth');
+      remaining -= JSON.stringify(marker).length;
+      return marker;
+    }
+
+    if (Array.isArray(current)) {
+      const out: unknown[] = [];
+      remaining -= 2; // brackets
+      const limit = Math.min(current.length, TRIMMED_HEALTH_ARRAY_ITEMS);
+      let index = 0;
+      for (; index < limit; index++) {
+        const separator = out.length > 0 ? 1 : 0;
+        if (remaining < separator + TRIMMED_HEALTH_MARKER_RESERVE + 40) break;
+        remaining -= separator;
+        out.push(visit(current[index], depth + 1));
+      }
+      const omitted = current.length - index;
+      if (omitted > 0) {
+        const marker = healthTruncationMarker('array-items', omitted);
+        remaining -= (out.length > 0 ? 1 : 0) + JSON.stringify(marker).length;
+        out.push(marker);
+      }
+      return out;
+    }
+
+    const entries = Object.entries(current as Record<string, unknown>);
+    const out: Record<string, unknown> = {};
+    remaining -= 2; // braces
+    let index = 0;
+    for (; index < Math.min(entries.length, TRIMMED_HEALTH_OBJECT_ENTRIES); index++) {
+      const [key, child] = entries[index]!;
+      const separator = Object.keys(out).length > 0 ? 1 : 0;
+      const keyCost = JSON.stringify(key).length + 1 + separator; // key, colon, comma
+      if (remaining < keyCost + TRIMMED_HEALTH_MARKER_RESERVE + 40) break;
+      remaining -= keyCost;
+      out[key] = visit(child, depth + 1);
+    }
+    const omitted = entries.length - index;
+    if (omitted > 0) {
+      const marker = healthTruncationMarker('object-fields', omitted);
+      const key = uniqueHealthTruncationKey(out);
+      const separator = Object.keys(out).length > 0 ? 1 : 0;
+      remaining -= JSON.stringify(key).length + 1 + separator + JSON.stringify(marker).length;
+      out[key] = marker;
+    }
+    return out;
+  };
+
+  const bounded = visit(value, 0);
+  const serialized = JSON.stringify(bounded);
+  if (serialized && serialized.length <= TRIMMED_HEALTH_JSON_CHARS) return bounded;
+  return healthTruncationMarker('health-json-budget', serialized?.length ?? 0);
+}
+
 export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
@@ -1135,8 +1268,8 @@ export default defineTool({
       plane: z.unknown().optional(),
     })
     .passthrough(),
-  // context-trimming-tiers P-023: rows are already lean scalars, so the CAP=60 row
-  // cap plus a loud notice row IS the size control (count keeps the true total);
+  // context-trimming-tiers P-023: rows have a per-health JSON bound plus a total
+  // serialized row budget and a loud notice row (count keeps the true total);
   // standard falls through to full.
   //
   // This comment used to say trimmed "drops the two rarely-read columns". It was
@@ -1158,7 +1291,7 @@ export default defineTool({
       if (Array.isArray(d.rollup)) return data; // rollup output is already a small aggregate — no trimming needed
       if (!Array.isArray(d.routines)) return data;
       const CAP = 60;
-      const rows = d.routines.slice(0, CAP).map((row) => {
+      const shapedRows = d.routines.slice(0, CAP).map((row) => {
         const r = (row ?? {}) as Record<string, unknown>;
         return {
           installSlug: r.installSlug ?? null,
@@ -1209,17 +1342,19 @@ export default defineTool({
           // unhealthy rows and the gate rows carry a body. The CAP=60 row cap is
           // untouched and remains the real size control.
           lastFiredAt: r.lastFiredAt ?? null,
-          health: r.health ?? null,
+          health: boundTrimmedHealth(r.health ?? null),
           // EI-25264102161745452: null on every unpinned row, so it costs one null
           // there; only a `name`-pinned read of a system routine carries a body.
           lastFire: r.lastFire ?? null,
           ...(r.plane ? { plane: r.plane } : {}),
         };
       });
-      if (d.routines.length > CAP) {
+      const boundedRows = trimToByteBudget(shapedRows, TRIMMED_ROUTINE_ROWS_JSON_CHARS);
+      const rows = boundedRows.kept;
+      if (d.routines.length > CAP || boundedRows.truncated) {
         rows.push({
           installSlug: '(truncated)',
-          name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name/group/limit, rollup:true, or payloadTier:"full"`,
+          name: `showing ${rows.length} of ${d.routines.length} — narrow with installSlug/name/group/limit, rollup:true, or payloadTier:"full"`,
           triggerKind: null,
           cron: null,
           targetRole: null,
