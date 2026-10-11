@@ -18,17 +18,13 @@
  * adding a new integration never needs a schema/migration change — only a
  * new key name.
  */
-import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { readOperatorState, updateOperatorState } from './operator-state-pg';
 
 export type IntegrationCredentials = Record<string, string>;
 
 async function readAll(): Promise<IntegrationCredentials> {
   const raw = await readOperatorState<IntegrationCredentials>('operator_integration_credentials');
   return raw && typeof raw === 'object' ? raw : {};
-}
-
-async function writeAll(creds: IntegrationCredentials): Promise<void> {
-  await writeOperatorState('operator_integration_credentials', creds);
 }
 
 /** Read all configured integration keys. Server-side only — full values. */
@@ -49,17 +45,19 @@ export async function readIntegrationKey(name: string): Promise<string | undefin
 export async function writeIntegrationCredentials(
   partial: Record<string, string | null>,
 ): Promise<IntegrationCredentials> {
-  const current = await readAll();
-  const next = { ...current };
-  for (const [k, v] of Object.entries(partial)) {
-    if (v === null || v === '') {
-      delete next[k];
-    } else if (typeof v === 'string') {
-      next[k] = v.trim();
+  // Snapshot before awaiting the store; callers cannot mutate a pending save.
+  const entries = Object.entries(partial);
+  return updateOperatorState<IntegrationCredentials>('operator_integration_credentials', {}, (current) => {
+    const next = { ...current };
+    for (const [k, v] of entries) {
+      if (v === null || v === '') {
+        delete next[k];
+      } else if (typeof v === 'string') {
+        next[k] = v.trim();
+      }
     }
-  }
-  await writeAll(next);
-  return next;
+    return next;
+  });
 }
 
 /** Mask a key for client display / logs: 'sk-...AbCd'. Null when too short. */
