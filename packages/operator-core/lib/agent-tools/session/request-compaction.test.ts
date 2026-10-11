@@ -251,6 +251,21 @@ vi.mock('../../carry-respawn-storm', async () => {
   };
 });
 const NO_STORM = { storm: false, reason: null, cutsSinceRealTurn: 0, cutTimes: [], lastRealTurnAt: null };
+// WI-6554700010008342: the handler scans all of /proc under a 5s production
+// deadline (NATIVE_BG_SCAN_DEADLINE_MS). On the green-checkpoint, the gate load
+// pushed that walk past the deadline, so the report came back `degraded: true`
+// and the "omits the field" case failed although nothing was alive. These cases
+// test the handler's wiring, not the deadline (native-bg-task-ledger.test.ts
+// owns that), so give the scan a deadline that load cannot exhaust. A caller-
+// supplied scanDeadlineMs still wins.
+vi.mock('../../native-bg-task-ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../native-bg-task-ledger')>('../../native-bg-task-ledger');
+  return {
+    ...actual,
+    readLiveNativeBgTasks: (input: Parameters<typeof actual.readLiveNativeBgTasks>[0]) =>
+      actual.readLiveNativeBgTasks({ scanDeadlineMs: 60_000, ...input }),
+  };
+});
 
 type Envelope = { mode: string; data: string; systemPromptAddendum?: string; sourceTranscriptPath?: string };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
