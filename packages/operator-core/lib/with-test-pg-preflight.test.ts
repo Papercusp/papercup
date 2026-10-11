@@ -52,6 +52,20 @@ describe('private API bundle durable evidence preflight', () => {
 });
 
 describe('isolated PostgreSQL durable evidence preflight', () => {
+  it.each(['', '  '])('refuses an explicitly blank sink before allocating ordinary PostgreSQL (%j)', sink => {
+    const env = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink };
+    let failure: { status: number; stdout: string; stderr: string } | undefined;
+    try {
+      execFileSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--', process.execPath, '-e', 'process.exit(91)'], {
+        cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+    } catch (error) { failure = error as typeof failure; }
+    expect(failure).toBeDefined();
+    expect(failure!.status).toBe(1);
+    expect(failure!.stderr).toContain('PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
+    expect(failure!.stdout).not.toContain('booting throwaway PG');
+  });
+
   it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])('refuses ledger receipts without an explicit sink before allocating PostgreSQL (%s)', mode => {
     for (const receiptKey of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
       const env = { ...process.env, [receiptKey]: '/tmp/unwritten-private-ledger-receipt' };

@@ -54,6 +54,13 @@ if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime)) {
   process.exit(2);
 }
 
+// An explicit-but-empty sink commonly comes from expanding an unset shell
+// variable. Refuse before allocating PG instead of silently losing evidence.
+if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined && !process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
+  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
+  process.exit(1);
+}
+
 // Evidence must outlive the private database. Require an explicit reporter-only
 // sink before bootstrapping when the caller asks for durable ledger receipts.
 // Never derive it from a product URL or silently claim a private insert survived.

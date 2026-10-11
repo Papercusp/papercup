@@ -181,7 +181,26 @@
       "result": "Anonymous /docs, Pagefind JavaScript and sitemap returned HTTP 200 with expected content types; a missing document returned HTTP 404. The Portal shut down its own Postgres and the outer wrapper verified runtimeRemoved and pgDataRemoved before exit 0.",
       "modelCalls": 0
     },
-    "qualification": "Artifact-local compiled dependencies, public bundle and anonymous runtime are verified. These receipts do not prove historical out-of-root dependency equality, hosted authentication, paid FAQ/cohort/history/live-state acceptance, human acceptance or production shipment. Original artifact, source and test lineage remain unchanged."
+    "chatProjection": {
+      "observedAt": "2026-10-11T20:39:58.144Z",
+      "taskId": "0mv4adx7w1passrh1y8",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-chat-projection-20261011T2040.json",
+      "receiptSha256": "8f0667994c56a322fc9fdd50b5d230a971b39555b79e6c7416deae25845bf5f8",
+      "log": "/tmp/tutorial-d047-chat-projection-20261011T2040.log",
+      "procedure": "Boot the unchanged standalone-entry.mjs inside maintained with-test-pg --isolated-runtime. Use the maintained PORTAL_OPERATOR_ORIGIN seam with a private deterministic loopback operator. Create an owned conversation through /api/papercup-chat/conversations, then send three turns through the compiled proxy. Assert validated granted/unavailable toolContext survives, invalid assumed authorization is dropped, tool_call/result retain only public correlation/status, and synthetic private grant, workspace, input and return fields never reach the stream.",
+      "configuration": {
+        "PORTAL_LOCAL_MODE": "1",
+        "PORTAL_LOCAL_OWNER_ID": "zero-model-chat-projection",
+        "PORTAL_OPERATOR_ORIGIN": "ephemeral deterministic loopback HTTP upstream",
+        "PORT": "ephemeral loopback port",
+        "HOSTNAME": "127.0.0.1"
+      },
+      "modelCalls": 0,
+      "result": "All three authorization variants passed on build 1DHsq9zazhmCtWqHAHyaP with unchanged sourceRootDigest 37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0. Both private databases shut down; the outer wrapper verified runtimeRemoved and pgDataRemoved in 1122ms before exit 0.",
+      "qualification": "Compiled Portal projection with a deterministic upstream only. This does not establish hosted authentication, real model authorization, paid FAQ/cohort/history/live-state acceptance or production shipment."
+    },
+    "qualification": "Artifact-local compiled dependencies, public bundle, anonymous runtime and compiled chat projection are verified within their stated scopes. These receipts do not prove historical out-of-root dependency equality, hosted authentication, paid FAQ/cohort/history/live-state acceptance, human acceptance or production shipment. Original artifact, source and test lineage remain unchanged."
   },
   "limitations": [
     "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
