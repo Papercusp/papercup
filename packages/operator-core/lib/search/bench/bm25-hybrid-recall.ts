@@ -74,13 +74,37 @@ export interface PairedCounts {
 
 export type Verdict = 'pass' | 'fail' | 'invalid';
 
+/**
+ * R-18's absolute ceilings (D-020), per source: the BM25 arm's end-to-end p95 may not exceed
+ * these even when legacy is slower. They are D-016's measured p95 (152 / 324 ms) with about 30%
+ * headroom. A source with no entry is judged against legacy only, and its reason says so.
+ */
+export const LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
+  work_item: 200,
+  session_turn: 400,
+};
+
+/**
+ * R-18's judgment, separate from R-13's recall verdict: the BM25 arm's end-to-end p95 (the
+ * whole `runHybridSearch` call, so the BM25 list, the D-016 exact list and the fusion) may not
+ * exceed the legacy arm's p95 measured in the same run on the same pairs (D-019), nor the
+ * source's absolute ceiling in `LATENCY_P95_CEILING_MS` (D-020).
+ */
+export interface LatencyJudgment {
+  verdict: Verdict;
+  reason: string;
+}
+
 export interface SourceSummary {
   source: string;
   scored: number;
   arms: Record<Arm, ArmSummary>;
   paired: PairedCounts;
+  /** R-13: recall@K of the BM25 arm against the legacy arm. */
   verdict: Verdict;
   reasons: string[];
+  /** R-18: end-to-end p95 of the BM25 arm against the legacy arm. */
+  latency: LatencyJudgment;
 }
 
 function percentile(sorted: number[], p: number): number | null {
@@ -156,15 +180,66 @@ export function summarizeSource(
     verdict = 'pass';
     reasons.push(`BM25 recall@${RECALL_K} ${arms.bm25.hitsAtK}/${arms.bm25.scored} >= legacy ${arms.legacy.hitsAtK}/${arms.legacy.scored}`);
   }
-  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons };
+  const latency: LatencyJudgment = verdict === 'invalid'
+    ? { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' }
+    : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null);
+  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, latency };
 }
 
-/** The overall verdict: `invalid` if any source is, else `fail` if any source is, else `pass`. */
-export function overallVerdict(sources: readonly SourceSummary[]): Verdict {
-  if (sources.length === 0) return 'invalid';
-  if (sources.some((s) => s.verdict === 'invalid')) return 'invalid';
-  if (sources.some((s) => s.verdict === 'fail')) return 'fail';
+/**
+ * R-18: `fail` when the BM25 arm's p95 exceeds the legacy arm's (D-019) or `ceilingMs` (D-020);
+ * `invalid` with no samples. `ceilingMs: null` judges against legacy only.
+ */
+export function judgeLatency(arms: Record<Arm, ArmSummary>, ceilingMs: number | null = null): LatencyJudgment {
+  const bm25 = arms.bm25.latencyP95Ms;
+  const legacy = arms.legacy.latencyP95Ms;
+  if (bm25 == null || legacy == null) {
+    return { verdict: 'invalid', reason: 'an arm has no latency samples' };
+  }
+  const failures: string[] = [];
+  if (bm25 > legacy) failures.push(`BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms`);
+  if (ceilingMs != null && bm25 > ceilingMs) failures.push(`BM25-arm p95 ${bm25} ms exceeds the ${ceilingMs} ms ceiling`);
+  if (failures.length > 0) return { verdict: 'fail', reason: failures.join('; ') };
+  const ceiling = ceilingMs != null ? ` and the ${ceilingMs} ms ceiling` : ' (no absolute ceiling for this source)';
+  return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms${ceiling}` };
+}
+
+function combine(verdicts: readonly Verdict[]): Verdict {
+  if (verdicts.length === 0) return 'invalid';
+  if (verdicts.includes('invalid')) return 'invalid';
+  if (verdicts.includes('fail')) return 'fail';
   return 'pass';
+}
+
+/** The overall R-13 verdict: `invalid` if any source is, else `fail` if any source is, else `pass`. */
+export function overallVerdict(sources: readonly SourceSummary[]): Verdict {
+  return combine(sources.map((s) => s.verdict));
+}
+
+/**
+ * Embed every distinct query once, in sample order, BEFORE any arm is timed (D-021). The CLI
+ * caches embeddings per query, so without this the arm that runs first in a pair also pays for
+ * the in-process embedding: measured 2026-10-11, the session_turn BM25 arm's p95 was 596 ms
+ * when it ran first and 303 ms when it ran second. Embedding is identical for both arms and not
+ * something this plan changes, so it must not land in either arm's latency. Returns how many
+ * distinct queries were embedded.
+ */
+export async function warmQueryEmbeddings(
+  pairs: readonly Pick<PairResult, 'query'>[],
+  embed: (text: string) => Promise<unknown>,
+): Promise<number> {
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    if (seen.has(p.query)) continue;
+    seen.add(p.query);
+    await embed(p.query);
+  }
+  return seen.size;
+}
+
+/** The overall R-18 verdict, combined the same way over each source's latency judgment. */
+export function overallLatencyVerdict(sources: readonly SourceSummary[]): Verdict {
+  return combine(sources.map((s) => s.latency.verdict));
 }
 
 /**

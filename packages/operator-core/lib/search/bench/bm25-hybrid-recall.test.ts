@@ -6,8 +6,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  LATENCY_P95_CEILING_MS,
   RECALL_K,
   armOrder,
+  judgeLatency,
+  overallLatencyVerdict,
   overallVerdict,
   pairedCounts,
   rankOf,
@@ -15,6 +18,7 @@ import {
   sampleFingerprint,
   summarizeArm,
   summarizeSource,
+  warmQueryEmbeddings,
   type ArmObservation,
   type PairResult,
 } from './bm25-hybrid-recall';
@@ -64,6 +68,96 @@ describe('pairedCounts', () => {
       legacyOnly: 1,
       neither: 1,
     });
+  });
+});
+
+/** n pairs found by both arms, every legacy call taking `legacyMs` and every BM25 call `bm25Ms`. */
+function timed(n: number, legacyMs: number, bm25Ms: number): PairResult[] {
+  return Array.from({ length: n }, (_, i) => ({
+    ...pair(i, 1, 1),
+    arms: { legacy: obs(1, 'legacy', legacyMs), bm25: obs(1, 'bm25', bm25Ms) },
+  }));
+}
+
+describe('R-18 latency judgment (D-019)', () => {
+  it('passes when the BM25 arm p95 is at or below the legacy arm p95', () => {
+    expect(summarizeSource('work_item', timed(30, 600, 150)).latency.verdict).toBe('pass');
+    expect(summarizeSource('work_item', timed(30, 200, 200)).latency.verdict).toBe('pass');
+  });
+
+  it('fails when the BM25 arm is slower, even when recall passes', () => {
+    const s = summarizeSource('work_item', timed(30, 150, 151));
+    expect(s.verdict).toBe('pass');
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms' });
+  });
+
+  it('judges p95, not the mean: one slow BM25 call in twenty does not flip it, two do', () => {
+    const one = timed(20, 100, 50);
+    one[0]!.arms.bm25 = obs(1, 'bm25', 5000);
+    expect(summarizeSource('work_item', one).latency.verdict).toBe('pass');
+    const two = timed(20, 100, 50);
+    two[0]!.arms.bm25 = obs(1, 'bm25', 5000);
+    two[1]!.arms.bm25 = obs(1, 'bm25', 5000);
+    expect(summarizeSource('work_item', two).latency.verdict).toBe('fail');
+  });
+
+  it('is invalid when the recall comparison is invalid or an arm has no samples', () => {
+    expect(summarizeSource('work_item', timed(3, 100, 50)).latency.verdict).toBe('invalid');
+    const arms = { legacy: summarizeArm([], 'legacy'), bm25: summarizeArm(timed(30, 1, 1), 'bm25') };
+    expect(judgeLatency(arms).verdict).toBe('invalid');
+  });
+
+  it('fails above the source ceiling even when legacy is slower (D-020)', () => {
+    expect(LATENCY_P95_CEILING_MS).toEqual({ work_item: 200, session_turn: 400 });
+    const s = summarizeSource('work_item', timed(30, 3000, 201));
+    expect(s.verdict).toBe('pass');
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 201 ms exceeds the 200 ms ceiling' });
+    const turns = timed(30, 3000, 401).map((p) => ({ ...p, source: 'session_turn' }));
+    expect(summarizeSource('session_turn', turns).latency.verdict).toBe('fail');
+    const turnsOk = timed(30, 3000, 400).map((p) => ({ ...p, source: 'session_turn' }));
+    expect(summarizeSource('session_turn', turnsOk).latency).toEqual({
+      verdict: 'pass',
+      reason: 'BM25-arm p95 400 ms <= legacy p95 3000 ms and the 400 ms ceiling',
+    });
+  });
+
+  it('names both failures when the BM25 arm breaks the legacy bound and the ceiling', () => {
+    expect(summarizeSource('work_item', timed(30, 250, 300)).latency.reason).toBe(
+      'BM25-arm p95 300 ms exceeds legacy p95 250 ms; BM25-arm p95 300 ms exceeds the 200 ms ceiling',
+    );
+  });
+
+  it('judges a source with no ceiling against legacy only, and says so', () => {
+    const other = timed(30, 3000, 900).map((p) => ({ ...p, source: 'memory' }));
+    expect(summarizeSource('memory', other).latency).toEqual({
+      verdict: 'pass',
+      reason: 'BM25-arm p95 900 ms <= legacy p95 3000 ms (no absolute ceiling for this source)',
+    });
+    const arms = { legacy: summarizeArm(timed(30, 100, 50), 'legacy'), bm25: summarizeArm(timed(30, 100, 50), 'bm25') };
+    expect(judgeLatency(arms, 40).verdict).toBe('fail');
+    expect(judgeLatency(arms).verdict).toBe('pass');
+  });
+
+  it('embeds every distinct query once, in sample order, before timing (D-021)', async () => {
+    const calls: string[] = [];
+    const embed = async (q: string) => {
+      calls.push(q);
+      return [0];
+    };
+    const n = await warmQueryEmbeddings([{ query: 'b' }, { query: 'a' }, { query: 'b' }, { query: 'c' }], embed);
+    expect(n).toBe(3);
+    expect(calls).toEqual(['b', 'a', 'c']);
+    expect(await warmQueryEmbeddings([], embed)).toBe(0);
+  });
+
+  it('combines per-source judgments like the recall verdict', () => {
+    const pass = summarizeSource('work_item', timed(30, 600, 150));
+    const fail = summarizeSource('work_item', timed(30, 150, 600));
+    const invalid = summarizeSource('work_item', timed(3, 600, 150));
+    expect(overallLatencyVerdict([pass, pass])).toBe('pass');
+    expect(overallLatencyVerdict([pass, fail])).toBe('fail');
+    expect(overallLatencyVerdict([fail, invalid])).toBe('invalid');
+    expect(overallLatencyVerdict([])).toBe('invalid');
   });
 });
 

@@ -32,14 +32,17 @@ import type { Sql } from 'postgres';
 
 import {
   ARMS,
+  LATENCY_P95_CEILING_MS,
   MIN_PAIRS_PER_SOURCE,
   RECALL_K,
   armOrder,
+  overallLatencyVerdict,
   overallVerdict,
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
   summarizeSource,
+  warmQueryEmbeddings,
   type Arm,
   type PairResult,
   type QueryStyle,
@@ -120,8 +123,9 @@ async function main(): Promise<number> {
   // the installed desktop app's embedded PG on :24680, which has no pg_textsearch, while the
   // operator reads :5432). Record it, and refuse before measuring if the BM25 arm cannot
   // run BM25 here: that run could only ever be `invalid`.
-  const [server] = await pg<{ db: string; port: number | null; libver: string | null }[]>`
+  const [server] = await pg<{ db: string; port: number | null; serverVersion: string; libver: string | null }[]>`
     SELECT current_database() AS db, inet_server_port() AS port,
+           current_setting('server_version') AS "serverVersion",
            current_setting('pg_textsearch.library_version', true) AS libver`;
   process.env[envVar] = '1';
   const unavailable: string[] = [];
@@ -130,7 +134,10 @@ async function main(): Promise<number> {
   }
   if (envBefore === undefined) delete process.env[envVar];
   else process.env[envVar] = envBefore;
-  console.log(`[r13] database ${server?.db} on port ${server?.port ?? 'unix-socket'}, pg_textsearch ${server?.libver ?? 'not loaded'}`);
+  console.log(
+    `[r13] database ${server?.db} on port ${server?.port ?? 'unix-socket'}, PostgreSQL ${server?.serverVersion ?? 'unknown'}, ` +
+      `pg_textsearch ${server?.libver ?? 'not loaded'}`,
+  );
   if (unavailable.length > 0) {
     console.error(
       `[r13] REFUSING TO RUN: with the BM25 flag on, ${unavailable.join(', ')} still rank with the legacy engine on ` +
@@ -175,6 +182,11 @@ async function main(): Promise<number> {
   }
   const fingerprint = sampleFingerprint(pairs);
 
+  // ---- Embed every query before timing (D-021): otherwise the arm that runs first in a
+  // pair also pays for the embedding, which lands in its R-18 latency.
+  const embeddedQueries = await warmQueryEmbeddings(pairs, (q) => sharedEmbedder(q));
+  console.log(`[r13] embedded ${embeddedQueries} distinct queries before timing`);
+
   // ---- Measure: both arms per pair, alternating which goes first -------------
   const startedAt = new Date().toISOString();
   try {
@@ -213,6 +225,7 @@ async function main(): Promise<number> {
 
   const summaries = sourceNames.map((s) => summarizeSource(s, pairs, Math.min(MIN_PAIRS_PER_SOURCE, perSource)));
   const verdict = overallVerdict(summaries);
+  const latencyVerdict = overallLatencyVerdict(summaries);
   let commit: string | null = null;
   try {
     commit = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
@@ -240,6 +253,16 @@ async function main(): Promise<number> {
     sameProcess: true,
     sources: summaries,
     verdict,
+    // R-18: end-to-end p95 of the BM25 arm against the legacy arm (D-019) and under the
+    // per-source ceiling (D-020), per source.
+    latencyRequirement: 'R-18',
+    latencyDecisions: ['D-019', 'D-020', 'D-021'],
+    latencyCeilingsMs: LATENCY_P95_CEILING_MS,
+    // D-021: every query was embedded before any arm was timed, so neither arm's latency
+    // carries the (shared, unchanged-by-this-plan) embedding cost.
+    embeddingsPrecomputed: true,
+    embeddedQueries,
+    latencyVerdict,
     redactedQueries: written.redactedQueries,
     pairs: written.pairs,
   };
@@ -251,11 +274,11 @@ async function main(): Promise<number> {
     const b = s.arms.bm25;
     console.log(
       `[r13] ${s.source}: legacy ${l.hitsAtK}/${l.scored} (MRR ${l.mrrAtK.toFixed(3)}) vs bm25 ${b.hitsAtK}/${b.scored} ` +
-        `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}`,
+        `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`,
     );
   }
-  console.log(`[r13] verdict=${verdict} sample=${fingerprint.slice(0, 12)} -> ${out}`);
-  return verdict === 'pass' ? 0 : 1;
+  console.log(`[r13] verdict=${verdict} latencyVerdict=${latencyVerdict} sample=${fingerprint.slice(0, 12)} -> ${out}`);
+  return verdict === 'pass' && latencyVerdict === 'pass' ? 0 : 1;
 }
 
 function renderMarkdown(a: {
@@ -264,6 +287,7 @@ function renderMarkdown(a: {
   recallK: number;
   sampleFingerprint: string;
   verdict: string;
+  latencyVerdict: string;
   sources: ReturnType<typeof summarizeSource>[];
 }): string {
   const rows = a.sources.flatMap((s) =>
@@ -281,6 +305,9 @@ function renderMarkdown(a: {
     `Plan ${PLAN}, requirement R-13. Generated ${a.generatedAt} at commit ${a.commit ?? 'unknown'}.`,
     `Both arms ran in one process on the identical sample (fingerprint \`${a.sampleFingerprint}\`).`,
     `Recall is fused (RRF) recall@${a.recallK} before any rerank. Verdict: **${a.verdict}**.`,
+    `Latency (R-18; D-019, D-020, D-021) is the p95 of the whole hybrid call with every query embedded before timing; the BM25 arm must not exceed legacy ` +
+      `nor its source ceiling (${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). ` +
+      `Verdict: **${a.latencyVerdict}**.`,
     ``,
     `| source | arm | recall@${a.recallK} | MRR@${a.recallK} | zero-hit | p50 ms | p95 ms | engine |`,
     `|---|---|---|---|---|---|---|---|`,
@@ -290,7 +317,7 @@ function renderMarkdown(a: {
     `|---|---|---|---|---|---|`,
     ...paired,
     ``,
-    ...a.sources.map((s) => `- ${s.source}: ${s.reasons.join('; ')}`),
+    ...a.sources.map((s) => `- ${s.source}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`),
     ``,
   ].join('\n');
 }
