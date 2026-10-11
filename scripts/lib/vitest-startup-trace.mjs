@@ -25,7 +25,7 @@ export function observeForkStartup(child, emit, now = () => performance.now()) {
   let closed = false;
   let start = null;
   let seenStarted = false;
-  const record = (event, fields = {}) => emit({ event, elapsedMs: Math.round(now() - origin), ...fields });
+  const record = (event, fields = {}) => emit({ event, childPid: child.pid, elapsedMs: Math.round(now() - origin), ...fields });
   child.send = function(message, ...args) {
     if (message?.type === 'start' && start === null) {
       start = now();

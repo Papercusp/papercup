@@ -17,6 +17,7 @@ describe('focused runner startup tracing', () => {
 
   it('observes the real start/started exchange without changing send semantics', () => {
     const child = new EventEmitter() as any;
+    child.pid = 42;
     const calls: unknown[] = [];
     const rows: any[] = [];
     let clock = 100;
@@ -32,7 +33,8 @@ describe('focused runner startup tracing', () => {
     child.emit('close');
     expect(calls).toEqual([[payload, 'callback-placeholder']]);
     expect(rows.map(row => row.event)).toEqual(['start-sent', 'started-received', 'worker-exit']);
-    expect(rows[1]).toMatchObject({ startupMs: 179, error: false });
+    expect(rows[1]).toMatchObject({ childPid: 42, startupMs: 179, error: false });
+    expect(rows.every(row => row.childPid === 42)).toBe(true);
     expect(JSON.stringify(rows)).not.toContain('never-log');
     expect(child.send).toBe(original);
     expect(child.listenerCount('message')).toBe(0);
@@ -42,11 +44,12 @@ describe('focused runner startup tracing', () => {
 
   it('reports a worker exit before the handshake and cleans up idempotently', () => {
     const child = new EventEmitter() as any;
+    child.pid = 43;
     child.send = () => true;
     const rows: any[] = [];
     const stop = observeForkStartup(child, row => rows.push(row), () => 0);
     child.emit('exit', 1, null);
-    expect(rows).toEqual([{ event: 'worker-exit', elapsedMs: 0, code: 1, signal: null, started: false }]);
+    expect(rows).toEqual([{ event: 'worker-exit', childPid: 43, elapsedMs: 0, code: 1, signal: null, started: false }]);
     stop(); stop();
     expect(child.eventNames()).toEqual([]);
   });
