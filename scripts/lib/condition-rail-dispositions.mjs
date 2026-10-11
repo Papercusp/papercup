@@ -86,6 +86,10 @@ export const DISPOSITIONS = Object.freeze({
     'notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own',
   ),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts': migrate('P-009'),
+  'owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts': migrate('P-009'),
+  'owner-only-alarm|packages/operator-core/lib/agent-tools/release/deploy.ts': na(
+    'owner-requested force-deploy audit notice after an explicitly accepted action; no continuing failure predicate is detected by this notification',
+  ),
   'owner-only-alarm|packages/operator-core/lib/iq-battery/gen-loop.ts': na(
     'needs-human request for the owner to decide an IQ-battery cadence change; a decision request, not a failure',
   ),
@@ -93,7 +97,6 @@ export const DISPOSITIONS = Object.freeze({
     'the Papercup assistant’s proactive Sentinel message to its user; a product feature, not a system failure signal',
   ),
   'owner-only-alarm|packages/operator-core/lib/poll-suspect-alarm.ts': migrate('P-007'),
-  'owner-only-alarm|packages/operator-core/lib/release/green-stall-watchdog.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/idle-repair-queue-actuator.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/lost-gate-run-alarm.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/staging-fix-proposal-cli.ts': na(
@@ -112,6 +115,8 @@ export const DISPOSITIONS = Object.freeze({
   ),
   'log-only-fallback|apps/operator/bin/hono-host.ts': migrate('P-012'),
   'log-only-fallback|apps/operator/bin/host-bootstrap.ts': migrate('P-012'),
+  'log-only-fallback|apps/operator/bin/llm-test.ts': NA_CLI,
+  'log-only-fallback|libs/papercusp/packages/cli/src/snapshot-cli.ts': NA_CLI,
   'log-only-fallback|apps/operator/lib/release/green-checkpoint.ts': migrate('P-008'),
   'log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts': migrate('P-013'),
   'log-only-fallback|apps/operator/scripts/onboard-launcher.mjs': NA_CLI,
@@ -246,7 +251,11 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
 
   // ── bespoke-watchdog ──────────────────────────────────────────────────────────────────────
+  'health-flag-no-condition|packages/operator-core/lib/release/green-stall-watchdog.ts|alarm': na(
+    'pure evaluateStrandedRepairQueue return values, not an emitting detector; checkStrandedRepairQueue consumes this verdict and already opens and resolves the keyed condition',
+  ),
   'bespoke-watchdog|apps/operator/scripts/bghost-watchdog.mjs': migrate('P-015'),
+  'bespoke-watchdog|apps/operator/lib/mcp-proxy/watchdog.mjs': migrate('P-015'),
   'bespoke-watchdog|apps/operator/scripts/recompute-watchdog-keys.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/set-watchdog-tunables.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts': NA_WATCHDOG_TOOLING,
