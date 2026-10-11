@@ -27,8 +27,14 @@ import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
 import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
-import type { Sql } from 'postgres';
-import { bm25LegIfAvailable, lexicalLeg, type LexicalLeg } from '../../search/lexical/rank';
+import type { Sql, TransactionSql } from 'postgres';
+import {
+  EXACT_LIST_MAX_AND_ROWS,
+  bm25LegIfAvailable,
+  lexicalLeg,
+  mergeExactAndBm25,
+  type LexicalLeg,
+} from '../../search/lexical/rank';
 import type { Bm25CorpusTable } from '../../search/lexical/corpora';
 // WI-37603: every `embedding` leg below runs through this. Without it an HNSW
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
@@ -266,11 +272,16 @@ function lexicalSql(
   /**
    * The BM25 (pg_textsearch) leg from `bm25LegIfAvailable`, when BM25 ranks this
    * source's corpus (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
-   * BM25 sums per-term IDF-weighted scores, so a document matching more of the
-   * query's terms already outranks one matching fewer: the coverage-graded mode,
-   * the rarest-lexeme anchor and the AND filter all exist to approximate that with
-   * `ts_rank_cd`, and none of them applies here. The match is disjunctive and the
-   * ORDER BY is the bare BM25 distance so the index drives the top-k scan.
+   * The match is disjunctive and the ORDER BY is the bare BM25 distance so the
+   * index drives the top-k scan.
+   *
+   * ⚠ BM25 does NOT make the AND list redundant (retracted 2026-10-11, R-13, D-016).
+   * This comment used to say BM25's summed per-term IDF already ranks a document
+   * matching more query terms above one matching fewer. Measured false for a
+   * verbatim fragment of a long document whose terms are individually common:
+   * BM25 ranked five such targets 11, 60, 286, 402 and >500 where AND +
+   * `ts_rank_cd` ranked them 1-2. So a source with a BM25 leg ALSO runs this
+   * function's AND mode as an exact list and fuses the two (`mergeExactAndBm25`).
    */
   bm25?: LexicalLeg | null,
 ) {
@@ -784,6 +795,11 @@ const workItem: SearchSource = {
     // no notes, so the BM25 leg joins each view row to its base row by primary key.
     const bm25 = await bm25LegIfAvailable(sql as unknown as Sql, 'work_items', p.query, 'w');
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`, undefined, bm25);
+    // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
+    // it and the two are fused, so a verbatim fragment is not lost (EXACT_LIST_MAX_AND_ROWS).
+    const exact = bm25
+      ? lexicalSql({ ...p, lexicalMode: 'and' }, sql`_search`, sql`harness_shared.engineer_issues`)
+      : null;
     const from = bm25
       ? sql`harness_shared.engineer_issues ei
             JOIN harness_shared.work_items w
@@ -797,23 +813,18 @@ const workItem: SearchSource = {
     // whatever runs next on the same connection).
     const rows = (await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
-      return tx`
-      ${lex.with}
-      SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
-             coalesce(ei.updated_at, ei.created_at) AS updated_at,
-             ${lex.coverage} AS coverage,
-             ${lex.rank} AS rank,
-             ts_headline('english', coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''),
-               ${lex.headlineQuery},
-               ${HEADLINE_OPTS}) AS highlight
-        FROM ${from} ${lex.join}
-       WHERE ei.workspace_id = ${workspaceId}
-         -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
-         -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
-         AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
-         AND ${lex.match}
-    ORDER BY ${lex.order} LIMIT ${limit}
-    `;
+      const primary = (await list(tx, lex, from)) as unknown as Array<{ issue_id: string; rank: number }>;
+      if (!exact) return primary;
+      const [gate] = (await tx`
+        SELECT count(*)::int AS n FROM (
+          SELECT 1 FROM harness_shared.engineer_issues ei
+           WHERE ei.workspace_id = ${workspaceId}
+             AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
+             AND ei._search @@ plainto_tsquery('english', ${p.query})
+           LIMIT ${EXACT_LIST_MAX_AND_ROWS + 1}) g`) as unknown as Array<{ n: number }>;
+      if (!gate || gate.n === 0 || gate.n > EXACT_LIST_MAX_AND_ROWS) return primary;
+      const exactRows = (await list(tx, exact, sql`harness_shared.engineer_issues ei`)) as unknown as Array<{ issue_id: string; rank: number }>;
+      return mergeExactAndBm25(exactRows, primary, (r) => r.issue_id, limit);
     })) as unknown as Array<{
       issue_id: string;
       scope: string;
@@ -827,6 +838,25 @@ const workItem: SearchSource = {
       rank: number;
       highlight: string;
     }>;
+    function list(tx: TransactionSql, l: ReturnType<typeof lexicalSql>, source: typeof from) {
+      return tx`
+      ${l.with}
+      SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+             coalesce(ei.updated_at, ei.created_at) AS updated_at,
+             ${l.coverage} AS coverage,
+             ${l.rank} AS rank,
+             ts_headline('english', coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''),
+               ${l.headlineQuery},
+               ${HEADLINE_OPTS}) AS highlight
+        FROM ${source} ${l.join}
+       WHERE ei.workspace_id = ${workspaceId}
+         -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
+         -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
+         AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
+         AND ${l.match}
+    ORDER BY ${l.order} LIMIT ${limit}
+    `;
+    }
     return rows.map((r) => {
       const body = `${r.title}\n${r.body}`.trim();
       return {
@@ -1049,13 +1079,13 @@ const sessionTurn: SearchSource = {
     // `undefined` is the supported degradation: literal-token recall falls back
     // to the bounded substring FILL below. RE-ARM ORDER if this is ever
     // revisited: apply migration 1163 FIRST, then restore this argument.
-    const lex = lexicalSql(
-      p,
-      p.sql`text_tsv`,
-      p.sql`harness_shared.session_turns`,
-      undefined,
-      await bm25LegIfAvailable(p.sql as unknown as Sql, 'session_turns', p.query),
-    );
+    const bm25 = await bm25LegIfAvailable(p.sql as unknown as Sql, 'session_turns', p.query);
+    const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`, undefined, bm25);
+    // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
+    // it and the two are fused (see the work_item source and EXACT_LIST_MAX_AND_ROWS).
+    const exact = bm25
+      ? lexicalSql({ ...p, lexicalMode: 'and' }, p.sql`text_tsv`, p.sql`harness_shared.session_turns`)
+      : null;
     // The caller's scope + filter bag as ONE predicate, shared by the primary
     // query and the literal fill so the two can never disagree about scope —
     // workspace isolation above all. A function, so each query embeds a fresh
@@ -1095,24 +1125,37 @@ const sessionTurn: SearchSource = {
       await tx.unsafe('SET LOCAL parallel_setup_cost = 0');
       await tx.unsafe('SET LOCAL parallel_tuple_cost = 0.01');
       // PRIMARY — index-served only (`lex.match` carries no substring arm).
-      const primary = (await tx`
-      ${lex.with}
+      const list = (l: ReturnType<typeof lexicalSql>) => tx`
+      ${l.with}
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
-             ${lex.coverage} AS coverage,
-             ${lex.rank} AS rank,
+             ${l.coverage} AS coverage,
+             ${l.rank} AS rank,
              ${p.wantHighlight === false
                ? p.sql`''`
-               : p.sql`CASE WHEN ${lex.fallbackOnly}
+               : p.sql`CASE WHEN ${l.fallbackOnly}
                        THEN left(text, 4000)
-                       ELSE ts_headline(${lex.headlineConfig}, left(text, 4000),
-                         ${lex.headlineQuery},
+                       ELSE ts_headline(${l.headlineConfig}, left(text, 4000),
+                         ${l.headlineQuery},
                          ${HEADLINE_OPTS})
                    END`} AS highlight
-        FROM harness_shared.session_turns ${lex.join}
+        FROM harness_shared.session_turns ${l.join}
        WHERE ${scoped()}
-         AND ${lex.match}
-    ORDER BY ${lex.order} LIMIT ${p.limit}
-    `) as unknown as SessionTurnLexicalRow[];
+         AND ${l.match}
+    ORDER BY ${l.order} LIMIT ${p.limit}
+    `;
+      let primary = (await list(lex)) as unknown as SessionTurnLexicalRow[];
+      if (exact) {
+        const [gate] = (await tx`
+          SELECT count(*)::int AS n FROM (
+            SELECT 1 FROM harness_shared.session_turns
+             WHERE ${scoped()}
+               AND text_tsv @@ plainto_tsquery('english', ${p.query})
+             LIMIT ${EXACT_LIST_MAX_AND_ROWS + 1}) g`) as unknown as Array<{ n: number }>;
+        if (gate && gate.n > 0 && gate.n <= EXACT_LIST_MAX_AND_ROWS) {
+          const exactRows = (await list(exact)) as unknown as SessionTurnLexicalRow[];
+          primary = mergeExactAndBm25(exactRows, primary, (r) => `${r.source_kind}\u0000${r.session_id}\u0000${r.turn_idx}`, p.limit);
+        }
+      }
 
       // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
       // so under the old single OR query it could only ever occupy slots the
