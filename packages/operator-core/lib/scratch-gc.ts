@@ -120,6 +120,7 @@ function withScratchWorkspaceMutex<T>(
   const requests = scratchMutexWaiters.get(mutexName) ?? [];
   const request = { operation, startedAt: Date.now() };
   requests.push(request);
+  const queuedLocally = requests[0] !== request;
   scratchMutexWaiters.set(mutexName, requests);
   let release!: () => void;
   const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
@@ -150,16 +151,35 @@ function withScratchWorkspaceMutex<T>(
 
   return (async () => {
     await previous.catch(() => {});
+    const localWaitMs = queuedLocally
+      ? Math.max(0, performance.now() - localWaitStartedAt)
+      : 0;
     if (localWaitTimer) {
       clearInterval(localWaitTimer);
       localWaitTimer = undefined;
     }
+    let firstFilesystemWaitElapsedMs: number | undefined;
+    const observedOnWaiting = onWaiting || onAcquired
+      ? (info: { owner: string; elapsedMs: number }) => {
+        if (firstFilesystemWaitElapsedMs === undefined) {
+          firstFilesystemWaitElapsedMs = info.elapsedMs;
+        }
+        onWaiting?.(info);
+      }
+      : undefined;
     try {
       return await withFsMutex(mutexName, run, {
         intent: { subsystem: 'scratch-quota', operation, workspaceId },
         waitingNoticeIntervalMs: 5_000,
-        onWaiting,
-        onAcquired,
+        onWaiting: observedOnWaiting,
+        onAcquired: onAcquired
+          ? (info) => {
+            const filesystemWaitMs = firstFilesystemWaitElapsedMs === undefined
+              ? 0
+              : Math.max(0, info.waitedMs - firstFilesystemWaitElapsedMs);
+            onAcquired({ waitedMs: localWaitMs + filesystemWaitMs });
+          }
+          : undefined,
       });
     } finally {
       if (localWaitTimer) clearInterval(localWaitTimer);
@@ -1755,10 +1775,9 @@ export async function writeWithScratchQuota(
         }
         throw error;
       }
-    }, onMutexWaiting, () => {
-      const elapsedMs = Math.max(0, performance.now() - lockWaitStartedAt);
-      if (refreshWaitOwner) timings.refreshWaitMs += elapsedMs;
-      else timings.quotaWaitMs += elapsedMs;
+    }, onMutexWaiting, ({ waitedMs }) => {
+      if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
+      else timings.quotaWaitMs += waitedMs;
     });
   } finally {
     entry.writes.delete(token);
