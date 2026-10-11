@@ -258,7 +258,7 @@ describe('conditional wake outcome oracle controls', () => {
     audit.rows[0].outcome = 'turn-observed-after-wake';
     audit.rows[0].deliveries[0].first_agent_call = new Date(Date.parse(AS_OF) + 600_001).toISOString();
     expect(auditWakeOutcomeViolations(dispositions, audit)).toContain('unsupported-outcome:a');
-    audit.rows[0].requests[0].receipt.pickupConfirmed = true;
+    audit.rows[0].requests[0].receipt = { pickupConfirmed: true };
     expect(auditWakeOutcomeViolations(dispositions, audit)).toContain('enqueue-claims-pickup:a');
   });
   it('records activity inside the window without claiming the request caused it', () => {
