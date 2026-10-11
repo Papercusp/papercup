@@ -159,6 +159,8 @@ export interface BenchReportArmSummary {
   costUsdMeasurementMissing?: boolean;
   costBasis?: string;
   tokensTotal: number;
+  /** Complete spend divided by the frozen assigned task count, including all seeds. */
+  costPerAssignedTaskUsd?: number | null;
   concurrency?: { avg: number; peak: number };
   /**
    * Freshness / contamination verdict for this arm's headline (P-009): its model's training-data cutoff vs
@@ -168,6 +170,26 @@ export interface BenchReportArmSummary {
   contamination?: ArmContamination;
   /** Suite-specific headline (e.g. METR: { horizon50Min, horizon50Ci }). */
   extra?: Record<string, unknown>;
+}
+
+/** Descriptive comparisons from the existing frozen outcome and cost projections. */
+export interface BenchReportCostComparison {
+  metric: 'assigned-mean-score' | 'assigned-resolved-rate';
+  points: Array<{
+    arm: string;
+    value: number | null;
+    costPerTaskUsd: number | null;
+    /** Null when the accounting, grade or frozen assignment is unavailable. */
+    onFrontier: boolean | null;
+    excludedReasons: string[];
+  }>;
+  taskWinners: Array<{
+    taskId: string;
+    value: number | null;
+    /** Missing grades make winner selection inconclusive across the entire matched task. */
+    incompleteArms: string[];
+    winners: Array<{ arm: string; costUsd: number | null; costBasis: string; tokensTotal: number }>;
+  }>;
 }
 
 /** The full bundle — one per run. SHARED core + per-suite `suiteData`. */
@@ -192,6 +214,8 @@ export interface BenchReportBundle {
   // ── shared sections (each optional → the viewer hides an absent one) ──
   arms: BenchReportArmSummary[];
   rollouts: BenchReportRollout[];
+  /** Absent in historical exports; no historical frontier is inferred by the viewer. */
+  costComparison?: BenchReportCostComparison;
   coordTrace?: BenchReportCoordEvent[];
   spawnTree?: BenchReportSpawnNode[];
   callLog?: BenchReportCall[];

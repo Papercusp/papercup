@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { summarizeAssignedOutcomes } from '@papercusp/bench-metrics';
+import { costAccuracyFrontier, summarizeAssignedOutcomes } from '@papercusp/bench-metrics';
 import { armContamination } from '../contamination';
 import {
   BENCH_REPORT_SCHEMA_VERSION,
@@ -23,6 +23,7 @@ import {
   type BenchReportBundle,
   type BenchReportCall,
   type BenchReportCoordEvent,
+  type BenchReportCostComparison,
   type BenchReportRollout,
   type BenchReportSpawnNode,
 } from './report-schema';
@@ -160,6 +161,7 @@ export function bundleFromRollouts(input: {
   const arms: BenchReportArmSummary[] = input.arms.map((arm) => {
     const rows = input.runResults.filter((r) => r.arm === arm);
     const outcome = summarizeAssignedOutcomes(rows, { assignedTaskIds, assignedSeeds: input.assignedSeeds });
+    const costs = recordedCosts(rows);
     return {
       arm,
       resolved: outcome.resolved,
@@ -177,7 +179,10 @@ export function bundleFromRollouts(input: {
       conditionalResolvedPct: outcome.conditionalResolvedPct,
       assignmentSource: input.assignedTaskIds && input.assignedSeeds ? 'frozen' : 'observed',
       infraExcluded: rows.length - outcome.gradedAttempts,
-      ...recordedCosts(rows),
+      ...costs,
+      costPerAssignedTaskUsd: input.assignedTaskIds && input.assignedSeeds &&
+        outcome.assignedTasks > 0 && outcome.absentAttempts === 0 && costs.costUsd !== null
+        ? costs.costUsd / outcome.assignedTasks : null,
       tokensTotal: rows.reduce((s, r) => s + (r.tokensTotal || 0), 0),
       concurrency: summarizeConcurrency(input.concurrencyTimeline?.[arm]),
       contamination: armContamination({
@@ -216,6 +221,7 @@ export function bundleFromRollouts(input: {
     },
     arms,
     rollouts,
+    costComparison: costComparison(input, arms, assignedTaskIds),
     coordTrace: input.coordTrace,
     spawnTree: input.spawnTree,
     callLog: input.callLog,
@@ -223,6 +229,52 @@ export function bundleFromRollouts(input: {
     suite: input.suite,
     suiteData: input.suiteData,
   };
+}
+
+/** Reuse the common Pareto core, with eligibility from the frozen assigned denominator.
+ * Never place a partial-cost subtotal or conditional graded quality on the efficiency frontier. */
+function costComparison(input: {
+  runResults: RunResultLike[]; assignedTaskIds?: readonly string[]; assignedSeeds?: readonly number[];
+}, arms: readonly BenchReportArmSummary[], assignedTaskIds: readonly string[]): BenchReportCostComparison {
+  const partialCredit = input.runResults.some(row => typeof row.score === 'number' && Number.isFinite(row.score));
+  const metric = partialCredit ? 'assigned-mean-score' : 'assigned-resolved-rate';
+  const bases = new Set(arms.filter(arm => arm.costPerAssignedTaskUsd != null).map(arm => arm.costBasis));
+  const points: BenchReportCostComparison['points'] = arms.map(arm => {
+    const value = (partialCredit ? arm.primaryMeanScore : arm.primaryResolvedPct) ?? null;
+    const excludedReasons: string[] = [];
+    if (arm.assignmentSource !== 'frozen') excludedReasons.push('unfrozen-assignment');
+    if (value === null || !arm.measurementComplete) excludedReasons.push('missing-grade');
+    if (arm.absentAttempts) excludedReasons.push('absent-attempts');
+    if (arm.costUsd === null) excludedReasons.push('incomplete-cost');
+    if (arm.costPerAssignedTaskUsd === null) excludedReasons.push('cost-per-task-unavailable');
+    if (arm.costBasis === 'mixed' || bases.size > 1) excludedReasons.push('incompatible-cost-bases');
+    return { arm: arm.arm, value, costPerTaskUsd: arm.costPerAssignedTaskUsd ?? null,
+      onFrontier: null, excludedReasons };
+  });
+  const eligible = points.filter(point => !point.excludedReasons.length)
+    .map(point => ({ arm: point.arm, accuracy: point.value!, cost: point.costPerTaskUsd! }));
+  const frontier = new Set(costAccuracyFrontier(eligible).map(point => point.arm));
+  for (const point of points) if (!point.excludedReasons.length) point.onFrontier = frontier.has(point.arm);
+
+  const taskWinners: BenchReportCostComparison['taskWinners'] = assignedTaskIds.map(taskId => {
+    const candidates = arms.map(arm => {
+      const rows = input.runResults.filter(row => row.arm === arm.arm && row.taskId === taskId);
+      const outcome = summarizeAssignedOutcomes(rows, { assignedTaskIds: [taskId], assignedSeeds: input.assignedSeeds });
+      const costs = recordedCosts(rows);
+      return { arm: arm.arm, value: (partialCredit ? outcome.primaryMeanScore : outcome.primaryResolvedPct),
+        complete: outcome.measurementComplete && arm.assignmentSource === 'frozen',
+        costUsd: outcome.absentAttempts ? null : costs.costUsd, costBasis: costs.costBasis,
+        tokensTotal: rows.reduce((sum, row) => sum + (row.tokensTotal || 0), 0) };
+    });
+    const incompleteArms = candidates.filter(candidate => !candidate.complete || candidate.value === null)
+      .map(candidate => candidate.arm);
+    const value = !incompleteArms.length && candidates.length ? Math.max(...candidates.map(candidate => candidate.value!)) : null;
+    // A zero-outcome tie has no successful winner. Retain all ties at a positive outcome, with their full task cost.
+    const winners = value !== null && value > 0 ? candidates.filter(candidate => candidate.value === value)
+      .map(({ arm, costUsd, costBasis, tokensTotal }) => ({ arm, costUsd, costBasis, tokensTotal })) : [];
+    return { taskId, value, incompleteArms, winners };
+  });
+  return { metric, points, taskWinners };
 }
 
 /** A caller-pinned cutoff for `modelId`: `undefined` when none was pinned (use the curated table). */
