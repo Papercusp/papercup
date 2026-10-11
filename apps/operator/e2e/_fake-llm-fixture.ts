@@ -2,6 +2,14 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 
+export function fixtureChildFailure(error: unknown): Error {
+  const child = error as { message?: string; code?: unknown; signal?: unknown; killed?: boolean; stdout?: string; stderr?: string };
+  return new Error(`Isolated fixture child failed: ${JSON.stringify({
+    message: child.message, code: child.code, signal: child.signal, killed: child.killed,
+    stdout: child.stdout, stderr: child.stderr,
+  })}`, { cause: error });
+}
+
 // Register a real harness only in the maintained disposable rig. The chat
 // tools resolve their project before entering the fake model seam.
 export async function seedFakeLlmHarness(options: { hive?: boolean } = {}): Promise<string> {
@@ -32,7 +40,7 @@ export async function seedFakeLlmHarness(options: { hive?: boolean } = {}): Prom
        const rows = await sql.unsafe('SELECT payload FROM harness_shared.harness_registry WHERE workspace_id = $1', [ws]);
        if (!rows[0]?.payload?.projects?.some(p => p.slug === slug && p.path === process.cwd() && (!${Boolean(options.hive)} || p.harness_kind === 'hive'))) throw new Error('Chat fixture registry write was not retained');
      } finally { await sql.end(); }`,
-  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 });
+  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 }).catch(error => { throw fixtureChildFailure(error); });
   return slug;
 }
 
@@ -61,5 +69,5 @@ export async function seedFakeLlmPlanAcceptance(harnessSlug: string, planSlug: s
        const gate = await checkPlanStartable(planSlug, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug }, null, 'start');
        if (!gate.ok) throw new Error('Plan fixture launch precondition failed: ' + JSON.stringify({ result, gate }));
      } finally { await sql.end(); }`,
-  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 });
+  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 }).catch(error => { throw fixtureChildFailure(error); });
 }

@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { seedFakeLlmHarness } from './_fake-llm-fixture';
+import { fixtureChildFailure, seedFakeLlmHarness } from './_fake-llm-fixture';
 
 afterEach(() => vi.unstubAllEnvs());
 
 describe('isolated chat fixture write boundary', () => {
+  it('retains child stderr and distinguishes a timeout from a gate refusal', () => {
+    const timeout = fixtureChildFailure({ message: 'Command failed', killed: true, signal: 'SIGTERM', stdout: 'stage: import' });
+    const refusal = fixtureChildFailure({ message: 'Command failed', code: 1, stderr: 'Plan fixture launch precondition failed: missing BAR' });
+    expect(timeout.message).toContain('SIGTERM');
+    expect(timeout.message).toContain('stage: import');
+    expect(refusal.message).toContain('missing BAR');
+    expect(refusal.message).toContain('"code":1');
+  });
   it.each([
     ['papercusp-workspace', 'postgres://localhost:23456/fixture'],
     ['verify-tauri-isolated-test', 'postgres://localhost:5432/papercusp'],
