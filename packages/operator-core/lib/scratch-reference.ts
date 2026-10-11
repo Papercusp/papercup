@@ -272,14 +272,16 @@ export function writeScratchReference(input: {
     const filePath = input.filePath;
     const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length,
       requestTraceId: input.requestTraceId,
-      onTiming: input.onScratchWriteTiming }, async () => {
+      captureSubphaseTimings: Boolean(input.onScratchWriteTiming),
+      onTiming: input.onScratchWriteTiming }, async (observeAwait) => {
       // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
       // scratch GC can later prove it is ours before deleting it.
-      await markNewWorkspaceScratchRoot(
-        input.workspaceId,
-        await mkdir(dirname(filePath), { recursive: true, mode: 0o700 }),
-      );
-      await writeFile(filePath, bytes, { mode: 0o600 });
+      const firstCreated = await observeAwait('file-write', 'mkdir', () =>
+        mkdir(dirname(filePath), { recursive: true, mode: 0o700 }));
+      await observeAwait('file-write', 'workspace-marker', () =>
+        markNewWorkspaceScratchRoot(input.workspaceId, firstCreated));
+      await observeAwait('file-write', 'payload-write-file', () =>
+        writeFile(filePath, bytes, { mode: 0o600 }));
     });
     // Mark handled now: the caller awaits it later, and a fast failure must not reach the
     // process-level unhandledRejection handler (which terminates the host) first.

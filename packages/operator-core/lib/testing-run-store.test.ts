@@ -7,6 +7,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+
+/**
+ * Map a captured `INSERT INTO … (col, …) VALUES (${…}, …)` call onto its column names.
+ * Every test_runs column is a bound parameter, so the n-th value is the n-th column.
+ * Reading by name keeps a new column (migration 1448 added configuration_snapshot)
+ * from silently shifting every fixture's positional index.
+ */
+function insertedColumns(strings: readonly string[], values: readonly unknown[]): Record<string, unknown> {
+  const columns = /\(([^()]*)\)\s*VALUES/i.exec(strings.join(''))?.[1];
+  if (!columns) throw new Error('insertedColumns: statement has no (columns) VALUES list');
+  const names = columns.split(',').map((name) => name.trim());
+  if (names.length !== values.length) {
+    throw new Error(`insertedColumns: ${names.length} columns but ${values.length} bound values`);
+  }
+  return Object.fromEntries(names.map((name, i) => [name, values[i]]));
+}
 
 interface FakeChild {
   stdout: { on: (e: string, cb: (b: Buffer) => void) => void };
@@ -437,16 +454,17 @@ describe('task lifecycle handlers', () => {
         call[0]?.join(' ').includes('INSERT INTO harness_shared.test_runs'),
       ) ?? [];
       expect(strings?.join(' ')).toContain('INSERT INTO harness_shared.test_runs');
-      expect(values[0]).toBe('packages/external/example.test.ts');
-      expect(values[2]).toBe('fail');
-      expect(values[7]).toBe(snapshot.runId);
-      expect(values[8]).toBe('local');
-      expect(values[11]).toBe('papercusp');
-      expect(values[12]).toBe('papercusp-workspace');
+      const inserted = insertedColumns(strings!, values);
+      expect(inserted.file_path).toBe('packages/external/example.test.ts');
+      expect(inserted.status).toBe('fail');
+      expect(inserted.run_group_id).toBe(snapshot.runId);
+      expect(inserted.source).toBe('local');
+      expect(inserted.harness_slug).toBe('papercusp');
+      expect(inserted.workspace_id).toBe('papercusp-workspace');
       // EI-24799048791133095: the jsonb param must be the OBJECT. A pre-stringified
       // value is double-encoded by postgres-js's default serializer into a jsonb
       // STRING scalar, and every `execution_details->>'key'` read returns NULL.
-      const executionDetails = values.at(-1);
+      const executionDetails = inserted.execution_details;
       expect(typeof executionDetails).toBe('object');
       expect(executionDetails).toMatchObject({
         schemaVersion: 1,
@@ -467,6 +485,11 @@ describe('task lifecycle handlers', () => {
       expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles).toHaveLength(64);
       expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles[0])
         .toBe('suite > passed case 0');
+      // P-011: the row records the configuration the MEASURED child ran under, as an object.
+      expect(inserted.configuration_snapshot).toMatchObject({
+        schemaVersion: 1,
+        fingerprint: expect.stringMatching(/^sha256-config-snapshot-v1:[0-9a-f]{64}$/),
+      });
       const snapshotCalls = persistSqlMock.mock.calls.filter((call) =>
         call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
       );
@@ -591,9 +614,9 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
   ];
 
   it('defaults worktree_dirty to false when the caller omits it', async () => {
-    let capturedValues: unknown[] = [];
+    let captured: Record<string, unknown> = {};
     const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      capturedValues = values;
+      captured = insertedColumns(strings, values);
       return Promise.resolve([]);
     }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
     await store.persistHarnessTestRuns({
@@ -603,14 +626,15 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       runGroupId: 'g1',
       sql: fakeSql,
     });
-    // worktree_dirty precedes the optional execution_details payload.
-    expect(capturedValues.at(-2)).toBe(false);
+    expect(captured.worktree_dirty).toBe(false);
+    // P-011: a caller that cannot name the measured process's configuration records NULL, not a guess.
+    expect(captured).toHaveProperty('configuration_snapshot', null);
   });
 
   it('carries worktree_dirty:true through to the insert when the caller marks the run dirty', async () => {
-    let capturedValues: unknown[] = [];
+    let captured: Record<string, unknown> = {};
     const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      capturedValues = values;
+      captured = insertedColumns(strings, values);
       return Promise.resolve([]);
     }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
     await store.persistHarnessTestRuns({
@@ -621,7 +645,25 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       worktreeDirty: true,
       sql: fakeSql,
     });
-    expect(capturedValues.at(-2)).toBe(true);
+    expect(captured.worktree_dirty).toBe(true);
+  });
+
+  it('carries the caller-supplied configuration snapshot through to the insert as an object (P-011)', async () => {
+    let captured: Record<string, unknown> = {};
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      captured = insertedColumns(strings, values);
+      return Promise.resolve([]);
+    }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
+    const configurationSnapshot = captureConfigurationSnapshot({ PAPERCUSP_FLAG_VIDEO_CHANNELS: '1' });
+    await store.persistHarnessTestRuns({
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws',
+      rows: oneRow(),
+      runGroupId: 'g1',
+      configurationSnapshot,
+      sql: fakeSql,
+    });
+    expect(captured.configuration_snapshot).toEqual(configurationSnapshot);
   });
 });
 
@@ -713,7 +755,7 @@ describe('durable detached snapshot lifecycle', () => {
         }));
       }
       const ledger: Record<string, unknown>[] = [];
-      const writes: unknown[][] = [];
+      const writes: Record<string, unknown>[] = [];
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const statement = strings.join(' ');
         const snapshotRead = statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot');
@@ -740,9 +782,10 @@ describe('durable detached snapshot lifecycle', () => {
         if (statement.includes('FROM harness_shared.test_runs')) return ledger;
         if (statement.includes('INSERT INTO harness_shared.test_runs')) {
           if (options.writeFailure) throw new Error('ledger unavailable');
-          writes.push(values);
-          ledger.push({ file_path: values[0], status: values[2], finished_at: values[5], output_tail: values[6],
-            execution_details: values.at(-1) });
+          const inserted = insertedColumns(strings, values);
+          writes.push(inserted);
+          ledger.push({ file_path: inserted.file_path, status: inserted.status, finished_at: inserted.finished_at,
+            output_tail: inserted.output_tail, execution_details: inserted.execution_details ?? null });
           return [{ id: 42 }];
         }
         if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return options.casLost ? [] : [{ run_id: snapshot.runId }];
@@ -782,11 +825,11 @@ describe('durable detached snapshot lifecycle', () => {
       expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.task_ledger'))).toBe(false);
       if (taskState === 'ended_unobserved') expect(recovered!.output).toContain('process exit code was not observed');
       expect(writes).toHaveLength(options.routerReports ? 2 : 1);
-      expect(writes[0]![7]).toBe(snapshot.runId);
-      expect(writes[0]![10]).toBe(options.legacy ? null : 'launch-sha');
-      expect(writes[0]![15]).toBe(true);
-      expect(typeof writes[0]!.at(-1)).toBe('object');
-      expect(writes[0]!.at(-1)).toMatchObject({
+      expect(writes[0]!.run_group_id).toBe(snapshot.runId);
+      expect(writes[0]!.commit_sha).toBe(options.legacy ? null : 'launch-sha');
+      expect(writes[0]!.worktree_dirty).toBe(true);
+      expect(typeof writes[0]!.execution_details).toBe('object');
+      expect(writes[0]!.execution_details).toMatchObject({
         root: '/tmp', passed: options.failure ? 0 : 1, skipped: 1, testNamePattern: 'saved assertion', worktreeDirty: true,
       });
       await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1853,12 +1896,15 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
       return '';
     });
     let runId: string | undefined;
-    let resolveFallback!: (values: unknown[]) => void;
-    const fallbackPersisted = new Promise<unknown[]>((resolve) => {
+    let resolveFallback!: (row: Record<string, unknown>) => void;
+    const fallbackPersisted = new Promise<Record<string, unknown>>((resolve) => {
       resolveFallback = resolve;
     });
-    persistSqlMock.mockImplementation((_strings: TemplateStringsArray, ..._values: unknown[]) => {
-      if (runId && _values[7] === runId) resolveFallback(_values);
+    persistSqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (runId && strings.join(' ').includes('INSERT INTO harness_shared.test_runs')) {
+        const row = insertedColumns(strings, values);
+        if (row.run_group_id === runId) resolveFallback(row);
+      }
       return Promise.resolve([]);
     });
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
@@ -1867,9 +1913,14 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
       runId = store.startRun(req({ kind: 'shell' })).runId;
       runClosed = true;
       lastChild._emitClose(0);
-      const capturedValues = await fallbackPersisted;
-      expect(capturedValues[10]).toBe('after-sha');
-      expect(capturedValues.at(-1)).toBe(true);
+      const persisted = await fallbackPersisted;
+      expect(persisted.commit_sha).toBe('after-sha');
+      expect(persisted.worktree_dirty).toBe(true);
+      // P-011: the fallback row records the configuration the measured child ran under.
+      expect(persisted.configuration_snapshot).toMatchObject({
+        schemaVersion: 1,
+        fingerprint: expect.stringMatching(/^sha256-config-snapshot-v1:[0-9a-f]{64}$/),
+      });
     } finally {
       if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
       else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;

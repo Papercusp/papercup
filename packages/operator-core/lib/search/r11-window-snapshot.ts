@@ -1,6 +1,6 @@
 /** Read-only, repeatable-read evidence capture for plan shared-vector-search-libraries P-008 R-11. */
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import type { getOrgPg } from '@papercusp/db-org';
@@ -155,6 +155,7 @@ export interface R11CaptureRuntime {
   journalSinceMs?: number;
   preparedJournals?: R11PreparedJournals;
   t0At?: string;
+  preparedJournalsPath?: string;
 }
 
 export interface R11PreparedJournals {
@@ -176,6 +177,35 @@ function verifyPreparedJournal(show: string, prior: string, t0At: string) {
       ['MainPID', 'InvocationID', 'ExecMainStartTimestamp'].some((key) => property(show, key) !== property(prior, key))) {
     throw new Error('Prepared journal identity changed or was not active before T0');
   }
+}
+
+/** Observe live identities at the frozen boundary before slow database work. */
+export async function captureR11JournalBoundary(prepared: R11PreparedJournals, t0At: string, t1At: string,
+  executeProcess: typeof executeGovernedByteProcess = executeGovernedByteProcess, now = Date.now) {
+  const deadline = Date.parse(t1At);
+  if (!Number.isFinite(deadline) || prepared.captures.length !== 3) throw new Error('Invalid journal boundary');
+  const observations = [];
+  for (const follower of prepared.captures) {
+    const result = await executeProcess('systemctl', ['--user', 'show', `${follower.unit}.service`,
+      ...journalProperties.flatMap((key) => ['-p', key])], new Uint8Array(),
+    { namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 1024 * 1024 });
+    const observedAt = now();
+    if (observedAt < deadline || observedAt > deadline + 60_000) throw new Error('Journal boundary observation missed T1');
+    if (result.error || result.status !== 0) throw new Error('Journal boundary process read failed');
+    verifyPreparedJournal(result.stdout, follower.show, t0At);
+    observations.push({ unit: follower.unit, path: follower.path, observedAt: new Date(observedAt).toISOString(), show: result.stdout });
+  }
+  // Hash each finite prefix as it exists at observation, even while the same
+  // producer continues appending. Never load up to 8 GiB into memory.
+  const files = [];
+  for (const observation of observations) {
+    const bytes = statSync(observation.path).size;
+    if (bytes > R11_JOURNAL_MAX_BYTES) throw new Error('Journal exceeded capture cap');
+    const hash = createHash('sha256');
+    if (bytes) for await (const chunk of createReadStream(observation.path, { start: 0, end: bytes - 1 })) hash.update(chunk);
+    files.push({ ...observation, bytes, sha256: hash.digest('hex') });
+  }
+  return { t1At, files };
 }
 
 /** The expiry timer is independent of the database snapshot service. */
@@ -209,8 +239,11 @@ export function buildR11JournalCapturePlan(
       '/usr/bin/journalctl', '--user', '-f', '-o', 'json', `--unit=${journalUnit}`, ...journalArgs] };
   });
   const expiryUnit = `r11-p008-journal-expiry-${stamp}`;
+  // Keep producers alive through the boundary observation and the final
+  // journald flush. Parsing still ends at T1; this is a bounded evidence tail.
+  const stopAt = `${new Date(deadline + 10 * 60_000).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
   return { deadline: new Date(deadline).toISOString(), captures, expiryUnit,
-    expiryCommand: ['--user', `--unit=${expiryUnit}`, `--on-calendar=${end.at}`,
+    expiryCommand: ['--user', `--unit=${expiryUnit}`, `--on-calendar=${stopAt}`,
       '--timer-property=AccuracySec=1s', '/usr/bin/systemctl', '--user', 'stop',
       ...captures.map(({ unit }) => `${unit}.service`)] };
 }
@@ -223,7 +256,7 @@ export function buildR11SystemdRunArgs(
 ): string[] {
   const args = spec.stage === 'Tcut'
     ? ['Tcut', paths.cut, paths.t0]
-    : ['T1', paths.t1, paths.t0, paths.cut];
+    : ['T1', paths.t1, paths.t0, paths.cut, ...(runtime.preparedJournalsPath ? [runtime.preparedJournalsPath] : [])];
   return ['--user', `--unit=${spec.unit}`, `--on-calendar=${spec.at}`,
     `--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`, '--property=UMask=0077',
     '--timer-property=AccuracySec=1s', `--working-directory=${runtime.repoRoot}`,
@@ -280,7 +313,7 @@ export async function scheduleR11Timers(
         const original = buildR11JournalCapturePlan(prepared.specs, runtime.journalDirectory, now(), prepared.sinceMs);
         if (prepared.captures.length !== 3 || original.captures.some((follower, index) =>
           follower.unit !== prepared.captures[index]?.unit || follower.path !== prepared.captures[index]?.path) ||
-          Date.parse(original.deadline) < Date.parse(capture.deadline)) {
+          Date.parse(original.deadline) < Date.parse(capture.deadline) + 10 * 60_000) {
           throw new Error('Prepared journals do not cover the frozen window');
         }
         capture.captures = original.captures;

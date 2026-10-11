@@ -8,6 +8,8 @@ vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   listWorkItems: vi.fn(),
   listAllWorkItemsForFileExport: vi.fn(),
+  countWorkItems: vi.fn(),
+  countWorkItemsByState: vi.fn(),
   getWorkItem: vi.fn(),
   explainIssueClaimFloors: vi.fn(),
 }));
@@ -28,7 +30,16 @@ vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
   withFleetMetricReadSql: async (read: (sql: undefined) => Promise<unknown>) => read(undefined),
 }));
 
-import { explainIssueClaimFloors, getWorkItem, listWorkItems, listAllWorkItemsForFileExport, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
+import {
+  countWorkItems,
+  countWorkItemsByState,
+  explainIssueClaimFloors,
+  getWorkItem,
+  listWorkItems,
+  listAllWorkItemsForFileExport,
+  WORK_ITEMS_MAX_LIMIT,
+} from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { listPresence } from '../coordination/presence';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
@@ -39,6 +50,7 @@ import {
   buildCohortAudit,
   liveOwnersFromPresence,
   applyLaneFence,
+  NON_TERMINAL_CENSUS_CEILING,
 } from './burn_down';
 import { shapeBurnDown } from './burn_down-shape';
 import { shapeLeaderBrief } from '../fleet/leader-brief-shape';
@@ -63,6 +75,30 @@ import { compareCountEvidence, materializeCountEvidence } from '../../count-evid
 
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockListAllWorkItems = vi.mocked(listAllWorkItemsForFileExport);
+const mockCountWorkItems = vi.mocked(countWorkItems);
+const mockCountWorkItemsByState = vi.mocked(countWorkItemsByState);
+
+/**
+ * WI-6554700010008464 — the live census no longer issues one capped listWorkItems. It reads
+ * the open rows, a terminal-history slice and two aggregates. Answer all four from one row
+ * set, the way the database would, so each test states its population once.
+ */
+function stubCensus(rows: WorkItem[]): void {
+  const terminal = new Set<string>(ANY_FAMILY_TERMINAL_STATES);
+  const open = rows.filter((r) => !terminal.has(r.state));
+  mockListWorkItems.mockImplementation(async (filter = {}) => {
+    const states = filter.states;
+    const pool = states ? rows.filter((r) => states.includes(r.state)) : filter.notTerminal ? open : rows;
+    return pool.slice(0, filter.limit ?? pool.length);
+  });
+  mockListAllWorkItems.mockImplementation(async (filter = {}) => (filter.notTerminal ? open : rows));
+  mockCountWorkItems.mockImplementation(async (filter = {}) => (filter.notTerminal ? open.length : rows.length));
+  mockCountWorkItemsByState.mockImplementation(async () => {
+    const byState: Record<string, number> = {};
+    for (const r of rows) byState[r.state] = (byState[r.state] ?? 0) + 1;
+    return byState;
+  });
+}
 const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockExplainIssueClaimFloors = vi.mocked(explainIssueClaimFloors);
 const mockListPresence = vi.mocked(listPresence);
@@ -318,6 +354,7 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 describe('work_items:burn_down', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubCensus([]);
     mockGetWorkItem.mockResolvedValue(null);
     mockExplainIssueClaimFloors.mockResolvedValue([]);
     mockGetModes.mockResolvedValue([]);
@@ -825,7 +862,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('wires the tool to list work-items and workspace-scoped presence', async () => {
-    mockListWorkItems.mockResolvedValue([item({ id: 'WI-live', assignee: 'su-live' })]);
+    stubCensus([item({ id: 'WI-live', assignee: 'su-live' })]);
     mockListPresence.mockResolvedValue([
       {
         ownerId: 'su-live',
@@ -836,12 +873,17 @@ describe('work_items:burn_down', () => {
 
     const res = await callTool({ harness: 'papercusp', includeChildren: true }, { workspaceId: 'ws-test' });
 
+    // WI-6554700010008464: open rows are read uncapped and counted exactly; terminal rows
+    // only as a bounded newest-first history slice.
+    const selector = { harness: 'papercusp', kind: undefined, includeChildren: true };
+    expect(mockCountWorkItems).toHaveBeenCalledWith({ ...selector, notTerminal: true });
+    expect(mockListAllWorkItems).toHaveBeenCalledWith({ ...selector, notTerminal: true });
     expect(mockListWorkItems).toHaveBeenCalledWith({
-      harness: 'papercusp',
-      kind: undefined,
-      includeChildren: true,
+      ...selector,
+      states: [...ANY_FAMILY_TERMINAL_STATES],
       limit: 2000,
     });
+    expect(mockCountWorkItemsByState).toHaveBeenCalledWith(selector);
     expect(mockListPresence).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
     expect(res.data).toMatchObject({
       ok: true,
@@ -851,7 +893,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('attaches exact canonical drain flow for a since-bounded read by an active DRAIN caller', async () => {
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     mockListPresence.mockResolvedValue([]);
     mockGetModes.mockResolvedValue([
       {
@@ -898,7 +940,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('omits drain flow outside an active since-bounded DRAIN read', async () => {
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     mockListPresence.mockResolvedValue([]);
     const ctx = { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-drainer' };
 
@@ -1269,8 +1311,14 @@ describe('work_items:burn_down', () => {
     ];
     // The ordinary display census cannot see the last matching row. Fleet metrics
     // must still include it through the uncapped internal reader.
-    mockListWorkItems.mockResolvedValue(sourceRows.slice(0, WORK_ITEMS_MAX_LIMIT));
-    mockListAllWorkItems.mockRejectedValue(new Error('whole-harness metric hydration is forbidden'));
+    stubCensus(sourceRows.slice(0, WORK_ITEMS_MAX_LIMIT));
+    // WI-6554700010008464: the display census reads the OPEN partition (notTerminal) through
+    // this reader; whole-harness hydration for fleet metrics stays forbidden.
+    const openCensus = mockListAllWorkItems.getMockImplementation()!;
+    mockListAllWorkItems.mockImplementation(async (filter = {}) => {
+      if (!filter.notTerminal) throw new Error('whole-harness metric hydration is forbidden');
+      return openCensus(filter);
+    });
     mockReadFleetMetricSource.mockResolvedValue({ items: sourceRows, terminalContributions: Promise.resolve([]) });
     mockListPresence.mockResolvedValue([]);
     mockResolveFleetMetricScope.mockResolvedValue(fleetResolution('current-spec'));
@@ -1306,7 +1354,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('returns an explicit unavailable metric block without hydrating an unresolved population', async () => {
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     mockListPresence.mockResolvedValue([]);
     mockResolveFleetMetricScope.mockResolvedValue({
       ok: false,
@@ -1324,7 +1372,8 @@ describe('work_items:burn_down', () => {
       ok: false, error: 'fleet_metrics_unavailable', reason: 'claim-spec history unavailable',
     } });
     expect(mockReadFleetMetricSource).not.toHaveBeenCalled();
-    expect(mockListAllWorkItems).not.toHaveBeenCalled();
+    // The open-partition census read (notTerminal) is not metric hydration.
+    expect(mockListAllWorkItems.mock.calls.filter(([filter]) => !filter?.notTerminal)).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------
@@ -1338,7 +1387,7 @@ describe('work_items:burn_down', () => {
       ...Array.from({ length: 6 }, (_, i) => item({ id: `WI-done-${i}`, state: 'done' })),
       ...Array.from({ length: 4 }, (_, i) => item({ id: `WI-live-${i}`, assignee: `su-${i}` })),
     ];
-    mockListWorkItems.mockResolvedValue(items);
+    stubCensus(items);
     mockListPresence.mockResolvedValue([]);
 
     const res = await callTool({ harness: 'papercusp', limit: 2 });
@@ -1358,7 +1407,10 @@ describe('work_items:burn_down', () => {
     expect(data.terminal.total).toBe(6);
     expect(data.counts).toMatchObject({ total: 10, terminal: 6, inFlight: 4 });
     expect(data.terminal.truncatedByLimit).toBe(false);
-    expect(data.terminal.censusLimit).toBe(WORK_ITEMS_MAX_LIMIT);
+    // WI-6554700010008464: the census limit is now the open-partition read ceiling; either
+    // way it is never the caller's `limit`.
+    expect(data.terminal.censusLimit).toBe(NON_TERMINAL_CENSUS_CEILING);
+    expect(mockListAllWorkItems).toHaveBeenCalledWith(expect.not.objectContaining({ limit: 2 }));
     // `limit` DOES bound the returned row list (display only).
     expect(data.inFlight).toHaveLength(2);
   });
@@ -1445,7 +1497,7 @@ describe('work_items:burn_down', () => {
       },
     });
 
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     const live = await callTool({ harness: 'papercusp' });
     const fixedData = fixed.data as Record<string, any>;
     const liveData = live.data as Record<string, any>;

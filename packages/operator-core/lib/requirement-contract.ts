@@ -24,10 +24,17 @@ export interface RequirementAcceptance {
   coversBarKeys?: string[];
 }
 
+/** P-011: what a bar's proof must run under. Validated by productionConfigurationSchema. */
+export interface RequirementProductionConfiguration {
+  flags?: Record<string, boolean>;
+  env?: Record<string, string>;
+}
+
 export interface RequirementVerification {
   method: string;
   check?: RubricCriterionCheck;
   replication?: string;
+  productionConfiguration?: RequirementProductionConfiguration;
 }
 
 export interface RequirementSectionInput {
@@ -49,6 +56,7 @@ export interface RequirementSectionInput {
   method?: string;
   check?: RubricCriterionCheck;
   replication?: string;
+  productionConfiguration?: RequirementProductionConfiguration;
 }
 
 function comparable(value: unknown): unknown {
@@ -88,6 +96,7 @@ export function normalizeRequirementSections<T extends RequirementSectionInput>(
     assign('method', verification.method);
     assign('check', verification.check);
     assign('replication', verification.replication);
+    assign('productionConfiguration', verification.productionConfiguration);
   }
   return { ...canonical, ...result };
 }
@@ -112,6 +121,8 @@ export function requirementSections(input: RequirementSectionInput) {
       method: input.method ?? '',
       check: input.check ?? null,
       replication: input.replication ?? null,
+      // Additive only: a bar without a declaration projects exactly as before P-011.
+      ...(input.productionConfiguration ? { productionConfiguration: input.productionConfiguration } : {}),
     },
   };
 }

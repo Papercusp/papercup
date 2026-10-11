@@ -10,6 +10,7 @@ import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySe
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { scopeUnitForTask } from '../task-manager/types';
+import { verifierSourceFiles, type VerifierSourceReceipt } from '../verifier-source';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { runSaturationCli } from './lsp-saturation-bench-cli';
@@ -474,6 +475,83 @@ describe('replay Git source population', () => {
     } })).toThrow('changed-during-replay-source-population');
     expect(existsSync(join(target, '.replay-source-capture.json'))).toBe(true);
     expect(existsSync(join(target, '.replay-source-snapshot.json'))).toBe(false);
+  });
+});
+describe('committed replay archive and canonical runtime inputs', () => {
+  function fixture() {
+    const parent = mkdtempSync(join(tmpdir(), 'lsp-replay-archive-')); roots.push(parent);
+    const donor = join(parent, 'canonical'); const archive = join(parent, 'archive');
+    const target = join(parent, 'captured'); mkdirSync(donor); mkdirSync(archive);
+    execFileSync('git', ['init', '-q', donor]);
+    for (const root of [donor, archive]) {
+      writeFileSync(join(root, '.gitignore'), 'dist/\n');
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'workspace', main: './dist/index.js' }));
+      writeFileSync(join(root, 'source.ts'), 'export const original = 1;');
+      writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'] }));
+    }
+    mkdirSync(join(donor, 'dist')); writeFileSync(join(donor, 'dist/index.js'), 'module.exports = 1;');
+    const receipt: VerifierSourceReceipt = { schemaVersion: 'verifier-source-v1', sourceCommit: '1'.repeat(40),
+      testedInputs: [{ path: 'source.ts', sha256: replayHash(readFileSync(join(archive, 'source.ts'))) }],
+      files: verifierSourceFiles(archive), submodules: [] };
+    writeFileSync(join(archive, '.verifier-source.json'), JSON.stringify(receipt));
+    const dependencies = vi.fn((_root: string, out: string) =>
+      writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n'));
+    const input: ReplayOracleInput = { runId: 'committed-source', rootPath: archive,
+      socketPath: join(parent, 'daemon.sock'), workspaceId: 'test', levels: [1], requestTimeoutMs: 1000,
+      tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 1, character: 1 },
+      references: { file: 'source.ts', line1: 1, character: 1 }, runtimeFiles: [], evidenceRef: 'archive-fixture' };
+    const options = { sourceArchive: { receipt, dependencyDonor: donor }, checkSourceHeadroom: vi.fn(),
+      snapshotDependencies: dependencies };
+    return { donor, archive, target, receipt, input, options, dependencies };
+  }
+  it('keeps every archived source byte while copying declared ignored outputs and using the canonical dependency mutex', () => {
+    const f = fixture(); writeFileSync(join(f.donor, 'source.ts'), 'uncommitted replacement');
+    writeFileSync(join(f.donor, 'unrelated.ts'), 'untracked source');
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    expect(readFileSync(join(f.target, 'source.ts'), 'utf8')).toBe('export const original = 1;');
+    expect(existsSync(join(f.target, 'unrelated.ts'))).toBe(false);
+    expect(readFileSync(join(f.target, 'dist/index.js'), 'utf8')).toBe('module.exports = 1;');
+    expect(statSync(join(f.target, 'dist/index.js')).ino).not.toBe(statSync(join(f.donor, 'dist/index.js')).ino);
+    expect(f.dependencies).toHaveBeenCalledWith(f.donor, f.target);
+    expect(f.options.checkSourceHeadroom).toHaveBeenCalledWith(f.donor, f.target, expect.any(Number));
+    const manifest = JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8'));
+    expect(manifest.sourcePopulation).toMatchObject({ policy: 'verifier-source-v1', sourceCommit: f.receipt.sourceCommit,
+      runtimeOutputPolicy: 'declared-package-ignored-inputs-v1', dependencyDonor: f.donor });
+    for (const file of f.receipt.files) expect(manifest.sourceFiles[file.path]).toBe(file.sha256);
+    expect(manifest.sourceFiles['dist/index.js']).toBe(replayHash('module.exports = 1;'));
+    expect(manifest.loadedRuntime).toBe('unmeasured');
+  });
+  it.each(['archive', 'declaration', 'unrecorded-source', 'custom-population', 'git-checkout'])
+    ('refuses an invalid archive input before creating a capture: %s', kind => {
+      const f = fixture();
+      if (kind === 'archive') writeFileSync(join(f.archive, 'source.ts'), 'changed archived source');
+      if (kind === 'declaration') writeFileSync(join(f.donor, 'package.json'), '{"main":"other.js"}');
+      if (kind === 'unrecorded-source') writeFileSync(join(f.donor, '.gitignore'), '');
+      if (kind === 'git-checkout') f.receipt.gitCheckout = { parentCommit: '2'.repeat(40), trackedFilesHash: 'x' };
+      const enumerateSources = kind === 'custom-population' ? () => ['source.ts'] : undefined;
+      const expected = { archive: 'tampered verification source archive', declaration: 'replay-archive-package-declaration-drift',
+        'unrecorded-source': 'replay-archive-unrecorded-source', 'custom-population': 'replay-archive-custom-population-forbidden',
+        'git-checkout': 'replay-archive-must-be-source-only' }[kind]!;
+      expect(() => materializeReplaySource(f.input, f.target, { ...f.options, enumerateSources })).toThrow(expected);
+      expect(existsSync(f.target)).toBe(false); expect(f.dependencies).not.toHaveBeenCalled();
+    });
+  it.each(['archive', 'declaration', 'output', 'output-population'])('refuses phase drift without a final manifest: %s', kind => {
+    const f = fixture();
+    const expected = { archive: 'tampered verification source archive', declaration: 'replay-archive-package-declaration-drift',
+      output: 'changed-during-replay-archive-output:', 'output-population': 'changed-during-replay-archive-output-population' }[kind]!;
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (root, out) => {
+      f.dependencies(root, out);
+      if (kind === 'archive') writeFileSync(join(f.archive, 'source.ts'), 'changed archived source');
+      if (kind === 'declaration') writeFileSync(join(f.donor, 'package.json'), '{"main":"other.js"}');
+      if (kind === 'output') writeFileSync(join(f.donor, 'dist/index.js'), 'replacement output');
+      if (kind === 'output-population') writeFileSync(join(f.donor, 'dist/added.js'), 'new output');
+    } })).toThrow(expected);
+    expect(existsSync(join(f.target, '.replay-source-capture.json'))).toBe(true);
+    expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+  });
+  it('requires the archive declaration before the CLI reads any source input', async () => {
+    await expect(runSaturationCli(['node', 'cli', '--materialize-archived-replay', '/missing/input', '/missing/source', '/missing/out']))
+      .rejects.toThrow('requires archive receipt and canonical dependency donor declaration');
   });
 });
 describe('independent replay source materialization', () => {

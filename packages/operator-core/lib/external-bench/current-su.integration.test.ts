@@ -11,7 +11,8 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
-  currentBenchAssignmentId, currentBenchGatewayController,
+  currentBenchAssignmentId, currentBenchGatewayController, currentBenchWorkloadLockStateReader,
+  type CurrentBenchLockStateAllocation,
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
   currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader, currentBenchWorkloadProviderInputReader,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader, currentBenchWorkloadGradeReader,
@@ -37,7 +38,8 @@ import { canonicalJson } from './reproducibility/canonical-json';
 import { emitRollout, rolloutIdFor } from './reproducibility/emit';
 import { computePreregHash } from './reproducibility/prereg';
 import { currentBenchTaskProviderCapture, freezeCurrentBenchTaskProviderReservation,
-  currentBenchTaskProviderInputReader, type CurrentTaskInput } from './run-launcher';
+  currentBenchTaskProviderInputReader, freezeCurrentBenchTaskLockState, currentBenchTaskLockStateReader,
+  type CurrentTaskInput } from './run-launcher';
 
 vi.mock('../sync-sse', async importOriginal => ({ ...await importOriginal<typeof import('../sync-sse')>(),
   notifySyncInvalidate: vi.fn().mockResolvedValue(undefined) }));
@@ -150,6 +152,9 @@ beforeAll(async () => {
       started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz);
     CREATE TABLE harness_shared.adv_sessions (id bigserial, workspace_id text, coord_owner_id text, session_id text,
       agent text, started_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE harness_shared.tool_invocations (id bigserial PRIMARY KEY, workspace_id text, harness_slug text,
+      tool_name text, coord_owner_id text, invoked_at timestamptz, duration_ms int, status text,
+      args_json jsonb, metadata_json jsonb, output_ref text, error_code text);
     CREATE TABLE harness_shared.runtime_vintage (workspace_id text, unit text, host text, tree_sha text,
       build_time timestamptz, bundle_version text, pid int, extra jsonb, reported_at timestamptz);
     CREATE TABLE harness_shared.interactive_usage_files (workspace_id text, file_path text, byte_offset bigint, parser_state jsonb);
@@ -174,6 +179,14 @@ beforeAll(async () => {
   await sql.unsafe('ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text');
   await sql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/296-bench-run-operational-store.sql', import.meta.url), 'utf8')
     .split('\n').filter(line => !/^GRANT /.test(line)).join('\n'));
+  // Shared private side-store setup must run even when a focused selection
+  // exercises provider composition without selecting the lock-grant describe.
+  await sql.unsafe(`CREATE TABLE agent_lock_waiters (ticket_id uuid PRIMARY KEY, coordination_domain text,
+    owner text, owner_label text, paths text[], intent text, goal_ref text, queued_ts timestamptz, wait_until timestamptz,
+    status text, granted_lock_id uuid, granted_expires_ts timestamptz);
+    CREATE TABLE agent_file_locks (coordination_domain text, path text, owner text, owner_label text,
+    intent text, goal_ref text, lock_id uuid, acquired_ts timestamptz, expires_ts timestamptz,
+    PRIMARY KEY (coordination_domain, path));`);
   // Canonical lifecycle fields from migration 696. Fail setup immediately if
   // this reduced private fixture cannot exercise the production timing read.
   await sql`SELECT started_at, ended_at FROM harness_shared.task_ledger LIMIT 0`;
@@ -184,10 +197,11 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
+  await sql`TRUNCATE agent_lock_waiters, agent_file_locks`;
   await sql`TRUNCATE harness_shared.bench_runs CASCADE`;
   await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
-    harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
+    harness_shared.interactive_usage_files, harness_shared.agent_usage_samples, harness_shared.tool_invocations,
     harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
   repoRoot = mkdtempSync(join(tmpdir(), 'current-bench-protocol-')); roots.push(repoRoot);
 });
@@ -196,16 +210,6 @@ let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
 
 describe('private workload lock-grant authority', () => {
   const binding = { runId: 'private-lock-run', trialBindingHash: 'a'.repeat(64) };
-  // This is a separate private side-store schema, never the host's live locks DB.
-  beforeAll(async () => {
-    await sql.unsafe(`CREATE TABLE agent_lock_waiters (ticket_id uuid PRIMARY KEY, coordination_domain text,
-      owner text, owner_label text, paths text[], intent text, goal_ref text, queued_ts timestamptz,
-      status text, granted_lock_id uuid, granted_expires_ts timestamptz);
-      CREATE TABLE agent_file_locks (coordination_domain text, path text, owner text, owner_label text,
-      intent text, goal_ref text, lock_id uuid, acquired_ts timestamptz, expires_ts timestamptz,
-      PRIMARY KEY (coordination_domain, path));`);
-  });
-  beforeEach(async () => { await sql`TRUNCATE agent_lock_waiters, agent_file_locks`; });
   async function fixture() {
     const ticketId = randomUUID(), lockId = randomUUID(), ownerId = `private-lock-owner:${randomUUID()}`;
     const subjectId = 'private-lock-subject', ownerLabel = 'Private lock worker', intent = 'Private workload edit';
@@ -218,7 +222,7 @@ describe('private workload lock-grant authority', () => {
     const payload = { granted: true, ticket_id: ticketId, lock_id: lockId, paths, expires_ts: expires.toISOString() };
     await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, 'private-lock-harness', ${subjectId}, 'wip')`;
     await sql`INSERT INTO agent_lock_waiters VALUES (${ticketId}::uuid, ${repoRoot}, ${ownerId}, ${ownerLabel},
-      ${paths}, ${intent}, ${subjectId}, ${queued}, 'granted', ${lockId}::uuid, ${expires})`;
+      ${paths}, ${intent}, ${subjectId}, ${queued}, ${expires}, 'granted', ${lockId}::uuid, ${expires})`;
     for (const path of paths) await sql`INSERT INTO agent_file_locks VALUES (${repoRoot}, ${path}, ${ownerId},
       ${ownerLabel}, ${intent}, ${subjectId}, ${lockId}::uuid, ${acquired}, ${expires})`;
     await sql`INSERT INTO harness_shared.event_key_fires VALUES (${workspaceId}, ${eventKey}, ${queued}, ${fired},
@@ -300,6 +304,332 @@ describe('private workload lock-grant authority', () => {
     expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, receipts: [{ ...f.receipt, paths: ['../escape'] }] })).toThrow(/unique exact/);
     const linked = `${repoRoot}-link`; symlinkSync(repoRoot, linked); roots.push(linked);
     expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, coordinationDomain: linked })).toThrow(/canonical private/);
+  });
+
+  async function stateFixture(phase: CurrentBenchLockStateAllocation['receipt']['phase'] = 'granted') {
+    const f = await fixture();
+    const holder = { ownerId: 'prior-private-holder', ownerLabel: 'Prior holder', intent: 'Hold private paths', lockId: randomUUID() };
+    const waiter = { ownerId: f.receipt.ownerId, ownerLabel: f.receipt.ownerLabel, intent: f.receipt.intent,
+      ticketId: f.receipt.ticketId, queuedAt: f.receipt.queuedAt, lockId: f.receipt.lockId };
+    if (['held', 'contended', 'queued'].includes(phase)) await sql`UPDATE agent_file_locks
+      SET owner = ${holder.ownerId}, owner_label = ${holder.ownerLabel}, intent = ${holder.intent}, lock_id = ${holder.lockId}::uuid`;
+    if (['held', 'contended'].includes(phase)) await sql`DELETE FROM agent_lock_waiters`;
+    if (phase === 'queued') await sql`UPDATE agent_lock_waiters SET status = 'waiting', granted_lock_id = NULL, granted_expires_ts = NULL`;
+    if (phase === 'released') await sql`DELETE FROM agent_file_locks`;
+    const allocation: CurrentBenchLockStateAllocation = { workspaceId, harnessSlug: f.options.harnessSlug, ...binding,
+      coordinationDomain: repoRoot, notBefore: f.receipt.queuedAt,
+      receipt: { receiptRef: `private-state:${phase}`, subjectId: f.receipt.subjectId, index: 4, phase,
+        paths: f.receipt.paths, holder, waiter } };
+    const protocol = currentProtocolFixture(binding.runId), arm = protocol.arms.find(row => row.id === 'papercusp')!;
+    const input: CurrentTaskInput = { options: { workspaceId, runId: binding.runId, armId: arm.id, seed: 1,
+      agent: 'codex', model: arm.model, effort: 'high', account: arm.account,
+      preregistration: { preregHash: 'b'.repeat(64), config: protocol } }, protocol,
+      task: request.task as CurrentTaskInput['task'], scope: { sql, workspaceId },
+      context: { workspaceId, principal: { slug: 'private-host' } } as CurrentTaskInput['context'],
+      resources: {} as CurrentTaskInput['resources'], loopId: 'private-lock-state-loop', hostRunId: 'private-lock-state-host',
+      checkout: { dir: repoRoot, repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} },
+      observation: { runtimeWorkspaceId: 'private-runtime', workerUnit: 'worker', gatewayUnit: 'gateway' } };
+    await sql`INSERT INTO harness_shared.bench_runs (id, workspace_id, arm, task_set_id, model, status, config)
+      VALUES (${input.hostRunId}, ${workspaceId}, 'papercusp', 'custom', ${arm.model}, 'running',
+        ${JSON.stringify({ current: { preregHash: 'b'.repeat(64) }, protocol, loopId: input.loopId })}::text::jsonb)`;
+    return { ...f, allocation, input, reader: currentBenchWorkloadLockStateReader({ ...allocation, sql, locksSql: sql }) };
+  }
+  it.each(['held', 'contended', 'queued', 'granted', 'released'] as const)
+  ('private lock-state capture samples %s without claiming native causality or provider consumption', async phase => {
+    const f = await stateFixture(phase), rows = await f.reader(f.allocation.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ name: `lock:state:${phase}`, metadata: { ...binding,
+      lockStateSource: { basis: 'live-private-lock-side-store', phase, coordinationDomain: repoRoot } } });
+    const body = JSON.parse(rows![0].content!);
+    expect(body.locks).toHaveLength(phase === 'released' ? 0 : 2);
+    expect(body.waiters).toHaveLength(['held', 'contended'].includes(phase) ? 0 : 1);
+    expect(rows![0].metadata).not.toHaveProperty('durableTransition');
+    expect(rows![0].metadata).not.toHaveProperty('nativeToolSource');
+    expect(rows![0].metadata).not.toHaveProperty('providerInputSource');
+  });
+  it.each(['foreign-owner', 'extra-path', 'expired', 'wrong-ticket', 'queue-time', 'partial-release', 'foreign-subject', 'future-start'])
+  ('private lock-state capture refuses %s state substitution', async fault => {
+    const f = await stateFixture();
+    if (fault === 'foreign-owner') await sql`UPDATE agent_file_locks SET owner = 'foreign'`;
+    if (fault === 'extra-path') await sql`INSERT INTO agent_file_locks SELECT coordination_domain, 'src/extra.ts', owner,
+      owner_label, intent, goal_ref, lock_id, acquired_ts, expires_ts FROM agent_file_locks LIMIT 1`;
+    if (fault === 'expired') await sql`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'`;
+    if (fault === 'wrong-ticket') await sql`UPDATE agent_lock_waiters SET ticket_id = ${randomUUID()}::uuid`;
+    if (fault === 'queue-time') await sql`UPDATE agent_lock_waiters SET queued_ts = queued_ts - interval '1 second'`;
+    if (fault === 'partial-release') await sql`DELETE FROM agent_file_locks WHERE path = 'src/a.ts'`;
+    if (fault === 'foreign-subject') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign'`;
+    if (fault === 'future-start') f.allocation.notBefore = new Date(Date.now() + 10000).toISOString();
+    const reader = fault === 'future-start' ? currentBenchWorkloadLockStateReader({ ...f.allocation,
+      receipt: { ...f.allocation.receipt, waiter: { ...f.allocation.receipt.waiter!, queuedAt: f.allocation.notBefore } }, sql, locksSql: sql }) : f.reader;
+    expect(await reader(f.allocation.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('private lock-state capture freezes bytes before release and retains read-only evidence after checkout cleanup', async () => {
+    const f = await stateFixture(), pin = await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql });
+    const reader = currentBenchTaskLockStateReader(f.input, { receiptRef: pin.allocation.receipt.receiptRef,
+      observationSha256: pin.observationSha256, trialBindingHash: binding.trialBindingHash });
+    await sql`DELETE FROM agent_file_locks`; await sql`UPDATE agent_lock_waiters SET status = 'cancelled'`;
+    expect(await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql })).toEqual(pin);
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    rmSync(repoRoot, { recursive: true, force: true });
+    const observed = await reader(pin.allocation.receipt.receiptRef, binding);
+    expect(observed).toEqual([pin.observation]);
+    observed![0].content = 'caller mutation';
+    expect(await reader(pin.allocation.receipt.receiptRef, binding)).toEqual([pin.observation]);
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+    expect(await reader('candidate-ref', binding)).toBeNull();
+  });
+  it('private lock-state capture refuses an expired queued ticket even while the holder remains live', async () => {
+    const f = await stateFixture('queued');
+    await sql`UPDATE agent_lock_waiters SET wait_until = clock_timestamp() - interval '1 second'`;
+    expect(await f.reader(f.allocation.receipt.receiptRef, binding)).toBeNull();
+  });
+  it.each(['observation', 'protocol', 'preregistration', 'loop', 'hash'])
+  ('private lock-state capture historical reader refuses %s checkpoint drift', async fault => {
+    const f = await stateFixture(), pin = await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql });
+    const reader = currentBenchTaskLockStateReader(f.input, { receiptRef: pin.allocation.receipt.receiptRef,
+      observationSha256: pin.observationSha256, trialBindingHash: binding.trialBindingHash });
+    const path = fault === 'protocol' ? ['protocol'] : fault === 'preregistration' ? ['current', 'preregHash'] :
+      fault === 'loop' ? ['loopId'] : ['workloadLockStates', currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1),
+        pin.allocation.receipt.receiptRef, fault === 'hash' ? 'observationSha256' : 'observation', ...(fault === 'observation' ? ['content'] : [])];
+    await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${path}::text[], '"changed"'::jsonb)`;
+    expect(await reader(pin.allocation.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('private lock-state capture serializes independent pins and refuses changed allocation or duplicate indices', async () => {
+    const f = await stateFixture();
+    const second = structuredClone(f.allocation); second.receipt.receiptRef += ':second'; second.receipt.index++;
+    const pins = await Promise.all([freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql }),
+      freezeCurrentBenchTaskLockState(f.input, second, { locksSql: sql })]);
+    const [row] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(Object.keys(row.config.workloadLockStates[currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1)])).toHaveLength(2);
+    const changed = structuredClone(f.allocation); changed.receipt.holder.ownerId = 'changed';
+    await expect(freezeCurrentBenchTaskLockState(f.input, changed, { locksSql: sql })).rejects.toThrow(/changed after/);
+    changed.receipt.receiptRef = 'third'; changed.receipt.index = pins[1].observation.index;
+    await expect(freezeCurrentBenchTaskLockState(f.input, changed, { locksSql: sql })).rejects.toThrow(/unique observation/);
+  });
+
+  async function frozenGrantFixture() {
+    const f = await stateFixture();
+    const grant = { receiptRef: f.receipt.receiptRef, transitionId: f.receipt.transitionId, index: f.receipt.index };
+    const pin = await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql, grant });
+    const selection = { receiptRef: pin.allocation.receipt.receiptRef, observationSha256: pin.observationSha256,
+      trialBindingHash: binding.trialBindingHash, lockGrant: { receiptRef: grant.receiptRef,
+        observationSha256: pin.lockGrant!.observationSha256,
+        allocationSha256: createHash('sha256').update(canonicalJson(pin.lockGrant!.allocation)).digest('hex') } };
+    return { ...f, grant, pin, selection, reader: currentBenchTaskLockStateReader(f.input, selection) };
+  }
+  it('private lock-state grant freezes the independent live bridge before release and reads it after checkout cleanup', async () => {
+    const f = await frozenGrantFixture();
+    expect(f.pin.lockGrant?.observation).toMatchObject({ name: 'lock:grant', content: canonicalJson(f.payload),
+      metadata: { durableTransition: { from: 'waiting', to: 'granted' },
+        lockGrantSource: { rootDevice: (f.pin.observation.metadata?.lockStateSource as Record<string, unknown>).rootDevice,
+          rootInode: (f.pin.observation.metadata?.lockStateSource as Record<string, unknown>).rootInode } } });
+    await sql`DELETE FROM agent_file_locks`;
+    await sql`UPDATE agent_lock_waiters SET status = 'released'`;
+    await sql`UPDATE harness_shared.event_key_fires SET fire_count = 2, last_payload = '{}'::jsonb`;
+    await sql`UPDATE harness_shared.bench_runs SET status = 'done'`;
+    rmSync(repoRoot, { recursive: true, force: true });
+    const before = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    const rows = await f.reader(f.selection.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows![0].content).toBe(f.pin.observation.content);
+    expect(rows![0].metadata?.lockGrantCorrelation).toMatchObject({
+      basis: 'host-frozen-lock-state-and-bridge-grant', grantObservation: f.pin.lockGrant!.observation });
+    for (const field of ['durableTransition', 'nativeToolSource', 'providerInputSource', 'lockStateCorrelation'])
+      expect(rows![0].metadata).not.toHaveProperty(field);
+    expect(await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`).toEqual(before);
+    expect(await f.reader(f.grant.receiptRef, binding)).toBeNull();
+    expect(await f.reader(f.selection.receiptRef, { ...binding, runId: 'other-arm' })).toBeNull();
+    expect(await f.reader(f.selection.receiptRef, { ...binding, trialBindingHash: 'c'.repeat(64) })).toBeNull();
+  });
+  it('private lock-state grant keeps immutable selection and refuses retargeting an existing state pin', async () => {
+    const f = await frozenGrantFixture();
+    const rows = await f.reader(f.selection.receiptRef, binding);
+    f.selection.lockGrant.receiptRef = 'candidate-receipt';
+    f.selection.lockGrant.observationSha256 = 'c'.repeat(64);
+    expect(await f.reader(f.pin.allocation.receipt.receiptRef, binding)).toEqual(rows);
+    expect(await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql, grant: f.grant })).toEqual(f.pin);
+    await expect(freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql })).rejects.toThrow(/changed after/);
+    await expect(freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql,
+      grant: { ...f.grant, transitionId: 'different-transition' } })).rejects.toThrow(/changed after/);
+  });
+  it.each(['missing-fire', 'wrong-source', 'wrong-payload', 'wrong-grantee', 'after-state'])
+  ('private lock-state grant refuses %s live authority and leaves no partial host pin', async fault => {
+    const f = await stateFixture();
+    if (fault === 'missing-fire') await sql`DELETE FROM harness_shared.event_key_fires`;
+    if (fault === 'wrong-source') await sql`UPDATE harness_shared.event_key_fires SET last_fired_by = 'candidate'`;
+    if (fault === 'wrong-payload') await sql`UPDATE harness_shared.event_key_fires SET last_payload = '{}'::jsonb`;
+    if (fault === 'wrong-grantee') await sql`UPDATE agent_file_locks SET owner = 'other-arm'`;
+    if (fault === 'after-state') await sql`UPDATE harness_shared.event_key_fires SET last_fired_at = clock_timestamp() + interval '10 seconds'`;
+    await expect(freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql,
+      grant: { receiptRef: f.receipt.receiptRef, transitionId: f.receipt.transitionId, index: f.receipt.index } })).rejects.toThrow(/could not verify/);
+    const [row] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(row.config).not.toHaveProperty('workloadLockStates');
+  });
+  it.each(['grant-bytes', 'grant-hash', 'allocation', 'state-bytes', 'slot', 'protocol', 'preregistration', 'loop'])
+  ('private lock-state grant refuses %s historical pin substitution', async fault => {
+    const f = await frozenGrantFixture();
+    const prefix = ['workloadLockStates', currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1), f.selection.receiptRef];
+    const path = fault === 'protocol' ? ['protocol'] : fault === 'preregistration' ? ['current', 'preregHash'] :
+      fault === 'loop' ? ['loopId'] : fault === 'slot' ? prefix : fault === 'state-bytes' ? [...prefix, 'observation', 'content'] :
+      [...prefix, 'lockGrant', ...(fault === 'grant-bytes' ? ['observation', 'content'] :
+        fault === 'grant-hash' ? ['observationSha256'] : ['allocation', 'coordinationDomain'])];
+    await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${path}::text[], '"changed"'::jsonb)`;
+    expect(await f.reader(f.selection.receiptRef, binding)).toBeNull();
+  });
+  it.each(['receipt', 'observation-hash', 'allocation-hash'])
+  ('private lock-state grant refuses borrowed %s selection', async fault => {
+    const f = await frozenGrantFixture(), selected = structuredClone(f.selection);
+    if (fault === 'receipt') selected.lockGrant.receiptRef = 'other-grant';
+    if (fault === 'observation-hash') selected.lockGrant.observationSha256 = 'c'.repeat(64);
+    if (fault === 'allocation-hash') selected.lockGrant.allocationSha256 = 'c'.repeat(64);
+    expect(await currentBenchTaskLockStateReader(f.input, selected)(selected.receiptRef, binding)).toBeNull();
+  });
+  it('private lock-state grant refuses another root instance even when its bridge bytes have a valid selected hash', async () => {
+    const f = await frozenGrantFixture(), grant = structuredClone(f.pin.lockGrant!);
+    (grant.observation.metadata!.lockGrantSource as Record<string, unknown>).rootInode = 'other-root-inode';
+    grant.observationSha256 = createHash('sha256').update(canonicalJson(grant.observation)).digest('hex');
+    const selected = structuredClone(f.selection); selected.lockGrant.observationSha256 = grant.observationSha256;
+    const path = ['workloadLockStates', currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1),
+      selected.receiptRef, 'lockGrant'];
+    await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${path}::text[], ${JSON.stringify(grant)}::text::jsonb)`;
+    expect(await currentBenchTaskLockStateReader(f.input, selected)(selected.receiptRef, binding)).toBeNull();
+  });
+  it('private lock-state grant requires granted state and distinct exact pins before capture', async () => {
+    const f = await stateFixture('queued'), grant = { receiptRef: f.receipt.receiptRef, transitionId: f.receipt.transitionId,
+      index: f.receipt.index };
+    await expect(freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql, grant })).rejects.toThrow(/distinct exact bridge/);
+    expect(() => currentBenchTaskLockStateReader(f.input, { receiptRef: f.allocation.receipt.receiptRef,
+      observationSha256: 'a'.repeat(64), trialBindingHash: binding.trialBindingHash,
+      lockGrant: { receiptRef: f.allocation.receipt.receiptRef, observationSha256: 'a'.repeat(64), allocationSha256: 'b'.repeat(64) } })).toThrow(/exact separate/);
+    expect(() => currentBenchTaskLockStateReader(f.input, { receiptRef: f.allocation.receipt.receiptRef,
+      observationSha256: 'a'.repeat(64), trialBindingHash: binding.trialBindingHash,
+      lockGrant: { receiptRef: f.receipt.receiptRef, observationSha256: 'invalid', allocationSha256: 'b'.repeat(64) } })).toThrow(/exact separate/);
+  });
+
+  async function correlationFixture(operation: 'locks:acquire' | 'locks:release' = 'locks:acquire', wrapper = false) {
+    const f = await stateFixture('held'), n = await workloadToolResultFixture(binding);
+    const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+    const fingerprint = (value: string) => createHash('sha256').update(value).digest('hex');
+    n.receipt.subjectId = f.receipt.subjectId;
+    f.allocation.receipt.index = 1;
+    if (operation === 'locks:release') {
+      delete f.allocation.receipt.waiter;
+      f.allocation.receipt.holder.ownerId = n.receipt.ownerId;
+      await sql`UPDATE agent_file_locks SET owner = ${n.receipt.ownerId}`;
+    } else f.allocation.receipt.waiter!.ownerId = n.receipt.ownerId;
+    const before = await freezeCurrentBenchTaskLockState(f.input, f.allocation, { locksSql: sql });
+    const afterAllocation = structuredClone(f.allocation);
+    afterAllocation.receipt.receiptRef = 'private-state:after'; afterAllocation.receipt.index = 3;
+    afterAllocation.receipt.phase = operation === 'locks:release' ? 'released' : 'contended';
+    if (operation === 'locks:release') await sql`DELETE FROM agent_file_locks`;
+    const after = await freezeCurrentBenchTaskLockState(f.input, afterAllocation, { locksSql: sql });
+    const args = operation === 'locks:release' ? { lock_id: f.allocation.receipt.holder.lockId, coordination_domain: repoRoot } :
+      { paths: f.allocation.receipt.paths, intent: f.allocation.receipt.waiter!.intent, coordination_domain: repoRoot };
+    const records = n.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
+    records[2].timestamp = records[3].timestamp = before.observation.at;
+    const argumentsText = wrapper ? 'text(await tools.mcp__papercusp_su__locks_acquire(selected));' : canonicalJson(args);
+    Object.assign(records[2].payload, { namespace: wrapper ? 'functions' : 'mcp',
+      name: wrapper ? 'exec' : operation === 'locks:release' ? 'locks_release' : 'locks_acquire', arguments: argumentsText });
+    const transcript = records.map(row => JSON.stringify(row) + '\n').join('');
+    const [source] = await sql`SELECT file_path FROM harness_shared.interactive_usage_files`;
+    writeFileSync(source.file_path, transcript);
+    await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${Buffer.byteLength(transcript)}`;
+    const at = new Date(before.observation.at!), started = new Date(at.getTime() - 1000), ended = new Date(at.getTime() + 1000);
+    await sql`UPDATE harness_shared.task_ledger SET started_at = ${started}, ended_at = ${ended}`;
+    await sql`UPDATE harness_shared.adv_sessions SET started_at = ${started}`;
+    const [adv] = await sql`SELECT id FROM harness_shared.adv_sessions`;
+    const metadata = { requestOrigin: { transport: 'mcp', mcpRequestTraceId: 'private-state-trace', nativeSession: {
+      carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: Number(adv.id),
+      valueFingerprint: fingerprint(n.receipt.nativeSessionId), callIdFingerprint: fingerprint(n.receipt.callId) } } };
+    const [invocation] = await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, tool_name, coord_owner_id, invoked_at, duration_ms, status, args_json, metadata_json)
+      VALUES (${workspaceId}, ${f.allocation.harnessSlug}, ${operation}, ${n.receipt.ownerId}, ${at}, 0, 'ok',
+        ${JSON.stringify(args)}::text::jsonb, ${JSON.stringify(metadata)}::text::jsonb) RETURNING id`;
+    const dispatch = { invocationId: String(invocation.id), requestTraceId: 'private-state-trace', toolName: operation,
+      argumentsSha256: hash(args), invocationSha256: '' };
+    async function repinDispatch() {
+      const [row] = await sql`SELECT to_jsonb(invocation) AS invocation FROM harness_shared.tool_invocations invocation`;
+      dispatch.invocationSha256 = hash(row.invocation);
+    }
+    await repinDispatch();
+    const receipt = { ...n.receipt, index: 2, toolName: wrapper ? 'functions.exec' : operation === 'locks:release' ? 'mcp.locks_release' : 'mcp.locks_acquire',
+      sourceSha256: fingerprint(transcript), argumentsSha256: fingerprint(argumentsText), dispatch };
+    const selection = { receiptRef: after.allocation.receipt.receiptRef, observationSha256: after.observationSha256,
+      trialBindingHash: binding.trialBindingHash, nativeCorrelation: { operation, receipt,
+        allocationSha256: hash(after.allocation), before: { receiptRef: before.allocation.receipt.receiptRef,
+          observationSha256: before.observationSha256, allocationSha256: hash(before.allocation) } } };
+    async function repinStates() {
+      before.observationSha256 = hash(before.observation); after.observationSha256 = hash(after.observation);
+      selection.observationSha256 = after.observationSha256;
+      selection.nativeCorrelation.allocationSha256 = hash(after.allocation);
+      selection.nativeCorrelation.before.observationSha256 = before.observationSha256;
+      selection.nativeCorrelation.before.allocationSha256 = hash(before.allocation);
+      const key = currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1);
+      await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${['workloadLockStates', key]}::text[],
+        ${JSON.stringify({ [before.allocation.receipt.receiptRef]: before, [after.allocation.receipt.receiptRef]: after })}::text::jsonb)`;
+    }
+    return { ...f, before, after, selection, args, hash, repinStates, repinDispatch };
+  }
+  it.each([['locks:acquire', false], ['locks:acquire', true], ['locks:release', false]] as const)
+  ('private lock-state correlation pairs %s wrapper=%s while preserving separate authority', async (operation, wrapper) => {
+    const f = await correlationFixture(operation, wrapper), reader = currentBenchTaskLockStateReader(f.input, f.selection);
+    await sql`DELETE FROM agent_file_locks`; await sql`DELETE FROM agent_lock_waiters`;
+    rmSync(repoRoot, { recursive: true, force: true });
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs`;
+    const rows = await reader(f.selection.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ content: f.after.observation.content, metadata: {
+      lockStateCorrelation: { basis: 'host-frozen-samples-and-native-dispatch', operation,
+        before: { observationSha256: f.before.observationSha256, observation: f.before.observation },
+        nativeObservation: { name: f.selection.nativeCorrelation.receipt.toolName,
+          metadata: { platformInvocationSource: { status: 'ok', toolName: operation } } } } } });
+    // An ok dispatch, contended state and fixture output are not business success/denial or causality.
+    expect(rows?.[0].metadata).not.toHaveProperty('durableTransition');
+    expect(rows?.[0].metadata).not.toHaveProperty('nativeToolSource');
+    expect(rows?.[0].metadata).not.toHaveProperty('providerInputSource');
+    f.selection.nativeCorrelation.receipt.ownerId = 'candidate';
+    expect(await reader(f.selection.receiptRef, binding)).toEqual(rows);
+    expect((await sql`SELECT config FROM harness_shared.bench_runs`)[0]).toEqual(before);
+  });
+  it.each(['before-hash', 'after-hash', 'allocation-hash', 'subject', 'actor', 'path', 'inode', 'device',
+    'before-time', 'after-time', 'index', 'dispatch-domain', 'dispatch-intent', 'dispatch-path', 'native-pin', 'missing-before'])
+  ('private lock-state correlation refuses %s borrowing even with repinned structural changes', async fault => {
+    const f = await correlationFixture();
+    if (fault === 'subject') f.after.allocation.receipt.subjectId = 'foreign';
+    if (fault === 'actor') f.after.allocation.receipt.waiter!.ownerId = 'foreign';
+    if (fault === 'path') f.after.allocation.receipt.paths = ['foreign.ts'];
+    if (fault === 'inode' || fault === 'device') {
+      const source = f.after.observation.metadata!.lockStateSource as Record<string, unknown>;
+      source[fault === 'inode' ? 'rootInode' : 'rootDevice'] = 'foreign';
+    }
+    if (fault === 'before-time') f.before.observation.at = new Date(Date.parse(f.after.observation.at!) + 1000).toISOString();
+    if (fault === 'after-time') f.after.observation.at = new Date(Date.parse(f.before.observation.at!) - 1000).toISOString();
+    if (fault === 'index') f.before.observation.index = f.before.allocation.receipt.index = 2;
+    await f.repinStates();
+    if (fault === 'before-hash') f.selection.nativeCorrelation.before.observationSha256 = 'b'.repeat(64);
+    if (fault === 'after-hash') f.selection.observationSha256 = 'b'.repeat(64);
+    if (fault === 'allocation-hash') f.selection.nativeCorrelation.allocationSha256 = 'b'.repeat(64);
+    if (fault === 'native-pin') f.selection.nativeCorrelation.receipt.sourceSha256 = 'b'.repeat(64);
+    if (fault === 'missing-before') await sql`UPDATE harness_shared.bench_runs SET config = config #-
+      ${['workloadLockStates', currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1), f.before.allocation.receipt.receiptRef]}::text[]`;
+    if (fault.startsWith('dispatch-')) {
+      const args = { ...f.args } as Record<string, unknown>;
+      if (fault === 'dispatch-domain') args.coordination_domain = '/foreign';
+      if (fault === 'dispatch-intent') args.intent = 'foreign';
+      if (fault === 'dispatch-path') args.paths = ['foreign.ts'];
+      await sql`UPDATE harness_shared.tool_invocations SET args_json = ${JSON.stringify(args)}::text::jsonb`;
+      f.selection.nativeCorrelation.receipt.dispatch.argumentsSha256 = f.hash(args);
+      await f.repinDispatch();
+    }
+    expect(await currentBenchTaskLockStateReader(f.input, f.selection)(f.selection.receiptRef, binding)).toBeNull();
+  });
+  it('private lock-state correlation requires distinct samples and a selected dispatch before reads', async () => {
+    const f = await correlationFixture();
+    f.selection.nativeCorrelation.before.receiptRef = f.selection.receiptRef;
+    expect(() => currentBenchTaskLockStateReader(f.input, f.selection)).toThrow(/distinct pinned/);
+    f.selection.nativeCorrelation.before.receiptRef = f.before.allocation.receipt.receiptRef;
+    f.selection.nativeCorrelation.receipt.dispatch.toolName = 'locks:release';
+    expect(() => currentBenchTaskLockStateReader(f.input, f.selection)).toThrow(/exact native dispatch/);
   });
 });
 
@@ -803,6 +1133,97 @@ async function workloadToolResultFixture(binding: { runId: string; trialBindingH
     return { ...f, transcript, argumentsText, output, receipt, options: { ...f.options, receipts: [receipt] } };
 }
 
+describe('private workload native dispatch correlation', () => {
+  const binding = { runId: 'private-dispatch-run', trialBindingHash: 'a'.repeat(64) };
+  const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  const fingerprint = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+  async function fixture(wrapper = false) {
+    const f = await workloadToolResultFixture(binding);
+    if (wrapper) {
+      const records = f.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
+      const argumentsText = 'text(await tools.mcp__papercusp_su__locks_acquire({paths:["private/task.txt"],intent:"exact π"}));';
+      Object.assign(records[2].payload, { namespace: 'functions', name: 'exec', arguments: argumentsText });
+      f.transcript = records.map(row => JSON.stringify(row) + '\n').join('');
+      const [source] = await sql`SELECT file_path FROM harness_shared.interactive_usage_files`;
+      writeFileSync(source.file_path, f.transcript);
+      await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${Buffer.byteLength(f.transcript)}`;
+      f.receipt.toolName = 'functions.exec';
+      f.receipt.argumentsSha256 = fingerprint(argumentsText);
+      f.receipt.sourceSha256 = fingerprint(f.transcript);
+    }
+    const [adv] = await sql`SELECT id FROM harness_shared.adv_sessions`;
+    const args = JSON.parse(f.argumentsText);
+    const metadata = { requestOrigin: { transport: 'mcp', mcpRequestTraceId: 'private-request-trace', nativeSession: {
+      carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: Number(adv.id),
+      valueFingerprint: fingerprint(f.receipt.nativeSessionId), callIdFingerprint: fingerprint(f.receipt.callId) } } };
+    const [row] = await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, tool_name, coord_owner_id, invoked_at, duration_ms, status, args_json, metadata_json)
+      VALUES (${workspaceId}, ${f.options.harnessSlug}, 'locks:acquire', ${f.receipt.ownerId},
+        '2026-10-11T00:00:00.800Z', 100, 'ok', ${JSON.stringify(args)}::text::jsonb,
+        ${JSON.stringify(metadata)}::text::jsonb) RETURNING id`;
+    const dispatch = { invocationId: String(row.id), requestTraceId: metadata.requestOrigin.mcpRequestTraceId,
+      toolName: 'locks:acquire', argumentsSha256: hash(args), invocationSha256: '' };
+    const receipt = { ...f.receipt, dispatch };
+    async function repin() {
+      const [row] = await sql`SELECT to_jsonb(invocation) AS invocation FROM harness_shared.tool_invocations invocation
+        WHERE id = ${dispatch.invocationId}::bigint`;
+      dispatch.invocationSha256 = hash(row.invocation);
+    }
+    await repin();
+    return { ...f, receipt, dispatch, metadata, repin, options: { ...f.options, receipts: [receipt] } };
+  }
+  it.each([false, true])('native dispatch correlation joins direct/wrapper=%s without inventing lock authority', async wrapper => {
+    const f = await fixture(wrapper), reader = currentBenchWorkloadToolResultReader(f.options);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ name: wrapper ? 'functions.exec' : 'mcp.locks_acquire', content: f.output,
+      metadata: { platformInvocationSource: { basis: 'native-call-correlated-dispatch', toolName: 'locks:acquire',
+        invocationId: f.dispatch.invocationId, status: 'ok', arguments: JSON.parse(f.argumentsText) } } });
+    expect(rows?.[0].metadata).not.toHaveProperty('durableTransition');
+    f.dispatch.requestTraceId = 'candidate'; f.options.receipts[0].toolName = 'candidate';
+    expect(await reader(f.receipt.receiptRef, binding)).toEqual(rows);
+  });
+  it.each(['missing', 'workspace', 'harness', 'owner', 'call', 'session', 'carrier', 'binding', 'adv',
+    'trace', 'target', 'args', 'truncated', 'before', 'after', 'duration', 'replayed', 'duplicate', 'changed-pin'])
+  ('native dispatch correlation refuses %s substitution', async fault => {
+    const f = await fixture(true);
+    if (fault === 'missing') await sql`DELETE FROM harness_shared.tool_invocations`;
+    if (fault === 'workspace') await sql`UPDATE harness_shared.tool_invocations SET workspace_id = 'foreign'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.tool_invocations SET harness_slug = 'foreign'`;
+    if (fault === 'owner') await sql`UPDATE harness_shared.tool_invocations SET coord_owner_id = 'foreign'`;
+    if (fault === 'call') f.metadata.requestOrigin.nativeSession.callIdFingerprint = fingerprint('foreign');
+    if (fault === 'session') f.metadata.requestOrigin.nativeSession.valueFingerprint = fingerprint('foreign');
+    if (fault === 'carrier') f.metadata.requestOrigin.nativeSession.carrier = 'header:x-papercusp-native-session';
+    if (fault === 'binding') f.metadata.requestOrigin.nativeSession.binding = 'unbound';
+    if (fault === 'adv') f.metadata.requestOrigin.nativeSession.candidateAdvSessionId++;
+    if (fault === 'trace') f.metadata.requestOrigin.mcpRequestTraceId = 'foreign';
+    await sql`UPDATE harness_shared.tool_invocations SET metadata_json = ${JSON.stringify(f.metadata)}::text::jsonb`;
+    if (fault === 'target') await sql`UPDATE harness_shared.tool_invocations SET tool_name = 'locks:release'`;
+    if (fault === 'args') await sql`UPDATE harness_shared.tool_invocations SET args_json = '{"paths":["foreign"]}'::jsonb`;
+    if (fault === 'truncated') {
+      const args = { _truncated: true, _size: 40000 }; f.dispatch.argumentsSha256 = hash(args);
+      await sql`UPDATE harness_shared.tool_invocations SET args_json = ${JSON.stringify(args)}::text::jsonb`;
+    }
+    if (fault === 'before') await sql`UPDATE harness_shared.tool_invocations SET invoked_at = '2026-10-11T00:00:00.400Z'`;
+    if (fault === 'after') await sql`UPDATE harness_shared.tool_invocations SET invoked_at = '2026-10-11T00:00:01.100Z'`;
+    if (fault === 'duration') await sql`UPDATE harness_shared.tool_invocations SET duration_ms = 400`;
+    if (fault === 'replayed') await sql`UPDATE harness_shared.tool_invocations SET status = 'replayed'`;
+    if (fault === 'duplicate') await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, tool_name, coord_owner_id, invoked_at, duration_ms, status, args_json, metadata_json)
+      SELECT workspace_id, harness_slug, tool_name, coord_owner_id, invoked_at, duration_ms, status, args_json, metadata_json
+        FROM harness_shared.tool_invocations`;
+    // Re-pin the altered row to distinguish structural refusal from hash drift.
+    if (fault !== 'missing' && fault !== 'changed-pin') await f.repin();
+    if (fault === 'changed-pin') await sql`UPDATE harness_shared.tool_invocations SET error_code = 'late-replacement'`;
+    expect(await currentBenchWorkloadToolResultReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('native dispatch correlation refuses duplicate host selection before reads', async () => {
+    const f = await fixture();
+    expect(() => currentBenchWorkloadToolResultReader({ ...f.options, receipts: [f.receipt,
+      { ...f.receipt, receiptRef: 'different', index: 9 }] })).toThrow(/unique pinned/);
+  });
+});
+
 describe('private workload native tool-result authority', () => {
   const binding = { runId: 'private-tool-result-run', trialBindingHash: 'a'.repeat(64) };
   const fixture = () => workloadToolResultFixture(binding);
@@ -1092,7 +1513,8 @@ describe('private workload provider input authority', () => {
       reservationNoteSha256: createHash('sha256').update(note).digest('hex') };
     return { ...f, body, native, receipt, options: { ...f.options, receipts: [receipt] } };
   }
-  async function composedFixture<F extends Awaited<ReturnType<typeof fixture>> | Awaited<ReturnType<typeof toolFixture>>>(f: F, freeze = true) {
+  async function composedFixture<F extends Awaited<ReturnType<typeof fixture>> | Awaited<ReturnType<typeof toolFixture>>>(f: F, freeze = true,
+    prepare?: (input: CurrentTaskInput) => Promise<void>) {
     const protocol = currentProtocolFixture(binding.runId);
     for (const arm of protocol.arms) arm.account = f.identity.accountId;
     const input: CurrentTaskInput = { options: { workspaceId, runId: binding.runId, armId: 'papercusp', seed: 1,
@@ -1109,6 +1531,7 @@ describe('private workload provider input authority', () => {
     await sql`INSERT INTO harness_shared.bench_runs (id, workspace_id, arm, task_set_id, model, status, config)
       VALUES (${input.hostRunId}, ${workspaceId}, 'papercusp', 'custom', ${input.options.model!}, 'running',
         ${JSON.stringify(config)}::text::jsonb)`;
+    await prepare?.(input);
     const host = await currentBenchTaskProviderCapture(input); roots.push(host.captureRoot);
     const body = JSON.stringify(f.body);
     await host.captureProviderInput({ ...f.attempt, body, bodySha256: createHash('sha256').update(body).digest('hex') });
@@ -1119,6 +1542,113 @@ describe('private workload provider input authority', () => {
       notBefore: f.options.notBefore, receipts: [f.receipt] };
     return { ...f, input, host, allocation };
   }
+  async function lockProviderFixture(kind: 'function' | 'custom' = 'function') {
+    const f = await toolFixture(kind), hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+    const fingerprint = (value: string) => createHash('sha256').update(value).digest('hex');
+    let selection!: Parameters<typeof currentBenchTaskLockStateReader>[1];
+    const composed = await composedFixture(f, true, async input => {
+      const holder = { ownerId: f.native.receipt.ownerId, ownerLabel: 'Private holder', intent: 'Hold private file', lockId: randomUUID() };
+      const paths = ['src/private.ts'], domain = input.checkout.dir, start = new Date(Date.now() - 1000), expiry = new Date(Date.now() + 60_000);
+      await sql`INSERT INTO agent_file_locks (coordination_domain, path, owner, owner_label, intent, goal_ref,
+        lock_id, acquired_ts, expires_ts) VALUES (${domain}, ${paths[0]}, ${holder.ownerId}, ${holder.ownerLabel},
+        ${holder.intent}, ${f.native.receipt.subjectId}, ${holder.lockId}::uuid, ${start}, ${expiry})`;
+      const allocation: CurrentBenchLockStateAllocation = { workspaceId, harnessSlug: f.options.harnessSlug, ...binding,
+        coordinationDomain: domain, notBefore: f.options.notBefore,
+        receipt: { receiptRef: 'private-provider-lock:before', index: 1, phase: 'held', paths, holder,
+          subjectId: f.native.receipt.subjectId } };
+      const before = await freezeCurrentBenchTaskLockState(input, allocation, { locksSql: sql });
+      await sql`DELETE FROM agent_file_locks`;
+      const after = await freezeCurrentBenchTaskLockState(input, { ...allocation,
+        receipt: { ...allocation.receipt, receiptRef: 'private-provider-lock:after', index: 3, phase: 'released' } }, { locksSql: sql });
+      const args = { lock_id: holder.lockId, coordination_domain: domain }, argumentsText = canonicalJson(args);
+      const records = f.native.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
+      records[2].timestamp = records[3].timestamp = before.observation.at;
+      Object.assign(records[2].payload, { namespace: 'mcp', name: 'locks_release',
+        ...(kind === 'function' ? { arguments: argumentsText } : { input: argumentsText }) });
+      const transcript = records.map(row => JSON.stringify(row) + '\n').join('');
+      const [source] = await sql`SELECT file_path FROM harness_shared.interactive_usage_files`;
+      writeFileSync(source.file_path, transcript);
+      await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${Buffer.byteLength(transcript)}`;
+      const at = new Date(before.observation.at!), started = new Date(at.getTime() - 1000), ended = new Date(at.getTime() + 1000);
+      await sql`UPDATE harness_shared.task_ledger SET started_at = ${started}, ended_at = ${ended}`;
+      await sql`UPDATE harness_shared.adv_sessions SET started_at = ${started}`;
+      await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = ${new Date(at.getTime() + 100)}`;
+      const [adv] = await sql`SELECT id FROM harness_shared.adv_sessions`;
+      const metadata = { requestOrigin: { transport: 'mcp', mcpRequestTraceId: 'private-provider-lock-trace', nativeSession: {
+        carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: Number(adv.id),
+        valueFingerprint: fingerprint(f.native.receipt.nativeSessionId), callIdFingerprint: fingerprint(f.native.receipt.callId) } } };
+      const [invocation] = await sql`INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, tool_name, coord_owner_id, invoked_at, duration_ms, status, args_json, metadata_json)
+        VALUES (${workspaceId}, ${f.options.harnessSlug}, 'locks:release', ${holder.ownerId}, ${at}, 0, 'ok',
+          ${JSON.stringify(args)}::text::jsonb, ${JSON.stringify(metadata)}::text::jsonb) RETURNING id`;
+      const [row] = await sql`SELECT to_jsonb(invocation) AS invocation FROM harness_shared.tool_invocations invocation`;
+      const dispatch = { invocationId: String(invocation.id), requestTraceId: 'private-provider-lock-trace', toolName: 'locks:release',
+        argumentsSha256: hash(args), invocationSha256: hash(row.invocation) };
+      Object.assign(f.native.receipt, { index: 2, toolName: 'mcp.locks_release', sourceSha256: fingerprint(transcript),
+        argumentsSha256: fingerprint(argumentsText), dispatch });
+      Object.assign(f.receipt, f.native.receipt);
+      Object.assign(f.body.input[0], { name: 'locks_release', ...(kind === 'function' ? { arguments: argumentsText } : { input: argumentsText }) });
+      const bodySha256 = fingerprint(JSON.stringify(f.body));
+      f.note.nativeGatewayAttempt.bodySha256 = f.note.nativeGatewayAttemptResult.bodySha256 = bodySha256;
+      await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${JSON.stringify(f.note)}`;
+      selection = { receiptRef: after.allocation.receipt.receiptRef, observationSha256: after.observationSha256,
+        trialBindingHash: binding.trialBindingHash, nativeCorrelation: { operation: 'locks:release',
+          receipt: { ...f.native.receipt, dispatch }, allocationSha256: hash(after.allocation),
+          before: { receiptRef: before.allocation.receipt.receiptRef, observationSha256: before.observationSha256,
+            allocationSha256: hash(before.allocation) }, providerInput: { ...f.native.receipt, dispatch,
+            nativeSource: 'tool-result', contextId: f.receipt.contextId, consumer: f.receipt.consumer,
+            reservationId: f.receipt.reservationId, inputIndex: 1 } } };
+    });
+    return { ...composed, selection };
+  }
+  it.each(['function', 'custom'] as const)('lock provider correlation preserves separate %s state, native and consumed-result authority', async kind => {
+    const f = await lockProviderFixture(kind);
+    // The native fixture carries extra provider fields from its base fixture;
+    // those fields must not replace independent completed-request selection.
+    expect(f.native.receipt).toHaveProperty('inputIndex', 0);
+    expect(f.selection.nativeCorrelation!.providerInput).toHaveProperty('inputIndex', 1);
+    const reader = currentBenchTaskLockStateReader(f.input, f.selection);
+    await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId}`;
+    rmSync(f.input.checkout.dir, { recursive: true });
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    const rows = await reader(f.selection.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'tool-result', name: 'lock:state:released', metadata: {
+      lockStateCorrelation: { nativeObservation: { content: f.native.output,
+        metadata: { platformInvocationSource: { toolName: 'locks:release' } } } },
+      lockProviderCorrelation: { basis: 'host-completed-request-and-exact-native-result', providerObservation: {
+        kind: 'input', content: f.native.output, metadata: { nativeToolSource: { callId: f.receipt.callId },
+          providerInputSource: { callId: f.receipt.callId, reservationId: f.receipt.reservationId } } } } } });
+    expect(JSON.parse(rows![0].content!).locks).toHaveLength(0);
+    for (const name of ['durableTransition', 'nativeToolSource', 'providerInputSource', 'businessOutcome', 'grade'])
+      expect(rows?.[0].metadata).not.toHaveProperty(name);
+    f.selection.nativeCorrelation!.providerInput!.consumer = 'candidate';
+    expect(await reader(f.selection.receiptRef, binding)).toEqual(rows);
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+  });
+  it.each(['receiptRef', 'subjectId', 'taskId', 'ownerId', 'label', 'codexHome', 'nativeSessionId',
+    'nativeTurnId', 'callRecordIndex', 'resultRecordIndex', 'callId', 'toolName', 'sourceSha256',
+    'argumentsSha256', 'outputSha256', 'index', 'dispatch'] as const)
+  ('lock provider correlation refuses %s receipt borrowing before reads', async fault => {
+    const f = await lockProviderFixture(), provider = f.selection.nativeCorrelation!.providerInput! as unknown as Record<string, unknown>;
+    provider[fault] = fault === 'dispatch' ? { ...(provider.dispatch as object), requestTraceId: 'foreign' } : 'foreign';
+    expect(() => currentBenchTaskLockStateReader(f.input, f.selection)).toThrow(/exact selected native tool-result/);
+  });
+  it.each(['status', 'note'] as const)('lock provider correlation refuses %s settlement drift without changing saved states', async fault => {
+    const f = await lockProviderFixture(), reader = currentBenchTaskLockStateReader(f.input, f.selection);
+    if (fault === 'status') await sql`UPDATE harness_shared.learning_spend_reservations SET status = 'open'`;
+    else await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' '`;
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(await reader(f.selection.receiptRef, binding)).toBeNull();
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+  });
+  it('lock provider correlation refuses a missing host settlement pin without creating one', async () => {
+    const f = await lockProviderFixture(), key = f.host.allocation.accountingBinding.assignmentId;
+    await sql`UPDATE harness_shared.bench_runs SET config = config #- ${['providerInputCaptures', key, 'settledProviderInputs']}::text[]`;
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    await expect(currentBenchTaskLockStateReader(f.input, f.selection)(f.selection.receiptRef, binding)).rejects.toThrow(/explicitly frozen/);
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+  });
   it('host provider composition binds closed native input to settled host pins after checkout removal without writing', async () => {
     const f = await composedFixture(await fixture());
     await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId}`;

@@ -1680,6 +1680,41 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
   });
 });
 
+// WI-6554700010008465: observe said available:true for a dependency-blocked row with no hint that
+// self-select (scheduler:get_next / claim_next) skips it. The fix names the blockers; availability
+// is deliberately unchanged because the by-id claim still succeeds (with blockedClaimWarning).
+describe('WI-6554700010008465 — observeWorkItem names unresolved dependency blockers (real PG)', () => {
+  it('reports the open blocker on an unclaimed item, keeps available:true, and drops it once the blocker settles', async () => {
+    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'observe blocker', harness: 'papercup', createdBy: 'agA' });
+    const blocked = await wi.createWorkItem({ kind: 'bug', title: 'observe blocked', harness: 'papercup', createdBy: 'agA' });
+    const free = await wi.createWorkItem({ kind: 'bug', title: 'observe free', harness: 'papercup', createdBy: 'agA' });
+    expect(await wi.linkWorkItem(blocker.id, { kind: 'issue', ref: blocked.id }, 'blocks', { by: 'agA' })).toEqual({ ok: true });
+
+    const obs = await wi.observeWorkItem(blocked.id, { harness: 'papercup' });
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+    expect(obs?.unresolvedDepBlockers?.map((b) => b.ref)).toEqual([blocker.id]);
+    expect(obs?.unresolvedDepBlockers?.[0]).toMatchObject({ kind: 'issue' });
+
+    // Control: an item with no edge carries no field at all (absent, not []).
+    const freeObs = await wi.observeWorkItem(free.id, { harness: 'papercup' });
+    expect(freeObs).toMatchObject({ available: true, claimedBy: null });
+    expect(freeObs).not.toHaveProperty('unresolvedDepBlockers');
+
+    // A held item reports its holder, not the blocker list.
+    expect((await wi.claimWorkItem(blocked.id, 'agA', { harness: 'papercup' }))?.assignee).toBe('agA');
+    const heldObs = await wi.observeWorkItem(blocked.id, { harness: 'papercup' });
+    expect(heldObs).toMatchObject({ available: false, claimedBy: 'agA' });
+    expect(heldObs).not.toHaveProperty('unresolvedDepBlockers');
+    expect((await wi.releaseWorkItem(blocked.id))?.assignee).toBeNull();
+
+    // Settling the blocker resolves the edge, and the field goes away.
+    await wi.setWorkItemState(blocker.id, 'resolved', { by: 'agA', completionRef: 'WI-6554700010008465 test' });
+    const settled = await wi.observeWorkItem(blocked.id, { harness: 'papercup' });
+    expect(settled).toMatchObject({ available: true, claimedBy: null });
+    expect(settled).not.toHaveProperty('unresolvedDepBlockers');
+  });
+});
+
 describe('WI-4119 — followBlockers derived subscriptions', () => {
   it('follows blockers added before or after subscribe, removes the derived edge on unlink, and preserves a direct follow', async () => {
     const blocker = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });

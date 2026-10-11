@@ -91,6 +91,13 @@ describe('listToasts (drizzle, PG)', () => {
     expect(toasts.map((t) => t.id)).toEqual([5, 4]); // newest 2
   });
 
+  it('filters by level before applying the newest-row limit', async () => {
+    await insertToast({ id: 1, createdAt: 100, level: 'warning', message: 'older warning' });
+    await insertToast({ id: 2, createdAt: 200, level: 'info', message: 'newer info' });
+    const { toasts } = await listToasts({ level: 'warning', limit: 1 });
+    expect(toasts.map((t) => t.id)).toEqual([1]);
+  });
+
   it('the `since` filter returns only created_at >= since (the delta read)', async () => {
     await insertToast({ id: 1, createdAt: 100 });
     await insertToast({ id: 2, createdAt: 200 });

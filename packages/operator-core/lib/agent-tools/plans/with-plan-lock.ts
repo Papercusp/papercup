@@ -44,8 +44,10 @@ import {
 } from './plan-lock-key';
 import {
   activationGateRefusalValue,
+  childSeedTemplateRefusalValue,
   entersActivationPlanStatus,
   evaluateConversationActivationGate,
+  introducesChildSeedTemplate,
   isActivationAuditExemptTemplate,
 } from './plan-activation-gate';
 import {
@@ -281,6 +283,15 @@ export interface WithPlanLockOpts<T = unknown> {
   actorId?: string;
   /** Advisory-lock acquisition budget before reporting busy. Default ~5s. */
   ttlSec?: number;
+  /**
+   * INTERNAL — set ONLY by spawn_child's seed-plan writer. Permits a write that
+   * introduces the `child-seed` template, which exempts the plan from the
+   * conversation activation audit (verification-system-improvements-2026-10-10#D-038).
+   * Every other caller that introduces that template is refused with
+   * `child_seed_template_reserved`, so the exemption is not self-serve. Never map a
+   * tool argument onto this field.
+   */
+  allowChildSeedTemplate?: boolean;
   /**
    * Hand the mutator the plan's latest `plan_revisions` snapshot as `meta.latestRevision`
    * (read inside the lock). Opt-in because it costs one indexed read per write; only
@@ -571,6 +582,28 @@ export async function withPlanLock<T>(
     if (newBody !== null) {
       const beforeIndex = cur ? deriveIndexFromContent(cur.content) : null;
       const afterIndex = deriveIndexFromContent(newBody);
+      // D-038: the child-seed template exempts a plan from the activation audit, so
+      // only spawn_child's seed writer may introduce it. A later edit that keeps an
+      // existing child-seed template is not an introduction and passes through.
+      if (
+        !opts.allowChildSeedTemplate &&
+        introducesChildSeedTemplate(beforeIndex?.template, afterIndex.template)
+      ) {
+        return {
+          kind: 'applied',
+          value: childSeedTemplateRefusalValue(slug) as T,
+          filePath,
+          version: curVersion,
+          scope: { workspaceId, harnessSlug },
+          writtenBody: null,
+          writtenTemplateData: cur?.template_data ?? null,
+          priorBody: cur?.content ?? null,
+        } satisfies AppliedResult<T> & {
+          writtenBody: string | null;
+          writtenTemplateData: unknown;
+          priorBody: string | null;
+        };
+      }
       if (
         entersActivationPlanStatus(beforeIndex?.status, afterIndex.status) &&
         !isActivationAuditExemptTemplate(afterIndex.template)

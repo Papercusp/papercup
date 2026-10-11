@@ -5042,6 +5042,32 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
     });
   });
 
+  it('preserves a watchdog force-compaction stamp on the checkpoint writer path', async () => {
+    const currentTurn = {
+      ref: '[turn:session-watchdog@2026-09-08T13:10:00.000Z]',
+      verdict: 'agent-injected',
+      origin: 'watchdog',
+    };
+    const id = 'WI-PROVENANCE-WATCHDOG';
+    const stored = `Checkpoint note created here: ${currentTurn.ref}`;
+    resolveCurrentTurnStamp.mockClear();
+    verifyTurnRefs.mockClear();
+    resolveCurrentTurnStamp.mockResolvedValueOnce(currentTurn);
+    getWorkItem.mockResolvedValue({ id, harness: 'papercusp' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id, checkpoint: 'Checkpoint note created here: [turn:self]' });
+
+    expect(result.ok).toBe(true);
+    expect(resolveCurrentTurnStamp).toHaveBeenCalledTimes(1);
+    expect(verifyTurnRefs).not.toHaveBeenCalled();
+    expect(result.turnProvenance).toMatchObject({
+      writtenDuring: currentTurn,
+      refs: [{ ref: currentTurn.ref, found: true, checked: true, verdict: currentTurn.verdict }],
+    });
+  });
+
   it('EI-21306957457076433: does not retain a factual timeout classification as bare imperative lint', async () => {
     const current = 'Fresh checkpoint evidence for the next wake.';
     const retained =

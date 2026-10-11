@@ -122,7 +122,10 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     return rows.length > 0;
   },
   async resolveCondition(blocker) {
-    if (blocker.kind === 'event' || blocker.kind === 'gate') return readEventConditionReachability(blocker.ref);
+    if (blocker.kind === 'event' || blocker.kind === 'gate') {
+      // Releasing work requires proof of its specific condition, including on re-check.
+      return readEventConditionReachability(blocker.ref, { requireSpecificCondition: true });
+    }
     return { verdict: 'unknown', basis: 'unmeasured', authoritative: false,
       evidence: 'Runtime and owner capabilities require the named next action.', checkedAt: new Date().toISOString() };
   },

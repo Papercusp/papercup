@@ -9292,6 +9292,16 @@ export interface WorkItemObservation {
     claimedBy: string;
     claimedByLabel: string | null;
   };
+  /**
+   * WI-6554700010008465: unresolved `blocks` edges on an UNCLAIMED item — the same read
+   * (`readUnresolvedDepBlockers`) behind work_items:claim's `blockedClaimWarning`. INFORMATIONAL:
+   * it never changes `available`, because the dependency floor gates SELF-SELECT only (D-008 of
+   * the deps/readiness work) and a by-id claim still succeeds. What it adds is the signal a
+   * reader of `available:true` otherwise lacks: `scheduler:get_next` / `claim_next` will skip
+   * this row until the listed blockers settle. Omitted when there are none, when the item is
+   * held, or when the read fails (an absent field asserts nothing).
+   */
+  unresolvedDepBlockers?: UnresolvedDepBlocker[];
 }
 
 /**
@@ -9449,6 +9459,15 @@ export async function observeWorkItem(
     if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return {
       item: wi, available: false, claimedBy: wi.assignee, gated: true, reproductionRefused: reproduction,
     };
+  }
+  // WI-6554700010008465: by-id claim succeeds on a dependency-blocked row (it warns), so
+  // `available` stays true; self-select does not. Name the blockers so `available:true`
+  // is not read as "the scheduler will hand this out". Fail-soft, like claim.ts.
+  if (unclaimed) {
+    const blockers = await readUnresolvedDepBlockers(id, opts.harness ?? wi.harness ?? undefined).catch(() => null);
+    if (blockers && blockers.length > 0) {
+      return { item: wi, available: true, claimedBy: wi.assignee, unresolvedDepBlockers: blockers };
+    }
   }
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }

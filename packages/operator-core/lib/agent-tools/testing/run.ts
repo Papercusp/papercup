@@ -78,6 +78,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import {
   boundTestRunPayload,
   captureWorktreeSnapshot,
@@ -3624,6 +3625,8 @@ export async function runTestFilesCore(opts: {
         worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
         root,
         testNamePattern: opts.testNamePattern ?? null,
+        // P-011: the env the measured Vitest children actually ran under (runDirectVitest).
+        configurationSnapshot: captureConfigurationSnapshot(childEnv),
       });
     }
 

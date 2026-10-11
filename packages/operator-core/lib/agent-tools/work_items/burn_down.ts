@@ -14,6 +14,9 @@ import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   explainIssueClaimFloors,
   listWorkItems,
+  listAllWorkItemsForFileExport,
+  countWorkItems,
+  countWorkItemsByState,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
   WORK_ITEMS_MAX_LIMIT,
@@ -178,6 +181,97 @@ export interface BurnDownDeltaBy {
 // already drifted (missing `done`/`dropped`) and silently scored finished work
 // as failed placements.
 const TERMINAL_STATES = new Set(ANY_FAMILY_TERMINAL_STATES);
+
+/**
+ * WI-6554700010008464 — the open-queue read is uncapped up to this many rows. Measured
+ * 2026-10-11: the largest live open population is 14,261 rows (papercusp, all kinds);
+ * terminal history is ~18x that (53,664 papercusp bugs alone), which is why history is
+ * never read in full. Above the ceiling the open read falls back to a capped read and
+ * the census reports itself bounded rather than guessing.
+ */
+export const NON_TERMINAL_CENSUS_CEILING = 25_000;
+
+/** The terminal-history slice that fed the authority split and the `since` delta. */
+export interface BurnDownTerminalHistory {
+  /** Where `terminal.total` and the per-state counts came from: an exact aggregate over
+   *  the same selector, or the fetched rows (a fenced census, or a fixed-id cohort). */
+  totalsSource: 'aggregate' | 'rows';
+  /** Terminal rows read (after any fence). */
+  rowsRead: number;
+  /** The cap on the terminal-history read, newest `updated_ts` first. */
+  limit: number;
+  truncatedByLimit: boolean;
+  /** `terminal.authority` covers every terminal row (the history read was not capped). */
+  authorityExact: boolean;
+  /** `delta`/`deltaBy`/`closedSince`/`openedSince` cover the whole `since` window: the
+   *  read was not capped, or its oldest row is no newer than `since` (a close after
+   *  `since` also moves `updated_ts` past it). Null without `since`. */
+  deltaExact: boolean | null;
+}
+
+/** WI-6554700010008464 — what a live (no-ids) census read, and how complete it was. */
+export interface LiveCensusSource {
+  /** Every open row (unless `nonTerminal.truncatedByLimit`) plus the terminal-history slice. */
+  items: WorkItem[];
+  /** Exact per-state counts over the selector; absent when not requested (fenced census). */
+  terminalStateCounts: Record<string, number> | undefined;
+  terminalHistory: { limit: number; truncatedByLimit: boolean; oldestUpdatedAt: string | null };
+  nonTerminal: { counted: number; read: number; limit: number; truncatedByLimit: boolean };
+}
+
+export interface LiveCensusDeps {
+  listWorkItems: typeof listWorkItems;
+  listAllWorkItemsForFileExport: typeof listAllWorkItemsForFileExport;
+  countWorkItems: typeof countWorkItems;
+  countWorkItemsByState: typeof countWorkItemsByState;
+}
+
+/**
+ * WI-6554700010008464 — read the live census so the OPEN partition is exact. The old
+ * read was one `listWorkItems` over all states capped at WORK_ITEMS_MAX_LIMIT, ordered
+ * by `updated_ts`, so recently touched terminal history filled the cap before the open
+ * queue: on 2026-10-11 it reported 543 open papercusp bugs against 2,971 real ones.
+ *
+ * Now: open rows uncapped (to NON_TERMINAL_CENSUS_CEILING); terminal totals from the
+ * same aggregate the state histogram uses; terminal ROWS only as a bounded newest-first
+ * slice for the authority split and the `since` delta, whose coverage is reported.
+ */
+export async function readLiveCensus(
+  selector: { harness: string; kind?: WorkItemKind; includeChildren?: boolean },
+  opts: { exactTerminalTotals: boolean },
+  deps: LiveCensusDeps = { listWorkItems, listAllWorkItemsForFileExport, countWorkItems, countWorkItemsByState },
+): Promise<LiveCensusSource> {
+  const [openCount, history, terminalStateCounts] = await Promise.all([
+    deps.countWorkItems({ ...selector, notTerminal: true }),
+    deps.listWorkItems({ ...selector, states: [...ANY_FAMILY_TERMINAL_STATES], limit: WORK_ITEMS_MAX_LIMIT }),
+    opts.exactTerminalTotals ? deps.countWorkItemsByState(selector) : Promise.resolve(undefined),
+  ]);
+  const openBounded = openCount > NON_TERMINAL_CENSUS_CEILING;
+  const open = openBounded
+    ? await deps.listWorkItems({ ...selector, notTerminal: true, limit: WORK_ITEMS_MAX_LIMIT })
+    : await deps.listAllWorkItemsForFileExport({ ...selector, notTerminal: true });
+  let oldestUpdatedAt: string | null = null;
+  for (const row of history) {
+    if (oldestUpdatedAt === null || Date.parse(row.updatedAt) < Date.parse(oldestUpdatedAt)) {
+      oldestUpdatedAt = row.updatedAt;
+    }
+  }
+  return {
+    items: [...open, ...history],
+    terminalStateCounts,
+    terminalHistory: {
+      limit: WORK_ITEMS_MAX_LIMIT,
+      truncatedByLimit: history.length >= WORK_ITEMS_MAX_LIMIT,
+      oldestUpdatedAt,
+    },
+    nonTerminal: {
+      counted: openCount,
+      read: open.length,
+      limit: openBounded ? WORK_ITEMS_MAX_LIMIT : NON_TERMINAL_CENSUS_CEILING,
+      truncatedByLimit: openBounded,
+    },
+  };
+}
 const PARKED_STATES = new Set(['blocked', 'needs-human', 'needs_human', 'cursed']);
 
 type PresenceLike = { ownerId: string; heartbeatAt?: string | null; stale?: boolean | null };
@@ -258,19 +352,25 @@ export interface BurnDownResult {
     deltaClosedUndated: number;
     /**
      * WI-37381 — `true` when the aggregate below was computed over a HARD-CAPPED fetch
-     * (`censusLimit` rows) rather than the true full queue. This is the ONLY thing that
-     * can make `terminal.*` an undercount: the caller-supplied `limit` arg never bounds
-     * this fetch (see `censusLimit` — it is fixed at WORK_ITEMS_MAX_LIMIT regardless of
-     * what the caller asked for), so a small `limit` can no longer silently zero out the
-     * aggregate. A harness with more open+terminal rows than `censusLimit` can still hit
-     * this flag; when it does, `terminal.*`/`counts.*`/`deltaBy.*` are a FLOOR, not a
-     * total, and should be read as such (same shape as `deltaClosedUndated` above).
+     * (`censusLimit` rows) rather than the true full queue. The caller-supplied `limit` arg
+     * never bounds this fetch, so a small `limit` cannot zero out the aggregate. Live census
+     * (WI-6554700010008464): open rows are read uncapped up to NON_TERMINAL_CENSUS_CEILING
+     * and terminal totals come from an aggregate count, so this flag fires only when the
+     * open partition exceeds that ceiling (or, on a fenced census, the terminal-history
+     * slice was capped). When it fires, `terminal.*`/`counts.*`/`deltaBy.*` are a FLOOR, not
+     * a total, and should be read as such (same shape as `deltaClosedUndated` above).
+     * Terminal-history coverage is reported separately in `terminal.history`.
      */
     truncatedByLimit: boolean;
-    /** The fetch size that produced this census (always WORK_ITEMS_MAX_LIMIT for a
-     *  non-cohort call — see `truncatedByLimit`). Reported so "0 of 5" and "0 of 2000"
-     *  are distinguishable without cross-referencing the request. */
+    /** The fetch size that produced this census: for a live call the open-partition read
+     *  limit (NON_TERMINAL_CENSUS_CEILING, or WORK_ITEMS_MAX_LIMIT once the open partition
+     *  exceeds that ceiling — see `truncatedByLimit`); for a cohort call the row count.
+     *  Reported so "0 of 5" and "0 of 2000" are distinguishable without cross-referencing
+     *  the request. */
     censusLimit: number;
+    /** WI-6554700010008464 — the terminal-history slice behind `authority` and `delta`,
+     *  and whether each covers its whole population. Present on a live census. */
+    history?: BurnDownTerminalHistory;
     /** EI-19313376980892266 fix B — WHO produced `delta`. Present only with `since`.
      *  `delta` is harness-WIDE; without this split it reads as the caller's own fleet's
      *  output and over-reports by whatever the rest of the harness closed. */
@@ -1585,6 +1685,12 @@ export function buildBurnDownResult(
     rowLimit?: number;
     /** Captured on the raw source before a fence/spec filter can shrink it. */
     sourceCapExhausted?: boolean;
+    /** WI-6554700010008464 — exact per-state counts over the same selector. When given,
+     *  `terminal.total`, the per-state counts and `counts.total` come from it, and `items`
+     *  need only carry the terminal slice that feeds `authority` and `delta`. */
+    terminalStateCounts?: Record<string, number>;
+    /** WI-6554700010008464 — the terminal-history read behind `items`' terminal rows. */
+    terminalHistory?: { limit: number; truncatedByLimit: boolean; oldestUpdatedAt: string | null };
   },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
@@ -1618,6 +1724,8 @@ export function buildBurnDownResult(
     /** WI-37381: see BurnDownResult.terminal.truncatedByLimit / censusLimit docs. */
     truncatedByLimit,
     censusLimit,
+    /** WI-6554700010008464: see BurnDownResult.terminal.history. */
+    history: undefined as BurnDownTerminalHistory | undefined,
     /** EI-19313376980892266 fix B: who produced `delta`. Only present with `since`. */
     deltaBy: undefined as BurnDownDeltaBy | undefined,
     /** True whenever `deltaBy` is present: its four counts sum to `delta` exactly. */
@@ -1750,6 +1858,35 @@ export function buildBurnDownResult(
     return { rows: sorted.slice(0, DELTA_ROW_CAP), total: sorted.length, truncated: sorted.length > DELTA_ROW_CAP };
   };
 
+  // WI-6554700010008464: on a live census `items` holds every open row but only a
+  // bounded, newest-first slice of terminal history, so the loop's per-state tallies
+  // count that slice. Replace them with the exact aggregate; `authority` and `delta`
+  // stay slice-derived and `terminal.history` states whether each covers everything.
+  const terminalRowsRead = terminal.total;
+  if (opts.terminalStateCounts) {
+    terminal.total = 0;
+    for (const s of ['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped'] as const) terminal[s] = 0;
+    for (const [state, n] of Object.entries(opts.terminalStateCounts)) {
+      if (!TERMINAL_STATES.has(state)) continue;
+      terminal.total += n;
+      if (state in terminal && typeof terminal[state as keyof typeof terminal] === 'number') {
+        (terminal[state as 'done' | 'passed' | 'resolved' | 'closed' | 'deprecated' | 'dropped']) += n;
+      }
+    }
+  }
+  if (opts.terminalHistory) {
+    const h = opts.terminalHistory;
+    const oldestMs = h.oldestUpdatedAt ? Date.parse(h.oldestUpdatedAt) : NaN;
+    terminal.history = {
+      totalsSource: opts.terminalStateCounts ? 'aggregate' : 'rows',
+      rowsRead: terminalRowsRead,
+      limit: h.limit,
+      truncatedByLimit: h.truncatedByLimit,
+      authorityExact: !h.truncatedByLimit,
+      deltaExact: hasSince ? !h.truncatedByLimit || (Number.isFinite(oldestMs) && oldestMs <= sinceMs) : null,
+    };
+  }
+
   terminal.deltaClosedUndated = deltaClosedUndated;
   if (hasSince) {
     // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER. `delta` is
@@ -1805,7 +1942,9 @@ export function buildBurnDownResult(
     parked: capRows(parked),
     unclaimed: capRows(unclaimed),
     counts: {
-      total: items.length,
+      // WI-6554700010008464: the fetched terminal slice is swapped for the exact
+      // terminal total; identical to items.length when no aggregate was supplied.
+      total: items.length - terminalRowsRead + terminal.total,
       terminal: terminal.total,
       inFlight: inFlight.length,
       parked: parked.length,
@@ -2053,6 +2192,16 @@ export default defineTool({
       deltaClosedUndated: z.number(),
       truncatedByLimit: z.boolean(),
       censusLimit: z.number(),
+      history: z
+        .object({
+          totalsSource: z.enum(['aggregate', 'rows']),
+          rowsRead: z.number(),
+          limit: z.number(),
+          truncatedByLimit: z.boolean(),
+          authorityExact: z.boolean(),
+          deltaExact: z.boolean().nullable(),
+        })
+        .optional(),
       deltaBy: z
         .object({
           fleet: z.number().nullable(),
@@ -2281,28 +2430,31 @@ export default defineTool({
     // display census and presence reads continue independently.
     const fleetMetricSourceItemsPromise = fleetMetricResolutionPromise.then(resolution =>
       resolution?.ok ? readFleetMetricSource(resolution) : null);
-    const [items, presence, fleetMetricResolution, fleetMetricSourceItems] = await Promise.all([
+    const [census, presence, fleetMetricResolution, fleetMetricSourceItems] = await Promise.all([
       requestedIds
-        ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
-            (rows) => rows.filter((row): row is WorkItem => row != null),
-          )
-        : listWorkItems({
-            harness: args.harness,
-            kind: args.kind as WorkItemKind | undefined,
-            includeChildren: args.includeChildren,
-            // WI-37381: this fetch feeds the AGGREGATE (terminal.*/counts.*/deltaBy.*),
-            // never just the returned row lists — so it must NEVER be bounded by the
-            // caller's `limit`. A small `limit:5` used to fetch only 5 rows total and
-            // report terminal.total 0 for a queue with 1693 real terminal rows. Always
-            // fetch up to the hard cap here; `args.limit` is applied below (via
-            // buildBurnDownResult's `rowLimit`) to the RETURNED inFlight/parked/unclaimed
-            // arrays only.
-            limit: WORK_ITEMS_MAX_LIMIT,
-          }),
+        ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then((rows) => ({
+            items: rows.filter((row): row is WorkItem => row != null),
+            live: null,
+          }))
+        : // WI-37381: this read feeds the AGGREGATE (terminal.*/counts.*/deltaBy.*), so the
+          // caller's `limit` never bounds it; `args.limit` only bounds the RETURNED arrays.
+          // WI-6554700010008464: open rows are read uncapped and terminal totals come from
+          // an exact aggregate. A fence filters rows in JS, so a fenced census keeps
+          // row-derived terminal totals rather than an unfenced aggregate that disagrees.
+          readLiveCensus(
+            {
+              harness: args.harness,
+              kind: args.kind as WorkItemKind | undefined,
+              includeChildren: args.includeChildren,
+            },
+            { exactTerminalTotals: !args.fence },
+          ).then((live) => ({ items: live.items, live })),
       listPresence({ workspaceId }).catch(() => []),
       fleetMetricResolutionPromise,
       fleetMetricSourceItemsPromise,
     ]);
+    const items = census.items;
+    const live = census.live;
     // EI-19313376980892266 fix B: resolve the fleet whose closes count as "ours".
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
     // Best-effort throughout: an attribution read must never cost a leader the census.
@@ -2394,9 +2546,20 @@ export default defineTool({
       // so it has no census limit to report. The real-census path always fetches at the
       // hard cap (see above) regardless of `args.limit`; `rowLimit` is where the caller's
       // `limit` actually takes effect — bounding only the returned row lists.
-      censusLimit: requestedIds ? undefined : WORK_ITEMS_MAX_LIMIT,
-      rowLimit: args.limit,
-      sourceCapExhausted: requestedIds ? false : items.length >= WORK_ITEMS_MAX_LIMIT,
+      // WI-6554700010008464: the census is bounded only when the open read hit its
+      // ceiling, or (fenced) when terminal totals had to come from a capped history read.
+      censusLimit: live
+        ? live.nonTerminal.truncatedByLimit || args.fence
+          ? WORK_ITEMS_MAX_LIMIT
+          : live.nonTerminal.limit
+        : undefined,
+      // The open read is uncapped, so default the RETURNED arrays to the old ceiling.
+      rowLimit: args.limit ?? (live ? WORK_ITEMS_MAX_LIMIT : undefined),
+      sourceCapExhausted: live
+        ? live.nonTerminal.truncatedByLimit || (args.fence ? live.terminalHistory.truncatedByLimit : false)
+        : false,
+      terminalStateCounts: live?.terminalStateCounts,
+      terminalHistory: live?.terminalHistory,
     });
     // The cohort audit deliberately reads the UNFENCED rows: it answers "what
     // happened to the exact IDs you named", and silently dropping a named ID because

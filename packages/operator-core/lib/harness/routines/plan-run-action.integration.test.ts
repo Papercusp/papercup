@@ -1433,6 +1433,40 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(inst[0].content_hash).not.toBe(hashPlanContent(fmContent));
   });
 
+  it("EI-25654921386861878: the instance's frontmatter `status:` agrees with its `status` column, even when the template's frontmatter says `ready`", async () => {
+    // The fixture above declares `status: active`, which happens to equal the column the
+    // seed writes, so it cannot see this bug. Real templates are `ready`.
+    const fmContent = `---\nslug: ${TEMPLATE}\nstatus: ready\nowner: ops@example.com\n---\n# Monitor X\n\n## Now\n**State:** recurring.`;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${fmContent}, content_hash = ${hashPlanContent(fmContent)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res).not.toBeNull();
+
+    const inst = await sql<Array<{ status: string; content: string; content_hash: string }>>`
+      SELECT status, content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${res!.instanceSlug}`;
+    expect(inst[0]).toBeTruthy();
+    const frontmatterStatus = inst[0].content.match(/^status:[ \t]*(\S+)[ \t]*$/m)?.[1];
+    expect(inst[0].status).toBe('active');
+    expect(frontmatterStatus).toBe(inst[0].status);
+    expect(inst[0].content).not.toContain('status: ready');
+    // Surgical: the template's other frontmatter lines survive, and the hash covers the
+    // stored bytes.
+    expect(inst[0].content).toContain('owner: ops@example.com');
+    expect(inst[0].content).toContain(`slug: ${res!.instanceSlug}`);
+    expect(inst[0].content_hash).toBe(hashPlanContent(inst[0].content));
+
+    // The template itself is untouched: it stays `ready`.
+    const tpl = await sql<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(tpl[0].content).toContain('status: ready');
+  });
+
   // WI-10006321: both raw instance writers bypass withPlanLock, so each records its own
   // plan_revisions row. Without it, the plan-parts reconcile sweep has no content clock for
   // the instance and falls back to updated_at (108 live instances had no revision at all).

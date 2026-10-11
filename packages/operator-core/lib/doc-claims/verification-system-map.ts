@@ -38,7 +38,9 @@ export interface ContractGateCodeType {
     | 'plans:start'
     | 'plans:bind-spec-evidence'
     | 'plans:acceptance-disposition'
-    | 'plans:promote';
+    | 'plans:promote'
+    // P-006: the blind gap review door, met first at the awaiting-acceptance writer.
+    | 'plans:set-status';
   /** Repo-relative module (from packages/operator-core/lib) that declares the type. */
   readonly module: string;
   /** Exported type (or interface) name. */
@@ -73,6 +75,9 @@ export const CONTRACT_GATE_CODE_TYPES: readonly ContractGateCodeType[] = [
   // P-008: independent-verification refusals, returned as BindSpecEvidenceResult.status.
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/spec-evidence-store.ts', type: 'IndependentVerificationRefusalStatus' },
   { door: 'plans:acceptance-disposition', module: 'agent-tools/plans/acceptance-drain-disposition.ts', type: 'AcceptanceDispositionRefusalCode' },
+  // P-006: the blind gap review door's codes, returned by the awaiting-acceptance writers
+  // (plans:set-status acceptanceBlocked, the drain sweep's skip) and by the ship gate.
+  { door: 'plans:set-status', module: 'blind-review-gate.ts', type: 'BlindReviewGateCode' },
   // P-003: the VAL-* retirement. plans:promote returns 'val-block-retired'; the other two
   // members are returned by the retired VAL write/read paths.
   { door: 'plans:promote', module: 'agent-tools/plans/val-retirement.ts', type: 'ValRetirementRefusalCode' },

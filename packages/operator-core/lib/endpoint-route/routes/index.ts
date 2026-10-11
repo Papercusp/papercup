@@ -506,6 +506,7 @@ import userMemoryAudit from './user/memory-audit';
 import userPersonalVault from './user/personal-vault';
 import userTicketIntegrations from './user/ticket-integrations';
 import userProviderCredentials from './user/provider-credentials';
+import userProviderOAuthClient from './user/provider-oauth-client';
 import userProviderOptions from './user/provider-options';
 import devSql from './dev/sql';
 import devProcessesKill from './dev/processes-kill';
@@ -1023,6 +1024,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userPersonalVault as AnyRoute[]),
   ...flatten(userTicketIntegrations as AnyRoute[]),
   ...flatten(userProviderCredentials as AnyRoute[]),
+  ...flatten(userProviderOAuthClient as AnyRoute[]),
   ...flatten(userProviderOptions as AnyRoute[]),
   ...flatten(devSql as AnyRoute),
   ...flatten(devProcessesKill as AnyRoute),

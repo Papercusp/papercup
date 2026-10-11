@@ -142,20 +142,19 @@ describe('notifications:recent', () => {
     expect(payload.count).toBe(2);
   });
 
-  it('filters by level', async () => {
+  it('pushes the level filter into the toast query before applying the limit', async () => {
+    listToastsMock.mockClear();
+    const warning = { level: 'warning', message: 'disk space low' };
     listToastsMock.mockResolvedValueOnce({
-      toasts: [
-        { level: 'error', message: 'e1' },
-        { level: 'info', message: 'i1' },
-        { level: 'error', message: 'e2' },
-      ],
+      toasts: [warning],
     });
-    const result = await notificationsRecent.handler({ level: 'error' }, MAKE_CTX());
+    const result = await notificationsRecent.handler(
+      { level: 'warning', limit: 1 },
+      MAKE_CTX(),
+    );
+    expect(listToastsMock).toHaveBeenCalledWith({ limit: 1, level: 'warning' });
     const payload = parsePayload(result);
-    expect(payload.count).toBe(2);
-    expect(
-      (payload.notifications as Array<{ level: string }>).every((t) => t.level === 'error'),
-    ).toBe(true);
+    expect(payload).toEqual({ count: 1, notifications: [warning] });
   });
 });
 

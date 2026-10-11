@@ -219,6 +219,54 @@ async function coordCanary(health: unknown) {
         project(harnesses!.foreign, { harness_kind: 'hive' })] }), workspace + '-foreign');
       writeFileSync(join(evidence, 'portal-work-seed.json'), JSON.stringify(harnesses, null, 2));
     }
+    let testingHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
+    if (process.env.ROSTER_TESTING_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const stem = `private-testing-${process.pid}`;
+      testingHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
+      const project = (role: 'selected' | 'neighbor' | 'foreign') => {
+        const slug = testingHarnesses![role];
+        const path = join(evidence, 'testing-harnesses', slug);
+        mkdirSync(join(path, '.papercusp'), { recursive: true });
+        mkdirSync(join(path, role), { recursive: true });
+        writeFileSync(join(path, role, `${role}.test.ts`), '// private acceptance input; never executed\n');
+        const title = role === 'selected' ? 'Selected' : role === 'neighbor' ? 'Neighbor' : 'Foreign';
+        writeFileSync(join(path, '.papercusp', 'testing-domains.json'), JSON.stringify({
+          domains: [{ id: `private-${role}-tests`, label: `${title} private tests`, description: `${title} scoped files`,
+            tier: 'project', sections: [{ id: 'files', label: `${title} files`, globs: [`${role}/*.test.ts`] }] }],
+          tierLabels: { project: `${title} private tier`, universal: 'Universal' },
+        }));
+        return { slug, path };
+      };
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects, project('selected'), project('neighbor')] }), workspace);
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects, project('foreign')] }), workspace + '-foreign');
+      writeFileSync(join(evidence, 'portal-testing-seed.json'), JSON.stringify(testingHarnesses, null, 2));
+    }
+    let insightsHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
+    if (process.env.ROSTER_INSIGHTS_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const stem = `private-insights-${process.pid}`;
+      insightsHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-selected' };
+      const seedRoot = join(evidence, 'insights-harnesses');
+      const project = (slug: string) => {
+        const path = join(seedRoot, slug);
+        mkdirSync(join(path, '.papercusp'), { recursive: true });
+        return { slug, path };
+      };
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(insightsHarnesses!.selected), project(insightsHarnesses!.neighbor)] }), workspace);
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(insightsHarnesses!.foreign)] }), workspace + '-foreign');
+      for (const [label, slug] of Object.entries(insightsHarnesses)) {
+        await sql`INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, harness_slug, ts, bucket_key, provider, model_class, source, session_id,
+            cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+          VALUES (${label === 'foreign' ? workspace + '-foreign' : workspace}, ${slug}, ${Date.now()},
+            'private-insights-fixture', 'anthropic', ${'private-' + label + '-model'}, 'private-insights-fixture',
+            ${'private-' + label + '-session'}, ${label === 'selected' ? 1.25 : label === 'neighbor' ? 9 : 99}, 10, 2, 25, 5)`;
+      }
+      writeFileSync(join(evidence, 'portal-insights-seed.json'), JSON.stringify(insightsHarnesses, null, 2));
+    }
     let brainstormHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
     if (process.env.ROSTER_BRAINSTORM_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
@@ -315,6 +363,8 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
       ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
+      ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
+      ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),
       ...(harnesses ? { harnesses } : {}),
       ...(docs ? { docs } : {}),

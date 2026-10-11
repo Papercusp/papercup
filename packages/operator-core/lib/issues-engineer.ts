@@ -24,10 +24,12 @@ import type { OrgSql } from './work-items';
 import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import {
+  assertWorkspaceChoice,
   harnessPreference,
   resolveIssuePhysicalSlug,
   stripTwinCensus,
   type TwinCensus,
+  type WorkspaceCensus,
 } from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
 import { hasActiveStrictHumanAsk } from './hold-registry';
@@ -2750,18 +2752,24 @@ export async function getIssue(
   // workspace, computed before LIMIT, so twins are detected without a second round trip and
   // without fetching their bodies. Several slugs the caller's harness does not narrow to one
   // is refused, never resolved by the recency term below (which now only orders rows the
-  // choice has already made equivalent).
-  const rows = await sql<(IssueRowDb & TwinCensus)[]>`
+  // choice has already made equivalent). `__all_ws` does the same across workspaces: when the
+  // ambient workspace lacks the id and several others hold it, the read is refused
+  // (WI-6554700010008365) instead of returning the freshest stranger's row.
+  const rows = await sql<(IssueRowDb & TwinCensus & WorkspaceCensus)[]>`
     SELECT ${sql.unsafe(columns)},
            workspace_id AS __ws,
-           array_agg(base_harness_slug) OVER (PARTITION BY workspace_id) AS __ws_slugs
+           array_agg(base_harness_slug) OVER (PARTITION BY workspace_id) AS __ws_slugs,
+           array_agg(workspace_id) OVER () AS __all_ws
       FROM harness_shared.engineer_issues
      WHERE issue_id = ${id}
      ORDER BY (workspace_id = ${ambient}) DESC,
               ${want ? sql`(base_harness_slug IN (${want}, ${bare}, ${`harness:${bare}`})) DESC,` : sql``}
               updated_at DESC NULLS LAST, base_harness_slug ASC
      LIMIT 1`;
-  return rows[0] ? toIssue(stripTwinCensus(id, rows[0], want)) : null;
+  if (!rows[0]) return null;
+  const { __all_ws, ...row } = rows[0];
+  assertWorkspaceChoice(id, ambient, row.__ws, __all_ws);
+  return toIssue(stripTwinCensus(id, row, want));
 }
 
 /**
@@ -2794,8 +2802,11 @@ export async function getIssue(
  * scope-unique-identifiers-2026-07-26 (D-005/D-006) a federated database mints into its
  * own node slot, but one that has never federated still starts at 1, and ids minted
  * before a database's first federation keep their old numbers. Within ONE workspace an
- * id names one row (P-011/P-012), and a same-workspace twin is refused (P-013); the
- * cross-WORKSPACE fallback below is the half that can still pick a stranger's row. Resolving such an id "by id alone" can therefore land
+ * id names one row (P-011/P-012), and a same-workspace twin is refused (P-013). When the
+ * ambient workspace lacks the id and SEVERAL other workspaces hold it, this throws
+ * WorkItemWorkspaceAmbiguousError (WI-6554700010008365) rather than choosing the freshest.
+ * The single-foreign-workspace fallback below is the half that can still pick a stranger's
+ * row (a caller whose own id does not exist yet). Resolving such an id "by id alone" can therefore land
  * on a DIFFERENT row than the caller meant, across a workspace OR a harness boundary,
  * and this function will return it without complaint (the `ORDER BY` below just picks
  * one). That is not hypothetical: it silently retargeted ~3h of writes — including a
@@ -2811,18 +2822,23 @@ export async function getIssue(
  * preferring a match under the ambient/ACTIVE workspace when the id exists in more
  * than one (a legacy federated dupe), else use whichever workspace actually holds
  * the row. Falls back to the ambient workspace when no row is found at all (a
- * brand-new id about to be inserted) — never throws, so an ordinary correctly-
- * ambient-scoped call is byte-identical to the old behavior.
+ * brand-new id about to be inserted), so an ordinary correctly-ambient-scoped call is
+ * byte-identical to the old behavior. Throws WorkItemWorkspaceAmbiguousError only when
+ * the ambient workspace lacks the id and two or more other workspaces hold it; every
+ * caller's next step is resolveIssuePhysicalSlug, which already throws the same family.
  */
 export async function resolveIssueWorkspace(id: string, fallback?: string, client?: OrgSql): Promise<string> {
   const ambient = fallback ?? issuesScopeWorkspace();
   const sql = client ?? getOrgPg().sql;
-  const rows = await sql<{ workspace_id: string }[]>`
-    SELECT workspace_id FROM harness_shared.engineer_issues
+  const rows = await sql<{ workspace_id: string; all_ws: string[] | null }[]>`
+    SELECT workspace_id, array_agg(workspace_id) OVER () AS all_ws
+      FROM harness_shared.engineer_issues
      WHERE issue_id = ${id}
      ORDER BY (workspace_id = ${ambient}) DESC, updated_at DESC NULLS LAST
      LIMIT 1`;
-  return rows[0]?.workspace_id ?? ambient;
+  if (!rows[0]) return ambient;
+  assertWorkspaceChoice(id, ambient, rows[0].workspace_id, rows[0].all_ws);
+  return rows[0].workspace_id;
 }
 
 /**

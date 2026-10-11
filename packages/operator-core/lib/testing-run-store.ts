@@ -34,6 +34,10 @@ import {
   MAX_RECORDED_PASSED_CASES,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
+import {
+  captureConfigurationSnapshot,
+  type ConfigurationSnapshot,
+} from '@papercusp/test-config/configuration-snapshot';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
@@ -1177,6 +1181,8 @@ interface PreparedRun {
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
   childEnv: NodeJS.ProcessEnv;
+  /** The child's configuration (P-011), recorded on every ledger row this run writes. */
+  configurationSnapshot: ConfigurationSnapshot;
   taskSpec: TaskSpec;
   enrolment: SyncEnrolment;
   scopeCgroupPath: string | null;
@@ -1255,6 +1261,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     cwd,
     worktreeBefore,
     childEnv,
+    configurationSnapshot: captureConfigurationSnapshot(childEnv),
     taskSpec,
     enrolment,
     scopeCgroupPath,
@@ -1273,6 +1280,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
 async function persistDetachedReportArtifacts(
   snapshot: RunSnapshot,
   artifacts: PreparedDetachedReportArtifact[],
+  configurationSnapshot: ConfigurationSnapshot | null,
 ): Promise<void> {
   let expanded: PreparedDetachedReportArtifact[];
   try {
@@ -1339,6 +1347,7 @@ async function persistDetachedReportArtifacts(
               worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
               root: artifact.root,
               testNamePattern: artifact.testNamePattern ?? null,
+              configurationSnapshot,
               sql: scopedSql,
             });
             if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
@@ -1378,6 +1387,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     cwd,
     worktreeBefore,
     childEnv,
+    configurationSnapshot,
     taskSpec,
     enrolment,
     scopeCgroupPath,
@@ -1394,8 +1404,8 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         // The final snapshot must be written only after detached report rows and
         // failure details have been reconciled; otherwise testing:run-status can
         // observe a terminal run while its Vitest evidence is still in flight.
-        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts);
-        await persistFallbackRow(snapshot, worktreeBefore, cwd);
+        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot);
+        await persistFallbackRow(snapshot, worktreeBefore, cwd, configurationSnapshot);
         await persistRunSnapshot(snapshot);
       } catch {
         /* swallow — terminal observability remains fail-soft (D-007) */
@@ -1527,7 +1537,12 @@ export async function startRunDurable(
  *
  * D-007 fail-soft: every error swallowed, never throws.
  */
-async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSnapshot, cwd: string): Promise<void> {
+async function persistFallbackRow(
+  s: RunSnapshot,
+  worktreeBefore: WorktreeGitSnapshot,
+  cwd: string,
+  configurationSnapshot: ConfigurationSnapshot | null,
+): Promise<void> {
   if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
   if (s.kind === 'admin-suite') return;
   if (s.status === 'running') return;
@@ -1573,14 +1588,17 @@ async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSna
       process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || null;
     const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
     const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
-    const { sql } = getOrgPg();
+    // SqlLike, as in persistHarnessTestRunsInternal: the jsonb snapshot is an
+    // interface without an index signature, which the strict tag type refuses.
+    const sql = getOrgPg().sql as unknown as SqlLike;
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, configuration_snapshot)
         VALUES
           (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
-           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
+           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
+           ${configurationSnapshot})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -2389,6 +2407,13 @@ export interface PersistHarnessTestRunsParams {
   testNamePattern?: string | null;
   /** Test-config mutation phase, if any. */
   mutationPhase?: string | null;
+  /**
+   * test_runs.configuration_snapshot (migration 1448): the configuration the MEASURED child
+   * process ran under — capture it from that child's env with captureConfigurationSnapshot.
+   * Omit (NULL) only when this process cannot know it, e.g. results recorded from elsewhere;
+   * never substitute this process's own env for a child's.
+   */
+  configurationSnapshot?: ConfigurationSnapshot | null;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
 }
@@ -2422,6 +2447,8 @@ export interface HarnessTestRunEvidence {
   worktree_dirty: boolean;
   /** Nullable versioned reporter measurement. Consumers must validate, not cast. */
   execution_details?: unknown;
+  /** Nullable configuration snapshot (migration 1448). Validate with readConfigurationSnapshot. */
+  configuration_snapshot?: unknown;
 }
 
 /** Same scoped ledger as findHarnessTestRunIds; null distinguishes an unreadable ledger. */
@@ -2437,7 +2464,8 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
     const rows = await sql`
       SELECT id, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
              commit_sha, worktree_dirty,
-             to_jsonb(test_runs)->'execution_details' AS execution_details
+             to_jsonb(test_runs)->'execution_details' AS execution_details,
+             to_jsonb(test_runs)->'configuration_snapshot' AS configuration_snapshot
         FROM harness_shared.test_runs
        WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
          AND run_group_id = ${params.runGroupId}
@@ -2719,11 +2747,11 @@ async function persistHarnessTestRunsInternal(
       const insert = Promise.resolve(
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details, configuration_snapshot)
           VALUES
             (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
              ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
-             ${executionDetails ?? null})
+             ${executionDetails ?? null}, ${params.configurationSnapshot ?? null})
           RETURNING id
         `,
       );

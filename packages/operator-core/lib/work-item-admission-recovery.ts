@@ -379,7 +379,15 @@ export async function runAdmissionRecoveries(
           await assertAllowed();
           const screened = await readItem(sql, exact);
           if (screened.admission === 'pending') {
-            throw new AdmissionRecoveryRefused('screening left the original item pending; repair its named admission hold and retry this same item');
+            // WI-6554700010008443: the promoter persists every hold as payload.admissionHold, so
+            // this refusal can name the hold it asks the caller to repair.
+            const hold = screened.payload?.admissionHold as { reason?: unknown; runId?: unknown } | undefined;
+            const named = typeof hold?.reason === 'string' && hold.reason.trim()
+              ? ` (admission hold${typeof hold.runId === 'string' ? ` from run ${hold.runId}` : ''}: ${hold.reason.trim()})`
+              : ' (the promoter recorded no hold reason)';
+            throw new AdmissionRecoveryRefused(
+              `screening left the original item pending${named}; repair its named admission hold and retry this same item`,
+            );
           }
           stage = 'assign';
           const result = await deps.dispatch({

@@ -583,6 +583,26 @@ describe('internal launch context provenance', () => {
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
+  // WI-6554700010008492: before this, a confinement passed WITHOUT a scoped gateway was
+  // silently dropped, so a blind reviewer launched "confined" ran with every tool.
+  it('installs a gateway-less session confinement before opening a process', async () => {
+    const denyOnly = { denyTools: ['plans:get'], imposedBy: 'blind-reviewer-mint', reason: 'blind review' };
+    const res = await launchAgent.handler({ brief: 'Blind review', harness: 'papercusp', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_SESSION_CONFINEMENT]: denyOnly } as never);
+    expect(isError(res)).toBe(false);
+    expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
+      workspaceId: 'ws-test', confinement: denyOnly });
+    expect(declareConfinementMock.mock.invocationCallOrder.at(-1)).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+  });
+  it('refuses a gateway-less confinement on a resumed identity before opening a process', async () => {
+    const denyOnly = { denyTools: ['plans:get'], imposedBy: 'blind-reviewer-mint', reason: 'blind review' };
+    const res = await launchAgent.handler({ brief: 'Blind review', harness: 'papercusp', resume: { agentId: 'su-a1a71' } } as never,
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_SESSION_CONFINEMENT]: denyOnly } as never);
+    expect(isError(res)).toBe(true);
+    expect(declareConfinementMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
   it('refuses private unsupported or multi-process launches before opening a process', async () => {
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:
       { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } } as never;
@@ -1680,6 +1700,56 @@ describe('resume + fork (D-004/D-007)', () => {
       });
       expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
       expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    });
+
+    it('reconciles an exact dead unended binding with terminal evidence before original routing', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      const reconciled = { ...stale, endedAt: '2026-10-11T07:00:00.000Z', endedBy: 'reconciler' };
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValueOnce(stale).mockResolvedValueOnce(stale).mockResolvedValue(reconciled);
+      resolveSessionStatesMock.mockResolvedValueOnce(new Map([[source.ownerId, { sessionState: 'ended' }]]));
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(false);
+      expect(resolveSessionStatesMock).toHaveBeenCalledWith([{ ownerId: source.ownerId }], { hydratePerId: true });
+      expect(markAdvSessionEndedMock).toHaveBeenCalledWith(source.advSessionId, null, 'reconciler', {
+        expectedBinding: source.binding,
+        throwOnError: true,
+      });
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+      expect(spawnedCommand()).toContain(`--resume=${uuid}`);
+      expect(spawnedCommand()).not.toContain('--fork');
+    });
+
+    it('refuses to reconcile an unended original when terminal evidence is not positive', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue(stale);
+      resolveSessionStatesMock.mockResolvedValueOnce(new Map([[source.ownerId, { sessionState: 'unknown' }]]));
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a changed original binding before terminal reconciliation', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      resolveResumeTargetMock.mockResolvedValueOnce(stale).mockResolvedValue({
+        ...stale,
+        binding: { ...stale.binding, startedAt: '2026-07-11 10:00:00.123456+00' },
+      });
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('original custody or saved settings changed');
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
     });
 
     it('retains the recorded restricted role in every original profile validation', async () => {

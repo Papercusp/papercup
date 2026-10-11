@@ -1,6 +1,6 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,7 @@ import { createTextCollector } from '../child-output';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
+import { verifyVerifierSourceSync, type VerifierSourceReceipt } from '../verifier-source';
 import type * as Ts from 'typescript';
 
 const replayScopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
@@ -487,6 +488,8 @@ function replayPackageRuntimeSources(root: string, sources: string[]): string[] 
  * Copies have independent inodes, never a live symlink floor or Git worktree.
  * The manifest describes captured inputs, not an atomic commit or loaded JS. */
 export function materializeReplaySource(input: ReplayOracleInput, destination: string, options: {
+  /** Whole committed archive verified by the maintained source exporter. */
+  sourceArchive?: { receipt: VerifierSourceReceipt; dependencyDonor: string };
   enumerateSources?: (root: string) => string[];
   snapshotDependencies?: (root: string, destination: string) => void;
   checkSourceHeadroom?: (root: string, destination: string, bytes: number) => void;
@@ -494,6 +497,15 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
 } = {}): ReplayOracleInput {
   const donor = realpathSync(input.rootPath);
   const target = join(realpathSync(dirname(resolve(destination))), basename(destination));
+  const archive = options.sourceArchive;
+  const dependencyDonor = archive ? realpathSync(archive.dependencyDonor) : donor;
+  if (archive) {
+    if (options.enumerateSources) throw new Error('replay-archive-custom-population-forbidden');
+    if (archive.receipt.gitCheckout) throw new Error('replay-archive-must-be-source-only');
+    verifyVerifierSourceSync(donor, archive.receipt);
+    if (insideReplayRoot(dependencyDonor, target) || insideReplayRoot(target, dependencyDonor))
+      throw new Error('replay-snapshot-must-be-disjoint');
+  }
   if (input.sourceSnapshot) throw new Error('replay-source-already-materialized');
   if (insideReplayRoot(donor, target) || insideReplayRoot(target, donor))
     throw new Error('replay-snapshot-must-be-disjoint');
@@ -574,21 +586,58 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   // to bypass it entirely. Apparent sizes include sparse files; per-entry
   // overhead conservatively covers directories and the two source manifests.
   const excludedRepositories: string[] = [];
-  const repositorySources = options.enumerateSources ? options.enumerateSources(donor) :
+  const repositorySources = archive ? [...archive.receipt.files.map(file => file.path), '.verifier-source.json'].sort() :
+    options.enumerateSources ? options.enumerateSources(donor) :
     replayRepositorySources(donor, { onExcludedRepository: path => excludedRepositories.push(path) });
-  const sourcePopulation = { policy: options.enumerateSources ? 'caller-declared-files-v1' :
-    'git-root-and-tracked-submodules-v1', excludedRepositories: excludedRepositories.sort() };
-  const paths = replayPackageRuntimeSources(donor, repositorySources);
+  const sourcePopulation = { policy: archive ? 'verifier-source-v1' : options.enumerateSources ? 'caller-declared-files-v1' :
+    'git-root-and-tracked-submodules-v1', excludedRepositories: excludedRepositories.sort(),
+    ...(archive ? { sourceCommit: archive.receipt.sourceCommit, submodules: archive.receipt.submodules ?? [],
+      receiptSha256: replayHash(readFileSync(join(donor, '.verifier-source.json'))),
+      runtimeOutputPolicy: 'declared-package-ignored-inputs-v1', dependencyDonor } : {}) };
+  const recordedSources = new Set(repositorySources);
+  const packageDeclarations = repositorySources.filter(path => basename(path) === 'package.json');
+  const archiveOutputPaths = () => {
+    for (const path of packageDeclarations) {
+      if (replayHash(readFileSync(resolve(dependencyDonor, path))) !== replayHash(readFileSync(resolve(donor, path))))
+        throw new Error(`replay-archive-package-declaration-drift:${path}`);
+    }
+    const outputs = replayPackageRuntimeSources(dependencyDonor, repositorySources).filter(path => !recordedSources.has(path));
+    // A package's first target directory can also contain uncommitted source.
+    // Admit only Git-ignored additions; recorded source always comes from the archive.
+    const groups = new Map<string, string[]>();
+    for (const path of outputs) {
+      const submodule = [...(archive!.receipt.submodules ?? [])].sort((a, b) => b.path.length - a.path.length)
+        .find(row => path.startsWith(`${row.path}/`))?.path ?? '';
+      const group = groups.get(submodule) ?? []; group.push(path); groups.set(submodule, group);
+    }
+    for (const [submodule, paths] of groups) {
+      const root = resolve(dependencyDonor, submodule);
+      const relativePaths = paths.map(path => relative(root, resolve(dependencyDonor, path)));
+      const result = spawnSync('git', ['-C', root, 'check-ignore', '--no-index', '-z', '--stdin'],
+        { input: `${relativePaths.join('\0')}\0`, encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+      if (result.error || result.status !== 0 && result.status !== 1)
+        throw new Error(`replay-archive-output-ignore-unmeasured:${result.error ?? result.stderr}`);
+      const ignored = new Set(result.stdout.split('\0').filter(Boolean));
+      const unexpected = relativePaths.find(path => !ignored.has(path));
+      if (unexpected) throw new Error(`replay-archive-unrecorded-source:${join(submodule, unexpected)}`);
+    }
+    return outputs;
+  };
+  const outputPaths = archive ? archiveOutputPaths() : [];
+  const outputSources = new Map(outputPaths.map(path => [path, resolve(dependencyDonor, path)]));
+  const outputSourceFiles = new Set(outputSources.values());
+  const paths = archive ? [...repositorySources, ...outputPaths].sort() : replayPackageRuntimeSources(donor, repositorySources);
   const sources = new Set<string>();
   for (const path of paths) {
-    const source = resolve(donor, path);
-    if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
+    const source = outputSources.get(path) ?? resolve(donor, path);
+    const sourceRoot = outputSources.has(path) ? dependencyDonor : donor;
+    if (isAbsolute(path) || !insideReplayRoot(sourceRoot, source) || path.split('/').includes('.git'))
       throw new Error(`escaping-replay-source:${path}`);
     try { lstatSync(source); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       continue;
     }
-    if (!insideReplayRoot(donor, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
+    if (!insideReplayRoot(sourceRoot, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
     sources.add(source);
   }
   for (const file of input.runtimeFiles) sources.add(resolve(donor, file));
@@ -611,9 +660,9 @@ dependency_generation_record_reserve_fs "$2"
 dependency_generation_acquire_copy_lock "replay source $3" || exit $?
 trap dependency_generation_release_copy_lock EXIT
 DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom "$2" "$3" "$4"`,
-      'replay-source-headroom', join(root, 'apps/operator/bin/release/dependency-generation.sh'), root, out, String(bytes)],
+      'replay-source-headroom', join(donor, 'apps/operator/bin/release/dependency-generation.sh'), root, out, String(bytes)],
     { encoding: 'utf8', timeout: 600_000 });
-  }))(donor, target, sourceBytes);
+  }))(dependencyDonor, target, sourceBytes);
   options.onProgress?.({ phase: 'source-admitted', completed: 0, total: paths.length });
   // Exclusive creation refuses a previous run; failures leave forensic inputs.
   mkdirSync(target, { mode: 0o700 });
@@ -629,7 +678,8 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
     if (before.isSymbolicLink()) {
       const link = readlinkSync(source);
       const resolved = realpathSync(source);
-      const root = compilerPaths.has(source) ? compilerSourceRoot! : donor;
+      const root = compilerPaths.has(source) ? compilerSourceRoot! :
+        outputSourceFiles.has(source) ? dependencyDonor : donor;
       const destinationRoot = compilerPaths.has(source) ? compilerPackageRoot! : target;
       if (!insideReplayRoot(root, resolved)) throw new Error(`escaping-replay-symlink:${source}`);
       symlinkSync(isAbsolute(link) ? resolve(destinationRoot, relative(root, resolved)) : link, out);
@@ -644,14 +694,15 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
       throw new Error(`changed-during-replay-copy:${source}`);
   };
   for (const [index, path] of paths.entries()) {
-    const source = resolve(donor, path);
-    if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
+    const source = outputSources.get(path) ?? resolve(donor, path);
+    const sourceRoot = outputSources.has(path) ? dependencyDonor : donor;
+    if (isAbsolute(path) || !insideReplayRoot(sourceRoot, source) || path.split('/').includes('.git'))
       throw new Error(`escaping-replay-source:${path}`);
     try { lstatSync(source); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       absent.push(path); continue; // tracked deletions are part of the captured population
     }
-    if (!insideReplayRoot(donor, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
+    if (!insideReplayRoot(sourceRoot, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
     copy(source, resolve(target, path));
     if ((index + 1) % 256 === 0 || index + 1 === paths.length)
       options.onProgress?.({ phase: 'source-copied', completed: index + 1, total: paths.length });
@@ -661,9 +712,9 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
     donor, rootPath: target, sourcePopulation, sourceFiles: hashes, absent, loadedRuntime: 'unmeasured' }, null, 2), { flag: 'wx' });
   options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
-    execFileSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
+    execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
       { stdio: 'inherit', timeout: 600_000 });
-  }))(donor, target);
+  }))(dependencyDonor, target);
   const dependencyStamp = join(target, '.papercusp-pinned-deps');
   if (!/^mode=copy$/m.test(readFileSync(dependencyStamp, 'utf8')))
     throw new Error('replay-dependencies-not-independent-copies');
@@ -728,7 +779,18 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
   }
   const compilerRuntimeFiles = Object.keys(compilerHashes).map(file =>
     resolve(compilerPackageRoot!, relative(compilerSourceRoot!, file)));
-  if (!options.enumerateSources) {
+  if (archive) {
+    verifyVerifierSourceSync(donor, archive.receipt);
+    if (JSON.stringify(archiveOutputPaths()) !== JSON.stringify(outputPaths))
+      throw new Error('changed-during-replay-archive-output-population');
+    for (const [path, source] of outputSources) {
+      const before = admittedFiles.get(source)!;
+      const after = replaySourceAdmissionStat(source);
+      if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
+        before[key as keyof typeof before] !== after[key as keyof typeof after]))
+        throw new Error(`changed-during-replay-archive-output:${path}`);
+    }
+  } else if (!options.enumerateSources) {
     const finalExcluded: string[] = [];
     const finalSources = replayRepositorySources(donor, { onExcludedRepository: path => finalExcluded.push(path) });
     if (JSON.stringify(finalSources) !== JSON.stringify(repositorySources) ||

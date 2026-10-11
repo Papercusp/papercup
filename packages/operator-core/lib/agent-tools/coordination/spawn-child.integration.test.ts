@@ -228,6 +228,27 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.projects (
       slug text PRIMARY KEY, workspace_id text, parent_slug text)`);
+  // The seed frontmatter carries `template: child-seed` (D-038), so a brand-new seed
+  // write takes withPlanLock's EI-14579 resurrection check, which reads
+  // plan_revisions for prior history. Without the table that read 42P01s the seed
+  // write into a warning. Shape mirrors 000-baseline + 1107 (content_snapshot_hash).
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      content_hash text NOT NULL,
+      content_snapshot text NOT NULL,
+      content_snapshot_hash text,
+      rationale text,
+      author_kind text,
+      author_id text,
+      session_id text,
+      session_kind text,
+      created_at bigint,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq))`);
   // resolvePlanScope's registry FALLBACK (EI-1511: projects is the org-blueprint
   // projection, sparse by design) now reads the AUTHORITATIVE slug→workspace
   // registry — the harness_registry operator-state row (workspace_id, payload

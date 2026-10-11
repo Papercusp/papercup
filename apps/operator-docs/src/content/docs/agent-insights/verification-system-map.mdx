@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Verification-system map: doors, layers, refusal codes, tables, tools, evidence kinds"
-description: "One map of everything that enforces a plan's requirement contract: the five doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test."
+description: "One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test."
 type: Convention
 discovered: 2026-10-11
 tags: ["verification", "acceptance", "requirement-contract", "refusal-codes"]
@@ -27,13 +27,14 @@ The refusal-code list below is checked against the code by `packages/operator-co
 
 ## The doors that enforce the requirement contract
 
-Five tools refuse when the contract is not met. Every other tool on this page prepares input for one of them.
+Six tools refuse when the contract is not met. Every other tool on this page prepares input for one of them.
 
 | door | what it guards | refuses when |
 | --- | --- | --- |
 | `plans:start` | Turning plan items into work-items. | The inputs, activation audit, spec quality, spec coverage or bar critique are not ready. |
 | `plans:bind-spec-evidence` | Recording evidence for a spec clause. | The measuring instrument has no provenance, a derived binding or mutation target is invalid, or an independent-verification row cites no valid implementer binding or re-observes a different source or environment. |
-| `plans:set-plan-status` with `status:'shipped'` | Shipping the plan. | Items are unfinished, code truth is unaudited, the acceptance-bar contract is incomplete, grading is missing or self-graded, the implementer has not accepted, or a live/deployed bar lacks independent verification. |
+| `plans:set-plan-status` with `status:'shipped'` | Shipping the plan. | Items are unfinished, code truth is unaudited, the acceptance-bar contract is incomplete, grading is missing or self-graded, the implementer has not accepted, a live/deployed bar lacks independent verification, or the blind gap review is missing or undispositioned. |
+| `plans:set-status` (the item flip that drains a plan) | Moving a plan to `awaiting-acceptance`. | No blind gap review counts for the plan's latest activation audit, or a review gap has neither a plan item nor an accepted-risk Decision. Returned as `acceptanceBlocked`; the item flip itself still lands. |
 | `plans:acceptance-disposition` | Deciding a plan stuck in `awaiting-acceptance`. | The disposition is not a typed kind with evidence and a reason. |
 | `plans:promote` | Promoting plan content. | The plan still carries a retired VAL-* assertion block. |
 
@@ -237,6 +238,16 @@ From `AcceptanceDispositionRefusalCode` (`packages/operator-core/lib/agent-tools
 | `acceptance_disposition_reason_missing` | The disposition has no reason. |
 | `acceptance_disposition_no_filing` | No acceptance-drain filing exists for the plan. |
 
+### `plans:set-status` (blind gap review)
+
+From `BlindReviewGateCode` (`packages/operator-core/lib/blind-review-gate.ts`). Returned as `acceptanceBlocked` when an item flip drains a plan, as the drain sweep's skip reason, and by `plans:set-plan-status` at ship. Not waivable by `force`.
+
+| code | meaning |
+| --- | --- |
+| `blind_review_missing` | No blind gap review counts for the plan's latest activation audit: none was posted, or each poster read the plan's artifacts first, owns or implemented the plan, or shares an implementer's lineage. |
+| `blind_review_gap_undispositioned` | A counted review has a gap with neither a non-dropped plan item nor an existing Decision recorded as an accepted risk. |
+| `blind_review_unavailable` | The door could not read the plan, its activation audit, its reviews, the reviewer ledger or lineage, and refused rather than guess. |
+
 ### `plans:promote`
 
 From `ValRetirementRefusalCode` (`packages/operator-core/lib/agent-tools/plans/val-retirement.ts`):
@@ -260,6 +271,7 @@ From `ValRetirementRefusalCode` (`packages/operator-core/lib/agent-tools/plans/v
 | `harness_shared.rubric_amend_receipts` | Receipts for acceptance-rubric amendments. |
 | `harness_shared.work_items` | Work-items, scorecard cards, and acceptance-drain filings (a disposition is stored on the filing as `payload.acceptanceDisposition`). |
 | `harness_shared.harness_plan_assertions` | Retired VAL-* assertions. No non-test source reads or writes it. |
+| `harness_shared.plan_blind_reviews` | Blind gap reviews (the gaps a reviewer who never read the plan found) and each gap's disposition to a plan item or an accepted-risk Decision. Append-only. |
 
 Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:*` tools.
 
@@ -279,6 +291,7 @@ Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:
 | `scorecards:emit` | Attest vetting, grade a rubric, or record the implementer's acceptance verdict. |
 | `plans:set-plan-status` | Ship; on `acceptance_ungraded` or `self_graded_only` it recruits a non-implementer grader for you. |
 | `plans:acceptance-disposition` | Record a typed decision on a stale awaiting-acceptance plan. |
+| `plans:blind-review` | Get the blind brief (the owner's turns only), post a blind review's gaps, or disposition each gap. |
 
 ## Evidence kinds
 

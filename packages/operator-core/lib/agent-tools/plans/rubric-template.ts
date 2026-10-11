@@ -23,6 +23,7 @@ import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
+import { parseProductionConfiguration } from './declared-configuration';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
 export const RUBRIC_TEMPLATE_NAME = 'rubric';
@@ -479,6 +480,22 @@ export const requirementAcceptanceSchema = z
   })
   .strict();
 
+/** P-011: the configuration a bar's proof must run under (registered flags, recorded env vars). */
+export const productionConfigurationSchema = z
+  .object({
+    flags: z.record(z.string(), z.boolean()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    try {
+      parseProductionConfiguration(value);
+    } catch (error) {
+      ctx.addIssue({ code: 'custom', message: error instanceof Error ? error.message : String(error) });
+    }
+  })
+  .describe('flags/env the proof must run with; evidence must carry a matching configuration fingerprint');
+
 export const requirementVerificationSchema = z
   .object({
     method: z
@@ -490,6 +507,7 @@ export const requirementVerificationSchema = z
       ),
     check: rubricCriterionCheckSchema.optional(),
     replication: z.string().trim().min(1).optional(),
+    productionConfiguration: productionConfigurationSchema.optional(),
   })
   .strict();
 
@@ -607,6 +625,9 @@ const rubricCriterionObjectSchema = z
           "can't silently drop it as 'verbose method prose' (WI-4287; rubrics:propose loss-guards " +
           'key off it)',
       ),
+    // P-011: lifted from verification.productionConfiguration by requirement normalization;
+    // the stored criterion is strict, so it must be declared here to persist.
+    productionConfiguration: productionConfigurationSchema.optional(),
     instrumentKey: z
       .string()
       .min(1)

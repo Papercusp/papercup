@@ -2111,6 +2111,28 @@ export async function readPendingBatch(
   // alone selected those same rows on every model tick. Rotate scheduled model
   // reviews by that existing watermark so never-reviewed debt gets a turn.
   // Targeted reads and the model-free pass retain their existing priorities.
+  //
+  // WI-6554700010008443: a claim alone no longer demotes an overdue fail-open re-review row
+  // (endpointProtection judges it; see isOverdueClaimedReReview). Such a row whose watermark is
+  // older than CLAIMED_REREVIEW_TURN_BOUND_MINUTES also LEADS the model window: as one of ~60
+  // claimed rows behind ~1,800 unclaimed ones it otherwise never reached the head. Every judged
+  // outcome advances lastRetryAt, so the lead lasts one turn per bound. Each fragment is built
+  // fresh per use because a postgres.js fragment is bound to one query position.
+  const otherGuardBlocked = () => sql`COALESCE(
+          origin = 'remote'
+          OR COALESCE(claim_hold, FALSE)
+          OR COALESCE(payload ->> '_claimHold', '') = 'true'
+          OR status IN ('blocked', 'needs-human')
+          OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+          OR harness_shared.work_item_status_is_terminal(status),
+          FALSE)`;
+  const claimed = () => sql`(NULLIF(btrim(COALESCE(taken_by, '')), '') IS NOT NULL)`;
+  const overdueReReview = () => sql`COALESCE(
+          COALESCE(payload #>> '{admissionReview,state}', CASE WHEN admission = 'unreviewed' THEN 'pending' END) = 'pending'
+          AND pg_input_is_valid(payload #>> '{admissionReview,reviewDueAt}', 'timestamp with time zone')
+          AND (payload #>> '{admissionReview,reviewDueAt}')::timestamptz < now(),
+          FALSE)`;
+  const turnBoundMinutes = CLAIMED_REREVIEW_TURN_BOUND_MINUTES;
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -2120,15 +2142,17 @@ export async function readPendingBatch(
        AND lane IS DISTINCT FROM 'observation'
        AND (${targets === undefined} OR feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
-       (${demote} AND COALESCE(
-          origin = 'remote'
-          OR NULLIF(btrim(COALESCE(taken_by, '')), '') IS NOT NULL
-          OR COALESCE(claim_hold, FALSE)
-          OR COALESCE(payload ->> '_claimHold', '') = 'true'
-          OR status IN ('blocked', 'needs-human')
-          OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
-          OR harness_shared.work_item_status_is_terminal(status),
-          FALSE)) ASC,
+       (${demote} AND NOT ${modelFree}
+          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked()}
+          AND COALESCE(
+            NOT pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
+            OR (payload #>> '{admissionReview,lastRetryAt}') IS NULL
+            OR (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
+                 < now() - make_interval(mins => ${turnBoundMinutes}::int),
+            TRUE)) DESC,
+       (${demote} AND (
+          ${otherGuardBlocked()}
+          OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
        CASE WHEN ${demote} AND NOT ${modelFree}
@@ -2312,7 +2336,10 @@ export async function readPromoterWindow(
     window
       .filter((item) => {
         const snapshot = snapshotsById.get(item.id);
-        return snapshot !== undefined && endpointProtection(snapshot, 'promote') !== null;
+        return (
+          snapshot !== undefined &&
+          endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) !== null
+        );
       })
       .map((item) => item.id),
   );
@@ -2324,7 +2351,7 @@ export async function readPromoterWindow(
   const pairsByKey = new Map<string, PromoterPair>();
   const processed = new Set<string>(selfBlockedIds);
   let cursor = 0;
-  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize });
+  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
   while (selected.batch.length < input.batchSize && cursor < eligible.length) {
     const chunk = eligible.slice(cursor, cursor + (input.batchSize - selected.batch.length));
     cursor += chunk.length;
@@ -2361,11 +2388,12 @@ export async function readPromoterWindow(
       pairs: [...pairsByKey.values()],
       snapshots: snapshotsById,
       batchSize: input.batchSize,
+      nowMs: input.nowMs,
     });
   }
   if (selected.prescreen.window === 0 && selfBlockedIds.size > 0) {
     // Every window row is self-blocked: still report them (no pair read needed).
-    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize });
+    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
   }
   return {
     pendingRows: selected.batch,
@@ -2374,6 +2402,71 @@ export async function readPromoterWindow(
     forcedHolds: selected.forcedHolds,
     prescreen: selected.prescreen,
   };
+}
+
+/**
+ * An overdue claimed re-review row is JUDGED but never MERGED while claimed
+ * (WI-6554700010008443; bug-queue-legitimacy-and-actionable-validation-2026-10-10#D-018/#D-019).
+ * The guard keeps refusing such a row as a 'loser' or 'canonical', so rewrite the plan before
+ * persistence instead of letting the guard refuse it unwritten:
+ *  - a claimed row in any merge verdict is HELD with a reason naming its twin. Its retry watermark
+ *    advances, and because no merge is approved the merge adjudication is not persisted, so the
+ *    pair is judged again once the claim ends;
+ *  - a pending row planned to merge INTO a claimed canonical is held; an outside candidate planned
+ *    to do so loses that disposition (nothing about it was under review).
+ * A distinct verdict leaves the claimed row's promote in place.
+ */
+export function applyClaimedReReviewHolds(
+  plan: PromoterPlan,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
+  pendingIds: ReadonlySet<string>,
+  nowMs: number,
+): PromoterPlan {
+  const claimed = new Set(
+    [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs)).map((s) => s.id),
+  );
+  if (claimed.size === 0) return plan;
+  const holder = (id: string) => snapshots.get(id)?.assignee ?? 'an agent';
+  const holds = new Map<string, string>();
+  for (const adjudication of plan.adjudications) {
+    if (adjudication.verdict !== 'r-finding-merge') continue;
+    for (const [id, twin] of [
+      [adjudication.a, adjudication.b],
+      [adjudication.b, adjudication.a],
+    ] as const) {
+      if (claimed.has(id) && !holds.has(id)) {
+        holds.set(id, `claimed re-review: judged a duplicate of ${twin}; held, not merged, while claimed by ${holder(id)}`);
+      }
+    }
+  }
+  const dropped = new Set<string>();
+  for (const disposition of plan.dispositions) {
+    if (disposition.action !== 'merge' || claimed.has(disposition.itemId)) continue;
+    if (!claimed.has(disposition.canonicalId)) continue;
+    if (pendingIds.has(disposition.itemId)) {
+      holds.set(
+        disposition.itemId,
+        `claimed re-review: canonical ${disposition.canonicalId} is claimed by ${holder(disposition.canonicalId)}; ` +
+          'held, not merged into a claimed row',
+      );
+    } else {
+      dropped.add(disposition.itemId);
+    }
+  }
+  if (holds.size === 0 && dropped.size === 0) return plan;
+  const dispositions: PromoterDisposition[] = plan.dispositions
+    .filter((disposition) => !dropped.has(disposition.itemId))
+    .map((disposition) => {
+      const reason = holds.get(disposition.itemId);
+      return reason && disposition.action !== 'hold' ? { itemId: disposition.itemId, action: 'hold', reason } : disposition;
+    });
+  const present = new Set(dispositions.map((disposition) => disposition.itemId));
+  for (const [itemId, reason] of holds) {
+    // A claimed canonical outside the batch carries no disposition of its own; it was still
+    // judged, so record the hold (and advance its watermark) rather than leave it silent.
+    if (!present.has(itemId) && claimed.has(itemId)) dispositions.push({ itemId, action: 'hold', reason });
+  }
+  return { ...plan, dispositions: dispositions.sort((a, b) => a.itemId.localeCompare(b.itemId)) };
 }
 
 /**
@@ -3449,6 +3542,39 @@ async function persistAdmissionLinks(
 
 type MergeEndpointRole = 'loser' | 'canonical' | 'reference' | 'promote' | 'hold';
 
+/**
+ * Roles for which an overdue claimed re-review row is NOT protected by its claim
+ * (WI-6554700010008443; bug-queue-legitimacy-and-actionable-validation-2026-10-10#D-018/#D-019).
+ * Each writes only admission-review state or a see-also link: promoting admission, recording a
+ * hold, or persisting a non-merge verdict never moves the held work. 'loser' and 'canonical' stay
+ * protected, so a claimed row is never merged, in either direction.
+ */
+const CLAIMED_REREVIEW_EXEMPT_ROLES: ReadonlySet<MergeEndpointRole> = new Set(['promote', 'hold', 'reference']);
+
+/**
+ * How long a judged claimed re-review row waits before it gets another head-of-window turn in the
+ * scheduled read. The turn is keyed on `admissionReview.lastRetryAt`, which every judged outcome
+ * (promote or hold) advances, so each such row is re-reviewed at most once per bound.
+ */
+export const CLAIMED_REREVIEW_TURN_BOUND_MINUTES = 24 * 60;
+
+/**
+ * A fail-open row whose admission re-review is overdue while an agent holds it
+ * (WI-6554700010008443). Before this, endpointProtection refused every claimed row in every role,
+ * so the scheduled window self-blocked it and its retry watermark never advanced: measured
+ * 2026-10-11, EI-25220422162112859 sat at retryAttempts 0 for five days while continuously claimed.
+ * Pure: the same snapshot and clock always give the same answer.
+ */
+export function isOverdueClaimedReReview(snapshot: AdmissionMergeSnapshot | undefined, nowMs: number): boolean {
+  if (!snapshot?.assignee) return false;
+  if (snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed') return false;
+  const review = recordValue(recordValue(snapshot.payload).admissionReview);
+  const state = typeof review.state === 'string' ? review.state : snapshot.admission === 'unreviewed' ? 'pending' : null;
+  if (state !== 'pending') return false;
+  const dueMs = typeof review.reviewDueAt === 'string' ? Date.parse(review.reviewDueAt) : Number.NaN;
+  return Number.isFinite(dueMs) && dueMs < nowMs;
+}
+
 function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean {
   if (snapshot.completionAuthority === 'committed' || snapshot.completionAuthority === 'validated') return true;
   if (snapshot.terminalCompletionRef) return true;
@@ -3457,10 +3583,21 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
   return isSufficientEvidence(completionEvidence as Parameters<typeof isSufficientEvidence>[0]);
 }
 
+interface EndpointProtectionOptions {
+  requireImplementationReadiness?: boolean;
+  reviewedEvidenceReady?: boolean;
+  /**
+   * The clock for the claimed re-review exemption. When set, an overdue claimed re-review row
+   * (isOverdueClaimedReReview) is not refused as 'claimed' in CLAIMED_REREVIEW_EXEMPT_ROLES.
+   * Every other protection still applies. Absent: every claimed row is refused, as before.
+   */
+  claimedReReviewAtMs?: number;
+}
+
 function endpointProtection(
   snapshot: AdmissionMergeSnapshot,
   role: MergeEndpointRole,
-  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
+  options: EndpointProtectionOptions = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   const payload = recordValue(snapshot.payload);
   // WI-10006515: an own-node row stranded at origin='remote' is ours to write (see ownNode).
@@ -3473,7 +3610,14 @@ function endpointProtection(
       detail: `promote ${snapshot.id} has admission ${snapshot.admission ?? 'legacy'}; expected pending or unreviewed`,
     };
   }
-  if (snapshot.assignee) {
+  if (
+    snapshot.assignee &&
+    !(
+      options.claimedReReviewAtMs !== undefined &&
+      CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
+      isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs)
+    )
+  ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
   if (String(payload._claimHold) === 'true') {
@@ -3606,7 +3750,7 @@ function snapshotIdentityProblem(
   captured: AdmissionMergeSnapshot | undefined,
   live: AdmissionMergeSnapshot | undefined,
   role: MergeEndpointRole,
-  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
+  options: EndpointProtectionOptions = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   if (!captured) return { reason: 'snapshot-missing', detail: `${role} was not captured before judging` };
   if (!live) {
@@ -3684,9 +3828,11 @@ export interface PromoterPrescreen {
  */
 export function admissionEndpointBlock(
   snapshot: AdmissionMergeSnapshot | undefined,
+  /** Clock for the claimed re-review exemption (see EndpointProtectionOptions). */
+  claimedReReviewAtMs?: number,
 ): (Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> & { permanent: boolean }) | null {
   if (!snapshot) return null;
-  const problem = endpointProtection(snapshot, 'reference');
+  const problem = endpointProtection(snapshot, 'reference', { claimedReReviewAtMs });
   if (!problem) return null;
   return { ...problem, permanent: PERMANENT_ENDPOINT_PROTECTIONS.has(problem.reason) };
 }
@@ -3714,16 +3860,22 @@ export function prescreenPromoterWindow(input: {
   pairs: readonly PromoterPair[];
   snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>;
   batchSize: number;
+  /**
+   * Tick clock. When set, an overdue claimed re-review row is judged rather than self-blocked
+   * (WI-6554700010008443); omitted, every claimed row is self-blocked as before.
+   */
+  nowMs?: number;
 }): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; prescreen: PromoterPrescreen } {
   const samples: PromoterPrescreenSample[] = [];
   const sample = (entry: PromoterPrescreenSample) => {
     if (samples.length < PROMOTER_PRESCREEN_SAMPLE_CAP) samples.push(entry);
   };
+  const block = (snapshot: AdmissionMergeSnapshot | undefined) => admissionEndpointBlock(snapshot, input.nowMs);
   const windowIds = new Set(input.window.map((item) => item.id));
   const selfBlocked = new Set<string>();
   for (const item of input.window) {
     const snapshot = input.snapshots.get(item.id);
-    const problem = snapshot ? endpointProtection(snapshot, 'promote') : null;
+    const problem = snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
     if (!problem) continue;
     selfBlocked.add(item.id);
     sample({ itemId: item.id, class: 'self-blocked', reason: problem.reason, blockedBy: null });
@@ -3747,7 +3899,7 @@ export function prescreenPromoterWindow(input: {
   let protectedPairs = 0;
   for (const pair of input.pairs) {
     const blocks = [pair.a.id, pair.b.id]
-      .map((id) => ({ id, block: admissionEndpointBlock(input.snapshots.get(id)) }))
+      .map((id) => ({ id, block: block(input.snapshots.get(id)) }))
       .filter((entry) => entry.block !== null);
     if (blocks.length === 0) continue;
     blockedPairKeys.add(pair.pairKey);
@@ -3769,10 +3921,12 @@ export function prescreenPromoterWindow(input: {
         continue;
       }
       const counterpart = pair.a.id === item.id ? pair.b : pair.a;
-      const block = admissionEndpointBlock(input.snapshots.get(counterpart.id));
-      if (block && !block.permanent && !protectedTwin) protectedTwin = { id: counterpart.id, reason: block.reason };
-      if (block?.permanent) {
-        sample({ itemId: item.id, class: 'unresolvable-pair', reason: block.reason, blockedBy: counterpart.id });
+      const twinBlock = block(input.snapshots.get(counterpart.id));
+      if (twinBlock && !twinBlock.permanent && !protectedTwin) {
+        protectedTwin = { id: counterpart.id, reason: twinBlock.reason };
+      }
+      if (twinBlock?.permanent) {
+        sample({ itemId: item.id, class: 'unresolvable-pair', reason: twinBlock.reason, blockedBy: counterpart.id });
       }
     }
     if (protectedTwin && movable === 0) {
@@ -4599,9 +4753,14 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       // A hold is still a re-review attempt for a fail-open row. Keep the row
       // claimable/pending, but advance the durable retry watermark so an owner
       // can distinguish "never revisited" from repeated ambiguous reviews.
+      //
+      // WI-6554700010008443 part 2: every held row also records WHY, so a refusal that says
+      // "repair its named admission hold" can name it. Before this a hold on a still-`pending`
+      // row wrote nothing at all. A pending row is rewritten only when the reason changes, so a
+      // row held for the same reason on every tick does not churn updated_ts.
       await sql`
         UPDATE harness_shared.work_items
-           SET payload = CASE WHEN admission = 'unreviewed' THEN
+           SET payload = (CASE WHEN admission = 'unreviewed' THEN
              COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                'admissionReview',
                COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -4615,12 +4774,23 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
                  'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
                )
              )
-           ELSE payload END,
+           ELSE COALESCE(payload, '{}'::jsonb) END) || jsonb_build_object(
+             'admissionHold', jsonb_build_object(
+               'reason', ${disposition.reason}::text,
+               'runId', ${input.runId}::text,
+               'actor', ${actor}::text,
+               'heldAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
+             )
+           ),
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
-           AND admission = 'unreviewed'`;
+           AND (
+             admission = 'unreviewed'
+             OR (admission = 'pending'
+                 AND (payload #>> '{admissionHold,reason}') IS DISTINCT FROM ${disposition.reason}::text)
+           )`;
       continue;
     }
     if (disposition.action === 'promote') {
@@ -4628,7 +4798,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       await sql`
         UPDATE harness_shared.work_items
            SET admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
-               payload = CASE WHEN admission = 'unreviewed' THEN
+               payload = (CASE WHEN admission = 'unreviewed' THEN
                  COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                    'admissionReview',
                    COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -4651,7 +4821,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
                      )
                    )
                  )
-               ELSE payload END,
+               ELSE payload END) - 'admissionHold',
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
@@ -4690,9 +4860,10 @@ async function persistAdmissionPlanInTransaction(
   const actor = input.actor ?? PROMOTER_ACTOR;
   const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   const reviewedReadyIds = new Set(input.reviewedReadyIds ?? []);
-  const protectionOptions = (itemId: string) => ({
+  const protectionOptions = (itemId: string): EndpointProtectionOptions => ({
     requireImplementationReadiness: input.requireImplementationReadiness,
     reviewedEvidenceReady: reviewedReadyIds.has(itemId),
+    claimedReReviewAtMs: input.nowMs,
   });
   const relevantIds = [
     ...new Set(
@@ -5360,11 +5531,16 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems.set(pair.a.id, pair.a);
       recurrenceItems.set(pair.b.id, pair.b);
     }
-    const fullPlan = applyPrescreenHolds(
-      selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
-        onConflict: 'hold',
-      }),
-      forcedHolds,
+    const fullPlan = applyClaimedReReviewHolds(
+      applyPrescreenHolds(
+        selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
+          onConflict: 'hold',
+        }),
+        forcedHolds,
+      ),
+      snapshotsById,
+      new Set(pending.map((item) => item.id)),
+      startedAt,
     );
     // A no-model pass has no judgement for any pair, so every paired row plans as a hold. That
     // hold means "awaits the model", not "reviewed and ambiguous", so it is deferred, not

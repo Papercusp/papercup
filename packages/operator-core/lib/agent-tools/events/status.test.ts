@@ -6,6 +6,9 @@
  * for awaits; delivery_id/channel/last_error for deliveries), that the meter is
  * omitted unless meter:true, and that all three store reads run.
  */
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -58,7 +61,11 @@ import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
-import type { DeliveryRow } from '../../events/await/types';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
+import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
+import { _resetScratchUsageForTests } from '../../scratch-gc';
+import { readVolatileScratchReference } from '../../scratch-reference';
+import type { AwaitRow, DeliveryRow } from '../../events/await/types';
 import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
@@ -70,7 +77,28 @@ const call = async (
   return JSON.parse(res.content[0].text);
 };
 
-const AWAIT_ROW = { id: 11, eventKey: 'lock:grant:t1', policy: 'wake', note: 'n', expiresTs: 'E', timeoutBehavior: 'wake', createdAt: 'C' };
+const AWAIT_ROW: AwaitRow = {
+  id: 11,
+  workspaceId: 'ws-x',
+  subscriberId: 'su-status',
+  eventKey: 'lock:grant:t1',
+  policy: 'wake',
+  note: 'n',
+  wakeHandle: null,
+  timeoutBehavior: 'wake',
+  expiresTs: '2026-10-11T01:00:00.000Z',
+  createdAt: '2026-10-11T00:00:00.000Z',
+  firedAt: null,
+  firedReason: null,
+  cancelledAt: null,
+  cancelReason: null,
+  once: true,
+  minSleepSec: null,
+  urgency: false,
+  payloadFilter: null,
+  scopeKind: null,
+  scopeRef: null,
+};
 // Typed as the real DeliveryRow (EI-21878602849246427) rather than a partial literal cast
 // `as never` at each use. The cast defeats vi.mocked()'s signature check, so a fixture that
 // goes stale when DeliveryRow gains a required field fails at RUNTIME in an unrelated file
@@ -179,9 +207,9 @@ describe('events:status projection', () => {
       event: 'lock:grant:t1',
       policy: 'wake',
       note: 'n',
-      expires_ts: 'E',
+      expires_ts: '2026-10-11T01:00:00.000Z',
       on_timeout: 'wake',
-      created_at: 'C',
+      created_at: '2026-10-11T00:00:00.000Z',
     });
   });
 
@@ -221,9 +249,9 @@ describe('events:status projection', () => {
         event: 'other:event',
         policy: 'wake',
         note: 'n',
-        expires_ts: 'E',
+        expires_ts: '2026-10-11T01:00:00.000Z',
         on_timeout: 'wake',
-        created_at: 'C',
+        created_at: '2026-10-11T00:00:00.000Z',
       },
     ]);
   });
@@ -923,5 +951,121 @@ describe('events:status — workspace-global scope is explicit', () => {
     expect(shape).not.toHaveProperty('workspace');
     expect(status.description).toMatch(/workspace-global/i);
     expect(status.description).toMatch(/do not pass `harness` or `workspace`/i);
+  });
+});
+
+describe('events:status result-door spill recovery', () => {
+  it('keeps real caller-scoped handler output recoverable after ENOTDIR and leaves a small response unspilled', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-status-spill-test-'));
+    const scratchRoot = join(sandbox, 'scratch');
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousDoorOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    const runId = '11111111-2222-4333-8444-555555555555';
+    const doorBudgetChars = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+    const doorOptions = {
+      toolName: 'tools:invoke',
+      nestedTargetToolName: 'events:status',
+      workspaceId: 'ws-x',
+      ownerId: 'su-status',
+      runId,
+    } as const;
+
+    resetResultDoorAggregatesForTests();
+    _resetScratchUsageForTests();
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+
+    try {
+      const controlHandlerResult = await status.handler({}, ctx) as unknown as DoorableResult;
+      const controlText = (controlHandlerResult.content[0] as { type: 'text'; text: string }).text;
+      const controlDoorResult = await applyResultDoorAsync(controlHandlerResult, doorOptions);
+      expect(controlText.length).toBeLessThan(doorBudgetChars);
+      expect(controlDoorResult.content).toEqual(controlHandlerResult.content);
+      expect(controlDoorResult._meta?.resultDoor).toBeUndefined();
+      expect(existsSync(scratchRoot)).toBe(false);
+      expect(listActiveAwaits).toHaveBeenLastCalledWith('su-status');
+
+      const note = 'caller-scoped await fixture '.repeat(80);
+      const largeRows: AwaitRow[] = Array.from(
+        { length: Math.ceil((doorBudgetChars * 1.5) / note.length) + 1 },
+        (_, index) => ({
+          ...AWAIT_ROW,
+          id: 100 + index,
+          eventKey: `lock:grant:spill-fixture-${index}`,
+          note: `${index}: ${note}`,
+        }),
+      );
+      vi.mocked(listActiveAwaits).mockResolvedValueOnce(largeRows);
+
+      const handlerResult = await status.handler({}, ctx) as unknown as DoorableResult;
+      const originalHandlerText = (handlerResult.content[0] as { type: 'text'; text: string }).text;
+      expect(listActiveAwaits).toHaveBeenLastCalledWith('su-status');
+      expect(originalHandlerText.length).toBeGreaterThan(doorBudgetChars);
+
+      const blocker = join(sandbox, 'scratch-is-a-file');
+      writeFileSync(blocker, 'x');
+      process.env.PAPERCUSP_SCRATCH_ROOT = join(blocker, 'scratch');
+      _resetScratchUsageForTests();
+
+      // Pass the exact content returned by status.handler through the real nested-tool door.
+      const doorResult = await applyResultDoorAsync(handlerResult, doorOptions);
+      const resultText = (doorResult.content.find((item) => item.type === 'text') as { text: string }).text;
+      const meta = doorResult._meta?.resultDoor as {
+        spillFailed?: boolean;
+        spillPath?: string | null;
+        spillUri?: string | null;
+        spillErrorCode?: string;
+        recoveryCursor?: Record<string, unknown>;
+      } | undefined;
+
+      expect(resultText.length).toBeLessThan(originalHandlerText.length);
+      expect(JSON.stringify(doorResult.content)).not.toContain(sandbox);
+      expect(meta).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        spillErrorCode: 'ENOTDIR',
+        recoveryCursor: {
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+        },
+      });
+
+      const cursor = meta?.recoveryCursor;
+      if (!cursor) throw new Error('missing volatile recovery cursor');
+      const cursorArgs = cursor.args && typeof cursor.args === 'object'
+        ? cursor.args as Record<string, unknown>
+        : undefined;
+      const uri = typeof cursor.uri === 'string'
+        ? cursor.uri
+        : typeof cursorArgs?.uri === 'string'
+          ? cursorArgs.uri
+          : undefined;
+      if (!uri) throw new Error('volatile recovery cursor has no URI');
+
+      const reference = readVolatileScratchReference(uri, { workspaceId: 'ws-x', ownerId: 'su-status' });
+      const bodyOffset = reference.manifest.bodyOffsetInPayload ?? 0;
+      const recoveredPage = reference.payload.subarray(bodyOffset).toString('utf8');
+      let recoveredText = recoveredPage;
+      try {
+        const recoveredEnvelope = JSON.parse(recoveredPage) as {
+          content?: Array<{ type?: unknown; text?: unknown }>;
+        };
+        const text = recoveredEnvelope.content?.find((item) => item.type === 'text')?.text;
+        if (typeof text === 'string') recoveredText = text;
+      } catch {
+        // Plain-text scratch pages already contain the exact original handler text.
+      }
+      expect(recoveredText).toBe(originalHandlerText);
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      if (previousDoorOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
+      resetResultDoorAggregatesForTests();
+      _resetScratchUsageForTests();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 });

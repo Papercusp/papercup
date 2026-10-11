@@ -1438,6 +1438,37 @@ describe('engineer issues surface (real PG)', () => {
     const fresh = await issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP', { baseHarnessSlug: 'operator:' + PINNED_WS });
     expect(fresh?.title).toBe('fresh twin');
   });
+
+  // WI-6554700010008365 (P-013 residue): the ambient workspace lacks the id and TWO other
+  // workspaces hold it. getIssue / resolveIssueWorkspace used to return the freshest stranger's
+  // row; both now refuse, naming the workspaces. A single foreign workspace is still the
+  // deliberate EI-15486 fallback (calibration), and an ambient row still wins outright.
+  it('refuses an id the ambient workspace lacks when several other workspaces hold it, and still falls back to one (WI-6554700010008365)', async () => {
+    const now = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        ('xws-foreign-a', 'EI-XWS', 'operator:xws-foreign-a', 'bug', 'older stranger', 'open', ${now - 60_000}, ${now - 60_000}),
+        ('xws-foreign-b', 'EI-XWS', 'operator:xws-foreign-b', 'bug', 'fresher stranger', 'open', ${now}, ${now}),
+        ('xws-foreign-a', 'EI-XONE', 'operator:xws-foreign-a', 'bug', 'only holder', 'open', ${now}, ${now})`;
+
+    const refusal = { code: 'work_item_id_ambiguous', scope: 'workspace', candidates: ['xws-foreign-a', 'xws-foreign-b'] };
+    await expect(issues.getIssue('EI-XWS')).rejects.toMatchObject(refusal);
+    await expect(issues.resolveIssueWorkspace('EI-XWS')).rejects.toMatchObject(refusal);
+
+    // Calibration: one foreign workspace is returned, not refused.
+    expect((await issues.getIssue('EI-XONE'))?.title).toBe('only holder');
+    expect(await issues.resolveIssueWorkspace('EI-XONE')).toBe('xws-foreign-a');
+
+    // An ambient row wins without a refusal, even when it is the oldest.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+      VALUES (${PINNED_WS}, 'EI-XWS', ${'operator:' + PINNED_WS}, 'bug', 'ambient row', 'open', ${now - 120_000}, ${now - 120_000})`;
+    expect((await issues.getIssue('EI-XWS'))?.title).toBe('ambient row');
+    expect(await issues.resolveIssueWorkspace('EI-XWS')).toBe(PINNED_WS);
+  });
 });
 
 describe('createIssue is atomic with its substrate writes (WI-8848)', () => {

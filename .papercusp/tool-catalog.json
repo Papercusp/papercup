@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 962,
+  "count": 963,
   "tools": [
     {
       "name": "ablation:report",
@@ -22536,6 +22536,36 @@
         "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (amend → vet → attest → bind → cards → grade).",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+      }
+    },
+    {
+      "name": "plans:blind-review",
+      "http": {
+        "path": "/api/agent-tools/plans/blind-review",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision. Required before a plan reaches awaiting-acceptance and at ship.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
+        "notWhen": "Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.",
+        "chaining": "reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
       }
     },
     {

@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { readFileSync, rmSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseVitestJsonForHarnessRows, persistHarnessTestRuns, computeWorktreeDirty } from '../../../testing-run-store';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { resolvePhasedProject, safeRead } from '../../../harness-core';
 import { type ProjectEntry, loadHarnessRegistry, resolveHarnessContentPath } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';
@@ -363,6 +364,8 @@ const run = defineTool({
             branch,
             commit: gitAfter.commit,
             worktreeDirty,
+            // P-011: execFileSync above inherits this process's env, so it IS the child's.
+            configurationSnapshot: captureConfigurationSnapshot(process.env),
           });
         }
       }

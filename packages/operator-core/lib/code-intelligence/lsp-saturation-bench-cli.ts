@@ -58,6 +58,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { assertReplayOracleRuntimeQualified, freezeCompilerReplayConfig, freezeQualifiedReplayConfig, holdReplayOracleForQualification, materializeReplaySource, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput, type ReplayOracleProducerOptions } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 import { isCliEntry } from '../util/cli-entry';
+import type { VerifierSourceReceipt } from '../verifier-source';
 
 import type { LspLanguage } from './lsp-adapter.ts';
 import type { ResolvedCursor } from './code-intel-bench.ts';
@@ -207,11 +208,15 @@ async function runLevel(
 export async function runSaturationCli(argv: readonly string[] = process.argv): Promise<void> {
   // Materialize first, then execute --freeze-replay with the COPIED CLI/runtime.
   // Running the shared CLI would still load its shared compiler/default libraries.
-  if (argv[2] === '--materialize-replay') {
+  if (argv[2] === '--materialize-replay' || argv[2] === '--materialize-archived-replay') {
     if (!argv[3] || !argv[4] || !argv[5])
       throw new Error('--materialize-replay requires authored input, exclusive source directory and new input path');
+    if (argv[2] === '--materialize-archived-replay' && !argv[6])
+      throw new Error('--materialize-archived-replay requires archive receipt and canonical dependency donor declaration');
     const input = JSON.parse(readFileSync(argv[3], 'utf8')) as ReplayOracleInput;
-    const captured = materializeReplaySource(input, argv[4], { onProgress: progress =>
+    const sourceArchive = argv[2] === '--materialize-archived-replay' ?
+      JSON.parse(readFileSync(argv[6], 'utf8')) as { receipt: VerifierSourceReceipt; dependencyDonor: string } : undefined;
+    const captured = materializeReplaySource(input, argv[4], { ...(sourceArchive ? { sourceArchive } : {}), onProgress: progress =>
       console.error(JSON.stringify({ event: 'replay-source-progress', runId: input.runId, atMs: Date.now(), ...progress })) });
     writeFileSync(argv[5], JSON.stringify(captured, null, 2), { flag: 'wx' });
     console.log(JSON.stringify({ input: argv[5], rootPath: captured.rootPath,

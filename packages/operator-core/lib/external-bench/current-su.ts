@@ -1642,6 +1642,7 @@ export function currentBenchWorkloadLockGrantReader(options: DbScope & {
             durableTransition: { id: receipt.transitionId,
               subjectRef: `file-lock:${frozen.coordinationDomain}:${receipt.ticketId}`, from: 'waiting', to: 'granted' },
             lockGrantSource: { basis: 'live-private-lock-side-store-and-bridge', coordinationDomain: frozen.coordinationDomain,
+              rootDevice: String(root.dev), rootInode: String(root.ino),
               ticketId: receipt.ticketId, lockId: receipt.lockId, ownerId: receipt.ownerId, ownerLabel: receipt.ownerLabel,
               paths: receipt.paths, queuedAt: waiter.queued_ts.toISOString(), expiresAt: status.granted_expires_ts.toISOString() } } }];
       });
@@ -1653,6 +1654,113 @@ export function currentBenchWorkloadLockGrantReader(options: DbScope & {
  * A candidate ref cannot select a filesystem path, workspace or subject. Byte
  * integrity is checked by replayResolvedWorkloadEvidence, separately from this
  * private membership/path read. */
+export interface CurrentBenchLockStateAllocation {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string;
+  coordinationDomain: string; notBefore: string;
+  receipt: { receiptRef: string; subjectId: string; index: number;
+    phase: 'held' | 'contended' | 'queued' | 'granted' | 'released'; paths: string[];
+    holder: { ownerId: string; ownerLabel: string; intent: string; lockId: string };
+    waiter?: { ownerId: string; ownerLabel: string; intent: string; ticketId: string; queuedAt: string; lockId?: string } };
+}
+
+/** Sample the actual private side-store before its rows are released/overwritten.
+ * This is state evidence, not evidence that a native call caused the state.
+ * In particular, a contended sample is not itself an acquire-denial receipt.
+ * The host freezes this observation through its existing run checkpoint. */
+export function currentBenchWorkloadLockStateReader(options: CurrentBenchLockStateAllocation & DbScope & {
+  locksSql?: import('postgres').Sql;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, locksSql: suppliedLocksSql, ...allocation } = options;
+  const frozen = structuredClone(allocation), receipt = frozen.receipt;
+  const present = (value: unknown) => typeof value === 'string' && !!value.trim();
+  const uuid = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+  const start = Date.parse(frozen.notBefore), waiter = receipt.waiter;
+  const actorValid = (actor: { ownerId: string; ownerLabel: string; intent: string }) =>
+    [actor.ownerId, actor.ownerLabel, actor.intent].every(present);
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId, frozen.coordinationDomain,
+      receipt.receiptRef, receipt.subjectId].every(present) || !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) ||
+      !Number.isFinite(start) || !Number.isSafeInteger(receipt.index) || receipt.index < 0 ||
+      !['held', 'contended', 'queued', 'granted', 'released'].includes(receipt.phase) ||
+      !actorValid(receipt.holder) || !uuid(receipt.holder.lockId) ||
+      !Array.isArray(receipt.paths) || !receipt.paths.length || receipt.paths.length > 50 ||
+      new Set(receipt.paths).size !== receipt.paths.length || receipt.paths.some(path =>
+        !present(path) || path.length > 4096 || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')) ||
+      (['queued', 'granted'].includes(receipt.phase) && !waiter) ||
+      (waiter && (!actorValid(waiter) || waiter.ownerId === receipt.holder.ownerId || !uuid(waiter.ticketId) ||
+        !Number.isFinite(Date.parse(waiter.queuedAt)) || Date.parse(waiter.queuedAt) < start ||
+        (waiter.lockId !== undefined && !uuid(waiter.lockId)) ||
+        (['granted', 'released'].includes(receipt.phase) && !uuid(waiter.lockId)))))
+    throw new Error('Workload lock-state reader requires an exact private phase allocation.');
+  const root = lstatSync(frozen.coordinationDomain, { bigint: true });
+  if (!root.isDirectory() || realpathSync(frozen.coordinationDomain) !== frozen.coordinationDomain ||
+      frozen.coordinationDomain === realpathSync(REPO_ROOT))
+    throw new Error('Workload lock-state reader requires a canonical private coordination domain.');
+  const unchangedRoot = () => {
+    const current = lstatSync(frozen.coordinationDomain, { bigint: true });
+    return current.isDirectory() && current.dev === root.dev && current.ino === root.ino &&
+      realpathSync(frozen.coordinationDomain) === frozen.coordinationDomain;
+  };
+  const samePaths = (paths: unknown, expected: string[]) => Array.isArray(paths) &&
+    canonicalJson([...paths].sort()) === canonicalJson([...expected].sort());
+  return async (ref, binding) => {
+    if (ref !== receipt.receiptRef || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { getTxPool }] = await Promise.all([
+      import('./reproducibility/db'), import('../agent-tools/locks/su-lock-store'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId: frozen.workspaceId });
+    try {
+      if (!unchangedRoot()) return null;
+      const subjects = await sql`SELECT feature_id FROM harness_shared.work_items
+        WHERE workspace_id = ${resolveBenchWorkspace(frozen.workspaceId)} AND harness_slug = ${frozen.harnessSlug}
+          AND feature_id = ${receipt.subjectId} LIMIT 2`;
+      if (subjects.length !== 1) return null;
+      return await (suppliedLocksSql ?? getTxPool()).begin(async tx => {
+        await tx`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;
+        const [{ at }] = await tx<{ at: Date }[]>`SELECT clock_timestamp() AS at`;
+        const atMs = at.getTime();
+        const locks = await tx<{ row: Record<string, unknown> }[]>`SELECT to_jsonb(l) AS row FROM agent_file_locks l
+          WHERE coordination_domain = ${frozen.coordinationDomain} ORDER BY path LIMIT 101`;
+        const tickets = await tx<{ row: Record<string, unknown> }[]>`SELECT to_jsonb(w) AS row FROM agent_lock_waiters w
+          WHERE coordination_domain = ${frozen.coordinationDomain} ORDER BY ticket_id LIMIT 101`;
+        if (locks.length > 100 || tickets.length > 100 || !Number.isFinite(atMs) || atMs < start) return null;
+        const held = locks.map(row => row.row), queued = tickets.map(row => row.row);
+        const date = (value: unknown) => typeof value === 'string' ? Date.parse(value) : NaN;
+        const holderExpected = ['held', 'contended', 'queued'].includes(receipt.phase);
+        const actor = holderExpected ? receipt.holder : waiter;
+        const lockId = holderExpected ? receipt.holder.lockId : waiter?.lockId;
+        if (receipt.phase === 'released' ? held.length !== 0 : (!actor ||
+          !samePaths(held.map(row => row.path), receipt.paths) || held.some(row =>
+            row.lock_id !== lockId || row.owner !== actor.ownerId || row.owner_label !== actor.ownerLabel ||
+            row.intent !== actor.intent || row.goal_ref !== receipt.subjectId ||
+            !Number.isFinite(date(row.acquired_ts)) || date(row.acquired_ts) < start || date(row.acquired_ts) > atMs ||
+            !Number.isFinite(date(row.expires_ts)) || date(row.expires_ts) <= atMs))) return null;
+        if (['held', 'contended'].includes(receipt.phase)) {
+          if (queued.length !== 0) return null;
+        } else if (waiter) {
+          const ticket = queued[0];
+          if (queued.length !== 1 || ticket.ticket_id !== waiter.ticketId || ticket.owner !== waiter.ownerId ||
+            ticket.owner_label !== waiter.ownerLabel || ticket.intent !== waiter.intent || ticket.goal_ref !== receipt.subjectId ||
+            !samePaths(ticket.paths, receipt.paths) || !Number.isFinite(date(ticket.queued_ts)) ||
+            date(ticket.queued_ts) !== Date.parse(waiter.queuedAt) || date(ticket.queued_ts) > atMs ||
+            ticket.status !== (receipt.phase === 'queued' ? 'waiting' : 'granted') ||
+            (receipt.phase === 'queued' && (!Number.isFinite(date(ticket.wait_until)) || date(ticket.wait_until) <= atMs)) ||
+            (receipt.phase === 'queued' ? ticket.granted_lock_id !== null : ticket.granted_lock_id !== waiter.lockId) ||
+            (receipt.phase === 'granted' && (!Number.isFinite(date(ticket.granted_expires_ts)) ||
+              held.some(row => date(row.expires_ts) !== date(ticket.granted_expires_ts) ||
+                date(row.acquired_ts) < date(ticket.queued_ts))))) return null;
+        } else if (queued.length) return null;
+        if (!unchangedRoot()) return null;
+        const content = canonicalJson({ locks: held, waiters: queued });
+        return [{ index: receipt.index, kind: 'tool-result' as const, name: `lock:state:${receipt.phase}`,
+          at: at.toISOString(), content, metadata: { ...binding, receiptRef: ref,
+            lockStateSource: { basis: 'live-private-lock-side-store', phase: receipt.phase,
+              coordinationDomain: frozen.coordinationDomain, rootDevice: String(root.dev), rootInode: String(root.ino),
+              snapshotSha256: createHash('sha256').update(content).digest('hex') } } }];
+      });
+    } catch { return null; }
+  };
+}
+
 export function currentBenchWorkloadArtifactReader(options: DbScope & {
   workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; checkoutRoot: string;
   artifacts: Array<{ ref: string; subjectId: string; path: string; maxBytes: number }>;
@@ -1985,7 +2093,12 @@ export function currentBenchWorkloadToolResultReader(options:
   Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
     receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
       codexHome: string; nativeSessionId: string; nativeTurnId: string; callRecordIndex: number; resultRecordIndex: number;
-      callId: string; toolName: string; sourceSha256: string; argumentsSha256: string; outputSha256: string; index: number }>;
+      callId: string; toolName: string; sourceSha256: string; argumentsSha256: string; outputSha256: string; index: number;
+      /** Host-selected settled dispatch, including an inner target of a native wrapper.
+       * The dispatcher callId is transient; the verified MCP native fingerprints
+       * in requestOrigin are the persisted join. This is not lock-state proof. */
+      dispatch?: { invocationId: string; requestTraceId: string; toolName: string;
+        argumentsSha256: string; invocationSha256: string } }>;
   },
 ): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
   const { sql: suppliedSql, ...allocation } = options;
@@ -1999,9 +2112,14 @@ export function currentBenchWorkloadToolResultReader(options:
           row.nativeSessionId, row.nativeTurnId, row.callId, row.toolName].every(present) ||
         ![row.sourceSha256, row.argumentsSha256, row.outputSha256].every(digest) ||
         ![row.index, row.callRecordIndex, row.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
-        row.callRecordIndex >= row.resultRecordIndex) ||
+        row.callRecordIndex >= row.resultRecordIndex || (row.dispatch !== undefined && (
+          !/^[1-9]\d*$/.test(row.dispatch.invocationId) ||
+          ![row.dispatch.requestTraceId, row.dispatch.toolName].every(present) ||
+          ![row.dispatch.argumentsSha256, row.dispatch.invocationSha256].every(digest)))) ||
       new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
-      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.filter(row => row.dispatch).map(row => row.dispatch!.invocationId)).size !==
+        frozen.receipts.filter(row => row.dispatch).length)
     throw new Error('Workload tool-result reader requires a private allocation and unique pinned native call/result receipts.');
   const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
   return async (ref, binding) => {
@@ -2035,8 +2153,50 @@ export function currentBenchWorkloadToolResultReader(options:
         observed.callId !== receipt.callId || observed.name !== receipt.toolName || observed.sourceSha256 !== receipt.sourceSha256 ||
         createHash('sha256').update(observed.arguments).digest('hex') !== receipt.argumentsSha256 ||
         createHash('sha256').update(content).digest('hex') !== receipt.outputSha256) return null;
+    let platformInvocationSource: Record<string, unknown> | undefined;
+    if (receipt.dispatch) {
+      const pin = receipt.dispatch;
+      const sessionFingerprint = createHash('sha256').update(receipt.nativeSessionId, 'utf8').digest('hex');
+      const callFingerprint = createHash('sha256').update(receipt.callId, 'utf8').digest('hex');
+      // Search the entire exact native-call/target population, not just the
+      // selected row: repeated inner calls must not be silently conflated.
+      const invocations = await sql<{ invocation: Record<string, unknown>; population: string }[]>`
+        SELECT to_jsonb(invocation) AS invocation, count(*) OVER ()::text AS population
+          FROM harness_shared.tool_invocations invocation
+         WHERE invocation.workspace_id = ${workspaceId}
+           AND invocation.tool_name = ${pin.toolName}
+           AND invocation.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint' = ${callFingerprint}
+           AND invocation.metadata_json->'requestOrigin'->'nativeSession'->>'valueFingerprint' = ${sessionFingerprint}
+         LIMIT 2
+      `;
+      if (invocations.length !== 1 || invocations[0].population !== '1') return null;
+      const invocation = invocations[0].invocation;
+      const metadata = invocation.metadata_json as Record<string, unknown> | null;
+      const origin = metadata?.requestOrigin as Record<string, unknown> | undefined;
+      const native = origin?.nativeSession as Record<string, unknown> | undefined;
+      const invokedAt = typeof invocation.invoked_at === 'string' ? Date.parse(invocation.invoked_at) : NaN;
+      const args = invocation.args_json;
+      if (String(invocation.id) !== pin.invocationId || invocation.harness_slug !== frozen.harnessSlug ||
+          invocation.coord_owner_id !== receipt.ownerId || origin?.mcpRequestTraceId !== pin.requestTraceId ||
+          origin?.transport !== 'mcp' || native?.carrier !== 'meta:threadId' || native.binding !== 'bound' ||
+          native.candidateAdvSessionId !== Number(row.adv_id) ||
+          !Number.isFinite(invokedAt) || invokedAt < calledAt || invokedAt > at ||
+          !Number.isSafeInteger(invocation.duration_ms) || Number(invocation.duration_ms) < 0 ||
+          invokedAt - Number(invocation.duration_ms) < calledAt ||
+          !['ok', 'error', 'quota-exceeded', 'role-not-allowed', 'invalid-input', 'timeout'].includes(String(invocation.status)) ||
+          !args || typeof args !== 'object' || Array.isArray(args) || Object.hasOwn(args, '_truncated') ||
+          createHash('sha256').update(canonicalJson(args)).digest('hex') !== pin.argumentsSha256 ||
+          createHash('sha256').update(canonicalJson(invocation)).digest('hex') !== pin.invocationSha256) return null;
+      platformInvocationSource = { basis: 'native-call-correlated-dispatch', invocationId: pin.invocationId,
+        requestTraceId: pin.requestTraceId, toolName: pin.toolName, arguments: args,
+        argumentsSha256: pin.argumentsSha256, invocationSha256: pin.invocationSha256,
+        invokedAt: new Date(invokedAt).toISOString(), durationMs: invocation.duration_ms,
+        status: invocation.status, errorCode: invocation.error_code ?? null,
+        outputRef: invocation.output_ref ?? null };
+    }
     return [{ index: receipt.index, kind: 'tool-result', name: observed.name, at: observed.at, content,
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+        ...(platformInvocationSource ? { platformInvocationSource } : {}),
         nativeToolSource: { basis: 'closed-native-recorded-tool-result', nativeSessionId: observed.nativeSessionId,
           nativeTurnId: observed.nativeTurnId, callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
           callId: observed.callId, callType: observed.callType, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',

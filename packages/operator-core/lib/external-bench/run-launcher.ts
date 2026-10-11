@@ -61,7 +61,9 @@ import { cloneTaskRepo, extractDiff } from './clone';
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
-  currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader,
+  currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
+  currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
+  type CurrentBenchLockStateAllocation,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
 import { registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
@@ -230,6 +232,255 @@ export async function currentBenchTaskProviderCapture(input: CurrentTaskInput, {
       if (rows.length !== 1) throw new Error('Provider capture host checkpoint changed; request cannot be forwarded.');
       checkpoint = next;
     } };
+}
+
+type HostLockAllocation = Omit<CurrentBenchLockStateAllocation, 'workspaceId' | 'runId' | 'coordinationDomain'>;
+type HostLockObservation = NonNullable<Awaited<ReturnType<ReturnType<typeof currentBenchWorkloadLockStateReader>>>>[number];
+type HostLockGrantAllocation = Omit<Parameters<typeof currentBenchWorkloadLockGrantReader>[0], 'sql' | 'locksSql'>;
+type HostLockGrantSelection = { receiptRef: string; transitionId: string; index: number };
+type HostLockGrantPin = { allocation: HostLockGrantAllocation; observation: HostLockObservation; observationSha256: string };
+type HostLockPin = { allocation: CurrentBenchLockStateAllocation; observation: HostLockObservation; observationSha256: string;
+  lockGrant?: HostLockGrantPin };
+
+function hostLockGrantAllocation(state: CurrentBenchLockStateAllocation, grant: HostLockGrantSelection): HostLockGrantAllocation {
+  const waiter = state.receipt.waiter;
+  if (state.receipt.phase !== 'granted' || !waiter?.lockId ||
+      typeof grant.receiptRef !== 'string' || !grant.receiptRef.trim() || grant.receiptRef === state.receipt.receiptRef ||
+      typeof grant.transitionId !== 'string' || !grant.transitionId.trim() ||
+      !Number.isSafeInteger(grant.index) || grant.index < 0 || grant.index >= state.receipt.index)
+    throw new Error('Lock grant capture requires a distinct exact bridge receipt preceding a granted state sample.');
+  return { workspaceId: state.workspaceId, harnessSlug: state.harnessSlug, runId: state.runId,
+    trialBindingHash: state.trialBindingHash, coordinationDomain: state.coordinationDomain, notBefore: state.notBefore,
+    receipts: [{ ...grant, subjectId: state.receipt.subjectId, ticketId: waiter.ticketId, lockId: waiter.lockId,
+      ownerId: waiter.ownerId, ownerLabel: waiter.ownerLabel, intent: waiter.intent,
+      paths: structuredClone(state.receipt.paths), queuedAt: waiter.queuedAt }] };
+}
+
+/** Freeze a host-selected state sample before release/latch overwrite. The
+ * existing operational checkpoint retains it; no event-stream persistence or
+ * native invocation/denial/provider consumption is inferred from this sample. */
+export async function freezeCurrentBenchTaskLockState(input: CurrentTaskInput, allocation: HostLockAllocation,
+  ports: { locksSql?: import('postgres').Sql; grant?: HostLockGrantSelection } = {}): Promise<HostLockPin> {
+  const frozen = structuredClone(allocation), options = structuredClone(input.options), protocol = structuredClone(input.protocol);
+  const { hostRunId, loopId } = input;
+  const { sql, ws } = resolveDb(input.scope);
+  const key = currentBenchAssignmentId(options.runId, options.armId, input.task.instanceId, options.seed);
+  const expected: CurrentBenchLockStateAllocation = { ...frozen, workspaceId: options.workspaceId,
+    runId: options.runId, coordinationDomain: realpathSync(input.checkout.dir) };
+  const expectedGrant = ports.grant ? hostLockGrantAllocation(expected, structuredClone(ports.grant)) : undefined;
+  if (ws !== resolveBenchWorkspace(options.workspaceId) || input.context.workspaceId !== options.workspaceId ||
+      !input.context.principal?.slug || canonicalJson(protocol) !== canonicalJson(options.preregistration.config) ||
+      protocol.runId !== options.runId || !protocol.arms.some(arm => arm.id === options.armId) ||
+      !protocol.taskIds.includes(input.task.instanceId) || !protocol.seeds.includes(options.seed))
+    throw new Error('Lock state capture requires an authenticated frozen host assignment.');
+  // Sample before taking the run-row lock. Otherwise concurrent captures can
+  // occupy the entire host pool with row-lock waiters while the winning
+  // transaction requests another connection for side-store inspection.
+  // The observation records its own sample time; commit time is not state time.
+  const reader = currentBenchWorkloadLockStateReader({ ...expected, sql, locksSql: ports.locksSql });
+  const observed = await reader(frozen.receipt.receiptRef, { runId: options.runId, trialBindingHash: frozen.trialBindingHash });
+  // Capture the independent live bridge authority before release or latch
+  // overwrite. A granted state alone never supplies this transition receipt.
+  const grantObserved = expectedGrant ? await currentBenchWorkloadLockGrantReader({ ...expectedGrant, sql,
+    locksSql: ports.locksSql })(expectedGrant.receipts[0].receiptRef,
+    { runId: options.runId, trialBindingHash: frozen.trialBindingHash }) : undefined;
+  return sql.begin(async tx => {
+    const rows = await tx<{ status: string; config: { current?: { preregHash?: string }; loopId?: string; protocol?: unknown;
+      workloadLockStates?: Record<string, Record<string, HostLockPin>> } }[]>`SELECT status, config
+      FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${hostRunId} FOR UPDATE`;
+    const row = rows[0];
+    if (rows.length !== 1 || row.config.current?.preregHash !== options.preregistration.preregHash ||
+        row.config.loopId !== loopId || canonicalJson(row.config.protocol) !== canonicalJson(protocol))
+      throw new Error('Lock state capture host checkpoint changed.');
+    const slots = row.config.workloadLockStates?.[key] ?? {}, prior = slots[frozen.receipt.receiptRef];
+    if (prior) {
+      if (canonicalJson(prior.allocation) !== canonicalJson(expected) ||
+          createHash('sha256').update(canonicalJson(prior.observation)).digest('hex') !== prior.observationSha256 ||
+          canonicalJson(prior.lockGrant?.allocation ?? null) !== canonicalJson(expectedGrant ?? null) ||
+          prior.lockGrant && createHash('sha256').update(canonicalJson(prior.lockGrant.observation)).digest('hex') !==
+            prior.lockGrant.observationSha256)
+        throw new Error('Lock state capture changed after its host pin was frozen.');
+      return structuredClone(prior);
+    }
+    if (row.status !== 'running' || Object.values(slots).some(pin => pin.observation.index === frozen.receipt.index))
+      throw new Error('Lock state capture requires a live host and a unique observation index.');
+    if (observed?.length !== 1) throw new Error('Lock state capture could not verify the exact private side-store state.');
+    const grantSource = grantObserved?.[0]?.metadata?.lockGrantSource as Record<string, unknown> | undefined;
+    const stateSource = observed[0].metadata?.lockStateSource as Record<string, unknown> | undefined;
+    if (expectedGrant && (grantObserved?.length !== 1 || Date.parse(grantObserved[0].at!) > Date.parse(observed[0].at!) ||
+        grantSource?.rootDevice !== stateSource?.rootDevice || grantSource?.rootInode !== stateSource?.rootInode))
+      throw new Error('Lock grant capture could not verify the exact live bridge before the state sample.');
+    const observation = observed[0], pin: HostLockPin = { allocation: expected, observation,
+      observationSha256: createHash('sha256').update(canonicalJson(observation)).digest('hex'),
+      ...(expectedGrant && grantObserved ? { lockGrant: { allocation: expectedGrant, observation: grantObserved[0],
+        observationSha256: createHash('sha256').update(canonicalJson(grantObserved[0])).digest('hex') } } : {}) };
+    await tx`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, '{workloadLockStates}',
+      COALESCE(config->'workloadLockStates', '{}'::jsonb) ||
+        ${JSON.stringify({ [key]: { ...slots, [frozen.receipt.receiptRef]: pin } })}::text::jsonb)
+      WHERE workspace_id = ${ws} AND id = ${hostRunId}`;
+    return structuredClone(pin);
+  }) as Promise<HostLockPin>;
+}
+
+/** Historical inspection reads only the exact host-frozen observation. It
+ * survives release/checkout cleanup, but never substitutes for call evidence. */
+export function currentBenchTaskLockStateReader(input: CurrentTaskInput, selection: {
+  receiptRef: string; observationSha256: string; trialBindingHash: string;
+  /** Separately selected host-frozen live bridge authority; no native call or
+   * provider consumption is inferred from the queued-to-granted edge. */
+  lockGrant?: { receiptRef: string; observationSha256: string; allocationSha256: string };
+  /** Optional evidence pairing, not a claim that the call caused a transition.
+   * Native business output and bridge grants remain separate authorities. */
+  nativeCorrelation?: { before: { receiptRef: string; observationSha256: string; allocationSha256: string };
+    allocationSha256: string;
+    operation: 'locks:acquire' | 'locks:release';
+    receipt: Parameters<typeof currentBenchWorkloadToolResultReader>[0]['receipts'][number];
+    /** Exact native result consumed by a separately completed host request.
+     * This does not assert that the state sample or bridge grant was consumed. */
+    providerInput?: Extract<NativeProviderReceipt, { nativeSource: 'tool-result' }> };
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const frozen = structuredClone(selection), { sql, ws } = resolveDb(input.scope);
+  const { options, protocol, hostRunId, loopId } = input;
+  const host = { hostRunId, loopId, preregHash: options.preregistration.preregHash, protocol: canonicalJson(protocol),
+    runId: options.runId, workspaceId: resolveBenchWorkspace(options.workspaceId),
+    domain: resolve(input.checkout.dir), key: currentBenchAssignmentId(options.runId, options.armId, input.task.instanceId, options.seed) };
+  if (!/^[a-f0-9]{64}$/.test(frozen.observationSha256) || !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) ||
+      !frozen.receiptRef.trim() || ws !== host.workspaceId || input.context.workspaceId !== options.workspaceId ||
+      !input.context.principal?.slug || host.protocol !== canonicalJson(options.preregistration.config))
+    throw new Error('Lock state inspection requires exact host observation pins.');
+  const correlation = frozen.nativeCorrelation;
+  if (frozen.lockGrant && (typeof frozen.lockGrant.receiptRef !== 'string' || !frozen.lockGrant.receiptRef.trim() ||
+      frozen.lockGrant.receiptRef === frozen.receiptRef ||
+      ![frozen.lockGrant.observationSha256, frozen.lockGrant.allocationSha256].every(value => /^[a-f0-9]{64}$/.test(value))))
+    throw new Error('Lock grant inspection requires exact separate host observation and allocation pins.');
+  if (correlation && (!['locks:acquire', 'locks:release'].includes(correlation.operation) ||
+      !correlation.before.receiptRef.trim() || correlation.before.receiptRef === frozen.receiptRef ||
+      ![correlation.before.observationSha256, correlation.before.allocationSha256, correlation.allocationSha256]
+        .every(value => /^[a-f0-9]{64}$/.test(value)) || !correlation.receipt.dispatch ||
+      correlation.receipt.dispatch.toolName !== correlation.operation))
+    throw new Error('Lock state correlation requires distinct pinned samples and an exact native dispatch.');
+  if (correlation?.providerInput) {
+    const provider = correlation.providerInput as unknown as Record<string, unknown>;
+    // Structurally extended receipts may also carry provider accounting fields.
+    // Compare the native reader's contract, leaving request selection to the
+    // independently pinned provider reader below.
+    const nativeKeys = ['receiptRef', 'subjectId', 'taskId', 'ownerId', 'label', 'codexHome',
+      'nativeSessionId', 'nativeTurnId', 'callRecordIndex', 'resultRecordIndex', 'callId', 'toolName',
+      'sourceSha256', 'argumentsSha256', 'outputSha256', 'index', 'dispatch'] as const satisfies ReadonlyArray<keyof typeof correlation.receipt>;
+    const selected = Object.fromEntries(nativeKeys.map(key => [key, correlation.receipt[key]]));
+    const native = Object.fromEntries(nativeKeys.map(key => [key, provider[key]]));
+    if (provider.nativeSource !== 'tool-result' || canonicalJson(native) !== canonicalJson(selected))
+      throw new Error('Lock provider correlation requires the exact selected native tool-result receipt.');
+  }
+  return async (ref, binding) => {
+    if (ref !== frozen.receiptRef || binding.runId !== host.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const rows = await sql<{ config: { current?: { preregHash?: string }; loopId?: string; protocol?: unknown;
+      workloadLockStates?: Record<string, Record<string, HostLockPin>> } }[]>`SELECT config FROM harness_shared.bench_runs
+        WHERE workspace_id = ${ws} AND id = ${host.hostRunId}`;
+    const config = rows[0]?.config, slots = config?.workloadLockStates?.[host.key], pin = slots?.[ref];
+    const validPin = (candidate: HostLockPin | undefined, receiptRef: string, hash: string): candidate is HostLockPin =>
+      !!candidate && candidate.observationSha256 === hash && candidate.allocation.runId === host.runId &&
+      resolveBenchWorkspace(candidate.allocation.workspaceId) === ws &&
+      candidate.allocation.coordinationDomain === host.domain &&
+      candidate.allocation.trialBindingHash === frozen.trialBindingHash &&
+      candidate.allocation.receipt.receiptRef === receiptRef &&
+      candidate.observation.metadata?.receiptRef === receiptRef &&
+      candidate.observation.metadata?.runId === host.runId &&
+      candidate.observation.metadata?.trialBindingHash === frozen.trialBindingHash &&
+      candidate.observation.index === candidate.allocation.receipt.index &&
+      createHash('sha256').update(canonicalJson(candidate.observation)).digest('hex') === hash;
+    if (rows.length !== 1 || config?.current?.preregHash !== host.preregHash || config.loopId !== host.loopId ||
+        canonicalJson(config.protocol) !== host.protocol || !validPin(pin, ref, frozen.observationSha256)) return null;
+    let result = structuredClone(pin.observation);
+    if (correlation) {
+      const before = slots?.[correlation.before.receiptRef];
+      if (!validPin(before, correlation.before.receiptRef, correlation.before.observationSha256)) return null;
+      const a = before.allocation, b = pin.allocation, receipt = correlation.receipt;
+      const source = before.observation.metadata?.lockStateSource as Record<string, unknown> | undefined;
+      const afterSource = pin.observation.metadata?.lockStateSource as Record<string, unknown> | undefined;
+      const samePaths = (paths: unknown, expected: string[]) => Array.isArray(paths) &&
+        canonicalJson([...paths].sort()) === canonicalJson([...expected].sort());
+      if (createHash('sha256').update(canonicalJson(a)).digest('hex') !== correlation.before.allocationSha256 ||
+          createHash('sha256').update(canonicalJson(b)).digest('hex') !== correlation.allocationSha256 ||
+          a.harnessSlug !== b.harnessSlug || a.notBefore !== b.notBefore ||
+          a.receipt.subjectId !== b.receipt.subjectId || receipt.subjectId !== b.receipt.subjectId ||
+          !samePaths(a.receipt.paths, b.receipt.paths) ||
+          canonicalJson(a.receipt.holder) !== canonicalJson(b.receipt.holder) ||
+          canonicalJson(a.receipt.waiter ?? null) !== canonicalJson(b.receipt.waiter ?? null) ||
+          before.observation.index >= receipt.index || receipt.index >= pin.observation.index ||
+          source?.basis !== 'live-private-lock-side-store' || afterSource?.basis !== source.basis ||
+          source.coordinationDomain !== host.domain || afterSource.coordinationDomain !== host.domain ||
+          typeof source.rootDevice !== 'string' || typeof source.rootInode !== 'string' ||
+          source.rootDevice !== afterSource.rootDevice || source.rootInode !== afterSource.rootInode) return null;
+      const native = await currentBenchWorkloadToolResultReader({ sql, workspaceId: options.workspaceId,
+        harnessSlug: b.harnessSlug, runId: host.runId, trialBindingHash: frozen.trialBindingHash,
+        notBefore: a.notBefore, receipts: [receipt] })(receipt.receiptRef, binding);
+      if (native?.length !== 1) return null;
+      const observed = native[0], call = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
+      const dispatch = observed.metadata?.platformInvocationSource as Record<string, unknown> | undefined;
+      const args = dispatch?.arguments as Record<string, unknown> | undefined;
+      const actor = correlation.operation === 'locks:release' ? b.receipt.holder :
+        [b.receipt.holder, b.receipt.waiter].find(row => row?.ownerId === receipt.ownerId);
+      const times = [before.observation.at, call?.calledAt, dispatch?.invokedAt, observed.at, pin.observation.at]
+        .map(value => typeof value === 'string' ? Date.parse(value) : NaN);
+      if (!actor || actor.ownerId !== receipt.ownerId || dispatch?.toolName !== correlation.operation ||
+          !times.every(Number.isFinite) || times.some((value, index) => index > 0 && value < times[index - 1]) ||
+          !Number.isSafeInteger(dispatch.durationMs) || times[2] - Number(dispatch.durationMs) < times[1] ||
+          !args || args.coordination_domain !== host.domain ||
+          (correlation.operation === 'locks:acquire' ?
+            !samePaths(args.paths, b.receipt.paths) || args.intent !== actor.intent || args.external_paths !== undefined :
+            args.lock_id !== b.receipt.holder.lockId || args.lock_ids !== undefined || args.all_mine === true ||
+              args.paths !== undefined && !samePaths(args.paths, b.receipt.paths))) return null;
+      // Retain the native observation as a separately named authority. The
+      // state content stays a state snapshot, including after checkout cleanup.
+      // Neither dispatcher status nor unchanged contention means business denial.
+      result = { ...result, metadata: { ...result.metadata,
+        lockStateCorrelation: { basis: 'host-frozen-samples-and-native-dispatch', operation: correlation.operation,
+          before: { observationSha256: before.observationSha256, observation: structuredClone(before.observation) },
+          afterObservationSha256: pin.observationSha256, nativeObservation: structuredClone(observed) } } };
+      if (correlation.providerInput) {
+        const provider = await currentBenchTaskProviderInputReader(input, { harnessSlug: b.harnessSlug,
+          trialBindingHash: frozen.trialBindingHash, notBefore: a.notBefore, receipts: [correlation.providerInput] });
+        const consumed = await provider(receipt.receiptRef, binding), inputObservation = consumed?.[0];
+        if (consumed?.length !== 1 || inputObservation?.kind !== 'input' || inputObservation.content !== observed.content ||
+            canonicalJson(inputObservation.metadata?.nativeToolSource) !== canonicalJson(observed.metadata?.nativeToolSource) ||
+            canonicalJson(inputObservation.metadata?.platformInvocationSource) !== canonicalJson(observed.metadata?.platformInvocationSource) ||
+            (inputObservation.metadata?.providerInputSource as Record<string, unknown> | undefined)?.basis !==
+              'completed-provider-request-input') return null;
+        result.metadata = { ...result.metadata, lockProviderCorrelation: {
+          basis: 'host-completed-request-and-exact-native-result', providerObservation: structuredClone(inputObservation) } };
+      }
+    }
+    if (frozen.lockGrant) {
+      const grant = pin.lockGrant, selected = frozen.lockGrant;
+      if (!grant || grant.observationSha256 !== selected.observationSha256 ||
+          createHash('sha256').update(canonicalJson(grant.observation)).digest('hex') !== selected.observationSha256 ||
+          createHash('sha256').update(canonicalJson(grant.allocation)).digest('hex') !== selected.allocationSha256 ||
+          grant.allocation.receipts.length !== 1) return null;
+      const receipt = grant.allocation.receipts[0], observation = grant.observation;
+      let expectedGrant: HostLockGrantAllocation;
+      try { expectedGrant = hostLockGrantAllocation(pin.allocation, receipt); } catch { return null; }
+      const source = observation.metadata?.lockGrantSource as Record<string, unknown> | undefined;
+      const stateSource = pin.observation.metadata?.lockStateSource as Record<string, unknown> | undefined;
+      const times = [pin.allocation.notBefore, observation.at, pin.observation.at, source?.expiresAt]
+        .map(value => typeof value === 'string' ? Date.parse(value) : NaN);
+      if (canonicalJson(grant.allocation) !== canonicalJson(expectedGrant) || receipt.receiptRef !== selected.receiptRef ||
+          observation.index !== receipt.index || observation.name !== 'lock:grant' || observation.kind !== 'tool-result' ||
+          observation.metadata?.receiptRef !== selected.receiptRef || observation.metadata?.runId !== host.runId ||
+          observation.metadata?.trialBindingHash !== frozen.trialBindingHash ||
+          source?.basis !== 'live-private-lock-side-store-and-bridge' || source.coordinationDomain !== host.domain ||
+          stateSource?.basis !== 'live-private-lock-side-store' || stateSource.coordinationDomain !== host.domain ||
+          typeof source.rootDevice !== 'string' || typeof source.rootInode !== 'string' ||
+          source.rootDevice !== stateSource.rootDevice || source.rootInode !== stateSource.rootInode ||
+          source.ticketId !== receipt.ticketId || source.lockId !== receipt.lockId || source.ownerId !== receipt.ownerId ||
+          source.ownerLabel !== receipt.ownerLabel || source.queuedAt !== receipt.queuedAt ||
+          canonicalJson(source.paths) !== canonicalJson(receipt.paths) || !times.every(Number.isFinite) ||
+          times[0] > times[1] || times[1] > times[2] || times[2] >= times[3]) return null;
+      result.metadata = { ...result.metadata, lockGrantCorrelation: { basis: 'host-frozen-lock-state-and-bridge-grant',
+        observationSha256: grant.observationSha256, grantObservation: structuredClone(observation) } };
+    }
+    return [result];
+  };
 }
 
 export type CurrentBenchSettledProviderCapture = NonNullable<ReturnType<

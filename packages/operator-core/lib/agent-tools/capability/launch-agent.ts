@@ -765,6 +765,12 @@ export default defineTool({
     if (scopedGateway && (args.resume || args.successor || args.fork || (args.count ?? args.members?.length ?? 1) !== 1)) {
       return err('Scoped inference gateway requires a fresh single native launch.');
     }
+    // A launch-declared confinement binds a NEW identity before its process opens. A
+    // resumed, successor or forked identity already ran turns unconfined, so it is refused
+    // rather than confined after the fact (WI-6554700010008492).
+    if (privateConfinement && (args.resume || args.successor || args.fork)) {
+      return err('A launch-declared session tool confinement requires a fresh launch.');
+    }
     // Internal direct-handler seam used only by fleet:respawn-member after the
     // canonical saved profile has been resolved. It is deliberately absent
     // from the public zod schema, so ordinary fresh-launch behavior does not
@@ -985,7 +991,20 @@ export default defineTool({
         // The request forbids placement overrides. Carry the recorded value
         // into the existing command/member configuration after that check.
         args = { ...args, headless: target.headless };
-        const snapshot = JSON.stringify(target);
+        if (target.agent !== 'codex' || target.advSessionId !== pin.advSessionId ||
+            target.ownerId !== pin.ownerId || target.sessionId !== pin.sessionId || target.live ||
+            target.binding?.coordOwnerId !== pin.ownerId || target.binding?.sessionId !== pin.sessionId ||
+            !target.binding?.startedAt) {
+          return err('originalRouting refused: original binding is live or changed.');
+        }
+        const snapshotTarget = target;
+        let snapshot = JSON.stringify(target);
+        let terminalEvidenceEstablished = target.endedAt != null;
+        const sameExceptTerminal = (current: typeof target) => {
+          const omitTerminalFields = (key: string, value: unknown) =>
+            key === 'endedAt' || key === 'endedBy' ? undefined : value;
+          return JSON.stringify(current, omitTerminalFields) === JSON.stringify(snapshotTarget, omitTerminalFields);
+        };
         const validate = (current: typeof target) => {
           if (current.live || current.binding?.sessionId !== pin.sessionId ||
               current.binding?.coordOwnerId !== pin.ownerId)
@@ -1000,11 +1019,75 @@ export default defineTool({
             account: current.account, codexHome: native?.backend === 'codex' ? native.codexHome : null,
           }, pin);
         };
-        try { validate(target); } catch (error) { return err((error as Error).message); }
+        // An existing end marker remains a prerequisite for every other
+        // original-routing check. A missing marker is handled at the spawn
+        // boundary below, where the same terminal-oracle/host/writer/CAS guard
+        // used by successors can safely reconcile an exact dead binding.
+        if (terminalEvidenceEstablished) {
+          try { validate(target); } catch (error) { return err((error as Error).message); }
+        }
         reconcileOriginalRouting = async () => {
-          const current = await resolveResumeTarget({ sessionId: pin.sessionId });
-          if (!current.ok || JSON.stringify(current) !== snapshot)
+          let current = await resolveResumeTarget({ sessionId: pin.sessionId });
+          if (!current.ok)
             throw new Error('originalRouting refused: original custody or saved settings changed before spawn.');
+          if (JSON.stringify(current) !== snapshot) {
+            if (!terminalEvidenceEstablished && current.endedAt != null && sameExceptTerminal(current)) {
+              // The normal lifecycle writer or reaper may publish its marker
+              // after the initial read. Accept only that monotonic transition
+              // for this same binding/settings snapshot.
+              snapshot = JSON.stringify(current);
+              terminalEvidenceEstablished = true;
+            } else {
+              throw new Error('originalRouting refused: original custody or saved settings changed before spawn.');
+            }
+          }
+          if (!terminalEvidenceEstablished) {
+            const binding = snapshotTarget.binding;
+            if (!binding || binding.coordOwnerId !== pin.ownerId || binding.sessionId !== pin.sessionId) {
+              throw new Error('originalRouting refused: exact predecessor binding is unavailable.');
+            }
+            if (current.live || await findLiveHostAsync(pin.ownerId)) {
+              throw new Error('originalRouting refused: original host is live.');
+            }
+            const writer = readSourceCodexWriter();
+            if (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason)) {
+              throw new Error('originalRouting refused: original writer is live or unknown.');
+            }
+            if (!hasAdvSessionTerminalEvidence(current)) {
+              const verdicts = await resolveSessionStates([{ ownerId: pin.ownerId }], { hydratePerId: true });
+              const state = verdicts.get(pin.ownerId)?.sessionState;
+              if (state !== 'ended' && state !== 'suspect') {
+                throw new Error(
+                  `originalRouting refused: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required.`,
+                );
+              }
+            }
+            if (await findLiveHostAsync(pin.ownerId)) {
+              throw new Error('originalRouting refused: a live host appeared during terminal reconciliation.');
+            }
+            const writerAfterOracle = readSourceCodexWriter();
+            if (!writerAfterOracle || writerAfterOracle.held ||
+                !['free', 'no-lock-file'].includes(writerAfterOracle.reason)) {
+              throw new Error('originalRouting refused: a live or unknown writer appeared during terminal reconciliation.');
+            }
+            const ended = await markAdvSessionEnded(pin.advSessionId, null, 'reconciler', {
+              expectedBinding: binding,
+              throwOnError: true,
+            });
+            if (!ended) {
+              throw new Error('originalRouting refused: predecessor binding reconciliation lost its compare-and-swap.');
+            }
+            const reconciled = await resolveResumeTarget({ sessionId: pin.sessionId });
+            if (!reconciled.ok || reconciled.endedAt == null || !sameExceptTerminal(reconciled)) {
+              throw new Error('originalRouting refused: terminal reconciliation changed or lost the original binding.');
+            }
+            current = reconciled;
+            snapshot = JSON.stringify(current);
+            terminalEvidenceEstablished = true;
+            notes.push(
+              `✓ Reconciled terminal original binding #${pin.advSessionId} before exact routing recovery; actual exit time remains unknown.`,
+            );
+          }
           validate(current);
         };
       }
@@ -1771,7 +1854,9 @@ export default defineTool({
       if (i === 0 && respawnOwnerId) return respawnOwnerId;
       return `su-${randomUUID()}`;
     });
-    if (scopedGateway) {
+    // Installed whenever the host declared one, not only beside a scoped gateway. Until
+    // WI-6554700010008492 a confinement passed without a gateway was silently dropped.
+    if (privateConfinement) {
       try {
         const { declareSessionConfinement } = await import('../../capability-envelope/session-confinement-store');
         for (const ownerId of memberOwnerIds) {

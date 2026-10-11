@@ -939,24 +939,90 @@ export type UnitLoadProbe = (units: string[], scope: JournalScope) => Promise<st
 /** Resolves requested systemd names to the Id journalctl records in the journal. */
 export type UnitCanonicalizer = (units: string[], scope: JournalScope) => Promise<string[]>;
 
-async function systemdUnitId(
+/**
+ * How long a RESOLVED alias→Id answer is reused before systemctl is asked again.
+ *
+ * Why a cache at all (WI-6554700010008328): every logs:read paid 1–4 `systemctl`
+ * spawns to canonicalize its units, and a spawn from the multi-GB bg-host is a
+ * synchronous fork whose cost scales with the parent's RSS — a saturation profile
+ * put the canonicalizer at ~10% of main-thread CPU. A unit's canonical Id only
+ * changes when unit files change and the manager reloads, so a short TTL bounds
+ * the staleness window to minutes. This is a process-local memo of an OS lookup,
+ * not durable state, so the Postgres storage policy does not apply.
+ */
+export const UNIT_ID_CACHE_TTL_MS = 5 * 60_000;
+const UNIT_ID_CACHE_MAX_ENTRIES = 256;
+
+interface UnitIdCacheEntry {
+  id: Promise<string>;
+  /** Null while the lookup is in flight; set only once it RESOLVED to an Id. */
+  expiresAtMs: number | null;
+}
+
+/**
+ * One memo per systemctl runner: an injected test seam never shares answers with
+ * the production runner or with another test's runner.
+ */
+const unitIdCaches = new WeakMap<ExecFileAsync, Map<string, UnitIdCacheEntry>>();
+
+function unitIdCacheFor(runSystemctl: ExecFileAsync): Map<string, UnitIdCacheEntry> {
+  let cache = unitIdCaches.get(runSystemctl);
+  if (!cache) {
+    cache = new Map();
+    unitIdCaches.set(runSystemctl, cache);
+  }
+  return cache;
+}
+
+/**
+ * Resolve one name to its Id. Returns null when systemd could not supply one, so
+ * the caller can keep its own name WITHOUT caching that non-answer: a unit that
+ * does not exist yet must resolve correctly the moment it is installed.
+ */
+async function lookupSystemdUnitId(
   manager: '--user' | '--system',
   unit: string,
   runSystemctl: ExecFileAsync,
-): Promise<string> {
+): Promise<string | null> {
   try {
     const { stdout } = await runSystemctl(
       'systemctl',
       [manager, 'show', '-p', 'Id', '--value', unit],
       { timeout: 3000 },
     );
-    return stdout.trim() || unit;
+    return stdout.trim() || null;
   } catch {
     // Keep the caller's name when systemd cannot resolve it. The existing
     // unknown-unit probe remains responsible for making a confident unknown
     // claim; a failed canonicalization is not evidence that the name is wrong.
-    return unit;
+    return null;
   }
+}
+
+async function systemdUnitId(
+  manager: '--user' | '--system',
+  unit: string,
+  runSystemctl: ExecFileAsync,
+  nowMs: () => number = Date.now,
+): Promise<string> {
+  const cache = unitIdCacheFor(runSystemctl);
+  const key = `${manager}\0${unit}`;
+  const hit = cache.get(key);
+  // An in-flight lookup is shared too, so N concurrent reads cost one spawn.
+  if (hit && (hit.expiresAtMs === null || hit.expiresAtMs > nowMs())) return hit.id;
+  if (cache.size >= UNIT_ID_CACHE_MAX_ENTRIES) cache.clear();
+
+  const entry: UnitIdCacheEntry = { id: Promise.resolve(unit), expiresAtMs: null };
+  entry.id = lookupSystemdUnitId(manager, unit, runSystemctl).then((id) => {
+    if (id === null) {
+      if (cache.get(key) === entry) cache.delete(key);
+      return unit;
+    }
+    entry.expiresAtMs = nowMs() + UNIT_ID_CACHE_TTL_MS;
+    return id;
+  });
+  cache.set(key, entry);
+  return entry.id;
 }
 
 /**
@@ -1027,7 +1093,49 @@ export type WindowResolver = (spec: string) => Promise<number | null>;
  * `--` guards a leading-dash spec ('-30 min'), which systemd-analyze would
  * otherwise read as its own option.
  */
+/**
+ * systemd time-span units resolved without a spawn. Case-SENSITIVE on purpose:
+ * systemd reads `M` as MONTHS and `m` as minutes, so only the exact lowercase
+ * tokens below are safe to evaluate in-process; anything else (months, years,
+ * `msec`, compound spans, calendar words) still goes to systemd-analyze.
+ */
+const RELATIVE_SPAN_MS: Record<string, number> = {
+  s: 1_000, sec: 1_000, secs: 1_000, second: 1_000, seconds: 1_000,
+  m: 60_000, min: 60_000, mins: 60_000, minute: 60_000, minutes: 60_000,
+  h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
+  d: 86_400_000, day: 86_400_000, days: 86_400_000,
+  w: 604_800_000, week: 604_800_000, weeks: 604_800_000,
+};
+
+/**
+ * Resolve the window specs this module itself produces (`-30 minutes`, the
+ * signed spaced `-10 min`, `2 hours ago`, `@<epoch>`) in-process, with the same
+ * arithmetic systemd uses (fixed-length days and weeks, no calendar math).
+ * Undefined ⇒ not a form we evaluate; ask systemd.
+ *
+ * Why (WI-6554700010008328): every grep read and every empty-result diagnosis
+ * spawned `systemd-analyze` 1–3 times, and a spawn from the multi-GB bg-host is
+ * a synchronous fork; a saturation profile put this path at ~22% of main-thread
+ * CPU.
+ */
+export function resolveRelativeWindowInProcess(
+  spec: string,
+  nowMs: number = Date.now(),
+): number | undefined {
+  const trimmed = spec.trim();
+  const epoch = /^@(\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (epoch) return Math.round(Number(epoch[1]) * 1000);
+  const relative = /^(?:-(\d+)\s*([a-z]+)|(\d+)\s*([a-z]+)\s+ago)$/.exec(trimmed);
+  if (!relative) return undefined;
+  const amount = Number(relative[1] ?? relative[3]);
+  const unitMs = RELATIVE_SPAN_MS[relative[2] ?? relative[4]];
+  if (!unitMs || !Number.isSafeInteger(amount)) return undefined;
+  return nowMs - amount * unitMs;
+}
+
 export const defaultWindowResolver: WindowResolver = async (spec) => {
+  const inProcess = resolveRelativeWindowInProcess(spec);
+  if (inProcess !== undefined) return inProcess;
   try {
     const { stdout } = await execFileAsync('systemd-analyze', ['timestamp', '--', spec], {
       timeout: 3000,

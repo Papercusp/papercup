@@ -57,6 +57,7 @@ import { derivePlanLifecycle, derivePlanStatusTransition, parsePlan } from '@pap
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
 import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { evaluateBlindReviewGate, type BlindReviewGateCode } from '../../blind-review-gate';
 
 /** Why a transition did not happen — every non-applied outcome is named, so a
  *  caller never has to read "false" and guess which of five reasons it was. */
@@ -77,7 +78,11 @@ export type PlanDrainTransitionSkip =
    *  `plans:set-status` event and this rule fires again on the far side of it
    *  with fresher bytes. Retrying here would queue behind a write whose result
    *  invalidates the decision we queued to make. */
-  | 'busy';
+  | 'busy'
+  /** P-006 (D-006, D-039): the graph warrants awaiting-acceptance, but the blind gap
+   *  review door refused it. The plan stays where it is until a counted review is
+   *  recorded and every gap is dispositioned; the next item flip or sweep re-tries. */
+  | BlindReviewGateCode;
 
 export interface PlanDrainTransitionResult {
   applied: boolean;
@@ -90,11 +95,15 @@ export interface PlanDrainTransitionResult {
     outcome: 'created' | 'already-open';
     id: string | null;
   };
+  /** Set when the blind gap review door withheld the move to awaiting-acceptance. */
+  blindReview?: { code: BlindReviewGateCode; message: string };
 }
 
 export interface PlanDrainTransitionOptions {
   /** Driver to receive the acceptance accountability task in the same tx. */
   accountableOwnerId?: string | null;
+  /** Workspace of the plan, for the blind gap review door. Defaults to the active one. */
+  workspaceId?: string;
 }
 
 /** Shared locked-body decision for direct item writes and the reaction/backstop. */
@@ -127,6 +136,40 @@ export function planDrainTransitionMutation(current: string | null): {
       from: transition.from,
       to: transition.to,
       reason: transition.reason,
+    },
+  };
+}
+
+/**
+ * planDrainTransitionMutation plus the P-006 blind gap review door, for every writer
+ * that can move a plan to awaiting-acceptance (plans:set-status in its lock, and
+ * applyPlanDrainTransition). A refused move writes nothing and names the door's code.
+ * Template 'rubric' plans are skipped, like the acceptance carry filing.
+ */
+export async function planDrainTransitionMutationGated(
+  current: string | null,
+  scope: { planSlug: string; harnessSlug?: string | null; workspaceId?: string },
+  deps: { evaluate?: typeof evaluateBlindReviewGate } = {},
+): Promise<{ newBody: string | null; value: PlanDrainTransitionResult }> {
+  const out = planDrainTransitionMutation(current);
+  if (!out.value.applied || out.value.to !== 'awaiting-acceptance' || out.newBody === null) return out;
+  if (parsePlan(out.newBody).frontmatter.template === 'rubric') return out;
+  const verdict = await (deps.evaluate ?? evaluateBlindReviewGate)({
+    planSlug: scope.planSlug,
+    harnessSlug: scope.harnessSlug ?? null,
+    ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+    planBody: out.newBody,
+  });
+  if (verdict.satisfied) return out;
+  const code = verdict.code ?? 'blind_review_missing';
+  return {
+    newBody: null,
+    value: {
+      applied: false,
+      from: out.value.from,
+      to: out.value.to,
+      skipped: code,
+      blindReview: { code, message: verdict.message ?? `plan '${scope.planSlug}' was refused by the blind gap review door (${code}).` },
     },
   };
 }
@@ -165,7 +208,11 @@ export async function applyPlanDrainTransition(
         }
       },
     },
-    async (current) => planDrainTransitionMutation(current),
+    async (current) => planDrainTransitionMutationGated(current, {
+      planSlug,
+      harnessSlug,
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    }),
   );
 
   return locked.kind === 'applied' ? locked.value : { applied: false, skipped: 'busy' };

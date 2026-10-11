@@ -241,12 +241,15 @@ describe('writePlanIndexRows keeps the jsonb twins equal to the rows', () => {
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
   });
-  async function jsonbRow(): Promise<{ items: unknown; decisions: unknown; updated_at: Date }> {
+  // xmin is the id of the transaction that wrote the current row version. Any
+  // executed UPDATE (even a no-op SET) writes a new version and moves it; an
+  // UPDATE whose WHERE filters the row out does not.
+  async function jsonbRow(): Promise<{ items: unknown; decisions: unknown; xmin: string }> {
     const rows = await admin`
-      SELECT items, decisions, updated_at FROM harness_shared.harness_plans
+      SELECT items, decisions, xmin::text AS xmin FROM harness_shared.harness_plans
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
-    return rows[0] as unknown as { items: unknown; decisions: unknown; updated_at: Date };
+    return rows[0] as unknown as { items: unknown; decisions: unknown; xmin: string };
   }
 
   it('overwrites a stale jsonb even when the caller wrote only the rows', async () => {
@@ -277,9 +280,19 @@ describe('writePlanIndexRows keeps the jsonb twins equal to the rows', () => {
     const before = await jsonbRow();
     await writePlanIndexRows(asTx(admin), scope(), { items: same, decisions: [] });
     const after = await jsonbRow();
-    // A no-op rewrite must not fire the updated_at / federation-stamp triggers.
-    expect(after.updated_at.getTime()).toBe(before.updated_at.getTime());
+    // No new row version, so emit_change_notify_trg does not fire. updated_at
+    // cannot detect this: its trigger ignores items/decisions, so it stays put
+    // with or without the guard (mutation probe 2, test_runs:21044378).
+    expect(after.xmin).toBe(before.xmin);
     expect(after.items).toEqual(same);
+
+    // Calibration: a write that DOES change the jsonb must move xmin, or the
+    // equality above would pass whether or not the guard exists.
+    const changed = [item('P-001', 'first item', 'wip')];
+    await writePlanIndexRows(asTx(admin), scope(), { items: changed, decisions: [] });
+    const rewritten = await jsonbRow();
+    expect(rewritten.xmin).not.toBe(after.xmin);
+    expect(rewritten.items).toEqual(changed);
   });
 });
 

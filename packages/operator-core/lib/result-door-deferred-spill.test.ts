@@ -248,7 +248,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }>((resolve) => { resolveLateSettlement = resolve; });
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
-      return stalledWrite.then(write);
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
     });
     let resultPromise: Promise<DoorableResult> | undefined;
     try {
@@ -355,7 +355,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }>((resolve) => { resolveLateSettlement = resolve; });
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
-      return stalledWrite.then(write);
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
     });
     let resultPromise: Promise<DoorableResult> | undefined;
     const original = oversized();
@@ -483,7 +483,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }>((resolve) => { resolveLateSettlement = resolve; });
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
-      return stalledWrite.then(write);
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
     });
     const volatileStore = vi.spyOn(scratchReference, 'storeVolatileScratchReference').mockReturnValue(null);
     const id = 'EI-release-spill-receipt-1';

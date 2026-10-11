@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveBackfillEmbedder } from '../packages/operator-core/lib/search/embed-backfill.ts';
-import { buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, publishR11SnapshotBytes, readR11SnapshotBytes, r11DiskAllocations, r11JournalDirectory, r11PreservationRoots, scheduleR11Timers, type R11PreparedJournals, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
+import { buildR11TimerSpecs, captureR11JournalBoundary, captureR11Snapshot, evaluateR11Snapshots, publishR11SnapshotBytes, readR11SnapshotBytes, r11DiskAllocations, r11JournalDirectory, r11PreservationRoots, scheduleR11Timers, type R11PreparedJournals, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
 import { assessAllocationDiskAdmission } from './lib/disk-reservations.mjs';
 import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
@@ -100,7 +100,7 @@ try {
     const preparedJournals = JSON.parse(readR11SnapshotBytes(arg5, recoveryRoot).toString('utf8')) as R11PreparedJournals;
     if (arg6 !== '--dry-run') mkdirSync(journalDirectory, { recursive: true, mode: 0o700 });
     const timers = await scheduleR11Timers(specs, { t0: path, cut: arg3, t1: arg4 },
-      { repoRoot, tsx, script, journalDirectory, ...preservation, preparedJournals, t0At: t0.capturedAt }, arg6 === '--dry-run');
+      { repoRoot, tsx, script, journalDirectory, ...preservation, preparedJournals, t0At: t0.capturedAt, preparedJournalsPath: arg5 }, arg6 === '--dry-run');
     const t0Bytes = readR11SnapshotBytes(path, recoveryRoot);
     process.stdout.write(`${JSON.stringify({ t0: { path, capturedAt: t0.capturedAt,
       bytes: t0Bytes.length, sha256: sha256(t0Bytes) }, timers, dryRun: arg6 === '--dry-run' })}\n`);
@@ -113,6 +113,14 @@ try {
   } else {
     if (!['preflight', 'T0', 'Tcut', 'T1'].includes(stage ?? '') || !path?.startsWith('/')) {
       throw new Error('Usage: <preflight|T0|Tcut|T1> <absolute-output.json>');
+    }
+    if (stage === 'T1') {
+      if (!arg3 || !arg4 || !arg5) throw new Error('T1 requires T0, Tcut and prepared journal receipt');
+      const t0 = load(arg3);
+      const prepared = JSON.parse(readR11SnapshotBytes(arg5, recoveryRoot).toString('utf8')) as R11PreparedJournals;
+      const proof = await captureR11JournalBoundary(prepared, t0.capturedAt,
+        buildR11TimerSpecs(t0)[1].at);
+      publishR11SnapshotBytes(`${path}.journal-boundary.json`, Buffer.from(JSON.stringify(proof)), recoveryRoot);
     }
     const resolved = await resolveBackfillEmbedder();
     if (!('profile' in resolved)) throw new Error(`Cannot capture R-11 with embedder ${resolved.mode}`);

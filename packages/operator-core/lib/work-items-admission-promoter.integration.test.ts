@@ -2024,6 +2024,154 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
   });
 
+  describe('overdue claimed fail-open re-review (WI-6554700010008443)', () => {
+    const overdueReview = {
+      admissionReview: {
+        state: 'pending',
+        enteredAt: '2026-08-26T10:00:00Z',
+        reviewDueAt: '2026-08-26T11:00:00Z',
+        retryOwner: 'system:work-item-admission-promoter',
+        retryAttempts: 0,
+      },
+    };
+
+    it('gives a claimed overdue row a head turn, judges it, promotes a distinct verdict and advances its watermark', async () => {
+      // Three older, never-retried unclaimed rows would win oldest-first; before the fix the claimed
+      // row was also demoted last and then self-blocked as 'claimed', so it was never judged.
+      // Distinct titles and no vectors: no row has a duplicate candidate, so the judgement is model-free.
+      for (const [index, id] of ['WI-older-a', 'WI-older-b', 'WI-older-c'].entries()) {
+        await seedItem({
+          id,
+          title: `unrelated older finding ${index}`,
+          admission: 'unreviewed',
+          vector: null,
+          payload: overdueReview,
+          createdAtMs: NOW - 90_000 + index,
+        });
+      }
+      await seedItem({
+        id: 'WI-claimed-rereview',
+        title: 'claimed overdue finding',
+        admission: 'unreviewed',
+        vector: null,
+        takenBy: 'su-worker',
+        payload: overdueReview,
+        createdAtMs: NOW - 10_000,
+      });
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-claimed-rereview',
+        sql: db.sql,
+        llmCall: vi.fn(),
+        now: () => NOW,
+        batchSize: 1,
+      });
+
+      expect(result).toMatchObject({ batchSize: 1, promoted: 1, merged: 0, held: 0 });
+      const rows = await db.sql<Array<{ feature_id: string; admission: string; taken_by: string | null; payload: Record<string, any> }>>`
+        SELECT feature_id, admission, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      expect(byId.get('WI-claimed-rereview')).toMatchObject({
+        admission: 'admitted',
+        taken_by: 'su-worker',
+        payload: { admissionReview: { state: 'reviewed', retryAttempts: 1 } },
+      });
+      for (const id of ['WI-older-a', 'WI-older-b', 'WI-older-c']) {
+        expect(byId.get(id)?.admission).toBe('unreviewed');
+      }
+    });
+
+    it('holds a claimed overdue row judged a duplicate: never merged, reason persisted, watermark advanced, pair left unadjudicated', async () => {
+      await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
+      await seedItem({
+        id: 'WI-claimed-dup',
+        admission: 'unreviewed',
+        vector: '[1,0,0]',
+        takenBy: 'su-worker',
+        payload: overdueReview,
+        createdAtMs: NOW - 20_000,
+      });
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-claimed-dup',
+        sql: db.sql,
+        llmCall: judgementCall('r-finding-merge'),
+        now: () => NOW,
+      });
+
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, modelCalled: true });
+      const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string; taken_by: string | null; payload: Record<string, any> }>>`
+        SELECT feature_id, status, admission, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      expect(byId.get('WI-canonical')).toMatchObject({ status: 'open', admission: 'admitted' });
+      const held = byId.get('WI-claimed-dup');
+      expect(held).toMatchObject({
+        status: 'open',
+        admission: 'unreviewed',
+        taken_by: 'su-worker',
+        payload: {
+          admissionReview: { state: 'pending', retryAttempts: 1 },
+          admissionHold: { runId: 'promoter-claimed-dup' },
+        },
+      });
+      expect(held?.payload.admissionHold.reason).toContain('duplicate of WI-canonical');
+      expect(held?.payload.admissionReview.lastRetryAt).toEqual(expect.any(String));
+      const adjudications = await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications`;
+      expect(adjudications).toHaveLength(0);
+    });
+  });
+
+  it('persists a hold reason on a still-pending row and does not rewrite it while the reason is unchanged (WI-6554700010008443)', async () => {
+    await seedItem({ id: 'WI-admitted-twin', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
+    await seedItem({ id: 'WI-pending-held', admission: 'pending', vector: '[1,0,0]', createdAtMs: NOW - 20_000 });
+    const holdCall = vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+      const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+      return {
+        text: '',
+        json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'hold' as const, reason: 'fixture ambiguous' })) },
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsd: 0,
+      };
+    });
+    const readHeld = async () => {
+      const [row] = await db.sql<Array<{ admission: string; updated_ts: string; payload: Record<string, any> }>>`
+        SELECT admission, updated_ts, payload FROM harness_shared.work_items WHERE feature_id = 'WI-pending-held'`;
+      return row!;
+    };
+
+    const first = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-pending-hold-1',
+      sql: db.sql,
+      llmCall: holdCall,
+      now: () => NOW,
+    });
+    expect(first).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    const afterFirst = await readHeld();
+    expect(afterFirst).toMatchObject({
+      admission: 'pending',
+      payload: { admissionHold: { reason: 'fixture ambiguous', runId: 'promoter-pending-hold-1' } },
+    });
+
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-pending-hold-2',
+      sql: db.sql,
+      llmCall: holdCall,
+      now: () => NOW + 60_000,
+    });
+    const afterSecond = await readHeld();
+    expect(afterSecond.payload.admissionHold.runId).toBe('promoter-pending-hold-1');
+    expect(String(afterSecond.updated_ts)).toBe(String(afterFirst.updated_ts));
+  });
+
   it('terminalizes an unreviewed duplicate with a terminal review outcome', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]' });
     await seedItem({ id: 'WI-unreviewed-duplicate', admission: 'unreviewed', vector: '[1,0,0]' });

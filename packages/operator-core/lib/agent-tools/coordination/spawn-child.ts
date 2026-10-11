@@ -51,6 +51,7 @@ import { resolveProject } from '../../harness-core';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { withWorkspace } from '@papercusp/db-org';
 import { withPlanLock } from '../plans/with-plan-lock';
+import { CHILD_SEED_TEMPLATE_NAME } from '../plans/plan-activation-gate';
 import { resolvePlanScope } from '../plans/source';
 import type { SpawnChild, BuiltFeature } from '../plans/promote-policy';
 
@@ -140,6 +141,7 @@ export function synthesizeChildSeedPlan(input: SynthesizeSeedPlanInput): Synthes
 title: ${title}
 slug: ${input.seedSlug}
 status: active
+template: ${CHILD_SEED_TEMPLATE_NAME}
 created: ${input.date}
 updated: ${input.date}
 ---
@@ -297,6 +299,30 @@ export function describeSpawnStart(start: SpawnStartOutcome): string {
   }
 }
 
+/**
+ * A seed-plan write that the locked plan-write seam REFUSED (the conversation
+ * activation gate, dependency validation, …). withPlanLock reports those refusals as
+ * `kind:'applied'` with the refusal object cast to the caller's value type, so a dep
+ * that returned `r.value` unchecked reported a refused seed as success-shaped
+ * (WI-6554700010008416). The dep narrows them out into this shape instead.
+ */
+export interface SeedPlanRefusal {
+  refused: true;
+  code: string;
+  message: string;
+}
+
+/** Map whatever withPlanLock handed back in place of a success literal to a refusal. */
+export function seedPlanRefusalOf(value: unknown): SeedPlanRefusal {
+  const v = (value && typeof value === 'object' ? value : {}) as { code?: unknown; message?: unknown };
+  return {
+    refused: true,
+    code: typeof v.code === 'string' ? v.code : 'unknown_refusal',
+    message:
+      typeof v.message === 'string' ? v.message : `unexpected seed-plan write value: ${JSON.stringify(value)}`,
+  };
+}
+
 export interface SpawnChildDeps {
   /** Is the child slug already a registered harness? */
   resolveChild(slug: string): Promise<boolean>;
@@ -311,7 +337,7 @@ export interface SpawnChildDeps {
     childSlug: string,
     seedSlug: string,
     body: string,
-  ): Promise<'created' | 'already_existed' | 'busy'>;
+  ): Promise<'created' | 'already_existed' | 'busy' | SeedPlanRefusal>;
   /** POST the payload to the child's /features/import. */
   importFeatures(
     childSlug: string,
@@ -410,6 +436,11 @@ export async function executeSpawnChild(
       warn('seed plan write was locked by another writer — child left scaffolded-but-unseeded; re-promote to retry');
       return result;
     }
+    if (typeof w === 'object') {
+      result.seed_plan = 'failed';
+      warn(`seed plan write was refused (${w.code}): ${w.message} — child left scaffolded-but-unseeded`);
+      return result;
+    }
     result.seed_plan = w;
   } catch (e) {
     result.seed_plan = 'failed';
@@ -502,14 +533,24 @@ export function buildDefaultSpawnChildDeps(io: {
     async writeSeedPlan(childSlug, seedSlug, body) {
       const r = await withPlanLock<'created' | 'already_existed'>(
         null,
-        { slug: seedSlug, harnessSlug: childSlug, intent: `plans:promote spawn_child → seed plan ${seedSlug}` },
+        {
+          slug: seedSlug,
+          harnessSlug: childSlug,
+          intent: `plans:promote spawn_child → seed plan ${seedSlug}`,
+          // D-038: the ONLY writer allowed to introduce the child-seed template.
+          allowChildSeedTemplate: true,
+        },
         async (current) => {
           if (current !== null) return { newBody: null, value: 'already_existed' as const };
           return { newBody: body, value: 'created' as const };
         },
       );
       if (r.kind === 'busy') return 'busy';
-      return r.value;
+      // A refused write (activation gate, invalid dependencies) also arrives as
+      // kind:'applied', its refusal object cast to the value type. Only the two
+      // success literals mean the seed exists.
+      if (r.value === 'created' || r.value === 'already_existed') return r.value;
+      return seedPlanRefusalOf(r.value);
     },
 
     importFeatures: io.importFeatures,

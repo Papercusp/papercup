@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as eventStore from '../events/await/store';
 import {
   applyBlockerDefaultToHistory,
   decideBlockerDefault,
@@ -7,7 +8,7 @@ import {
   updateExternalBlockerHistory,
   type ExternalBlockerRecord,
 } from '../external-blockers';
-import { sweepWorkItemBlockerDefaults, type BlockerReapDeps } from './work-item-blocker-reaper';
+import { defaultBlockerReapDeps, sweepWorkItemBlockerDefaults, type BlockerReapDeps } from './work-item-blocker-reaper';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const PAST = '2026-10-01T12:00:00.000Z';
@@ -118,6 +119,45 @@ function fakeDeps(payloads: Record<string, unknown>) {
 }
 
 describe('sweepWorkItemBlockerDefaults', () => {
+  it.each([
+    { kind: 'gate' as const, ref: 'plan:acceptance:grading-plan', clearsBlocker: false, announced: false },
+    { kind: 'event' as const, ref: 'release:deployed:abc123', clearsBlocker: false, announced: false },
+    { kind: 'event' as const, ref: 'work-item:unblocked:WI-ready', clearsBlocker: true, announced: false },
+    { kind: 'gate' as const, ref: 'reaper:declared-ready', clearsBlocker: true, announced: true },
+  ])('production resolver clears $ref only when the fire proves its condition', async ({ kind, ref, clearsBlocker, announced }) => {
+    const firedAt = '2026-09-30T12:00:00.000Z';
+    const inspect = vi.spyOn(eventStore, 'inspectEventKey').mockResolvedValue({
+      announcements: announced
+        ? [{ firedAt, firedReason: 'event', supersededAt: null, cancelledAt: null, expiresTs: null }]
+        : [],
+      waiters: [], deliveries: [], composedRoot: null,
+      fireLatch: { lastFiredAt: firedAt },
+    } as never);
+    try {
+      const due = blocker({ kind, ref, capability: 'live-dependency',
+        decideBy: undefined, defaultAction: undefined, recheckAt: PAST });
+      const { deps, writes, restores } = fakeDeps({ 'WI-condition': { externalBlockers: [due] } });
+      deps.resolveCondition = defaultBlockerReapDeps.resolveCondition;
+      deps.escalate = vi.fn(async () => undefined);
+
+      const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+
+      expect(out.rechecked).toEqual({ cleared: clearsBlocker ? 1 : 0, escalated: clearsBlocker ? 0 : 1 });
+      expect(writes[0]?.blockers[0]?.status).toBe(clearsBlocker ? 'cleared' : 'active');
+      expect(restores).toHaveLength(clearsBlocker ? 1 : 0);
+      if (clearsBlocker) {
+        expect(deps.escalate).not.toHaveBeenCalled();
+      } else {
+        expect(deps.escalate).toHaveBeenCalledOnce();
+        expect(writes[0]?.blockers[0]?.reachability).toMatchObject({
+          verdict: 'unknown', authoritative: false,
+        });
+      }
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
   it('clears only a proved fired event at its re-check date and preserves history', async () => {
     const event = blocker({ kind: 'event', capability: 'live-dependency', ref: 'event:ready',
       decideBy: undefined, defaultAction: undefined, recheckAt: PAST });

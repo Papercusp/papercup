@@ -638,7 +638,17 @@ async function runScheduledPlanFireTx(
   // (and imported plans) may have a populated index even when their markdown
   // predates strict item-line syntax, and silently dropping it would turn a
   // valid run into a zero-work promotion.
-  const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
+  //
+  //    EI-25654921386861878: the same verbatim clone left the TEMPLATE's frontmatter
+  //    `status:` (typically `ready`) on an instance row whose `status` column is
+  //    `active`. Column readers (contract triage, plans:list filters) and frontmatter
+  //    readers (plans:set-plan-status's expectedCurrent check) then disagreed about the
+  //    same plan. Stamp the instance's own status alongside its slug.
+  const instanceContent = setFrontmatterScalar(
+    setFrontmatterScalar(template.content, 'slug', instanceSlug),
+    'status',
+    'active',
+  );
   const instanceContentHash = hashPlanContent(instanceContent);
   // P-009: this raw INSERT bypasses withPlanLock, so it must invoke the same
   // candidate policy explicitly before the active instance or its plan_runs row

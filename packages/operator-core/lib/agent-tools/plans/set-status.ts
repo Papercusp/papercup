@@ -78,7 +78,8 @@ import {
 } from '../../coord-lifecycle/records';
 import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
-import { planDrainTransitionMutation } from './plan-drain-transition';
+import { planDrainTransitionMutationGated } from './plan-drain-transition';
+import type { BlindReviewGateCode } from '../../blind-review-gate';
 import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
 import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
 import { attestLandedPlanItemStatus } from './plan-item-consumer-view';
@@ -277,6 +278,9 @@ type SetStatusValue =
        *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
       drainedPlan: boolean;
       acceptanceCarry?: { outcome: 'created' | 'already-open'; id: string | null };
+      /** P-006: the flip drained the plan, but the blind gap review door withheld
+       *  awaiting-acceptance (plan-drain-transition.ts planDrainTransitionMutationGated). */
+      acceptanceBlocked?: { code: BlindReviewGateCode; message: string };
       /** memory-delivery-unification-2026-07-12 P-008: the item's text, captured
        *  inside the lock ONLY on a real →wip edge, so the claim-time recall port
        *  can query it without a second read. Undefined on every other flip. */
@@ -1606,14 +1610,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         };
       }
       let finalBody = bumpUpdatedDate(newBody);
+      let acceptanceBlocked: { code: BlindReviewGateCode; message: string } | undefined;
       // Preserve accountability BEFORE releasing the implementation claim. The
       // same parser-owned transition serves direct writes and the backstop;
       // final item + lifecycle + carry filing commit together or not at all.
       if (isTerminalStatus(it.status) !== (oldStatus !== null && isTerminalStatus(oldStatus))) {
-        const drain = planDrainTransitionMutation(finalBody);
+        const drain = await planDrainTransitionMutationGated(finalBody, { planSlug: it.slug, harnessSlug: harnessSlug ?? null });
         if (drain.newBody !== null) finalBody = drain.newBody;
-        carryRequired = drain.value.to === 'awaiting-acceptance' &&
+        carryRequired = drain.value.applied && drain.value.to === 'awaiting-acceptance' &&
           parsePlan(finalBody).frontmatter.template !== 'rubric';
+        // P-006: the item flip still lands; the plan stays put until the blind gap
+        // review door is satisfied, and the caller is told why.
+        if (drain.value.blindReview) acceptanceBlocked = drain.value.blindReview;
       }
       // WI-1830: on a real →done edge, does this flip leave the plan with zero open
       // (non-terminal) items? Computed here, INSIDE the lock, off the just-written body so
@@ -1638,6 +1646,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           importance,
           drainedPlan,
           ...(wipItemText ? { wipItemText } : {}),
+          ...(acceptanceBlocked ? { acceptanceBlocked } : {}),
         },
       };
     },

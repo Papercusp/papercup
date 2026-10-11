@@ -12,6 +12,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { stripCommentsAndStrings } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   childSeedSlug,
   mintChildFeatureIds,
@@ -20,10 +23,13 @@ import {
   buildChildImportPayload,
   executeSpawnChild,
   describeSpawnStart,
+  seedPlanRefusalOf,
   type SpawnChildDeps,
   type SpawnChildOpts,
 } from './spawn-child';
 import { findValBlocks } from '../plans/val-retirement';
+import { activationGateRefusalValue } from '../plans/plan-activation-gate';
+import { invalidPlanDependenciesValue } from '../plans/plan-candidate-dependencies';
 import { buildPromotedRows } from './tools/promote';
 import type { BuiltFeature, SpawnChild } from '../plans/promote-policy';
 
@@ -86,6 +92,30 @@ describe('childSeedSlug / mintChildFeatureIds (D-002 / D-004 determinism)', () =
 });
 
 describe('synthesizeChildSeedPlan (D-002)', () => {
+  it('declares the child-seed template, so the activation gate exempts it (D-038)', () => {
+    expect(synth().body).toMatch(/^template: child-seed$/m);
+  });
+
+  it('spawn-child.ts is the ONLY source that may introduce the child-seed template (D-038 no-self-serve)', () => {
+    // Producer pin: allowChildSeedTemplate is the capability that bypasses the
+    // child_seed_template_reserved refusal. Scan non-test source with comments and
+    // string literals stripped, so prose that mentions the flag cannot self-match.
+    // Stripping is the expensive step, so it runs only on files whose raw text names the
+    // flag at all (a superset of the setters); the full strip over every lib file timed out.
+    const libRoot = path.resolve(__dirname, '..', '..');
+    const files = fs.readdirSync(libRoot, { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.ts') && !/\.test\.ts$/.test(f) && !f.includes('node_modules'));
+    const mentions = files.filter((f) => fs.readFileSync(path.join(libRoot, f), 'utf8').includes('allowChildSeedTemplate'));
+    const setters = mentions.filter((f) =>
+      /allowChildSeedTemplate\s*:\s*true/.test(stripCommentsAndStrings(fs.readFileSync(path.join(libRoot, f), 'utf8'))),
+    );
+    // Positive controls: the scan must cover lib and see the real producer and the gate that
+    // declares the option, or an empty result is vacuous.
+    expect(files.length).toBeGreaterThan(100);
+    expect(mentions).toContain(path.join('agent-tools', 'plans', 'with-plan-lock.ts'));
+    expect(setters).toEqual([path.join('agent-tools', 'coordination', 'spawn-child.ts')]);
+  });
+
   it('frontmatter carries the seed slug, active status, and the goal as title', () => {
     const seed = synth();
     expect(seed.body).toMatch(/^---\n/);
@@ -361,6 +391,37 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.seed_plan).toBe('failed');
     expect(deps.importFeatures).not.toHaveBeenCalled();
     expect(r.warnings.some((w) => w.includes('scaffolded-but-unseeded'))).toBe(true);
+  });
+
+  // WI-6554700010008416: withPlanLock returns a refused write as kind:'applied' with
+  // the refusal object cast to the value type. A refused seed must fail the seed step
+  // and name the refusal — never be reported as a created seed.
+  it('a refused seed-plan write fails the seed step and names the refusal code', async () => {
+    const { deps } = stubDeps({
+      writeSeedPlan: vi.fn(async () => ({
+        refused: true as const,
+        code: 'conversation_audit_required',
+        message: 'plan needs a conversation audit',
+      })),
+    });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(r.scaffold).toBe('created');
+    expect(r.seed_plan).toBe('failed');
+    expect(deps.importFeatures).not.toHaveBeenCalled();
+    expect(deps.startPlan).not.toHaveBeenCalled();
+    expect(r.warnings.some((w) => w.includes('conversation_audit_required'))).toBe(true);
+  });
+
+  it('seedPlanRefusalOf keeps the code and message of both withPlanLock refusal builders', () => {
+    const gate = seedPlanRefusalOf(
+      activationGateRefusalValue('seed-x', { satisfied: false, code: 'conversation_audit_required', message: 'm1' } as never),
+    );
+    expect(gate).toEqual({ refused: true, code: 'conversation_audit_required', message: 'm1' });
+    const deps = seedPlanRefusalOf(invalidPlanDependenciesValue('seed-x', { state: 'rejected', diagnostics: [] } as never));
+    expect(deps.refused).toBe(true);
+    expect(deps.code).toBe('invalid_plan_dependencies');
+    expect(deps.message).toContain('seed-x');
+    expect(seedPlanRefusalOf(undefined)).toMatchObject({ refused: true, code: 'unknown_refusal' });
   });
 
   it('import failure aborts the start step with a re-promote warning', async () => {
