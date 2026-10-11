@@ -25,8 +25,8 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
       row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
     const claimed = call('work_items:claim', { row: `${taskBriefItem},self,papercusp`,
-      projection: { pick: ['taskBrief'] } });
-    const brief = claimed.taskBrief;
+      projection: { pick: ['results[].taskBrief'] } });
+    const brief = claimed.results?.[0]?.taskBrief;
     expect(brief?.status, JSON.stringify(claimed)).toBe('current');
     expect(brief.repository.workspaceId).toBe(identity.workspaceId);
     expect(brief.recover).toMatchObject({ tool: 'code:pack', args: { rootPath: brief.repository.rootPath } });
