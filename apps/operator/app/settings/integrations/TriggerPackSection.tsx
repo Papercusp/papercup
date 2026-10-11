@@ -15,6 +15,8 @@ import { toast } from 'sonner';
 import type { TriggerPackSettings } from '@papercusp/operator-core/lib/cupboard/trigger-pack-lifecycle';
 import type { TriggerPackUnmet } from '@papercusp/operator-core/lib/cupboard/trigger-pack-materialize';
 import { Button } from '../../harness/Button';
+import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
 import { ProviderOptionsSelect } from './ProviderOptionsSelect';
 import { armTriggerPackRequest, IntegrationRequestError, saveTriggerPackInputs } from './ticket-integrations-client';
 
@@ -244,17 +246,19 @@ function FieldInput({
   let control;
   if (Array.isArray(property.enum)) {
     control = (
-      <select id={id} value={typeof value === 'string' ? value : ''} disabled={disabled} onChange={(e) => onChange(e.target.value)} style={inputStyle}>
-        <option value="">Choose…</option>
-        {property.enum.map((option) => (
-          <option key={String(option)} value={String(option)}>
-            {String(option)}
-          </option>
-        ))}
-      </select>
+      <Select
+        id={id}
+        ariaLabel={label}
+        value={typeof value === 'string' ? value : ''}
+        onChange={onChange}
+        options={property.enum.map((option) => ({ value: String(option), label: String(option) }))}
+        placeholder="Choose…"
+        disabled={disabled}
+        triggerStyle={inputStyle}
+      />
     );
   } else if (property.type === 'boolean') {
-    control = <input id={id} type="checkbox" checked={value === true} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />;
+    control = <Checkbox id={id} ariaLabel={label} checked={value === true} disabled={disabled} onChange={onChange} />;
   } else if (property.type === 'number' || property.type === 'integer') {
     control = (
       <input
