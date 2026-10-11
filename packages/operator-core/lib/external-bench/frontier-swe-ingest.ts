@@ -110,6 +110,16 @@ export class FrontierSweIngestError extends Error {
 }
 
 /** The `sha256:<hex>` digest of a digest-pinned image reference, or null when the reference can float. */
+/**
+ * First exposure of a task an earlier corpus version already published: the earliest of the two first-add dates,
+ * and null whenever the earlier version's date is unknown, because the later date alone would understate exposure.
+ */
+export function earliestExposure(priorFirstAddedAt: string | null, ownFirstAddedAt: string | null): string | null {
+  if (!priorFirstAddedAt || Number.isNaN(Date.parse(priorFirstAddedAt))) return null;
+  if (!ownFirstAddedAt || Number.isNaN(Date.parse(ownFirstAddedAt))) return priorFirstAddedAt;
+  return Date.parse(ownFirstAddedAt) < Date.parse(priorFirstAddedAt) ? ownFirstAddedAt : priorFirstAddedAt;
+}
+
 export function imageDigestOf(image: string | null | undefined): string | null {
   if (!image) return null;
   return DIGEST_RE.exec(image.trim())?.[1] ?? null;
@@ -230,6 +240,14 @@ export async function ingestFrontierSweCorpus(
     now?: Date;
     /** Supplies each row's `taskCreatedAt` (D-007). Omitted ⇒ no row carries one ⇒ reports read 'contamination-unknown'. */
     history?: FrontierSweTaskHistory;
+    /**
+     * An EARLIER corpus version (v1) that already published some of these task ids. A carried-over id was exposed
+     * from its first appearance THERE, so its date is the earliest first-add across versions. When the prior
+     * version's history cannot supply that date the row carries NO `taskCreatedAt` ('unknown'), never this
+     * checkout's later date: v2 added every task in one 2026-09-02 commit, and that date would read post-cutoff
+     * for a model that trained on the v1 copy (D-007 item 3, "unknown is never clean").
+     */
+    priorVersion?: { instanceIds: readonly string[]; history?: FrontierSweTaskHistory; commitSha?: string };
   },
   fs: FrontierSweIngestFs,
 ): Promise<FrontierSweIngestResult> {
@@ -237,6 +255,13 @@ export async function ingestFrontierSweCorpus(
   if (!COMMIT_SHA_RE.test(input.commitSha)) {
     problems.push(`commitSha must be a full 40-hex commit, got '${input.commitSha}'`);
   }
+  const prior = input.priorVersion;
+  if (prior?.commitSha !== undefined && !COMMIT_SHA_RE.test(prior.commitSha)) {
+    problems.push(`priorVersion.commitSha must be a full 40-hex commit, got '${prior.commitSha}'`);
+  }
+  const priorIds = new Set(prior?.instanceIds ?? []);
+  const priorFirstAddedAt = async (name: string): Promise<string | null> =>
+    prior?.history && prior.commitSha ? prior.history.firstAddedAt(`tasks/${name}/task.toml`, prior.commitSha) : null;
   const tasksDir = join(input.root, 'tasks');
   const dirs = (await fs.listDirs(tasksDir)).slice().sort();
   const rows: FrontierSweTaskRow[] = [];
@@ -298,9 +323,12 @@ export async function ingestFrontierSweCorpus(
       problems.push(`${name}: missing from the README task table (no suite category)`);
     }
     const verifierEnvironmentMode = str(verifier.environment_mode) === 'separate' ? 'separate' : 'shared';
-    const taskCreatedAt = input.history
+    const ownFirstAddedAt = input.history
       ? await input.history.firstAddedAt(`tasks/${name}/task.toml`, input.commitSha)
       : null;
+    const taskCreatedAt = priorIds.has(name)
+      ? earliestExposure(await priorFirstAddedAt(name), ownFirstAddedAt)
+      : ownFirstAddedAt;
     rows.push({
       ...(taskCreatedAt ? { taskCreatedAt } : {}),
       instanceId: name,

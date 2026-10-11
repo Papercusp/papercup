@@ -10,6 +10,7 @@ import {
   frontierSweArtifactsOf,
   frontierSweExternalNeeds,
   parseFrontierSweReadmeCategories,
+  earliestExposure,
   imageDigestOf,
   ingestFrontierSweCorpus,
   labelV1History,
@@ -200,6 +201,56 @@ describe('ingestFrontierSweCorpus (P-002 / FSWE-P002-MANIFEST)', () => {
     });
     const without = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs);
     expect(without.rows.every((r) => !('taskCreatedAt' in r))).toBe(true);
+  });
+
+  it('dates a task carried over from v1 by its v1 first-add, and leaves it undated when v1 cannot say (WI-6554700010008471)', async () => {
+    // v2 added every task in one later commit; that date must never stand in for a carried-over task's exposure.
+    const V2_SCAFFOLD = '2026-09-02T17:59:58+00:00';
+    const V1_COMMIT = 'b'.repeat(40);
+    const fs = memFs({
+      [t('carried', 'task.toml')]: v2TaskToml('carried'),
+      [t('carried-v1-undated', 'task.toml')]: v2TaskToml('carried-v1-undated'),
+      [t('v2-only', 'task.toml')]: v2TaskToml('v2-only'),
+    });
+    const v2History: FrontierSweTaskHistory = { firstAddedAt: async () => V2_SCAFFOLD };
+    const askedV1: Array<[string, string]> = [];
+    const v1History: FrontierSweTaskHistory = {
+      async firstAddedAt(relPath, commitSha) {
+        askedV1.push([relPath, commitSha]);
+        return relPath === 'tasks/carried/task.toml' ? '2026-05-20T09:00:00+00:00' : null;
+      },
+    };
+    const instanceIds = ['carried', 'carried-v1-undated', 'retired-in-v2'];
+    const dates = async (priorVersion: Parameters<typeof ingestFrontierSweCorpus>[0]['priorVersion']) =>
+      Object.fromEntries((await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT, history: v2History, priorVersion }, fs))
+        .rows.map((r) => [r.instanceId, r.taskCreatedAt]));
+
+    expect(await dates({ instanceIds, history: v1History, commitSha: V1_COMMIT })).toEqual({
+      carried: '2026-05-20T09:00:00+00:00', 'carried-v1-undated': undefined, 'v2-only': V2_SCAFFOLD,
+    });
+    expect(askedV1).toEqual([['tasks/carried/task.toml', V1_COMMIT], ['tasks/carried-v1-undated/task.toml', V1_COMMIT]]);
+    // Knowing WHICH ids v1 published but not WHEN is still enough to withhold the misleading v2 date.
+    expect(await dates({ instanceIds })).toEqual({ carried: undefined, 'carried-v1-undated': undefined, 'v2-only': V2_SCAFFOLD });
+    // Control: without the prior version every row keeps its own (v2) date, which is the defect this input exists for.
+    expect(await dates(undefined)).toEqual({ carried: V2_SCAFFOLD, 'carried-v1-undated': V2_SCAFFOLD, 'v2-only': V2_SCAFFOLD });
+  });
+
+  it('refuses a priorVersion commit that is not a full 40-hex SHA', async () => {
+    const fs = memFs({ [t('carried', 'task.toml')]: v2TaskToml('carried') });
+    const err = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT, priorVersion: { instanceIds: ['carried'], commitSha: 'main' } }, fs)
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(FrontierSweIngestError);
+    expect((err as FrontierSweIngestError).problems).toEqual(["priorVersion.commitSha must be a full 40-hex commit, got 'main'"]);
+  });
+});
+
+describe('earliestExposure', () => {
+  it('takes the earlier date, and refuses to date a task whose prior-version date is unknown or unparseable', () => {
+    expect(earliestExposure('2026-05-20T09:00:00+00:00', '2026-09-02T17:59:58+00:00')).toBe('2026-05-20T09:00:00+00:00');
+    expect(earliestExposure('2026-09-02T17:59:58+00:00', '2026-05-20T09:00:00+00:00')).toBe('2026-05-20T09:00:00+00:00');
+    expect(earliestExposure('2026-05-20T09:00:00+00:00', null)).toBe('2026-05-20T09:00:00+00:00');
+    expect(earliestExposure(null, '2026-09-02T17:59:58+00:00')).toBeNull();
+    expect(earliestExposure('not-a-date', '2026-09-02T17:59:58+00:00')).toBeNull();
   });
 });
 
