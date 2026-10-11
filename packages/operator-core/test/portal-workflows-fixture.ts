@@ -11,6 +11,18 @@ const harness = 'private-calendar-harness';
 const queryNames = ['plans.list', 'plans.schedule', 'plans.scheduledOccurrences'];
 const rowId = (slug: string) => `wf-row:plan:${harness}:${slug}`;
 
+/** The real polling client retries three times before exposing `error`.
+ * Observe the completed responses, then give the UI its normal assertion
+ * deadline. Request latency must not consume that UI deadline. Register before
+ * the action; retain a rejection until the caller awaits it. */
+export function observeWorkflowDenialCycle(page: Page): () => Promise<void> {
+  let completed = 0;
+  const result = page.waitForResponse(response => response.status() === 403
+    && new URL(response.url()).searchParams.get('name') === 'plans.scheduledOccurrences'
+    && ++completed === 4, { timeout: 45_000 }).then(() => null, error => error);
+  return async () => { const error = await result; if (error) throw error; };
+}
+
 export async function seedPrivateWorkflows(workspace: string, evidence: string): Promise<PrivateWorkflowsSeed> {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
@@ -44,19 +56,27 @@ export async function preflightPrivateWorkflows(seed: PrivateWorkflowsSeed, base
 
 export async function runPrivateWorkflowsPage(page: Page, context: BrowserContext,
   seed: PrivateWorkflowsSeed, url: URL, evidence: string) {
-  const reads: Array<{ name: string; url: string; status: number; body: any }> = [];
+  const reads: Array<{ name: string; url: string; status: number; body: any; requestedAtMs: number; receivedAtMs: number }> = [];
+  const requestTimes = new WeakMap<object, number>();
   const denials: Array<{ status: number; body: any }> = [];
   const pending = new Set<Promise<void>>();
   const writes: string[] = [];
+  const stages: Array<{ stage: string; atMs: number; attached?: boolean; visible?: boolean }> = [];
+  const mark = (stage: string, observation: { attached?: boolean; visible?: boolean } = {}) => {
+    stages.push({ stage, atMs: Date.now(), ...observation });
+    writeFileSync(join(evidence, 'portal-workflows-stages.json'), JSON.stringify(stages, null, 2));
+  };
   let deny = true;
   page.on('request', request => {
+    requestTimes.set(request, Date.now());
     if (new URL(request.url()).pathname.startsWith('/api/') && request.method() !== 'GET') writes.push(request.url());
   });
   page.on('response', response => {
     const name = new URL(response.url()).searchParams.get('name') ?? '';
     if (!queryNames.includes(name)) return;
     const task = response.json().then(body => {
-      reads.push({ name, url: response.url(), status: response.status(), body });
+      reads.push({ name, url: response.url(), status: response.status(), body,
+        requestedAtMs: requestTimes.get(response.request()) ?? 0, receivedAtMs: Date.now() });
       writeFileSync(join(evidence, 'portal-workflows-reads.json'), JSON.stringify(reads, null, 2));
     });
     pending.add(task); void task.finally(() => pending.delete(task)).catch(() => {});
@@ -73,18 +93,23 @@ export async function runPrivateWorkflowsPage(page: Page, context: BrowserContex
     writeFileSync(join(evidence, 'portal-workflows-denials.json'), JSON.stringify(denials, null, 2));
     await route.fulfill({ response: upstream });
   });
+  mark('navigation');
+  const initialDenial = observeWorkflowDenialCycle(page);
   await page.goto(url.href);
   const selected = page.getByTestId(rowId(seed.selected));
   const neighbor = page.getByTestId(rowId(seed.neighbor));
   const alert = page.getByRole('alert').filter({ hasText: 'Upcoming scheduled runs are unavailable:' });
+  await initialDenial();
   await alert.waitFor(); await selected.waitFor(); await neighbor.waitFor();
   await selected.getByText('Schedule unavailable', { exact: true }).waitFor();
+  mark('initial-denial-visible');
   assert.equal(await page.getByTestId(rowId(seed.foreign)).count(), 0);
   deny = false;
   await alert.getByRole('button', { name: 'Retry schedule read', exact: true }).focus();
   await page.keyboard.press('Enter');
   await selected.getByText(/^in /).waitFor();
   await alert.waitFor({ state: 'detached' });
+  mark('initial-retry-recovered');
   await selected.click();
   await page.getByRole('group', { name: 'Filter by kind', exact: true })
     .getByRole('button', { name: /^Triggered/ }).click();
@@ -101,17 +126,29 @@ export async function runPrivateWorkflowsPage(page: Page, context: BrowserContex
   };
   assertSelection();
   await page.reload(); await selected.getByText(/^in /).waitFor(); assertSelection();
+  mark('reload-recovered');
   assert.equal(await neighbor.count(), 0, 'workflow search must narrow the ledger');
   deny = true;
   await page.getByRole('button', { name: 'Refresh workflows', exact: true }).focus();
+  mark('stale-refresh');
+  const staleDenial = observeWorkflowDenialCycle(page);
   await page.keyboard.press('Enter');
-  await alert.waitFor(); await selected.getByText('Schedule unavailable', { exact: true }).waitFor();
+  await staleDenial();
+  mark('stale-refresh-denial-cycle-completed');
+  try { await alert.waitFor(); }
+  catch (error) {
+    mark('stale-refresh-wait-failed', { attached: await alert.count() > 0, visible: await alert.isVisible() });
+    throw error;
+  }
+  mark('stale-refresh-error-visible');
+  await selected.getByText('Schedule unavailable', { exact: true }).waitFor();
   assert.equal(await selected.getByText(/^in /).count(), 0, 'denied refresh must withhold previously successful next-run data');
   assertSelection();
   deny = false;
   await alert.getByRole('button', { name: 'Retry schedule read', exact: true }).focus();
   await page.keyboard.press('Enter');
   await selected.getByText(/^in /).waitFor(); assertSelection();
+  mark('stale-refresh-retry-recovered');
   await page.getByRole('textbox', { name: 'Search workflows', exact: true }).fill('');
   await neighbor.waitFor();
   await Promise.all([...pending]);

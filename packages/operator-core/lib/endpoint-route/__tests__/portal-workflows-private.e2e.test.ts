@@ -24,10 +24,25 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Workflows polling refresh denial exposes stale-data errors before private allocation', async () => {
+    const receipt = await verifyPrivateWorkspaceBrowserMount(preflight(), { workflowsRead: true });
+    expect(receipt).toMatchObject({ workflowsRead: true, staleNextRunWithheld: true, keyboardRetry: true });
+    expect(receipt.occurrenceRequests?.some(read => read.status === 200)).toBe(true);
+    expect(receipt.occurrenceRequests?.filter(read => read.status === 403).length).toBeGreaterThan(0);
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Workflows delayed denied responses finish polling retries before checking stale-data errors', async () => {
+    expect(await verifyPrivateWorkspaceBrowserMount(preflight(), {
+      workflowsRead: true, workflowsDeniedResponseDelayMs: 3_000,
+    })).toMatchObject({ workflowsRead: true, staleNextRunWithheld: true, keyboardRetry: true });
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal Workflows withholds denied next runs and retains filters and selection on reload without writes', async context => {
     preparePrivateRosterSocketRoot(); await verifyPrivateHudReadPolicy();
     const portalSource = source();
-    await verifyPrivateWorkspaceBrowserMount(preflight());
+    await verifyPrivateWorkspaceBrowserMount(preflight(), { workflowsRead: true });
     let preparedApi: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-workflows-private.e2e.test.ts',

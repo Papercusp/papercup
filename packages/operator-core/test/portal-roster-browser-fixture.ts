@@ -19,7 +19,7 @@ import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-i
 import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './portal-project-history-fixture';
 import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calendar-fixture';
 import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learning-fixture';
-import { runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
+import { observeWorkflowDenialCycle, runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -526,14 +526,21 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 }
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
-  options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean } = {}) {
+  options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
+    workflowsDeniedResponseDelayMs?: number } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
+  assert.ok(!options.workflowsRead || input.workflows, 'Workflows read preflight requires Workflows');
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const writes: Array<{ surface: string; body: any }> = [];
   const reads: Array<{ name: string | null; args: any }> = [];
+  let workflowsFail = false;
+  const workflowsTimeline: Array<{ name: string; atMs: number; status: number }> = [];
+  const workflowHarness = 'private-calendar-harness';
+  const workflowAt = Date.now() + 3_600_000;
+  const workflowSubjects = [input.selected, input.neighbor];
   // These are explicit component fixtures, never provider or private API proof.
   const prRows: PrRowData[] = [
     { remote: 'github.com/preflight/selected', number: 101, title: 'preflight-selected-open', author_login: 'fixture-viewer',
@@ -590,7 +597,22 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if ((options.prsRead || options.insightsRead) && request.method !== 'GET') {
+    if (options.workflowsRead && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name') ?? '';
+      const denied = workflowsFail && name === 'plans.scheduledOccurrences';
+      workflowsTimeline.push({ name, atMs: Date.now(), status: denied ? 403 : 200 });
+      const rows = name === 'plans.list' ? workflowSubjects.map(slug => ({ slug, title: slug, status: 'active',
+        harness: workflowHarness, triggered: true, scheduled: true, scheduleActive: true, triggerSources: ['schedule'] }))
+        : name === 'plans.schedule' ? workflowSubjects.map(slug => ({ templateSlug: slug, title: slug,
+          harnessSlug: workflowHarness, scheduledAt: new Date(workflowAt).toISOString(), scheduleActive: true }))
+        : name === 'plans.scheduledOccurrences' ? workflowSubjects.map(slug => ({ templateSlug: slug, title: slug,
+          harnessSlug: workflowHarness, occurrenceMs: workflowAt, kind: 'one-shot', scheduleActive: true })) : [];
+      response.writeHead(denied ? 403 : 200, { 'content-type': 'application/json' });
+      const body = JSON.stringify(denied ? { error: 'fixture occurrence denial' } : { rows });
+      if (denied && options.workflowsDeniedResponseDelayMs) {
+        setTimeout(() => { if (!response.destroyed) response.end(body); }, options.workflowsDeniedResponseDelayMs);
+      } else response.end(body);
+    } else if ((options.prsRead || options.insightsRead) && request.method !== 'GET') {
       prWrites.push(pathname); response.writeHead(405); response.end();
     } else if (options.insightsRead && pathname.startsWith('/api/harness/') && pathname.endsWith('/insights')) {
       const slug = decodeURIComponent(pathname.split('/')[3]);
@@ -657,7 +679,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
-    } else if (options.brainstormHydration && pathname === '/docs-preflight.css') {
+    } else if ((options.brainstormHydration || options.workflowsRead) && pathname === '/docs-preflight.css') {
       response.writeHead(200, { 'content-type': 'text/css' });
       response.end(readFileSync(join(built.portal, 'app/tokens.css'), 'utf8') + '\n'
         + readFileSync(join(built.portal, 'app/globals.css'), 'utf8') + '\n'
@@ -667,7 +689,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
-      response.end((options.brainstormHydration ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
+      response.end((options.brainstormHydration || options.workflowsRead ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
         + '<div id="root"></div><script src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
@@ -878,6 +900,28 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (input.workflows) {
       assert.equal(await page.getByRole('textbox', { name: 'Search workflows', exact: true }).count(), 1);
       assert.equal(await page.getByRole('button', { name: 'Refresh workflows', exact: true }).count(), 1);
+      if (options.workflowsRead) {
+        const selected = page.getByTestId(`wf-row:plan:${workflowHarness}:${input.selected}`);
+        const alert = page.getByRole('alert').filter({ hasText: 'Upcoming scheduled runs are unavailable:' });
+        await selected.getByText(/^in /).waitFor();
+        workflowsFail = true;
+        await page.getByRole('button', { name: 'Refresh workflows', exact: true }).focus();
+        const refreshAtMs = Date.now();
+        const denialCycle = observeWorkflowDenialCycle(page);
+        await page.keyboard.press('Enter');
+        await denialCycle();
+        await alert.waitFor();
+        const alertAtMs = Date.now();
+        await selected.getByText('Schedule unavailable', { exact: true }).waitFor();
+        assert.equal(await selected.getByText(/^in /).count(), 0);
+        workflowsFail = false;
+        await alert.getByRole('button', { name: 'Retry schedule read', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        await selected.getByText(/^in /).waitFor();
+        await alert.waitFor({ state: 'detached' });
+        console.log('WORKFLOWS_REFRESH_PREFLIGHT ' + JSON.stringify({ refreshAtMs, alertAtMs,
+          errorDelayMs: alertAtMs - refreshAtMs, requests: workflowsTimeline }));
+      }
     } else if (input.learning) {
       assert.equal(await page.getByRole('textbox', { name: 'Filter retained items' }).count(), 1);
     } else if (input.calendar) {
@@ -901,8 +945,11 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         subjectPreserved: true, noOutwardWrites: true, providerUsed: false } : {}),
       ...(options.insightsRead ? { insightsRead: true, keyboardTabs: true, tokensReload: true,
         coldRetry: true, warmRetry: true, tokenRetry: true, subjectPreserved: true,
-        neighborDistinct: true, noOutwardWrites: true, providerUsed: false } : {}) };
+        neighborDistinct: true, noOutwardWrites: true, providerUsed: false } : {}),
+      ...(options.workflowsRead ? { workflowsRead: true, staleNextRunWithheld: true, keyboardRetry: true,
+        occurrenceRequests: workflowsTimeline.filter(r => r.name === 'plans.scheduledOccurrences') } : {}) };
   } catch (error) {
+    if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
     if (page && (options.brainstormHydration || options.prsRead || options.insightsRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence, error, errors);
