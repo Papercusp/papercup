@@ -2998,6 +2998,28 @@ const modUrl = pathToFileURL(
 ).href;
 const { startEmbeddedPostgresServer } = await import(modUrl);
 
+function classifyStartupStage(message) {
+  if (message.startsWith('preload:')) return 'preload-ready';
+  if (message.startsWith('initialising data dir ')) return 'initdb';
+  if (message.startsWith('reusing existing data dir ')) return 'data-dir-reuse';
+  if (message.startsWith('starting postgres on ')) return 'postmaster-start';
+  if (message.includes('database system is ready to accept connections')) return 'postmaster-ready';
+  if (message.startsWith('creating database ')) return 'database-create';
+  if (message.startsWith('restoring logical seed ')) return 'logical-seed-restore';
+  if (message.startsWith('logical seed restored ')) return 'logical-seed-restored';
+  if (message.startsWith('logical seed failed ')) return 'logical-seed-fallback';
+  if (message.startsWith('migrations: ')) return 'migrations-complete';
+  return null;
+}
+
+function reportStartupStage(message, observedStages) {
+  const stage = classifyStartupStage(message);
+  if (!stage || observedStages.has(stage)) return;
+  observedStages.add(stage);
+  // Emit fixed stage names only; never copy raw Postgres output, paths, or SQL.
+  console.log(`PG_STAGE stage=${stage}`);
+}
+
 // WI-10004558: give this throwaway server the SAME connection ceiling the shipped
 // desktop gives its embedded Postgres (apps/operator/bin/serve.ts passes the
 // resource-profile derivation as extraPostgresSettings). The operator sizes its
@@ -3027,6 +3049,7 @@ console.log(
 );
 
 let pg = null;
+const observedStartupStages = new Set();
 const observedMigrations = new Set();
 async function shutdown() {
   try {
@@ -3047,6 +3070,7 @@ try {
     dbSqlDir: sqlDir,
     extraPostgresSettings,
     onLog: message => {
+      reportStartupStage(message, observedStartupStages);
       // The next distinct migration can only start after the preceding one
       // finishes. Provider chatter/NOTICEs and retries of one file are not
       // forward progress and must not keep a stalled boot alive.
