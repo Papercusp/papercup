@@ -48,6 +48,72 @@ export interface ArmObservation {
    * It attributes an R-18 tail to a leg; artifacts written before it was recorded omit it.
    */
   legMs?: Record<string, number>;
+  /**
+   * Where this call's time went, measured OUTSIDE the timed window (D-026): the lexical
+   * statements' pg_stat_statements deltas, the bench process's CPU time and event-loop delay,
+   * and host I/O pressure at call start. Artifacts written before D-026 omit it.
+   */
+  attrib?: CallAttribution;
+}
+
+/** Per-call attribution of an R-18 observation (D-026). See {@link callAttribution}. */
+export interface CallAttribution {
+  /** Execution time of the lexical statements that ran during the call (pg_stat_statements). */
+  pgExecMs: number;
+  /** Of which: time reading blocks not in shared buffers. Can exceed pgExecMs under parallel query. */
+  pgReadMs: number;
+  pgBlksRead: number;
+  /** Statement executions in the window; above the call's own count means a peer ran the same statement. */
+  pgCalls: number;
+  /** User + system CPU time of the bench process over the call. */
+  clientCpuMs?: number;
+  /** Largest event-loop delay sampled during the call: the bench process waiting for a CPU. */
+  loopDelayMaxMs?: number;
+  /** `/proc/pressure/io` some avg10 at call start. */
+  psiIoAvg10?: number;
+}
+
+/**
+ * The lexical statements' share of one call, from pg_stat_statements snapshots taken just before
+ * and just after it (both outside the timed window). Uses {@link statementDeltas}, so evicted or
+ * reset counters count from zero.
+ */
+export function callAttribution(
+  before: readonly StatementStat[],
+  after: readonly StatementStat[],
+): Pick<CallAttribution, 'pgExecMs' | 'pgReadMs' | 'pgBlksRead' | 'pgCalls'> {
+  const d = statementDeltas(before, after);
+  return {
+    pgExecMs: round1(d.reduce((s, x) => s + x.totalExecMs, 0)),
+    pgReadMs: round1(d.reduce((s, x) => s + x.sharedBlkReadMs, 0)),
+    pgBlksRead: d.reduce((s, x) => s + x.sharedBlksRead, 0),
+    pgCalls: d.reduce((s, x) => s + x.calls, 0),
+  };
+}
+
+/** Sum over a set of observations: how much of the lexical leg was statement execution. */
+export interface AttributionSummary {
+  calls: number;
+  wallMs: number;
+  lexicalMs: number;
+  pgExecMs: number;
+  pgReadMs: number;
+  /** 1 - pgExecMs / lexicalMs: the lexical leg's time spent outside statement execution. */
+  outsideExecShare: number | null;
+}
+
+export function summarizeAttribution(observations: readonly ArmObservation[]): AttributionSummary {
+  const with_ = observations.filter((o) => o.attrib && o.legMs && 'lexical:lexical' in o.legMs);
+  const lexicalMs = round1(with_.reduce((s, o) => s + (o.legMs!['lexical:lexical'] ?? 0), 0));
+  const pgExecMs = round1(with_.reduce((s, o) => s + o.attrib!.pgExecMs, 0));
+  return {
+    calls: with_.length,
+    wallMs: round1(with_.reduce((s, o) => s + o.latencyMs, 0)),
+    lexicalMs,
+    pgExecMs,
+    pgReadMs: round1(with_.reduce((s, o) => s + o.attrib!.pgReadMs, 0)),
+    outsideExecShare: lexicalMs > 0 ? Math.round((1 - pgExecMs / lexicalMs) * 1000) / 1000 : null,
+  };
 }
 
 /**
@@ -117,10 +183,15 @@ export const LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
 };
 
 /**
- * R-18's judgment, separate from R-13's recall verdict: the BM25 arm's end-to-end p95 (the
- * whole `runHybridSearch` call, so the BM25 list, the D-016 exact list and the fusion) may not
- * exceed the legacy arm's p95 measured in the same run on the same pairs (D-019), nor the
- * source's absolute ceiling in `LATENCY_P95_CEILING_MS` (D-020).
+ * R-18's judgment, separate from R-13's recall verdict. Both bounds time the whole
+ * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion):
+ * - D-019: on the paired cold pass, the BM25 arm's p95 may not exceed the legacy arm's p95 on
+ *   the same pairs.
+ * - D-020 as measured by D-024/D-025: the source's absolute ceiling in `LATENCY_P95_CEILING_MS`
+ *   bounds the p95 of the STEADY pass, a timed BM25-only pass over a disjoint sample of novel
+ *   queries after an untimed warm-up on a third disjoint sample. On a disk-contended host the
+ *   cold pass is dominated by the disk queue, which the BM25 path does not control. With no
+ *   steady pass (an artifact written before D-024), the ceiling bounds the paired BM25 p95.
  */
 export interface LatencyJudgment {
   verdict: Verdict;
@@ -135,7 +206,12 @@ export interface SourceSummary {
   /** R-13: recall@K of the BM25 arm against the legacy arm. */
   verdict: Verdict;
   reasons: string[];
-  /** R-18: end-to-end p95 of the BM25 arm against the legacy arm. */
+  /**
+   * The steady pass (D-024/D-025): the BM25 arm over this source's steady sample, or null when
+   * none was run. Its `latencyP95Ms` is what the absolute ceiling judges.
+   */
+  steady: ArmSummary | null;
+  /** R-18: the paired relative bound (D-019) and the absolute ceiling (D-020, D-024). */
   latency: LatencyJudgment;
 }
 
@@ -196,8 +272,11 @@ export function summarizeSource(
   source: string,
   pairs: readonly PairResult[],
   minPairs: number = MIN_PAIRS_PER_SOURCE,
+  steadyPairs: readonly PairResult[] | null = null,
 ): SourceSummary {
   const mine = pairs.filter((p) => p.source === source);
+  const steadyMine = steadyPairs?.filter((p) => p.source === source) ?? null;
+  const steady = steadyMine ? summarizeArm(steadyMine, 'bm25') : null;
   const arms = { legacy: summarizeArm(mine, 'legacy'), bm25: summarizeArm(mine, 'bm25') };
   const reasons: string[] = [];
   const incomplete = mine.filter((p) => !p.arms.legacy || !p.arms.bm25).length;
@@ -218,28 +297,156 @@ export function summarizeSource(
     verdict = 'pass';
     reasons.push(`BM25 recall@${RECALL_K} ${arms.bm25.hitsAtK}/${arms.bm25.scored} >= legacy ${arms.legacy.hitsAtK}/${arms.legacy.scored}`);
   }
-  const latency: LatencyJudgment = verdict === 'invalid'
-    ? { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' }
-    : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null);
-  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, latency };
+  let latency: LatencyJudgment;
+  if (verdict === 'invalid') {
+    latency = { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' };
+  } else {
+    const problems = steadyMine ? steadyPassProblems(steadyMine, minPairs) : [];
+    latency = problems.length > 0
+      ? { verdict: 'invalid', reason: `the steady pass is invalid: ${problems.join('; ')}` }
+      : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null, steady);
+  }
+  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, steady, latency };
 }
 
 /**
- * R-18: `fail` when the BM25 arm's p95 exceeds the legacy arm's (D-019) or `ceilingMs` (D-020);
- * `invalid` with no samples. `ceilingMs: null` judges against legacy only.
+ * Why a source's steady pass (D-024/D-025) cannot carry the ceiling judgment: too few calls,
+ * a call that did not record the BM25 arm, or a call whose seam ran another engine (the flag
+ * did not reach it). Empty when the pass is usable.
  */
-export function judgeLatency(arms: Record<Arm, ArmSummary>, ceilingMs: number | null = null): LatencyJudgment {
+export function steadyPassProblems(steadyPairs: readonly PairResult[], minPairs: number = MIN_PAIRS_PER_SOURCE): string[] {
+  const problems: string[] = [];
+  const missing = steadyPairs.filter((p) => !p.arms.bm25).length;
+  if (missing > 0) problems.push(`${missing} steady call(s) recorded no BM25 observation`);
+  const scored = steadyPairs.length - missing;
+  if (scored < minPairs) problems.push(`only ${scored} steady call(s); at least ${minPairs} are needed`);
+  const engines = [...new Set(steadyPairs.flatMap((p) => (p.arms.bm25 ? [p.arms.bm25.engine] : [])))].sort();
+  if (scored > 0 && engines.join() !== 'bm25') problems.push(`steady calls ran engine(s) [${engines.join(', ')}], expected [bm25]`);
+  return problems;
+}
+
+/**
+ * R-18: `fail` when the paired BM25 p95 exceeds the legacy arm's (D-019), or when the ceiling's
+ * subject exceeds `ceilingMs` (D-020). The ceiling's subject is the steady pass's p95 when
+ * `steady` is given (D-024/D-025), else the paired BM25 p95. `invalid` with no samples.
+ * `ceilingMs: null` judges against legacy only.
+ */
+export function judgeLatency(
+  arms: Record<Arm, ArmSummary>,
+  ceilingMs: number | null = null,
+  steady: ArmSummary | null = null,
+): LatencyJudgment {
   const bm25 = arms.bm25.latencyP95Ms;
   const legacy = arms.legacy.latencyP95Ms;
   if (bm25 == null || legacy == null) {
     return { verdict: 'invalid', reason: 'an arm has no latency samples' };
   }
+  const steadyP95 = steady?.latencyP95Ms ?? null;
+  if (steady && steadyP95 == null) {
+    return { verdict: 'invalid', reason: 'the steady pass has no latency samples' };
+  }
   const failures: string[] = [];
   if (bm25 > legacy) failures.push(`BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms`);
-  if (ceilingMs != null && bm25 > ceilingMs) failures.push(`BM25-arm p95 ${bm25} ms exceeds the ${ceilingMs} ms ceiling`);
+  if (ceilingMs != null) {
+    if (steadyP95 != null) {
+      if (steadyP95 > ceilingMs) failures.push(`steady-pass BM25 p95 ${steadyP95} ms exceeds the ${ceilingMs} ms ceiling`);
+    } else if (bm25 > ceilingMs) {
+      failures.push(`BM25-arm p95 ${bm25} ms exceeds the ${ceilingMs} ms ceiling`);
+    }
+  }
   if (failures.length > 0) return { verdict: 'fail', reason: failures.join('; ') };
-  const ceiling = ceilingMs != null ? ` and the ${ceilingMs} ms ceiling` : ' (no absolute ceiling for this source)';
-  return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms${ceiling}` };
+  if (ceilingMs == null) {
+    return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms (no absolute ceiling for this source)` };
+  }
+  if (steadyP95 == null) {
+    return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms and the ${ceilingMs} ms ceiling` };
+  }
+  return {
+    verdict: 'pass',
+    reason:
+      `paired BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms; ` +
+      `steady-pass BM25 p95 ${steadyP95} ms (${steady!.scored} novel queries, warm index) <= the ${ceilingMs} ms ceiling`,
+  };
+}
+
+/** One normalized statement's cumulative counters from `pg_stat_statements`. */
+export interface StatementStat {
+  queryid: string;
+  calls: number;
+  totalExecMs: number;
+  sharedBlksHit: number;
+  sharedBlksRead: number;
+  /** `shared_blk_read_time`: time spent reading blocks not in shared buffers (needs track_io_timing). */
+  sharedBlkReadMs: number;
+  /** Normalized query text, whitespace-collapsed and truncated. */
+  query: string;
+}
+
+export interface StatementDelta extends StatementStat {
+  meanExecMs: number | null;
+  /** sharedBlkReadMs / totalExecMs: the share of execution spent waiting on block reads. */
+  readTimeShare: number | null;
+}
+
+/**
+ * Per-statement change between two `pg_stat_statements` snapshots, statements with calls in
+ * the window only, slowest total first. A statement absent from `before`, or whose counters
+ * went backwards (evicted or reset in between), counts from zero. The view is cluster-wide, so
+ * a delta also contains any concurrent calls of the same normalized statement by other
+ * sessions; compare `calls` with the calls the bench made.
+ */
+export function statementDeltas(before: readonly StatementStat[], after: readonly StatementStat[]): StatementDelta[] {
+  const prior = new Map(before.map((s) => [s.queryid, s]));
+  const out: StatementDelta[] = [];
+  for (const a of after) {
+    const b0 = prior.get(a.queryid);
+    const b = b0 && b0.calls <= a.calls && b0.totalExecMs <= a.totalExecMs ? b0 : null;
+    const calls = a.calls - (b?.calls ?? 0);
+    if (calls <= 0) continue;
+    const totalExecMs = round1(a.totalExecMs - (b?.totalExecMs ?? 0));
+    const sharedBlkReadMs = round1(a.sharedBlkReadMs - (b?.sharedBlkReadMs ?? 0));
+    out.push({
+      queryid: a.queryid,
+      calls,
+      totalExecMs,
+      sharedBlksHit: a.sharedBlksHit - (b?.sharedBlksHit ?? 0),
+      sharedBlksRead: a.sharedBlksRead - (b?.sharedBlksRead ?? 0),
+      sharedBlkReadMs,
+      query: a.query,
+      meanExecMs: round1(totalExecMs / calls),
+      readTimeShare: totalExecMs > 0 ? Math.round((sharedBlkReadMs / totalExecMs) * 1000) / 1000 : null,
+    });
+  }
+  return out.sort((x, y) => y.totalExecMs - x.totalExecMs);
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/**
+ * Split one source's derivable candidates, in their seeded order, into the three disjoint
+ * samples of D-025: `paired` (the first `n`, identical to the pre-D-024 sample for the same
+ * seed), `warmup` (the next `n`) and `steady` (the next `n`). A later candidate whose query
+ * text repeats an earlier one is skipped, so the three are disjoint by target id and by query.
+ * A set may come up short when the source has too few candidates; the steady pass's validity
+ * check then reports it.
+ */
+export function splitDisjointSamples<P extends Pick<PairResult, 'targetId' | 'query'>>(
+  candidates: readonly P[],
+  n: number,
+): { paired: P[]; warmup: P[]; steady: P[] } {
+  const ids = new Set<string>();
+  const queries = new Set<string>();
+  const taken: P[] = [];
+  for (const c of candidates) {
+    if (taken.length >= n * 3) break;
+    if (ids.has(c.targetId) || queries.has(c.query)) continue;
+    ids.add(c.targetId);
+    queries.add(c.query);
+    taken.push(c);
+  }
+  return { paired: taken.slice(0, n), warmup: taken.slice(n, 2 * n), steady: taken.slice(2 * n, 3 * n) };
 }
 
 function combine(verdicts: readonly Verdict[]): Verdict {

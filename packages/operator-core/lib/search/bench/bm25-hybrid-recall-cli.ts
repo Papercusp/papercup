@@ -21,6 +21,13 @@
  * query and reused, so the cosine leg is identical. Fused recall is read before any
  * rerank (R-13 is about fusion, not the cross-encoder).
  *
+ * R-18 (D-019, D-020, D-024, D-025). Per source the candidates split into three disjoint
+ * samples: P (paired), W (warm-up), S (steady). The paired alternating pass over P gives
+ * R-13 and D-019's relative bound. Then, per source, an untimed BM25-only warm-up over W and
+ * a timed BM25-only pass over S, whose queries no earlier pass has run: the absolute
+ * ceilings judge that steady pass. pg_stat_statements deltas around the timed passes say how
+ * much of each lexical statement's time was block reads.
+ *
  * READ-ONLY against PG. Writes the JSON artifact and a Markdown summary beside it.
  * Exit 0 = pass, 1 = fail or invalid, 2 = could not run.
  */
@@ -30,9 +37,13 @@ import path from 'node:path';
 
 import type { Sql } from 'postgres';
 
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+
 import {
   ARMS,
   LATENCY_P95_CEILING_MS,
+  callAttribution,
+  summarizeAttribution,
   MIN_PAIRS_PER_SOURCE,
   RECALL_K,
   armOrder,
@@ -42,11 +53,17 @@ import {
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
+  splitDisjointSamples,
+  statementDeltas,
   summarizeSource,
   warmQueryEmbeddings,
   type Arm,
+  type ArmObservation,
+  type CallAttribution,
   type PairResult,
   type QueryStyle,
+  type StatementDelta,
+  type StatementStat,
 } from './bm25-hybrid-recall';
 
 const PLAN = 'bm25-lexical-search-evoke-adoption-2026-10-10';
@@ -99,6 +116,50 @@ async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
     psiCpuSome: firstLine('/proc/pressure/cpu'),
     activeBackends,
   };
+}
+
+/**
+ * Cumulative pg_stat_statements counters for the lexical-leg statements over the two BM25
+ * corpora (the BM25 top-k, the D-016 exact list, the GIN gate), or an error string. The
+ * snapshot query names the same tables, so it excludes itself.
+ */
+async function statementSnapshot(pg: Sql, ids?: readonly string[]): Promise<StatementStat[] | string> {
+  try {
+    type Row = { queryid: string; calls: string; total: number; hit: string; read: string; readMs: number; query: string };
+    // `[[:space:]]`, not a backslash class: inside a tagged template '\s' cooks to 's' (D-026).
+    const rows = ids
+      ? await pg<Row[]>`
+          SELECT queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
+                 shared_blks_hit::text AS hit, shared_blks_read::text AS read, shared_blk_read_time AS "readMs", '' AS query
+            FROM pg_stat_statements(false)
+           WHERE queryid = ANY(${ids as string[]}::bigint[])`
+      : await pg<Row[]>`
+          SELECT queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
+                 shared_blks_hit::text AS hit, shared_blks_read::text AS read, shared_blk_read_time AS "readMs",
+                 left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 200) AS query
+            FROM pg_stat_statements
+           WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+             AND (query LIKE '%harness_shared.session_turns%' OR query LIKE '%harness_shared.work_items%')
+             AND (query LIKE '%<@>%' OR query LIKE '%bm25%' OR query LIKE '%ts_rank_cd%' OR query LIKE '%count(*)::int AS n%')
+             AND query NOT LIKE '%pg_stat_statements%'`;
+    return rows.map((r) => ({
+      queryid: r.queryid,
+      calls: Number(r.calls),
+      totalExecMs: Number(r.total),
+      sharedBlksHit: Number(r.hit),
+      sharedBlksRead: Number(r.read),
+      sharedBlkReadMs: Number(r.readMs),
+      query: r.query,
+    }));
+  } catch (e) {
+    return `pg_stat_statements unreadable: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+function snapshotDelta(before: StatementStat[] | string, after: StatementStat[] | string): StatementDelta[] | string {
+  if (typeof before === 'string') return before;
+  if (typeof after === 'string') return after;
+  return statementDeltas(before, after);
 }
 
 async function sampleCandidates(sql: Sql, source: SourceName, workspaceId: string, want: number, seed: string): Promise<Candidate[]> {
@@ -203,75 +264,151 @@ async function main(): Promise<number> {
     return v;
   };
 
-  // ---- Sample: identical pairs for both arms --------------------------------
+  // ---- Sample: three disjoint sets per source (D-025) ------------------------
+  // P (paired) is the first --pairs derivable candidates, the same sample the bench drew
+  // before D-024 for a given seed; W (warm-up) and S (steady) are the next --pairs each.
   const pairs: PairResult[] = [];
+  const warmupPairs: PairResult[] = [];
+  const steadyPairs: PairResult[] = [];
   for (const source of sourceNames) {
-    const candidates = await sampleCandidates(pg, source, workspaceId, perSource, seed);
-    let taken = 0;
+    const candidates = await sampleCandidates(pg, source, workspaceId, perSource * 3, seed);
+    const derived: PairResult[] = [];
     for (const [i, c] of candidates.entries()) {
-      if (taken >= perSource) break;
       const style: QueryStyle = i % 2 === 0 ? 'fragment' : 'keyword';
       const query = canary.deriveCanaryQuery(c.text, style);
-      if (!query) continue;
-      pairs.push({ source, targetId: c.id, style, query, arms: {} });
-      taken += 1;
+      if (query) derived.push({ source, targetId: c.id, style, query, arms: {} });
     }
-    console.log(`[r13] ${source}: ${candidates.length} candidates -> ${taken} pairs`);
+    const split = splitDisjointSamples(derived, perSource);
+    pairs.push(...split.paired);
+    warmupPairs.push(...split.warmup);
+    steadyPairs.push(...split.steady);
+    console.log(
+      `[r13] ${source}: ${candidates.length} candidates -> ${split.paired.length} paired, ` +
+        `${split.warmup.length} warm-up, ${split.steady.length} steady (disjoint)`,
+    );
   }
   const fingerprint = sampleFingerprint(pairs);
 
-  // ---- Embed every query before timing (D-021): otherwise the arm that runs first in a
-  // pair also pays for the embedding, which lands in its R-18 latency.
-  const embeddedQueries = await warmQueryEmbeddings(pairs, (q) => sharedEmbedder(q));
+  // ---- Embed every timed query before timing (D-021): otherwise the arm that runs first in a
+  // pair also pays for the embedding, which lands in its R-18 latency. Warm-up queries are
+  // untimed and embed on demand.
+  const embeddedQueries = await warmQueryEmbeddings([...pairs, ...steadyPairs], (q) => sharedEmbedder(q));
   console.log(`[r13] embedded ${embeddedQueries} distinct queries before timing`);
 
-  // ---- Measure: both arms per pair, alternating which goes first -------------
-  const startedAt = new Date().toISOString();
-  const hostAtStart = await hostSnapshot(pg);
-  try {
-    for (const [i, p] of pairs.entries()) {
-      const source = SEARCH_SOURCES.find((s) => s.name === p.source);
-      if (!source) throw new Error(`search source ${p.source} is not registered`);
-      const table = SOURCE_TABLES[p.source as SourceName];
-      for (const arm of armOrder(i)) {
-        process.env[envVar] = arm === 'bm25' ? '1' : '0';
-        const engine = await rank.lexicalEngine(pg, table);
-        const t0 = performance.now();
-        const { results, legs } = await runHybridSearch([source], {
-          caller: 'bench:bm25-hybrid-recall',
-          sql,
-          query: p.query,
-          workspaceId,
-          scopeFilter: null,
-          limit: RECALL_K,
-          mode: 'hybrid',
-          embedder: sharedEmbedder,
-          embedTimeoutMs: 30_000,
-          // Mirrors search:semantic (SEARCH_SEMANTIC_DEFER_HIGHLIGHT), so R-18 times the
-          // tool's path; it includes the final-page highlight hydration.
-          deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
-        });
-        const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
-        // Per-leg time from the engine's own instrument, so an R-18 tail can be attributed to
-        // a leg instead of inferred (WI-6554700010008520).
-        const legMs = legDurations(legs);
-        p.arms[arm] = {
-          rank: rankOf(results, p.source, p.targetId),
-          latencyMs,
-          engine,
-          hits: results.length,
-          ...(Object.keys(legMs).length ? { legMs } : {}),
+  // The lexical statements' queryids, refreshed from the full snapshot before each timed pass;
+  // the per-call snapshots read only these, without query text, to stay cheap (D-026).
+  let lexicalIds: string[] = [];
+  const setLexicalIds = (snap: StatementStat[] | string) => {
+    if (typeof snap !== 'string') lexicalIds = snap.map((s) => s.queryid);
+  };
+  const psiIoAvg10 = (): number | undefined => {
+    const m = /avg10=([0-9.]+)/.exec(firstLine('/proc/pressure/io') ?? '');
+    return m ? Number(m[1]) : undefined;
+  };
+
+  /**
+   * One hybrid call for `p` with the flag set for `arm`, through the search:semantic path. With
+   * `attribute`, the call is bracketed (outside the timed window) by statement snapshots, and the
+   * bench process's CPU time and event-loop delay are sampled over it (D-026).
+   */
+  const measure = async (p: PairResult, arm: Arm, attribute = true): Promise<ArmObservation> => {
+    const source = SEARCH_SOURCES.find((s) => s.name === p.source);
+    if (!source) throw new Error(`search source ${p.source} is not registered`);
+    process.env[envVar] = arm === 'bm25' ? '1' : '0';
+    const engine = await rank.lexicalEngine(pg, SOURCE_TABLES[p.source as SourceName]);
+    const track = attribute && lexicalIds.length > 0;
+    const snapBefore = track ? await statementSnapshot(pg, lexicalIds) : null;
+    const psi = track ? psiIoAvg10() : undefined;
+    const loop = track ? monitorEventLoopDelay({ resolution: 10 }) : null;
+    loop?.enable();
+    const cpu0 = process.cpuUsage();
+    const t0 = performance.now();
+    const { results, legs } = await runHybridSearch([source], {
+      caller: 'bench:bm25-hybrid-recall',
+      sql,
+      query: p.query,
+      workspaceId,
+      scopeFilter: null,
+      limit: RECALL_K,
+      mode: 'hybrid',
+      embedder: sharedEmbedder,
+      embedTimeoutMs: 30_000,
+      // Mirrors search:semantic (SEARCH_SEMANTIC_DEFER_HIGHLIGHT), so R-18 times the
+      // tool's path; it includes the final-page highlight hydration.
+      deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
+    });
+    const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
+    const cpu = process.cpuUsage(cpu0);
+    loop?.disable();
+    // Per-leg time from the engine's own instrument, so an R-18 tail can be attributed to
+    // a leg instead of inferred (WI-6554700010008520).
+    const legMs = legDurations(legs);
+    let attrib: CallAttribution | undefined;
+    if (track && snapBefore && typeof snapBefore !== 'string') {
+      const snapAfter = await statementSnapshot(pg, lexicalIds);
+      if (typeof snapAfter !== 'string') {
+        attrib = {
+          ...callAttribution(snapBefore, snapAfter),
+          clientCpuMs: Math.round((cpu.user + cpu.system) / 100) / 10,
+          ...(loop ? { loopDelayMaxMs: Math.round(loop.max / 1e5) / 10 } : {}),
+          ...(psi !== undefined ? { psiIoAvg10: psi } : {}),
         };
       }
+    }
+    return {
+      rank: rankOf(results, p.source, p.targetId),
+      latencyMs,
+      engine,
+      hits: results.length,
+      ...(Object.keys(legMs).length ? { legMs } : {}),
+      ...(attrib ? { attrib } : {}),
+    };
+  };
+
+  // ---- Paired pass over P: both arms per pair, alternating which goes first ----
+  const startedAt = new Date().toISOString();
+  const hostAtStart = await hostSnapshot(pg);
+  const stmtBeforePaired = await statementSnapshot(pg);
+  setLexicalIds(stmtBeforePaired);
+  let stmtAfterPaired: StatementStat[] | string = 'not measured';
+  let hostAtEnd = hostAtStart;
+  const steadyHost: Record<string, { beforeWarmup: HostSnapshot; afterSteady: HostSnapshot }> = {};
+  const steadyStatements: Record<string, StatementDelta[] | string> = {};
+  let warmupCalls = 0;
+  try {
+    for (const [i, p] of pairs.entries()) {
+      for (const arm of armOrder(i)) p.arms[arm] = await measure(p, arm);
       if ((i + 1) % 10 === 0) console.log(`[r13] ${i + 1}/${pairs.length} pairs measured`);
+    }
+    stmtAfterPaired = await statementSnapshot(pg);
+    hostAtEnd = await hostSnapshot(pg);
+
+    // ---- Steady pass (D-024/D-025), per source: untimed warm-up over W, then a timed
+    // BM25-only pass over S, whose queries no earlier pass has run.
+    for (const source of sourceNames) {
+      const beforeWarmup = await hostSnapshot(pg);
+      for (const p of warmupPairs.filter((w) => w.source === source)) {
+        await measure(p, 'bm25', false);
+        warmupCalls += 1;
+      }
+      const stmtBefore = await statementSnapshot(pg);
+      setLexicalIds(stmtBefore);
+      const mine = steadyPairs.filter((s) => s.source === source);
+      for (const [i, p] of mine.entries()) {
+        p.arms.bm25 = await measure(p, 'bm25');
+        if ((i + 1) % 20 === 0) console.log(`[r18] ${source}: ${i + 1}/${mine.length} steady calls measured`);
+      }
+      steadyStatements[source] = snapshotDelta(stmtBefore, await statementSnapshot(pg));
+      steadyHost[source] = { beforeWarmup, afterSteady: await hostSnapshot(pg) };
     }
   } finally {
     if (envBefore === undefined) delete process.env[envVar];
     else process.env[envVar] = envBefore;
   }
-  const hostAtEnd = await hostSnapshot(pg);
+  const pairedStatements = snapshotDelta(stmtBeforePaired, stmtAfterPaired);
 
-  const summaries = sourceNames.map((s) => summarizeSource(s, pairs, Math.min(MIN_PAIRS_PER_SOURCE, perSource)));
+  const minPairs = Math.min(MIN_PAIRS_PER_SOURCE, perSource);
+  const summaries = sourceNames.map((s) => summarizeSource(s, pairs, minPairs, steadyPairs));
   const verdict = overallVerdict(summaries);
   const latencyVerdict = overallLatencyVerdict(summaries);
   let commit: string | null = null;
@@ -282,6 +419,9 @@ async function main(): Promise<number> {
   }
   // Queries are sampled from live rows; scrub box identity before writing a tracked file.
   const written = redactPairsForArtifact(pairs);
+  const writtenSteady = redactPairsForArtifact(steadyPairs);
+  const perSourceCount = (list: PairResult[]) =>
+    Object.fromEntries(sourceNames.map((s) => [s, list.filter((p) => p.source === s).length]));
   const artifact = {
     kind: 'bm25-hybrid-recall',
     plan: PLAN,
@@ -301,11 +441,39 @@ async function main(): Promise<number> {
     sameProcess: true,
     sources: summaries,
     verdict,
-    // R-18: end-to-end p95 of the BM25 arm against the legacy arm (D-019) and under the
-    // per-source ceiling (D-020), per source.
+    // R-18: end-to-end p95 of the BM25 arm against the legacy arm on the paired pass (D-019),
+    // and the steady pass's p95 under the per-source ceiling (D-020, D-024, D-025).
     latencyRequirement: 'R-18',
-    latencyDecisions: ['D-019', 'D-020', 'D-021'],
+    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-024', 'D-025'],
     latencyCeilingsMs: LATENCY_P95_CEILING_MS,
+    // D-024/D-025: after the paired pass over P, per source an untimed BM25-only warm-up over
+    // W and a timed BM25-only pass over S. P, W and S are disjoint by target id and query.
+    // sources[].arms.bm25.latencyP95Ms is the cold paired p95; sources[].steady.latencyP95Ms
+    // is what the ceiling judges.
+    steadyPass: {
+      order: ['paired over P', 'per source: untimed warm-up over W, then timed BM25-only over S'],
+      pairedPerSource: perSourceCount(pairs),
+      warmupPerSource: perSourceCount(warmupPairs),
+      steadyPerSource: perSourceCount(steadyPairs),
+      warmupCalls,
+      warmupSampleFingerprint: sampleFingerprint(warmupPairs),
+      steadySampleFingerprint: sampleFingerprint(steadyPairs),
+      host: steadyHost,
+    },
+    // Per-statement pg_stat_statements deltas for the lexical-leg statements, slowest first:
+    // readTimeShare is the share of execution spent reading blocks not in shared buffers.
+    statementStats: {
+      note: 'pg_stat_statements is cluster-wide: a delta also counts concurrent calls of the same normalized statement by other sessions; compare calls with the bench calls.',
+      paired: pairedStatements,
+      steady: steadyStatements,
+    },
+    // D-026: per-call attribution sums (pairs[].arms[].attrib and steadyPairs[].arms.bm25.attrib
+    // hold each call). outsideExecShare = the lexical leg's time outside statement execution.
+    attribution: Object.fromEntries(sourceNames.map((s) => [s, {
+      pairedBm25: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
+      pairedLegacy: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.legacy ? [p.arms.legacy] : []))),
+      steady: summarizeAttribution(steadyPairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
+    }])),
     // D-021: every query was embedded before any arm was timed, so neither arm's latency
     // carries the (shared, unchanged-by-this-plan) embedding cost.
     embeddingsPrecomputed: true,
@@ -314,8 +482,9 @@ async function main(): Promise<number> {
     // cause by itself: attribute a tail with sources[].arms[].legP95Ms / pairs[].arms[].legMs.
     host: { atStart: hostAtStart, atEnd: hostAtEnd },
     latencyVerdict,
-    redactedQueries: written.redactedQueries,
+    redactedQueries: written.redactedQueries + writtenSteady.redactedQueries,
     pairs: written.pairs,
+    steadyPairs: writtenSteady.pairs,
   };
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`);
@@ -325,7 +494,9 @@ async function main(): Promise<number> {
     const b = s.arms.bm25;
     console.log(
       `[r13] ${s.source}: legacy ${l.hitsAtK}/${l.scored} (MRR ${l.mrrAtK.toFixed(3)}) vs bm25 ${b.hitsAtK}/${b.scored} ` +
-        `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`,
+        `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}; ` +
+        `cold paired BM25 p95 ${b.latencyP95Ms ?? '-'} ms, steady p95 ${s.steady?.latencyP95Ms ?? '-'} ms; ` +
+        `latency ${s.latency.verdict}: ${s.latency.reason}`,
     );
   }
   console.log(`[r13] verdict=${verdict} latencyVerdict=${latencyVerdict} sample=${fingerprint.slice(0, 12)} -> ${out}`);
@@ -341,7 +512,19 @@ function renderMarkdown(a: {
   latencyVerdict: string;
   sources: ReturnType<typeof summarizeSource>[];
   host: { atStart: HostSnapshot; atEnd: HostSnapshot };
+  steadyPass: { host: Record<string, { beforeWarmup: HostSnapshot; afterSteady: HostSnapshot }>; warmupPerSource: Record<string, number> };
+  statementStats: { paired: StatementDelta[] | string; steady: Record<string, StatementDelta[] | string> };
 }): string {
+  const steadyRows = a.sources.map((s) => {
+    const ceiling = LATENCY_P95_CEILING_MS[s.source];
+    return `| ${s.source} | ${a.steadyPass.warmupPerSource[s.source] ?? 0} | ${s.steady?.scored ?? 0} | ${s.steady?.latencyP50Ms ?? '-'} | ${s.steady?.latencyP95Ms ?? '-'} | ${ceiling ?? '-'} | ${s.arms.bm25.latencyP95Ms ?? '-'} | ${s.latency.verdict} |`;
+  });
+  const stmtRows = (label: string, d: StatementDelta[] | string) =>
+    typeof d === 'string'
+      ? [`| ${label} | - | - | - | - | ${d} |`]
+      : d.slice(0, 8).map((x) =>
+          `| ${label} | ${x.calls} | ${x.meanExecMs ?? '-'} | ${x.sharedBlksRead} | ${x.readTimeShare == null ? '-' : `${Math.round(x.readTimeShare * 100)}%`} | \`${x.query.slice(0, 100).replace(/\|/g, '\\|')}\` |`,
+        );
   const legRows = a.sources.flatMap((s) =>
     (['legacy', 'bm25'] as Arm[]).flatMap((arm) =>
       Object.entries(s.arms[arm].legP95Ms).map(([leg, ms]) => `| ${s.source} | ${arm} | ${leg} | ${ms ?? '-'} |`),
@@ -364,8 +547,10 @@ function renderMarkdown(a: {
     `Plan ${PLAN}, requirement R-13. Generated ${a.generatedAt} at commit ${a.commit ?? 'unknown'}.`,
     `Both arms ran in one process on the identical sample (fingerprint \`${a.sampleFingerprint}\`).`,
     `Recall is fused (RRF) recall@${a.recallK} before any rerank. Verdict: **${a.verdict}**.`,
-    `Latency (R-18; D-019, D-020, D-021) is the p95 of the whole hybrid call with every query embedded before timing; the BM25 arm must not exceed legacy ` +
-      `nor its source ceiling (${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). ` +
+    `Latency (R-18; D-019, D-020, D-021, D-024, D-025) is the p95 of the whole hybrid call with every timed query embedded before timing. ` +
+      `On the paired cold pass the BM25 arm must not exceed legacy; the steady pass (untimed warm-up on a disjoint sample, then BM25-only ` +
+      `over a third disjoint sample of novel queries) must stay under its source ceiling ` +
+      `(${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). ` +
       `Verdict: **${a.latencyVerdict}**.`,
     ``,
     `| source | arm | recall@${a.recallK} | MRR@${a.recallK} | zero-hit | p50 ms | p95 ms | engine |`,
@@ -377,6 +562,26 @@ function renderMarkdown(a: {
     ...paired,
     ``,
     ...a.sources.map((s) => `- ${s.source}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`),
+    ``,
+    `## Steady pass (D-024, D-025)`,
+    ``,
+    `| source | warm-up calls | steady calls | steady p50 ms | steady p95 ms | ceiling ms | cold paired BM25 p95 ms | R-18 |`,
+    `|---|---|---|---|---|---|---|---|`,
+    ...steadyRows,
+    ``,
+    ...Object.entries(a.steadyPass.host).flatMap(([s, h]) => [
+      `- ${s} before warm-up: ${host(h.beforeWarmup)}`,
+      `- ${s} after steady pass: ${host(h.afterSteady)}`,
+    ]),
+    ``,
+    `## Lexical statements (pg_stat_statements deltas, slowest first)`,
+    ``,
+    `Cluster-wide: a delta also counts concurrent calls of the same normalized statement by other sessions. Read share = time reading blocks not in shared buffers / execution time.`,
+    ``,
+    `| pass | calls | mean ms | blocks read | read share | statement |`,
+    `|---|---|---|---|---|---|`,
+    ...stmtRows('paired', a.statementStats.paired),
+    ...Object.entries(a.statementStats.steady).flatMap(([s, d]) => stmtRows(`steady ${s}`, d)),
     ``,
     `## Where the time goes (attribution only; R-18 judges the whole call)`,
     ``,

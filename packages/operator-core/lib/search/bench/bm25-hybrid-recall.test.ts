@@ -9,7 +9,9 @@ import {
   LATENCY_P95_CEILING_MS,
   RECALL_K,
   armOrder,
+  callAttribution,
   judgeLatency,
+  summarizeAttribution,
   legDurations,
   overallLatencyVerdict,
   overallVerdict,
@@ -17,11 +19,15 @@ import {
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
+  splitDisjointSamples,
+  statementDeltas,
+  steadyPassProblems,
   summarizeArm,
   summarizeSource,
   warmQueryEmbeddings,
   type ArmObservation,
   type PairResult,
+  type StatementStat,
 } from './bm25-hybrid-recall';
 
 function obs(rank: number | null, engine: 'bm25' | 'legacy', latencyMs = 10, hits = 10): ArmObservation {
@@ -206,6 +212,154 @@ describe('R-18 latency judgment (D-019)', () => {
     expect(overallLatencyVerdict([pass, fail])).toBe('fail');
     expect(overallLatencyVerdict([fail, invalid])).toBe('invalid');
     expect(overallLatencyVerdict([])).toBe('invalid');
+  });
+});
+
+/** n BM25-only steady calls for `source`, every one taking `ms` and running `engine`. */
+function steadyCalls(n: number, ms: number, source = 'session_turn', engine: 'bm25' | 'legacy' = 'bm25'): PairResult[] {
+  return Array.from({ length: n }, (_, i) => ({
+    source,
+    targetId: `S-${i}`,
+    style: 'fragment' as const,
+    query: `steady ${i}`,
+    arms: { bm25: obs(1, engine, ms) },
+  }));
+}
+
+function turnsTimed(n: number, legacyMs: number, bm25Ms: number): PairResult[] {
+  return timed(n, legacyMs, bm25Ms).map((p) => ({ ...p, source: 'session_turn' }));
+}
+
+describe('R-18 steady pass: the ceiling judges novel queries on a warm index (D-024, D-025)', () => {
+  it('judges the ceiling on the steady p95, not the cold paired p95', () => {
+    // Cold paired BM25 p95 1100 ms (disk queue) is under legacy 4000 ms; steady 250 ms is under 400.
+    const s = summarizeSource('session_turn', turnsTimed(30, 4000, 1100), 20, steadyCalls(30, 250));
+    expect(s.steady?.latencyP95Ms).toBe(250);
+    expect(s.arms.bm25.latencyP95Ms).toBe(1100);
+    expect(s.latency).toEqual({
+      verdict: 'pass',
+      reason: 'paired BM25-arm p95 1100 ms <= legacy p95 4000 ms; steady-pass BM25 p95 250 ms (30 novel queries, warm index) <= the 400 ms ceiling',
+    });
+  });
+
+  it('fails when the steady p95 exceeds the ceiling, even with a fast cold pass', () => {
+    const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(30, 401));
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'steady-pass BM25 p95 401 ms exceeds the 400 ms ceiling' });
+  });
+
+  it('keeps the D-019 relative bound on the paired pass when a steady pass exists', () => {
+    const s = summarizeSource('work_item', timed(30, 150, 151), 20, steadyCalls(30, 50, 'work_item'));
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms' });
+  });
+
+  it('is invalid, not pass, when the steady pass is too small, incomplete or ran another engine', () => {
+    const tooFew = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(5, 10));
+    expect(tooFew.latency.verdict).toBe('invalid');
+    expect(tooFew.latency.reason).toBe('the steady pass is invalid: only 5 steady call(s); at least 20 are needed');
+    const legacyEngine = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(30, 10, 'session_turn', 'legacy'));
+    expect(legacyEngine.latency.verdict).toBe('invalid');
+    expect(legacyEngine.latency.reason).toContain('steady calls ran engine(s) [legacy], expected [bm25]');
+    const incomplete = steadyCalls(30, 10);
+    incomplete[3] = { ...incomplete[3]!, arms: {} };
+    expect(steadyPassProblems(incomplete, 20)).toEqual(['1 steady call(s) recorded no BM25 observation']);
+    expect(steadyPassProblems(steadyCalls(20, 10), 20)).toEqual([]);
+  });
+
+  it('uses only its own source steady calls', () => {
+    const steady = [...steadyCalls(30, 900, 'work_item'), ...steadyCalls(30, 120, 'session_turn')];
+    const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steady);
+    expect(s.steady?.scored).toBe(30);
+    expect(s.latency.verdict).toBe('pass');
+    expect(summarizeSource('work_item', timed(30, 4000, 100), 20, steady).latency.verdict).toBe('fail');
+  });
+
+  it('judges an artifact with no steady pass exactly as before D-024', () => {
+    const s = summarizeSource('session_turn', turnsTimed(30, 3000, 400));
+    expect(s.steady).toBeNull();
+    expect(s.latency).toEqual({ verdict: 'pass', reason: 'BM25-arm p95 400 ms <= legacy p95 3000 ms and the 400 ms ceiling' });
+  });
+
+  it('is invalid when the steady summary has no samples', () => {
+    const arms = { legacy: summarizeArm(timed(30, 100, 50), 'legacy'), bm25: summarizeArm(timed(30, 100, 50), 'bm25') };
+    expect(judgeLatency(arms, 400, summarizeArm([], 'bm25'))).toEqual({
+      verdict: 'invalid',
+      reason: 'the steady pass has no latency samples',
+    });
+  });
+
+  it('splits candidates into disjoint paired / warm-up / steady samples, paired first in seeded order', () => {
+    const c = (id: string, query: string) => ({ targetId: id, query });
+    const candidates = [
+      c('a', 'q1'), c('b', 'q2'), c('a', 'q9'), c('c', 'q3'), c('d', 'q2'), c('e', 'q4'), c('f', 'q5'), c('g', 'q6'), c('h', 'q7'),
+    ];
+    const split = splitDisjointSamples(candidates, 2);
+    expect(split.paired.map((x) => x.targetId)).toEqual(['a', 'b']);
+    // 'a' (repeat id) and 'd' (repeat query) are skipped.
+    expect(split.warmup.map((x) => x.targetId)).toEqual(['c', 'e']);
+    expect(split.steady.map((x) => x.targetId)).toEqual(['f', 'g']);
+    const all = [...split.paired, ...split.warmup, ...split.steady];
+    expect(new Set(all.map((x) => x.targetId)).size).toBe(all.length);
+    expect(new Set(all.map((x) => x.query)).size).toBe(all.length);
+    // Too few candidates leave the later samples short rather than overlapping.
+    expect(splitDisjointSamples(candidates.slice(0, 4), 2)).toEqual({
+      paired: [c('a', 'q1'), c('b', 'q2')],
+      warmup: [c('c', 'q3')],
+      steady: [],
+    });
+  });
+
+  it('the paired sample is the same prefix whatever the steady sample size', () => {
+    const candidates = Array.from({ length: 30 }, (_, i) => ({ targetId: `t${i}`, query: `q${i}` }));
+    expect(splitDisjointSamples(candidates, 5).paired).toEqual(candidates.slice(0, 5));
+  });
+});
+
+describe('statementDeltas (pg_stat_statements read-time attribution, D-024)', () => {
+  const stat = (queryid: string, calls: number, totalExecMs: number, read: number, readMs: number): StatementStat => ({
+    queryid, calls, totalExecMs, sharedBlksHit: calls * 100, sharedBlksRead: read, sharedBlkReadMs: readMs, query: `q${queryid}`,
+  });
+
+  it('subtracts the before snapshot, keeps statements with calls in the window, slowest first', () => {
+    const before = [stat('1', 10, 1000, 50, 100), stat('2', 5, 500, 0, 0), stat('3', 7, 70, 0, 0)];
+    const after = [stat('1', 70, 16_000, 16_423, 7_600), stat('2', 65, 3_500, 100, 300), stat('3', 7, 70, 0, 0)];
+    const d = statementDeltas(before, after);
+    expect(d.map((x) => x.queryid)).toEqual(['1', '2']);
+    expect(d[0]).toMatchObject({ calls: 60, totalExecMs: 15_000, sharedBlksRead: 16_373, sharedBlkReadMs: 7_500, meanExecMs: 250, readTimeShare: 0.5 });
+    expect(d[1]).toMatchObject({ calls: 60, totalExecMs: 3_000, meanExecMs: 50, readTimeShare: 0.1 });
+  });
+
+  it('counts a new or reset statement from zero instead of reporting negative deltas', () => {
+    const d = statementDeltas([stat('1', 100, 9_000, 10, 10)], [stat('1', 4, 400, 2, 1), stat('4', 3, 30, 0, 0)]);
+    expect(d.map((x) => [x.queryid, x.calls, x.totalExecMs])).toEqual([['1', 4, 400], ['4', 3, 30]]);
+  });
+
+  it('reports no read share for a zero-time statement', () => {
+    expect(statementDeltas([], [stat('9', 2, 0, 0, 0)])[0]!.readTimeShare).toBeNull();
+  });
+});
+
+describe('per-call attribution (D-026)', () => {
+  const stat = (queryid: string, calls: number, totalExecMs: number, read: number, readMs: number): StatementStat => ({
+    queryid, calls, totalExecMs, sharedBlksHit: 0, sharedBlksRead: read, sharedBlkReadMs: readMs, query: '',
+  });
+
+  it('sums the lexical statements that ran during one call', () => {
+    const before = [stat('1', 10, 1000, 5, 10), stat('2', 4, 100, 0, 0), stat('3', 1, 5, 0, 0)];
+    const after = [stat('1', 11, 1150.5, 105, 60), stat('2', 5, 130, 2, 1), stat('3', 1, 5, 0, 0)];
+    expect(callAttribution(before, after)).toEqual({ pgExecMs: 180.5, pgReadMs: 51, pgBlksRead: 102, pgCalls: 2 });
+    expect(callAttribution(after, after)).toEqual({ pgExecMs: 0, pgReadMs: 0, pgBlksRead: 0, pgCalls: 0 });
+  });
+
+  it('reports the lexical leg time spent outside statement execution', () => {
+    const o = (lex: number, exec: number): ArmObservation => ({
+      ...obs(1, 'bm25', lex + 20),
+      legMs: { 'lexical:lexical': lex },
+      attrib: { pgExecMs: exec, pgReadMs: exec / 2, pgBlksRead: 1, pgCalls: 3 },
+    });
+    expect(summarizeAttribution([o(400, 100), o(600, 400), obs(1, 'bm25', 9000)])).toEqual({
+      calls: 2, wallMs: 1040, lexicalMs: 1000, pgExecMs: 500, pgReadMs: 250, outsideExecShare: 0.5,
+    });
+    expect(summarizeAttribution([]).outsideExecShare).toBeNull();
   });
 });
 
