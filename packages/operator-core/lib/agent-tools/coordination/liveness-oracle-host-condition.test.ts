@@ -47,6 +47,7 @@ const LIVE_TURN: WakeabilitySignals = { wakeable: true, liveTurn: true };
 
 type HostRecord = {
   startedAt?: number;
+  advSessionId?: string | null;
   authBlocked?: boolean;
   quotaBlocked?: boolean;
   lastOutputAt?: number | null;
@@ -230,6 +231,73 @@ describe('P-011(a) — scope of the leg', () => {
     expect((await verdictFor(subject, authOnly.o)).wedged).toBe('auth-blocked');
     const clean = opts(WAKEABLE, healthyHost, boom);
     expect((await verdictFor(subject, clean.o)).sessionState).toBe('parked');
+  });
+});
+
+describe('WI-6554700010008461 — a host record without authBlocked is an unknown self-report', () => {
+  // Measured 2026-10-11: hosts started before P-004 never write `authBlocked`. Three codex
+  // sessions on such hosts had every wake turn end `unauthorized`, yet the oracle read the
+  // missing field as healthy and called them parked. The codex rollout is the corroboration.
+  const oldCodeHost: HostRecord = { ...healthyHost, advSessionId: '38238' };
+  const unauthorized = {
+    code: 'unauthorized',
+    rawCode: 'unauthorized',
+    message:
+      'Your access token could not be refreshed because you have since logged out or signed in to another ' +
+      'account. Please sign in again.',
+  };
+
+  it('POSITIVE CONTROL: an old host whose latest codex turn succeeded stays parked', async () => {
+    const readProviderErrorFn = vi.fn(async () => null);
+    const { o } = opts(WAKEABLE, oldCodeHost, [], { readProviderErrorFn });
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('parked');
+    expect(v.wedged).toBeUndefined();
+    // The rollout WAS consulted, so the parked verdict is a reading, not a skipped check.
+    expect(readProviderErrorFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('an old host whose latest codex turn since host start ended unauthorized → suspect, wedged auth-blocked', async () => {
+    const readProviderErrorFn = vi.fn(async () => unauthorized);
+    const { o } = opts(WAKEABLE, oldCodeHost, [], { readProviderErrorFn });
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('suspect');
+    expect(v.wedged).toBe('auth-blocked');
+    // Scoped to THIS host's child: the codex home outlives a host process.
+    expect(readProviderErrorFn).toHaveBeenCalledWith('38238', HOST_STARTED_AT, 64 * 1024);
+  });
+
+  it('the same reading also wedges a non-wakeable session the host would otherwise rescue to recorded', async () => {
+    const { o } = opts(NOT_WAKEABLE, oldCodeHost, [], { readProviderErrorFn: async () => unauthorized });
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('suspect');
+    expect(v.wedged).toBe('auth-blocked');
+  });
+
+  it('a host that reports authBlocked:false is trusted; the rollout is never read', async () => {
+    const readProviderErrorFn = vi.fn(async () => unauthorized);
+    const { o } = opts(WAKEABLE, { ...oldCodeHost, authBlocked: false }, [], { readProviderErrorFn });
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('parked');
+    expect(readProviderErrorFn).not.toHaveBeenCalled();
+  });
+
+  it('a quota terminal is not corroborated: walls lift at the provider reset (D-014)', async () => {
+    const { o } = opts(WAKEABLE, oldCodeHost, [], {
+      readProviderErrorFn: async () => ({ code: 'usage_limit_exceeded', rawCode: 'usageLimitExceeded', message: null }),
+    });
+    const v = await verdictFor(subject, o);
+    expect(v.sessionState).toBe('parked');
+    expect(v.wedged).toBeUndefined();
+  });
+
+  it('an unreadable rollout is no reading, never a wedge', async () => {
+    const { o } = opts(WAKEABLE, oldCodeHost, [], {
+      readProviderErrorFn: async () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect((await verdictFor(subject, o)).sessionState).toBe('parked');
   });
 });
 

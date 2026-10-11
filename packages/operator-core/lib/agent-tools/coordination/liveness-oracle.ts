@@ -93,6 +93,11 @@ import {
 } from '../../adv-sessions';
 import { findLiveHost, findLiveHostAsync, readHostEventTailAsync } from '../../events/await/psu-pty-discovery';
 import {
+  corroborateHostAuth,
+  type AuthCorroborationHost,
+  type ReadProviderErrorAfter,
+} from '../../events/await/host-auth-corroboration';
+import {
   hostRecoverableCondition,
   pickupHostView,
   type HostTailEvent,
@@ -253,6 +258,12 @@ export interface ResolveSessionStatesOpts {
   hostCondition?: boolean;
   /** DI seam for the host-condition leg's lifecycle-tail read. */
   readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+  /**
+   * DI seam for the host-condition leg's codex rollout read. Used only for a host whose record
+   * omits `authBlocked` (pre-P-004 host code): the missing field is unknown, not `false`
+   * (WI-6554700010008461, host-auth-corroboration.ts).
+   */
+  readProviderErrorFn?: ReadProviderErrorAfter;
   // ── DI seams (unit tests / bounded callers) ──
   fetchWakeabilityFn?: (ids: string[]) => Promise<Map<string, WakeabilitySignals>>;
   fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
@@ -820,7 +831,10 @@ export async function resolveSessionStates(
           // reading", which can still surface the record's own auth/quota flags
           // but never invents an unbound or stuck verdict.
           const tail = await readTail(s.ownerId).catch(() => [] as HostTailEvent[]);
-          const condition = hostRecoverableCondition(pickupHostView(host as PickupHostRecord, tail, nowMs));
+          // A host record without `authBlocked` predates P-004: corroborate from the codex
+          // rollout rather than read the missing field as healthy (WI-6554700010008461).
+          const judged = await corroborateHostAuth(host as AuthCorroborationHost, opts.readProviderErrorFn);
+          const condition = hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, nowMs));
           const v = out.get(s.ownerId);
           if (v) out.set(s.ownerId, applyHostCondition(v, condition));
         }),

@@ -437,15 +437,20 @@ export function latestCodexProviderErrorAfter(
   return latest;
 }
 
-/** Read the latest native Codex provider error tied to one loop fire. */
+/**
+ * Read the latest native Codex provider error after `afterMs` (a loop fire, or a host start).
+ * `maxBytes` bounds the tail read; callers that sweep many sessions per call pass less than the
+ * default, since a failed turn's terminal is the rollout's last line.
+ */
 export async function readCodexProviderErrorAfter(
   sessionKey: string | number,
   afterMs: number,
+  maxBytes: number = CODEX_PROVIDER_ERROR_TAIL_BYTES,
 ): Promise<CodexProviderError | null> {
   if (!Number.isFinite(afterMs)) return null;
   const rollout = await latestRollout(codexHomeForSessionKey(sessionKey));
   if (!rollout || rollout.mtimeMs <= afterMs) return null;
-  const tail = await readCodexRolloutTail(rollout.path);
+  const tail = await readCodexRolloutTail(rollout.path, maxBytes);
   return tail == null ? null : latestCodexProviderErrorAfter(tail, afterMs);
 }
 

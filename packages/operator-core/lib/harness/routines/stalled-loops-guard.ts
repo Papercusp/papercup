@@ -180,6 +180,7 @@ import {
   type StalledLoopHostReading,
 } from '../../events/await/host-recovery-eligibility';
 import { findLiveHostAsync, readHostEventTailAsync } from '../../events/await/psu-pty-discovery';
+import { corroborateHostAuth, type ReadProviderErrorAfter } from '../../events/await/host-auth-corroboration';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
@@ -554,12 +555,24 @@ export interface StalledLoopsSweepDeps {
   routeToHostRecovery?: typeof routeStalledLoopToHostRecovery;
 }
 
-/** The owner's live psu host as `classifyStalledLoopHost` reads it (P-007). */
-export async function readStalledLoopHost(ownerId: string): Promise<StalledLoopHostReading> {
-  const host = await findLiveHostAsync(ownerId);
+/**
+ * The owner's live psu host as `classifyStalledLoopHost` reads it (P-007). silent-halt reads it
+ * too, so this is where the census learns a session is wedged rather than stranded. A record
+ * without `authBlocked` predates P-004; its auth condition is corroborated from the codex
+ * rollout instead of being read as healthy (WI-6554700010008461, host-auth-corroboration.ts).
+ */
+export async function readStalledLoopHost(
+  ownerId: string,
+  deps: {
+    findHost?: typeof findLiveHostAsync;
+    readTail?: typeof readHostEventTailAsync;
+    readProviderError?: ReadProviderErrorAfter;
+  } = {},
+): Promise<StalledLoopHostReading> {
+  const host = await (deps.findHost ?? findLiveHostAsync)(ownerId);
   if (!host) return { host: null, events: [] };
-  const events = await readHostEventTailAsync(ownerId).catch(() => []);
-  return { host, events };
+  const events = await (deps.readTail ?? readHostEventTailAsync)(ownerId).catch(() => []);
+  return { host: await corroborateHostAuth(host, deps.readProviderError), events };
 }
 
 export interface StalledLoopsSweepResult {
