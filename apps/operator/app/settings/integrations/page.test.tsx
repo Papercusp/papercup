@@ -81,6 +81,7 @@ const LINEAR = {
   requiredConfig: ['teamIds'],
   connectHref: '/api/oauth/start?provider=linear&return=%2Fsettings%2Fintegrations',
   credentials: [],
+  appRegistration: null,
 };
 const ASANA = {
   id: 'asana',
@@ -91,6 +92,7 @@ const ASANA = {
   requiredConfig: ['projectGids'],
   connectHref: '/api/oauth/start?provider=asana&return=%2Fsettings%2Fintegrations',
   credentials: [],
+  appRegistration: null,
 };
 
 function source(overrides: Record<string, unknown> = {}) {

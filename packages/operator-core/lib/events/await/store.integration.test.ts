@@ -2019,6 +2019,8 @@ describe('await-event store (PG)', () => {
           subscriberId: 'sub-a',
           eventKey: 'coord:inbox-wake:sub-a',
           note: 'explicit bounded inbox-wake park',
+          // P-009: loop:end's guarantee check reads this; absent, it defaulted to 'wake'.
+          timeoutBehavior: 'wake',
         }),
       ]),
     );

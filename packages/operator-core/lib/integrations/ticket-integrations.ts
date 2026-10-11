@@ -18,6 +18,7 @@
  */
 import type postgres from 'postgres';
 import type { HostFetch, ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { providerAppRegistrationView, type ProviderAppRegistrationView } from '@papercusp/plugin-sdk/provider';
 import {
   ProviderRegistryNotReadyError,
   readyProviderRegistry,
@@ -112,6 +113,11 @@ export interface TicketProviderSummary {
    * configured. Status only: never a stored value. Empty when the provider declares none.
    */
   credentials: ProviderCredentialStatus[];
+  /**
+   * The vendor app the owner creates before connecting (`setup.appRegistration`, P-002), or null
+   * when the provider declares none.
+   */
+  appRegistration: ProviderAppRegistrationView | null;
 }
 
 export interface TicketSourceSummary {
@@ -231,6 +237,7 @@ function summarizeProvider(entry: RegisteredProvider, credentials: ProviderCrede
     requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
     connectHref: ticketConnectHref(d),
     credentials,
+    appRegistration: providerAppRegistrationView(d),
   };
 }
 

@@ -1741,6 +1741,11 @@ export {
   PROVIDER_CREDENTIAL_MAX_LENGTH,
   providerCredentialValueIssue,
   providerCredentialForHost,
+  PROVIDER_APP_DEFINITION_PLACEHOLDER,
+  PROVIDER_APP_DEFINITION_MAX_LENGTH,
+  providerAppRegistrationUrl,
+  providerAppDefinitionText,
+  providerAppRegistrationView,
 } from './provider';
 export type {
   ProviderDestination,
@@ -1752,6 +1757,8 @@ export type {
   ProviderDescriptor,
   ProviderSetupDescriptor,
   ProviderCredentialField,
+  ProviderAppRegistration,
+  ProviderAppRegistrationView,
   ProviderSyncRequest,
   ProviderRecord,
   ProviderSyncPage,

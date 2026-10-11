@@ -170,6 +170,28 @@ export function providerAppDefinitionText(registration: Pick<ProviderAppRegistra
   return registration.definition === undefined ? null : JSON.stringify(registration.definition, null, 2);
 }
 
+/** What an Integrations card needs to offer "Create app" and "Copy definition" (P-002). */
+export interface ProviderAppRegistrationView {
+  /** The vendor page to open, with the definition already filled in where the descriptor asks. */
+  createUrl: string;
+  /** The definition as pretty JSON for the copy fallback, or null when none is declared. */
+  definitionText: string | null;
+  docsUrl: string | null;
+  copyHint: string | null;
+}
+
+/** The card's view of a descriptor's `setup.appRegistration`, or null when it declares none. */
+export function providerAppRegistrationView(descriptor: Pick<ProviderDescriptor, 'setup'>): ProviderAppRegistrationView | null {
+  const registration = descriptor.setup?.appRegistration;
+  if (!registration) return null;
+  return {
+    createUrl: providerAppRegistrationUrl(registration),
+    definitionText: providerAppDefinitionText(registration),
+    docsUrl: registration.docsUrl ?? null,
+    copyHint: registration.copyHint ?? null,
+  };
+}
+
 /**
  * One paste-a-secret field (P-001). The descriptor carries only the field's shape, never a value.
  * The host stores the value next to the provider's OAuth tokens and uses it in exactly two places:

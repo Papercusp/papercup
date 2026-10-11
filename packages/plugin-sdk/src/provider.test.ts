@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PROVIDER_APP_DEFINITION_MAX_LENGTH,
+  PROVIDER_APP_DEFINITION_PLACEHOLDER,
   PROVIDER_CREDENTIAL_MAX_LENGTH,
+  providerAppDefinitionText,
+  providerAppRegistrationUrl,
   providerCredentialForHost,
   providerCredentialValueIssue,
   validateProviderDescriptor,
@@ -238,5 +242,75 @@ describe('providerCredentialForHost', () => {
     expect(providerCredentialForHost(d, 'Slack.com')?.key).toBe('bot_token');
     expect(providerCredentialForHost(d, 'api.slack.com')).toBeNull();
     expect(providerCredentialForHost({}, 'slack.com')).toBeNull();
+  });
+});
+
+/**
+ * The vendor app the owner creates before connecting (cupboard-distributable-integrations-2026-10-10
+ * P-002, SPEC-R-2-P-002): a Create app link with the definition filled in, plus a copyable definition.
+ */
+describe('setup.appRegistration', () => {
+  const base: ProviderDescriptor = {
+    id: 'example-chat',
+    contractVersion: 1,
+    datatypes: ['chat-message'],
+    capabilities: ['chat.send'],
+    egressHosts: ['api.example.com'],
+  };
+  const manifest = { display_information: { name: 'Papercusp' }, settings: { socket_mode_enabled: true } };
+  const slackLike = {
+    createUrl: 'https://api.example.com/apps?new_app=1&manifest_json={definition}',
+    definition: manifest,
+    docsUrl: 'https://api.example.com/docs/app-manifests',
+    copyHint: 'Choose Create New App, then From a manifest, and paste it.',
+  };
+  const withRegistration = (appRegistration: unknown) =>
+    validateProviderDescriptor({ ...base, setup: { appRegistration } } as unknown as ProviderDescriptor);
+
+  it('accepts a create link with the definition placeholder, docs and a copy hint, alone or beside credentials', () => {
+    expect(withRegistration(slackLike)).toEqual([]);
+    expect(withRegistration({ createUrl: 'https://api.example.com/apps/new' })).toEqual([]);
+    expect(
+      validateProviderDescriptor({
+        ...base,
+        setup: { appRegistration: slackLike, credentials: [{ key: 'bot_token', label: 'Bot token', hosts: ['api.example.com'] }] },
+      }),
+    ).toEqual([]);
+  });
+
+  it('opens the vendor page with the definition URL-encoded where the placeholder sits', () => {
+    const url = providerAppRegistrationUrl(slackLike);
+    expect(url.startsWith('https://api.example.com/apps?new_app=1&manifest_json=')).toBe(true);
+    expect(url).not.toContain(PROVIDER_APP_DEFINITION_PLACEHOLDER);
+    expect(JSON.parse(new URL(url).searchParams.get('manifest_json') ?? 'null')).toEqual(manifest);
+    expect(providerAppRegistrationUrl({ createUrl: 'https://api.example.com/apps/new' })).toBe('https://api.example.com/apps/new');
+  });
+
+  it('copies the definition as pretty JSON, and offers nothing to copy when none is declared', () => {
+    expect(providerAppDefinitionText(slackLike)).toBe(JSON.stringify(manifest, null, 2));
+    expect(providerAppDefinitionText({})).toBeNull();
+  });
+
+  it('refuses a non-https link, an unknown placeholder, a placeholder with no definition, and a secret', () => {
+    expect(withRegistration({ createUrl: 'http://api.example.com/apps' })).toContain('provider.setup.appRegistration.createUrl must be an https URL');
+    expect(withRegistration({ createUrl: 'https://api.example.com/apps?team={team}', definition: manifest })).toContain(
+      "provider.setup.appRegistration.createUrl placeholder '{team}' is unknown; only {definition} is filled in",
+    );
+    expect(withRegistration({ createUrl: slackLike.createUrl })).toContain(
+      'provider.setup.appRegistration.createUrl uses {definition} but no definition is declared',
+    );
+    expect(withRegistration({ ...slackLike, clientSecret: 'x' })).toContain(
+      'provider.setup.appRegistration.clientSecret is not allowed: a descriptor never carries a credential value',
+    );
+    expect(withRegistration({ ...slackLike, docsUrl: 'ftp://example.com' })).toContain('provider.setup.appRegistration.docsUrl must be an https URL');
+    expect(withRegistration('slack')).toEqual(['provider.setup.appRegistration must be an object']);
+  });
+
+  it('refuses a definition that is not a JSON object or is too long to travel in a URL', () => {
+    expect(withRegistration({ ...slackLike, definition: ['a'] })).toContain('provider.setup.appRegistration.definition must be a JSON object');
+    const huge = { blob: 'x'.repeat(PROVIDER_APP_DEFINITION_MAX_LENGTH) };
+    expect(withRegistration({ ...slackLike, definition: huge })).toContain(
+      `provider.setup.appRegistration.definition is longer than ${PROVIDER_APP_DEFINITION_MAX_LENGTH} characters as JSON`,
+    );
   });
 });

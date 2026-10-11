@@ -3408,11 +3408,11 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it('settles via presence-quiescence once the session goes quiet — WITHOUT waiting for the 30-min stuck-park dwell', async () => {
+  it.each(['suppressed-redundant', 'coalesced', 'inbox'])('recovers a %s non-turn wake after quiet without mistaking unrelated inference for loop execution', async channel => {
     const recordFire = vi.fn(async () => {});
     const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
     const res = await reconcile({
-      sql: fakeSql([warmSuppressedRow()], []),
+      sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
       nowMs: T0 + 110_000, // 70s of quiet — far short of the 30-min dwell
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
@@ -3422,13 +3422,10 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     // This active inference is the unrelated turn that caused suppression, not a loop-fire turn.
     expect(recoverExpectedExecution).not.toHaveBeenCalled();
     expect(res.rearmed).toBe(1);
-    expect(res.loops[0].via).toBe('presence-quiescence');
+    expect(res.loops[0].via).toBe(channel === 'suppressed-redundant' ? 'presence-quiescence' : 'delivered-wake-no-loop-turn');
     // A wake that was never spent must never feed the fire-circuit (EI-22127560919383327).
-    expect(recordFire).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      'error',
+    if (channel === 'suppressed-redundant') expect(recordFire).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), 'error',
     );
   });
 
