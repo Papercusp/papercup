@@ -808,13 +808,22 @@ export function deriveGitSyncExclusions(
   const skipped = skippedEntries.map((entry) => entry.key);
   const skipReasons = [...new Set(skippedEntries.map((entry) => entry.reason).filter((r): r is string => r !== null))];
   const recordedSkipReason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null;
-  // The writer stamps 'locked-path' for every skip, including migration-guard deferrals; the
-  // entries themselves are the better witness whenever they carry a reason.
-  const skipReason = skipReasons.length > 0 ? skipReasons.join(', ') : recordedSkipReason;
-  const oversized = stringList(metadata?.last_oversized);
-  const bulkExcluded = stringList(metadata?.last_bulk_excluded);
   const skippedAtMs = epochMs(metadata?.last_skipped_at);
   const exclusionAtMs = epochMs(metadata?.last_exclusions_at);
+  // WI-6554700010008512: a SKIP tick restamps last_skipped_at and last_skip_reason (shared
+  // fields the stall and staleness alarms read) but leaves last_skipped_paths alone
+  // (SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS). The paths therefore belong to the last completed sweep,
+  // which stamped last_exclusions_at in the same write: report THAT time beside them, and trust
+  // the recorded reason only when that sweep wrote it. Legacy rows without the sweep stamp keep
+  // last_skipped_at.
+  const recordedBySweep = exclusionAtMs === null || skippedAtMs === exclusionAtMs;
+  const sweepSkippedAtMs = exclusionAtMs ?? skippedAtMs;
+  // The sweep stamps 'locked-path' for every path skip, including migration-guard deferrals;
+  // the entries themselves are the better witness whenever they carry a reason.
+  const skipReason =
+    skipReasons.length > 0 ? skipReasons.join(', ') : recordedBySweep ? recordedSkipReason : 'locked-path';
+  const oversized = stringList(metadata?.last_oversized);
+  const bulkExcluded = stringList(metadata?.last_bulk_excluded);
   const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
   const hasByteExclusions = oversized.length > 0 || bulkExcluded.length > 0;
   const exclusionStampMatchesSweep =
@@ -873,7 +882,7 @@ export function deriveGitSyncExclusions(
   }
   return {
     skip_reason: skipped.length > 0 ? skipReason : recordedSkipReason,
-    skipped_at: isoAt(skippedAtMs),
+    skipped_at: isoAt(skipped.length > 0 ? sweepSkippedAtMs : skippedAtMs),
     skipped_count: skipped.length,
     skipped_sample: skipped.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     skipped_sample_truncated: skipped.length > GIT_SYNC_EXCLUSION_SAMPLE,

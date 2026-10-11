@@ -843,6 +843,58 @@ describe('routines:list', () => {
     expect(out.warning).toContain('locked-path');
   });
 
+  // WI-6554700010008512: a skip tick restamps last_skipped_at / last_skip_reason (shared with the
+  // stall and staleness alarms) but no longer clears the sweep's paths
+  // (SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS), so the time and reason reported BESIDE those paths must
+  // come from the sweep that wrote them — never from a later tick.
+  describe('WI-6554700010008512: sweep paths keep the sweep stamp across skip ticks', () => {
+    const sweepAt = Date.parse('2026-10-11T09:00:00.000Z');
+    const tickAt = Date.parse('2026-10-11T09:45:00.000Z');
+
+    it('reports the sweep time and reason, not the later skip tick, beside the sweep paths', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'skipped',
+        last_skip_reason: 'held_exclusive',
+        last_skipped_at: tickAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: ['superproject:packages/app/legacy.ts'],
+      });
+      expect(out).toMatchObject({
+        skipped_at: '2026-10-11T09:00:00.000Z',
+        skip_reason: 'locked-path',
+        skipped_count: 1,
+        sweep_at: '2026-10-11T09:00:00.000Z',
+      });
+      expect(out.warning).not.toContain('held_exclusive');
+    });
+
+    it('trusts the recorded reason when the sweep itself wrote it', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'synced',
+        last_skip_reason: 'migration-reservation',
+        last_skipped_at: sweepAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: ['superproject:packages/app/legacy.ts'],
+      });
+      expect(out).toMatchObject({ skipped_at: '2026-10-11T09:00:00.000Z', skip_reason: 'migration-reservation' });
+    });
+
+    it('still reports the skip tick itself when the sweep left no paths', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'skipped',
+        last_skip_reason: 'held_exclusive',
+        last_skipped_at: tickAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: [],
+      });
+      expect(out).toMatchObject({
+        skipped_at: '2026-10-11T09:45:00.000Z',
+        skip_reason: 'held_exclusive',
+        skipped_count: 0,
+      });
+    });
+  });
+
   // WI-10006505: the fixture above uses strings, but git-sync-action persists GitSyncSkippedPath
   // OBJECTS. `stringList` dropped every one, so the real row always read skipped_count: 0, and a
   // migration-guard deferral was labelled with the writer's hard-coded 'locked-path'.
