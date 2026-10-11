@@ -20,6 +20,7 @@ import { createServer } from 'node:net';
 import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { WebSocket, WebSocketServer } from 'ws';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -32,10 +33,14 @@ import { OperatorTarget } from '../targets/operator';
 import { llmBatteryEvidenceRoot } from '../battery-harness';
 import { buildConverseMcpMount, PUBLIC_MANUAL_TOOLS } from '../../agent-tools/operator/converse-toolset';
 import { createPublicManualSource, getPublicManual } from '../../agent-tools/docs/_public-manual';
-import { upsertWorkspaceHost, upsertWorkspaceHostConnection } from '../../workspace-host/observability-store';
+import { recordWorkspaceHostSignals, upsertWorkspaceHost, upsertWorkspaceHostConnection } from '../../workspace-host/observability-store';
+import { HostedWorkspaceConnectorClient } from '../../workspace-host/hosted-connector-client';
+import { HostedWorkspaceHostSessionAdapter } from '../../workspace-host/hosted-session-host';
+import type { HostedConnectorBinding } from '../../endpoint-route/hosted-workspace-connector';
+import { preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
-import { withWorkspace } from '@papercusp/db-org';
+import { withHostedServiceContext, withWorkspace } from '@papercusp/db-org';
 import { parseChatEvent } from '@papercusp/chat-protocol';
 import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
 import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
@@ -94,7 +99,7 @@ async function verifyFixtureBundle() {
   return result;
 }
 
-async function loadPortalFixtureModules(portalRoot: string) {
+async function loadPortalFixtureModules(portalRoot: string, phase = publicManualHostedPhaseRecorder(() => {})) {
   // Vitest already owns TypeScript loading here. An outer tsImport registers
   // another namespace around helpers which use tsImport themselves; its query
   // suffix can then reach fs as part of the launcher filename. Use the runner's
@@ -103,9 +108,11 @@ async function loadPortalFixtureModules(portalRoot: string) {
     const loaded = await import(/* @vite-ignore */ pathToFileURL(path).href);
     return { ...loaded.default, ...loaded };
   };
-  const { loadHostedTestUserKit } = await sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts'));
-  const { resolveServedRelease } = await sourceImport(join(portalRoot, 'e2e/served-artifact.ts'));
-  return { loadHostedTestUserKit, resolveServedRelease };
+  const { loadHostedTestUserKit, cleanupHostedTestResources } = await phase('portal-fixture-module-import',
+    () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')));
+  const { resolveServedRelease } = await phase('portal-served-artifact-import',
+    () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')));
+  return { loadHostedTestUserKit, cleanupHostedTestResources, resolveServedRelease };
 }
 
 function publicManualPortalUser() {
@@ -322,6 +329,23 @@ function manualCleanupEvidence(failures: { step: string; error: unknown }[]) {
 }
 
 describe('public manual fixture cleanup evidence', () => {
+  it('persists the running phase before an operation that never settles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'manual-phase-evidence-'));
+    const file = join(root, 'stage.json');
+    let finish!: () => void;
+    const phase = publicManualHostedPhaseRecorder(value => writeFileSync(file, JSON.stringify(value), { mode: 0o600 }));
+    try {
+      const operation = phase('frozen-source-import', () => new Promise<void>(ready => { finish = ready; }));
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ stage: 'frozen-source-import', state: 'running' });
+      finish();
+      await operation;
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ stage: 'frozen-source-import', state: 'complete' });
+      await expect(phase('admission', async () => { throw new Error('private-value-must-not-be-recorded'); }))
+        .rejects.toThrow('private-value-must-not-be-recorded');
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ stage: 'admission', state: 'failed' });
+      expect(readFileSync(file, 'utf8')).not.toContain('private-value');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('attempts every cleanup and saves rejected cleanup evidence before failing', async () => {
     const steps: string[] = [];
     let saved: unknown;
@@ -583,7 +607,399 @@ async function verifyPortalRuntimePreconditions(candidateRoot: string) {
   return { entry, metadata };
 }
 
+/** The maintained VM transport, confined to this acceptance run's operator. */
+async function connectHostedOperatorFixture(input: {
+  url: string; bearer: string; publicHost: string; binding: HostedConnectorBinding; operatorOrigin: string;
+}) {
+  const root = mkdtempSync(join(tmpdir(), 'public-manual-connector-'));
+  let adapter: HostedWorkspaceHostSessionAdapter | undefined;
+  let bindingError: Error | undefined;
+  let transportError: Error | undefined;
+  let socket: WebSocket | undefined;
+  const client = new HostedWorkspaceConnectorClient({
+    url: input.url, bearer: input.bearer,
+    createSocket: (url, headers) => {
+      socket = new WebSocket(url, { headers: { ...headers, host: input.publicHost } });
+      socket.once('unexpected-response', (_request, response) => {
+        transportError = new Error(`hosted_fixture_connector_upgrade:${response.statusCode}`);
+        response.resume();
+        socket?.terminate();
+      });
+      socket.once('error', () => {
+        transportError ??= new Error('hosted_fixture_connector_socket_error');
+      });
+      return socket;
+    },
+    onBound: (binding) => {
+      adapter?.close('fixture_rebinding');
+      adapter = undefined;
+      for (const key of ['controlPlaneWorkspaceId', 'organizationId', 'customerWorkspaceId', 'hostId', 'routeLabel', 'generation'] as const) {
+        if (binding[key] !== input.binding[key]) {
+          bindingError = new Error(`hosted_fixture_connector_binding_mismatch:${key}`);
+          return;
+        }
+      }
+      adapter = new HostedWorkspaceHostSessionAdapter({
+        binding, workspaceRoot: root, allowedChannelKinds: new Set(['operator-http']),
+        operatorHttp: { origin: input.operatorOrigin },
+        send: (message) => { client.send(message); },
+      });
+    },
+    onEnvelope: (envelope) => { void adapter?.accept(envelope); },
+    onDisconnect: () => { adapter?.close('fixture_disconnected'); adapter = undefined; },
+  });
+  const close = async () => {
+    adapter?.close('fixture_cleanup');
+    client.stop('fixture_cleanup');
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      await new Promise<void>((ready) => {
+        const deadline = setTimeout(() => socket!.terminate(), 1000);
+        socket!.once('close', () => { clearTimeout(deadline); ready(); });
+      });
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    client.start();
+    await expect.poll(() => {
+      if (bindingError) throw bindingError;
+      if (transportError) throw transportError;
+      return Boolean(adapter && client.connected);
+    }, { timeout: 5000, interval: 50 }).toBe(true);
+    return { close, connected: () => Boolean(adapter && client.connected) };
+  } catch (error) { await close(); throw error; }
+}
+
+/** Admission alone cannot prove the compiled Portal can reach a workspace host. */
+async function assertHostedOperatorConnector(portalRoot: string, config: {
+  controlPlaneOrigin: string; publicHost: string; publicOrigin: string;
+}, cookie: string, workspace: string) {
+  const loaded = await import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href);
+  const relay = { ...loaded.default, ...loaded };
+  const host = await relay.resolveRelayHost(config, cookie, workspace);
+  const ticket = await relay.mintOperatorTicket(config, cookie, workspace, host);
+  const channel = await relay.OperatorRelayChannel.open(config, ticket);
+  try {
+    // GET only: prove real ticket admission, http.ready, request forwarding and
+    // response framing without creating a conversation or invoking a model.
+    const response: Response = await channel.fetch('/api/agent-config', { method: 'GET', headers: {} });
+    await response.body?.cancel();
+    if (!response.ok) throw new Error(`hosted_fixture_operator_preflight:${response.status}`);
+    return { hostId: host.hostId, routeLabel: host.routeLabel, status: response.status };
+  } finally { channel.close(); }
+}
+
+async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceId?: string },
+  cookie: string, operatorOrigin: string, phase = publicManualHostedPhaseRecorder(() => {})) {
+  assertHostedFixtureOperatorOrigin(operatorOrigin);
+  const loaded = await phase('connector-fixture-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'e2e/hosted-test-user.ts')).href));
+  const fixture = { ...loaded.default, ...loaded };
+  const controlWorkspace = fixture.isolatedHostedWorkspaceContext(process.env);
+  const relayModule = await phase('connector-relay-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href));
+  const config = ({ ...relayModule.default, ...relayModule }).relayConfig(process.env);
+  if (!config) throw new Error('hosted_fixture_relay_configuration_missing');
+  const workspace = user.workspaceId!;
+  const [host] = await phase('connector-host-binding-read', () => withWorkspace(controlWorkspace, (sql) => sql`
+    SELECT customer.workspace_host_id AS id, customer.organization_id AS organization, host.connection_id AS connection
+    FROM harness_shared.customer_workspaces AS customer
+    JOIN harness_shared.workspace_hosts AS host ON host.workspace_id=customer.workspace_id AND host.id=customer.workspace_host_id
+    WHERE customer.workspace_id=${controlWorkspace} AND customer.id=${workspace}
+  `));
+  if (!host?.id) throw new Error('hosted_fixture_workspace_host_missing');
+  const routeLabel = `manual-${randomUUID()}`;
+  const frozenRoot = process.env.PAPERCUSP_INTEGRATION_ROOT!;
+  const { stdout: expectedSha } = await phase('connector-frozen-source-custody', () => runPtool('git', ['-C', frozenRoot, 'rev-parse', 'HEAD']));
+  const delegation = await phase('connector-delegation-verification', () => preparePublicManualHostedDelegation({ controlPlaneWorkspaceId: controlWorkspace,
+    organizationId: host.organization, customerWorkspaceId: workspace, hostId: host.id, connectionId: host.connection },
+  fn => withWorkspace(controlWorkspace, fn), operatorOrigin, expectedSha.trim()));
+  // Read the retained production policy before enrolling: the fixture manager
+  // verified the private host, while the compiled control plane supplies admission.
+  try {
+    const hostedModule = await phase('connector-frozen-policy-import', () => import(/* @vite-ignore */ pathToFileURL(join(
+      frozenRoot, 'apps/operator/bin/hosted-handler.ts',
+    )).href));
+    const hostedPolicy = { ...hostedModule.default, ...hostedModule };
+    const hosting = await phase('connector-frozen-policy-read', () => hostedPolicy.readHostedWorkspaceHosting({ controlPlaneWorkspaceId: controlWorkspace,
+      organizationId: host.organization, customerWorkspaceId: workspace, hostId: host.id }));
+    if (!hosting) throw new Error('hosted_fixture_verified_delegation_required');
+  } catch (error) {
+    await delegation.close();
+    throw error;
+  }
+  const headers = { cookie, host: config.publicHost, origin: config.publicOrigin,
+    'x-papercusp-workspace': workspace, 'content-type': 'application/json' };
+  const binding = { hostId: host.id, routeLabel, transport: 'websocket' };
+  const call = async (path: string, init: RequestInit) => {
+    const response = await fetch(`${config.controlPlaneOrigin}${path}`, {
+      ...init, signal: AbortSignal.timeout(5000), redirect: 'manual',
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(`hosted_fixture_connector_http:${response.status}:${safeHostedErrorCode(body)}`);
+    return body;
+  };
+  let transport: Awaited<ReturnType<typeof connectHostedOperatorFixture>> | undefined;
+  let enrolled = false;
+  const close = async () => {
+    await finishManualFixture({ cleanup: [
+      { name: 'connector-socket', run: async () => { await transport?.close(); } },
+      { name: 'connector-enrollment', run: async () => {
+        if (enrolled) await call(`/api/hosted/workspaces/${workspace}/connectors/revoke`, {
+          method: 'POST', headers, body: JSON.stringify(binding),
+        });
+      } },
+      { name: 'connector-signals', run: () => recordWorkspaceHostSignals({
+        workspaceId: controlWorkspace, hostId: host.id, tunnelStatus: {},
+      }) },
+      { name: 'connector-fixture-rows', run: async () => {
+        // Revocation preserves audit rows in production. This exact disposable
+        // tuple must be removed before the TEST kit deletes its workspace.
+        if (enrolled) await purgePublicManualHostedConnector(withHostedServiceContext, {
+          controlPlaneWorkspaceId: controlWorkspace, organizationId: host.organization,
+          customerWorkspaceId: workspace, hostId: host.id, routeLabel,
+        });
+      } },
+      { name: 'connector-fixture-delegation', run: () => delegation.close().then(() => {}) },
+    ], writeEvidence: () => {} });
+  };
+  try {
+    const enrollment = await phase('connector-enrollment', () => call(`/api/hosted/workspaces/${workspace}/connectors/enroll`, {
+      method: 'POST', headers, body: JSON.stringify(binding),
+    }));
+    enrolled = true;
+    const registered = await phase('connector-registration', () => call('/api/hosted/connectors/register', {
+      method: 'POST', headers: { host: config.publicHost, 'x-papercusp-connector-ticket': enrollment.ticket },
+    }));
+    const socketUrl = new URL('/api/hosted/connectors/socket', config.controlPlaneOrigin);
+    socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    transport = await phase('connector-websocket-binding', () => connectHostedOperatorFixture({ url: socketUrl.href, publicHost: config.publicHost,
+      bearer: registered.bearer, binding: registered.binding, operatorOrigin }));
+    await phase('connector-signal-persistence', () => recordWorkspaceHostSignals({ workspaceId: controlWorkspace, hostId: host.id,
+      tunnelStatus: { hostedConnector: { routeLabel, transport: 'websocket', generation: registered.binding.generation } } }));
+    const observation = await phase('connector-compiled-relay-read', () => assertHostedOperatorConnector(portalRoot, config, cookie, workspace));
+    return { close, observation };
+  } catch (error) { await close(); throw error; }
+}
+
+function assertHostedFixtureOperatorOrigin(origin: string | undefined) {
+  let operator: URL;
+  try { operator = new URL(origin ?? ''); }
+  catch { throw new Error('hosted_fixture_operator_origin_required'); }
+  if (!['http:', 'https:'].includes(operator.protocol)
+    || !['localhost', '127.0.0.1'].includes(operator.hostname)
+    || operator.username || operator.password) throw new Error('hosted_fixture_operator_not_loopback');
+}
+
+describe('public manual connected-host transport', () => {
+  const binding: HostedConnectorBinding = { controlPlaneWorkspaceId: 'private-control', organizationId: 'private-org',
+    customerWorkspaceId: 'private-customer', hostId: 'private-host', routeLabel: 'private-route',
+    generation: 1, state: 'active', transport: 'websocket' };
+
+  it.each([undefined, '', 'https://outside.invalid', 'file:///tmp/operator'])(
+    'refuses an absent or external operator before loading admission resources (%s)', async origin => {
+      await expect(ownHostedOperatorConnector('/fixture-must-not-load', {}, '', origin!))
+        .rejects.toThrow(/hosted_fixture_operator_(origin_required|not_loopback)/);
+    });
+
+  it('retains the HTTP refusal from a real upgrade and disposes its socket', async () => {
+    const { createServer } = await import('node:http');
+    const broker = createServer();
+    const sockets = new Set<import('node:net').Socket>();
+    broker.on('connection', socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    broker.on('upgrade', (_request, socket) => socket.end(
+      'HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+    ));
+    try {
+      await new Promise<void>(ready => broker.listen(0, '127.0.0.1', ready));
+      await expect(connectHostedOperatorFixture({ binding, publicHost: 'app.papercusp.com',
+        bearer: 'private-fixture-credential', operatorOrigin: 'http://127.0.0.1:1',
+        url: `ws://127.0.0.1:${(broker.address() as { port: number }).port}` }))
+        .rejects.toThrow('hosted_fixture_connector_upgrade:503');
+      await expect.poll(() => sockets.size).toBe(0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(ready => broker.close(() => ready()));
+    }
+  }, 15_000);
+
+  it('forwards over the maintained client and host adapter only after binding, and closes its socket', async () => {
+    const { createServer } = await import('node:http');
+    const requests: Array<{ path: string; user?: string; session?: string }> = [];
+    const upstream = createServer((request, response) => {
+      requests.push({ path: request.url!, user: request.headers['x-papercusp-hosted-user-id'] as string,
+        session: request.headers['x-papercusp-hosted-session-id'] as string });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"privateOperator":true}');
+    });
+    const broker = createServer();
+    const wss = new WebSocketServer({ server: broker });
+    const frames: Array<Record<string, any>> = [];
+    let connector: Awaited<ReturnType<typeof connectHostedOperatorFixture>> | undefined;
+    let peer: WebSocket | undefined;
+    wss.on('connection', (socket, request) => {
+      peer = socket;
+      expect(request.headers.host).toBe('app.papercusp.com');
+      expect(request.headers.authorization).toBe('Bearer private-fixture-credential');
+      socket.on('message', (data) => frames.push(JSON.parse(data.toString())));
+      socket.send(JSON.stringify({ type: 'bound', role: 'connector', binding }));
+    });
+    try {
+      await new Promise<void>(ready => upstream.listen(0, '127.0.0.1', ready));
+      await new Promise<void>(ready => broker.listen(0, '127.0.0.1', ready));
+      connector = await connectHostedOperatorFixture({ binding, publicHost: 'app.papercusp.com',
+        bearer: 'private-fixture-credential', url: `ws://127.0.0.1:${(broker.address() as { port: number }).port}`,
+        operatorOrigin: `http://127.0.0.1:${(upstream.address() as { port: number }).port}` });
+      expect(connector.connected()).toBe(true);
+      expect(requests).toEqual([]);
+      peer!.send(JSON.stringify({ type: 'relay.open', channelId: 'private-channel', kind: 'operator-http',
+        userId: 'ticket-user', hostedSessionId: 'ticket-session', audience: 'workspace-operator', role: 'controller' }));
+      await expect.poll(() => frames.some(frame => frame.payload?.type === 'http.ready')).toBe(true);
+      peer!.send(JSON.stringify({ type: 'relay', channelId: 'private-channel', payload: {
+        type: 'http.request', requestId: 'readiness-read', method: 'GET', path: '/api/agent-config', headers: {},
+      } }));
+      await expect.poll(() => frames.some(frame => frame.payload?.type === 'http.end')).toBe(true);
+      expect(requests).toEqual([{ path: '/api/agent-config', user: 'ticket-user', session: 'ticket-session' }]);
+      expect(frames.find(frame => frame.payload?.type === 'http.response')?.payload.status).toBe(200);
+      expect(Buffer.from(frames.find(frame => frame.payload?.type === 'http.body')!.payload.data, 'base64').toString())
+        .toBe('{"privateOperator":true}');
+      await connector.close();
+      expect(connector.connected()).toBe(false);
+      await expect.poll(() => wss.clients.size).toBe(0);
+    } finally {
+      await connector?.close();
+      for (const socket of wss.clients) socket.terminate();
+      await new Promise<void>(ready => wss.close(() => ready()));
+      await new Promise<void>(ready => broker.close(() => ready()));
+      upstream.closeAllConnections();
+      await new Promise<void>(ready => upstream.close(() => ready()));
+    }
+  }, 15_000);
+
+  it('refuses a different bound workspace before forwarding and disposes the connector', async () => {
+    const { createServer } = await import('node:http');
+    const broker = createServer();
+    const wss = new WebSocketServer({ server: broker });
+    let forwarded = 0;
+    wss.on('connection', socket => {
+      socket.on('message', () => { forwarded += 1; });
+      socket.send(JSON.stringify({ type: 'bound', role: 'connector', binding: { ...binding, customerWorkspaceId: 'other-customer' } }));
+    });
+    try {
+      await new Promise<void>(ready => broker.listen(0, '127.0.0.1', ready));
+      await expect(connectHostedOperatorFixture({ binding, publicHost: 'app.papercusp.com', bearer: 'fixture',
+        url: `ws://127.0.0.1:${(broker.address() as { port: number }).port}`, operatorOrigin: 'http://127.0.0.1:1' }))
+        .rejects.toThrow('hosted_fixture_connector_binding_mismatch:customerWorkspaceId');
+      expect(forwarded).toBe(0);
+      await expect.poll(() => wss.clients.size).toBe(0);
+    } finally {
+      for (const socket of wss.clients) socket.terminate();
+      await new Promise<void>(ready => wss.close(() => ready()));
+      await new Promise<void>(ready => broker.close(() => ready()));
+    }
+  }, 15_000);
+});
+
 describe('public manual Portal fixture preparation', () => {
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1' && Boolean(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT))(
+    'creates an owned chat and reads empty history on an existing hosted release without a canary or model call', async () => {
+      const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+      const candidateRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_CANDIDATE_ROOT!);
+      const origin = process.env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN!;
+      const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-hosted-readiness-${randomUUID()}`);
+      mkdirSync(evidenceDir, { recursive: true });
+      const receipt: Record<string, unknown> = { stage: 'artifact-preflight', origin,
+        candidateRoot, portalRoot, modelTurnRequests: 0, observations: {}, observedAt: new Date().toISOString() };
+      const observations = receipt.observations as Record<string, unknown>;
+      const receiptFile = join(evidenceDir, 'case.json');
+      const phase = publicManualHostedPhaseRecorder(value => {
+        receipt.stage = value.stage;
+        receipt.phase = value;
+        writeFileSync(receiptFile, serializePortalEvidence(receipt), { mode: 0o600 });
+        console.log(`HOSTED_READINESS_PHASE ${JSON.stringify(value)} receipt=${receiptFile}`);
+      });
+      const { metadata } = await phase('artifact-preflight', () => verifyPortalRuntimePreconditions(candidateRoot));
+      Object.assign(receipt, { buildId: metadata.buildId, sourceRootDigest: metadata.sourceRootDigest });
+      expect(new URL(origin).protocol).toBe('https:');
+      expect(['localhost', '127.0.0.1']).toContain(new URL(origin).hostname);
+      assertHostedFixtureOperatorOrigin(baseUrl);
+      // Hermetic setup removes ambient runtime pins. Restore only this case's
+      // explicit frozen source, which the hosted kit hashes against its package.
+      const integrationRoot = realpathSync(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT!);
+      expect(existsSync(join(integrationRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts'))).toBe(true);
+      const originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+      process.env.PAPERCUSP_INTEGRATION_ROOT = integrationRoot;
+      const { loadHostedTestUserKit, cleanupHostedTestResources, resolveServedRelease } = await loadPortalFixtureModules(portalRoot, phase);
+      // Only creation and GET history cross the compiled API. No turn endpoint
+      // receives a POST, so this preflight cannot start the model engine.
+      const { request } = await phase('playwright-library-import', () => import('playwright'));
+      const api = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true }));
+      let user: Awaited<ReturnType<Awaited<ReturnType<typeof loadHostedTestUserKit>>['create']>> | undefined;
+      let connector: Awaited<ReturnType<typeof ownHostedOperatorConnector>> | undefined;
+      let failure: unknown;
+      try {
+        const kit = await phase('frozen-hosted-kit-import', () => loadHostedTestUserKit(portalRoot));
+        const journeyStartedAt = new Date();
+        const document = await phase('compiled-document', () => api.get(origin));
+        expect(document.status()).toBe(200);
+        const served = resolveServedRelease({ html: await document.text(), releasesDir: dirname(candidateRoot), journeyStartedAt });
+        expect(served.buildId).toBe(metadata.buildId);
+        receipt.servedRelease = served;
+        const missingCookie = await phase('anonymous-creation', () => api.post(`${origin}/api/papercup-chat/conversations`, { data: {}, headers: { origin } }));
+        observations.anonymousCreation = { status: missingCookie.status() };
+        expect(missingCookie.status()).toBe(401);
+        receipt.stage = 'hosted-test-admission';
+        const fixtureUser = publicManualPortalUser();
+        receipt.fixtureOwner = { email: fixtureUser.email, attemptId: fixtureUser.attemptId };
+        user = await phase('hosted-test-admission', () => kit.create({ ...fixtureUser, preassignedWorkspace: true }));
+        expect(user.workspaceId).toBeTruthy();
+        const cookie = user.cookie(origin);
+        const headers = { origin, cookie: `${cookie.name}=${cookie.value}` };
+        receipt.stage = 'connected-host-preflight';
+        connector = await phase('connected-host-preflight', () => ownHostedOperatorConnector(portalRoot, user!, headers.cookie, baseUrl!, phase));
+        observations.connector = connector.observation;
+        receipt.stage = 'compiled-chat-creation';
+        const created = await phase('compiled-chat-creation', () => api.post(`${origin}/api/papercup-chat/conversations`, { data: { title: 'Disposable readiness control' }, headers }));
+        const createdBody = await created.json();
+        observations.creation = { status: created.status(), ok: createdBody.ok, errorCode: safeHostedErrorCode(createdBody) };
+        expect(created.status(), JSON.stringify(observations.creation)).toBe(201);
+        expect(createdBody.ok).toBe(true);
+        expect(createdBody.chat?.id).toBeTypeOf('string');
+        const chatId = createdBody.chat.id;
+        receipt.stage = 'authorized-empty-history';
+        const historyPath = `${origin}/api/papercup-chat/conversations/${encodeURIComponent(chatId)}/turns`;
+        const history = await phase('authorized-empty-history', () => api.get(historyPath, { headers }));
+        const historyBody = await history.json();
+        observations.history = { status: history.status(), turns: historyBody.turns };
+        expect(history.status()).toBe(200);
+        expect(historyBody.turns).toEqual([]);
+        const listed = await phase('owned-chat-list', () => api.get(`${origin}/api/papercup-chat/conversations`, { headers }));
+        const listedBody = await listed.json();
+        observations.ownedList = { status: listed.status(), containsChat: listedBody.chats?.some((chat: { id: string }) => chat.id === chatId) };
+        expect(listed.status()).toBe(200);
+        expect((observations.ownedList as { containsChat: boolean }).containsChat).toBe(true);
+        const deniedHistory = await phase('anonymous-history', () => api.get(historyPath));
+        observations.anonymousHistory = { status: deniedHistory.status() };
+        expect(deniedHistory.status()).toBe(401);
+        receipt.stage = 'passed';
+      } catch (error) { failure = error; }
+      finally {
+        try { await phase('cleanup', () => cleanupHostedTestResources([
+          { kind: 'hosted-operator-connector', cleanup: async () => { await connector?.close(); } },
+          { kind: 'hosted-test-user', cleanup: async () => { await user?.cleanup('existing hosted release readiness cleanup'); } },
+          { kind: 'http-client', cleanup: () => api.dispose() },
+        ], failure, async (cleanup: unknown) => {
+          receipt.cleanup = cleanup;
+          const file = join(evidenceDir, 'case.json');
+          writeFileSync(file, serializePortalEvidence(receipt, failure), { mode: 0o600 });
+          console.log(`HOSTED_READINESS_RECEIPT ${file}`);
+        })); } finally {
+          if (originalIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+          else process.env.PAPERCUSP_INTEGRATION_ROOT = originalIntegrationRoot;
+        }
+      }
+    }, 90_000);
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'launches the actual Chromium binary before hosted fixture creation', async () => {
       const evidenceDir = join(llmBatteryEvidenceRoot(), 'public-manual-browser-preflight');
@@ -635,15 +1051,61 @@ describe('public manual Portal fixture preparation', () => {
         }
       }
     }, 30_000);
+  it.runIf(Boolean(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT))(
+    'imports the retained hosting policy before any TEST account creation', async () => {
+      const frozenRoot = realpathSync(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT!);
+      const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-hosted-policy-import-${randomUUID()}`);
+      mkdirSync(evidenceDir, { recursive: true });
+      const file = join(evidenceDir, 'case.json');
+      const phase = publicManualHostedPhaseRecorder(value => {
+        writeFileSync(file, serializePortalEvidence({ ...value, accountCreations: 0, modelTurnRequests: 0 }), { mode: 0o600 });
+        console.log(`HOSTED_POLICY_IMPORT_PHASE ${JSON.stringify(value)} receipt=${file}`);
+      });
+      const loaded = await phase('connector-frozen-policy-import', () => import(/* @vite-ignore */ pathToFileURL(join(
+        frozenRoot, 'apps/operator/bin/hosted-handler.ts',
+      )).href));
+      expect(({ ...loaded.default, ...loaded }).readHostedWorkspaceHosting).toBeTypeOf('function');
+    }, 60_000);
+  it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+    'imports the retained Portal fixture modules without account or runtime admission', async () => {
+      const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+      const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-hosted-source-import-${randomUUID()}`);
+      mkdirSync(evidenceDir, { recursive: true });
+      const file = join(evidenceDir, 'case.json');
+      const phase = publicManualHostedPhaseRecorder(value => {
+        writeFileSync(file, serializePortalEvidence({ ...value, accountCreations: 0, modelTurnRequests: 0 }), { mode: 0o600 });
+        console.log(`HOSTED_SOURCE_IMPORT_PHASE ${JSON.stringify(value)} receipt=${file}`);
+      });
+      const modules = await loadPortalFixtureModules(portalRoot, phase);
+      expect(modules.loadHostedTestUserKit).toBeTypeOf('function');
+      expect(modules.resolveServedRelease).toBeTypeOf('function');
+      expect(modules.cleanupHostedTestResources).toBeTypeOf('function');
+    }, 60_000);
   it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     'loads the maintained Portal acceptance sources before live fixture creation', async () => {
       const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
-      const { loadHostedTestUserKit, resolveServedRelease } = await loadPortalFixtureModules(portalRoot);
-      expect(resolveServedRelease).toBeTypeOf('function');
-      // Loads the real auth/session helpers and resolves their TEST credentials,
-      // but creates no account, browser, host, or model request.
-      const kit = await loadHostedTestUserKit(portalRoot);
-      expect(kit.create).toBeTypeOf('function');
+      const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-hosted-kit-load-${randomUUID()}`);
+      mkdirSync(evidenceDir, { recursive: true });
+      const file = join(evidenceDir, 'case.json');
+      const phase = publicManualHostedPhaseRecorder(value => {
+        writeFileSync(file, serializePortalEvidence({ ...value, accountCreations: 0, modelTurnRequests: 0 }), { mode: 0o600 });
+        console.log(`HOSTED_KIT_LOAD_PHASE ${JSON.stringify(value)} receipt=${file}`);
+      });
+      const originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+      if (process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT) {
+        process.env.PAPERCUSP_INTEGRATION_ROOT = realpathSync(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT);
+      }
+      try {
+        const { loadHostedTestUserKit, resolveServedRelease } = await loadPortalFixtureModules(portalRoot, phase);
+        expect(resolveServedRelease).toBeTypeOf('function');
+        // Resolves TEST credentials and probes the control plane, but creates
+        // no account, browser, host, or model request.
+        const kit = await phase('frozen-hosted-kit-import', () => loadHostedTestUserKit(portalRoot));
+        expect(kit.create).toBeTypeOf('function');
+      } finally {
+        if (originalIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+        else process.env.PAPERCUSP_INTEGRATION_ROOT = originalIntegrationRoot;
+      }
     }, 60_000);
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'validates the selected Portal entry and cleanup authority before account creation', async () => {
@@ -1539,6 +2001,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let child: ReturnType<typeof spawn> | undefined;
     let browser: import('@playwright/test').Browser | undefined;
     let tls: Awaited<ReturnType<typeof ownPortalHttps>> | undefined;
+    let connector: Awaited<ReturnType<typeof ownHostedOperatorConnector>> | undefined;
     let stage = 'hosted-fixture';
     let servedRelease: Record<string, unknown> | undefined;
     let stream = '';
@@ -1621,6 +2084,11 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
       const cookieValue = new HostedSessionCookieCodec(secret).encode(hostedSessionId!);
       evidenceCredentials.push(cookieValue);
+      if (!mismatchedOrigin) {
+        stage = 'connected-host-preflight';
+        connector = await ownHostedOperatorConnector(portalRoot!, { workspaceId },
+          `${HOSTED_SESSION_COOKIE}=${cookieValue}`, baseUrl!);
+      }
       await context.addCookies([publicManualHostedCookie(origin, cookieValue)]);
       const page = await context.newPage();
       captureBrowser = observePortalBrowser(page);
@@ -1780,7 +2248,8 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
         conversationCreation: conversationCreation?.snapshot(), creationResponses: conversationCreation?.responses(),
-        operatorCreation, creationPreflight, interceptedModelTurns }, caseFailure, evidenceCredentials);
+        operatorCreation, creationPreflight, interceptedModelTurns,
+        connectedHost: connector?.observation }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
@@ -1795,8 +2264,17 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         }
         closeSync(logFd);
         try {
-          if (hostedSessionId) await revokeHostedSession(hostedSessionId, 'public manual browser fixture cleanup');
-          await user?.cleanup('public manual browser fixture cleanup');
+          await finishManualFixture({ cleanup: [
+            { name: 'hosted-operator-connector', run: async () => { await connector?.close(); } },
+            { name: 'hosted-session', run: async () => {
+              if (hostedSessionId) await revokeHostedSession(hostedSessionId, 'public manual browser fixture cleanup');
+            } },
+            { name: 'hosted-test-user', run: async () => { await user?.cleanup('public manual browser fixture cleanup'); } },
+          ], writeEvidence: failures => {
+            if (failures.length) writeFileSync(join(evidenceDir, 'case.json'), serializePortalEvidence({
+              ...JSON.parse(safeEvidence), cleanupFailures: manualCleanupEvidence(failures),
+            }, caseFailure, evidenceCredentials), { mode: 0o600 });
+          } });
         } finally {
           try { await withWorkspace(controlWorkspace, async (sql) => {
             await sql`DELETE FROM harness_shared.customer_workspaces WHERE workspace_id=${controlWorkspace} AND id=${workspaceId}`;
