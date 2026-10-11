@@ -1535,6 +1535,95 @@ export function currentBenchWorkloadArtifactReader(options: DbScope & {
   };
 }
 
+/** Resolve an exact stored grade, separately from task exit or provider output.
+ * Full row pins detect re-emission under the deterministic rollout id. The
+ * recorded timestamps are the original emission, not a later re-grade time.
+ * This is grade-record provenance; the host must separately verify the actual
+ * grader execution and committed preregistration before accepting a trial. */
+export function currentBenchWorkloadGradeReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string;
+  notBefore: string; preregHash: string; protocol: CurrentBenchmarkProtocol;
+  receipts: Array<{ receiptRef: string; subjectId: string; rolloutId: string; taskId: string; arm: string; seed: number;
+    index: number; outcomeId: string; graderRef: string; resultSha256: string; rolloutSha256: string;
+    submissionSha256: string; rawGraderOutputSha256: string }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation), workspaceId = resolveBenchWorkspace(frozen.workspaceId);
+  const start = Date.parse(frozen.notBefore), protocol = currentBenchmarkProtocolSchema.parse(frozen.protocol);
+  const present = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
+  const digest = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  const graderRef = `benchmark-grader:${protocol.grader.family}@${protocol.grader.version}`;
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
+      !digest(frozen.trialBindingHash) || !digest(frozen.preregHash) || hash(protocol) !== frozen.preregHash ||
+      protocol.runId !== frozen.runId || !Number.isFinite(start) || !frozen.receipts.length ||
+      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.taskId, row.arm, row.outcomeId].every(present) ||
+        row.graderRef !== graderRef || !protocol.taskIds.includes(row.taskId) || !protocol.seeds.includes(row.seed) ||
+        !protocol.arms.some(arm => arm.id === row.arm) || !Number.isSafeInteger(row.index) || row.index < 0 ||
+        ![row.rolloutId, row.resultSha256, row.rolloutSha256, row.submissionSha256, row.rawGraderOutputSha256].every(digest)) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.rolloutId)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload grade reader requires a frozen private protocol and unique pinned grade records.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { rolloutIdFor }] = await Promise.all([
+      import('./reproducibility/db'), import('./reproducibility/emit'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const rows = await sql<{ result: unknown; rollout: unknown; prereg: unknown }[]>`
+      SELECT to_jsonb(result) AS result, to_jsonb(rollout) AS rollout, to_jsonb(prereg) AS prereg
+        FROM harness_shared.benchmark_run_result result
+        JOIN harness_shared.benchmark_rollout rollout ON rollout.rollout_id = result.rollout_id
+          AND rollout.workspace_id = result.workspace_id
+        JOIN harness_shared.benchmark_prereg prereg ON prereg.prereg_hash = result.prereg_hash
+          AND prereg.workspace_id = result.workspace_id
+       WHERE result.workspace_id = ${workspaceId} AND result.run_id = ${frozen.runId}
+         AND result.rollout_id = ${receipt.rolloutId}
+         AND (SELECT count(*) FROM harness_shared.work_items item
+               WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
+                 AND item.feature_id = ${receipt.subjectId}) = 1
+    `;
+    if (rows.length !== 1) return null;
+    try {
+      const decode = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value) as Record<string, unknown>;
+      const result = decode(rows[0].result), rollout = decode(rows[0].rollout), prereg = decode(rows[0].prereg);
+      const suite = result.suite, at = Date.parse(String(result.created_at)), rolloutAt = Date.parse(String(rollout.created_at));
+      const preregAt = Date.parse(String(prereg.created_at)), suites = prereg.suites;
+      const arm = protocol.arms.find(value => value.id === receipt.arm)!;
+      if (hash(result) !== receipt.resultSha256 || hash(rollout) !== receipt.rolloutSha256 ||
+          !present(suite) || !Array.isArray(suites) || suites.length !== 1 || suites[0] !== suite ||
+          rolloutIdFor(frozen.runId, suite, receipt.taskId, receipt.arm, receipt.seed) !== receipt.rolloutId ||
+          [result, rollout].some(row => row.workspace_id !== workspaceId || row.run_id !== frozen.runId ||
+            row.rollout_id !== receipt.rolloutId || row.prereg_hash !== frozen.preregHash || row.suite !== suite ||
+            row.task_id !== receipt.taskId || row.arm !== receipt.arm || row.seed !== receipt.seed || row.model_id !== arm.model ||
+            row.grader_family !== protocol.grader.family || row.grader_version !== protocol.grader.version) ||
+          prereg.workspace_id !== workspaceId || prereg.run_id !== frozen.runId || prereg.prereg_hash !== frozen.preregHash ||
+          hash(prereg.config) !== frozen.preregHash || hash(rollout.config_snapshot) !== frozen.preregHash ||
+          prereg.git_committed !== true || !/^[a-f0-9]{40}$/.test(String(prereg.git_commit_sha)) ||
+          ![at, rolloutAt, preregAt].every(Number.isFinite) || at < start || rolloutAt < start || preregAt >= start ||
+          result.generation_status !== 'completed' || result.generation_error !== null || typeof result.resolved !== 'boolean' ||
+          result.grader_status !== (result.resolved ? 'passed' : 'failed') ||
+          !present(result.harness_version) || result.harness_version !== rollout.harness_version ||
+          result.submission_ref !== `rollout:${receipt.rolloutId}#submission` ||
+          result.raw_grader_output_ref !== `rollout:${receipt.rolloutId}#grader` ||
+          !present(rollout.submission) || !present(rollout.raw_grader_output) ||
+          createHash('sha256').update(rollout.submission).digest('hex') !== receipt.submissionSha256 ||
+          createHash('sha256').update(rollout.raw_grader_output).digest('hex') !== receipt.rawGraderOutputSha256) return null;
+      const outcome = { id: receipt.outcomeId, value: result.resolved, graderRef };
+      return [{ index: receipt.index, kind: 'tool-result', name: 'benchmark:grade', at: new Date(at).toISOString(),
+        content: canonicalJson(outcome), metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash,
+          receiptRef: ref, workloadOutcome: outcome,
+          gradeSource: { basis: 'stored-benchmark-grade', rolloutId: receipt.rolloutId, preregHash: frozen.preregHash,
+            taskId: receipt.taskId, arm: receipt.arm, seed: receipt.seed, resultSha256: receipt.resultSha256,
+            rolloutSha256: receipt.rolloutSha256, submissionSha256: receipt.submissionSha256,
+            rawGraderOutputSha256: receipt.rawGraderOutputSha256 } } }];
+    } catch { return null; }
+  };
+}
+
 /** Capture the exact authored checkpoint before the next checkpoint write.
  * The journal's note may be truncated; only its hash-bound latest-update span
  * in the complete current note proves the authored bytes. Old/evicted journal
@@ -1787,14 +1876,15 @@ export function currentBenchWorkloadToolResultReader(options:
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
         nativeToolSource: { basis: 'closed-native-recorded-tool-result', nativeSessionId: observed.nativeSessionId,
           nativeTurnId: observed.nativeTurnId, callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
-          callId: observed.callId, sourceSha256: observed.sourceSha256, arguments: observed.arguments,
+          callId: observed.callId, callType: observed.callType, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',
+          sourceSha256: observed.sourceSha256, arguments: observed.arguments,
           argumentsSha256: receipt.argumentsSha256, outputSha256: receipt.outputSha256,
           calledAt: observed.calledAt, isError: observed.isError } } }];
   };
 }
 
 /** A recorded native input alone does not prove a provider received it. Join
- * the exact private native text block to a host-captured request body and the
+ * the exact private native text block or call/result to a host-captured request body and the
  * maintained gateway reservation's completed response. Neither request IDs
  * supplied by a candidate nor a response-headers observation can fill a gap.
  * Capture after result settlement: a later changed reservation note refuses
@@ -1802,10 +1892,13 @@ export function currentBenchWorkloadToolResultReader(options:
 export function currentBenchWorkloadProviderInputReader(options:
   Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
     checkoutRoot: string; accountingBinding: CurrentBenchAccountingBinding;
-    receipts: Array<Parameters<typeof currentBenchWorkloadContextReader>[0]['receipts'][number] & {
+    receipts: Array<((Parameters<typeof currentBenchWorkloadContextReader>[0]['receipts'][number] & { nativeSource?: 'input' }) |
+      (Parameters<typeof currentBenchWorkloadToolResultReader>[0]['receipts'][number] & {
+        nativeSource: 'tool-result'; contextId: string; consumer: string;
+      })) & {
       reservationId: string; reservationNoteSha256: string;
       bodyRef: string; bodyPath: string; maxBytes: number;
-      inputIndex: number; textIndex: number; model: string; effort: string; accountId: string;
+      inputIndex: number; textIndex?: number; model: string; effort: string; accountId: string;
     }>;
   },
 ): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
@@ -1818,10 +1911,19 @@ export function currentBenchWorkloadProviderInputReader(options:
       !present(host.loopId) || !digest(host.preregHash) || !host.assignmentId?.startsWith('bench-assignment:') ||
       frozen.receipts.some(row => !uuid(row.reservationId) || !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId) ||
         !digest(row.reservationNoteSha256) || ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
-        ![row.inputIndex, row.textIndex].every(index => Number.isSafeInteger(index) && index >= 0)) ||
+        !Number.isSafeInteger(row.inputIndex) || row.inputIndex < 0 ||
+        row.nativeSource !== undefined && !['input', 'tool-result'].includes(row.nativeSource) ||
+        row.nativeSource === 'tool-result' && ![row.contextId, row.consumer].every(present) ||
+        row.nativeSource !== 'tool-result' && (!Number.isSafeInteger(row.textIndex) || row.textIndex! < 0)) ||
       new Set(frozen.receipts.map(row => row.reservationId)).size !== frozen.receipts.length)
     throw new Error('Workload provider input reader requires unique exact requests and a private accounting binding.');
-  const native = currentBenchWorkloadContextReader({ ...frozen, sql: suppliedSql });
+  const inputReceipts = frozen.receipts.filter(row => row.nativeSource !== 'tool-result');
+  const toolReceipts = frozen.receipts.filter(row => row.nativeSource === 'tool-result');
+  const nativeInput = inputReceipts.length ? currentBenchWorkloadContextReader({ ...frozen, sql: suppliedSql, receipts: inputReceipts }) : null;
+  const nativeTool = toolReceipts.length ? currentBenchWorkloadToolResultReader({ ...frozen, sql: suppliedSql, receipts: toolReceipts }) : null;
+  if (new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload provider input reader requires unique native receipts across source kinds.');
   const artifacts = currentBenchWorkloadArtifactReader({ ...frozen, sql: suppliedSql,
     artifacts: frozen.receipts.map(row => ({ ref: row.bodyRef, path: row.bodyPath,
       subjectId: row.subjectId, maxBytes: row.maxBytes })) });
@@ -1829,7 +1931,8 @@ export function currentBenchWorkloadProviderInputReader(options:
   return async (ref, binding) => {
     const receipt = allowed.get(ref);
     if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
-    const inputs = await native(ref, binding), bytes = await artifacts(receipt.bodyRef, binding);
+    const native = receipt.nativeSource === 'tool-result' ? nativeTool : nativeInput;
+    const inputs = await native?.(ref, binding), bytes = await artifacts(receipt.bodyRef, binding);
     if (inputs?.length !== 1 || !bytes) return null;
     const { resolveDb } = await import('./reproducibility/db');
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId: frozen.workspaceId });
@@ -1843,7 +1946,9 @@ export function currentBenchWorkloadProviderInputReader(options:
          AND r.arm_id = ${host.assignmentId} AND r.attempt_kind = 'evaluation'
          AND r.status IN ('open', 'settled')
     `;
-    const row = rows[0], input = inputs[0];
+    const row = rows[0], observed = inputs[0];
+    const input = receipt.nativeSource === 'tool-result' ? { ...observed, kind: 'input' as const,
+      role: receipt.consumer, metadata: { ...observed.metadata, contextId: receipt.contextId } } : observed;
     if (rows.length !== 1 || typeof row.note !== 'string' ||
         createHash('sha256').update(row.note).digest('hex') !== receipt.reservationNoteSha256 ||
         !(row.created_at instanceof Date) || !(row.ended_at instanceof Date) ||
@@ -1869,13 +1974,30 @@ export function currentBenchWorkloadProviderInputReader(options:
       if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
           (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
           correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
-      const message = body.input[receipt.inputIndex], block = message?.content?.[receipt.textIndex];
-      if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
-          !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+      const message = body.input[receipt.inputIndex];
+      if (receipt.nativeSource === 'tool-result') {
+        const source = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
+        const outputs = body.input.filter((item: Record<string, unknown>) =>
+          ['function_call_output', 'custom_tool_call_output'].includes(String(item?.type)) && item.call_id === receipt.callId);
+        const calls = body.input.map((item: Record<string, unknown>, index: number) => ({ item, index })).filter(
+          (row: { item: Record<string, unknown> }) => ['function_call', 'custom_tool_call'].includes(String(row.item?.type)) && row.item.call_id === receipt.callId);
+        const call = calls[0];
+        if (!source || source.outputKind !== 'text' || outputs.length !== 1 || calls.length !== 1 ||
+            call.index >= receipt.inputIndex || call.item.type !== source.callType ||
+            `${call.item.namespace ? call.item.namespace + '.' : ''}${call.item.name}` !== receipt.toolName ||
+            (call.item.type === 'function_call' ? call.item.arguments : call.item.input) !== source.arguments ||
+            message?.type !== (source.callType === 'function_call' ? 'function_call_output' : 'custom_tool_call_output') ||
+            message.call_id !== receipt.callId || typeof message.output !== 'string' || message.output !== input.content) return null;
+      } else {
+        const block = message?.content?.[receipt.textIndex!];
+        if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
+            !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+      }
       return [{ ...input, metadata: { ...input.metadata,
         providerInputSource: { basis: 'completed-provider-request-input', reservationId: receipt.reservationId,
           reservationNoteSha256: receipt.reservationNoteSha256, bodyRef: receipt.bodyRef, bodySha256,
-          inputIndex: receipt.inputIndex, textIndex: receipt.textIndex, accountId: receipt.accountId,
+          inputIndex: receipt.inputIndex, ...(receipt.nativeSource === 'tool-result' ? { callId: receipt.callId } : { textIndex: receipt.textIndex }),
+          accountId: receipt.accountId,
           responseId: result.providerCompletion.responseId, responseSha256: result.responseSha256 } } }];
     } catch { return null; }
   };

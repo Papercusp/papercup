@@ -640,16 +640,15 @@ describe('private workload context authority', () => {
   });
 });
 
-describe('private workload native tool-result authority', () => {
-  const binding = { runId: 'private-tool-result-run', trialBindingHash: 'a'.repeat(64) };
-  async function fixture() {
-    const f = await workloadContextFixture(binding);
+async function workloadToolResultFixture(binding: { runId: string; trialBindingHash: string },
+  base?: Awaited<ReturnType<typeof workloadContextFixture>>, kind: 'function' | 'custom' = 'function') {
+    const f = base ?? await workloadContextFixture(binding);
     const argumentsText = '{"paths":["private/task.txt"],"intent":"exact π"}', output = '{"ok":false,"busy":["private/task.txt"]}';
     const records = f.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
-    records[2] = { timestamp: '2026-10-11T00:00:00.500Z', type: 'response_item', payload: { type: 'function_call',
-      call_id: 'private-tool-call', namespace: 'mcp', name: 'locks_acquire', arguments: argumentsText } };
+    records[2] = { timestamp: '2026-10-11T00:00:00.500Z', type: 'response_item', payload: { type: kind === 'function' ? 'function_call' : 'custom_tool_call',
+      call_id: 'private-tool-call', namespace: 'mcp', name: 'locks_acquire', ...(kind === 'function' ? { arguments: argumentsText } : { input: argumentsText }) } };
     records.splice(3, 0, { timestamp: '2026-10-11T00:00:01Z', type: 'response_item',
-      payload: { type: 'function_call_output', call_id: 'private-tool-call', output } });
+      payload: { type: kind === 'function' ? 'function_call_output' : 'custom_tool_call_output', call_id: 'private-tool-call', output } });
     const transcript = records.map(row => JSON.stringify(row) + '\n').join('');
     const [source] = await sql`SELECT file_path FROM harness_shared.interactive_usage_files`;
     writeFileSync(source.file_path, transcript);
@@ -658,14 +657,19 @@ describe('private workload native tool-result authority', () => {
       callId: 'private-tool-call', toolName: 'mcp.locks_acquire', sourceSha256: createHash('sha256').update(transcript).digest('hex'),
       argumentsSha256: createHash('sha256').update(argumentsText).digest('hex'), outputSha256: createHash('sha256').update(output).digest('hex') };
     return { ...f, transcript, argumentsText, output, receipt, options: { ...f.options, receipts: [receipt] } };
-  }
+}
+
+describe('private workload native tool-result authority', () => {
+  const binding = { runId: 'private-tool-result-run', trialBindingHash: 'a'.repeat(64) };
+  const fixture = () => workloadToolResultFixture(binding);
   it('binds exact call/result source bytes to the private task without inventing a durable transition', async () => {
     const f = await fixture();
     expect(await currentBenchWorkloadToolResultReader(f.options)(f.receipt.receiptRef, binding)).toEqual([
       { index: 3, kind: 'tool-result', name: 'mcp.locks_acquire', at: '2026-10-11T00:00:01.000Z', content: f.output,
         metadata: { ...binding, receiptRef: f.receipt.receiptRef, nativeToolSource: { basis: 'closed-native-recorded-tool-result',
           nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId, callRecordIndex: 2, resultRecordIndex: 3,
-          callId: f.receipt.callId, sourceSha256: f.receipt.sourceSha256, arguments: f.argumentsText,
+          callId: f.receipt.callId, callType: 'function_call', outputKind: 'text',
+          sourceSha256: f.receipt.sourceSha256, arguments: f.argumentsText,
           argumentsSha256: f.receipt.argumentsSha256, outputSha256: f.receipt.outputSha256,
           calledAt: '2026-10-11T00:00:00.500Z', isError: null } } },
     ]);
@@ -805,6 +809,62 @@ describe('private workload provider input authority', () => {
     const note = JSON.stringify(f.note); f.receipt.reservationNoteSha256 = createHash('sha256').update(note).digest('hex');
     await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
     expect((await currentBenchWorkloadProviderInputReader(f.options)(f.receipt.receiptRef, binding))?.[0].content).toBe(f.text);
+  });
+  async function toolFixture(kind: 'function' | 'custom' = 'function') {
+    const f = await fixture(), native = await workloadToolResultFixture(binding, f, kind);
+    const call = { type: kind === 'function' ? 'function_call' : 'custom_tool_call', call_id: native.receipt.callId,
+      namespace: 'mcp', name: 'locks_acquire', ...(kind === 'function' ? { arguments: native.argumentsText } : { input: native.argumentsText }) };
+    const output = { type: kind === 'function' ? 'function_call_output' : 'custom_tool_call_output',
+      call_id: native.receipt.callId, output: native.output };
+    const body = { ...f.body, input: [call, output] }, bytes = JSON.stringify(body);
+    writeFileSync(join(repoRoot, f.receipt.bodyPath), bytes);
+    f.note.nativeGatewayAttempt.bodySha256 = f.note.nativeGatewayAttemptResult.bodySha256 = createHash('sha256').update(bytes).digest('hex');
+    const note = JSON.stringify(f.note);
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
+    const receipt = { ...f.receipt, ...native.receipt, nativeSource: 'tool-result' as const, inputIndex: 1,
+      reservationNoteSha256: createHash('sha256').update(note).digest('hex') };
+    return { ...f, body, native, receipt, options: { ...f.options, receipts: [receipt] } };
+  }
+  it.each(['function', 'custom'] as const)('binds exact %s call/result consumption with completed provider identity', async kind => {
+    const f = await toolFixture(kind), reader = currentBenchWorkloadProviderInputReader(f.options);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'input', role: f.receipt.consumer, content: f.native.output,
+      metadata: { contextId: f.receipt.contextId, nativeToolSource: { callId: f.receipt.callId },
+        providerInputSource: { callId: f.receipt.callId, inputIndex: 1, responseId: 'private-response' } } });
+    expect(rows?.[0].metadata).not.toHaveProperty('durableTransition');
+    f.receipt.inputIndex = 0; f.receipt.callId = 'candidate';
+    expect(await reader(f.native.receipt.receiptRef, binding)).toEqual(rows);
+  });
+  it.each(['no-call', 'duplicate-call', 'duplicate-output', 'output-before-call', 'call-name', 'call-namespace',
+    'call-arguments', 'call-type', 'output-type', 'call-id', 'output-id', 'output-content', 'wrong-index',
+    'foreign-native-pin', 'foreign-binding', 'missing-source', 'changed-request', 'headers-only'])
+  ('refuses %s tool-result provider borrowing', async fault => {
+    const f = await toolFixture();
+    if (fault === 'no-call') f.body.input.shift();
+    if (fault === 'duplicate-call') f.body.input.push(f.body.input[0]);
+    if (fault === 'duplicate-output') f.body.input.push(f.body.input[1]);
+    if (fault === 'output-before-call') { f.body.input.reverse(); f.receipt.inputIndex = 0; }
+    if (fault === 'call-name') Object.assign(f.body.input[0], { name: 'other' });
+    if (fault === 'call-namespace') Object.assign(f.body.input[0], { namespace: 'other' });
+    if (fault === 'call-arguments') Object.assign(f.body.input[0], { arguments: '{}' });
+    if (fault === 'call-type') Object.assign(f.body.input[0], { type: 'custom_tool_call', input: f.native.argumentsText });
+    if (fault === 'output-type') Object.assign(f.body.input[1], { type: 'custom_tool_call_output' });
+    if (fault === 'call-id') Object.assign(f.body.input[0], { call_id: 'other' });
+    if (fault === 'output-id') Object.assign(f.body.input[1], { call_id: 'other' });
+    if (fault === 'output-content') Object.assign(f.body.input[1], { output: 'candidate output' });
+    if (fault === 'wrong-index') f.receipt.inputIndex = 0;
+    if (fault === 'foreign-native-pin') f.receipt.outputSha256 = 'e'.repeat(64);
+    if (fault === 'missing-source') await sql`TRUNCATE harness_shared.interactive_usage_files`;
+    if (fault === 'headers-only') f.note.nativeGatewayAttemptResult = f.headers;
+    const bytes = JSON.stringify(f.body) + (fault === 'changed-request' ? ' ' : '');
+    writeFileSync(join(repoRoot, f.receipt.bodyPath), bytes);
+    if (fault !== 'changed-request') f.note.nativeGatewayAttempt.bodySha256 =
+      f.note.nativeGatewayAttemptResult.bodySha256 = createHash('sha256').update(bytes).digest('hex');
+    const note = JSON.stringify(f.note); f.receipt.reservationNoteSha256 = createHash('sha256').update(note).digest('hex');
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
+    expect(await currentBenchWorkloadProviderInputReader(f.options)(f.receipt.receiptRef,
+      fault === 'foreign-binding' ? { ...binding, trialBindingHash: 'f'.repeat(64) } : binding)).toBeNull();
   });
   it('refuses ambiguous request allocations and foreign accounting bindings before reads', async () => {
     const f = await fixture();
