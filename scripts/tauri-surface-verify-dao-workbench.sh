@@ -9,6 +9,16 @@ vh_phase mobile desktop
 echo "DAO_NATIVE_PREFLIGHT stage=harness-init elapsedSec=$SECONDS"
 vh_init dao-workbench "${DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT:-/tmp/pcv/dao-workbench}"
 vh_begin preflight
+# A lint-as-committed source clone links its dependency contents to the donor.
+# Validate the existing donor override before imports or native rig allocation;
+# verify-tauri-headless keeps that donor separate from the frozen source ref.
+DEPENDENCY_DONOR="${PAPERCUSP_REPO_DIR:-$ROOT}"
+echo "DAO_NATIVE_PREFLIGHT stage=dependency-donor elapsedSec=$SECONDS"
+if ! bash "$ROOT/papercusp-desktop/bin/lib/pinned-deps.sh" preflight "$DEPENDENCY_DONOR"; then
+  echo "DAO native dependency donor failed preflight: $DEPENDENCY_DONOR" >&2
+  echo 'For a lint-as-committed source clone, set PAPERCUSP_REPO_DIR to the canonical dependency donor; VERIFY_TAURI_SOURCE_REF still pins the tested source.' >&2
+  exit 2
+fi
 # Pin the shared result ledger and caller identity before the rig rebinds the
 # app to its disposable database/workspace. Reuse the existing ledger resolver.
 echo "DAO_NATIVE_PREFLIGHT stage=ledger elapsedSec=$SECONDS"
