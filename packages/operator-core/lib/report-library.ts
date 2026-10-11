@@ -425,6 +425,9 @@ export interface ListReportsOptions {
   subject?: { kind: ReportSubjectKind; ref?: string | null };
   /** Filter by the pot a report was WRITTEN in. */
   originHarnessSlug?: string;
+  /** Exact server-stamped author/source filters for persisted producer provenance. */
+  originOwnerId?: string;
+  source?: string;
   /** Rows must carry ALL of these tags. */
   tags?: string[];
   /** Include soft-retired rows (default false). */
@@ -454,6 +457,8 @@ export async function listReports(
     ${opts.subject?.kind ? sql`AND subject_kind = ${opts.subject.kind}` : sql``}
     ${opts.subject?.ref ? sql`AND subject_ref = ${opts.subject.ref}` : sql``}
     ${opts.originHarnessSlug ? sql`AND origin_harness_slug = ${opts.originHarnessSlug}` : sql``}
+    ${opts.originOwnerId ? sql`AND author_owner_id = ${opts.originOwnerId}` : sql``}
+    ${opts.source ? sql`AND source = ${opts.source}` : sql``}
     ${opts.tags?.length ? sql`AND tags @> ${opts.tags}::text[]` : sql``}
     ${opts.visibility ? sql`AND visibility = ${opts.visibility}` : sql``}
     ${opts.since ? sql`AND published_at >= ${opts.since}::timestamptz` : sql``}`;

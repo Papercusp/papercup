@@ -1,6 +1,7 @@
 /** Actual work_items:complete → audit capture → immutable Reports store (P-012). */
 import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
+import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -23,9 +24,20 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 const { activeWorkspaceId } = await import('./workspace-registry');
 const { createWorkItem, getWorkItem } = await import('./work-items');
 const { drainDetached } = await import('./detached-imports');
-const { getReport } = await import('./report-library');
+const { getReport, publishReport } = await import('./report-library');
 const { modeById, axisKeyFor } = await import('./modes/registry');
 const { default: complete } = await import('./agent-tools/work_items/complete');
+const { PROJECTED_DEPS } = await import('./projected-tool-deps');
+await import('./agent-tools/reports/publish');
+await import('./agent-tools/mode/set');
+await import('./agent-tools/tools/invoke');
+await import('./agent-tools/work_items/set_state');
+const publicTools = new Map(['work_items:complete', 'work_items:set_state', 'tools:invoke',
+  'reports:publish', 'mode:set'].map(name => {
+  const tool = lookupByMcpName(name);
+  if (!tool) throw new Error(`Public audit fixture requires registered tool ${name}`);
+  return [name, tool] as const;
+}));
 
 const OWNER = 'su-reports-audit-producer-fixture';
 const SESSION = 'reports-audit-producer-fixture-session';
@@ -83,10 +95,79 @@ describe('Reports audit producer against migrated private PostgreSQL', () => {
     return args;
   }
 
+  // Exercise the generic public dispatcher with its real production AUDIT
+  // admission port. Direct handler calls above cannot observe that boundary.
+  async function dispatch(name: string, args: unknown, owner = OWNER) {
+    const ctx = { uiClientId: owner, isSuperuser: true, workspaceId: activeWorkspaceId(),
+      harnessSlug: HARNESS, runId: SESSION, signal: new AbortController().signal,
+      log: () => {}, progress: () => {}, emit: () => {} } as UnifiedToolContext;
+    ctx.dispatchTool = async (nestedName, nestedArgs) => {
+      const result = await dispatch(nestedName, nestedArgs, owner);
+      return result.ok && result.result
+        ? { ...result.result, content: result.result.content ?? [] }
+        : { isError: true, content: [{ type: 'text', text: result.error?.message ?? 'dispatch failed' }],
+          _meta: { dispatchError: result.error } };
+    };
+    const tool = publicTools.get(name);
+    expect(tool, name).toBeDefined();
+    return dispatchProjectedTool(tool!, name, args, ctx, {
+      checkCapabilityEnvelope: PROJECTED_DEPS.checkCapabilityEnvelope,
+    });
+  }
+
+  it('captures the delivered audit after standalone mode exit while public subject mutations remain refused', async () => {
+    vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY', '1');
+    try {
+      const item = await seed(true);
+      const args = { ...structuredClone(terminalTemplate), id: item.id };
+      expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: false,
+        error: { code: 'capability_denied' } });
+      const nested = await dispatch('tools:invoke', { name: 'work_items:complete', args });
+      expect(nested).toMatchObject({ ok: false });
+      expect(nested.error?.message).toContain('read-only toward the audited subject');
+      expect(await dispatch('work_items:set_state', { id: item.id, state: 'done' }))
+        .toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      expect(await getWorkItem(item.id, HARNESS)).toMatchObject({ state: 'open' });
+      expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library`).toHaveLength(0);
+
+      expect(await dispatch('reports:publish', { title: item.title, kind: 'audit',
+        subject: { kind: 'work_item', ref: item.id }, body_md: 'The delivered private audit verdict.',
+        request_key: `audit-delivery:${item.id}` })).toMatchObject({ ok: true });
+      // The exit is its own successful call, never batched with completion.
+      expect(await dispatch('mode:set', { mode: 'audit', enabled: false, reason: 'Audit delivered' }))
+        .toMatchObject({ ok: true });
+      expect(await db.adminSql`SELECT mode FROM harness_shared.agent_modes
+        WHERE workspace_id = ${activeWorkspaceId()} AND owner_id = ${OWNER} AND mode = 'audit'`)
+        .toHaveLength(0);
+      expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: true });
+      await drainDetached();
+      const stored = await getWorkItem(item.id, HARNESS);
+      expect(stored).toMatchObject({ state: 'done', terminalOwner: OWNER });
+      const reference = stored!.terminalCompletionRef ?? item.id;
+      const requestKey = `capture:audit:${createHash('sha256').update(reference).digest('hex')}`;
+      const rows = await db.adminSql<Array<{ report_id: string }>>`
+        SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`;
+      expect(rows).toHaveLength(1);
+      const report = await getReport(db.adminSql, activeWorkspaceId(), rows[0].report_id, { isOwner: true });
+      expect(report).toMatchObject({ kind: 'audit', visibility: 'owner', source: 'capture:audit',
+        subject: { kind: 'work_item', ref: item.id }, origin: { authorOwnerId: OWNER,
+          harnessSlug: HARNESS, authorSessionRef: SESSION } });
+      expect(report!.bodyMd).toContain(`Source reference: ${reference}`);
+      expect(JSON.parse(report!.bodyMd.match(/```json\n([\s\S]*?)\n```/)![1])).toEqual(args.completion);
+      expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: true });
+      await drainDetached();
+      expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`)
+        .toEqual(rows);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('publishes an actual terminal audit completion with persisted source and exact verdict', async () => {
     vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY', '1');
     try {
       const item = await seed(true);
+      await publishReport(db.adminSql, { workspaceId: activeWorkspaceId(), title: item.title,
+        kind: 'audit', subject: { kind: 'work_item', ref: item.id }, bodyMd: 'Delivered audit' },
+      { authorOwnerId: OWNER, harnessSlug: HARNESS, authorSessionRef: SESSION });
       const args = await finish(item.id);
       const stored = await getWorkItem(item.id, HARNESS);
       expect(stored).toMatchObject({ state: 'done', terminalOwner: OWNER });
@@ -142,4 +223,28 @@ describe('Reports audit producer against migrated private PostgreSQL', () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it.each(['author', 'workspace', 'harness', 'subject', 'kind', 'source'] as const)(
+    'does not borrow a delivered report with mismatched %s provenance', async mismatch => {
+      vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY', '1');
+      try {
+        const item = await seed(false);
+        await publishReport(db.adminSql, {
+          workspaceId: mismatch === 'workspace' ? 'other-private-audit-workspace' : activeWorkspaceId(),
+          title: item.title, kind: mismatch === 'kind' ? 'review' : 'audit',
+          subject: { kind: 'work_item', ref: mismatch === 'subject' ? 'WI-unrelated' : item.id },
+          bodyMd: 'An unrelated delivered verdict', source: mismatch === 'source' ? 'capture:audit' : 'agent',
+        }, { authorOwnerId: mismatch === 'author' ? 'su-other-private-author' : OWNER,
+          harnessSlug: mismatch === 'harness' ? 'other-private-harness' : HARNESS, authorSessionRef: SESSION });
+        const args = { ...structuredClone(terminalTemplate), id: item.id };
+        expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: true });
+        await drainDetached();
+        expect(await getWorkItem(item.id, HARNESS)).toMatchObject({ state: 'done' });
+        const captures = await db.adminSql`SELECT report_id FROM harness_shared.report_library
+          WHERE source = 'capture:audit' AND workspace_id = ${activeWorkspaceId()}
+            AND subject_ref = ${item.id}`;
+        // The synthetic existing capture is a control input, never a new capture.
+        expect(captures).toHaveLength(mismatch === 'source' ? 1 : 0);
+      } finally { vi.unstubAllEnvs(); }
+    });
 });

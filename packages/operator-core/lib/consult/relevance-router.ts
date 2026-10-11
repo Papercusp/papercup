@@ -482,20 +482,26 @@ export function expertiseSubject(question: string): string | null {
  * make an unrelated system look like expertise. Names and dotted versions stay
  * intact; a sentence boundary needs punctuation followed by a new capitalised
  * sentence. A missing contract is unknown, never a bare-name expertise proof. */
+function subjectEvidenceAction(toolDescription?: string | null): string | null {
+  const action = toolDescription?.trim().split(/(?<=[.!?])\s+(?=[A-Z])/u, 1)[0];
+  return action ? action.slice(0, 1_500) : null;
+}
+
 export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
   if (!subject.includes(':')) return subject;
-  const action = toolDescription?.trim().split(/(?<=[.!?])\s+(?=[A-Z])/u, 1)[0];
-  return action ? `${subject}\n${action.slice(0, 1_500)}` : null;
+  const action = subjectEvidenceAction(toolDescription);
+  return action ? `${subject}\n${action}` : null;
 }
 
 export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
 export interface SubjectContract { name: string; description: string }
 
 /** Reuse tool discovery to nominate contrasting systems, never to establish
- * expertise. The crossencoder compares their actual contracts semantically. */
+ * expertise. Nominate the same primary action that the crossencoder scores:
+ * operational notes otherwise crowd real competing systems out of the cap. */
 export function subjectContrasts(subject: string, text: string, contracts: readonly SubjectContract[]): SubjectContract[] {
   const entries: ToolDiscoveryEntry[] = contracts.filter(c => c.description.trim() && categoryOf(c.name) !== categoryOf(subject))
-    .map(c => ({ tool: c.name, category: categoryOf(c.name), description: c.description,
+    .map(c => ({ tool: c.name, category: categoryOf(c.name), description: subjectEvidenceAction(c.description)!,
       status: 'available', provider: { kind: 'builtin', name: c.name } }));
   return searchTools(entries, text, { limit: SUBJECT_EVIDENCE_CONTRAST_LIMIT })
     .map(c => ({ name: c.tool, description: c.description! }));

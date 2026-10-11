@@ -121,6 +121,7 @@ import {
   hasPendingDeliberateWakeDelivery,
 } from '../../events/await/store';
 import { listActiveComposedRoots } from '../../events/await/compose-store';
+import { applyRootDeadlines } from '../../events/await/effective-deadline';
 import { getModes } from '../../modes/store';
 import { checkOpenDirectivesGuard } from '../orders/open-directives-guard';
 import {
@@ -618,6 +619,27 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
 
     expect(got).toMatchObject({ isError: false, ok: true, ended: true });
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['wake', 'expire'])('honors the composed audit root %s timeout policy for a claim holder', async (timeoutBehavior) => {
+    // The composed writer keeps the delivery anchor unbounded/expire; its root
+    // node owns the tree deadline AND policy. Exercise the shared read fold and
+    // the real claim-holder predicate, rather than mocking a ready-made guarantee.
+    const deadline = new Date(Date.now() + 900_000).toISOString();
+    listParkedAwaitsMock.mockResolvedValue(applyRootDeadlines([
+      park({ eventKey: 'composed-root:438', rootId: 438, timeoutBehavior: 'expire' }),
+    ], new Map([[438, { expiresTs: deadline, timeoutBehavior }]])));
+
+    const got = await run({});
+
+    if (timeoutBehavior === 'wake') {
+      expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+      expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+    } else {
+      expect(got.error).toBe('wake_less_claim_holder_refused');
+      expect(got.untimedWakeSources).toEqual(['composed-root:438']);
+      expect(deactivateLoopMock).not.toHaveBeenCalled();
+    }
   });
 
   it("does not count a bounded on_timeout:'expire' park as a guarantee: it lapses without waking anyone", async () => {

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 import type { ReportKind, ReportSubject } from './report-library';
+import { listReports } from './report-library';
 import { publishReportWithEffects } from './report-publication';
 import { reportsLibraryDisabled } from './agent-tools/reports/_shared';
 
@@ -63,9 +64,18 @@ export async function captureAcceptanceVerdict(options: CaptureOrigin & {
 export async function captureAuditCompletion(options: CaptureOrigin & {
   itemId: string; completionRef?: string | null; title: string; completion: { summary: string };
 }) {
-  const { getModes } = await import('./modes/store');
-  const modes = await getModes(options.workspaceId, options.ownerId);
-  if (!modes.some(mode => mode.mode === 'audit')) return null;
+  // Public dispatch correctly refuses terminal subject mutations during AUDIT.
+  // Delivery precedes its standalone exit, then completion records the result.
+  // Identify that audit from durable publication rather than a mode row already
+  // cleared by the required exit. Never infer it from a title or caller origin.
+  if (!options.workspaceId || options.workspaceId === '*' || !options.ownerId || await reportsLibraryDisabled()) return null;
+  const audits = await listReports(getOrgPg().sql, {
+    workspaceId: options.workspaceId, viewer: { ownerId: options.ownerId },
+    kind: 'audit', subject: { kind: 'work_item', ref: options.itemId },
+    originOwnerId: options.ownerId, originHarnessSlug: options.harnessSlug ?? undefined,
+    source: 'agent', limit: 1,
+  });
+  if (!audits.length) return null;
   return capture(options, 'audit', options.completionRef ?? options.itemId, options.title,
     `${options.completion.summary}\n\n\`\`\`json\n${JSON.stringify(options.completion, null, 2)}\n\`\`\``,
     'audit', { kind: 'work_item', ref: options.itemId });

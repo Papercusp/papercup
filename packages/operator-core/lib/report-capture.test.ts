@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ publish: vi.fn(), disabled: vi.fn(), modes: vi.fn(), failure: vi.fn() }));
+const mocks = vi.hoisted(() => ({ publish: vi.fn(), disabled: vi.fn(), audits: vi.fn(), failure: vi.fn() }));
 vi.mock('./report-publication', () => ({ publishReportWithEffects: mocks.publish }));
 vi.mock('./agent-tools/reports/_shared', () => ({ reportsLibraryDisabled: mocks.disabled }));
-vi.mock('./modes/store', () => ({ getModes: mocks.modes }));
+vi.mock('./report-library', () => ({ listReports: mocks.audits }));
 vi.mock('./harness/improvements/capture-core', () => ({ captureImprovement: mocks.failure }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'fixture-sql' }) }));
 import { captureCoordReport, captureAcceptanceVerdict, captureAuditCompletion } from './report-capture';
 const origin = { workspaceId: 'ws', ownerId: 'author', harnessSlug: 'pot', sessionRef: 'session' };
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.disabled.mockResolvedValue(null); mocks.modes.mockResolvedValue([{ mode: 'audit' }]);
+  vi.clearAllMocks(); mocks.disabled.mockResolvedValue(null); mocks.audits.mockResolvedValue([{ reportId: 'rpt_audit' }]);
   mocks.publish.mockResolvedValue({ report: { reportId: 'rpt_saved' }, eventEmitted: true });
   mocks.failure.mockResolvedValue({ created: true });
 });
@@ -34,12 +34,17 @@ describe('Reports capture adapters', () => {
     expect(first.bodyMd).toContain('accepted');
     expect(mocks.publish.mock.calls[1][1].requestKey).not.toBe(first.requestKey);
   });
-  it('captures a completed audit only when the author holds audit mode', async () => {
+  it('captures a completed audit from exact persisted publication after audit mode exit', async () => {
     const input = { ...origin, itemId: 'WI-1', title: 'Program audit', completion: { summary: 'Measured verdict', testResult: 'passed' } };
     await captureAuditCompletion(input);
     expect(mocks.publish.mock.calls[0][1]).toMatchObject({ kind: 'audit', subject: { kind: 'work_item', ref: 'WI-1' } });
     expect(mocks.publish.mock.calls[0][1].bodyMd).toContain('testResult');
-    mocks.publish.mockClear(); mocks.modes.mockResolvedValue([]);
+    expect(mocks.audits).toHaveBeenCalledWith('fixture-sql', {
+      workspaceId: 'ws', viewer: { ownerId: 'author' }, kind: 'audit',
+      subject: { kind: 'work_item', ref: 'WI-1' }, originOwnerId: 'author',
+      originHarnessSlug: 'pot', source: 'agent', limit: 1,
+    });
+    mocks.publish.mockClear(); mocks.audits.mockResolvedValue([]);
     expect(await captureAuditCompletion(input)).toBeNull(); expect(mocks.publish).not.toHaveBeenCalled();
   });
   it('honors the kill switch and files a source-addressable failure without failing the original verdict', async () => {

@@ -17,6 +17,7 @@ import { readPlanAdmissionGovernanceSnapshot } from '../packages/operator-core/l
 import { getPlanRow } from '../packages/operator-core/lib/agent-tools/plans/source.ts';
 import { readNativeHostHealth } from './fixtures/dao-workbench-identity.mjs';
 import { WORKBENCH_FIELD_SELECTOR, workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from './lib/dao-workbench-controls.ts';
+import { DAO_SECTIONS } from '../apps/operator-vite/src/components/dao/dao-navigation.ts';
 
 if (process.argv.includes('--check-imports')) {
   assert.equal(typeof authorHivePolicy, 'function'); assert.equal(typeof getPlanRow, 'function');
@@ -150,13 +151,12 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       wait("location.pathname==='/daos' && new URLSearchParams(location.search).get('dao')==='workbench-native' && !!document.querySelector('.dao-governance')");
       }
       ctx.markStep('nineteen-sections-and-responsive-layout');
-      const sections = [
-        ['directory', 'Discover DAOs'], ['overview', 'Overview'], ['join', 'Membership'], ['members', 'Members'],
-        ['proposals', 'Proposals'], ['vote', 'Voting'], ['delegation', 'Delegation'], ['work', 'Projects'],
-        ['jobs', 'Jobs & agents'], ['treasury', 'Treasury'], ['funding', 'Funding'], ['billing', 'Billing'],
-        ['ownership', 'Ownership'], ['returns', 'Returns'], ['reputation', 'Contributions'],
-        ['marketplace', 'Marketplace'], ['records', 'Records'], ['settings', 'Settings'], ['inbox', 'Inbox'],
-      ];
+      const sections = DAO_SECTIONS.map(({ id, label }) => [id, label]);
+      assert.deepEqual(sections.map(([id]) => id), [
+        'directory', 'overview', 'join', 'members', 'proposals', 'vote', 'delegation', 'work',
+        'jobs', 'treasury', 'funding', 'billing', 'ownership', 'returns', 'reputation',
+        'marketplace', 'records', 'settings', 'inbox',
+      ], 'Native acceptance must cover every required Workbench area');
       for (const [id, heading] of sections) {
         ev(`window.__TSR_ROUTER__.navigate({to:'/daos',search:{dao:${JSON.stringify(slug)},daoSection:${JSON.stringify(id)}}})`);
         wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && document.querySelector('.dao-page-header h1')?.textContent===${JSON.stringify(heading)}`);
