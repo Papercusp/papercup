@@ -98,6 +98,9 @@ function makeIntegration(): string {
     { recursive: true },
   );
   writeFileSync(join(root, 'node_modules/pkg/index.js'), 'root-v1\n');
+  // A real install: the publish-time lock-vs-tree audit (WI-6554700010008514) requires
+  // every locked package to carry package.json at its locked version (PKG below locks 1.0.0).
+  writeFileSync(join(root, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'package-lock.json'),
     '{"name":"fixture","lockfileVersion":3,"packages":{}}\n',
@@ -1946,6 +1949,41 @@ exec /bin/cp "$@"
     );
   });
 
+  // WI-6554700010008514: v1-7c590a4e was published from a root missing
+  // node_modules/sharp/node_modules/semver and indexed under input 8f48c4a6, so every gate
+  // run sharing that key failed `npm ls`. The publish now audits the copied trees against
+  // the lockfiles they were copied under and refuses (infra rc75) instead of publishing.
+  it('WI-6554700010008514: refuses (rc75) a source whose trees do not realise its lockfile, and publishes nothing', () => {
+    const integration = makeIntegration();
+    // The fixture installs pkg@1.0.0; this lock claims 2.0.0 plus a never-installed package.
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      `${JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'fixture' },
+          'node_modules/pkg': { version: '2.0.0' },
+          'node_modules/never-installed': { version: '1.0.0' },
+          'node_modules/optional-absent': { version: '1.0.0', optional: true },
+        },
+      })}\n`,
+    );
+
+    const result = publish(integration);
+
+    expect(result.status).toBe(75);
+    expect(result.stderr).toContain(
+      'LOCK_TREE_DEFECT\tversion-mismatch\tnode_modules/pkg\tlocked 2.0.0 installed 1.0.0',
+    );
+    expect(result.stderr).toContain('LOCK_TREE_DEFECT\tmissing\tnode_modules/never-installed\tlocked 1.0.0');
+    // npm skips optional packages that do not fit the platform: absence is not a defect.
+    expect(result.stderr).not.toContain('optional-absent');
+    expect(result.stderr).toContain('refusing to publish');
+    expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('refuses a torn source with rc75 and publishes no partial generation', () => {
     const integration = makeIntegration();
     const source = join(integration, 'node_modules/pkg/index.js');
@@ -2529,6 +2567,9 @@ exec /bin/cp "$@"
       join(integration, 'package-lock.json'),
       '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new-input":{}}}\n',
     );
+    // The new lock entry is installed, as a real install would leave it (lock-tree audit).
+    mkdirSync(join(integration, 'node_modules/new-input'), { recursive: true });
+    writeFileSync(join(integration, 'node_modules/new-input/package.json'), '{"name":"new-input"}\n');
     writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'new-generation\n');
     const second = publish(integration, {
       DEPENDENCY_GENERATION_RETAIN_COUNT: '1',

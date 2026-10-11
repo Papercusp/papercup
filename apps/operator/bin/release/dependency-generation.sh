@@ -392,10 +392,10 @@ dependency_generation_enumerate_node_modules() {
   # those copies have no committed lock at the emitted path. Source generations
   # include the desktop's own node_modules and ordinary source dirs named sidecar.
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
-    [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
+    { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
       case "$dir" in .next|.next/*|*/.next|*/.next/*) continue ;; esac
-      if [ -d "$root/$dir/node_modules" ] \
+      if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
         && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
         printf '%s\n' "$root/$dir/node_modules"
       fi
@@ -411,7 +411,7 @@ dependency_generation_enumerate_node_modules() {
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
       -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
       -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \
-    \( -type d -name node_modules -prune -print \) \
+    \( \( -type d -o -type l \) -name node_modules -prune -print \) \
     | while IFS= read -r dir; do
         dependency_generation_is_foreign_checkout "$root" "$dir" && continue
         printf '%s\n' "$dir"
@@ -2881,10 +2881,31 @@ dependency_generation_ensure() {
   done
 }
 
+# Copy the input lockfiles of `root` into `dest` (same relative paths) BEFORE the trees are
+# copied. The audit below must judge the copied trees against the lockfiles they were
+# copied under: the generation is indexed under its PRE-build inputs, and a peer may
+# rewrite a live lockfile mid-copy (an ordinary tracked file the install mutex does not
+# cover). Auditing the live lockfiles after the copy refused a correct build on that drift.
+dependency_generation_snapshot_lockfiles() {
+  local root="$1" dest="$2" manifest rel digest
+  manifest="$(dependency_generation_input_manifest "$root")" || return 1
+  mkdir -p -- "$dest" || return 1
+  while IFS=$'\t' read -r rel digest; do
+    [ -n "$rel" ] || continue
+    case "${rel##*/}" in
+      package-lock.json|npm-shrinkwrap.json) ;;
+      *) continue ;;
+    esac
+    mkdir -p -- "$dest/$(dirname -- "$rel")" || return 1
+    cp -- "$root/$rel" "$dest/$rel" || return 1
+  done <<< "$manifest"
+}
+
 # Lock-vs-tree completeness audit (WI-6554700010008514): every installed lock entry of
 # every input lockfile must be present in `tree` at its locked version. Lockfiles are read
-# from `lock_root` (the build's integration root, whose inputs key the generation). Logs
-# the helper's summary + defect lines; returns 0 complete, non-zero otherwise.
+# from `lock_root` — the pre-copy snapshot taken by dependency_generation_snapshot_lockfiles,
+# whose inputs key the generation. Logs the helper's summary + defect lines; returns 0
+# complete, non-zero otherwise.
 dependency_generation_audit_lock_tree() {
   local tree="$1" lock_root="$2" manifest_file rc=0 output line
   local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
@@ -2931,6 +2952,13 @@ dependency_generation_ensure_once() {
   after_manifest="$build/.source-after"
   mkdir -p "$tree"
   dependency_generation_write_owner "$build/.papercusp-generation-writer"
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    dependency_generation_snapshot_lockfiles "$integration_root" "$build/.lock-inputs" || {
+      dependency_generation_log 'FATAL: could not snapshot the input lockfiles before copy'
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+  fi
   dependency_generation_log 'capturing live dependency manifest (before copy)'
   phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_set_manifest "$integration_root" > "$before_manifest" || {
@@ -3188,7 +3216,7 @@ dependency_generation_ensure_once() {
   # fault, not a verdict on the candidate under test.
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
     phase_started_ms="$(dependency_generation_now_ms)"
-    if ! dependency_generation_audit_lock_tree "$tree" "$integration_root"; then
+    if ! dependency_generation_audit_lock_tree "$tree" "$build/.lock-inputs"; then
       dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" failed
       dependency_generation_emit_summary \
         lock-tree-incomplete "$total_started_ms" "$source_after" "$identity" \
@@ -3199,6 +3227,7 @@ dependency_generation_ensure_once() {
       return 75
     fi
     dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
+    rm -rf -- "$build/.lock-inputs"
   fi
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
