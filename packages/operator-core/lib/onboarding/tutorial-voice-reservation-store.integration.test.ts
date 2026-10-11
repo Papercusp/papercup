@@ -301,16 +301,16 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
     await db.adminSql.begin(tx => enrollAccountTutorial(tx as unknown as Sql,
       { tenantId: organization.id, userId: user.id }));
-    // Exercise composition with a registered flag as a fixture policy; this
-    // does not designate that flag as the production tutorial policy.
+    // Exercise the actual tutorial policy; only explicit persisted approval
+    // authorizes provider verification, regardless of bundled defaults.
     let providerChecks = 0; let providerEvidence = true; let expireDuringProvider = false;
     const readAuthority = createTutorialVoiceAuthorityReader({ identityProvider: provider,
-      policyFlag: FLAGS.ENDPOINT_AUTH_TIERS, verifyProviderLimits: async () => {
+      policyFlag: FLAGS.TUTORIAL_VOICE_ISSUANCE, verifyProviderLimits: async () => {
         providerChecks++;
         if (expireDuringProvider) upstreamExpired = true;
         return providerEvidence ? authority() : null;
       } });
-    for (const payload of [{}, { [FLAGS.ENDPOINT_AUTH_TIERS]: false }]) {
+    for (const payload of [{}, { [FLAGS.TUTORIAL_VOICE_ISSUANCE]: false }]) {
       await db.adminSql`INSERT INTO harness_shared.operator_flag_overrides (workspace_id, payload)
         VALUES ('@global', ${db.adminSql.json(payload)}) ON CONFLICT (workspace_id)
         DO UPDATE SET payload = EXCLUDED.payload`;
@@ -318,7 +318,7 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     }
     expect(providerChecks).toBe(0);
     await db.adminSql`UPDATE harness_shared.operator_flag_overrides
-      SET payload = ${db.adminSql.json({ [FLAGS.ENDPOINT_AUTH_TIERS]: true })} WHERE workspace_id = '@global'`;
+      SET payload = ${db.adminSql.json({ [FLAGS.TUTORIAL_VOICE_ISSUANCE]: true })} WHERE workspace_id = '@global'`;
     providerEvidence = false;
     expect(await run(tx => readAuthority(tx, input))).toBeNull();
     providerEvidence = true;
