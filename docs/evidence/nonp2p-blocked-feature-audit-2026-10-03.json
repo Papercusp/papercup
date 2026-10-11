@@ -5796,7 +5796,178 @@
      "summary": "plan lane iphone-public-release-2026-08-11#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "iphoneP009EvidenceQualification": {
+    "status": "retained-source-and-candidate-evidence-qualified-not-accepted",
+    "qualifiedAt": "2026-10-11T11:07:55.453208+00:00",
+    "workItem": "WI-10005820",
+    "sourceAuthority": {
+     "plan": "iphone-public-release-2026-08-11",
+     "item": "P-009",
+     "version": 86,
+     "contentHash": "6192e3634380dddea809f42953af4bd80f7ca4deec86fcbafae52bf09ce6069c",
+     "observedAt": "2026-10-11T10:35:49.993Z",
+     "sourceRecord": "WI-10005820#comment:1174062",
+     "planState": "active",
+     "itemState": "todo",
+     "directDependencies": [
+      "P-007"
+     ],
+     "dependencyQualification": "P-007 was DONE/effective DONE and unresolvedBlockers was empty in the saved full read. D-025 removes P-008 only as a start blocker; it retains actual native, pairing and hardware evidence. These observations qualify the original version52 dependency snapshot without replacing its historical fields or accepting P-009.",
+     "decisions": [
+      "D-023",
+      "D-024",
+      "D-025"
+     ],
+     "fullItemBoundary": "Maintain current-Xcode/iOS-SDK CI, regenerated native bindings/slices, Rust quality checks, Swift unit tests, positive actual paired XCUITest, token/privacy/static checks and exact-candidate archive validation. D-023 separately requires an exact-source clean signed validated archive and exactly one retained IPA bound by bytes/hash. D-024 permits manual-download readiness independently of store milestones.",
+     "executionOwnership": "Existing iphone-release fleet owns the native and reviewer lanes; this PERSONAL audit makes no child claim or acceptance change."
+    },
+    "specs": [
+     {
+      "specId": "AUTO-BAR-R-3-P-009",
+      "revision": 2,
+      "contentHash": "9f56646fcc2bf339c9c57176f1e0b4d1857b52e4190c2303071a3e8b94f742aa",
+      "status": "draft",
+      "requiredEvidence": [
+       "tree"
+      ],
+      "requiredTestLayers": [
+       "e2e",
+       "unit"
+      ]
+     },
+     {
+      "specId": "AUTO-REQ-M-001-P-009",
+      "revision": 2,
+      "contentHash": "08ac938f13f40792099d6e2ba3d7ae74094480b222fb32811dddb00ebfe471aa",
+      "status": "active",
+      "requiredTestLayers": [
+       "integration"
+      ],
+      "requirement": "Current source, executed receipts and source-bound comparison; positive native counts, current accepted SDK and exact candidate."
+     }
+    ],
+    "bindingQualification": {
+     "sourceRecord": "WI-10005820#comment:1174062",
+     "evidenceRows": 0,
+     "truncatedByLimit": false,
+     "scope": "Two saved reads of the exact consumer/clause binding plane, the second corroborating the first after a proxy-degradation warning. Empty registered bindings do not establish absence of native artifacts or wider proof."
+    },
+    "subjectQualification": {
+     "observedAt": "2026-10-11T10:35:49.993Z",
+     "state": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHash": "2b227fdb6d3c",
+     "checkpointSubjectStatus": "mismatch",
+     "currentSubjectSha256": "b86ef82ab02642f69edbf4b64244431a607eec7f885695861c3edfc3ef3dee11",
+     "storedSubjectSha256": "3d27f66b0ebd96654c75fa84fb06efbcfcbddb947e1f3f37b2ea18f9f9d8a941",
+     "scope": "Dated full subject read saved in1174062; the older checkpoint is not current-subject acceptance."
+    },
+    "implementationQualification": {
+     "sourceHarness": "papercup-rust-mobile",
+     "sourceRootResolution": "Workspace-global harness:list declared canonical repository path, qualified in1174074; source pins below are relative to that root.",
+     "sourceRecords": [
+      "WI-10005820#comment:1174074",
+      "WI-10005820#comment:1174086"
+     ],
+     "executor": "The maintained tools/ios-ci.py regenerates the build, removes stale unit bundles, executes selected smoke cases and an optional exact paired case, retains summaries/screenshots, validates the archive and checks source identity again. Signed delivery reserves the build number, validates the exported profile, requires one regular IPA and emits a signed manifest only after successful cleanup.",
+     "guards": "Shared source identity includes tracked/untracked source and recursive submodule identity. The XCTest classifier requires integer positive passed counts and zero failed/skipped tests. Conventional test source covers preflight-only success, skipped/empty results, artifact tampering, source drift, exact paired/private input, stale unit evidence, signed cleanup failure and retention.",
+     "proofBoundary": "Source and test-source inspection only; no new test execution or native candidate acceptance. Reuse the maintained executor, signing, archive validation and manifest surfaces; no new workflow or parallel qualification system."
+    },
+    "currentFilePins": [
+     {
+      "path": "tools/ios-ci.py",
+      "sha256": "29c087c18b42cc8ed57cf4a1008358a331b9ddbecc46ac77fddafba8b603b4ee"
+     },
+     {
+      "path": "tools/android-ci.py",
+      "sha256": "5f9f96dab87c81ee4bc8f92186467ff1bfc15d728d14cb07be945e5b3a519ec3"
+     },
+     {
+      "path": "tools/run-ios-tests.sh",
+      "sha256": "fa571fa4de2531c27a1ca46e41833ac2e79afb6e20ce441bccad2a33c7ba0b82"
+     },
+     {
+      "path": "tools/build-scripts/validate-ios-archive.py",
+      "sha256": "cf78b231b6a638f8efad1fe1d479265616f29a32b17b1b46fe79d28620e76dbe"
+     },
+     {
+      "path": "tools/build-scripts/check-xctest-summary.py",
+      "sha256": "8093276f7f5d3526ec173784dce32dea8242782d80cbcb9865ede684e2d1d898"
+     },
+     {
+      "path": "tools/tests/ios-ci-runner-test.py",
+      "sha256": "0ca30ff7a31914c944e1e885660e1b8c8d9e6f0e6d9b011fdfffad2ced6bb049"
+     },
+     {
+      "path": "tools/tests/run-ios-tests-test.sh",
+      "sha256": "5a0076a0cc76292133bea3e916c5e8a2031c69152ff13ab1f2180dba7e0988ba"
+     },
+     {
+      "path": "tools/tests/validate-ios-archive-test.sh",
+      "sha256": "9e3accc4eec550a9a6179a9dcb4702b06591c370e216366c611121619435d6ab"
+     }
+    ],
+    "candidateReceiptQualification": {
+     "sourceRecord": "WI-10005820#comment:1174092",
+     "receipts": [
+      {
+       "path": "docs/evidence/iphone-native-candidate-44e0670-2026-10-01.json",
+       "sha256": "39e3b5d83290178f9c75668b4561b7a7e636b333f956ca2092d80b24f49f838f",
+       "candidateSha": "44e0670c9d94f29c39c84eba68c4f167fdf0bf3f",
+       "retainedZipSha256": "911f626052683c4f3fe0a0712aa2f0cd97addcc5e9e54a3276c0be583b581a0d",
+       "zipDigestIndependentlyMatched": true,
+       "smokeSummarySha256": "73a44688f27abc189178114272b9278ef3066ee350a0efc937151afb5e4947db",
+       "screenshotSha256": "8d561a8d5b6b4c85b09e5bf7f79fe16381ba1f194c428d9a1a6c0c4971d005cd"
+      },
+      {
+       "path": "docs/evidence/iphone-native-candidate-f961aff-2026-10-01.json",
+       "sha256": "d17da3708d5ae78537a9109ff953829a0629e55b6675c7ff4221e499bf1a547a",
+       "candidateSha": "f961aff81938c4402fa813f97843175b843d106a",
+       "retainedZipSha256": "ffca0d08bb57b85e3483b6547d57de45d1336a9396a94ea31fa7d4f8233a06bc",
+       "zipDigestIndependentlyMatched": true,
+       "smokeSummarySha256": "5bced66d43a4fc5cb8dd472d3ca00f95fc99cfe5a625ede61d38c8235040f104",
+       "screenshotSha256": "d4c9a225bfbf767e3351b7e6c89f1e1154396bd56c901ed5261fac5b58bddfce"
+      },
+      {
+       "path": "docs/evidence/iphone-native-candidate-043c02a-2026-10-01.json",
+       "sha256": "4c7845dbef624c5d2cf7b5d9e8c63a8b6f28eb58e12052dac8233346b8f9685f",
+       "candidateSha": "043c02a8851706cf35ff45b5d0645741f035a49d",
+       "zipDigestIndependentlyMatched": false,
+       "retentionBoundary": "Extracted candidate directory inspected; original ZIP and GitHub artifact digest not independently verified.",
+       "smokeSummarySha256": "5d30e3a0b0bb7a596ce380ed3f27f4c6cab8598293148930cc662db827c63717"
+      }
+     ],
+     "independentlyInspected": "Saved1174092 inspected retained source-sha, Xcode metadata, smoke summaries, unsigned archive Info.plist and application binary bytes. Each source-sha names its candidate; each summary reports1passed/0failed/0skipped. The summary does not name the case; its clean-install classification comes from the attributed receipt.",
+     "sdkReadback": {
+      "pathWithinCandidate": "ci-release/ios-sdk.txt",
+      "candidateCount": 3,
+      "bytes": "26.5\n",
+      "sha256": "25205f2e2f02dc71036ee827e19c49b893b231a3d1af240e35a3ac55aa8cdcb6",
+      "scope": "Retained dated metadata read in this continuation; no present accepted-SDK revalidation."
+     },
+     "visualReadback": "Both retained1206x2622 PNGs were viewed in this continuation. Each shows an unpaired launch screen with desktop Settings/Remote access/Pair a phone guidance, Scan QR, Paste manually, Privacy and Support. This supports the guidance screenshot only, not an executed paired journey or durable reviewer access.",
+     "reportedOnly": "Stored receipts report39Swift unit tests and successful CI jobs/binding generation; original CI logs and native execution were not replayed. Peer1160977 separately reports58Swift tests at93fbe5c/job112562965171/run37550001258 with an unrelated Android failure; this was not independently promoted to current native acceptance.",
+     "archiveBoundary": "Inspected archives name arm64/com.papercuspai.operator.mobile/version1.0.0/build1 with empty SigningIdentity/Team. Shared application binary SHA d282e9ff68a840e7a3ad5400a28fa33b4011d47318e2e092054be19656cf86d6 alone neither proves nor refutes source-to-build causality.",
+     "notEstablished": [
+      "actual paired XCUITest",
+      "LAN/cellular native journey",
+      "physical iPhone and production APNs",
+      "paired candidate screenshots and durable reviewer access",
+      "signed export privacy report and live consent",
+      "distribution rights clearance",
+      "signed IPA export, Apple processing and TestFlight",
+      "Apple approval and public App Store install"
+     ]
+    },
+    "historicalPhone9Qualification": {
+     "status": "unresolved-separate-reference",
+     "ref": "WI-10005203#comment:1156678",
+     "scope": "Historical Phone9/R68 carry claim was not recovered by the saved exact lookup; machine carry echoes are not proof. Do not equate it with iPhone plan revision86 or infer missing history from an unresolved ref."
+    },
+    "auditBoundary": "Only this additive row37 qualification; original historical fields, all172 prior rows, exclusions, peer claims and the unresolved200/172 population reconciliation are preserved. No child state/hold changes, native or test run, provider/gate action, killed-goal renewal, whole-audit acceptance or shipment."
+   }
   },
   {
    "id": "WI-10004737",
