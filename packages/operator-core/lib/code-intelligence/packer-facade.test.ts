@@ -144,8 +144,8 @@ describe('native P021 symbol/source bundle evidence boundary', () => {
       sourceScope: { ...evidence.sourceScope, sourceFingerprint: 'inputs', supportingFiles: [
         { path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' },
         { path: 'credentials.ts', contentHash: secretHash, language: 'typescript', representation: 'full-source' }] },
-      siteIdentities: answer.sites.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
-        contentHash: site.path === 'target.ts' ? contentHash : secretHash, versionedSymbolId: `identity-${siteIndex}` })),
+      siteIdentities: answer.sites.map((location, siteIndex) => ({ siteIndex, sourcePath: location.path,
+        contentHash: location.path === 'target.ts' ? contentHash : secretHash, versionedSymbolId: `identity-${siteIndex}` })),
       relationships: answer.sites.map((_site, siteIndex) => ({ siteIndex, kind: 'callers', origin: 'syntax', knowledge: 'inferred', runtimeExecution: 'unknown' })) } };
     let document = '';
     const run = () => nativeChangeReport({ rootPath: root, include: ['target.ts'] }, { symbol: 'target', file: 'target.ts' },
