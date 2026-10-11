@@ -1123,7 +1123,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     // EI-8393: kept tight — this rule is the single biggest driver of the P-013
     // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Call `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains or you are blocked; otherwise ending without the loop parks you until a leader wake (EI-8318).',
+    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn. `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains and you hold no claims, else you park until a leader wake (EI-8318).',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
@@ -1131,7 +1131,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of next `scheduler:get_next` pull and loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+    body: 'A released item can re-surface at the top of the next `scheduler:get_next` pull. If it reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
