@@ -33,6 +33,7 @@ import type { PendingQuery, Row, Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { observeFallback as recordFallback } from '../../degradation/fallback-observations';
 import { RRF_K_DEFAULT, rrfCombine } from '@papercusp/rrf';
 import { BM25_CORPORA, bm25Corpus, renderBm25TextExpr, type Bm25Corpus, type Bm25CorpusTable } from './corpora';
 
@@ -314,11 +315,15 @@ export async function runBm25TopK<R>(
   req: Bm25TopKRequest,
   run: (topK: SqlFragment) => Promise<R[]>,
   distanceOf: (row: R) => number,
+  observeFallback: typeof recordFallback = recordFallback,
 ): Promise<R[]> {
   const rows = await run(bm25TopK(sql, req));
   if (!req.scanScore) return rows;
   const distances = rows.map(distanceOf);
-  if (distances.length >= 2 && distances.some((d) => d !== distances[0])) return rows;
+  if (distances.length >= 2 && distances.some((d) => d !== distances[0])) {
+    observeFallback('bm25-scan-score', { eligible: 1, applied: 1, reason: 'applied' });
+    return rows;
+  }
   const [best] = (await exec`${bm25TopK(sql, { ...req, scanScore: null, columns: sql`1 AS one`, limit: 1 })}`) as unknown as Array<{
     bm25_d: number;
   }>;
@@ -328,7 +333,11 @@ export async function runBm25TopK<R>(
     want === null
       ? got === null
       : got !== null && Math.abs(got - want) <= SCAN_SCORE_TOLERANCE * Math.max(1, Math.abs(want));
-  if (agree) return rows;
+  if (agree) {
+    observeFallback('bm25-scan-score', { eligible: 1, applied: 1, reason: 'applied' });
+    return rows;
+  }
+  observeFallback('bm25-scan-score', { eligible: 1, applied: 0, reason: 'scan-score-disagreement' });
   state.scanScoreFallbacks += 1;
   const now = Date.now();
   if (now - state.scanScoreFallbackWarnedAt >= SCAN_SCORE_WARN_INTERVAL_MS) {
@@ -464,6 +473,37 @@ export function fuseByPosition<T>(lists: ReadonlyArray<PositionedList<T>>): Arra
  * BM25 + cosine carry it.
  */
 export const EXACT_LIST_MAX_AND_ROWS = 5000;
+
+/**
+ * The exact companion list's identities and cover-density scores. D-033: count and rank
+ * one bounded materialization instead of scanning the same indexed match set twice.
+ * Callers hydrate only these top identities. Above the cap the whole exact list is empty;
+ * ranking an arbitrary truncated subset would change D-016's recall contract.
+ */
+export function boundedExactTopK(sql: Sql, req: {
+  columns: SqlFragment;
+  from: SqlFragment;
+  where: SqlFragment;
+  tsv: SqlFragment;
+  query: string;
+  limit: number;
+  /** Test seam; production callers use the unchanged D-016 cap. */
+  maxMatches?: number;
+}): SqlFragment {
+  const cap = req.maxMatches ?? EXACT_LIST_MAX_AND_ROWS;
+  return sql`
+    WITH exact_query AS (SELECT plainto_tsquery('english', ${req.query}) AS tq),
+    exact_candidates AS MATERIALIZED (
+      SELECT ${req.columns}, ${req.tsv} AS exact_tsv
+        FROM ${req.from}, exact_query q
+       WHERE ${req.where} AND ${req.tsv} @@ q.tq
+       LIMIT ${cap + 1}
+    )
+    SELECT c.*, ts_rank_cd(c.exact_tsv, q.tq) AS exact_rank
+      FROM exact_candidates c, exact_query q
+     WHERE (SELECT count(*) FROM exact_candidates) <= ${cap}
+  ORDER BY exact_rank DESC LIMIT ${req.limit}`;
+}
 
 /**
  * Merge a source's EXACT list (legacy AND + `ts_rank_cd`) with its BM25 list for the
