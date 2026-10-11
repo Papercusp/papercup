@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 type SettleVerifiedAwaitTimeoutInput = {
   id: number;
@@ -2336,13 +2337,29 @@ describe('WI-10008194 — every pump / sweep run reports its outcome to pump hea
     expect(tracker.recordFailure).not.toHaveBeenCalled();
   });
 
+  it('pumps parked coordination retries under the shared workspace context', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ workspaceId: DEFAULT_COORD_WORKSPACE, attempts: 1 }),
+    ]);
+    await sweepAllWorkspaces();
+    expect(h.admitSpawn).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId: DEFAULT_COORD_WORKSPACE,
+      role: 'await-wake',
+    });
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'pump');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+
   it('the production sweeper records a sweep FAILURE without throwing, and a sweep SUCCESS when it completes', async () => {
     h.store.compactSupersededLoopDeliveries.mockRejectedValueOnce(OUTAGE);
     await expect(sweepAllWorkspaces()).resolves.toBeUndefined();
-    expect(tracker.recordFailure).toHaveBeenCalledWith('ws-test', 'sweep', OUTAGE);
+    expect(tracker.recordFailure).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'sweep', OUTAGE);
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
 
     tracker.recordFailure.mockReset();
     await sweepAllWorkspaces();
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'sweep');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'pump');
     expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
     expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
     expect(tracker.recordFailure).not.toHaveBeenCalledWith('ws-test', 'sweep', expect.anything());
