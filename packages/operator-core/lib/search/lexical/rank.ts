@@ -467,10 +467,20 @@ export const EXACT_LIST_MAX_AND_ROWS = 5000;
 
 /**
  * Merge a source's EXACT list (legacy AND + `ts_rank_cd`) with its BM25 list for the
- * SAME corpus by reciprocal-rank fusion, keyed by row identity so a row both lists
- * found is counted once with both contributions. Ties keep the exact list's order
- * (it is passed first), and each returned row's `rank` is its fused score, so the
- * caller's best-first order and its scores agree. Returns at most `limit` rows.
+ * SAME corpus by INTERLEAVING them: BM25 row 1, exact row 1, BM25 row 2, exact row 2, …
+ * A row both lists hold appears once, at its earlier slot. Returns at most `limit` rows.
+ *
+ * Why not reciprocal-rank fusion (plan bm25-lexical-search-evoke-adoption-2026-10-10,
+ * D-032): RRF rewards a row found by both lists, so an EXACT-ONLY row sorts below every
+ * overlap row. Measured on R-13 run 12: a verbatim fragment's target was exact rank 1
+ * and BM25 rank 58; 21 rows of the two top-30 lists overlapped, each scoring at least
+ * 2/90 against the target's 1/61, so the merged leg carried the target at position 22
+ * and the hybrid top 10 lost it. The interleave bounds every row by its better list: a
+ * row at rank r in the exact list lands at position <= 2r, a BM25 rank-r row at <= 2r-1.
+ * BM25 goes first because BM25 is the plan's ranking (R-1).
+ *
+ * Each returned row's `rank` is `1 / (RRF_K_DEFAULT + position)`, so the caller's
+ * best-first order and its scores agree and no raw score of either list leaks (R-16).
  */
 export function mergeExactAndBm25<T extends { rank: number }>(
   exact: readonly T[],
@@ -478,11 +488,19 @@ export function mergeExactAndBm25<T extends { rank: number }>(
   key: (row: T) => string,
   limit: number,
 ): T[] {
-  const fused = rrfCombine([
-    { name: 'exact', list: exact.map(row => ({ key: key(row), score: row.rank, row })) },
-    { name: 'bm25', list: bm25.map(row => ({ key: key(row), score: row.rank, row })) },
-  ]);
-  return fused.slice(0, Math.max(0, limit)).map(f => ({ ...f.row, rank: f.score }));
+  const cap = Math.max(0, limit);
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < Math.max(exact.length, bm25.length) && out.length < cap; i += 1) {
+    for (const row of [bm25[i], exact[i]]) {
+      if (row === undefined || out.length >= cap) continue;
+      const k = key(row);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(row);
+    }
+  }
+  return out.map((row, i) => ({ ...row, rank: 1 / (RRF_K_DEFAULT + i + 1) }));
 }
 
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
