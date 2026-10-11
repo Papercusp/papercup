@@ -22,45 +22,8 @@
  *   connection's account, so a mis-pointed profile can never create resources in another
  *   account; the region is bound by construction of the regional clients.
  */
-import {
-  AttachVolumeCommand,
-  CancelSpotInstanceRequestsCommand,
-  CreateSnapshotCommand,
-  CreateVolumeCommand,
-  DeleteVolumeCommand,
-  DescribeAvailabilityZonesCommand,
-  DescribeImagesCommand,
-  DescribeInstanceStatusCommand,
-  DescribeInstanceTypesCommand,
-  DescribeInstancesCommand,
-  DescribeRegionsCommand,
-  DescribeSecurityGroupsCommand,
-  DescribeSnapshotsCommand,
-  DescribeSpotInstanceRequestsCommand,
-  DescribeSubnetsCommand,
-  DescribeVolumesCommand,
-  DetachVolumeCommand,
-  EC2Client,
-  GetConsoleOutputCommand,
-  RebootInstancesCommand,
-  RunInstancesCommand,
-  StartInstancesCommand,
-  StopInstancesCommand,
-  TerminateInstancesCommand,
-  waitUntilInstanceRunning,
-  waitUntilInstanceStopped,
-  waitUntilInstanceTerminated,
-  waitUntilSnapshotCompleted,
-  waitUntilVolumeAvailable,
-  waitUntilVolumeDeleted,
-  waitUntilVolumeInUse,
-  type _InstanceType,
-  type Image,
-  type Instance,
-  type InstanceTypeInfo,
-  type Snapshot,
-  type Volume,
-} from '@aws-sdk/client-ec2';
+import { createRequire } from 'node:module';
+import type { _InstanceType, Image, Instance, InstanceTypeInfo, Snapshot, Volume, EC2Client } from '@aws-sdk/client-ec2';
 import { type ContextEntry, GetRoleCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
 import { DescribeKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
@@ -69,13 +32,7 @@ import {
   GetServiceQuotaCommand,
   ServiceQuotasClient,
 } from '@aws-sdk/client-service-quotas';
-import {
-  DescribeInstanceInformationCommand,
-  GetCommandInvocationCommand,
-  SendCommandCommand,
-  SSMClient,
-  waitUntilCommandExecuted,
-} from '@aws-sdk/client-ssm';
+import type { SSMClient } from '@aws-sdk/client-ssm';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   awsWorkspaceHostManagedFilters,
@@ -146,6 +103,15 @@ import {
   AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS,
   parseAwsAmiReleaseDescription,
 } from './aws-ami-release';
+
+// These SDKs are external in HOST: static imports are hoisted even from lazy internal modules.
+// Free literal require calls also let desktop esbuild include the SDKs. Source
+// ESM uses the fallback; Node caches each package after its first real use.
+const requireSdk = createRequire(import.meta.url);
+const ec2Sdk = () => (typeof require === 'function' ? require('@aws-sdk/client-ec2') :
+  requireSdk('@aws-sdk/client-ec2')) as typeof import('@aws-sdk/client-ec2');
+const ssmSdk = () => (typeof require === 'function' ? require('@aws-sdk/client-ssm') :
+  requireSdk('@aws-sdk/client-ssm')) as typeof import('@aws-sdk/client-ssm');
 
 export const AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG = 'papercusp:client-token';
 const DEFAULT_ROLE_SESSION_NAME = 'papercusp-workspace-host';
@@ -519,8 +485,8 @@ export function createAwsSdkCredentialProvider(
 function defaultCreateClients(config: AwsSdkClientConfig): AwsSdkClientSet {
   const base = { region: config.region, credentials: config.credentials };
   return {
-    ec2: new EC2Client(base),
-    ssm: new SSMClient(base),
+    ec2: new (ec2Sdk().EC2Client)(base),
+    ssm: new (ssmSdk().SSMClient)(base),
     sts: new STSClient(base),
     iam: new IAMClient(base),
     kms: new KMSClient(base),
@@ -768,7 +734,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     this.assertSameAccount(connection);
     this.assertSameAccount(query.scope);
     const result = await this.call('describe-regions', () =>
-      this.ec2.send(new DescribeRegionsCommand({ AllRegions: true })),
+      this.ec2.send(new (ec2Sdk().DescribeRegionsCommand)({ AllRegions: true })),
     );
     const zones = query.region ? await this.listZones(query.region) : undefined;
     return (result.Regions ?? [])
@@ -790,7 +756,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   private async listZones(region: string): Promise<readonly string[]> {
     const result = await this.call('describe-availability-zones', () =>
       this.clients(region).ec2.send(
-        new DescribeAvailabilityZonesCommand({
+        new (ec2Sdk().DescribeAvailabilityZonesCommand)({
           Filters: [
             { Name: 'state', Values: ['available'] },
             { Name: 'zone-type', Values: ['availability-zone'] },
@@ -820,7 +786,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     let nextToken: string | undefined;
     do {
       const page = await this.call('describe-instance-types', () =>
-        ec2.send(new DescribeInstanceTypesCommand({ Filters: filters, MaxResults: 100, NextToken: nextToken })),
+        ec2.send(new (ec2Sdk().DescribeInstanceTypesCommand)({ Filters: filters, MaxResults: 100, NextToken: nextToken })),
       );
       infos.push(...(page.InstanceTypes ?? []));
       nextToken = page.NextToken;
@@ -863,7 +829,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     const [owned, published] = await Promise.all([
       this.call('describe-images', () =>
         ec2.send(
-          new DescribeImagesCommand({
+          new (ec2Sdk().DescribeImagesCommand)({
             Owners: ['self'],
             Filters: [available, { Name: 'tag:papercusp:managed', Values: ['true'] }, ...architecture],
           }),
@@ -872,7 +838,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       publishers.length
         ? this.call('describe-images', () =>
             ec2.send(
-              new DescribeImagesCommand({
+              new (ec2Sdk().DescribeImagesCommand)({
                 Owners: publishers,
                 Filters: [available, { Name: 'name', Values: [`${AWS_AMI_NAME_PREFIX}*`] }, ...architecture],
               }),
@@ -1013,7 +979,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     await this.assertMutationAccount();
     const result = await this.call('create-volume', () =>
       this.ec2.send(
-        new CreateVolumeCommand({
+        new (ec2Sdk().CreateVolumeCommand)({
           AvailabilityZone: input.AvailabilityZone,
           ClientToken: input.ClientToken,
           Encrypted: input.Encrypted,
@@ -1041,7 +1007,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async findVolumeByClientToken(clientToken: string): Promise<AwsVolumeObservation | undefined> {
     const result = await this.call('describe-volumes', () =>
       this.ec2.send(
-        new DescribeVolumesCommand({
+        new (ec2Sdk().DescribeVolumesCommand)({
           Filters: [{ Name: `tag:${AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG}`, Values: [clientToken] }],
         }),
       ),
@@ -1052,7 +1018,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async describeVolume(volumeId: string): Promise<AwsVolumeObservation | undefined> {
     try {
-      const result = await this.ec2.send(new DescribeVolumesCommand({ VolumeIds: [volumeId] }));
+      const result = await this.ec2.send(new (ec2Sdk().DescribeVolumesCommand)({ VolumeIds: [volumeId] }));
       const volume = result.Volumes?.[0];
       return volume ? this.volumeObservation(volume) : undefined;
     } catch (error) {
@@ -1067,7 +1033,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     signal?: AbortSignal,
   ): Promise<AwsVolumeObservation | undefined> {
     const waiter =
-      state === 'available' ? waitUntilVolumeAvailable : state === 'in-use' ? waitUntilVolumeInUse : waitUntilVolumeDeleted;
+      state === 'available' ? ec2Sdk().waitUntilVolumeAvailable : state === 'in-use' ? ec2Sdk().waitUntilVolumeInUse : ec2Sdk().waitUntilVolumeDeleted;
     await this.runWaiter('wait-volume', signal, (config) => waiter({ ...config, client: this.ec2 }, { VolumeIds: [volumeId] }));
     const observed = await this.describeVolume(volumeId);
     if (observed?.state === 'error') throw new Error(`aws_workspace_host_volume_failed: ${volumeId} entered state 'error'`);
@@ -1077,7 +1043,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async deleteVolume(volumeId: string): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     try {
-      const result = await this.ec2.send(new DeleteVolumeCommand({ VolumeId: volumeId }));
+      const result = await this.ec2.send(new (ec2Sdk().DeleteVolumeCommand)({ VolumeId: volumeId }));
       return { requestId: result.$metadata.requestId };
     } catch (error) {
       // Already gone is the desired end state of a confirmed destroy; the provider re-reads to confirm.
@@ -1090,7 +1056,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async describeImageRootDeviceName(imageId: string): Promise<string | undefined> {
     try {
-      const result = await this.ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] }));
+      const result = await this.ec2.send(new (ec2Sdk().DescribeImagesCommand)({ ImageIds: [imageId] }));
       const image = result.Images?.find((candidate) => candidate.ImageId === imageId);
       return image?.RootDeviceName || undefined;
     } catch (error) {
@@ -1105,7 +1071,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     const disk = input.BlockDeviceMappings[0];
     const result = await this.call('run-instances', () =>
       this.ec2.send(
-        new RunInstancesCommand({
+        new (ec2Sdk().RunInstancesCommand)({
           ClientToken: input.ClientToken,
           ImageId: input.ImageId,
           InstanceType: input.InstanceType as _InstanceType,
@@ -1164,7 +1130,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async findInstanceByClientToken(clientToken: string): Promise<AwsInstanceObservation | undefined> {
     const result = await this.call('describe-instances', () =>
-      this.ec2.send(new DescribeInstancesCommand({ Filters: [{ Name: 'client-token', Values: [clientToken] }] })),
+      this.ec2.send(new (ec2Sdk().DescribeInstancesCommand)({ Filters: [{ Name: 'client-token', Values: [clientToken] }] })),
     );
     const instances = (result.Reservations ?? []).flatMap((reservation) => reservation.Instances ?? []);
     const live = instances.find((instance) => instance.State?.Name !== 'terminated') ?? instances[0];
@@ -1176,7 +1142,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   ): Promise<readonly AwsSecurityGroupIngressObservation[]> {
     if (groupIds.length === 0) return [];
     const result = await this.call('describe-security-groups', () =>
-      this.ec2.send(new DescribeSecurityGroupsCommand({ GroupIds: [...groupIds] })),
+      this.ec2.send(new (ec2Sdk().DescribeSecurityGroupsCommand)({ GroupIds: [...groupIds] })),
     );
     return (result.SecurityGroups ?? [])
       .filter((group): group is typeof group & { GroupId: string } => Boolean(group.GroupId))
@@ -1193,7 +1159,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
    */
   async getConsoleOutput(instanceId: string): Promise<string | undefined> {
     const result = await this.call('get-console-output', () =>
-      this.ec2.send(new GetConsoleOutputCommand({ InstanceId: instanceId, Latest: true })),
+      this.ec2.send(new (ec2Sdk().GetConsoleOutputCommand)({ InstanceId: instanceId, Latest: true })),
     );
     return result.Output ? Buffer.from(result.Output, 'base64').toString('utf8') : undefined;
   }
@@ -1209,7 +1175,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       if (signal?.aborted) throw abortError('wait-ssm-online');
       const result = await this.call('describe-instance-information', () =>
         this.clients().ssm.send(
-          new DescribeInstanceInformationCommand({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
+          new (ssmSdk().DescribeInstanceInformationCommand)({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
         ),
       );
       const online = (result.InstanceInformationList ?? []).some(
@@ -1226,7 +1192,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     await this.assertMutationAccount();
     const result = await this.call('send-command', () =>
       this.clients().ssm.send(
-        new SendCommandCommand({
+        new (ssmSdk().SendCommandCommand)({
           InstanceIds: [input.instanceId],
           DocumentName: 'AWS-RunShellScript',
           Comment: input.comment.slice(0, 100),
@@ -1253,10 +1219,10 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     signal?: AbortSignal,
   ): Promise<AwsCommandInvocationObservation> {
     await this.runWaiter('wait-command', signal, (config) =>
-      waitUntilCommandExecuted({ ...config, client: this.clients().ssm }, { CommandId: commandId, InstanceId: instanceId }),
+      ssmSdk().waitUntilCommandExecuted({ ...config, client: this.clients().ssm }, { CommandId: commandId, InstanceId: instanceId }),
     );
     const result = await this.call('get-command-invocation', () =>
-      this.clients().ssm.send(new GetCommandInvocationCommand({ CommandId: commandId, InstanceId: instanceId })),
+      this.clients().ssm.send(new (ssmSdk().GetCommandInvocationCommand)({ CommandId: commandId, InstanceId: instanceId })),
     );
     return {
       status: result.Status ?? 'Pending',
@@ -1269,7 +1235,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined> {
     let instance: Instance | undefined;
     try {
-      const result = await this.ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
+      const result = await this.ec2.send(new (ec2Sdk().DescribeInstancesCommand)({ InstanceIds: [instanceId] }));
       instance = result.Reservations?.flatMap((reservation) => reservation.Instances ?? [])[0];
     } catch (error) {
       if (isNotFound(error, ['InvalidInstanceID.NotFound'])) return undefined;
@@ -1310,11 +1276,11 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     if (stateName !== 'running') return observation;
     const [status, ssm] = await Promise.all([
       this.optionalRead('describe-instance-status', () =>
-        this.ec2.send(new DescribeInstanceStatusCommand({ InstanceIds: [instanceId], IncludeAllInstances: true })),
+        this.ec2.send(new (ec2Sdk().DescribeInstanceStatusCommand)({ InstanceIds: [instanceId], IncludeAllInstances: true })),
       ),
       this.optionalRead('describe-instance-information', () =>
         this.clients().ssm.send(
-          new DescribeInstanceInformationCommand({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
+          new (ssmSdk().DescribeInstanceInformationCommand)({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
         ),
       ),
     ]);
@@ -1375,7 +1341,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     signal?: AbortSignal,
   ): Promise<AwsInstanceObservation | undefined> {
     const waiter =
-      state === 'running' ? waitUntilInstanceRunning : state === 'stopped' ? waitUntilInstanceStopped : waitUntilInstanceTerminated;
+      state === 'running' ? ec2Sdk().waitUntilInstanceRunning : state === 'stopped' ? ec2Sdk().waitUntilInstanceStopped : ec2Sdk().waitUntilInstanceTerminated;
     await this.runWaiter('wait-instance', signal, (config) =>
       waiter({ ...config, client: this.ec2 }, { InstanceIds: [instanceId] }),
     );
@@ -1385,7 +1351,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async attachVolume(input: { InstanceId: string; VolumeId: string; Device: string }): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     const result = await this.call('attach-volume', () =>
-      this.ec2.send(new AttachVolumeCommand({ InstanceId: input.InstanceId, VolumeId: input.VolumeId, Device: input.Device })),
+      this.ec2.send(new (ec2Sdk().AttachVolumeCommand)({ InstanceId: input.InstanceId, VolumeId: input.VolumeId, Device: input.Device })),
     );
     return { requestId: result.$metadata.requestId };
   }
@@ -1394,7 +1360,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     await this.assertMutationAccount();
     try {
       const result = await this.ec2.send(
-        new DetachVolumeCommand({ InstanceId: input.InstanceId, VolumeId: input.VolumeId }),
+        new (ec2Sdk().DetachVolumeCommand)({ InstanceId: input.InstanceId, VolumeId: input.VolumeId }),
       );
       return { requestId: result.$metadata.requestId };
     } catch (error) {
@@ -1409,7 +1375,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     const result = await this.call('start-instances', () =>
-      this.ec2.send(new StartInstancesCommand({ InstanceIds: [...instanceIds] })),
+      this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [...instanceIds] })),
     );
     return { requestId: result.$metadata.requestId };
   }
@@ -1417,7 +1383,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async stopInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     const result = await this.call('stop-instances', () =>
-      this.ec2.send(new StopInstancesCommand({ InstanceIds: [...instanceIds] })),
+      this.ec2.send(new (ec2Sdk().StopInstancesCommand)({ InstanceIds: [...instanceIds] })),
     );
     return { requestId: result.$metadata.requestId };
   }
@@ -1425,7 +1391,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async rebootInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     const result = await this.call('reboot-instances', () =>
-      this.ec2.send(new RebootInstancesCommand({ InstanceIds: [...instanceIds] })),
+      this.ec2.send(new (ec2Sdk().RebootInstancesCommand)({ InstanceIds: [...instanceIds] })),
     );
     return { requestId: result.$metadata.requestId };
   }
@@ -1441,14 +1407,14 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       throw new Error(`aws_workspace_host_repair_instance_absent: ${instanceId}`);
     }
     if (current.state !== 'stopped') {
-      await this.call('stop-instances', () => this.ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] })));
+      await this.call('stop-instances', () => this.ec2.send(new (ec2Sdk().StopInstancesCommand)({ InstanceIds: [instanceId] })));
       const stopped = await this.waitForInstanceState(instanceId, 'stopped');
       if (stopped?.state !== 'stopped') {
         throw new Error(`aws_workspace_host_repair_stop_incomplete: ${instanceId} is '${stopped?.state ?? 'absent'}'`);
       }
     }
     const started = await this.call('start-instances', () =>
-      this.ec2.send(new StartInstancesCommand({ InstanceIds: [instanceId] })),
+      this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [instanceId] })),
     );
     return { requestId: started.$metadata.requestId };
   }
@@ -1456,7 +1422,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async terminateInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
     try {
-      const result = await this.ec2.send(new TerminateInstancesCommand({ InstanceIds: [...instanceIds] }));
+      const result = await this.ec2.send(new (ec2Sdk().TerminateInstancesCommand)({ InstanceIds: [...instanceIds] }));
       return { requestId: result.$metadata.requestId };
     } catch (error) {
       if (isNotFound(error, ['InvalidInstanceID.NotFound'])) return {};
@@ -1469,7 +1435,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     await this.assertMutationAccount();
     try {
       const result = await this.ec2.send(
-        new CancelSpotInstanceRequestsCommand({ SpotInstanceRequestIds: [...spotInstanceRequestIds] }),
+        new (ec2Sdk().CancelSpotInstanceRequestsCommand)({ SpotInstanceRequestIds: [...spotInstanceRequestIds] }),
       );
       return { requestId: result.$metadata.requestId };
     } catch (error) {
@@ -1496,7 +1462,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     }
     const result = await this.call('create-snapshot', () =>
       this.ec2.send(
-        new CreateSnapshotCommand({
+        new (ec2Sdk().CreateSnapshotCommand)({
           VolumeId: input.VolumeId,
           Description: input.Description,
           TagSpecifications: [
@@ -1515,7 +1481,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   async findSnapshotByClientToken(clientToken: string): Promise<AwsSnapshotObservation | undefined> {
     const result = await this.call('describe-snapshots', () =>
       this.ec2.send(
-        new DescribeSnapshotsCommand({
+        new (ec2Sdk().DescribeSnapshotsCommand)({
           OwnerIds: ['self'],
           Filters: [{ Name: `tag:${AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG}`, Values: [clientToken] }],
         }),
@@ -1573,13 +1539,13 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       }
     };
     const [instancePages, volumePages, snapshotPages, spotRequestPages] = await Promise.all([
-      readPages('describe-instances', (NextToken) => ec2.send(new DescribeInstancesCommand({ Filters, NextToken }))),
-      readPages('describe-volumes', (NextToken) => ec2.send(new DescribeVolumesCommand({ Filters, NextToken }))),
+      readPages('describe-instances', (NextToken) => ec2.send(new (ec2Sdk().DescribeInstancesCommand)({ Filters, NextToken }))),
+      readPages('describe-volumes', (NextToken) => ec2.send(new (ec2Sdk().DescribeVolumesCommand)({ Filters, NextToken }))),
       readPages('describe-snapshots', (NextToken) =>
-        ec2.send(new DescribeSnapshotsCommand({ OwnerIds: ['self'], Filters, NextToken })),
+        ec2.send(new (ec2Sdk().DescribeSnapshotsCommand)({ OwnerIds: ['self'], Filters, NextToken })),
       ),
       readPages('describe-spot-instance-requests', (NextToken) =>
-        ec2.send(new DescribeSpotInstanceRequestsCommand({ Filters, NextToken })),
+        ec2.send(new (ec2Sdk().DescribeSpotInstanceRequestsCommand)({ Filters, NextToken })),
       ),
     ]);
     const observedAt = this.now();
@@ -1638,10 +1604,10 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async waitForSnapshotCompleted(snapshotId: string, signal?: AbortSignal): Promise<AwsSnapshotObservation> {
     await this.runWaiter('wait-snapshot', signal, (config) =>
-      waitUntilSnapshotCompleted({ ...config, client: this.ec2 }, { SnapshotIds: [snapshotId], OwnerIds: ['self'] }),
+      ec2Sdk().waitUntilSnapshotCompleted({ ...config, client: this.ec2 }, { SnapshotIds: [snapshotId], OwnerIds: ['self'] }),
     );
     const result = await this.call('describe-snapshots', () =>
-      this.ec2.send(new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId], OwnerIds: ['self'] })),
+      this.ec2.send(new (ec2Sdk().DescribeSnapshotsCommand)({ SnapshotIds: [snapshotId], OwnerIds: ['self'] })),
     );
     const observed = result.Snapshots?.[0] ? this.snapshotObservation(result.Snapshots[0]) : undefined;
     if (!observed) throw new Error(`aws_workspace_host_snapshot_absent: ${snapshotId}`);
@@ -1650,7 +1616,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async describeSnapshot(snapshotId: string): Promise<AwsSnapshotDescription | undefined> {
     try {
-      const result = await this.ec2.send(new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId], OwnerIds: ['self'] }));
+      const result = await this.ec2.send(new (ec2Sdk().DescribeSnapshotsCommand)({ SnapshotIds: [snapshotId], OwnerIds: ['self'] }));
       const snapshot = result.Snapshots?.[0];
       const observed = snapshot ? this.snapshotObservation(snapshot) : undefined;
       if (!snapshot || !observed) return undefined;
@@ -1683,7 +1649,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   private async preflightRegion(region: string): Promise<AwsRegionEvidence> {
     const result = await this.call('describe-regions', () =>
-      this.ec2.send(new DescribeRegionsCommand({ AllRegions: true, RegionNames: [region] })),
+      this.ec2.send(new (ec2Sdk().DescribeRegionsCommand)({ AllRegions: true, RegionNames: [region] })),
     );
     const found = result.Regions?.find((entry) => entry.RegionName === region);
     return {
@@ -1697,7 +1663,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   private async preflightSubnet(subnetId: string): Promise<AwsSubnetEvidence> {
     const result = await this.call('describe-subnets', () =>
-      this.ec2.send(new DescribeSubnetsCommand({ SubnetIds: [subnetId] })),
+      this.ec2.send(new (ec2Sdk().DescribeSubnetsCommand)({ SubnetIds: [subnetId] })),
     );
     const subnet = result.Subnets?.[0];
     if (!subnet?.SubnetId) throw new Error(`aws_workspace_host_subnet_absent: ${subnetId}`);
@@ -1714,7 +1680,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   private async preflightImage(imageId: string): Promise<AwsImageEvidence> {
     const result = await this.call('describe-images', () =>
-      this.ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] })),
+      this.ec2.send(new (ec2Sdk().DescribeImagesCommand)({ ImageIds: [imageId] })),
     );
     const image = result.Images?.[0];
     if (!image?.ImageId) throw new Error(`aws_workspace_host_image_absent: ${imageId}`);

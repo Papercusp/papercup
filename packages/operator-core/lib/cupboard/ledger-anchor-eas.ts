@@ -16,29 +16,31 @@
  * talks to Papercusp's infrastructure.
  */
 import { readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
-  createPublicClient,
-  createWalletClient,
   decodeAbiParameters,
   encodeAbiParameters,
   encodePacked,
-  http,
   keccak256,
   parseAbi,
   parseAbiParameters,
   parseEventLogs,
-  zeroAddress,
-  zeroHash,
-  type Address,
-  type Chain,
-  type Hex,
-  type Transport,
-} from 'viem';
+} from 'viem/utils';
+import type { Address, Chain, Hex, Transport } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
 import type { AnchoredRoot, AnchorBackend, AnchorPublication, AnchorReader, AnchorReceipt } from './ledger-anchor';
+
+// Keep the synchronous client factories while deferring viem's client graph.
+// Internal dynamic imports alone are hoisted by the single-file HOST bundler.
+// Preserve the free literal require so packaged desktop builds include viem.
+const requireSdk = createRequire(import.meta.url);
+const viemClients = () => (typeof require === 'function' ? require('viem') :
+  requireSdk('viem')) as typeof import('viem');
+const zeroAddress: Address = '0x0000000000000000000000000000000000000000';
+const zeroHash: Hex = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 /** EAS and SchemaRegistry predeploys (identical on every OP-stack chain). */
 export const EAS_PREDEPLOY: Address = '0x4200000000000000000000000000000000000021';
@@ -126,6 +128,7 @@ interface ChainConfig {
 }
 
 function publicClientFor(cfg: ChainConfig) {
+  const { createPublicClient } = viemClients();
   return createPublicClient({
     chain: cfg.chain,
     transport: cfg.transport,
@@ -183,6 +186,7 @@ export interface EasBackendConfig extends ChainConfig {
  * first use (a lost registration race is fine: the schema then exists).
  */
 export function easAnchorBackend(cfg: EasBackendConfig): AnchorBackend & { readonly attester: Address } {
+  const { createWalletClient } = viemClients();
   const account = privateKeyToAccount(cfg.privateKey);
   const publicClient = publicClientFor(cfg);
   const walletClient = createWalletClient({ account, chain: cfg.chain, transport: cfg.transport });
@@ -309,6 +313,7 @@ export function resolveAnchorBackend(
   if (!spec) {
     return { ok: false, config, reason: 'unsupported-chain', detail: `chain ${config.chainId} is not an anchor chain`, reader: null };
   }
+  const { http } = viemClients();
   const chainCfg: ChainConfig = {
     chain: spec.chain,
     transport: (opts.transportFor ?? ((url: string) => http(url)))(config.rpcUrl),

@@ -8,13 +8,7 @@
  * the stack is still being created: that answers {@link HostedAwsHostInfrastructurePendingError},
  * which the first-workspace route turns into "waiting for your AWS setup", not a failure.
  */
-import {
-  DescribeImagesCommand,
-  DescribeLaunchTemplatesCommand,
-  DescribeSecurityGroupsCommand,
-  DescribeSubnetsCommand,
-  EC2Client,
-} from '@aws-sdk/client-ec2';
+import { createRequire } from 'node:module';
 import { GetInstanceProfileCommand, IAMClient } from '@aws-sdk/client-iam';
 import { DescribeKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { planAwsSdkCredentialProvider } from './aws-connection';
@@ -30,6 +24,8 @@ import {
 } from './hosted-aws-host-stack';
 import { resolveOrganizationExternalIdRef } from './hosted-aws-identity';
 import type { HostedProviderDelegationRecord } from './hosted-provider-delegation';
+
+const requireSdk = createRequire(import.meta.url);
 
 /** Canonical's AWS account: the publisher of the official Ubuntu AMIs in every commercial region. */
 export const CANONICAL_AWS_IMAGE_OWNER = '099720109477';
@@ -54,6 +50,8 @@ export interface HostedAwsHostDiscoveryDependencies {
 }
 
 function defaultClients(region: string, credentials: AwsSdkCredentialIdentityProvider): HostedAwsHostClients {
+  const { EC2Client } = (typeof require === 'function' ? require('@aws-sdk/client-ec2') :
+    requireSdk('@aws-sdk/client-ec2')) as typeof import('@aws-sdk/client-ec2');
   return {
     ec2: new EC2Client({ region, credentials }),
     iam: new IAMClient({ region, credentials }),
@@ -133,6 +131,8 @@ export async function discoverHostedAwsHostInfrastructure(
     resolveExternalId: resolveOrganizationExternalIdRef,
     ...(deps.controlPlaneCredentials ? { controlPlaneCredentials: deps.controlPlaneCredentials } : {}),
   });
+  const { DescribeImagesCommand, DescribeLaunchTemplatesCommand, DescribeSecurityGroupsCommand, DescribeSubnetsCommand } =
+    await import('@aws-sdk/client-ec2');
   const clients = (deps.createClients ?? defaultClients)(region, credentials);
   const names = hostedAwsHostNames(accountId);
   const ownTag = { Name: `tag:${HOSTED_AWS_HOST_TAG_KEY}`, Values: [accountId] };
