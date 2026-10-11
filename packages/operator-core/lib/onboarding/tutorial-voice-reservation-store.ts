@@ -11,6 +11,7 @@ import { readAccountTutorialProgress, readTutorialProgress } from './cloud-tutor
 import { authorizeTutorialVoice } from './cloud-tutorial-help';
 import type { FlagKey } from '@papercusp/flags';
 import { readTutorialVoiceGlobalFlagsForUpdate } from '../flag-override-store';
+import { readAdmittedElevenLabsIntegrationCredential } from '../integration-credentials';
 
 /** Read a verified tenant's lesson inside the reservation transaction. Unlike
  * withTenantContext, this must not open a second transaction: successful row
@@ -123,6 +124,28 @@ export interface TutorialVoiceQuotaAuthority {
  * issuance follows commit. No browser authority is accepted. */
 export type TutorialVoiceAuthorityReader = (sql: Sql, admission: TutorialVoiceAdmission) =>
   Promise<TutorialVoiceQuotaAuthority | null>;
+/** Host-owned provider verification for the existing reservation authority.
+ * The encrypted secret is consumed only by fresh admission and never returned
+ * as quota evidence. This does not mint a token or enable the policy flag. */
+export function createElevenLabsTutorialVoiceLimitVerifier(options: {
+  credential: Parameters<typeof readAdmittedElevenLabsIntegrationCredential>[0];
+  dailySeconds: TutorialVoiceQuotaAuthority['dailySeconds'];
+}): TutorialVoiceAuthorityReader {
+  const credential = { ...options.credential,
+    allowedPermissions: [...options.credential.allowedPermissions],
+    definition: structuredClone(options.credential.definition), toolIds: [...options.credential.toolIds] };
+  const dailySeconds = { ...options.dailySeconds };
+  return async () => {
+    if (credential.signal.aborted || !(['global', 'user', 'organization', 'workspace'] as const)
+      .every(key => positive(dailySeconds[key]))) return null;
+    const admitted = await readAdmittedElevenLabsIntegrationCredential(credential);
+    if (!admitted || credential.signal.aborted || !positive(admitted.maximumSeconds)
+      || admitted.maximumSeconds > 7200) return null;
+    const providerLimitRef = `elevenlabs:${admitted.keyId}:${admitted.agentId}`;
+    if (!identifier(providerLimitRef)) return null;
+    return { maximumSeconds: admitted.maximumSeconds, providerLimitRef, dailySeconds: { ...dailySeconds } };
+  };
+}
 /** Compose admission from server-owned dependencies. A cached/default flag
  * cannot authorize spending: the registered policy needs explicit persisted
  * approval. Provider verification must attest restricted credential and agent
