@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
   AGENT_STRAND_SAMPLE_SIZE,
@@ -94,6 +94,7 @@ describe('readAgentStrandCensus', () => {
   });
 
   it('one failing leg is reported unreadable while the other still counts', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const s = await readAgentStrandCensus('ws', {
       readSubjects: async () => [{ ownerId: 'a' }],
       resolveStates: async () => {
@@ -104,9 +105,12 @@ describe('readAgentStrandCensus', () => {
     expect(s.wedgedUnreadable).toBe(true);
     expect(s.strandedUnreadable).toBe(false);
     expect(s.stranded).toBe(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('wedged read failed: oracle down'));
+    warn.mockRestore();
   });
 
   it('a failing stranded leg is reported unreadable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const s = await readAgentStrandCensus('ws', {
       readSubjects: async () => [],
       resolveStates: async () => new Map(),
@@ -116,5 +120,7 @@ describe('readAgentStrandCensus', () => {
     });
     expect(s.strandedUnreadable).toBe(true);
     expect(s.wedgedUnreadable).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stranded read failed: sweep failed'));
+    warn.mockRestore();
   });
 });
