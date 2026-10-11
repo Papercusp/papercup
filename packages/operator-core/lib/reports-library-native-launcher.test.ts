@@ -5,13 +5,18 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const seams = vi.hoisted(() => ({ execute: vi.fn(), child: vi.fn(), authenticate: vi.fn(),
-  reportRuntime: vi.fn(), end: vi.fn() }));
+  reportRuntime: vi.fn(), end: vi.fn(), postmasterCommand: vi.fn() }));
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: (...args: Parameters<typeof actual.readFileSync>) =>
+    String(args[0]) === `/proc/${process.pid}/cmdline` ? seams.postmasterCommand() : actual.readFileSync(...args) };
+});
 vi.mock('node:child_process', () => ({ execFileSync: seams.execute, execFile: seams.child }));
 vi.mock('../../../libs/generic/tauri-verify/src/bridge-client', () => ({ bridgeEval: seams.authenticate }));
 vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
   listRuntimeVintage: async () => [], measureRuntimeVintageEnvironment: () => 'measured-native' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
-import { nativeChildEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
+import { nativeChildEnvironment, nativeTestDatabaseEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
 import { verifierSourceFiles } from './verifier-source';
 
 describe('Reports native launcher at the Vitest temp-directory boundary', () => {
@@ -32,16 +37,26 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
   let sourceRoot: string;
   let receiptPath: string;
   let profilePath: string;
+  let dataDir: string;
   beforeEach(() => {
     vi.resetAllMocks();
     seams.authenticate.mockResolvedValue({ ok: true, value: true });
     seams.reportRuntime.mockResolvedValue(undefined);
     seams.end.mockResolvedValue(undefined);
-    root = mkdtempSync(join(tmpdir(), 'reports-native-launcher-test-'));
+    root = mkdtempSync(join(tmpdir(), 'verify-tauri-headless.'));
     nativeRoot = join(root, 'native');
     runnerRoot = join(root, 'vitest');
     mkdirSync(nativeRoot);
     mkdirSync(runnerRoot);
+    mkdirSync(join(root, 'papercusp-home'));
+    dataDir = join(root, 'isolated-pgdata');
+    mkdirSync(dataDir);
+    writeFileSync(join(dataDir, 'postmaster.pid'), `${process.pid}\n${dataDir}\n0\n37461\n`);
+    seams.postmasterCommand.mockReturnValue(`/fixture/bin/postgres\0-D\0${dataDir}\0`);
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'papercusp-home'));
+    vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '1');
+    vi.stubEnv('PAPERCUSP_PG_PORT', '37461');
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture@localhost:37461/papercusp');
     const source = 'a'.repeat(40);
     sourceRoot = join(root, 'source');
     const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts',
@@ -91,6 +106,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       expect(existsSync(join(options.cwd, '.git'))).toBe(false);
       expect(options.cwd).toBe(sourceRoot);
       expect(options.env.PAPERCUSP_TEST_RUN_COMMIT).toBe('a'.repeat(40));
+      expect(options.env.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgresql://fixture@localhost:37461/papercusp');
       expect(args).toEqual(['run', 'test:file', '--', 'packages/operator-core/lib/reports-library-native.e2e.test.ts']);
       expect(args.at(-1)).toBe('packages/operator-core/lib/reports-library-native.e2e.test.ts');
       if (fail) throw new Error('native test failed');
@@ -112,6 +128,34 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.execute.mock.calls[0][0]).toBe(process.execPath);
     expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
   });
+
+  it('admits the owned native postmaster through the existing test-PG seam without disabling the live guard', () => {
+    vi.stubEnv('PAPERCUSP_FORBID_LIVE_PG', '1');
+    vi.stubEnv('PAPERCUSP_TEST_PG_ADMIN_URL', 'postgresql://other@localhost:45000/postgres');
+    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90' };
+    const env = nativeTestDatabaseEnvironment(profile);
+    expect(env.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgresql://fixture@localhost:37461/papercusp');
+    expect(env.PAPERCUSP_FORBID_LIVE_PG).toBe('1');
+    expect(process.env.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgresql://other@localhost:45000/postgres');
+  });
+
+  it.each(['shared discovery', 'foreign home', 'live port', 'remote host', 'wrong port',
+    'foreign data', 'stale pid', 'foreign postmaster', 'missing ownership'])(
+    'refuses %s before bridge authentication, shared runtime writes or test launch', async changed => {
+      if (changed === 'shared discovery') vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '0');
+      if (changed === 'foreign home') vi.stubEnv('PAPERCUSP_HOME', runnerRoot);
+      if (changed === 'live port') vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture@localhost:5432/papercusp');
+      if (changed === 'remote host') vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture@192.0.2.1:37461/papercusp');
+      if (changed === 'wrong port') vi.stubEnv('PAPERCUSP_PG_PORT', '45000');
+      if (changed === 'foreign data') writeFileSync(join(dataDir, 'postmaster.pid'), `${process.pid}\n/foreign\n0\n37461\n`);
+      if (changed === 'stale pid') writeFileSync(join(dataDir, 'postmaster.pid'), `0\n${dataDir}\n0\n37461\n`);
+      if (changed === 'foreign postmaster') seams.postmasterCommand.mockReturnValue(`/fixture/bin/postgres\0-D\0/foreign\0`);
+      if (changed === 'missing ownership') rmSync(join(dataDir, 'postmaster.pid'));
+      await expect(runNativeE2e()).rejects.toThrow();
+      expect(seams.authenticate).not.toHaveBeenCalled();
+      expect(seams.reportRuntime).not.toHaveBeenCalled();
+      expect(seams.execute).not.toHaveBeenCalled();
+    });
 
   it.each([{ files: [] }, { files: ['../foreign.e2e.test.ts'] }, { files: ['--ref=other'] }])(
     'refuses invalid native test selection $files', async ({ files }) => {

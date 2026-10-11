@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
@@ -28,6 +28,37 @@ export function nativeChildEnvironment(profile: NativeLiveProfile, env = process
     'Native profile requires an absolute discovery directory');
   return { ...env, TMPDIR: profile.nativeTmpDir,
     PAPERCUSP_WORKSPACE_ID: profile.workspaceId, PAPERCUSP_WORKSPACE: profile.workspaceId };
+}
+
+/** Admit only the postmaster provisioned inside this verifier's private profile. */
+export function nativeTestDatabaseEnvironment(profile: NativeLiveProfile, env = process.env): NodeJS.ProcessEnv {
+  const privateEnv = nativeChildEnvironment(profile, env);
+  assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1', 'Native test PG must disable shared discovery');
+  assert.ok(env.PAPERCUSP_HOME && isAbsolute(env.PAPERCUSP_HOME), 'Native test PG requires a private home');
+  const privateHome = realpathSync(env.PAPERCUSP_HOME);
+  const work = dirname(privateHome);
+  assert.ok(basename(privateHome) === 'papercusp-home' && /^verify-tauri-headless\./.test(basename(work)),
+    'Native test PG requires the owned verifier profile');
+  const dataDir = realpathSync(join(work, 'isolated-pgdata'));
+  assert.equal(dataDir, join(work, 'isolated-pgdata'), 'Native test PG data must remain in its private profile');
+  const address = new URL(env.HARNESS_ADMIN_DATABASE_URL ?? '');
+  assert.ok(['postgres:', 'postgresql:'].includes(address.protocol)
+    && ['localhost', '127.0.0.1'].includes(address.hostname)
+    && address.pathname === '/papercusp'
+    && !!address.port && address.port !== '5432' && address.port === env.PAPERCUSP_PG_PORT,
+    'Native test PG URL must match the private rig');
+  const [pidText, recordedDataDir, , port] = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8').split('\n');
+  const pid = Number(pidText);
+  assert.ok(Number.isSafeInteger(pid) && pid > 0 && recordedDataDir === dataDir && port === address.port,
+    'Native test PG postmaster identity must match its private data and port');
+  process.kill(pid, 0);
+  const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+  assert.ok(basename(command[0]) === 'postgres' && command.indexOf('-D') > 0
+    && command[command.indexOf('-D') + 1] === dataDir,
+    'Native test PG requires the live owned postmaster');
+  // The integration setup already admits PAPERCUSP_TEST_PG_ADMIN_URL and keeps
+  // every other captured ambient target protected. Do not alter that guard.
+  return { ...privateEnv, PAPERCUSP_TEST_PG_ADMIN_URL: address.toString() };
 }
 
 /** Preserve startup stdout/stderr and the original stack in the test failure. */
@@ -63,7 +94,7 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   assert.ok(Number.isSafeInteger(tauriPID) && tauriPID > 0, 'Owned native PID required');
   const nativeTmpDir = tmpdir();
   const profile = { runtimeUnits: [] as string[], tauriPID, nativeTmpDir, workspaceId: process.env.PAPERCUSP_WORKSPACE_ID! };
-  nativeChildEnvironment(profile);
+  const testEnv = nativeTestDatabaseEnvironment(profile);
   const token = JSON.parse(readFileSync(join(nativeTmpDir, `tauri-dev-bridge-${tauriPID}.token`), 'utf8'));
   assert.equal(token.pid, tauriPID);
   const authenticated = await bridgeEval({ tauriPID, bridgePort: token.port, bridgeToken: token.token }, 'true');
@@ -104,7 +135,7 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
     // Its maintained recorder checks source integrity at both test boundaries;
     // lint:as-committed would wrongly require Git inside this archive.
     execFileSync('npm', ['run', 'test:file', '--', ...testFiles],
-    { cwd: sourceRoot, stdio: 'inherit', env: { ...process.env,
+    { cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,
       PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
 }
