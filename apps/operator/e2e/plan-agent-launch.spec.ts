@@ -114,7 +114,7 @@ async function pollRunStatus(
 }
 
 test.describe('plan-agent-launch E2E (P-028)', () => {
-  test.beforeAll(async () => { harnessSlug = await seedFakeLlmHarness(); });
+  test.beforeAll(async () => { harnessSlug = await seedFakeLlmHarness({ hive: true }); });
   test('full flow: author → edit twice → launch → resume → verify rows', async ({ request, page }) => {
     if (!(await fakeLlmActive(request))) {
       test.skip(true, 'PAPERCUSP_FAKE_LLM=1 not set on dev server; skipping');
