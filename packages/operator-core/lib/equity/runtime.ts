@@ -79,10 +79,10 @@ export interface EquityChainReader {
   getCode(input: { address: Address; blockNumber: bigint }): Promise<Hex | undefined>;
   readContract(input: { address: Address; abi: Abi; functionName: string; args?: unknown[]; blockNumber: bigint }): Promise<unknown>;
 }
-export async function inspectEquity(reader: EquityChainReader, input: { chainId: number; equity: string; governor: string; timelock: string; holder?: string }) {
+export async function inspectEquity(reader: EquityChainReader, input: { chainId: number; equity: string; governor: string; timelock: string; holder?: string; blockNumber?: bigint }) {
   const chainId = await reader.getChainId();
   if (chainId !== input.chainId) throw new Error('RPC chain id differs from requested chain');
-  const blockNumber = await reader.getBlockNumber();
+  const blockNumber = input.blockNumber ?? await reader.getBlockNumber();
   const addresses = { PapercuspEquity: address(input.equity), EquityGovernor: address(input.governor), EquityTimelock: address(input.timelock) };
   const code = await Promise.all(Object.values(addresses).map(addr => reader.getCode({ address: addr, blockNumber })));
   if (code.some(v => !v || v === '0x')) throw new Error('One or more equity contracts are not deployed');

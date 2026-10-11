@@ -4,7 +4,7 @@ import { createBlock } from '@ethereumjs/block';
 import { createLegacyTx } from '@ethereumjs/tx';
 import { createAccount, createAddressFromPrivateKey, createAddressFromString, hexToBytes, bytesToHex } from '@ethereumjs/util';
 import { createVM, runTx } from '@ethereumjs/vm';
-import { encodeDeployData, encodeFunctionData, decodeFunctionResult, decodeErrorResult, keccak256, stringToHex, getAddress, type Abi, type Address, type Hex } from 'viem';
+import { encodeDeployData, encodeFunctionData, decodeFunctionResult, decodeErrorResult, decodeEventLog, keccak256, stringToHex, getAddress, type Abi, type Address, type Hex } from 'viem';
 import { readFileSync } from 'node:fs';
 import { compileEquityContracts, type EquityArtifacts, type EquityContractName } from './compile';
 
@@ -29,6 +29,7 @@ export async function evmChain() {
   for (const address of accounts) await vm.stateManager.putAccount(createAddressFromString(address), createAccount({ balance: 10n ** 26n }));
   let time = 1_800_000_000n;
   let number = 1n;
+  const logs: Array<{ address: Address; data: Hex; topics: Hex[]; blockNumber: bigint }> = [];
   const block = () => createBlock({ header: { number, timestamp: time, gasLimit: 60_000_000n, baseFeePerGas: 1n } }, { common });
   const error = (abi: Abi, data: Hex) => {
     try { return decodeErrorResult({ abi, data }).errorName; } catch { return data; }
@@ -40,6 +41,8 @@ export async function evmChain() {
     const result = await runTx(vm, { tx, block: block() });
     const output = bytesToHex(result.execResult.returnValue) as Hex;
     if (result.execResult.exceptionError) throw new Error('EVM reverted: ' + error(abi, output) + ' (' + result.execResult.exceptionError.error + ')');
+    for (const [address, topics, data] of result.execResult.logs ?? []) logs.push({ address: bytesToHex(address) as Address,
+      data: bytesToHex(data) as Hex, topics: topics.map(topic => bytesToHex(topic) as Hex), blockNumber: number });
     return { result, output };
   }
   async function deploy(name: EquityContractName, args: unknown[] = []): Promise<Contract> {
@@ -60,6 +63,8 @@ export async function evmChain() {
       data: hexToBytes(encodeFunctionData({ abi: c.abi, functionName: name, args })), gasLimit: 50_000_000n, block: block() });
     const output = bytesToHex(result.execResult.returnValue) as Hex;
     if (result.execResult.exceptionError) throw new Error('EVM reverted: ' + error(c.abi, output) + ' (' + result.execResult.exceptionError.error + ')');
+    for (const [address, topics, data] of result.execResult.logs ?? []) logs.push({ address: bytesToHex(address) as Address,
+      data: bytesToHex(data) as Hex, topics: topics.map(topic => bytesToHex(topic) as Hex), blockNumber: number });
   }
   async function read(c: Contract, name: string, args: unknown[] = []) {
     const result = await vm.evm.runCall({ to: createAddressFromString(c.address), caller: createAddressFromString(accounts[0]),
@@ -70,7 +75,17 @@ export async function evmChain() {
   }
   const advance = (seconds: bigint | number) => { time += BigInt(seconds); ++number; };
   const now = () => time;
-  return { vm, accounts, raw, deploy, send, callAs, read, advance, now };
+  const blockNumber = () => number;
+  async function getContractEvents(input: { address: Address; abi: Abi; eventName: string; fromBlock: bigint; toBlock: bigint }) {
+    return logs.filter(log => log.address.toLowerCase() === input.address.toLowerCase() && log.blockNumber >= input.fromBlock && log.blockNumber <= input.toBlock)
+      .flatMap(log => {
+        try {
+          const decoded = decodeEventLog({ abi: input.abi, data: log.data, topics: log.topics as [Hex, ...Hex[]], strict: true });
+          return decoded.eventName === input.eventName ? [{ args: decoded.args }] : [];
+        } catch { return []; } // unrelated events use a different ABI; amounts still read from storage
+      });
+  }
+  return { vm, accounts, raw, deploy, send, callAs, read, advance, now, blockNumber, getContractEvents };
 }
 type Chain = Awaited<ReturnType<typeof evmChain>>;
 
