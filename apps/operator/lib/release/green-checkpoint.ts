@@ -5510,8 +5510,8 @@ export type RepairHeadVerification =
       /** WI-10007489: the targeted radius this verdict actually ran, recorded on its round. */
       executed?: FrozenRepairRoundExecution;
     }
-  /** A typed post-suite leg is present, so the FULL gate at the repair head is the only
-   *  runner that can re-measure it. Repair-radius widening never produces this verdict. */
+  /** A typed post-suite leg or a configured target without selective tooling requires
+   *  the FULL gate at the repair head. Repair-radius widening never produces this verdict. */
   | { kind: "full-run-required"; summary: string }
   /** A runner failed to EXECUTE, or a malformed legacy signature cannot be routed safely —
    *  absence of evidence, never a verdict: the queue holds as it is and the next tick retries. */
@@ -5531,6 +5531,9 @@ export type RepairHeadVerificationDeps = Pick<
    *  production). Without it a multi-workspace signature's test files are unroutable and
    *  the ready-to-verify queue holds forever. */
   resolveTestWorkspace?: TestWorkspaceResolver;
+  /** A target without the platform selector verifies its configured full suite.
+   *  Missing/malformed selective evidence within the platform still holds. */
+  selectiveRepairSupported?: boolean;
 };
 
 /** The paths every admission put on the frozen lineage (the ledger's PROVED diff-tree name
@@ -6308,6 +6311,12 @@ export async function verifyRepairHead(
 ): Promise<RepairHeadVerification> {
   const head = queue.repairHead;
   const at = head.slice(0, 8);
+  if (deps.selectiveRepairSupported === false) {
+    return {
+      kind: "full-run-required",
+      summary: `target has no platform selective repair runner; its configured full suite at ${at} decides`,
+    };
+  }
   // A legacy row can still carry the retired staging-mismatch sentinel; it names no leg.
   // A row handed in WITHOUT a typed signature (an in-memory row from before schema 4, or a
   // fixture) is typed the way the parser types a persisted one: derived from the flat list.
@@ -12194,6 +12203,8 @@ async function runGreenCheckpointInner(
       const verifyDeps = {
         ...deps,
         resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
+        selectiveRepairSupported: !existsSync(path.join(cfg.integrationRoot, "package.json")) ||
+          existsSync(path.join(cfg.integrationRoot, "scripts/affected-tests.mjs")),
       };
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
