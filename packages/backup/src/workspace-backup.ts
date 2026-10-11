@@ -795,7 +795,8 @@ export class WorkspaceBackup {
   }
 
   /**
-   * All currently-active PostgreSQL sessions from EITHER backup producer —
+   * All PostgreSQL sessions currently holding a granted relation
+   * `AccessShareLock` from EITHER backup producer —
    * this workspace's kopia hook (`WORKSPACE_BACKUP_APPLICATION_NAME`) or the
    * independent host-level cron `pg_dump` (`HOST_BACKUP_APPLICATION_NAME`) —
    * regardless of whether either has a receipt row in
@@ -805,8 +806,8 @@ export class WorkspaceBackup {
    * and is blind to the host producer by construction (it only ever reads
    * this table). This method answers the different, narrower question an
    * operator actually needs before treating an empty `list()` as an
-   * all-clear: "is ANY backup holding relation locks on this database RIGHT
-   * NOW?" Deliberately NOT scoped by `workspaceId` — a PG session carries no
+   * all-clear: "is ANY backup holding a granted relation lock on this database
+   * RIGHT NOW?" Deliberately NOT scoped by `workspaceId` — a PG session carries no
    * workspace context, and the whole point is to catch the producer `list()`
    * cannot see. Mirrors the exact predicate already proven correct in
    * db/migrate.ts's `migrationBackupLockGuardSql()` (EI-22064935119941678).
@@ -821,12 +822,20 @@ export class WorkspaceBackup {
       query_start: string | null;
       age_sec: number | string | null;
     }[]>`
-      SELECT pid, application_name, state, xact_start, query_start,
-             EXTRACT(EPOCH FROM (now() - COALESCE(xact_start, query_start))) AS age_sec
-      FROM pg_stat_activity
-      WHERE application_name = ANY(${sql.array([...BACKUP_APPLICATION_NAMES])})
-        AND datname = current_database()
-        AND pid <> pg_backend_pid()
+      SELECT a.pid, a.application_name, a.state, a.xact_start, a.query_start,
+             EXTRACT(EPOCH FROM (now() - COALESCE(a.xact_start, a.query_start))) AS age_sec
+      FROM pg_stat_activity AS a
+      WHERE a.application_name = ANY(${sql.array([...BACKUP_APPLICATION_NAMES])})
+        AND a.datname = current_database()
+        AND a.pid <> pg_backend_pid()
+        AND EXISTS (
+          SELECT 1
+          FROM pg_locks AS l
+          WHERE l.pid = a.pid
+            AND l.locktype = 'relation'
+            AND l.granted
+            AND l.mode = 'AccessShareLock'
+        )
     `;
     return rows.map((r) => ({
       pid: r.pid,

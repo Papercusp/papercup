@@ -1074,7 +1074,7 @@ describe('db_dump_ok readers stay tri-state and drive rollups', () => {
 // false all-clear — it must see BOTH backup producers, not just the workspace hook
 // this class's own receipt table (list()) tracks.
 describe('liveBackupSessions (EI-22064935119941678)', () => {
-  it('queries pg_stat_activity for both application names, scoped to this database and excluding self', async () => {
+  it('requires a granted relation AccessShareLock while checking both producers, this database, and excluding self', async () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const sql = ((strings: unknown, ...values: unknown[]) => {
       if (Array.isArray(strings)) queries.push({ text: (strings as string[]).join('?'), values });
@@ -1093,16 +1093,56 @@ describe('liveBackupSessions (EI-22064935119941678)', () => {
 
     expect(queries).toHaveLength(1);
     const { text, values } = queries[0];
-    expect(text).toContain('pg_stat_activity');
-    expect(text).toContain('application_name = ANY(');
-    expect(text).toContain('datname = current_database()');
-    expect(text).toContain('pid <> pg_backend_pid()');
+    expect(text).toContain('pg_stat_activity AS a');
+    expect(text).toContain('a.application_name = ANY(');
+    expect(text).toContain('a.datname = current_database()');
+    expect(text).toContain('a.pid <> pg_backend_pid()');
+    expect(text).toContain('FROM pg_locks AS l');
+    expect(text).toContain('l.pid = a.pid');
+    expect(text).toContain("l.locktype = 'relation'");
+    expect(text).toContain('l.granted');
+    expect(text).toContain("l.mode = 'AccessShareLock'");
     expect(values[0]).toEqual(['pcbackup', 'pcbackup-workspace']);
   });
 
-  it('maps a live host-cron session even when it has no snapshot receipt', async () => {
+  it('excludes an idle pcbackup session with no granted AccessShareLock', async () => {
     const sql = ((strings: unknown) => {
-      if (Array.isArray(strings) && (strings as string[]).join('').includes('pg_stat_activity')) {
+      const text = Array.isArray(strings) ? (strings as string[]).join('') : '';
+      const filtersGrantedAccessShare =
+        text.includes('FROM pg_locks AS l') &&
+        text.includes('l.pid = a.pid') &&
+        text.includes("l.locktype = 'relation'") &&
+        text.includes('l.granted') &&
+        text.includes("l.mode = 'AccessShareLock'");
+      return Promise.resolve(filtersGrantedAccessShare ? [] : [{
+        pid: 3294839,
+        application_name: 'pcbackup',
+        state: 'idle',
+        xact_start: null,
+        query_start: '2026-09-01T13:04:00.000Z',
+        age_sec: '369.2',
+      }]);
+    }) as unknown as Sql;
+    (sql as unknown as { array: (v: unknown) => unknown }).array = (v) => v;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await expect(w.liveBackupSessions()).resolves.toEqual([]);
+  });
+
+  it('maps a host-cron session holding a granted AccessShareLock even without a snapshot receipt', async () => {
+    const sql = ((strings: unknown) => {
+      const text = Array.isArray(strings) ? (strings as string[]).join('') : '';
+      if (
+        text.includes('pg_stat_activity AS a') &&
+        text.includes('l.granted') &&
+        text.includes("l.mode = 'AccessShareLock'")
+      ) {
         return Promise.resolve([{
           pid: 3294839,
           application_name: 'pcbackup',
