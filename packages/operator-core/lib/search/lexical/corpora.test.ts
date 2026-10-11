@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BM25_CORPORA, bm25Corpus, bm25CorpusSqlRow, bm25TextColumns, renderBm25TextExpr } from './corpora';
+import { BM25_CORPORA, bm25Corpus, bm25CorpusSqlRow, bm25TextColumns, renderBm25TextExpr, type Bm25Corpus } from './corpora';
 
 const SQL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../libs/papercusp/libs/db/sql');
 const DEFINES = 'FUNCTION harness_shared.bm25_corpus_indexes()';
@@ -53,12 +53,45 @@ describe('BM25 legacy-column retirement list ↔ registry', () => {
       .sort((a, b) => b.n - a.n)[0];
   const m = pick('.sql') ?? pick('.sql.DRAFT');
 
-  it(`names exactly the registry's (table, legacyTsvColumn) pairs`, () => {
+  const body = () => {
     expect(m, `no migration defines ${LEGACY}`).toBeDefined();
     const start = m!.sql.indexOf(LEGACY);
-    const body = m!.sql.slice(start, m!.sql.indexOf('$fn$;', start));
-    const pairs = [...body.matchAll(/\('([a-z0-9_]+)', '([a-z0-9_]+)', /g)].map(r => `${r[1]}.${r[2]}`);
-    expect(pairs.sort()).toEqual(BM25_CORPORA.map(c => `${c.table}.${c.legacyTsvColumn}`).sort());
+    return m!.sql.slice(start, m!.sql.indexOf('$fn$;', start));
+  };
+  const corpora: readonly Bm25Corpus[] = BM25_CORPORA;
+
+  it(`names exactly the registry's (table, legacyTsvColumn) pairs`, () => {
+    const pairs = [...body().matchAll(/\('([a-z0-9_]+)', '([a-z0-9_]+)', /g)].map(r => `${r[1]}.${r[2]}`);
+    expect(pairs.sort()).toEqual(corpora.map(c => `${c.table}.${c.legacyTsvColumn}`).sort());
+  });
+
+  // D-016: a corpus whose source reads the stored column (the exact list) must be kept, and
+  // only those. The kept_for value is the last field of each VALUES row.
+  it(`keeps exactly the registry's keepLegacyColumn corpora`, () => {
+    const rows = [...body().matchAll(/^\s*\('([a-z0-9_]+)', '[a-z0-9_]+', .*, (NULL|'([a-z-]+)')(?:::text)?\),?\s*$/gm)];
+    expect(rows).toHaveLength(corpora.length);
+    const kept = rows.filter(r => r[3]).map(r => `${r[1]}:${r[3]}`);
+    expect(kept.sort()).toEqual(corpora.filter(c => c.keepLegacyColumn).map(c => `${c.table}:${c.keepLegacyColumn}`).sort());
+  });
+});
+
+/**
+ * D-016: the work_item and session_turn sources of search:semantic fuse an exact list (legacy
+ * AND + ts_rank_cd) that reads the stored legacy column and its GIN index. Every relation an
+ * exact list reads must be a corpus with keepLegacyColumn, and every such corpus must have an
+ * exact list, so retirement can neither break a live source nor keep a column nobody reads.
+ */
+describe('BM25 exact-list sources ↔ keepLegacyColumn', () => {
+  /** Views the sources read through, mapped to the base table that owns the column. */
+  const VIEW_BASE: Record<string, string> = { engineer_issues: 'work_items' };
+  it('the exact-list relations are exactly the kept corpora', () => {
+    const src = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../agent-tools/search/sources.ts'), 'utf8');
+    const reads = [...src.matchAll(/lexicalMode: 'and' \}, (?:p\.)?sql`(\w+)`, (?:p\.)?sql`harness_shared\.(\w+)`/g)]
+      .map(r => `${VIEW_BASE[r[2]!] ?? r[2]}.${r[1]}`);
+    expect(reads.length, 'no exact-list call found in sources.ts').toBeGreaterThan(0);
+    const corpora: readonly Bm25Corpus[] = BM25_CORPORA;
+    expect([...new Set(reads)].sort())
+      .toEqual(corpora.filter(c => c.keepLegacyColumn).map(c => `${c.table}.${c.legacyTsvColumn}`).sort());
   });
 });
 

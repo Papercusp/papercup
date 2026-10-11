@@ -30,6 +30,14 @@ export interface Bm25Corpus {
   readonly textConfig: Bm25TextConfig;
   /** The legacy `tsvector` column the `ts_rank_cd` fallback ranks with. */
   readonly legacyTsvColumn: string;
+  /**
+   * Set when a BM25-live search source still reads the stored legacy column and its GIN
+   * index, so legacy-column retirement (migration 1452, `bm25_retire_legacy_columns()`)
+   * must keep both on this corpus. `'exact-list'`: the source fuses an exact list (legacy
+   * AND + `ts_rank_cd`) with its BM25 list (plan decision D-016). `corpora.test.ts` pins
+   * this set to the retirement list and to the exact-list sources in `sources.ts`.
+   */
+  readonly keepLegacyColumn?: 'exact-list';
 }
 
 const TITLE_DESCRIPTION = "coalesce({title}, '') || ' ' || coalesce({description}, '')";
@@ -38,6 +46,7 @@ export const BM25_CORPORA = [
   {
     table: 'work_items', indexName: 'work_items_bm25', textConfig: 'english', legacyTsvColumn: '_search',
     textExprTemplate: "coalesce({title}, '') || ' ' || coalesce({summary}, '') || ' ' || coalesce({notes}, '')",
+    keepLegacyColumn: 'exact-list',
   },
   {
     table: 'harness_plans', indexName: 'harness_plans_bm25', textConfig: 'english', legacyTsvColumn: '_search',
@@ -55,6 +64,7 @@ export const BM25_CORPORA = [
   {
     table: 'session_turns', indexName: 'session_turns_bm25', textConfig: 'english', legacyTsvColumn: 'text_tsv',
     textExprTemplate: "left(coalesce({text}, ''), 20000)",
+    keepLegacyColumn: 'exact-list',
   },
   {
     table: 'documents', indexName: 'documents_bm25', textConfig: 'english', legacyTsvColumn: 'text_tsv',
