@@ -1726,14 +1726,14 @@ Confirm which build an endpoint runs from its **health sha** — never a proxy's
 boot time, which describe the proxy, not the code it forwards to:
 `for p in 9071 3070 3170; do curl -s 127.0.0.1:$p/api/health; done`
 
-⚠ **`:3170` is not the canonical working tree.** The staging operator serves the
-separate `papercusp-staging` checkout pinned to `origin/staging`, so an uncommitted
-edit — or a commit that git-sync has not pushed yet — is invisible there; restarting
-`:3170` cannot make an unpublished edit appear. Use focused tests or a current-build
-instance for unpublished work. After git-sync publishes the candidate, reload the
-staging operator with `dev:restart { target: 'staging', confirm: true, authorize: true,
-reason: 'reload staging after origin/staging advanced' }`, then compare `/api/health`
-with the intended `origin/staging` build before exercising the real MCP surface:
+⚠ **`:3170` is not the canonical working tree.** It serves an isolated generation of
+the canonical tree's LOCAL committed `staging` (`sync-staging-checkout.sh` resolves
+`rev-parse staging`, not `origin/staging`): an uncommitted or git-sync-held edit is
+invisible there; a committed-but-unpushed one is not. `papercup-staging-sync.timer`
+advances it every ~5 min, deferring while `:3170` has live clients until the build is
+1800s old (journal: `Will advance to <sha>`); `dev:restart { target: 'staging' }`
+only relaunches the same generation. Test uncommitted work with focused tests. Once
+`:3170`'s `/api/health` build contains your change, exercise the real MCP surface:
 `POST http://127.0.0.1:3170/api/mcp?superuser=1&client=$PAPERCUSP_SID&workspace=…`.
 Run the identical sequence against `:3070` for an A/B whose only variable is the
 build. Worked example:

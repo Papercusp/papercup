@@ -912,8 +912,13 @@ describe('exact spec evidence bindings', () => {
       resetRuntimeVintageStore();
     }
   });
-  it.each(['manual', 'operational'] as const)(
-    'preserves the server-measured runtime for live %s proof without a test run', async (evidenceKind) => {
+  // WI-6554700010008521: the repo-files basis once measured runtimeUnits only at READ time, so a
+  // live probe pinned to source files stored a NULL environment and could never read as current.
+  it.each([
+    ['manual', 'work-items'], ['operational', 'work-items'],
+    ['manual', 'repo-files'], ['operational', 'repo-files'],
+  ] as const)(
+    'preserves the server-measured runtime for live %s proof on a %s basis without a test run', async (evidenceKind, basis) => {
       await specs.setSpecClause(clause({ mutationRequired: false }));
       configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
       try {
@@ -921,11 +926,13 @@ describe('exact spec evidence bindings', () => {
           treeSha: 'a'.repeat(40), pid: process.pid });
         const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(WORKSPACE), ['bg-host']);
         expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
-        const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
-          workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] };
+        const measurement = basis === 'work-items'
+          ? { schemaVersion: 1 as const, kind: 'work-items' as const, workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] }
+          : { schemaVersion: 1 as const, kind: 'repo-files' as const, sourcePaths: ['src/reconnect.ts'],
+              runtimeUnits: ['bg-host'] };
         const binding = {
           workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind,
-          evidenceRef: `live-${evidenceKind}-probe`, measurement, details: { evidencePlane: 'live' },
+          evidenceRef: `live-${evidenceKind}-${basis}-probe`, measurement, details: { evidencePlane: 'live' },
         };
         // The live-runtime fixture uses only the binder's built-in server measurements.
         // An omitted declaration must still fail closed before any binding is written.
@@ -942,11 +949,11 @@ describe('exact spec evidence bindings', () => {
         } }, CTX);
         expect(result).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
         const [stored] = await db.sql`SELECT test_run_id, environment_fingerprint
-          FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${`live-${evidenceKind}-probe`}`;
+          FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${binding.evidenceRef}`;
         expect(stored.test_run_id).toBeNull();
         expect(stored.environment_fingerprint).toBe(fingerprint);
         const [proof] = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
-          planSlugs: ['reconnect-plan'], evidenceRefs: [`live-${evidenceKind}-probe`] });
+          planSlugs: ['reconnect-plan'], evidenceRefs: [binding.evidenceRef] });
         expect(proof.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
           dimensions: { environment: 'current', testRun: 'not-applicable' } });
       } finally {

@@ -6,7 +6,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, validateTutorialVoiceLessonForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
-import { enrollAccountTutorial } from './cloud-tutorial-progress';
+import { enrollAccountTutorial, updateTutorialProgress } from './cloud-tutorial-progress';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
@@ -346,6 +346,57 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     });
     expect(await pendingAdmission).toBe(false);
     upstreamExpired = false;
+    // Cloud admission composes the same verified identity with workspace
+    // ownership and a persisted version-specific lesson, in one transaction.
+    const workspace = randomUUID(), host = randomUUID(), connection = randomUUID();
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_connections
+      (workspace_id, id, target, label, credential_ref, status)
+      VALUES (${input.controlWorkspaceId}, ${connection}, 'gcp', 'Cloud voice fixture', 'fixture://no-provider', 'connected')`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_hosts
+      (workspace_id, id, name, connection_id, target, scope_label, region,
+       size, image, disk_gib, network, desired_state, observed_state)
+      VALUES (${input.controlWorkspaceId}, ${host}, 'Cloud voice fixture', ${connection}, 'gcp', 'fixture',
+        'us-central1', 'n2-standard-2', 'ubuntu-2404', 40, 'default', 'running', 'running')`;
+    await db.adminSql`INSERT INTO harness_shared.customer_workspaces
+      (workspace_id, id, organization_id, workspace_host_id, display_name, state, created_by_principal_kind, created_by_principal_id)
+      VALUES (${input.controlWorkspaceId}, ${workspace}, ${organization.id}, ${host}, 'Cloud voice fixture', 'active', 'user', ${user.id})`;
+    const cloudSession = await new HostedSessionStore(db.adminSql).create({ userId: user.id,
+      organizationId: organization.id, workspaceId: workspace, permissionVersion: member!.permissionVersion,
+      upstreamProvider: 'workos', upstreamSessionId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000) });
+    externalSessionId = cloudSession.upstreamSessionId;
+    const cloud = { ...input, sessionId: cloudSession.id, customerWorkspaceId: workspace,
+      lesson: { version: 2 as const, step: 'configuration' as const, status: 'ready' as const } };
+    expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx,
+      { ...cloud, customerWorkspaceId: randomUUID() }, provider))).toBe(false);
+    await expect(run(tx => validateTutorialVoiceLessonForUpdate(tx, cloud, provider)))
+      .rejects.toThrow('tutorial_not_enrolled');
+    const cloudScope = { tenantId: organization.id, userId: user.id, workspaceId: workspace };
+    await run(tx => withTutorialVoiceTenantContext(tx, { principal: {
+      kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified', slug: user.id,
+      workspaceId: input.controlWorkspaceId, userId: user.id, activeOrganizationId: organization.id,
+      selectedWorkspaceId: workspace, sessionId: cloudSession.id, sessionVersion: member!.permissionVersion,
+    }, selectedWorkspace: { id: workspace, organizationId: organization.id } },
+    scoped => updateTutorialProgress(scoped, cloudScope, { expectedScope: cloudScope,
+      expectedRevision: 0, mutationId: randomUUID(), version: 2, disposition: 'active' })));
+    await run(async tx => {
+      expect(await validateTutorialVoiceLessonForUpdate(tx, cloud, provider)).toBe(true);
+      expect(await validateTutorialVoiceLessonForUpdate(tx,
+        { ...cloud, controlWorkspaceId: randomUUID() }, provider)).toBe(false);
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE harness_shared.customer_workspaces SET organization_id = ${randomUUID()}
+          WHERE workspace_id = ${input.controlWorkspaceId} AND id = ${workspace}`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
+          WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    await expect(run(tx => validateTutorialVoiceLessonForUpdate(tx,
+      { ...cloud, lesson: { ...cloud.lesson, version: 1 } }, provider))).rejects.toThrow('tutorial_not_enrolled');
+    externalSessionId = session.upstreamSessionId;
     await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
       SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"paused"'::jsonb)
       WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;

@@ -58,10 +58,23 @@ export async function validateTutorialVoiceIdentityForUpdate(sql: Sql, admission
   const membership = new PostgresHostedMembershipAuthority(sql);
   const active = await membership.resolveActiveForUpdate({ userId: admission.userId, organizationId: admission.organizationId });
   if (!active || active.permissionVersion !== admission.sessionVersion) return false;
-  if (admission.customerWorkspaceId !== null && (!active.permissions.has('workspace:view')
-    || !await membership.workspaceBelongsToOrganizationForUpdate({ userId: admission.userId,
-      sessionId: admission.sessionId, sessionVersion: admission.sessionVersion, organizationId: admission.organizationId,
-      customerWorkspaceId: admission.customerWorkspaceId, controlPlaneWorkspaceId: admission.controlWorkspaceId }))) return false;
+  if (admission.customerWorkspaceId !== null) {
+    if (!active.permissions.has('workspace:view')) return false;
+    const workspaceId = admission.customerWorkspaceId;
+    // The service role owns identity checks, but workspace directory authority
+    // belongs to the verified tenant role. Preserve its lock in this transaction.
+    const owned = await withTutorialVoiceTenantContext(sql, { principal: {
+      kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified', slug: admission.userId,
+      workspaceId: admission.controlWorkspaceId, userId: admission.userId,
+      activeOrganizationId: admission.organizationId, selectedWorkspaceId: workspaceId,
+      sessionId: admission.sessionId, sessionVersion: admission.sessionVersion,
+    }, selectedWorkspace: { id: workspaceId, organizationId: admission.organizationId } },
+    tx => new PostgresHostedMembershipAuthority(tx).workspaceBelongsToOrganizationForUpdate({
+      userId: admission.userId, sessionId: admission.sessionId, sessionVersion: admission.sessionVersion,
+      organizationId: admission.organizationId, customerWorkspaceId: workspaceId,
+      controlPlaneWorkspaceId: admission.controlWorkspaceId }));
+    if (!owned) return false;
+  }
   // Upstream verification can take time; expiry must still hold after all reads.
   return session.expiresAt.getTime() > Date.now() && upstream.value.expiresAtMs > Date.now();
 }
