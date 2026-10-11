@@ -7,14 +7,37 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
   RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('native approval terminal wait', () => {
+  const event = (value: Record<string, unknown>) => value as unknown as SuSessionEvent;
+  const reply = event({ type: 'transcript', phase: 'completed', role: 'assistant',
+    channel: 'text', turnId: 'requested-turn', sequence: 10 });
+  const idle = event({ type: 'lifecycle', state: 'waiting-for-owner', sequence: 11 });
+
+  it('fails promptly when the requested turn replies and settles without a card', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'requested-turn', false)).toBe(true);
+  });
+  it('keeps waiting for a pending card, including a prerequisite MCP approval', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'requested-turn', true)).toBe(false);
+  });
+  it('does not mistake an earlier turn, reasoning completion, or initial idle for a refusal', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'next-turn', false)).toBe(false);
+    expect(nativeApprovalTurnSettled([event({ ...reply, channel: 'reasoning' }), idle], 'requested-turn', false)).toBe(false);
+    expect(nativeApprovalTurnSettled([idle, event({ ...reply, sequence: 12 })], 'requested-turn', false)).toBe(false);
+  });
+  it.each(['failed', 'ended'])('stops a %s native session without a card', (state) => {
+    expect(nativeApprovalTurnSettled([event({ type: 'lifecycle', state, sequence: 12 })], 'requested-turn', false)).toBe(true);
+  });
+});
 
 describe('installed acceptance canonical test ledger', () => {
   it('retains the ledger reporter when Vitest replaces configured reporters with CLI options', async () => {

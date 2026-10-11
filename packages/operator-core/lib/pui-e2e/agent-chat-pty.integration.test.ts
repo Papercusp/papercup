@@ -39,7 +39,7 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { assertInstalledPuiStore, HARNESS_TAG, nativeInterruptRequest } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalTurnSettled, nativeInterruptRequest } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
@@ -7836,7 +7836,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const processMarker = `pui-process-${shortMarkerId()}`;
     const { prompt: greeting, reply: greetingReply } = markerRequest(processMarker);
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
-    const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
+    const approvalResult = `Temporary text note ${randomUUID()}`;
     // Codex's `on-request` policy asks only when a command must leave its
     // workspace-write sandbox. The fixture home lives under the system temp
     // root, which Codex may write without escalation; targeting it would let
@@ -7845,15 +7845,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // must honor the explicit approval before the exact effect can occur.
     const approvalFixturePath = path.join(
       path.dirname(REPO_ROOT),
-      `.pui-approval-fixture-${randomUUID()}.txt`,
+      `.pui-note-${randomUUID()}.txt`,
     );
-    // Ask for the ordinary outcome in ordinary language. Security-attestation
-    // rhetoric and instructions not to inspect the task correctly make a real
-    // provider stop and ask what is actually being tested, which exercises
-    // provider policy rather than the PUI permission transport. The fixture
-    // pre-assigns the task and the AUTO launch authorizes execution; native
-    // toolApproval:'prompt' still requires the real Bash card below.
-    const approvalRequest = `Continue the already-assigned PUI acceptance task ${REAL_APPROVAL_WORK_ITEM}. Use Bash to create the temporary fixture file '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline.`;
+    // Start the session before sending work so its actual native owner is
+    // known. A controller-owned seed is not a task assigned to that SU.
     const first = await startOperatorProcess();
     const launchDir = journeyDir('restore');
     const pane = new PuiPane(bin, first.port, home, { cwd: launchDir });
@@ -7870,8 +7865,26 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       // show that state before openComposer sends Escape/o. The generic
       // startup footer can still belong to the default papercup context.
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
-      await openComposer(pane);
+      await openComposer(pane, !approvalEnabled);
       if (approvalEnabled) {
+        pane.escape();
+        pane.write('s');
+        await pane.waitFor('Enter attach/resume · n New');
+        pane.reviewNextNewSession();
+        pane.write('n');
+        await pane.waitForSendReady({ timeoutMs: 60_000 });
+        await vi.waitFor(() => expect(first.descriptors.size).toBe(1), { timeout: 60_000, interval: 100 });
+        const nativeOwner = [...first.descriptors.values()][0].identity.ownerId;
+        expect(nativeOwner).toBeTruthy();
+        const assigned = await db.adminSql`
+          UPDATE harness_shared.work_items
+             SET taken_by = ${nativeOwner}, taken_at = now(), last_progress_at = now()
+           WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+             AND feature_id = ${REAL_APPROVAL_WORK_ITEM}
+          RETURNING taken_by`;
+        expect(assigned).toEqual([{ taken_by: nativeOwner }]);
+        const approvalRequest = `Task ${REAL_APPROVAL_WORK_ITEM} is assigned to your session ${nativeOwner}. Please verify it with work_items:get. I want a temporary plain-text note at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline. Create it using Bash.`;
+        console.info('PUI_APPROVAL_TASK_ASSIGNMENT', JSON.stringify({ workItem: REAL_APPROVAL_WORK_ITEM, ownerId: nativeOwner }));
         const approvalEventsBefore = first.events.length;
         pane.write(approvalRequest);
         pane.enter();
@@ -7886,10 +7899,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const approvalLabel = 'Yes';
         const pendingCards = () => pendingNativeCards(first.events);
         const approvalWait = await pollUntil(() => {
+          pane.settleSuToolApproval();
           if (scriptedEngine.real) {
             throwIfProviderRateLimited(first.events.slice(approvalEventsBefore), 'Native tool approval');
           }
-          return pendingCards().some((card) => cardMentions(card, approvalFixturePath));
+          const pending = pendingCards();
+          if (pending.some((card) => cardMentions(card, approvalFixturePath))) return true;
+          if (nativeApprovalTurnSettled(first.events.slice(approvalEventsBefore), approvalCommand.turnId, pending.length > 0)) {
+            throw new Error('The native approval turn settled without the requested tool card; inspect PUI_OPERATOR_PROCESS_FAILURE for its reply');
+          }
+          return false;
         }, { timeoutMs: 120_000, intervalMs: 100 });
         expect(approvalWait.ok, 'the native tool must request approval within 120 seconds').toBe(true);
         const targetApprovalCard = pendingCards().find((card) => cardMentions(card, approvalFixturePath));

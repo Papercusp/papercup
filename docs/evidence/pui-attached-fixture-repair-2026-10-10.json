@@ -109,6 +109,34 @@
       "The fixture source and setup driver changed after this passing run; its source hashes above identify the bytes it tested.",
       "No native restart/approval, serving-account identity, immutable full-candidate acceptance, BAR adequacy, independent grading, final Avi approval or public shipment is established."
     ],
-    "nextAction": "Verify the focused OMP operator-process restart/approval journey with the same connection/query render waits; preserve original full-candidate refused verdict."
+    "nextAction": "Verify the corrected native task assignment and OMP operator-process restart/approval journey; preserve original full-candidate refused verdict."
+  },
+  "nativeApprovalFixtureRepair": {
+    "workItem": "EI-25701191623415602",
+    "failedTaskId": "0mv414d431ibepuh1nf",
+    "failedTestRunId": 21090981,
+    "failedLogPath": ".papercusp/scratch/bash-000409a8-e11.log",
+    "failedLogSha256": "a20b197326eb287942ea5c754a5cf3ce10b2db602efa029abd883ad2d8c16fec",
+    "failedTerminalAt": "2026-10-11T16:27:01.695Z",
+    "failedExitCode": 1,
+    "observedNativeModel": "papercusp-gateway/claude-sonnet-4-6",
+    "observation": "Setup reached native launch. The model refused the controller-owned task claim and temporary approval-marker request without opening a tool card; the test waited 120 seconds after the turn ended.",
+    "correction": "Start the native session without a first turn through Sessions > New, assign its actual descriptor owner before submitting work, ask it to verify the assignment, use an ordinary temporary text note, preserve prerequisite MCP approvals and the exact native tool-card/effect checks.",
+    "detector": {
+      "testFile": "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+      "testGroup": "native approval terminal wait",
+      "taskId": "0mv41nww8y8pdzsr50m",
+      "testRunId": 21091031,
+      "logPath": ".papercusp/scratch/bash-9f929183-df7.log",
+      "logSha256": "d56b89f318a6bc82a8b99da42fa2cde21680587d681fe1e4fba9f4ccf10b9ef2",
+      "terminalAt": "2026-10-11T16:37:22.072Z",
+      "exitCode": 0,
+      "result": "5 passed / 36 skipped; matching-turn terminal refusal, pending-card, earlier-turn, reasoning, initial-idle, failed and ended controls"
+    },
+    "limitations": [
+      "The corrected native journey has not yet passed. These five tests cover its wait detector only.",
+      "The original Connection: Unavailable cause remains unconfirmed.",
+      "Account auto is routing metadata, not serving-account proof. No full-candidate acceptance, BAR adequacy, independent grade, final Avi approval or public shipment is asserted."
+    ]
   }
 }

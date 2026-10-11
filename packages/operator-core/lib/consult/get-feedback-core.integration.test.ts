@@ -2985,6 +2985,40 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     expect(row.state).toBe('no_qualified_responder');
   });
 
+  it('WI-6554700010008590: a single-seat menu refused pre-launch refills from the untried pool instead of ending no_available_responder', async () => {
+    // The live incident: the menu seated ONE floor-qualified expert whose transcript
+    // was not archived, while the routing pool held further unseated candidates.
+    // The creation-leg failover used to require >1 SEATED expert, so the untried
+    // pool was never consulted and the consult ended no_qualified_responder.
+    const { deps, reached } = makeDispatchDeps(
+      routeOf([deadExpert], { all: [deadExpert, liveLow] }),
+      [0, 1],
+    );
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'live-low']);
+    expect(res.verdict).toBe('routed');
+    expect(res.responder?.ownerId).toBe('live-low');
+    const row = await stateRow(res.conversation_id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.responder_id).toBe('live-low');
+    const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
+    expect(digest).toEqual([expect.objectContaining({ ownerId: 'dead-x', kind: 'dispatch_failed' })]);
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>>; refill?: unknown } }).selection;
+    expect(sel?.selected?.map((s) => s.ownerId)).toEqual(['dead-x', 'live-low']);
+    expect(sel?.refill).toBeTruthy();
+  });
+
+  it('WI-6554700010008590: an untried pool does not refill a min-0 consult', async () => {
+    const { deps, reached } = makeDispatchDeps(
+      routeOf([deadExpert], { all: [deadExpert, liveLow] }),
+      [0, 1],
+    );
+    const res = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x']);
+    expect(res.verdict).toBe('no_qualified_responder');
+    expect(res.reason).toBe('no_available_responder');
+  });
+
   it('dispatch-failed: advances to the next selected responder', async () => {
     const first = cand('zombie-first');
     const second = cand('live-second', { score: 0.65 });

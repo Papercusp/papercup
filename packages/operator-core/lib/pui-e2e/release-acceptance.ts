@@ -17,6 +17,7 @@
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
+import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import { moduleRepoRoot } from '../module-repo-root';
 
 // Walk to the checkout, not a fixed `..` climb: that climb is wrong inside the esbuild host
@@ -35,6 +36,22 @@ export function nativeInterruptRequest(listId: string, count = 1000): string {
     throw new Error('Native interruption probe exceeds its 4096-byte reply budget');
   }
   return `Please write the numbers from 1 through ${count}, one per line, with no other text. Do not summarize or use tools. (List id: ${listId})`;
+}
+
+/** Stop a card wait when this turn has actually settled without a pending
+ * card. The caller supplies only events received after submitting the turn. */
+export function nativeApprovalTurnSettled(
+  events: readonly SuSessionEvent[], turnId: string, hasPendingCard: boolean,
+): boolean {
+  if (hasPendingCard) return false;
+  const lifecycle = events.findLast((event) => event.type === 'lifecycle');
+  if (lifecycle?.type !== 'lifecycle') return false;
+  if (lifecycle.state === 'failed' || lifecycle.state === 'ended') return true;
+  const reply = events.findLast((event) => event.type === 'transcript'
+    && event.phase === 'completed' && event.role === 'assistant'
+    && event.channel === 'text' && event.turnId === turnId);
+  return lifecycle.state === 'waiting-for-owner' && reply !== undefined
+    && lifecycle.sequence > reply.sequence;
 }
 
 /** Reject an incomplete installed-product invocation before starting its database or PTY. */

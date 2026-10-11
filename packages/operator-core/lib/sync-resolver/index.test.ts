@@ -2,6 +2,41 @@ import { describe, expect, it, vi, beforeEach, beforeAll, afterAll } from 'vites
 import { knownQueryNamesV2, isRegisteredV2, resolveNamedQueryV2, NAME_NOT_FOUND, jsonSafeRows } from './index';
 import { readWorkItemAdmissionSnapshot } from '../work-items-admission-promoter';
 
+describe('Learning canonical detail provider-free prerequisite', () => {
+  it.each(['mem0', 'hybrid-pg', 'custom'])('reads %s through its own corpus and preserves owner unsealing', async choice => {
+    const entry = { id: 'selected-memory', text: 'sealed-source', scope: 'hive:selected' };
+    const canonicalRead = vi.fn(async () => [entry]);
+    const available = vi.fn(async () => ({ ok: choice === 'custom', reason: 'provider-unavailable' }));
+    const get = vi.fn(async () => entry);
+    const unseal = vi.fn(async (rows: Array<typeof entry>) => rows.map(row => ({ ...row, text: 'owner-readable' })));
+    const sql = {};
+    vi.doMock('../memory/backend-selection', () => ({ currentMemoryBackendChoice: () => choice }));
+    vi.doMock('../memory/backend', () => ({ getMemoryBackend: () => ({ available, get }) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'private-workspace' }));
+    vi.doMock('../personal-vault/shared-store-seal', () => ({ unsealRowsForOwner: unseal }));
+    vi.doMock('./learning-retain-read', async importOriginal => ({
+      ...await importOriginal<typeof import('./learning-retain-read')>(),
+      listCanonicalRetainMemoriesPage: canonicalRead,
+    }));
+    try {
+      const rows = await resolveNamedQueryV2('learning.retainDetail', { kind: 'memory', id: entry.id, hive: 'selected' });
+      expect(rows).toEqual([expect.objectContaining({ id: entry.id, body: 'owner-readable' })]);
+      expect(unseal).toHaveBeenCalledWith([entry], expect.objectContaining({ workspaceId: 'private-workspace' }));
+      if (choice === 'custom') {
+        expect(canonicalRead).not.toHaveBeenCalled();
+        expect(available).toHaveBeenCalledOnce(); expect(get).toHaveBeenCalledWith(entry.id);
+      } else {
+        expect(canonicalRead).toHaveBeenCalledWith(sql, ['hive:selected'], { window: null, limit: 1, id: entry.id });
+        expect(available).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const module of ['../memory/backend-selection', '../memory/backend', '@papercusp/db-org',
+        '../workspace-registry', '../personal-vault/shared-store-seal', './learning-retain-read']) vi.doUnmock(module);
+    }
+  });
+});
+
 describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
   it('coerces a BigInt id so the row is JSON-serializable (the user_actions 500 class)', () => {
     const out = jsonSafeRows([{ id: 42n, kind: 'tool', startedAt: 1700000000000 }]);

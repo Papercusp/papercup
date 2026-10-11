@@ -821,7 +821,7 @@ async function retainStoreDeps(
   sql: import('postgres').Sql,
   workspaceId: string,
   hive: string | undefined,
-): Promise<import('./learning-retain-read').RetainFeedDeps> {
+): Promise<import('./learning-retain-read').RetainFeedDeps & Pick<import('./learning-retain-read').RetainDetailDeps, 'getMemory'>> {
   const { currentMemoryBackendChoice } = await import('../memory/backend-selection');
   // Only these two active choices enumerate the canonical Postgres rows.
   // A custom/future backend keeps the pluggable `backend.list()` contract — a
@@ -846,6 +846,24 @@ async function retainStoreDeps(
   };
 
   return {
+    // Feed, summary, counts and keyed detail must use the same corpus. Canonical
+    // reads need PG only, not an extraction LLM or embedding client.
+    getMemory: async (id) => {
+      let entry: import('./learning-retain-read').RetainMemorySource | null;
+      if (canonicalBacked) {
+        const { listCanonicalRetainMemoriesPage } = await import('./learning-retain-read');
+        [entry = null] = await listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), { window: null, limit: 1, id });
+      } else {
+        const { getMemoryBackend } = await import('../memory/backend');
+        const backend = getMemoryBackend();
+        const avail = await backend.available();
+        if (!avail.ok) throw new Error(avail.reason);
+        entry = await backend.get(id);
+      }
+      if (!entry) return null;
+      const [owned] = await unsealMemoriesForOwner(workspaceId, [entry]);
+      return owned ?? null;
+    },
     // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
     // resolution mirrors learning.hive (learning-hive-read): `hive:<slug>` for
     // a selected pot, every pot's pool under the All-Pots lens (ListOptions.scope
@@ -5717,7 +5735,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       hive: z.string().max(120).optional(),
     }),
     resolve: async (args) => {
-      const a = args as { kind: 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe'; id: string };
+      const a = args as { kind: 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe'; id: string; hive?: string };
       if (!a.id) return [];
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -5777,15 +5795,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return null;
         },
         getMemory: async (id) => {
-          const { getMemoryBackend } = await import('../memory/backend');
-          const backend = getMemoryBackend();
-          const avail = await backend.available();
-          if (!avail.ok) throw new Error(avail.reason);
-          const entry = await backend.get(id);
-          if (!entry) return null;
-          const { activeWorkspaceId } = await import('../workspace-registry');
-          const [owned] = await unsealMemoriesForOwner(activeWorkspaceId(), [entry]);
-          return owned as typeof entry & { scope?: string };
+          const deps = await retainStoreDeps(sql, activeWorkspaceId(), a.hive);
+          return deps.getMemory(id);
         },
       });
       return detail ? [detail] : [];
