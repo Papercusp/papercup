@@ -25,6 +25,8 @@ const H = vi.hoisted(() => ({
   noRollup: false,
   /** Core inventory queries are unresolved — absence must render as loading, never zero. */
   loadingData: false,
+  occurrenceError: null as Error | null,
+  emptyOccurrences: false,
   /** Swap the connected-source fixture to Gmail for direct Email-target coverage. */
   gmailSource: false,
   /** The catalog carries the `external-trigger-dispatch` routine, inactive (WI-10004922). */
@@ -175,7 +177,7 @@ vi.mock('@papercusp/sync', () => ({
       { slug: 'rubric-ratification', title: 'Rubric ratification', harness: 'papercusp', status: 'ready', nextAction: 'Wait for independent review', triggered: true, triggerSources: ['manual'], scheduled: false, scheduleActive: false },
     ], loading: false, invalidate };
     if (queryName === 'plans.schedule') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', schedule: { rrule: 'RRULE:FREQ=DAILY;BYHOUR=9', tzid: 'America/New_York' }, scheduledAt: null, expiresAt: null, tzid: 'America/New_York', scheduleActive: true }], loading: false, invalidate };
-    if (queryName === 'plans.scheduledOccurrences') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], loading: false, invalidate };
+    if (queryName === 'plans.scheduledOccurrences') return { data: H.emptyOccurrences ? [] : [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], error: H.occurrenceError, loading: false, invalidate };
     if (queryName === 'plans.runHistory' && H.noRollup) return { data: [{ runs: [], rollup: null }], loading: false, invalidate };
     if (queryName === 'plans.runHistory') return { data: [{ runs: [{ id: 1, status: 'done', trigger: 'manual', outcome: 'success', launchedAt: Date.now() - 60_000, durationMs: 45_000, costUsd: 0.62 }], rollup: { total: 1, successRate: 1, totalCostUsd: 0.62, medianDurationMs: 45_000, running: 0, failed: 0 } }], loading: false, invalidate };
     return { data: [], loading: false, invalidate };
@@ -255,6 +257,8 @@ beforeEach(() => {
   H.manyPlans = false;
   H.noRollup = false;
   H.loadingData = false;
+  H.occurrenceError = null;
+  H.emptyOccurrences = false;
   H.gmailSource = false;
   H.dispatcherPaused = false;
   H.externalDisarmed = false;
@@ -389,6 +393,52 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     await screen.findByRole('heading', { name: 'Workflows', level: 1 });
     // The rule this preserves: no "all clear" card, no empty frame — absence IS the state.
     expect(screen.queryByTestId('workflows-needs-you')).toBeNull();
+  });
+
+  it('reports an occurrence read failure while retaining the workflow and routine inventory', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    renderTab();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('occurrence read denied');
+    expect(within(alert).getByRole('button', { name: 'Retry schedule read' })).toBeTruthy();
+    expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
+    expect(screen.getByTestId('wf-row:routine:git-sync:papercusp')).toBeTruthy();
+  });
+
+  it('does not show stale next-run values after an occurrence read fails', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    renderTabOnDigest();
+    const row = await screen.findByTestId(`wf-row:${DIGEST}`);
+    expect(row.textContent).not.toContain('18m');
+    expect(row.textContent).toContain('Schedule unavailable');
+    expect(screen.getByLabelText('Workflow inspector').textContent).not.toContain('18m');
+  });
+
+  it('retries the occurrence read and restores verified next-run values on recovery', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    const view = renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry schedule read' }));
+    expect(H.invalidates).toEqual(['plans.scheduledOccurrences']);
+    expect(H.runTool).not.toHaveBeenCalled();
+    H.occurrenceError = null;
+    view.rerender(<NuqsTestingAdapter><AdvWorkflowsTab /></NuqsTestingAdapter>);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByTestId(`wf-row:${DIGEST}`).textContent).toContain('18m');
+  });
+
+  it('keeps a genuinely empty successful occurrence read distinct from failure', async () => {
+    H.emptyOccurrences = true;
+    renderTab();
+    await screen.findByTestId(`wf-row:${DIGEST}`);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry schedule read' })).toBeNull();
+    expect(screen.getByTestId(`wf-row:${DIGEST}`).textContent).not.toContain('Schedule unavailable');
+  });
+
+  it('shows verified next-run values for a successful occurrence read', async () => {
+    renderTabOnDigest();
+    expect((await screen.findByTestId(`wf-row:${DIGEST}`)).textContent).toContain('18m');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   /**

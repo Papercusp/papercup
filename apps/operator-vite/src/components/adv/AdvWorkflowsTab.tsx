@@ -412,12 +412,23 @@ export default function AdvWorkflowsTab() {
     catalog,
     plans: plansQuery.data ?? [],
     schedules: schedulesQuery.data ?? [],
-    occurrences: occurrencesQuery.data ?? [],
+    // A failed refresh may retain old query data. It cannot verify the next run.
+    occurrences: occurrencesQuery.error ? [] : occurrencesQuery.data ?? [],
     external,
-  }), [catalog, external, occurrencesQuery.data, plansQuery.data, schedulesQuery.data]);
+  }), [catalog, external, occurrencesQuery.data, occurrencesQuery.error, plansQuery.data, schedulesQuery.data]);
 
   const items = useMemo(() => buildAutomationItems(modelInput), [modelInput]);
-  const rows = useMemo(() => buildLedgerRows(items), [items]);
+  const rows = useMemo(() => {
+    const ledger = buildLedgerRows(items);
+    if (!occurrencesQuery.error) return ledger;
+    const scheduledPlans = new Set(items
+      .filter(item => item.planSlug && item.triggers.some(trigger => trigger.kind === 'schedule'))
+      .map(item => item.id));
+    // Keep independently read routines and event-only workflows intact.
+    return ledger.map(row => scheduledPlans.has(row.id)
+      ? { ...row, nextLabel: 'Schedule unavailable' }
+      : row);
+  }, [items, occurrencesQuery.error]);
   const counts = useMemo(() => buildFacetCounts(rows), [rows]);
   const activity = useMemo(() => buildAutomationActivity(modelInput), [modelInput]);
   const sources = useMemo(() => buildAutomationSources(modelInput), [modelInput]);
@@ -762,6 +773,14 @@ export default function AdvWorkflowsTab() {
   const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
   const filtered = stateFacet !== 'all' || kindFacet !== 'all' || sourceFacet != null || query.trim() !== '';
   const populationEmpty = !loading && rows.length === 0;
+  const scheduleReadAlert = occurrencesQuery.error ? (
+    <div className="pc-wf__notice" role="alert">
+      Upcoming scheduled runs are unavailable: {errorMessage(occurrencesQuery.error)}.{' '}
+      <button type="button" className="pc-wf__btn pc-wf__btn--sm" onClick={() => void occurrencesQuery.invalidate?.()}>
+        <span className="pc-wf__btn-inner">Retry schedule read</span>
+      </button>
+    </div>
+  ) : null;
 
   // The expansion (D-002). A `wfId` that resolves to nothing (a stale URL) falls through to
   // the frame rather than rendering an empty shell.
@@ -785,6 +804,7 @@ export default function AdvWorkflowsTab() {
     return (
       <section className="pc-wf" aria-label="Workflow detail">
         {confirmElement}
+        {scheduleReadAlert}
         <WorkflowDetailView
           workflowLabel={expandedWorkflow.label}
           planSlug={expandedWorkflow.planSlug ?? null}
@@ -900,6 +920,8 @@ export default function AdvWorkflowsTab() {
           </button>
         </div>
       </header>
+
+      {scheduleReadAlert}
 
       <section className="pc-wf__composer" aria-label="Describe a workflow">
         <div className="pc-wf__composer-head">
