@@ -52,34 +52,24 @@ interface AllowedDraft {
  * file a "test that names the draft", which is exactly what the scan looks for.
  */
 const ALLOWED_TEST_LOADED_DRAFTS: Record<string, AllowedDraft> = {
-  '917': {
-    kind: 'contract-phase',
-    owner: 'WI-6554700010008620',
-    reason:
-      'Contract phase after the captured-only probe code; the test proves the store survives the contract. Originating WI-3962 closed without arming it.',
-  },
   '1077': {
     kind: 'parked',
-    owner: 'WI-6554700010008620',
+    // resource-governor-admission-ledger-2026-09-01#P-005 (still open) owns this retirement.
+    owner: 'WI-2092046',
     reason:
-      'Guarded deletion of legacy resource-governor receipts, parked until zero are active; admission-ledger-removal-contract.test.ts asserts it is parked or armed, never both.',
-  },
-  '1130': {
-    kind: 'parked',
-    owner: 'WI-6554700010008620',
-    reason:
-      'Tool-name backfill parked until the catalog-backed writer is deployed. Originating EI-22420642374429444 closed without arming it.',
+      'Guarded deletion of legacy resource-governor receipts. Not armable yet: on 2026-10-11 both governed workspaces still lacked the retired-writer marker, so the migration would refuse. admission-ledger-removal-contract.test.ts asserts it is parked or armed, never both.',
   },
   '1145': {
     kind: 'parked',
-    owner: 'WI-6554700010008620',
+    owner: 'WI-6554700010008642',
     reason:
-      'Expand phase; its header says do not arm while deployed rubric readers lack subjectHarnessSlug. Originating WI-10000549 closed without arming it.',
+      'Expand phase; its header requires separate rollout authorization, which coordination-metadata-friction-reduction-2026-09-07#P-007 (controlled adoption) owns.',
   },
   '1146': {
     kind: 'contract-phase',
-    owner: 'WI-6554700010008620',
-    reason: 'Contract phase of 1145; arms only after 1145 and a compatible writer are deployed.',
+    owner: 'WI-6554700010008642',
+    reason:
+      'Contract phase of 1145. Also blocked because the deployed activeAcceptanceRubricsQuery is keyed by plan slug alone and relies on the broad index this drops.',
   },
   '1416': {
     kind: 'contract-phase',
