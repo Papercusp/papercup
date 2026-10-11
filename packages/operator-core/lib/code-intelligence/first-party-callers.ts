@@ -87,7 +87,9 @@ export interface FirstPartyCallersAnswer extends CodeIntelAnswer {
 export interface CompilerInterfaceEvidence {
   readonly status: 'measured' | 'unknown';
   readonly diagnostics: readonly { site: SymbolSite; code: number; message: string }[];
-  readonly registrations: readonly { name: string | null; site: SymbolSite; implementation: SymbolSite | null;
+  readonly registrations: readonly { name: string | null; kind: 'tool' | 'route'; method: string | null; path: string | null;
+    factoryAuthority: 'maintained-import' | 'maintained-source' | 'unverified'; factory: SymbolSite | null;
+    site: SymbolSite; implementation: SymbolSite | null;
     requestValidator: SymbolSite | null; responseValidator: SymbolSite | null; documentation: SymbolSite | null;
     runtimeRegistered: 'unmeasured' }[];
   readonly sources: readonly CodeIntelSourceFile[];
@@ -425,11 +427,37 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
       language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' });
     return { path, line1: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, kind, detail: null };
   };
-  const reference = (node: TsModule.Expression | undefined, kind: string) => {
+  const reference = (node: TsModule.Node | undefined, kind: string) => {
     if (!node) return null;
     let symbol = checker.getSymbolAtLocation(node);
     if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
     return site(symbol?.declarations?.[0] ?? node, kind);
+  };
+  const factoryEvidence = (expression: TsModule.Expression) => {
+    // Inspect the bound import before unaliasing. Same-spelled local factories
+    // are candidates only; they are never evidence of platform registration.
+    const bound = checker.getSymbolAtLocation(expression);
+    let imported = bound?.declarations?.find(ts.isImportSpecifier);
+    let declaration: TsModule.ImportDeclaration | undefined;
+    if (imported && (imported.propertyName ?? imported.name).text === 'defineTool')
+      declaration = imported.parent.parent.parent;
+    if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'defineTool') {
+      const namespace = checker.getSymbolAtLocation(expression.expression)?.declarations?.find(ts.isNamespaceImport);
+      if (namespace) declaration = namespace.parent.parent;
+    }
+    const moduleName = declaration && ts.isStringLiteralLike(declaration.moduleSpecifier) ? declaration.moduleSpecifier.text : null;
+    let resolved = bound;
+    if (resolved && resolved.flags & ts.SymbolFlags.Alias) resolved = checker.getAliasedSymbol(resolved);
+    const definition = resolved?.declarations?.[0];
+    const definitionPath = definition ? posix(relative(root, definition.getSourceFile().fileName)) : null;
+    const maintainedSource = resolved?.getName() === 'defineTool' && definitionPath === 'libs/generic/tooldef/src/define-tool.ts';
+    const maintainedImport = moduleName === '@papercusp/agent-mcp' || moduleName === '@papercusp/tooldef';
+    if (!maintainedImport && !maintainedSource && resolved?.getName() !== 'defineTool'
+      && !(ts.isIdentifier(expression) && expression.text === 'defineTool')
+      && !(ts.isPropertyAccessExpression(expression) && expression.name.text === 'defineTool')) return null;
+    return { factoryAuthority: maintainedSource ? 'maintained-source' as const
+      : maintainedImport ? 'maintained-import' as const : 'unverified' as const,
+      factory: site(maintainedSource ? definition! : declaration ?? definition ?? expression, 'registration-factory') };
   };
   for (const sf of program.getSourceFiles()) {
     const path = posix(relative(root, sf.fileName));
@@ -445,18 +473,24 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
     }
     const visit = (node: TsModule.Node): void => {
       if (ts.isCallExpression(node)) {
-        let factory = checker.getSymbolAtLocation(node.expression);
-        if (factory && factory.flags & ts.SymbolFlags.Alias) factory = checker.getAliasedSymbol(factory);
-        const named = factory?.getName() === 'defineTool' || (ts.isIdentifier(node.expression) && node.expression.text === 'defineTool');
-        if (named && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
+        const factory = factoryEvidence(node.expression);
+        if (factory && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
           if (registrations.length >= limit) { truncated = true; return; }
-          const props = new Map(node.arguments[0].properties.filter(ts.isPropertyAssignment)
-            .map(prop => [prop.name.getText(sf).replace(/^['"]|['"]$/g, ''), prop.initializer]));
-          const name = props.get('name');
-          registrations.push({ name: name && ts.isStringLiteralLike(name) ? name.text : null,
-            site: site(node, 'static-tool-registration')!, implementation: reference(props.get('handler'), 'tool-implementation'),
-            requestValidator: reference(props.get('args'), 'request-validator'), responseValidator: reference(props.get('returns'), 'response-validator'),
-            documentation: reference(props.get('publicDoc') ?? props.get('description'), 'contract-documentation'), runtimeRegistered: 'unmeasured' });
+          const props = new Map<string, TsModule.Node>();
+          for (const prop of node.arguments[0].properties) {
+            if (!(ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) || ts.isMethodDeclaration(prop))) continue;
+            if (!ts.isIdentifier(prop.name) && !ts.isStringLiteralLike(prop.name)) continue;
+            props.set(prop.name.text, ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : prop);
+          }
+          const literal = (key: string) => { const value = props.get(key); return value && ts.isStringLiteralLike(value) ? value.text : null; };
+          const kind = props.has('method') && props.has('path') ? 'route' : 'tool';
+          registrations.push({ name: literal('name'), kind, method: kind === 'route' ? literal('method') : null,
+            path: kind === 'route' ? literal('path') : null, ...factory,
+            site: site(node, `static-${kind}-registration`)!, implementation: reference(props.get('handler'), `${kind}-implementation`),
+            requestValidator: reference(props.get('args') ?? props.get('input'), 'request-validator'),
+            // Tool result/output are executable validators. returns is prose.
+            responseValidator: kind === 'tool' ? reference(props.get('result') ?? props.get('output'), 'response-validator') : null,
+            documentation: reference(props.get('publicDoc') ?? props.get('description') ?? props.get('guidance'), 'contract-documentation'), runtimeRegistered: 'unmeasured' });
         }
       }
       ts.forEachChild(node, visit);
@@ -465,7 +499,8 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
   }
   return { status: 'measured', diagnostics, registrations, sources: [...sources.values()].sort((a, b) => a.path.localeCompare(b.path)), truncated,
     limitations: ['Diagnostics describe the captured TypeScript program, not executed runtime failures.',
-      'Only static defineTool object registrations in captured source are linked; dynamic names, registrations and runtime validation remain unmeasured.',
+      'Static defineTool object candidates are linked; factoryAuthority distinguishes maintained imports/source from unverified same-name factories. Imports do not prove loaded runtime registration.',
+      'Dynamic names, methods, paths and spreads remain unmeasured; route response validators are not declared by the route primitive. Runtime validation is not executed.',
       'Untyped or any-valued clients can escape compiler diagnostics; this is not registry or client completeness proof.'] };
 }
 
