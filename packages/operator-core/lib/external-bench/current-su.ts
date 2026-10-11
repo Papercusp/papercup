@@ -2059,7 +2059,7 @@ export function currentBenchWorkloadProviderInputReader(options:
       (Parameters<typeof currentBenchWorkloadToolResultReader>[0]['receipts'][number] & {
         nativeSource: 'tool-result'; contextId: string; consumer: string;
       })) & {
-      reservationId: string; reservationNoteSha256: string;
+      reservationId: string; reservationNoteSha256: string; settledAt?: string;
       bodyRef: string; bodyPath: string; maxBytes: number;
       inputIndex: number; textIndex?: number; model: string; effort: string; accountId: string;
     }>;
@@ -2073,7 +2073,8 @@ export function currentBenchWorkloadProviderInputReader(options:
   if (!host || host.workspaceId !== frozen.workspaceId || host.runId !== frozen.runId ||
       !present(host.loopId) || !digest(host.preregHash) || !host.assignmentId?.startsWith('bench-assignment:') ||
       frozen.receipts.some(row => !uuid(row.reservationId) || !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId) ||
-        !digest(row.reservationNoteSha256) || ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
+        !digest(row.reservationNoteSha256) || row.settledAt !== undefined && !Number.isFinite(Date.parse(row.settledAt)) ||
+        ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
         !Number.isSafeInteger(row.inputIndex) || row.inputIndex < 0 ||
         row.nativeSource !== undefined && !['input', 'tool-result'].includes(row.nativeSource) ||
         row.nativeSource === 'tool-result' && ![row.contextId, row.consumer].every(present) ||
@@ -2099,8 +2100,8 @@ export function currentBenchWorkloadProviderInputReader(options:
     if (inputs?.length !== 1 || !bytes) return null;
     const { resolveDb } = await import('./reproducibility/db');
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId: frozen.workspaceId });
-    const rows = await sql<{ note: string; created_at: Date; ended_at: Date }[]>`
-      SELECT r.note, r.created_at, t.ended_at
+    const rows = await sql<{ note: string; status: string; settled_at: Date | null; created_at: Date; ended_at: Date }[]>`
+      SELECT r.note, r.status, r.settled_at, r.created_at, t.ended_at
         FROM harness_shared.learning_spend_reservations r
         JOIN harness_shared.task_ledger t ON t.workspace_id = r.workspace_id AND t.task_id = ${receipt.taskId}
        WHERE r.workspace_id = ${frozen.workspaceId} AND r.loop_id = ${host.loopId}
@@ -2113,6 +2114,8 @@ export function currentBenchWorkloadProviderInputReader(options:
     const input = receipt.nativeSource === 'tool-result' ? { ...observed, kind: 'input' as const,
       role: receipt.consumer, metadata: { ...observed.metadata, contextId: receipt.contextId } } : observed;
     if (rows.length !== 1 || typeof row.note !== 'string' ||
+        receipt.settledAt !== undefined && (row.status !== 'settled' || !(row.settled_at instanceof Date) ||
+          row.settled_at.toISOString() !== receipt.settledAt) ||
         createHash('sha256').update(row.note).digest('hex') !== receipt.reservationNoteSha256 ||
         !(row.created_at instanceof Date) || !(row.ended_at instanceof Date) ||
         row.created_at.getTime() < Date.parse(input.at!) || row.created_at > row.ended_at) return null;

@@ -28,7 +28,7 @@
  * (Not a "module-scoped state Map" in the storage-policy sense: a live promise +
  * cancel flag cannot be serialized; PG is the source of truth.)
  */
-import type { BenchTask } from './types';
+import type { BenchTask, TaskCheckout } from './types';
 import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import { runHiveBacklog } from './hive-backlog';
 import { bindRealQueenBacklogDriver, dissolveBenchHive } from './hive-backlog-realqueen';
@@ -47,6 +47,9 @@ import {
 } from './run-store';
 import { loadBenchTaskSet } from './task-sets';
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
@@ -58,6 +61,7 @@ import { cloneTaskRepo, extractDiff } from './clone';
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
+  currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
 import { registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
@@ -153,7 +157,198 @@ export interface CurrentTaskInput {
   scope: DbScope;
   resources: LearningReservationResourceBudget;
   loopId: string;
+  /** The generation primitive has already cloned this exact assignment. */
+  checkout: TaskCheckout;
+  /** Operational run row retaining private host recovery pins. */
+  hostRunId: string;
   observation: NonNullable<LaunchBenchRunInput['current']>['observation'];
+}
+
+/** Retain private capture authority in the existing operational run checkpoint.
+ * No candidate-selected paths or account aliases can allocate this host. Each
+ * request's pins must commit before the gateway may reserve or forward it. */
+export async function currentBenchTaskProviderCapture(input: CurrentTaskInput, { readOnly = false }: { readOnly?: boolean } = {}) {
+  const { options, protocol, task, resources, loopId, hostRunId } = input;
+  const arm = protocol.arms.find(value => value.id === options.armId);
+  if (!arm || !arm.account.trim() || ['auto', 'default'].includes(arm.account) ||
+      arm.account !== options.account || arm.model !== options.model || arm.effort !== options.effort ||
+      protocol.runId !== options.runId || !protocol.taskIds.includes(task.instanceId) || !protocol.seeds.includes(options.seed) ||
+      canonicalJson(protocol) !== canonicalJson(options.preregistration.config) ||
+      input.context.workspaceId !== options.workspaceId || !input.context.principal?.slug ||
+      !Number.isSafeInteger(resources.requestsPerArm) || resources.requestsPerArm! < 1 || resources.requestsPerArm! > 10_000)
+    throw new Error('Provider capture host requires an exact frozen account, assignment and authenticated checkout.');
+  const accountingBinding = { workspaceId: options.workspaceId, loopId, runId: options.runId,
+    preregHash: options.preregistration.preregHash,
+    assignmentId: currentBenchAssignmentId(options.runId, arm.id, task.instanceId, options.seed) };
+  const { sql, ws } = resolveDb(input.scope);
+  if (ws !== resolveBenchWorkspace(options.workspaceId)) throw new Error('Provider capture host workspace differs.');
+  const key = accountingBinding.assignmentId;
+  type CaptureOptions = Parameters<typeof currentBenchWorkloadProviderInputCapture>[0];
+  type Checkpoint = { allocation: Omit<CaptureOptions, 'recovery' | 'readOnly'>;
+    recovery: ReturnType<ReturnType<typeof currentBenchWorkloadProviderInputCapture>['recoveryState']> };
+  const expected = { accountingBinding, candidateCheckoutRoot: readOnly ? resolve(input.checkout.dir) : realpathSync(input.checkout.dir), model: arm.model,
+    effort: arm.effort, accountId: arm.account, maxRequests: resources.requestsPerArm!, maxBytes: 16 * 1024 * 1024 };
+  let capture!: ReturnType<typeof currentBenchWorkloadProviderInputCapture>;
+  let checkpoint!: Checkpoint;
+  await sql.begin(async tx => {
+    const rows = await tx<{ status: string; config: { current?: { preregHash?: string }; loopId?: string;
+      protocol?: unknown; providerInputCaptures?: Record<string, Checkpoint> } }[]>`
+      SELECT status, config FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${hostRunId} FOR UPDATE`;
+    const row = rows[0];
+    if (!row || !readOnly && row.status !== 'running' || row.config?.current?.preregHash !== accountingBinding.preregHash ||
+        row.config.loopId !== loopId || canonicalJson(row.config.protocol) !== canonicalJson(protocol))
+      throw new Error('Provider capture host has no matching live operational checkpoint.');
+    const saved = row.config.providerInputCaptures?.[key] as Checkpoint | undefined;
+    if (saved) {
+      const { captureRoot, ...allocation } = saved.allocation;
+      if (canonicalJson(allocation) !== canonicalJson(expected)) throw new Error('Provider capture host allocation drifted.');
+      capture = currentBenchWorkloadProviderInputCapture({ ...expected, captureRoot, recovery: saved.recovery, readOnly });
+      checkpoint = saved;
+    } else {
+      if (readOnly) throw new Error('Read-only provider capture requires an existing host checkpoint.');
+      const parent = defaultBenchResultsDir();
+      mkdirSync(parent, { recursive: true, mode: 0o700 });
+      const captureRoot = realpathSync(mkdtempSync(join(parent, 'current-provider-input-')));
+      const allocation = { ...expected, captureRoot };
+      capture = currentBenchWorkloadProviderInputCapture(allocation);
+      checkpoint = { allocation, recovery: capture.recoveryState() };
+      await tx`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, '{providerInputCaptures}',
+        COALESCE(config->'providerInputCaptures', '{}'::jsonb) || ${JSON.stringify({ [key]: checkpoint })}::text::jsonb)
+        WHERE workspace_id = ${ws} AND id = ${hostRunId}`;
+    }
+  });
+  return { captureRoot: checkpoint.allocation.captureRoot, readCapture: capture.readCapture,
+    allocation: Object.freeze(structuredClone(checkpoint.allocation)),
+    recoveryState: capture.recoveryState,
+    async captureProviderInput(attempt: Parameters<typeof capture.captureProviderInput>[0]) {
+      await capture.captureProviderInput(attempt);
+      const next = { allocation: checkpoint.allocation, recovery: capture.recoveryState() };
+      const rows = await sql`UPDATE harness_shared.bench_runs
+        SET config = jsonb_set(config, ${['providerInputCaptures', key]}::text[], ${JSON.stringify(next)}::text::jsonb)
+        WHERE workspace_id = ${ws} AND id = ${hostRunId} AND status = 'running'
+          AND config->'providerInputCaptures'->${key} = ${JSON.stringify(checkpoint)}::text::jsonb RETURNING id`;
+      if (rows.length !== 1) throw new Error('Provider capture host checkpoint changed; request cannot be forwarded.');
+      checkpoint = next;
+    } };
+}
+
+export type CurrentBenchSettledProviderCapture = NonNullable<ReturnType<
+  ReturnType<typeof currentBenchWorkloadProviderInputCapture>['readCapture']>> & {
+    reservationNoteSha256: string; settledAt: string;
+  };
+
+/** Freeze the final ledger note beside the existing host-owned request pins.
+ * This evidence-only transaction can run after checkout cleanup; it grants no
+ * generation authority and does not settle spend. Native input, billing and
+ * downstream correctness still require their independent readers. */
+export async function freezeCurrentBenchTaskProviderReservation(
+  input: CurrentTaskInput, reservationId: string,
+): Promise<CurrentBenchSettledProviderCapture> {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservationId))
+    throw new Error('Provider settlement capture requires an exact reservation.');
+  const { sql, ws } = resolveDb(input.scope);
+  const hostRunId = input.hostRunId, loopId = input.loopId;
+  const protocol = canonicalJson(input.protocol), preregHash = input.options.preregistration.preregHash;
+  const host = await currentBenchTaskProviderCapture(input, { readOnly: true });
+  const captured = host.readCapture(reservationId);
+  if (!captured) throw new Error('Provider settlement capture requires an acknowledged host request.');
+  const key = captured.accountingBinding.assignmentId;
+  type Checkpoint = { allocation: typeof host.allocation; recovery: ReturnType<typeof host.recoveryState>;
+    settledProviderInputs?: Record<string, CurrentBenchSettledProviderCapture> };
+  return sql.begin(async tx => {
+    const runs = await tx<{ config: { current?: { preregHash?: string }; loopId?: string;
+      protocol?: unknown; providerInputCaptures?: Record<string, Checkpoint> } }[]>`
+      SELECT config FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${hostRunId} FOR UPDATE`;
+    const config = runs[0]?.config, saved = config?.providerInputCaptures?.[key];
+    if (runs.length !== 1 || !saved || config?.current?.preregHash !== preregHash || config.loopId !== loopId ||
+        canonicalJson(config.protocol) !== protocol || canonicalJson(saved.allocation) !== canonicalJson(host.allocation) ||
+        canonicalJson(saved.recovery) !== canonicalJson(host.recoveryState()))
+      throw new Error('Provider settlement capture host checkpoint changed.');
+    const rows = await tx<{ note: string | null; status: string; settled_at: Date | null }[]>`
+      SELECT note, status, settled_at FROM harness_shared.learning_spend_reservations
+       WHERE workspace_id = ${ws} AND id = ${reservationId}::uuid AND loop_id = ${loopId}
+         AND arm_id = ${key} AND attempt_kind = 'evaluation'
+         AND run_ref = ${`manifest:${preregHash}/attempt:${reservationId}`} FOR UPDATE`;
+    const row = rows[0];
+    if (rows.length !== 1 || row.status !== 'settled' || typeof row.note !== 'string' ||
+        !(row.settled_at instanceof Date) || !Number.isFinite(row.settled_at.getTime()))
+      throw new Error('Provider settlement capture requires a settled matching ledger reservation.');
+    let note: { nativeGatewayAttempt?: Record<string, unknown>; nativeGatewayAttemptResult?: Record<string, unknown> };
+    try { note = JSON.parse(row.note); } catch { throw new Error('Provider settlement capture has an invalid ledger note.'); }
+    const attempt = note?.nativeGatewayAttempt, result = note?.nativeGatewayAttemptResult;
+    const completion = result?.providerCompletion as Record<string, unknown> | undefined;
+    const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+    const present = (value: unknown) => typeof value === 'string' && !!value.trim();
+    const identity = { attemptId: reservationId, manifestSha256: preregHash, armId: key,
+      nativeSessionId: captured.nativeSessionId, nativeTurnId: captured.nativeTurnId,
+      accountId: captured.accountId, bodySha256: captured.bodySha256, transport: 'bearer-http',
+      credentialHeader: 'authorization', target: 'https://api.openai.com/v1/responses' };
+    if (!attempt || !result || Object.entries(identity).some(([field, value]) => attempt[field] !== value || result[field] !== value) ||
+        !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
+        !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== reservationId ||
+        result.outcome !== 'response-completed' || result.responseStatus !== 200 ||
+        !digest(result.responseSha256) || typeof result.responseBytes !== 'number' ||
+        !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 || result.costUsdMeasurementMissing !== true ||
+        completion?.model !== captured.model || !present(completion?.responseId) ||
+        completion.providerEffort !== null && completion.providerEffort !== captured.effort ||
+        canonicalJson(host.readCapture(reservationId)) !== canonicalJson(captured))
+      throw new Error('Provider settlement capture does not match the completed host request.');
+    const receipt = { ...captured, reservationNoteSha256: createHash('sha256').update(row.note).digest('hex'),
+      settledAt: row.settled_at.toISOString() };
+    const prior = saved.settledProviderInputs?.[reservationId];
+    if (prior && canonicalJson(prior) !== canonicalJson(receipt))
+      throw new Error('Provider settlement capture changed after its host pin was frozen.');
+    if (!prior) {
+      const next = { ...saved, settledProviderInputs: { ...saved.settledProviderInputs, [reservationId]: receipt } };
+      await tx`UPDATE harness_shared.bench_runs SET config = jsonb_set(config,
+        ${['providerInputCaptures', key]}::text[], ${JSON.stringify(next)}::text::jsonb)
+        WHERE workspace_id = ${ws} AND id = ${hostRunId}`;
+    }
+    return Object.freeze(receipt);
+  });
+}
+
+type ProviderInputAllocation = Parameters<typeof currentBenchWorkloadProviderInputReader>[0];
+type HostProviderFields = 'reservationNoteSha256' | 'settledAt' | 'bodyRef' | 'bodyPath' | 'maxBytes' | 'model' | 'effort' | 'accountId';
+type NativeProviderReceipt<T = ProviderInputAllocation['receipts'][number]> =
+  T extends unknown ? Omit<T, HostProviderFields> : never;
+
+/** Compose native input with already frozen host settlement pins. Inspection
+ * never allocates, freezes or settles a reservation. Native call authority,
+ * lock transitions, billing and downstream grades remain separate receipts. */
+export async function currentBenchTaskProviderInputReader(input: CurrentTaskInput, allocation: {
+  harnessSlug: string; trialBindingHash: string; notBefore: string; receipts: NativeProviderReceipt[];
+}): Promise<ReturnType<typeof currentBenchWorkloadProviderInputReader>> {
+  const frozen = structuredClone(allocation);
+  const hostRunId = input.hostRunId, loopId = input.loopId, protocol = canonicalJson(input.protocol);
+  const preregHash = input.options.preregistration.preregHash;
+  const host = await currentBenchTaskProviderCapture(input, { readOnly: true });
+  const { sql, ws } = resolveDb(input.scope), key = host.allocation.accountingBinding.assignmentId;
+  const rows = await sql<{ config: { current?: { preregHash?: string }; loopId?: string; protocol?: unknown; providerInputCaptures?: Record<string, {
+    allocation: typeof host.allocation; recovery: ReturnType<typeof host.recoveryState>;
+    settledProviderInputs?: Record<string, CurrentBenchSettledProviderCapture>;
+  }> } }[]>`SELECT config FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${hostRunId}`;
+  const saved = rows[0]?.config?.providerInputCaptures?.[key];
+  if (rows.length !== 1 || rows[0].config?.current?.preregHash !== preregHash ||
+      rows[0].config.loopId !== loopId || canonicalJson(rows[0].config.protocol) !== protocol ||
+      !saved || canonicalJson(saved.allocation) !== canonicalJson(host.allocation) ||
+      canonicalJson(saved.recovery) !== canonicalJson(host.recoveryState()) || !frozen.receipts.length)
+    throw new Error('Provider input composition requires an unchanged host checkpoint and native receipts.');
+  const receipts = frozen.receipts.map(native => {
+    const pin = saved.settledProviderInputs?.[native.reservationId];
+    const captured = host.readCapture(native.reservationId);
+    if (!pin || !captured) throw new Error('Provider input composition requires an explicitly frozen settlement pin.');
+    const { reservationNoteSha256, settledAt, ...request } = pin;
+    if (typeof reservationNoteSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(reservationNoteSha256) ||
+        typeof settledAt !== 'string' || !Number.isFinite(Date.parse(settledAt)) ||
+        new Date(settledAt).toISOString() !== settledAt || canonicalJson(request) !== canonicalJson(captured) ||
+        native.nativeSessionId !== pin.nativeSessionId || native.nativeTurnId !== pin.nativeTurnId)
+      throw new Error('Provider input composition differs from the acknowledged native host request.');
+    return { ...native, reservationNoteSha256, settledAt, bodyRef: pin.bodyRef, bodyPath: pin.bodyPath,
+      maxBytes: host.allocation.maxBytes, model: pin.model, effort: pin.effort, accountId: pin.accountId };
+  });
+  return currentBenchWorkloadProviderInputReader({ ...frozen, sql, workspaceId: host.allocation.accountingBinding.workspaceId,
+    runId: host.allocation.accountingBinding.runId, checkoutRoot: host.captureRoot, accountingBinding: host.allocation.accountingBinding, receipts });
 }
 
 /** Resolve the frozen controls once, before any durable run or native launch. */
@@ -200,12 +395,14 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 
 async function liveCurrentTask(input: CurrentTaskInput) {
   const { options, protocol, task, context, scope, resources, loopId } = input;
+  const capture = await currentBenchTaskProviderCapture(input);
   const auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
     protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
   const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId, token: randomBytes(32).toString('hex'),
     preregHash: options.preregistration.preregHash, protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed,
     resources, outputTokenLimit: Math.min(4096, protocol.arms.find(arm => arm.id === options.armId)!.generationBudget.maxTokens ?? 4096),
-    authenticateProvider: auth.authenticateProvider }, { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
+    authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
+    { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
   let host: Awaited<ReturnType<typeof controller.startNativeGateway>> | undefined;
   const stop = async () => { auth.revoke(); controller.revoke(); await host?.stop(); };
   try {
@@ -273,19 +470,25 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
       const options: CurrentSuBenchOptions = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
         agent: arm.agent, model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
         preregistration: registration, signal: abort.signal, driveTimeoutMs: arm.generationBudget.maxWallClockMs };
-      const owned = await (deps.currentTask ?? liveCurrentTask)({ options, protocol, task, context, scope, resources, loopId, observation: current.observation });
-      active.stopCurrent = owned.stop;
       const startedAtMs = Date.now();
+      let owned: Awaited<ReturnType<NonNullable<LaunchDeps['currentTask']>>> | undefined;
       try {
         const attempt = await runArmGeneration({ arm: arm.id, blueprintId: arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT, task,
           seed: String(current.seed), budget: arm.generationBudget }, {
           clone: deps.currentGeneration?.clone ?? cloneTaskRepo, extractDiff: deps.currentGeneration?.extractDiff ?? extractDiff,
-          instantiate: (blueprintId, task, checkout, budget) => owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }) });
+          instantiate: async (blueprintId, task, checkout, budget) => {
+            if (abort.signal.aborted) throw new Error('Current benchmark assignment cancelled before host allocation.');
+            owned = await (deps.currentTask ?? liveCurrentTask)({ options, protocol, task, context, scope, resources, loopId,
+              checkout, hostRunId: runId, observation: current.observation });
+            active.stopCurrent = owned.stop;
+            try { return await owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }); }
+            finally { await owned.stop(); owned = undefined; active.stopCurrent = undefined; }
+          } });
         const result: FleetTaskResult = { attempt, cupId: currentBenchAssignmentId(protocol.runId, arm.id, task.instanceId, current.seed),
           placedAtMs: startedAtMs, startedAtMs, finishedAtMs: Date.now(), disposition: 'spawn' };
         taskResults.push(result);
         await upsertBenchRunTask(runId, taskRowFromFleetResult(result), scope);
-      } finally { await owned.stop(); active.stopCurrent = undefined; }
+      } finally { await owned?.stop(); active.stopCurrent = undefined; }
     }
     return { arm: req.arm, suite: req.suite, runId, seed: current.seed, startedAtMs: active.startedAtMs,
       finishedAtMs: Date.now(), taskResults, coordEvents: [], peakConcurrentBees: taskResults.length ? 1 : 0, runError: null };
@@ -535,6 +738,8 @@ export async function reapStaleBenchRuns(
   deps: {
     scope?: DbScope;
     dissolve?: (potSlug: string, workspaceId: string) => Promise<void>;
+    /** Assignment task retirement seam; tests keep native control inside their private runtime. */
+    retireCurrent?: typeof retireCurrentRun;
     staleAfterSec?: number;
   } = {},
 ): Promise<{ reaped: string[] }> {
@@ -552,7 +757,7 @@ export async function reapStaleBenchRuns(
   const reaped: string[] = [];
   for (const r of rows) {
     const protocolRunId = storedCurrentRunId(r.config);
-    if (protocolRunId) await retireCurrentRun(ws, protocolRunId);
+    if (protocolRunId) await (deps.retireCurrent ?? retireCurrentRun)(ws, protocolRunId);
     if (r.pot_slug) {
       await dissolve(r.pot_slug, ws).catch(() => {});
     }
