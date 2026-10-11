@@ -139,6 +139,34 @@ describe('firstPartyCallers', () => {
 });
 
 describe('P007 first-party symbol/context/callees', () => {
+  it('bounds symbol declarations to candidate source while callees retain full dependency versions', () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-symbol-scope-'));
+    const entry = 'import { heavy } from "./dependency";\nexport function scopedDeclaration(n: number) { return heavy(n); }\n';
+    try {
+      writeFileSync(join(project, 'entry.ts'), entry);
+      writeFileSync(join(project, 'dependency.ts'), 'export function heavy(n: number) { return n + 1; }\n');
+      const query = (op: 'symbol' | 'callees') => firstPartyCallers({ ts, root: project, op,
+        name: 'scopedDeclaration', filePath: 'entry.ts', paths: ['entry.ts'] });
+      const symbol = query('symbol');
+      const callees = query('callees');
+      expect(symbol.error).toBeNull();
+      expect(lines(symbol.sites)).toEqual(['entry.ts:2']);
+      expect(symbol.evidence!.sourceScope.supportingFiles).toEqual([expect.objectContaining({
+        path: 'entry.ts', representation: 'full-source', contentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      })]);
+      expect(symbol.evidence!.graphScope.limitations.join(' ')).toMatch(/other reached files are re-export stubs/);
+      expect(callees.error).toBeNull();
+      expect(callees.evidence!.sourceScope.supportingFiles).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'dependency.ts', representation: 'full-source' }),
+      ]));
+      writeFileSync(join(project, 'dependency.ts'), 'export function heavy(n: number) { return n + 100; }\n');
+      const symbolAfter = query('symbol');
+      expect(symbolAfter.error).toBeNull();
+      expect(symbolAfter.evidence!.sourceScope.sourceFingerprint).toBe(symbol.evidence!.sourceScope.sourceFingerprint);
+      expect(query('callees').evidence!.sourceScope.sourceFingerprint).not.toBe(callees.evidence!.sourceScope.sourceFingerprint);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  });
+
   it('refuses ambiguity and resolves the defining-file selector with actual source identity', () => {
     const ambiguous = firstPartyCallers({ ts, root, op: 'symbol', name: 'target' });
     expect(ambiguous.error).toMatch(/Ambiguous symbol.*file_path/);

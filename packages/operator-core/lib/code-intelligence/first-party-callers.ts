@@ -541,10 +541,14 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     });
   }
 
-  // Outgoing/context queries need the actual reached declarations, not callers'
-  // re-export-only optimization. These remain inside the worker heap/deadline.
+  // A symbol query returns declarations in the selected candidate files. Like
+  // callers, it only needs re-export links outside those files; loading every
+  // dependency body turns a single declaration lookup into a whole-project
+  // checker (EI-25679714152389108). Outgoing/context queries still need the
+  // actual reached declarations and retain their full compiler snapshots.
+  const declarationScope = op === 'callers' || op === 'symbol';
   const tree = openScopedTsTree(q.ts, q.root, search.files,
-    op === 'callers' ? undefined : (_ts, _file, text) => text);
+    declarationScope ? undefined : (_ts, _file, text) => text);
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
@@ -590,11 +594,11 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     const resolvedKeys = new Set(resolved.map(keyOf));
     const declKeys = new Set(decls.map((d) => keyOf(d.site)));
 
-    const checker = program.getTypeChecker();
     const counts: Record<UnattributedReason, number> = { external: 0, 'other-in-repo': 0, unresolved: 0 };
     const unattributed: SymbolSite[] = [];
     const seen = new Set<string>();
     for (const file of op === 'callers' ? search.files : []) {
+      const checker = program.getTypeChecker();
       const sf = program.getSourceFile(file);
       if (!sf) continue;
       for (const call of syntacticCalls(q.ts, sf, posix(relative(q.root, file)), q.name)) {
@@ -618,7 +622,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) return [];
       return [{ path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
         language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript',
-        representation: op !== 'callers' || tree.rootFiles.has(sf.fileName) ? 'full-source' as const : 'reexport-stub' as const }];
+        representation: !declarationScope || tree.rootFiles.has(sf.fileName) ? 'full-source' as const : 'reexport-stub' as const }];
     }).sort((a, b) => a.path.localeCompare(b.path));
     const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
     const sourceByPath = new Map(sources.map(source => [source.path, source]));
@@ -633,7 +637,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
         paths: scope.paths, supportingFiles: sources.filter(source => supporting.has(source.path)) },
       graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [
-        ...partial, op === 'callers' ? 'Only candidate files are full compiler inputs; other reached files are re-export stubs.'
+        ...partial, declarationScope ? 'Only candidate files are full compiler inputs; other reached files are re-export stubs.'
           : 'Candidate files and reached in-repository dependencies are full compiler snapshots; this is not a repository-wide completeness proof.',
         'Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.' ] },
       languageCapabilities: [...new Set(sources.map(source => source.language))].map(language =>
