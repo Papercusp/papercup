@@ -468,7 +468,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // per-row key to scope by.
   'harness_shared.operator_account_pool': ['accounts.pool'],
   'harness_shared.harness_dock_layouts': ['dockLayouts.byName', 'dockLayouts.list'],
-  'harness_shared.harness_plan_assertions': ['testing.assertionsByHarness'],
   'harness_shared.projects': ['kpis.all'],
   'harness_shared.autoloop_state': ['kpis.all'],
   'harness_shared.audit_log': ['auditLog.operatorDecisions'],
