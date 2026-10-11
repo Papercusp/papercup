@@ -12,5 +12,5 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     expect(inputs.some(path => path.endsWith('/LearningTab.tsx'))).toBe(true);
     expect(inputs.some(path => path.endsWith('/AdvShell.tsx'))).toBe(true);
     expect(inputs.some(path => path.endsWith('/learning-retain-types.ts'))).toBe(true);
-    expect(graph.bundle).toContain('Retained ledger');
+    expect(new TextDecoder().decode(graph.bundle)).toContain('Retained ledger');
   }, 180_000);
