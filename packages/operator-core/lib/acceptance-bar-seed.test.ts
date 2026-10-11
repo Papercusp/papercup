@@ -10,6 +10,7 @@ import {
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
 
 function plan(opts: { requirements?: string; map?: string } = {}): string {
@@ -319,6 +320,61 @@ describe('acceptance BAR seed builder', () => {
     const onScale = content.replace('"passRatings":["pass"]', '"passRatings":["healthy"]');
     expect(onScale).not.toBe(content);
     expect(buildAcceptanceBarSeed({ ...input, planContent: onScale }).ok).toBe(true);
+  });
+
+  // EI-25649770239138025: plans:edit on build d740fc3802 refused a multi-probe requirement
+  // (`check: { kind:'probe', all:[...] }`) that the rubric template accepted. Both paths now
+  // share rubricCriterionCheckSchema; this pins the round-trip so they cannot diverge again.
+  it('round-trips a multi-probe check from a requirement block into the seeded criterion', () => {
+    const probes = [
+      { kind: 'state-cell', schemaRevision: 1, cell: 'verification.health', expect: { path: 'status', op: 'eq', value: 'measured' } },
+      { kind: 'state-cell', schemaRevision: 1, cell: 'verification.health', expect: { path: 'denominator', op: 'gt', value: 0 } },
+    ];
+    const sections = (check: Record<string, unknown>) => ({
+      intent: { request: 'Grade a metric and its denominator together.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The metric and its positive control both pass.',
+        falsifier: 'Either probe fails.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['unit'] },
+      verification: { method: 'Run both read-only probes.', check },
+    });
+    const content = (check: Record<string, unknown>) => plan({
+      requirements: '**R-1 — Metric with control.**\n```requirement\n' + JSON.stringify(sections(check)) + '\n```',
+      map: '| R-1 | P-001 | tree |',
+    });
+
+    const multi = { kind: 'probe', all: probes };
+    // Every member of the rubric check union, not only the shape that failed: the item's
+    // defect class is the two schemas diverging on ANY shape. One entry per union kind
+    // (probe twice: single and all), so a new kind added to the union without a case
+    // here is caught by the length assertion below.
+    const everyShape: Record<string, Record<string, unknown>> = {
+      tests: { kind: 'tests', files: ['lib/evidence.test.ts'] },
+      cargo: { kind: 'cargo', manifestPath: 'native/Cargo.toml', sourceFiles: ['native/src/lib.rs'], test: 'limits' },
+      instrument: { kind: 'instrument', instrumentKey: 'upload-limit-meter' },
+      'probe-single': { kind: 'probe', probe: probes[0] },
+      'probe-all': multi,
+      coverage: { kind: 'coverage', scope: { surfaceKind: 'mcp-tool', planTouched: true }, floor: 'l2' },
+      requirements: { kind: 'requirements' },
+    };
+    const unionKinds = rubricCriterionCheckSchema.options.map((o) => o.shape.kind.value);
+    expect(new Set(Object.values(everyShape).map((s) => s.kind))).toEqual(new Set(unionKinds));
+    for (const [label, shape] of Object.entries(everyShape)) {
+      expect(rubricCriterionCheckSchema.safeParse(shape).success, label).toBe(true);
+      const parsed = parseRequirementBars(content(shape));
+      if (!parsed.ok) throw new Error(`${label} requirement refused: ${JSON.stringify(parsed.problems)}`);
+      expect(parsed.bars[0]!.criterion?.check, label).toEqual(shape);
+    }
+    expect(buildAcceptanceBarSeed({ ...input, planContent: content(multi) }).ok).toBe(true);
+
+    // Controls: the shared refinement refuses neither/both on both paths alike, so the
+    // calibration above cannot pass vacuously on a parser that accepts anything.
+    for (const bad of [{ kind: 'probe' }, { kind: 'probe', probe: probes[0], all: probes }]) {
+      expect(rubricCriterionCheckSchema.safeParse(bad).success).toBe(false);
+      expect(parseRequirementBars(content(bad))).toMatchObject({
+        ok: false,
+        problems: [expect.objectContaining({ code: 'bar_requirement_parse_failed', barKey: 'R-1' })],
+      });
+    }
   });
 
   it('authors one unified requirement and derives all mapped proof contracts without rewriting its promise', () => {

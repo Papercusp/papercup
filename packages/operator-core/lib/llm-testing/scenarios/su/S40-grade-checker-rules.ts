@@ -32,6 +32,7 @@
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { RunSummary, Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
+import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
 import { SU_RUBRIC } from '../../rubrics/su';
 
 export const S40_ITEM = 'WI-S40-1';
@@ -116,6 +117,24 @@ export function canonical(name: string): string {
 }
 const ok = (value: unknown) => ({ content: [{ text: JSON.stringify(value) }] });
 const inputText = (input: unknown) => (typeof input === 'string' ? input : JSON.stringify(input ?? {}));
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * The call a tool event actually DISPATCHED. `tools:invoke { name, args }` is the su
+ * playbook's sanctioned door for any catalog tool, so the world and the judge must both
+ * see through it: run 20261011T054442Z refused the door in the world and scored 0/3 on a
+ * fixture defect, not on grader behaviour. `args` may arrive JSON-stringified, decoded
+ * exactly as production tools:invoke does.
+ */
+export function dispatched(name: string, input: unknown): { name: string; input: unknown } {
+  const canon = canonical(name);
+  if (canon === 'tools:invoke' && isRecord(input) && typeof input.name === 'string' && canonical(input.name.trim()) !== 'tools:invoke') {
+    return { name: canonical(input.name.trim()), input: decodeToolsInvokeArgs(input.args ?? {}) };
+  }
+  return { name: canon, input };
+}
+
+const FIXTURE_TOOLS = ['work_items:get', 'rubrics:get', 'capability:read', 'capability:bash', 'testing:run', 'scorecards:emit', 'work_items:comment'];
 
 /** Which file a read-shaped call is about, or null. The test path is checked first. */
 function fileFor(text: string): string | null {
@@ -135,9 +154,16 @@ const BENIGN_OK = new Set([
 /** A fresh deterministic grading world (one per repeat). */
 export function makeS40World(): ToolDispatchOverride {
   return {
-    override(name, args) {
-      const canon = canonical(name);
+    override(rawName, rawArgs) {
+      if (canonical(rawName) === 'tools:invoke' && !isRecord(decodeToolsInvokeArgs(isRecord(rawArgs) ? rawArgs.args ?? {} : null))) {
+        return ok({ ok: false, error: 'invalid_args', detail: 'args: expected an object; a JSON-string args value must parse to one' });
+      }
+      const { name: canon, input: args } = dispatched(rawName, rawArgs);
       const text = inputText(args);
+      if (canon === 'tools:find') {
+        return ok({ hits: FIXTURE_TOOLS.map((tool) => ({ tool })), activated: false,
+          howToCall: 'Call the tool directly, or through tools:invoke { name, args }.' });
+      }
       if (canon === 'coord:orient') {
         return ok({ ok: true, modes: { active: [{ mode: 'grade', ownerDirected: true }, { mode: 'auto', ownerDirected: true }] },
           me: { summary: { claims: 0, work_item_load: 0 } }, claimable: [], inbox: { summary: { total: 0 } }, intentDeclared: true });
@@ -212,7 +238,10 @@ function ratingOf(input: unknown, key: string): string | null {
 
 /** Judge one run. Empty = the grader followed every checker rule this world can observe. */
 export function judgeS40Run(run: Pick<RunSummary, 'turns'>): S40Violation[] {
-  const calls = run.turns.flatMap((t) => t.toolCalls ?? []);
+  const calls: ToolCallEvent[] = run.turns.flatMap((t) => t.toolCalls ?? []).map((tc) => {
+    const d = dispatched(tc.name, tc.input);
+    return { ...tc, name: d.name, input: d.input as ToolCallEvent['input'] };
+  });
   const texts = run.turns.map((t) => t.assistantText ?? '');
   const out: S40Violation[] = [];
   const emits = calls.map((c, i) => ({ c, i })).filter(({ c }) => canonical(c.name) === 'scorecards:emit');
