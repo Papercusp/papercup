@@ -17,20 +17,23 @@ import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '..
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
 import { buildExpected } from './templates-mirror-sync.mjs';
-import { historicalGitBlobIdentityResolver } from '../packages/operator-core/lib/backup/state-census-producers';
+import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { fileURLToPath } from 'node:url';
 
 const installed = installedRootCensusProducers();
 const affectedCache = await affectedTestCacheCensusProducer();
 const sidefiles = await runtimeSidefileCensusProducer();
 const setupHomes = await cliSetupHomeCensusProducer();
-const templateStore = await templateStoreCensusProducer(undefined, (await buildExpected()).expected, historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url))));
+const templateExpected = (await buildExpected()).expected;
+const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url)));
+const templateStore = await templateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
+const workspaceTemplateStores = await workspaceTemplateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = process.argv.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs ? (await loadAccountPool()).accounts : []);
 const checkpointLogDir = releaseConfig().checkpointLogDir;
-const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...planTemplateStore.roots,
-  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...planTemplateStore.declarations, {
+const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
+  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },

@@ -18,6 +18,9 @@ import ts from 'typescript';
 import { identityDir } from '../identity/keychain';
 import { anchorKeyFilePath } from '../cupboard/ledger-anchor-eas';
 import { papercuspRoot } from '../papercusp-root';
+import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
+import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
+import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -44,14 +47,205 @@ export function installedRootCensusProducers() {
 export function runtimeRetainedCensusProducer() {
   const root: CensusRoot = { id: 'runtime-retained', path: papercuspRoot() };
   const declarations: CensusDeclaration[] = [
-    { kind: 'path', root: root.id, name: 'deploy-credentials', classification: 'secret', producer: 'deployment-account-link', descendants: true },
+    { kind: 'path', root: root.id, name: 'deploy-credentials', classification: 'state', producer: 'deployment-account-link' },
     { kind: 'path', root: root.id, name: 'crash-reports', classification: 'state', producer: 'fatal-diagnostics', descendants: true },
     { kind: 'path', root: root.id, name: 'snapshot-fold-checkpoints', classification: 'state', producer: 'hyperbee-own-compaction', descendants: true },
   ];
   return { roots: [root], declarations };
 }
 
-/** Parent roots already walk descendants; preserve child ownership by prefixing names. */
+/** Pool references own credential files, never every file copied into a CLI home. */
+export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ credentialRef: string }>) {
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  for (const account of accounts) {
+    const home = parseCodexCliRef(account.credentialRef);
+    const path = home ? codexAuthPath(home) : /^(?:file|token):(.+)$/.exec(account.credentialRef)?.[1];
+    if (!path || !isAbsolute(path)) continue;
+    const directory = dirname(path);
+    try { await lstat(directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    let root = roots.find(entry => entry.path === directory);
+    if (!root) { root = { id: `account-credential-${roots.length}`, path: directory }; roots.push(root); }
+    const add = (name: string) => {
+      if (!declarations.some(entry => entry.root === root!.id && entry.name === name)) {
+        declarations.push({ kind: 'path', root: root!.id, name, classification: 'secret', producer: 'account-pool-credential-reference' });
+      }
+    };
+    add(basename(path));
+    if (home) {
+      let entries;
+      try { entries = await readdir(directory, { withFileTypes: true }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      // persistCodexAuth's exact atomic writer; do not read token contents.
+      for (const entry of entries ?? []) {
+        if (entry.isFile() && /^auth\.json\.[0-9]+\.tmp$/.test(entry.name)) add(entry.name);
+      }
+    }
+  }
+  return { roots, declarations };
+}
+
+/** account-link-cli preserves completed setup homes when registration fails. */
+export async function cliSetupHomeCensusProducer(path = papercuspRoot()) {
+  const root: CensusRoot = { id: 'cli-setup-homes', path };
+  const declarations: CensusDeclaration[] = [];
+  let entries;
+  try { entries = await readdir(join(path, 'deploy-credentials'), { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\.(?:codex-)?setup-[A-Za-z0-9._-]+-[0-9a-f]{8}$/.test(entry.name)) continue;
+    const name = `deploy-credentials/${entry.name}`;
+    declarations.push({ kind: 'path', root: root.id, name, classification: 'state', producer: 'account-link-cli-setup-home' });
+    if (!entry.name.startsWith('.codex-setup-')) continue;
+    const files = await readdir(join(path, name), { withFileTypes: true });
+    if (files.some(file => file.name === 'auth.json' && file.isFile())) {
+      declarations.push({ kind: 'path', root: root.id, name: `${name}/auth.json`, classification: 'secret', producer: 'account-link-cli-completed-login' });
+    }
+  }
+  return { roots: [root], declarations };
+}
+
+/** Prove bytes against one source path's reachable Git history, never another path. */
+export function historicalGitBlobIdentityResolver(repository: string) {
+  const histories = new Map<string, Promise<Set<string>>>();
+  return async (source: string, bytes: Buffer): Promise<boolean> => {
+    const name = relative(repository, source).split(sep).join('/');
+    if (!name || name === '..' || name.startsWith('../') || isAbsolute(name)) return false;
+    let history = histories.get(name);
+    if (!history) {
+      history = (async () => {
+        const { stdout } = await execFileAsync('git', ['-C', repository, 'log', '--all', '--format=%H', '--', name], { maxBuffer: 16 * 1024 * 1024 });
+        const blobs = new Set<string>();
+        for (const revision of stdout.trim().split('\n').filter(Boolean)) {
+          const tree = await execFileAsync('git', ['-C', repository, 'ls-tree', revision, '--', name]);
+          for (const line of tree.stdout.trim().split('\n')) {
+            const match = /^100(?:644|755) blob ([0-9a-f]+)\t(.+)$/.exec(line);
+            if (match && match[2] === name) blobs.add(match[1]);
+          }
+        }
+        return blobs;
+      })();
+      histories.set(name, history);
+    }
+    const hash = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    return (await history).has(hash);
+  };
+}
+
+/** Installer/store metadata owns exact files, not arbitrary bundle descendants. */
+export async function templateStoreCensusProducer(path = papercuspRoot(), expected: ReadonlyMap<string, string> = new Map(), historicalIdentity?: (source: string, bytes: Buffer) => Promise<boolean>) {
+  const root: CensusRoot = { id: 'template-store', path };
+  const declarations: CensusDeclaration[] = [];
+  let entries;
+  try { entries = await readdir(join(path, 'templates'), { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  const add = (name: string) => declarations.push({ kind: 'path', root: root.id, name, classification: 'state', producer: 'cupboard-installed-template-store' });
+  add('templates');
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9._-]+$/.test(entry.name)) continue;
+    const name = `templates/${entry.name}`;
+    const files = await readdir(join(path, name), { withFileTypes: true });
+    // install-template-core requires this manifest before copying into the store.
+    if (!files.some(file => file.name === 'template.yaml' && file.isFile())) continue;
+    add(name);
+    for (const file of files) {
+      if (file.isFile() && ['template.yaml', 'listing.json', 'GUIDE.md', 'COMPONENT_CATALOG.md'].includes(file.name)) add(`${name}/${file.name}`);
+    }
+    // The existing mirror map proves individual source identity. Never infer
+    // ownership of a whole subtree from its manifest or installation receipt.
+    for (const [mirrorName, source] of expected) {
+      if (!mirrorName.startsWith(`${entry.name}/`)) continue;
+      const parts = mirrorName.split('/');
+      if (parts.some(part => !part || part === '.' || part === '..')) continue;
+      let regular = true;
+      for (let index = 1; index <= parts.length; index++) {
+        try {
+          const metadata = await lstat(join(path, 'templates', ...parts.slice(0, index)));
+          if (index === parts.length ? !metadata.isFile() : !metadata.isDirectory()) { regular = false; break; }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ENOTDIR') throw error;
+          regular = false; break;
+        }
+      }
+      if (!regular) continue;
+      const bytes = await readFile(join(path, 'templates', mirrorName));
+      if (!bytes.equals(await readFile(source)) && !(await historicalIdentity?.(source, bytes))) continue;
+      for (let index = 2; index <= parts.length; index++) {
+        const installedName = `templates/${parts.slice(0, index).join('/')}`;
+        if (!declarations.some(declaration => declaration.name === installedName)) add(installedName);
+      }
+    }
+  }
+  return { roots: [root], declarations };
+}
+
+/** Workspace homes use the same store writer, including homes no longer in the registry. */
+export async function workspaceTemplateStoreCensusProducer(path = workspacesRoot(), expected: ReadonlyMap<string, string> = new Map(), historicalIdentity?: (source: string, bytes: Buffer) => Promise<boolean>) {
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  const entries = await readdir(path, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const home = join(path, entry.name, '.papercusp');
+    try { if (!(await lstat(home)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const store = await templateStoreCensusProducer(home, expected, historicalIdentity);
+    const id = `workspace-template-store:${entry.name}`;
+    roots.push({ id, path: home });
+    declarations.push(...store.declarations.map(declaration => ({ ...declaration, root: id })));
+  }
+  return { roots, declarations };
+}
+
+/** The plan-template writer owns its parsed manifest and storefront metadata only. */
+export async function planTemplateStoreCensusProducer(path = papercuspRoot()) {
+  const root: CensusRoot = { id: 'plan-template-store', path };
+  const declarations: CensusDeclaration[] = [];
+  let entries;
+  try { entries = await readdir(join(path, 'plan-templates'), { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  const add = (name: string) => declarations.push({ kind: 'path', root: root.id, name, classification: 'state', producer: 'cupboard-plan-template-writer' });
+  add('plan-templates');
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9._-]+$/.test(entry.name)) continue;
+    const name = `plan-templates/${entry.name}`;
+    const files = await readdir(join(path, name), { withFileTypes: true });
+    if (!files.some(file => file.name === 'plan.md' && file.isFile())) continue;
+    // The shared installer reader rejects legacy/unstructured manifests.
+    if (!readPlanTemplateDirForInstall(join(path, name), entry.name)) continue;
+    add(name);
+    for (const file of files) {
+      if (file.isFile() && ['plan.md', 'listing.json'].includes(file.name)) add(`${name}/${file.name}`);
+    }
+  }
+  return { roots: [root], declarations };
+}
+
+/** Exact hook pacing and template gym writers; siblings require separate provenance. */
+export async function runtimeSidefileCensusProducer(home = homedir()) {
+  const root: CensusRoot = { id: 'runtime-sidefiles', path: join(home, '.papercusp') };
+  const declarations: CensusDeclaration[] = [];
+  const pacingFile = 'google-vertex-gemini-3.1-pro-preview.json';
+  for (const [directory, producer, files] of [
+    ['provider-pacing', 'omp-vertex-request-start', [pacingFile, `${pacingFile}.lock`]],
+    ['template-gym', 'template-gym-runner', ['last-run.json', 'runs.jsonl']],
+  ] as const) {
+    let entries;
+    try { entries = await readdir(join(root.path, directory), { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    declarations.push({ kind: 'path', root: root.id, name: directory, classification: 'state', producer });
+    for (const entry of entries) {
+      const atomic = directory === 'provider-pacing' && entry.name.startsWith(`${pacingFile}.tmp-`) &&
+        /^[0-9]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.name.slice(`${pacingFile}.tmp-`.length));
+      if (entry.isFile() && ((files as readonly string[]).includes(entry.name) || atomic)) {
+        declarations.push({ kind: 'path', root: root.id, name: `${directory}/${entry.name}`, classification: 'state', producer });
+      }
+    }
+  }
+  return { roots: [root], declarations };
+}
+
 export function mergeNestedCensusRoots(input: { roots: CensusRoot[]; declarations: CensusDeclaration[] }) {
   const normalized = input.roots.map(root => ({ ...root, path: resolve(root.path) }));
   const contains = (parent: CensusRoot, child: CensusRoot) => {
