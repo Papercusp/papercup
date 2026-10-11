@@ -1,6 +1,6 @@
 /** Physical restoration of the existing frozen CorpusEntry snapshot format. */
 import { createHash } from 'node:crypto';
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { canonicalJson } from './canonical-json';
@@ -41,12 +41,44 @@ function containedPath(root: string, ref: string): string {
   }
   return file;
 }
-function readRegularFile(file: string): Buffer {
+function readRegularFile(file: string, maxBytes?: number): Buffer {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    if (!fstatSync(fd).isFile()) throw new Error('Benchmark context snapshot is not a regular file.');
-    return readFileSync(fd);
+    const before = fstatSync(fd);
+    if (!before.isFile()) throw new Error('Benchmark context snapshot is not a regular file.');
+    if (maxBytes !== undefined && (before.size < 1 || before.size > maxBytes))
+      throw new Error('Benchmark file size is outside its allocated bound.');
+    // Resolve the opened descriptor: a swapped parent must not redirect this
+    // read outside the private root checked before open.
+    if (maxBytes !== undefined && realpathSync(`/proc/self/fd/${fd}`) !== file)
+      throw new Error('Benchmark file descriptor differs from its allocated path.');
+    const bytes = maxBytes === undefined ? readFileSync(fd) : Buffer.alloc(before.size);
+    if (maxBytes !== undefined) {
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (!read) throw new Error('Benchmark file ended during its evidence read.');
+        offset += read;
+      }
+    }
+    if (maxBytes !== undefined) {
+      const after = lstatSync(file);
+      if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino ||
+          before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+          bytes.length !== before.size || realpathSync(`/proc/self/fd/${fd}`) !== file)
+        throw new Error('Benchmark file changed during its evidence read.');
+    }
+    return bytes;
   } finally { closeSync(fd); }
+}
+
+/** Reuse the frozen-context path boundary for host-allocated output artifacts.
+ * Linux descriptor resolution refuses parent swaps; unavailable proof fails
+ * closed. This reads bytes only and does not establish workload completion. */
+export function readContainedBenchmarkFile(root: string, ref: string, maxBytes: number): Buffer {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 16 * 1024 * 1024 || realpathSync(root) !== root)
+    throw new Error('Benchmark artifact requires a canonical private root and bounded size.');
+  return readRegularFile(containedPath(root, ref), maxBytes);
 }
 function readSnapshot(file: string, expected: string, forbidden: readonly string[]): Buffer {
   const bytes = readRegularFile(file);
