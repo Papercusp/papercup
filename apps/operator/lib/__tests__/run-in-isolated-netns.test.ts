@@ -150,7 +150,9 @@ describe.skipIf(!ISOLATION_AVAILABLE)(`run-in-isolated-netns.sh — isolation ${
     expect(fd3).toBe('from-fd3');
     // 0-2, the inherited 3, and the descriptor `ls` opens on /proc/self/fd itself.
     expect(fds.trim().split(' ').map(Number).filter(fd => fd > 3)).toHaveLength(1);
-  }, 60_000);
+    // Parent budget must exceed the spawnSync child's 60s, or Vitest kills the test
+    // first and the child timeout is unreachable (lint:test-timing-budgets).
+  }, 90_000);
 
   it('forwards SIGTERM to the command and returns its exit code', async () => {
     const out = await new Promise<{ code: number | null; stdout: string }>(done => {
