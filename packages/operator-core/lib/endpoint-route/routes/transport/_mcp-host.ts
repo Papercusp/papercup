@@ -95,6 +95,7 @@ import {
   logMcpRequestTrace,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
+  resolveMcpRequestTraceId,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
@@ -405,7 +406,8 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   const url = urlFromExtra(extra);
   if (!url) return undefined;
   const headers = headersFromExtra(extra);
-  const mcpRequestTraceId = mcpTraceIdFromExtra(extra);
+  // Same id the tools/call handler logs and settles with (WI-6554700010008586).
+  const mcpRequestTraceId = resolveMcpRequestTraceId(extra);
   const query: Record<string, string> = {};
   for (const [key, value] of url.searchParams.entries()) {
     if (REQUEST_ORIGIN_QUERY_KEYS.has(key)) query[key] = value;
@@ -3623,7 +3625,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       }
       const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
       logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
-        traceId: mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID(),
+        traceId: resolveMcpRequestTraceId(extra),
         toolName: typeof requestedName === 'string' ? requestedName : 'tools/call',
         stage: 'stale_contract_rejected',
         elapsedMs: Math.max(0, Date.now() - checkStartedAt),
@@ -3972,7 +3974,7 @@ export function registerMcpHost(server: McpServer): void {
     const sessionKey = mcpSessionKey(extra);
     rememberSessionToolRegistryRevision(sessionKey, servingGeneration.revision);
     logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
-      traceId: mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID(),
+      traceId: resolveMcpRequestTraceId(extra),
       toolName: 'tools/list',
       stage: 'tools_list_completed',
       elapsedMs: Math.max(0, Date.now() - listStartedAt),
@@ -4016,7 +4018,7 @@ export function registerMcpHost(server: McpServer): void {
       // The local proxy owns and overwrites this UUID before forwarding. Keep a
       // generated fallback for direct/native callers, then carry the same value
       // through request, dispatch and deadline evidence without logging args.
-      const traceId = mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID();
+      const traceId = resolveMcpRequestTraceId(extra);
       const trace = (
         stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
         details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
@@ -5169,6 +5171,30 @@ export function registerMcpHost(server: McpServer): void {
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   requestTraceId: traceId,
+                  onScratchWritePending: (timeout) => backfillResultDoorOutputRef({
+                    workspaceId: dispatchSpawnCtx.workspaceId,
+                    spawnId: dispatchSpawnCtx.spawnId,
+                    toolName,
+                    runId: dispatchSpawnCtx.runId ?? null,
+                    mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+                    outputRef: timeout.spillUri,
+                    outputSize: null,
+                    metadataJson: {
+                      returnedContextBytes: timeout.returnedContextBytes,
+                      spilledBytes: 0,
+                      spillPath: timeout.spillPath,
+                      spillUri: timeout.spillUri,
+                      spillPending: true,
+                      spillFailed: false,
+                      spillError: `result-door scratch spill write exceeded ${timeout.timeoutMs}ms`,
+                      spillErrorCode: 'ETIMEDOUT',
+                      spillTimeoutCount: 1,
+                      spillTimeoutMs: timeout.timeoutMs,
+                      spillTimeoutAt: timeout.timedOutAt,
+                      resultDoorReason: timeout.reason,
+                      aggregateOutputEscape: timeout.aggregateOutputEscape,
+                    },
+                  }),
                   onLateScratchWriteSettled: (settlement) => {
                     const settledAt = new Date().toISOString();
                     return backfillResultDoorOutputRef({
@@ -5358,7 +5384,7 @@ export function registerMcpHost(server: McpServer): void {
                   aggregate?: { exceeded?: boolean };
                 }
               | undefined;
-            if (doorMeta?.truncated &&
+            if (doorMeta?.truncated && doorMeta.spillPending !== true &&
               (doorMeta.spillUri || doorMeta.spillFailed === true || isPreferredDoor(toolName))) {
               const originalBytes = doorMeta.originalBytes ?? doorMeta.originalChars ?? 0;
               void backfillResultDoorOutputRef({
@@ -6006,7 +6032,7 @@ export function registerMcpHost(server: McpServer): void {
     server.server.setRequestHandler(
       sdk.InitializeRequestSchema,
       wrapInitializeWithInstructions(sdkInitialize, async (base, extra, timing) => {
-        const traceId = mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID();
+        const traceId = resolveMcpRequestTraceId(extra);
         const stages = {
           sdkMs: timing.sdkMs,
           spawnContextMs: null as number | null,
