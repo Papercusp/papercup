@@ -852,8 +852,8 @@ describe('cross-process scratch quota coordination', () => {
     const second = startScratchChild(script, { ...baseEnv, PC_FILE_PATH: secondPath });
     const [firstResult, secondResult] = await Promise.all([first.finished, second.finished]);
 
-    expect(firstResult.code, firstResult.stderr || firstResult.spawnError).toBe(0);
-    expect(secondResult.code, secondResult.stderr || secondResult.spawnError).toBe(0);
+    expect(firstResult.code, firstResult.stderr || firstResult.spawnError || undefined).toBe(0);
+    expect(secondResult.code, secondResult.stderr || secondResult.spawnError || undefined).toBe(0);
     const outcomes = [JSON.parse(firstResult.stdout), JSON.parse(secondResult.stdout)];
     expect(outcomes.map((outcome) => outcome.ok).sort()).toEqual([false, true]);
     expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
@@ -912,8 +912,8 @@ describe('cross-process scratch quota coordination', () => {
       ]);
       expect(gcFinishedBeforeWriter).toBe(false);
       const [writerResult, gcResult] = await Promise.all([writer.finished, gc.finished]);
-      expect(writerResult.code, writerResult.stderr || writerResult.spawnError).toBe(0);
-      expect(gcResult.code, gcResult.stderr || gcResult.spawnError).toBe(0);
+      expect(writerResult.code, writerResult.stderr || writerResult.spawnError || undefined).toBe(0);
+      expect(gcResult.code, gcResult.stderr || gcResult.spawnError || undefined).toBe(0);
       expect(JSON.parse(gcResult.stdout)).toMatchObject({ retentionEvictions: 0 });
       expect(existsSync(filePath)).toBe(true);
     } finally {
@@ -1482,7 +1482,7 @@ describe('deferred scratch quota recovery', () => {
       PC_BYTES: String(sharedBytes),
     });
     const childResult = await child.finished;
-    expect(childResult.code, childResult.stderr || childResult.spawnError).toBe(0);
+    expect(childResult.code, childResult.stderr || childResult.spawnError || undefined).toBe(0);
     expect(JSON.parse(childResult.stdout)).toMatchObject({ ok: true });
 
     vi.mocked(readdirAsync).mockClear();

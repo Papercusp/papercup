@@ -48,6 +48,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
@@ -137,9 +138,10 @@ function withScratchWorkspaceMutex<T>(
   const tail = previous.then(() => held, () => held);
   scratchMutexState.set(mutexName, tail);
   const localWaitStartedAt = performance.now();
-  let localWaitTimer: ReturnType<typeof setInterval> | undefined;
+  let localWaitTimer: ManagedHandle | undefined;
   if (requests[0] !== request && onWaiting) {
-    localWaitTimer = setInterval(() => {
+    // Instanced: one timer per queued waiter, aggregated into ONE schedule:inventory row.
+    localWaitTimer = managedSetInterval('scratch-mutex-local-wait-progress', 5_000, () => {
       const holder = requests[0];
       if (!holder || holder === request) return;
       try {
@@ -156,19 +158,21 @@ function withScratchWorkspaceMutex<T>(
       } catch {
         // Diagnostic observers must not change mutex admission behavior.
       }
-    }, 5_000);
-    (localWaitTimer as { unref?: () => void }).unref?.();
+    }, { category: 'lifecycle', instanced: true, classification: 'timeout-reaper' });
   }
+  // A closure, so both call sites below stop the SAME handle without TS narrowing it to
+  // `never` after the first stop (stop() is idempotent; the finally is the safety net).
+  const stopLocalWaitTimer = () => {
+    localWaitTimer?.stop();
+    localWaitTimer = undefined;
+  };
 
   return (async () => {
     await previous.catch(() => {});
     const localWaitMs = queuedLocally
       ? Math.max(0, performance.now() - localWaitStartedAt)
       : 0;
-    if (localWaitTimer) {
-      clearInterval(localWaitTimer);
-      localWaitTimer = undefined;
-    }
+    stopLocalWaitTimer();
     let firstFilesystemWaitElapsedMs: number | undefined;
     const observedOnWaiting = onWaiting || onAcquired
       ? (info: { owner: string; elapsedMs: number }) => {
@@ -203,7 +207,7 @@ function withScratchWorkspaceMutex<T>(
           : undefined,
       });
     } finally {
-      if (localWaitTimer) clearInterval(localWaitTimer);
+      stopLocalWaitTimer();
       release();
       const requestIndex = requests.indexOf(request);
       if (requestIndex >= 0) requests.splice(requestIndex, 1);
@@ -1694,15 +1698,16 @@ export async function writeWithScratchQuota(
       ? setTimeout(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
       : undefined;
     const progressInterval = opts.onTiming && phase === 'quotaRecoveryMs'
-      ? setInterval(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
+      ? managedSetInterval('scratch-write-quota-recovery-progress', SCRATCH_WRITE_PROGRESS_AFTER_MS, emitProgress, {
+          category: 'lifecycle', instanced: true, classification: 'timeout-reaper',
+        })
       : undefined;
-    const progressTimer = progressTimeout ?? progressInterval;
-    (progressTimer as { unref?: () => void } | undefined)?.unref?.();
+    (progressTimeout as { unref?: () => void } | undefined)?.unref?.();
     try {
       await run();
     } finally {
       if (progressTimeout) clearTimeout(progressTimeout);
-      if (progressInterval) clearInterval(progressInterval);
+      progressInterval?.stop();
       timings[phase] += Math.max(0, performance.now() - start);
     }
   };
