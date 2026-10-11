@@ -14,10 +14,13 @@
  * metric leaves that metric's reading unchanged") testable at the unit layer: a test
  * edits one fixture row and asserts exactly one metric moves.
  *
- * FOUR METRICS ARE NOT COMPUTED HERE (plan Decision D-018): uncoveredActivePlans,
- * uncoveredActivePlansRaw, closureReasonMissing and triageGaps come from P-004's
- * measureContractTriage, and the three staleAcceptance* counts from P-005's
- * measureStaleAcceptance. The storage behind them belongs to that lane, so this module
+ * THE LANE-2 METRICS ARE NOT COMPUTED HERE (plan Decision D-018): uncoveredActivePlans,
+ * uncoveredActivePlansRaw, closureReasonMissing, triageGaps and unreachablePlans come from
+ * P-004's measureContractTriage, and the four staleAcceptance* counts (including
+ * staleAcceptanceScopeExcluded) from P-005's measureStaleAcceptance. unreachablePlans and
+ * staleAcceptanceScopeExcluded are pass-throughs with no threshold (D-033): they hold the
+ * plans D-030 and D-029 (2) move OUT of the two probe readings, so dropping them would let
+ * those plans vanish from the one-read surface. The storage behind them belongs to that lane, so this module
  * takes them as injected measures and never re-derives their SQL — two copies of a
  * definition (the 24h grace window, the 3-day surfacing grace) would drift.
  *
@@ -70,14 +73,26 @@ export interface StaleAcceptanceMeasure {
   staleAcceptanceSurfaced: number;
   staleAcceptanceNeverSurfaced: number;
   staleAcceptanceUndispositioned: number;
+  /**
+   * D-029 (2)/D-033: stale plans outside the workspace work-scope policy. Never a stall and
+   * left out of staleAcceptanceUndispositioned, so the cell must carry them to stay visible.
+   */
+  staleAcceptanceScopeExcluded: number;
   acceptancePlansConsidered?: number;
 }
 
-const TRIAGE_COUNT_KEYS = ['uncoveredActivePlans', 'uncoveredActivePlansRaw', 'closureReasonMissing', 'triageGaps'] as const;
+const TRIAGE_COUNT_KEYS = [
+  'uncoveredActivePlans',
+  'uncoveredActivePlansRaw',
+  'closureReasonMissing',
+  'triageGaps',
+  'unreachablePlans',
+] as const;
 const STALE_COUNT_KEYS = [
   'staleAcceptanceSurfaced',
   'staleAcceptanceNeverSurfaced',
   'staleAcceptanceUndispositioned',
+  'staleAcceptanceScopeExcluded',
 ] as const;
 
 export interface VerificationHealthMeasureArgs {
@@ -156,6 +171,11 @@ export interface VerificationHealth {
   triageGaps: number | null;
   /** D-019 denominator: active plans the triage measurement examined; null when not reported. */
   activePlansConsidered: number | null;
+  /**
+   * D-030/D-033: uncovered active plans with no Hive plan scope (outside triageGaps). Not a
+   * threshold of its own; null only when measureContractTriage threw.
+   */
+  unreachablePlans: number | null;
   awaitingAcceptancePlans: number;
   awaitingAcceptanceAgeDays: Record<AcceptanceAgeBucket, number>;
   /** Lane-2 stale-acceptance counts (D-018); null only when measureStaleAcceptance threw. */
@@ -165,6 +185,11 @@ export interface VerificationHealth {
   staleAcceptanceUndispositioned: number | null;
   /** D-019 denominator: in-scope plans the stale-acceptance measurement examined; null when not reported. */
   acceptancePlansConsidered: number | null;
+  /**
+   * D-029 (2)/D-033: stale plans excluded by the work-scope policy (a policy count the owner
+   * changes by widening scope). Not a threshold; null only when measureStaleAcceptance threw.
+   */
+  staleAcceptanceScopeExcluded: number | null;
   /** Lane-2 measures that threw, with their messages. Empty when both ran. */
   measurementErrors: Array<{ measure: 'measureContractTriage' | 'measureStaleAcceptance'; message: string }>;
   /** Shipped plans that were force-shipped past a gate (harness_plans.forced_past set). */
@@ -382,12 +407,14 @@ export function buildVerificationHealth(input: {
     closureReasonMissing: triage ? triage.closureReasonMissing : null,
     triageGaps,
     activePlansConsidered,
+    unreachablePlans: triage ? triage.unreachablePlans : null,
     awaitingAcceptancePlans,
     awaitingAcceptanceAgeDays,
     staleAcceptanceSurfaced: stale ? stale.staleAcceptanceSurfaced : null,
     staleAcceptanceNeverSurfaced: stale ? stale.staleAcceptanceNeverSurfaced : null,
     staleAcceptanceUndispositioned,
     acceptancePlansConsidered,
+    staleAcceptanceScopeExcluded: stale ? stale.staleAcceptanceScopeExcluded : null,
     measurementErrors: input.measurementErrors ?? [],
     forcedShips,
     valBlockPlans,

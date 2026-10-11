@@ -13,8 +13,8 @@ import {
 const NOW = new Date('2026-10-11T00:00:00.000Z');
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
 
-const ZERO_TRIAGE: ContractTriageMeasure = { uncoveredActivePlans: 0, uncoveredActivePlansRaw: 0, closureReasonMissing: 0, triageGaps: 0, activePlansConsidered: 4 };
-const ZERO_STALE: StaleAcceptanceMeasure = { staleAcceptanceSurfaced: 0, staleAcceptanceNeverSurfaced: 0, staleAcceptanceUndispositioned: 0, acceptancePlansConsidered: 7 };
+const ZERO_TRIAGE: ContractTriageMeasure = { uncoveredActivePlans: 0, uncoveredActivePlansRaw: 0, closureReasonMissing: 0, triageGaps: 0, unreachablePlans: 0, activePlansConsidered: 4 };
+const ZERO_STALE: StaleAcceptanceMeasure = { staleAcceptanceSurfaced: 0, staleAcceptanceNeverSurfaced: 0, staleAcceptanceUndispositioned: 0, staleAcceptanceScopeExcluded: 0, acceptancePlansConsidered: 7 };
 
 function plan(over: Partial<VerificationHealthPlanRow>): VerificationHealthPlanRow {
   return {
@@ -76,8 +76,8 @@ describe('verification-health (P-002)', () => {
 
   it('passes the lane-2 triage and staleness measures through and alerts on them', () => {
     const h = build({
-      triage: { uncoveredActivePlans: 2, uncoveredActivePlansRaw: 5, closureReasonMissing: 1, triageGaps: 3, activePlansConsidered: 9 },
-      stale: { staleAcceptanceSurfaced: 1, staleAcceptanceNeverSurfaced: 2, staleAcceptanceUndispositioned: 3, acceptancePlansConsidered: 6 },
+      triage: { uncoveredActivePlans: 2, uncoveredActivePlansRaw: 5, closureReasonMissing: 1, triageGaps: 3, unreachablePlans: 4, activePlansConsidered: 9 },
+      stale: { staleAcceptanceSurfaced: 1, staleAcceptanceNeverSurfaced: 2, staleAcceptanceUndispositioned: 3, staleAcceptanceScopeExcluded: 5, acceptancePlansConsidered: 6 },
     });
     expect([h.uncoveredActivePlans, h.uncoveredActivePlansRaw, h.closureReasonMissing, h.triageGaps]).toEqual([2, 5, 1, 3]);
     expect([h.staleAcceptanceSurfaced, h.staleAcceptanceNeverSurfaced, h.staleAcceptanceUndispositioned]).toEqual([1, 2, 3]);
@@ -87,6 +87,28 @@ describe('verification-health (P-002)', () => {
 
   it('refuses a lane-2 measure that is not an integer instead of reporting it', () => {
     expect(() => build({ triage: { ...ZERO_TRIAGE, triageGaps: null as unknown as number } })).toThrow(/triageGaps is not an integer/);
+  });
+
+  // D-033: the plans D-030 and D-029 (2) move OUT of the two probe readings must stay on the
+  // one-read surface. Both fields pass through non-null when the measures ran, and neither
+  // becomes a threshold of its own.
+  it('carries unreachablePlans and staleAcceptanceScopeExcluded through without alerting on them (D-033)', () => {
+    const h = build({
+      triage: { ...ZERO_TRIAGE, unreachablePlans: 2 },
+      stale: { ...ZERO_STALE, staleAcceptanceScopeExcluded: 3 },
+    });
+    expect([h.unreachablePlans, h.staleAcceptanceScopeExcluded]).toEqual([2, 3]);
+    expect([h.triageGaps, h.staleAcceptanceUndispositioned]).toEqual([0, 0]);
+    expect(h.breachCodes).toEqual([]);
+    expect(h.breaches).toBe(0);
+    expect(h.unmeasuredCodes).toEqual([]);
+  });
+
+  it('refuses a lane-2 measure that omits unreachablePlans or staleAcceptanceScopeExcluded (D-033)', () => {
+    const { unreachablePlans: _u, ...noUnreachable } = ZERO_TRIAGE;
+    const { staleAcceptanceScopeExcluded: _s, ...noScopeExcluded } = ZERO_STALE;
+    expect(() => build({ triage: noUnreachable as ContractTriageMeasure })).toThrow(/unreachablePlans is not an integer/);
+    expect(() => build({ stale: noScopeExcluded as StaleAcceptanceMeasure })).toThrow(/staleAcceptanceScopeExcluded is not an integer/);
   });
 
   // SPEC-P-002-VALUE-SHAPE r4: no matching plans ⇒ every count is an integer, never null,
@@ -144,8 +166,9 @@ describe('verification-health (P-002)', () => {
       async measureStaleAcceptance() { return ZERO_STALE; },
     });
     const h = report.health;
-    expect([h.uncoveredActivePlans, h.uncoveredActivePlansRaw, h.closureReasonMissing, h.triageGaps, h.activePlansConsidered])
-      .toEqual([null, null, null, null, null]);
+    expect([h.uncoveredActivePlans, h.uncoveredActivePlansRaw, h.closureReasonMissing, h.triageGaps, h.activePlansConsidered, h.unreachablePlans])
+      .toEqual([null, null, null, null, null, null]);
+    expect(h.staleAcceptanceScopeExcluded).toBe(0);
     expect(h.measurementErrors).toEqual([{ measure: 'measureContractTriage', message: 'relation contract_triage does not exist' }]);
     expect(h.staleAcceptanceUndispositioned).toBe(0);
     expect(h.activePlans).toBe(build().activePlans);
