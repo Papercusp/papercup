@@ -22,6 +22,7 @@ import {
 } from './arm-snapshot';
 import {
   BENCH_DEFAULT_MODEL_ALIAS,
+  assertModelInSnapshot,
   assertModelRegistrySnapshot,
   benchDefaultModelId,
   captureModelRegistrySnapshot,
@@ -36,7 +37,18 @@ const PIN = pinEvaluatedModel(BENCH_DEFAULT_MODEL_ALIAS, { now: new Date('2026-1
 /** A registry snapshot whose content differs from the live one (so its id differs too). */
 function otherRegistry(): ModelRegistrySnapshot {
   const entries = PIN.snapshot.entries.map((e) => (e.alias === 'luna' ? { ...e, priced: !e.priced } : e));
-  return { ...PIN.snapshot, entries, snapshotId: modelRegistrySnapshotId(PIN.snapshot.priceTableVersion, entries) };
+  return { ...PIN.snapshot, entries, snapshotId: modelRegistrySnapshotId({ ...PIN.snapshot, entries }) };
+}
+
+/**
+ * A fixture registry snapshot that omits `modelId` entirely: no menu entry resolves to it and it is not in the
+ * priced id list. Stands in for the registry having moved past a model that benchmark code once hard-coded.
+ */
+function registryWithout(modelId: string): ModelRegistrySnapshot {
+  const entries = PIN.snapshot.entries.filter((e) => e.modelId !== modelId);
+  const pricedModelIds = PIN.snapshot.pricedModelIds.filter((id) => id !== modelId);
+  const content = { ...PIN.snapshot, entries, pricedModelIds };
+  return { ...content, snapshotId: modelRegistrySnapshotId(content) };
 }
 
 function task(instanceId: string, over: Partial<ArmSnapshotPerTask> = {}): ArmSnapshotPerTask {
@@ -251,6 +263,56 @@ describe('model-registry snapshot — evaluated models are derived, not hard-cod
     expect(otherRegistry().snapshotId).not.toBe(a.snapshotId);
     expect(assertModelRegistrySnapshot(a)).toBe(a);
     expect(a.entries.map((e) => e.alias)).toContain(BENCH_DEFAULT_MODEL_ALIAS);
+  });
+});
+
+describe('a run record names only models its pinned snapshot resolves (FSWE-P010-REGISTRY falsifier)', () => {
+  // The model the benchmark default resolves to today: the role a hard-coded pin used to play.
+  const pinned = PIN.model.modelId;
+  // A model June-era benchmark code hard-coded; still priced, so only the snapshot can refuse it.
+  const formerPin = 'claude-opus-4-1';
+
+  it('calibration: both models resolve against the live snapshot, and the fixture really omits them', () => {
+    expect(resolveEvaluatedModel(formerPin, PIN.snapshot).modelId).toBe(formerPin);
+    expect(PIN.snapshot.pricedModelIds).toContain(pinned);
+    const fixture = registryWithout(formerPin);
+    expect(fixture.pricedModelIds).not.toContain(formerPin);
+    expect(fixture.snapshotId).not.toBe(PIN.snapshot.snapshotId);
+    expect(assertModelRegistrySnapshot(fixture).snapshotId).toBe(fixture.snapshotId);
+  });
+
+  it('a dry run against a fixture snapshot that omits a formerly hard-coded model refuses it', () => {
+    // Resolution reads the pinned list, not the live price table, which still prices formerPin.
+    expect(priceFor(formerPin)).not.toBeNull();
+    expect(() => pinEvaluatedModel(formerPin, { snapshot: registryWithout(formerPin) })).toThrow(/neither a registry alias nor a priced model id/);
+    // Dated snapshot ids inherit only from a key the pinned list holds.
+    expect(resolveEvaluatedModel(`${formerPin}-20250805`, PIN.snapshot).modelId).toBe(`${formerPin}-20250805`);
+    expect(() => resolveEvaluatedModel(`${formerPin}-20250805`, registryWithout(formerPin))).toThrow(/neither a registry alias/);
+    // The default alias cannot fall through to a model its snapshot no longer carries.
+    expect(() => pinEvaluatedModel(BENCH_DEFAULT_MODEL_ALIAS, { snapshot: registryWithout(pinned) })).toThrow(/neither a registry alias/);
+  });
+
+  it('an arm record whose model id is absent from its own pinned snapshot is refused, even with a matching snapshot id', () => {
+    dirForWrite = mkdtempSync(join(tmpdir(), 'arm-absent-'));
+    const fixture = registryWithout(formerPin);
+    const forged = { modelId: formerPin, alias: null, backend: 'claude' as const, snapshotId: fixture.snapshotId };
+    const record = snapshot('su-independent', [task('iid-a')], { modelRegistry: fixture, evaluatedModel: forged });
+    expect(() => assertArmModelPin(record)).toThrow(/is not in its pinned registry snapshot/);
+    const path = join(dirForWrite, 'su-independent.json');
+    expect(() => writeArmSnapshotMerged(path, record)).toThrow(/is not in its pinned registry snapshot/);
+    expect(readArmSnapshot(path)).toBeNull();
+  });
+
+  it('an arm record whose alias resolves to a different id under its snapshot is refused', () => {
+    const relabelled = { ...PIN.model, modelId: formerPin };
+    expect(() => assertModelInSnapshot(relabelled, PIN.snapshot)).toThrow(/is not what its pinned registry snapshot/);
+    expect(assertModelInSnapshot(PIN.model, PIN.snapshot)).toBe(PIN.model);
+  });
+
+  let dirForWrite: string | undefined;
+  afterEach(() => {
+    if (dirForWrite) rmSync(dirForWrite, { recursive: true, force: true });
+    dirForWrite = undefined;
   });
 });
 

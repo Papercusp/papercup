@@ -22,6 +22,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { CoordEvent } from '@papercusp/bench-metrics';
 import {
+  assertModelInSnapshot,
   assertModelRegistrySnapshot,
   type EvaluatedModel,
   type ModelRegistrySnapshot,
@@ -79,6 +80,7 @@ export function assertArmModelPin(snapshot: ArmSnapshot, where = `arm ${snapshot
       `${where}: evaluatedModel was resolved from registry snapshot ${model.snapshotId}, not the pinned ${registry.snapshotId}`,
     );
   }
+  assertModelInSnapshot(model, registry, where);
   return snapshot;
 }
 

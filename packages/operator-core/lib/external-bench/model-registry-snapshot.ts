@@ -20,7 +20,7 @@
  * Pure apart from the clock: no disk, no network, no PG.
  */
 import { createHash } from 'node:crypto';
-import { normalizeModelId, priceFor, PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
+import { MODEL_PRICES, normalizeModelId, priceFor, priceKeyFor, PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import { CLOUD_MODEL_MENU } from '../agent-config-constants';
 import { normalizeCodexCliModel } from '../model-context-budget.mjs';
 import { resolveGatewayModel } from '../inference-gateway/model-aliases';
@@ -58,6 +58,11 @@ export interface ModelRegistrySnapshot {
   /** `@papercusp/model-pricing` content version the `priced` flags were read under. */
   priceTableVersion: string;
   entries: RegistryModelEntry[];
+  /**
+   * Every concrete Claude/Codex id `@papercusp/model-pricing` priced at capture (sorted). A run may name one
+   * of these directly; resolution reads this list, never the live table, so it is a function of the snapshot.
+   */
+  pricedModelIds: string[];
 }
 
 /** The model a run evaluates, resolved from (and traceable to) one registry snapshot. */
@@ -94,20 +99,26 @@ function canonicalJson(value: unknown): string {
 }
 
 /** The content id of a registry state. Exported so a stored snapshot can be re-verified. */
-export function modelRegistrySnapshotId(priceTableVersion: string, entries: readonly RegistryModelEntry[]): string {
-  const text = canonicalJson({ schema: MODEL_REGISTRY_SNAPSHOT_SCHEMA, priceTableVersion, entries });
+export function modelRegistrySnapshotId(
+  content: Pick<ModelRegistrySnapshot, 'priceTableVersion' | 'entries' | 'pricedModelIds'>,
+): string {
+  const { priceTableVersion, entries, pricedModelIds } = content;
+  const text = canonicalJson({ schema: MODEL_REGISTRY_SNAPSHOT_SCHEMA, priceTableVersion, entries, pricedModelIds });
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
 /** Read the live registry into a snapshot. Deterministic in everything but `capturedAt`. */
 export function captureModelRegistrySnapshot(opts: { now?: Date } = {}): ModelRegistrySnapshot {
   const entries = CLOUD_MODEL_MENU.map((row) => resolveEntry(row.value, row.backend));
+  const pricedModelIds = Object.keys(MODEL_PRICES)
+    .filter((id) => backendOfConcreteId(id) !== null)
+    .sort();
+  const content = { priceTableVersion: PRICE_TABLE_VERSION, entries, pricedModelIds };
   return {
     schema: MODEL_REGISTRY_SNAPSHOT_SCHEMA,
-    snapshotId: modelRegistrySnapshotId(PRICE_TABLE_VERSION, entries),
+    snapshotId: modelRegistrySnapshotId(content),
     capturedAt: (opts.now ?? new Date()).toISOString(),
-    priceTableVersion: PRICE_TABLE_VERSION,
-    entries,
+    ...content,
   };
 }
 
@@ -139,10 +150,17 @@ export function resolveEvaluatedModel(selector: string, snapshot: ModelRegistryS
     return { modelId: byAlias.modelId, alias: byAlias.alias, backend: byAlias.backend, snapshotId: snapshot.snapshotId };
   }
   const byId = snapshot.entries.find((e) => e.modelId === norm);
-  if (byId) return { modelId: norm, alias: byId.alias, backend: byId.backend, snapshotId: snapshot.snapshotId };
+  if (byId) {
+    if (!byId.priced) {
+      throw new Error(`resolveEvaluatedModel: model "${norm}" is unpriced in registry snapshot ${snapshot.snapshotId}; register its price in @papercusp/model-pricing first`);
+    }
+    return { modelId: norm, alias: byId.alias, backend: byId.backend, snapshotId: snapshot.snapshotId };
+  }
   const backend = backendOfConcreteId(norm);
-  if (backend === null || priceFor(norm) === null) {
-    throw new Error(`resolveEvaluatedModel: "${selector}" is neither a registry alias nor a priced model id`);
+  if (backend === null || priceKeyFor(norm, snapshot.pricedModelIds) === null) {
+    throw new Error(
+      `resolveEvaluatedModel: "${selector}" is neither a registry alias nor a priced model id in registry snapshot ${snapshot.snapshotId}`,
+    );
   }
   return { modelId: norm, alias: null, backend, snapshotId: snapshot.snapshotId };
 }
@@ -173,12 +191,39 @@ export function assertModelRegistrySnapshot(value: unknown, where = 'snapshot'):
   if (!s || typeof s !== 'object' || s.schema !== MODEL_REGISTRY_SNAPSHOT_SCHEMA) {
     throw new Error(`${where}: missing or unrecognised model-registry snapshot (expected schema ${MODEL_REGISTRY_SNAPSHOT_SCHEMA})`);
   }
-  if (typeof s.priceTableVersion !== 'string' || !Array.isArray(s.entries) || typeof s.snapshotId !== 'string') {
-    throw new Error(`${where}: model-registry snapshot is missing priceTableVersion, entries or snapshotId`);
+  if (
+    typeof s.priceTableVersion !== 'string' ||
+    !Array.isArray(s.entries) ||
+    !Array.isArray(s.pricedModelIds) ||
+    typeof s.snapshotId !== 'string'
+  ) {
+    throw new Error(`${where}: model-registry snapshot is missing priceTableVersion, entries, pricedModelIds or snapshotId`);
   }
-  const expected = modelRegistrySnapshotId(s.priceTableVersion, s.entries);
+  const expected = modelRegistrySnapshotId({ priceTableVersion: s.priceTableVersion, entries: s.entries, pricedModelIds: s.pricedModelIds });
   if (expected !== s.snapshotId) {
     throw new Error(`${where}: model-registry snapshot id ${s.snapshotId} does not match its content (${expected})`);
   }
   return s as ModelRegistrySnapshot;
+}
+
+/**
+ * Refuse a recorded model that its own pinned snapshot does not resolve to: re-resolve the recorded alias
+ * (or, without one, the recorded id) against `snapshot` and require the same concrete id and backend. This
+ * is what makes a run record's model traceable to its pin, not merely labelled with the pin's id.
+ */
+export function assertModelInSnapshot(model: EvaluatedModel, snapshot: ModelRegistrySnapshot, where = 'model'): EvaluatedModel {
+  let again: EvaluatedModel;
+  try {
+    again = resolveEvaluatedModel(model.alias ?? model.modelId, snapshot);
+  } catch (err) {
+    throw new Error(
+      `${where}: evaluatedModel "${model.modelId}" is not in its pinned registry snapshot ${snapshot.snapshotId} (${(err as Error).message})`,
+    );
+  }
+  if (again.modelId !== model.modelId || again.backend !== model.backend) {
+    throw new Error(
+      `${where}: evaluatedModel "${model.modelId}" (${model.backend}) is not what its pinned registry snapshot ${snapshot.snapshotId} resolves ${model.alias ?? model.modelId} to ("${again.modelId}", ${again.backend})`,
+    );
+  }
+  return model;
 }
