@@ -69,11 +69,18 @@
  * my case". The single deliberate exception is inherited from `hasAutonomyPosture`: an UNKNOWN
  * mode id counts as autonomous, because a spurious page costs one notification while a missed
  * one costs days.
+ *
+ * "Any pending await" EXCLUDES the session's own `coord:inbox-wake:<self>` watcher (P-007 slice 2,
+ * D-006). Every parked session holds one, and it fires only when somebody else messages the
+ * session, so it is not a wake source the session can count on. Counting it hid every normally
+ * parked AUTO session: measured 2026-10-10, 115 of 115 exemptions were 'pending-await', and 51
+ * claim-holding AUTO sessions had that watcher as their only await.
  */
 
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { AttentionNotifyInput } from '../../attention-notify';
+import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
 import { hasAutonomyPosture } from './loop-dead-man';
 import { getLoopStatuses } from './loop';
 import { readEngineLoopRowsByOwner } from './engine-loop-standdown';
@@ -304,8 +311,23 @@ export interface SilentHaltSweepDeps {
   readCandidates?: (workspaceId: string, sql: Sql) => Promise<SilentHaltCandidate[]>;
   /** Injectable for tests; defaults to the shared `getLoopStatuses` accessor. */
   readLoopStatuses?: typeof getLoopStatuses;
-  /** Injectable for tests; defaults to a dynamically-imported `notifyAttention`. */
-  notify?: (payload: AttentionNotifyInput & { dedupeKey?: string }) => Promise<void>;
+  /**
+   * Injectable for tests; defaults to a dynamically-imported `notifyAttention`. Return
+   * `{ deduped: true }` when the page already existed for this (owner, epoch): a deduped page
+   * neither counts against the per-sweep page cap nor re-alerts the fleet leader (D-006 (3)/(4)).
+   */
+  notify?: (payload: AttentionNotifyInput & { dedupeKey?: string }) => Promise<{ deduped?: boolean } | void>;
+  /**
+   * Classifies the halted session's psu host (P-007 slice 2, D-006 (2)); defaults to the
+   * stalled-loops guard's `readStalledLoopHost` + `classifyStalledLoopHost`. `null` = unreadable,
+   * which keeps today's wake-first behaviour.
+   */
+  readHostClass?: (ownerId: string, nowMs: number) => Promise<StalledLoopHostClass | null>;
+  /**
+   * Alerts a halted fleet member's CURRENT leader beside the owner page (D-006 (3)); defaults to
+   * resolving `@fleet-leader:<slug>` with `expandAudience` and sending + waking that leader.
+   */
+  alertFleetLeader?: (fleetSlug: string, summary: string, body: string, workspaceId: string) => Promise<void>;
   nowMs?: number;
   /** P-003 wake-first rung on/off. Defaults to the SILENT_HALT_WAKE_FIRST flag (fail-closed). */
   wakeFirstEnabled?: boolean;
@@ -327,6 +349,8 @@ export interface SilentHaltSweepResult {
   paged: string[];
   /** Owners the wake-first rung WOKE this tick (P-003) — deliberately NOT paged this tick. */
   woken: string[];
+  /** Halted fleet members whose CURRENT leader was alerted with a newly created page (D-006 (3)). */
+  fleetLeaderAlerted: string[];
   /** ownerId → the named exemption, so a zero-page sweep is explicable rather than mute. */
   exempt: Record<string, string>;
   dryRun: boolean;
@@ -348,6 +372,8 @@ export interface SilentHaltSweepResult {
  * measured live while writing this file, and the reason the term is joined this way.
  */
 async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<SilentHaltCandidate[]> {
+  // Lazy, like the wake leg's `wakeRecipients` import: keeps inbox-wake's graph out of this module.
+  const { COORD_INBOX_WAKE_PREFIX: inboxWakePrefix } = await import('../../agent-tools/coordination/inbox-wake');
   const rows = await sql<
     Array<{
       owner_id: string;
@@ -371,10 +397,13 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
          AND r.workspace_id = ${workspaceId}
          AND r.active = false
     ), awaits AS (
+      -- The session's own inbox-wake watcher is NOT a wake source (D-006 (1)): it fires only
+      -- on an inbound message, and every parked session holds one.
       SELECT subscriber_id, count(*)::int AS n
         FROM harness_shared.event_awaits
        WHERE fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())
+         AND event_key <> (${inboxWakePrefix}::text || subscriber_id)
        GROUP BY 1
     )
     SELECT l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
@@ -440,6 +469,7 @@ export async function sweepSilentHalts(opts: {
     halted: [],
     paged: [],
     woken: [],
+    fleetLeaderAlerted: [],
     exempt: {},
     dryRun,
     pageCapReached: false,
@@ -585,9 +615,31 @@ export async function sweepSilentHalts(opts: {
     marker: SilentHaltWakeMarker | null;
     classification: SessionEndClassification;
     parkPath: FleetParkResumePath | null;
+    /** The session's psu host, classified (D-006 (2)); null = unreadable. */
+    host: StalledLoopHostClass | null;
   };
+  const readHost =
+    deps.readHostClass ??
+    (async (ownerId: string, atMs: number): Promise<StalledLoopHostClass | null> => {
+      const [{ readStalledLoopHost }, { classifyStalledLoopHost }] = await Promise.all([
+        import('./stalled-loops-guard'),
+        import('../../events/await/host-recovery-eligibility'),
+      ]);
+      return classifyStalledLoopHost(await readStalledLoopHost(ownerId), ownerId, atMs);
+    });
+  const hosts = await Promise.all(
+    halted.map((h) =>
+      readHost(h.candidate.ownerId, nowMs).catch((e) => {
+        console.warn(
+          `[silent-halt-reconcile] host read for ${h.candidate.ownerId} failed (wake-first kept): ` +
+            `${e instanceof Error ? e.message : e}`,
+        );
+        return null;
+      }),
+    ),
+  );
   const entries: ActuationEntry[] = [];
-  for (const h of halted) {
+  for (const [i, h] of halted.entries()) {
     const epochToken = disarmEpochToken(nowMs, h.candidate.inactiveForMs);
     const summary = wakeMarkerSummary(h.candidate.ownerId, epochToken);
     const marker = rungLive ? ((markers ?? []).find((m) => m.summary === summary) ?? null) : null;
@@ -603,11 +655,16 @@ export async function sweepSilentHalts(opts: {
         heldWorkItems: h.candidate.heldWorkItems,
       }),
       parkPath,
+      host: hosts[i] ?? null,
     });
   }
 
-  const toWake = rungLive ? entries.filter((e) => e.marker == null) : [];
-  const toPage = rungLive ? entries.filter((e) => e.marker != null) : entries;
+  // A host that needs a RELAUNCH (unbound carry-respawn child, or a wall a wake cannot clear) is
+  // never woken: the wake would bounce off it, and waking wedged sessions en masse is exactly what
+  // D-002 forbids. It is paged at once, with the remedy, instead (D-006 (2)).
+  const needsRelaunch = (e: ActuationEntry): boolean => e.host?.kind === 'needs-relaunch';
+  const toWake = rungLive ? entries.filter((e) => e.marker == null && !needsRelaunch(e)) : [];
+  const toPage = rungLive ? entries.filter((e) => e.marker != null || needsRelaunch(e)) : entries;
 
   // WAKE leg — bounded fan (R2). Overflow is DEFERRED whole: an unwoken candidate has
   // not had its R1 wake yet, so it must not fall through to the page either.
@@ -665,17 +722,48 @@ export async function sweepSilentHalts(opts: {
   // A mass halt is ONE incident (a wedged host, a deploy, an operator restart), not N — page a
   // bounded sample and name the total, the same reasoning stalled-loops-guard applies to its
   // fleet-wide broadcast.
-  result.pageCapReached = toPage.length > SILENT_HALT_MAX_PAGES_PER_SWEEP;
-  const paging = toPage.slice(0, SILENT_HALT_MAX_PAGES_PER_SWEEP);
+  // The cap counts NEWLY created pages only (D-006 (4)): a session that stays halted re-presents
+  // every sweep and its page dedupes, and counting those let a standing set of 5 still-halted
+  // sessions starve every new halt out of the cap indefinitely.
+  let newPages = 0;
 
   const notify =
     deps.notify ??
     (async (payload: AttentionNotifyInput & { dedupeKey?: string }) => {
       const { notifyAttention } = await import('../../attention-notify');
-      await notifyAttention(payload);
+      return notifyAttention(payload);
+    });
+  const alertFleetLeader =
+    deps.alertFleetLeader ??
+    (async (fleetSlug: string, summary: string, body: string, workspaceId: string) => {
+      const [{ expandAudience }, { hostAudienceResolvers, audienceMode }, { sendMessage }, { wakeRecipients }] =
+        await Promise.all([
+          import('../../agent-tools/coordination/audience'),
+          import('../../agent-tools/coordination/audience-host'),
+          import('../../agent-tools/coordination/messages'),
+          import('../../agent-tools/coordination/inbox-wake'),
+        ]);
+      const leaders = await expandAudience([`@fleet-leader:${fleetSlug}`], hostAudienceResolvers, audienceMode());
+      if (leaders.length === 0) return;
+      await sendMessage(
+        {
+          ownerId: SILENT_HALT_WAKE_OWNER,
+          ownerLabel: SILENT_HALT_WAKE_OWNER,
+          source: 'static-client',
+          workspaceId: null,
+          userId: null,
+        },
+        { to: leaders, summary, body },
+      );
+      await wakeRecipients(leaders, { summary, source: SILENT_HALT_WAKE_OWNER, workspaceId });
     });
 
-  for (const { candidate, verdict, epochToken, marker, classification, parkPath, lastRealTurnAtMs } of paging) {
+  for (const entry of toPage) {
+    if (newPages >= SILENT_HALT_MAX_PAGES_PER_SWEEP) {
+      result.pageCapReached = true;
+      break;
+    }
+    const { candidate, verdict, epochToken, marker, classification, parkPath, lastRealTurnAtMs, host } = entry;
     // One page per (owner, disarm epoch). A session that STAYS halted never re-pages; one that
     // is re-armed and halts again gets a new epoch, because that is a genuinely new fault.
     const dedupeKey = `silent-halt:${candidate.ownerId}:${epochToken}`;
@@ -697,31 +785,40 @@ export async function sweepSilentHalts(opts: {
       `\n\nEnd classification (derived): ${classification}.` +
       (parkPath?.parked ? ` Fleet park state: ${describeParkResumePath(parkPath)}` : '');
 
+    // D-006 (2): a host that needs a relaunch was deliberately NOT woken — say why, and what fixes it.
+    const hostLine =
+      host?.kind === 'needs-relaunch'
+        ? `\n\nHOST UNHEALTHY (${host.condition}): ${host.why} No wake was attempted, because a ` +
+          `wake cannot fix this. ${host.remedy}`
+        : '';
+    const title =
+      `Autonomous session ${candidate.ownerId} is alive but has taken no turns` +
+      (inactiveMin != null ? ` for ${inactiveMin}m` : '') +
+      ` — nothing will wake it`;
+    const body =
+      `${verdict.reason}.\n\n` +
+      `This session's process is still running (its presence heartbeat is current), it holds a ` +
+      `registered autonomy posture (${candidate.modes.map((m) => m.mode).join(', ')}), and its ` +
+      `engine loop is INACTIVE with no pending events:await other than its own inbox watcher, ` +
+      `which fires only if somebody messages it. There is therefore no wake source it can count ` +
+      `on: a paused loop does not fire, no await will resolve on its own, and the one warning ` +
+      `designed to catch this (coord:orient's wakeSourceLostWarning) is only ever delivered ON a ` +
+      `wake. It will take no further turns, and any plan or work-item it was advancing stops ` +
+      `exactly where it is, until something acts.\n\n` +
+      `To bring it back: resume the session and re-arm its loop (loop:arm). If it was stopped ` +
+      `by a bound it should not have had, re-arm without maxFires/maxDurationSec. If it was ` +
+      `stopped by a zero-tool escalation, check for a provider usage wall first — a wall makes ` +
+      `an agent look inert without anything being wrong with it.\n\n` +
+      `Loop routine: ${candidate.routineId}` +
+      hostLine +
+      wakeLine +
+      classificationLine;
+
     try {
-      await notify({
+      const outcome = await notify({
         kind: 'intervention',
-        title:
-          `Autonomous session ${candidate.ownerId} is alive but has taken no turns` +
-          (inactiveMin != null ? ` for ${inactiveMin}m` : '') +
-          ` — nothing will wake it`,
-        body:
-          `${verdict.reason}.\n\n` +
-          `This session's process is still running (its presence heartbeat is current), it holds a ` +
-          `registered autonomy posture (${candidate.modes.map((m) => m.mode).join(', ')}), and its ` +
-          `engine loop is INACTIVE with no pending events:await. There is therefore no wake source ` +
-          `of any kind pointed at it: a paused loop does not fire, no await will resolve, and the ` +
-          `one warning designed to catch this (coord:orient's wakeSourceLostWarning) is only ever ` +
-          `delivered ON a wake. It will take no further turns, and any plan or work-item it was ` +
-          `advancing stops exactly where it is, until a human acts.\n\n` +
-          `Its own inbox is the wrong channel and is deliberately not used: delivery-to-inbox does ` +
-          `not wake a session, so a message there would be spent on a dead channel.\n\n` +
-          `To bring it back: resume the session and re-arm its loop (loop:arm). If it was stopped ` +
-          `by a bound it should not have had, re-arm without maxFires/maxDurationSec. If it was ` +
-          `stopped by a zero-tool escalation, check for a provider usage wall first — a wall makes ` +
-          `an agent look inert without anything being wrong with it.\n\n` +
-          `Loop routine: ${candidate.routineId}` +
-          wakeLine +
-          classificationLine,
+        title,
+        body,
         importance: 'urgent',
         workspaceId: candidate.workspaceId,
         dedupeKey,
@@ -734,9 +831,32 @@ export async function sweepSilentHalts(opts: {
           totalHalted: halted.length,
           wakeAttemptedAt: attemptedAt,
           endClassification: classification,
+          hostClass: host?.kind ?? null,
         },
       });
       result.paged.push(candidate.ownerId);
+      const deduped = typeof outcome === 'object' && outcome !== null && outcome.deduped === true;
+      if (deduped) continue;
+      newPages++;
+      // D-006 (3): the fleet's leader can re-place the held work; the owner page alone leaves a
+      // fleet member's lane frozen until a human reads it. Same epoch dedupe as the page.
+      if (candidate.fleetSlug) {
+        try {
+          await alertFleetLeader(
+            candidate.fleetSlug,
+            `silent-halt: fleet member ${candidate.ownerId} is halted holding ` +
+              `${candidate.heldWorkItems} work-item(s) — re-place or resume it`,
+            `${title}.\n\n${body}`,
+            candidate.workspaceId,
+          );
+          result.fleetLeaderAlerted.push(candidate.ownerId);
+        } catch (e) {
+          console.warn(
+            `[silent-halt-reconcile] fleet-leader alert for ${candidate.ownerId} ` +
+              `(${candidate.fleetSlug}) failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+      }
     } catch (e) {
       // A downed push transport must never turn a successful detection into a thrown routine —
       // the remaining candidates still deserve their page.

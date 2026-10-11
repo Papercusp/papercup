@@ -19,6 +19,15 @@ import {
   type SilentHaltWakeMarker,
 } from './silent-halt-reconcile';
 import { resolveFleetParkResumePath } from '../../fleet-park-resume-path';
+import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
+
+// The default host reader (D-006 (2)) discovers live psu hosts on disk. Tests that call
+// sweepSilentHalts without injecting readHostClass must never read the real ~/.papercusp/psu-pty.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/psu-pty-discovery')>()),
+  findLiveHostAsync: vi.fn(async () => null),
+  readHostEventTailAsync: vi.fn(async () => []),
+}));
 
 const MIN = 60 * 1000;
 
@@ -152,6 +161,9 @@ function sweepHarness(
     readFleetParkPath?: SilentHaltSweepDeps['readFleetParkPath'];
     /** Engine-loop residue fed to the end classifier; default = never armed (⇒ 'abnormal'). */
     readEngineLoopRows?: SilentHaltSweepDeps['readEngineLoopRows'];
+    /** D-006 (2) host class per owner; default = unreadable (null), i.e. today's wake-first. */
+    readHostClass?: SilentHaltSweepDeps['readHostClass'];
+    alertFleetLeader?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const nowMs = opts.nowMs ?? Date.now();
@@ -162,10 +174,13 @@ function sweepHarness(
   const markers = opts.markers;
   const readWakeMarkers: SilentHaltSweepDeps['readWakeMarkers'] =
     typeof markers === 'function' ? markers : async () => markers ?? [];
+  const alertFleetLeader =
+    opts.alertFleetLeader ?? vi.fn(async (_slug: string, _summary: string, _body: string, _ws: string) => {});
   return {
     notify,
     sendWakeMessage,
     fireWake,
+    alertFleetLeader,
     run: () =>
       sweepSilentHalts({
         workspaceId: 'ws',
@@ -182,6 +197,8 @@ function sweepHarness(
           fireWake: fireWake as unknown as SilentHaltSweepDeps['fireWake'],
           readEngineLoopRows: opts.readEngineLoopRows ?? ((async () => ({})) as never),
           readFleetParkPath: opts.readFleetParkPath ?? (async () => null),
+          readHostClass: opts.readHostClass ?? (async () => null),
+          alertFleetLeader: alertFleetLeader as unknown as SilentHaltSweepDeps['alertFleetLeader'],
         },
       }),
   };
@@ -553,5 +570,140 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     const r2 = await second.run();
     expect(r2.paged).toEqual(['su-halted']);
     expect(second.notify.mock.calls[0][0].data.endClassification).toBe('deliberate');
+  });
+});
+
+describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
+  const now = Date.parse('2026-10-10T23:00:00.000Z');
+  const oldTurn = new Date(now - 120 * MIN).toISOString();
+  const haltedAs = (...owners: string[]) =>
+    Object.fromEntries(owners.map((o) => [o, { active: false, lastRealTurnAt: oldTurn }]));
+  const unbound: StalledLoopHostClass = {
+    kind: 'needs-relaunch',
+    condition: 'unbound-successor' as never,
+    why: 'the carry-respawn child never bound a native session.',
+    remedy: 'Relaunch the session (psu --resume).',
+  };
+
+  it("the candidate read does NOT count the session's own inbox-wake watcher as a wake source", async () => {
+    // The measured blind spot: every parked session holds coord:inbox-wake:<self>, which fires
+    // only on an inbound message — counting it exempted 115 of 115 candidates on 2026-10-10.
+    const seen: { text: string; values: unknown[] }[] = [];
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      seen.push({ text: strings.join('$?'), values });
+      return Promise.resolve([]);
+    }) as never;
+    const r = await sweepSilentHalts({ workspaceId: 'ws', sql: fakeSql, deps: { notify: vi.fn() as never } });
+
+    expect(r.checked).toBe(0);
+    const read = seen.find((q) => q.text.includes('harness_shared.event_awaits'));
+    expect(read, 'candidate read must query event_awaits').toBeDefined();
+    expect(read!.text).toMatch(/AND event_key <> \(\$\?::text \|\| subscriber_id\)/);
+    expect(read!.values).toContain('coord:inbox-wake:');
+  });
+
+  it('a host that needs a relaunch is NOT woken; it is paged at once with the HOST UNHEALTHY remedy', async () => {
+    const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+      nowMs: now,
+      wakeFirstEnabled: true,
+      readHostClass: async () => unbound,
+    });
+    const r = await h.run();
+
+    expect(r.woken).toEqual([]);
+    expect(h.sendWakeMessage).not.toHaveBeenCalled();
+    expect(h.fireWake).not.toHaveBeenCalled();
+    expect(r.paged).toEqual(['su-halted']);
+    const payload = h.notify.mock.calls[0][0];
+    expect(payload.body).toMatch(/HOST UNHEALTHY \(unbound-successor\)/);
+    expect(payload.body).toMatch(/No wake was attempted/);
+    expect(payload.body).toMatch(/psu --resume/);
+    expect(payload.data.hostClass).toBe('needs-relaunch');
+  });
+
+  it('a healthy, recoverable, or unreadable host keeps the wake-first rung exactly as before', async () => {
+    for (const host of [{ kind: 'healthy' }, null] as (StalledLoopHostClass | null)[]) {
+      const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        readHostClass: async () => host,
+      });
+      const r = await h.run();
+      expect(r.woken).toEqual(['su-halted']);
+      expect(h.notify).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a host read that THROWS degrades to the wake-first rung, never to silence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        readHostClass: async () => {
+          throw new Error('psu-pty dir unreadable');
+        },
+      });
+      const r = await h.run();
+      expect(r.woken).toEqual(['su-halted']);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/host read for su-halted failed/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a DEDUPED page does not consume the per-sweep cap, so standing halts cannot starve a new one', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    expect(owners.length).toBeGreaterThan(SILENT_HALT_MAX_PAGES_PER_SWEEP);
+    // a..f already paged this epoch (deduped); g is a NEW halt and must still be paged.
+    const notify = vi.fn(async (p: { data: { ownerId: string } }) => ({ deduped: p.data.ownerId !== 'g' }));
+    const h = sweepHarness(owners.map((o) => candidate({ ownerId: o })), haltedAs(...owners), {
+      nowMs: now,
+      notify,
+    });
+    const r = await h.run();
+
+    expect(r.paged).toEqual(owners);
+    expect(r.pageCapReached).toBe(false);
+  });
+
+  it('the cap still bounds NEWLY created pages', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    const h = sweepHarness(owners.map((o) => candidate({ ownerId: o })), haltedAs(...owners), { nowMs: now });
+    const r = await h.run();
+
+    expect(r.paged).toHaveLength(SILENT_HALT_MAX_PAGES_PER_SWEEP);
+    expect(r.pageCapReached).toBe(true);
+  });
+
+  it("a fleet member's NEW page also alerts its fleet leader, once; a deduped page does not", async () => {
+    const fresh = sweepHarness([candidate({ fleetSlug: 'fleet-x', heldWorkItems: 3 })], haltedAs('su-halted'), {
+      nowMs: now,
+    });
+    const r = await fresh.run();
+
+    expect(r.fleetLeaderAlerted).toEqual(['su-halted']);
+    expect(fresh.alertFleetLeader).toHaveBeenCalledOnce();
+    const [slug, summary, body, ws] = fresh.alertFleetLeader.mock.calls[0];
+    expect(slug).toBe('fleet-x');
+    expect(summary).toMatch(/su-halted is halted holding 3 work-item\(s\)/);
+    expect(body).toMatch(/is alive but has taken no turns/);
+    expect(ws).toBe('ws');
+
+    const deduped = sweepHarness([candidate({ fleetSlug: 'fleet-x' })], haltedAs('su-halted'), {
+      nowMs: now,
+      notify: vi.fn(async () => ({ deduped: true })),
+    });
+    const r2 = await deduped.run();
+    expect(r2.paged).toEqual(['su-halted']);
+    expect(r2.fleetLeaderAlerted).toEqual([]);
+    expect(deduped.alertFleetLeader).not.toHaveBeenCalled();
+  });
+
+  it('a non-fleet session is paged without any fleet-leader alert', async () => {
+    const h = sweepHarness([candidate()], haltedAs('su-halted'), { nowMs: now });
+    const r = await h.run();
+    expect(r.paged).toEqual(['su-halted']);
+    expect(h.alertFleetLeader).not.toHaveBeenCalled();
   });
 });
