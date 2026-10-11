@@ -120,6 +120,7 @@ type PortalRosterBrowserInput = {
   settings?: boolean;
   prompts?: boolean;
   overview?: boolean;
+  overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
   health?: boolean;
   brainstorm?: boolean;
@@ -972,6 +973,82 @@ async function runPrivateInsightsPage(page: Page, context: BrowserContext, input
     foreignExcluded: true, ...denialCoverage, providerUsed: false };
 }
 
+/** Read the real private plan list before selecting an exact Overview row.
+ * Seeded plans are fixture inputs; Host denial is the production API guard. */
+async function runPrivateOverviewPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const plans = input.overviewPlans!;
+  let denyPlans = true;
+  const reads: Array<{ url: string; status: number; body: unknown }> = [];
+  const denials: Array<{ url: string; status: number; body: unknown }> = [];
+  const writes: string[] = [];
+  const pending = new Set<Promise<void>>();
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/') && request.method() !== 'GET') writes.push(request.url());
+  });
+  page.on('response', response => {
+    if (!new URL(response.url()).searchParams.get('name')?.startsWith('plans.list')) return;
+    const task = response.json().then(body => { reads.push({ url: response.url(), status: response.status(), body });
+      writeFileSync(join(input.evidence, 'portal-overview-reads.json'), JSON.stringify(reads, null, 2));
+    }).catch(error => { throw new Error('Overview plan response could not be retained: ' + String(error)); });
+    pending.add(task); void task.finally(() => pending.delete(task)).catch(() => {});
+  });
+  await context.route('**/*rest-query*', async route => {
+    if (!denyPlans || !new URL(route.request().url()).searchParams.get('name')?.startsWith('plans.list')) {
+      await route.continue(); return;
+    }
+    const upstream = await context.request.get(route.request().url(), { headers: { host: 'foreign-overview.invalid' } });
+    const body = await upstream.json();
+    denials.push({ url: route.request().url(), status: upstream.status(), body });
+    writeFileSync(join(input.evidence, 'portal-overview-denials.json'), JSON.stringify(denials, null, 2));
+    assert.equal(upstream.status(), 403, 'Overview must exercise the real Host guard');
+    await route.fulfill({ response: upstream });
+  });
+  await page.goto(url.href);
+  const tile = page.locator('.pc-overview__tile').filter({ has: page.getByRole('button', { name: 'Open Plans', exact: true }) });
+  await tile.locator('[data-error="true"]').waitFor();
+  assert.equal(await page.getByRole('button', { name: `Open plan ${plans.selectedSlug}`, exact: true }).count(), 0);
+  denyPlans = false;
+  await page.reload();
+  const selected = page.getByRole('button', { name: `Open plan ${plans.selectedSlug}`, exact: true });
+  await selected.waitFor();
+  await page.getByRole('button', { name: `Open plan ${plans.neighborSlug}`, exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: `Open plan ${plans.foreignSlug}`, exact: true }).count(), 0);
+  await Promise.all([...pending]);
+  const successful = reads.find(read => read.status === 200);
+  assert.ok(successful, 'Overview must retain its successful real private plan read');
+  const response = await context.request.get(successful.url);
+  assert.equal(response.status(), 200);
+  const body = await response.json();
+  const rows = body.rows as Array<{ slug: string }>;
+  assert.ok(rows.some(row => row.slug === plans.selectedSlug));
+  assert.ok(rows.some(row => row.slug === plans.neighborSlug));
+  assert.ok(!rows.some(row => row.slug === plans.foreignSlug), 'foreign workspace plan must not enter the private API response');
+  await selected.focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(value => value.searchParams.get('app') === 'create' && value.searchParams.get('plan') === plans.selectedSlug);
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  assert.equal(await page.locator('.pc-overview').count(), 0);
+  await page.reload();
+  await page.getByTestId('overview-destination').filter({ hasText: /^create$/ }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('plan'), plans.selectedSlug);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+  await Promise.all([...pending]);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const stored = await sql`SELECT workspace_id, harness_slug, plan_slug, status, content_hash FROM harness_shared.harness_plans
+    WHERE plan_slug IN (${plans.selectedSlug}, ${plans.neighborSlug}, ${plans.foreignSlug}) ORDER BY plan_slug`;
+  assert.equal(stored.length, 3); assert.ok(stored.every(row => row.status === 'active'));
+  assert.equal(stored.filter(row => row.workspace_id === input.workspace).length, 2);
+  assert.deepEqual(writes, [], 'Overview navigation and reload must make no product writes');
+  const receipt = { workspace: input.workspace, plans, authMethod: 'private-loopback-overview-with-cookie',
+    selectedPlan: plans.selectedSlug, keyboardNavigation: true, deepLinkReload: true, shellQueryPreserved: true,
+    privatePlanRead: true, foreignExcluded: true, denialStatus: 403, denialRecovery: 'reload', writes,
+    qualification: 'Seeded plan list and exact navigation only; other Overview tiles, hosted tenant and full shell remain unverified' };
+  writeFileSync(join(input.evidence, 'portal-overview-read-receipt.json'), JSON.stringify({ ...receipt, stored, reads, denials }, null, 2));
+  return receipt;
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
@@ -1033,7 +1110,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
+    const url = new URL(input.overview ? '/?app=overview&q=retained-shell-search'
+      : input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.testing ? '/?app=testing&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
       : input.brainstorm ? '/?app=brainstorm&q=retained-shell-search'
@@ -1057,6 +1135,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     if (input.insights) {
       const receipt = await runPrivateInsightsPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'real Insights controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
+    if (input.overviewPlans) {
+      const receipt = await runPrivateOverviewPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'actual Overview and Create controls must stay browser-safe');
       const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
       writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
       return retained;
