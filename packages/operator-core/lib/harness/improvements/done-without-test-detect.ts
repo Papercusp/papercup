@@ -17,11 +17,9 @@
  * are composite-keyed by plan before the rollup to avoid a cross-plan `item_id`
  * collision (two plans can both carry a "P-001").
  *
- * Mirrors zero-promotion-detect.ts (its sibling recurrence guard): a pure detector +
- * a single workspace-scoped PG read feeding it, registered as a watchdog collector in
- * `defaultPapercuspCollectors`. Unlike zero-promotion it needs NO flag gate — it is
- * naturally inert wherever the inline-VAL flow is dark (no `requires_test` assertions
- * ⇒ nothing to flag), so it only fires on a genuine done-without-test gap.
+ * RETIRED (verification-system-improvements-2026-10-10 P-003): inline VAL-*
+ * assertions are no longer read, so the PG collector and its watchdog registration
+ * are removed. Only this pure core remains, uncalled, pending owner deletion.
  */
 import {
   computePlanItemTestStatus,
@@ -141,92 +139,15 @@ export function detectDoneWithoutTest(
   }));
 }
 
-/**
- * The PG read that feeds the pure detector (enforce-system-on-generic-work P-009).
- * Reads, per TERMINAL/done feature work-item in the workspace that carries plan
- * provenance, its plan-items' `requires_test` assertions (harness_plan_assertions) and
- * the harness's tests (harness_tests — `status` + `payload.coversVALs`), then keeps
- * items where a required VAL has no passing covering test. One finding per harness,
- * `count` = number of flagged items.
- *
- * No flag gate: where the inline-VAL flow is dark the assertion read is empty, so the
- * detector produces nothing by design — it can only fire on a genuine done-without-test
- * gap. Three workspace-scoped queries, LIMITed; cheap enough for the per-tick watchdog.
- * Tests are matched per-harness (VAL ids are harness-local).
- */
-export async function collectDoneWithoutTestSignals(
-  workspaceId: string,
-): Promise<{ signals: DoneWithoutTestFinding[]; note?: string }> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
-
-  // 1. Terminal/done feature work-items with plan provenance. `passed` is the genuine
-  //    "claimed done" feature-terminal state; `deprecated` (abandoned/dropped) is
-  //    excluded — a dropped item is not "done", so a missing test there is not a gap.
-  const doneRows = await sql<
-    { feature_id: string; harness_slug: string; source_plan_slug: string; source_plan_item_ids: string[] }[]
-  >`
-    SELECT feature_id, harness_slug, source_plan_slug, source_plan_item_ids
-      FROM harness_shared.harness_features_consolidated
-     WHERE workspace_id = ${workspaceId}
-       AND status = 'passed'
-       AND source_plan_slug IS NOT NULL
-       AND source_plan_item_ids IS NOT NULL
-       AND array_length(source_plan_item_ids, 1) > 0
-     ORDER BY harness_slug
-     LIMIT 500
-  `;
-  if (doneRows.length === 0) return { signals: [] };
-
-  const harnesses = [...new Set(doneRows.map((r) => r.harness_slug))];
-  const planSlugs = [...new Set(doneRows.map((r) => r.source_plan_slug))];
-
-  // 2. requires_test assertions for those harnesses + plans.
-  const assertionRows = await sql<
-    { harness_slug: string; plan_slug: string; item_id: string; val_id: string }[]
-  >`
-    SELECT harness_slug, plan_slug, item_id, val_id
-      FROM harness_shared.harness_plan_assertions
-     WHERE workspace_id = ${workspaceId}
-       AND requires_test = true
-       AND harness_slug = ANY(${harnesses})
-       AND plan_slug = ANY(${planSlugs})
-  `;
-
-  // 3. Tests for those harnesses (status + payload.coversVALs).
-  const testRows = await sql<
-    { harness_slug: string; status: string; payload: { coversVALs?: unknown } | null }[]
-  >`
-    SELECT harness_slug, status, payload
-      FROM harness_shared.harness_tests
-     WHERE workspace_id = ${workspaceId}
-       AND harness_slug = ANY(${harnesses})
-  `;
-
-  const coversOf = (payload: { coversVALs?: unknown } | null): string[] => {
-    const raw = payload?.coversVALs;
-    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
-  };
-
-  // VAL ids are harness-local, so run the detector ONCE PER HARNESS over that
-  // harness's done items / assertions / tests.
-  const signals: DoneWithoutTestFinding[] = [];
-  for (const harness of harnesses) {
-    const doneItems: DoneWorkItem[] = doneRows
-      .filter((r) => r.harness_slug === harness)
-      .map((r) => ({
-        workItemId: r.feature_id,
-        harnessSlug: r.harness_slug,
-        planSlug: r.source_plan_slug,
-        planItemIds: r.source_plan_item_ids ?? [],
-      }));
-    const assertions: DoneItemAssertion[] = assertionRows
-      .filter((a) => a.harness_slug === harness)
-      .map((a) => ({ planSlug: a.plan_slug, itemId: a.item_id, valId: a.val_id }));
-    const tests: RollupTest[] = testRows
-      .filter((t) => t.harness_slug === harness)
-      .map((t) => ({ coversVALs: coversOf(t.payload), status: t.status }));
-    signals.push(...detectDoneWithoutTest(doneItems, assertions, tests));
-  }
-  return { signals };
-}
+// The PG collector that fed this detector (`collectDoneWithoutTestSignals`, which
+// read the inline-VAL assertion store) is RETIRED by
+// verification-system-improvements-2026-10-10 P-003 (SPEC-P-003-VAL-READERS) and is
+// no longer registered in the watchdog. SUCCESSOR SIGNAL: spec-test-adequacy
+// (SPEC-P-003-DETECTOR-SUCCESSOR). `specTestAdequacyCompletionGate`
+// (agent-tools/work_items/spec-test-adequacy-gate.ts) runs inside work_items:complete
+// and refuses a close whose current spec revisions lack adequate bound test evidence,
+// so the "done without a test" state this detector flagged after the fact is now
+// refused at the close; plans:evaluate-spec-test-adequacy grades the same rows on
+// demand. The P-002 `verification.health` cell reports the fleet-wide share of active
+// clauses with bound evidence. The pure detector above has no caller; this file is
+// pending owner deletion with the rest of the VAL-* residue.

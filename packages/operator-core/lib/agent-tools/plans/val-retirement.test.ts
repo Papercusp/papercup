@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   VAL_BLOCK_HEADER_LINE_RE,
+  VAL_RETIREMENT_DOC,
   VAL_RETIREMENT_REFUSAL_CODES,
   findValBlocks,
   valRetirementRefusal,
@@ -20,6 +24,47 @@ const PLAN = [
   '    - **[VAL-',
   '- **P-004** `todo` No block.',
 ].join('\n');
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+
+describe('VAL_RETIREMENT_DOC names a doc marked retired (SPEC-P-003-DOC)', () => {
+  it('the projected spec doc is superseded and leads with the retirement notice', () => {
+    const rel = VAL_RETIREMENT_DOC.replace(/^\/internal\/docs\//, '');
+    const file = resolve(ROOT, 'apps/operator-docs/src/content/docs', `${rel}.mdx`);
+    const text = readFileSync(file, 'utf8');
+    const fmEnd = text.indexOf('\n---\n', 4);
+    expect(fmEnd).toBeGreaterThan(0);
+    const frontmatter = text.slice(0, fmEnd);
+    expect(frontmatter).toMatch(/^status: superseded$/m);
+    expect(frontmatter).toMatch(/^title: .*\bretired\b/im);
+    // The notice must precede the first section of the old format, so no reader takes
+    // the historical VAL-* syntax as the current mechanism.
+    const notice = text.indexOf('Retired: superseded by the requirement contract');
+    const firstSection = text.indexOf('\n## ');
+    expect(notice).toBeGreaterThan(fmEnd);
+    expect(notice).toBeLessThan(firstSection);
+  });
+});
+
+describe('the retired done-without-test detector names its successor (SPEC-P-003-DETECTOR-SUCCESSOR)', () => {
+  const read = (rel: string) => readFileSync(resolve(ROOT, rel), 'utf8');
+
+  it('names spec-test-adequacy, and the named gate is live in work_items:complete', () => {
+    // If the owner deletes the detector (pending VAL-* residue deletion), this read throws:
+    // move the successor pointer into the verification-system map and repoint this case.
+    const detector = read('packages/operator-core/lib/harness/improvements/done-without-test-detect.ts');
+    expect(detector).toContain('SUCCESSOR SIGNAL: spec-test-adequacy');
+    expect(detector).toContain('specTestAdequacyCompletionGate');
+    // Control: the pointer must name a successor that exists and runs at the close, or it
+    // would point at nothing.
+    expect(read('packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts')).toMatch(
+      /export async function specTestAdequacyCompletionGate\(/,
+    );
+    expect(read('packages/operator-core/lib/agent-tools/work_items/complete.ts')).toMatch(
+      /await specTestAdequacyCompletionGate\(/,
+    );
+  });
+});
 
 describe('VAL-* retirement refusal codes', () => {
   it('exports exactly the three typed refusal codes', () => {
