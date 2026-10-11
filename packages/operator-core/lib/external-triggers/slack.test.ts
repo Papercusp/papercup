@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acknowledgeSlackSocketEnvelope,
   connectOwnedSlackSource,
+  ingestSlackSocketEnvelope,
   normalizeSlackSocketEnvelope,
   postSlackThreadMessage,
   reconcileSlackHistoryOnce,
@@ -171,6 +172,67 @@ describe('Slack external-trigger adapter', () => {
       expect(normalizeSlackSocketEnvelope(envelope(forbidden), config)).toBeNull();
     }
     expect(normalizeSlackSocketEnvelope(envelope({}))).toBeNull();
+  });
+
+  it('admits one configured drill bot through real-envelope normalization and ingestion only in its channel', async () => {
+    const config = { ...source().config,
+      botId: 'BPAPER',
+      testBotAllowance: { name: 'Bug drill reporter', botId: 'BTEST', appId: 'ATEST', userId: 'UTEST', channelId: 'C1' },
+    };
+    const envelope = (patch: Record<string, unknown> = {}) => ({
+      type: 'events_api', payload: { event_id: 'EvTestBot', event: {
+        type: 'message', channel_type: 'channel', channel: 'C1', user: 'UTEST',
+        bot_id: 'BTEST', app_id: 'ATEST', text: 'BD001 shipping total is incorrect', ts: '1777000000.1', ...patch,
+      } },
+    });
+    const ingest = vi.fn(async () => ({ ok: true } as never));
+    expect(normalizeSlackSocketEnvelope(envelope(), config)).toMatchObject({
+      event: 'message', dedupeKey: 'slack:C1:1777000000.1', payload: { sender: 'UTEST' },
+    });
+    await expect(ingestSlackSocketEnvelope({} as never, source({ config }), envelope(), ingest))
+      .resolves.toMatchObject({ event: 'message' });
+    expect(ingest).toHaveBeenCalledOnce();
+    expect(ingest.mock.calls[0]?.[1]).toMatchObject({ source: 'slack', event: 'message', sourceId: source().id });
+  });
+
+  it.each([
+    { channel: 'C2' }, { channel: 'D1', channel_type: 'im' }, { channel_type: 'mpim' },
+    { bot_id: 'BOTHER' }, { app_id: 'AOTHER' }, { user: 'UOTHER' },
+    { bot_id: undefined }, { app_id: undefined }, { user: '' }, { user: 'UPAPER' },
+    { subtype: 'bot_message' }, { subtype: 'message_changed' }, { subtype: 'message_deleted' },
+    { type: 'app_mention' },
+  ])('keeps bot-loop and subtype exclusion for a drill envelope with %j', async (patch) => {
+    const config = { ...source().config, botId: 'BPAPER', channels: ['C1', 'C2', 'D1'],
+      testBotAllowance: { botId: 'BTEST', appId: 'ATEST', userId: 'UTEST', channelId: 'C1' },
+    };
+    const envelope = { type: 'events_api', payload: { event_id: 'EvTestBot', event: {
+      type: 'message', channel_type: 'channel', channel: 'C1', user: 'UTEST', bot_id: 'BTEST', app_id: 'ATEST',
+      text: 'BD001 shipping total is incorrect', ts: '1777000000.1', ...patch,
+    } } };
+    const ingest = vi.fn(async () => ({ ok: true } as never));
+    expect(normalizeSlackSocketEnvelope(envelope, config)).toBeNull();
+    await expect(ingestSlackSocketEnvelope({} as never, source({ config }), envelope, ingest)).resolves.toBeNull();
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, {}, { botId: 'BTEST', appId: 'ATEST', channelId: 'C1' }])(
+    'rejects bot envelopes when the explicit allowance is absent or incomplete: %j', (testBotAllowance) => {
+      const envelope = { type: 'events_api', payload: { event_id: 'EvTestBot', event: {
+        type: 'message', channel: 'C1', user: 'UTEST', bot_id: 'BTEST', app_id: 'ATEST',
+        text: 'BD001', ts: '1777000000.1',
+      } } };
+      expect(normalizeSlackSocketEnvelope(envelope, { ...source().config, testBotAllowance })).toBeNull();
+    },
+  );
+
+  it('refuses an allowance for the receiver bot even with another configured sender', () => {
+    const envelope = { type: 'events_api', payload: { event_id: 'EvOwnBot', event: {
+      type: 'message', channel: 'C1', user: 'UTEST', bot_id: 'BPAPER', app_id: 'ATEST', text: 'BD001', ts: '1777000000.1',
+    } } };
+    const config = { ...source().config, botId: 'BPAPER',
+      testBotAllowance: { botId: 'BPAPER', appId: 'ATEST', userId: 'UTEST', channelId: 'C1' },
+    };
+    expect(normalizeSlackSocketEnvelope(envelope, config)).toBeNull();
   });
 
   it('posts a bounded bot reply to the exact originating thread', async () => {

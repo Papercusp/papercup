@@ -268,6 +268,23 @@ function mentions(message: string): string[] {
   return [...message.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]);
 }
 
+/** An explicit drill identity never grants other bots, gestures, or channels access. */
+function slackMessageSenderAllowed(event: Record<string, unknown>, config: Record<string, unknown>): boolean {
+  const sender = text(event.user);
+  if (!sender || sender === config.botUserId || event.subtype) return false;
+  if (!event.bot_id && !event.app_id) return true;
+  const allowance = config.testBotAllowance;
+  if (!allowance || typeof allowance !== 'object' || Array.isArray(allowance)) return false;
+  const testBot = allowance as Record<string, unknown>;
+  const channel = text(event.channel);
+  return event.type === 'message'
+    && !!text(testBot.botId) && !!text(testBot.appId) && !!text(testBot.userId)
+    && event.bot_id === testBot.botId && event.app_id === testBot.appId && sender === testBot.userId
+    && event.bot_id !== config.botId
+    && !!channel && channel === testBot.channelId && uniqueStrings(config.channels).includes(channel)
+    && event.channel_type !== 'im' && event.channel_type !== 'mpim' && !channel.startsWith('D');
+}
+
 export function normalizeSlackSocketEnvelope(
   envelope: SlackSocketEnvelope,
   sourceConfig: Record<string, unknown> = {},
@@ -278,11 +295,10 @@ export function normalizeSlackSocketEnvelope(
       ? payload.event as Record<string, unknown>
       : null;
     const eventId = text(payload.event_id);
-    if (!event || !eventId || event.bot_id || event.app_id || event.subtype) return null;
+    if (!event || !eventId || !slackMessageSenderAllowed(event, sourceConfig)) return null;
     const channelId = text(event.channel) || null;
     const message = text(event.text);
     const sender = text(event.user);
-    if (!sender || sender === sourceConfig.botUserId) return null;
     const ordinary = event.type === 'message'
       && !!channelId && uniqueStrings(sourceConfig.channels).includes(channelId)
       && event.channel_type !== 'im' && event.channel_type !== 'mpim' && !channelId.startsWith('D')
@@ -369,8 +385,7 @@ export async function ingestSlackSocketEnvelope(
   const providerEvent = envelope.payload?.event as Record<string, unknown> | undefined;
   // Apply this once before gesture/suggestion fallbacks as well as normalization.
   if (providerEvent && (providerEvent.type === 'message' || providerEvent.type === 'app_mention')
-    && (providerEvent.bot_id || providerEvent.app_id || providerEvent.subtype
-      || providerEvent.user === source.config.botUserId)) return null;
+    && !slackMessageSenderAllowed(providerEvent, source.config)) return null;
   const config = slackReportBugConfig(source.config);
   const reportBug = classifySlackReportBugEnvelope(envelope, config);
   if (reportBug && reportBug.kind !== 'signal') return null;
