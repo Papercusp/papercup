@@ -332,7 +332,8 @@ function contextRelationships(tree: TsTree, program: TsModule.Program, selected:
   const fields = (ts.isClassLike(declaration) || ts.isInterfaceDeclaration(declaration) ? declaration.members : [declaration])
     .filter((member): member is TsModule.PropertyDeclaration | TsModule.PropertySignature =>
       ts.isPropertyDeclaration(member) || ts.isPropertySignature(member));
-  const fieldSymbols = new Set(fields.map(field => checker.getSymbolAtLocation(field.name)).filter(Boolean));
+  // Instantiated `this` properties can be transient symbols with the same source declaration.
+  const fieldDeclarations = new Set<TsModule.Declaration>(fields);
   for (const file of program.getSourceFiles()) {
     if (isExternalPath(posix(relative(tree.root, file.fileName))) || program.isSourceFileDefaultLibrary(file)) continue;
     const accesses = (node: TsModule.Node): void => {
@@ -341,7 +342,7 @@ function contextRelationships(tree: TsTree, program: TsModule.Program, selected:
       if (token) {
         const sym = ts.isPropertyAccessExpression(node) ? checker.getSymbolAtLocation(token)
           : checker.getTypeAtLocation((node as TsModule.ElementAccessExpression).expression).getProperty(nameText(ts, token));
-        if (sym && fieldSymbols.has(sym)) {
+        if (sym?.declarations?.some(d => fieldDeclarations.has(d))) {
           const target = targetOf(sym)!;
           let expression: TsModule.Node = node;
           while (ts.isParenthesizedExpression(expression.parent) || ts.isNonNullExpression(expression.parent)) expression = expression.parent;

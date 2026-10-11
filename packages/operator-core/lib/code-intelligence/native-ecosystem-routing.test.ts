@@ -17,6 +17,7 @@ vi.mock('./gitnexus-facade', async importOriginal => ({
 import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
 import codePack from '../agent-tools/lsp/pack';
+import { versionedSymbolIdentity } from './contracts';
 
 const baselinePath = fileURLToPath(new URL('../../../../docs/evidence/native-code-intelligence-baseline-2026-10-09.json', import.meta.url));
 const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as {
@@ -124,11 +125,12 @@ describe('native baseline against the exposed graph handler', () => {
   it('rejects incomplete compiler evidence while allowing a measured site and target from the producer snapshot', async () => {
     const hash = 'a'.repeat(64);
     const source = { path: 'src/a.ts', contentHash: hash, language: 'typescript', representation: 'full-source' as const };
+    const site = { path: source.path, line1: 1, kind: 'class' };
     const answer = { backend: 'typescript-service', intent: 'definition', sites: [{ path: source.path, line1: 1, kind: 'class' }], error: null,
       freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false },
       evidence: { schemaVersion: 1, sourceScope: { repositoryId: 'fixture', identityKind: 'registry', sourceFingerprint: hash, paths: ['src'], supportingFiles: [source] },
         graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [] }, languageCapabilities: [],
-        siteIdentities: [{ siteIndex: 0, sourcePath: source.path, contentHash: hash, versionedSymbolId: 'site-v1' }],
+        siteIdentities: [{ siteIndex: 0, sourcePath: source.path, contentHash: hash, versionedSymbolId: versionedSymbolIdentity('fixture', site, source) }],
         relationships: [{ siteIndex: 0, kind: 'definition', origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown' }] } };
     const run = async () => (await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'target' }),
       { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer }).data;
@@ -137,6 +139,7 @@ describe('native baseline against the exposed graph handler', () => {
     for (const corrupt of [
       { ...answer, evidence: undefined },
       { ...answer, evidence: { ...answer.evidence, siteIdentities: [] } },
+      { ...answer, evidence: { ...answer.evidence, siteIdentities: [{ ...answer.evidence.siteIdentities[0], versionedSymbolId: 'unbound-site-v1' }] } },
       { ...answer, evidence: { ...answer.evidence, sourceScope: { ...answer.evidence.sourceScope, supportingFiles: [] } } },
       { ...answer, evidence: { ...answer.evidence, relationships: [{ ...answer.evidence.relationships[0], target: {
         site: { path: 'unmeasured.ts', line1: 1, kind: 'class' }, contentHash: hash, versionedSymbolId: 'target-v1',

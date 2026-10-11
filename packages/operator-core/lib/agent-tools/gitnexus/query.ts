@@ -37,7 +37,7 @@ import {
   gitnexusRefusal,
   type GitnexusFacadeOp,
 } from '../../code-intelligence/gitnexus-facade';
-import { unmeasuredSourceEvidence, type CodeIntelAnswer, type CodeIntelIntent } from '../../code-intelligence/contracts';
+import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelIntent } from '../../code-intelligence/contracts';
 import { FIRST_PARTY_CALLERS_DEFAULT_LIMIT } from '../../code-intelligence/first-party-callers';
 import { firstPartyCallersOffthread } from '../../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
@@ -184,10 +184,13 @@ export default defineTool({
         hash(evidence.sourceScope.sourceFingerprint) && measured.sites.every((site, index) => {
           const identity = evidence.siteIdentities.find(row => row.siteIndex === index);
           return identity?.sourcePath === site.path && hash(identity.contentHash) && Boolean(identity.versionedSymbolId) &&
-            identity.contentHash === sourceByPath.get(site.path)?.contentHash;
+            identity.contentHash === sourceByPath.get(site.path)?.contentHash &&
+            identity.versionedSymbolId === versionedSymbolIdentity(evidence.sourceScope.repositoryId, site, sourceByPath.get(site.path));
         }) && evidence.relationships.every(relation => !relation.target || (
           hash(relation.target.contentHash) && Boolean(relation.target.versionedSymbolId) &&
-          relation.target.contentHash === sourceByPath.get(relation.target.site.path)?.contentHash)));
+          relation.target.contentHash === sourceByPath.get(relation.target.site.path)?.contentHash &&
+          relation.target.versionedSymbolId === versionedSymbolIdentity(evidence.sourceScope.repositoryId,
+            relation.target.site, sourceByPath.get(relation.target.site.path)))));
       if (sourceBacked) return measured;
       const reason = 'Graph source versions are unavailable: refusing sites whose repository/content snapshot cannot be determined. Re-query through an admitted current compiler route.';
       return { ...measured, sites: [], error: [measured.error, reason].filter(Boolean).join(' '),
