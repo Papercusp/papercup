@@ -130,6 +130,20 @@ export const SEPARATE_PROCESS_ALLOWLIST = new Set([
   // bundles it for a relay VM with only hyperdht + blind-relay as runtime deps and no
   // operator, so @papercusp/scheduled-registry is neither available nor meaningful there.
   'scripts/relay/blind-relay-daemon.ts',
+  // The owned producer-container supervisor's lease heartbeat. papercusp-desktop is a
+  // standalone package (not an npm workspace), and this file is loaded only by its
+  // build-time CLIs (bin/build-server-container.mjs, bin/lib/sidecar-stage-state.js,
+  // bin/build-desktop-sidecar.sh); in the operator host only tests read it, as text.
+  // The timer lives and dies with that CLI process, so a registry entry would land in
+  // an inventory schedule:inventory never serves, and the package cannot import
+  // @papercusp/scheduled-registry. Measured red on gate repair head 382606c4 (WI-10006055).
+  'papercusp-desktop/bin/lib/server-container.mjs',
+  // The throwaway-Postgres wrapper CLI (`node scripts/with-test-pg.mjs -- <cmd>`). Its two
+  // timers sample its OWN private postmaster while cleanup stops it, and live and die with
+  // that wrapper process. Like governed-test-process.mjs it must run under bare `node` for
+  // packaged installs, so it cannot import @papercusp/scheduled-registry (a .ts main), and a
+  // registry entry would sit in an inventory schedule:inventory never serves (WI-6554700010008641).
+  'scripts/with-test-pg.mjs',
 ]);
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
@@ -212,6 +226,11 @@ export const isExcluded = (f) =>
   // moment it landed and stayed red, unnoticed, because this lint runs only in CI on
   // `main` and green-checkpoint does not carry it as a leg.
   f.includes('/dist-sidecar/') ||
+  // WI-6554700010008641: the esbuild host bundles (apps/operator/dist-host/, dist-host-*/) are
+  // gitignored build output, but a 2026-10-10 sweep committed dist-host-customer-terminal/
+  // before its ignore rule landed, so its compiled event-loop-sentinel worker is TRACKED.
+  // Same class as `/dist-sidecar/`: the source is already allowlisted; the artifact is not code.
+  /\/dist-host(-[^/]+)?\//.test(f) ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||

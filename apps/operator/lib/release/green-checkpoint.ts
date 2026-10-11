@@ -5368,6 +5368,34 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   ],
 };
 
+/** WI-10006055: the gate scripts that census the LIVE plane (the operator DB), not the
+ *  candidate. Every path that runs one must hand it the gate's operator DSN; without one it
+ *  resolves `$PAPERCUSP_HOME/embedded-pg.json`, which on this box is the installed Server
+ *  sidecar (522 agent_facts rows), and reds the gate on a database that is not the operator's.
+ *  Three paths run them: runPostSuiteLegs, runGateAtRef and runRepairTickLegs. Round 24 of
+ *  frozen queue ad82b273 went red through runRepairTickLegs, which passed no DSN, while the
+ *  same lints passed against the operator DB. */
+export const LIVE_PLANE_LINT_SCRIPTS: ReadonlySet<string> = new Set([
+  "lint:plane-producers",
+  "lint:declared-consumed",
+  "lint:no-bespoke-state-read",
+  "lint:plane-ratchet",
+  "lint:plane-adoption",
+  "lint:derived-signal-firings",
+  "lint:plane-guards",
+]);
+
+/** The env one gate script runs under: the suite env, plus the gate's operator DSN when the
+ *  script is a live-plane lint. `operatorPgEnv` defaults to the gate process's own DSN so a
+ *  caller cannot forget it; pass `{}` to run a plane lint without one. */
+export function gateScriptEnv(
+  script: string,
+  env: NodeJS.ProcessEnv,
+  operatorPgEnv: Readonly<Record<string, string>> = gateOperatorPgEnv(process.env),
+): NodeJS.ProcessEnv {
+  return LIVE_PLANE_LINT_SCRIPTS.has(script) ? { ...env, ...operatorPgEnv } : env;
+}
+
 /** `failingTests` for a red that is ENTIRELY non-test gate failures — never a test
  *  file/workspace name (those go through `runTestsAtRef` via `failingFiles`), and
  *  never an unmapped signature (see above). Returns the gate ids to re-verify, or
@@ -17989,8 +18017,13 @@ export async function runPostSuiteLegs(
     const planeFailures: string[] = [];
     let planeRan = 0;
     // WI-10006055: these lints census the LIVE plane, so they get the gate's operator DSN.
-    // No other leg does; the candidate suite stays DSN-free.
-    const planeEnv: NodeJS.ProcessEnv = { ...env, ...(options.operatorPgEnv ?? {}) };
+    // No other leg does; the candidate suite stays DSN-free. An omitted `operatorPgEnv`
+    // defaults to the gate process's own DSN: runPostSuiteAtRef omitted it, so its plane
+    // lints censused the 522-row sidecar instead of the operator DB.
+    const planeEnv: NodeJS.ProcessEnv = {
+      ...env,
+      ...(options.operatorPgEnv ?? gateOperatorPgEnv(process.env)),
+    };
     for (const { script, label } of planeLints) {
       const check = checkNpmScript(treeDir, script);
       if (check === "unreadable") {
@@ -21141,7 +21174,8 @@ export function realCheckpointDeps(
               })
             : null;
         for (const line of armed?.lines ?? []) log(line);
-        const taskEnv = armed?.env ?? env;
+        // WI-10006055: a live-plane lint re-run here needs the operator DSN too.
+        const taskEnv = gateScriptEnv(script, armed?.env ?? env);
         try {
           return await exec(invocation.cmd, invocation.args, {
             cwd: invocation.cwd,
@@ -21203,11 +21237,13 @@ export function realCheckpointDeps(
                   args: ["run", script],
                   cwd: cfg.checkpointRoot,
                 };
+            // WI-10006055: the round-24 false red — plane lints measured here had no DSN.
+            const scriptEnv = gateScriptEnv(script, env);
             const r = await exec(invocation.cmd, invocation.args, {
               cwd: invocation.cwd,
-              env,
+              env: scriptEnv,
               allowNonZero: true,
-              ...rescueTaskWatchdogOptions(script, env),
+              ...rescueTaskWatchdogOptions(script, scriptEnv),
             });
             return {
               code: r.code,
