@@ -178,18 +178,22 @@ describe('turn-scoped hold', () => {
     expect(text).toContain('FROM harness_shared.session_turn_journal j');
     // turn_ts (the final assistant message) wins over the asynchronous insert time.
     expect(text).toContain('max(COALESCE(j.turn_ts, j.created_at))');
-    expect(text).toContain('r.ts > e.turn_ended_at');
+    expect(text).toContain('r.ts > h.turn_ended_at');
     expect(text).toContain('s.ended_at IS NULL');
     expect(text).toContain('NOT e.session_ended');
+    // D-005: the cap is per turn, probed from the turn's oldest edit since its end.
+    expect(text).toContain('o.ts > e.turn_ended_at');
     // The default window is D-001's 60 minutes, and the journal window covers it.
     expect(values[0]).toBe(3600);
     expect(values[1]).toBeGreaterThanOrEqual(3600);
+    expect(values[2]).toBe(3600);
   });
 
   it('honours an explicit max age', async () => {
     const { sql, calls } = capturingSql(() => []);
     await readTurnHoldings(sql, { maxAgeMs: 90_000 });
     expect(calls[0].values[0]).toBe(90);
+    expect(calls[0].values[2]).toBe(90);
   });
 
   it('fails closed: an unreadable ledger or journal is a refusal, never an empty census', async () => {

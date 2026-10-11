@@ -201,9 +201,15 @@ export function turnHoldingsFromRows(rows: readonly TurnEditRow[]): RestrictedEd
 /**
  * Every path a live session edited during its CURRENT turn: a native edit
  * (edit_attribution_ledger — written at lock grant, before the edit) newer than
- * the editor's last recorded turn end, unless the edit is older than
- * `maxAgeMs` or every recorded session of the editor has ended.
+ * the editor's last recorded turn end, unless every recorded session of the
+ * editor has ended or the turn has outlived the cap.
  *
+ *  - THE CAP IS PER TURN (plan git-sync-turn-scoped-commit-hold-2026-10-11#D-005):
+ *    once ANY edit the owner made since its turn end is older than `maxAgeMs`,
+ *    none of its edits are held, so a long turn's files commit together rather
+ *    than one at a time (which could commit a source ahead of the importer that
+ *    depends on it). The anchor is the turn's oldest edit, not the previous turn
+ *    end, which for a parked agent can be hours old.
  *  - TURN END = the newest `session_turn_journal` row for the owner, using its
  *    `turn_ts` (the turn's final assistant message, transcript-derived) and only
  *    falling back to `created_at` (the asynchronous insert) when absent. The
@@ -215,8 +221,8 @@ export function turnHoldingsFromRows(rows: readonly TurnEditRow[]): RestrictedEd
  *    treated as live and bounded by `maxAgeMs`.
  *  - ONLY JOURNALING EDITORS ARE HELD: the owner must have at least one
  *    `session_turn_journal` row, ever. A host that never journals turn ends
- *    (e.g. a Codex home whose hooks.json predates Stop-hook enrolment,
- *    WI-6554700010008402) has nothing that could release its edits early, so
+ *    (e.g. a Codex home written by a build without the stop-turn-journal
+ *    enrolment, WI-6554700010008402) has nothing that could release its edits early, so
  *    holding it would delay every edit by the full `maxAgeMs` cap. Such an
  *    editor is not held, which is the pre-hold behaviour. Consequence: a brand-new
  *    owner's first turn is also unheld, until its first turn end is journaled.
@@ -244,26 +250,42 @@ export async function readTurnHoldings(
       ),
       editors AS (
         SELECT e.agent_id,
-               (SELECT max(COALESCE(j.turn_ts, j.created_at))
-                  FROM harness_shared.session_turn_journal j
-                 WHERE j.owner_id = e.agent_id
-                   AND j.created_at > now() - make_interval(secs => ${journalWindowSec})) AS turn_ended_at,
+               -- The newest turn end in the window; outside it, the owner's newest row
+               -- ever (one backward probe of the (owner_id, created_at) index). NULL
+               -- only for an owner that has never journaled a turn end (D-003).
+               COALESCE(
+                 (SELECT max(COALESCE(j.turn_ts, j.created_at))
+                    FROM harness_shared.session_turn_journal j
+                   WHERE j.owner_id = e.agent_id
+                     AND j.created_at > now() - make_interval(secs => ${journalWindowSec})),
+                 (SELECT COALESCE(j.turn_ts, j.created_at)
+                    FROM harness_shared.session_turn_journal j
+                   WHERE j.owner_id = e.agent_id
+                   ORDER BY j.created_at DESC
+                   LIMIT 1)) AS turn_ended_at,
                (EXISTS (SELECT 1 FROM harness_shared.adv_sessions s WHERE s.coord_owner_id = e.agent_id)
                 AND NOT EXISTS (SELECT 1 FROM harness_shared.adv_sessions s
-                                 WHERE s.coord_owner_id = e.agent_id AND s.ended_at IS NULL)) AS session_ended,
-               -- Unbounded on purpose: an owner journaled once is journaling-capable.
-               -- One probe of the (owner_id, created_at) index per distinct editor.
-               EXISTS (SELECT 1 FROM harness_shared.session_turn_journal j
-                        WHERE j.owner_id = e.agent_id) AS journals_turns
+                                 WHERE s.coord_owner_id = e.agent_id AND s.ended_at IS NULL)) AS session_ended
           FROM (SELECT DISTINCT agent_id FROM recent) e
+      ),
+      held AS (
+        -- D-005: the cap is per TURN. Once any edit since the turn end is older than
+        -- the cap, none of the owner's edits are held, so the whole turn commits
+        -- together instead of one file at a time. Probes the (agent_id, ts) index.
+        SELECT e.agent_id, e.turn_ended_at
+          FROM editors e
+         WHERE NOT e.session_ended
+           AND e.turn_ended_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM harness_shared.edit_attribution_ledger o
+                            WHERE o.agent_id = e.agent_id
+                              AND o.ts > e.turn_ended_at
+                              AND o.ts <= now() - make_interval(secs => ${maxAgeSec}))
       )
       SELECT DISTINCT ON (r.repo_root, r.file)
              r.repo_root, r.file, r.agent_id, r.work_item_id, r.ts::text AS ts
         FROM recent r
-        JOIN editors e ON e.agent_id = r.agent_id
-       WHERE NOT e.session_ended
-         AND e.journals_turns
-         AND (e.turn_ended_at IS NULL OR r.ts > e.turn_ended_at)
+        JOIN held h ON h.agent_id = r.agent_id
+       WHERE r.ts > h.turn_ended_at
        ORDER BY r.repo_root, r.file, r.ts DESC`;
   } catch (error) {
     throw ledgerUnavailable('git-sync turn-scoped hold', error);
