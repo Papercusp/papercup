@@ -22,12 +22,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../test/_disclosure-ledger-fixture';
 import { D006_TRANSCRIPT_RULE } from '../personal-vault/transcript-exclusion';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
 import { readExpertiseExecutionHealth } from './consult-routing-health';
-import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
@@ -55,6 +54,7 @@ const vecAt = (theta: number): number[] => {
 };
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): ConsultRouteDeps => ({
   getSql: () => rootSql,
@@ -96,18 +96,8 @@ async function insertWorkItem(owner: string, authority: string, closedMsAgo: num
 }
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultr_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-    await markManagedTestDatabase(admin, dbName);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultr' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   const ledgerMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/archive/077-route-invocations.sql', import.meta.url));
@@ -184,7 +174,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };

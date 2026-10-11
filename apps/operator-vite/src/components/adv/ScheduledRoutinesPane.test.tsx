@@ -56,7 +56,7 @@ describe('<ScheduledRoutinesPane>', () => {
   it('retries a failed read and restores the routine list when it succeeds', () => {
     H.result = { data: [], loading: false, error: new Error('read denied') };
     const view = render(<ScheduledRoutinesPane />);
-    fireEvent.click(screen.getByRole('button', { name: 'Try again', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(H.invalidate).toHaveBeenCalledTimes(1);
     H.result = { data: [occ()], loading: false, error: null };
     view.rerender(<ScheduledRoutinesPane />);
