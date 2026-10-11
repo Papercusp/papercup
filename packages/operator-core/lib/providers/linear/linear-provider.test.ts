@@ -337,8 +337,8 @@ describe('writes: ticket.comment and ticket.transition', () => {
     ]);
   });
 
-  it('declares ticket.containers beside the writes', async () => {
-    expect((await adapter.describe()).capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers']);
+  it('declares ticket.create and ticket.containers beside the writes', async () => {
+    expect((await adapter.describe()).capabilities).toEqual(['ticket.read', 'ticket.create', 'ticket.comment', 'ticket.transition', 'ticket.containers']);
   });
 
   it('leaves an issue already in the column alone, and refuses an unknown column or a capability it lacks', async () => {
@@ -351,5 +351,104 @@ describe('writes: ticket.comment and ticket.transition', () => {
       .rejects.toThrow(/transition_category_invalid:shipped/);
     await expect(adapter.invoke({ source: SOURCE, capability: 'ticket.assign', args: {} }, fake.host))
       .rejects.toThrow(/provider_capability_unsupported:ticket.assign/);
+  });
+});
+
+/**
+ * ticket.create (plan cupboard-distributable-integrations-2026-10-10 P-007, AUTO-BAR-R-5-P-007): the
+ * provider-neutral create the bug-triage workflow files through. The issue id is chosen by the
+ * caller and derived from the correlation id, so a retry finds the issue an earlier attempt made.
+ */
+describe('ticket.create files one issue per correlation id in a configured team', () => {
+  const CONFIG = { teamIds: ['team-eng'] };
+  const ARGS = { containerId: 'team-eng', correlationId: 'papercusp-ticket-abc', title: 'Export crashes', body: 'Observed: crash.' };
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const create = (host: { fetch: HostFetch }, args: Record<string, unknown> = ARGS, config: Record<string, unknown> = CONFIG) =>
+    adapter.invoke({ source: SOURCE, capability: 'ticket.create', args, config }, host);
+
+  /** A Linear workspace holding `issues` by id; issueCreate stores the issue under the id it was given. */
+  function linear(issues = new Map<string, { id: string; url: string; team: { id: string } }>(), opts: { loseCreateResponse?: boolean } = {}) {
+    const created: Array<Record<string, unknown>> = [];
+    const fake = fakeHost((op, vars) => {
+      if (op === 'PapercuspIssueById') {
+        const found = issues.get(String(vars.id));
+        return json(200, { data: { issues: { nodes: found ? [{ ...found, identifier: 'ENG-1' }] : [] } } });
+      }
+      expect(op).toBe('PapercuspIssueCreate');
+      const input = vars.input as { id: string; teamId: string };
+      created.push(input);
+      issues.set(input.id, { id: input.id, url: `https://linear.app/acme/issue/ENG-${created.length}`, team: { id: input.teamId } });
+      if (opts.loseCreateResponse) return json(502, {});
+      return json(200, { data: { issueCreate: { success: true, issue: { ...issues.get(input.id), identifier: `ENG-${created.length}` } } } });
+    });
+    return { ...fake, created, issues };
+  }
+
+  it('creates the issue in the team with a UUID derived from the correlation id, and a second call recovers it', async () => {
+    const remote = linear();
+    const first = await create(remote.host);
+    expect(remote.created).toHaveLength(1);
+    const input = remote.created[0] as { id: string; teamId: string; title: string; description: string };
+    expect(input).toEqual({ id: expect.stringMatching(UUID_V4), teamId: 'team-eng', title: 'Export crashes', description: 'Observed: crash.' });
+    expect(first).toEqual({ externalRef: input.id, url: 'https://linear.app/acme/issue/ENG-1', recovered: false });
+
+    const again = await create(remote.host);
+    expect(again).toEqual({ externalRef: input.id, url: 'https://linear.app/acme/issue/ENG-1', recovered: true });
+    expect(remote.created).toHaveLength(1);
+    // The lookup that answered the retry asked for exactly that id, archived issues included.
+    const lookups = remote.calls.filter((c) => c.op === 'PapercuspIssueById');
+    expect(lookups.map((c) => c.variables.id)).toEqual([input.id, input.id]);
+    expect(JSON.parse(String(lookups[0].request.body)).query).toContain('includeArchived: true');
+  });
+
+  it('derives a different issue id for a different correlation id', async () => {
+    const remote = linear();
+    await create(remote.host);
+    await create(remote.host, { ...ARGS, correlationId: 'papercusp-ticket-def' });
+    expect(remote.created).toHaveLength(2);
+    expect((remote.created[0] as { id: string }).id).not.toBe((remote.created[1] as { id: string }).id);
+  });
+
+  it('a recovery-only call never creates: it answers pending until the issue exists', async () => {
+    const remote = linear();
+    await expect(create(remote.host, { ...ARGS, recoveryOnly: true })).resolves.toEqual({ pendingReconciliation: true });
+    expect(remote.created).toHaveLength(0);
+  });
+
+  it('a create whose response is lost is answered by the issue Linear made, not a second create', async () => {
+    const remote = linear(undefined, { loseCreateResponse: true });
+    const out = await create(remote.host);
+    expect(out).toMatchObject({ recovered: true, externalRef: (remote.created[0] as { id: string }).id });
+    expect(remote.created).toHaveLength(1);
+  });
+
+  it('refuses a team the source is not configured for, before any Linear call', async () => {
+    const remote = linear();
+    await expect(create(remote.host, { ...ARGS, containerId: 'team-other' })).rejects.toThrow('ticket_create_project_out_of_scope');
+    await expect(create(remote.host, ARGS, {})).rejects.toThrow('ticket_create_project_out_of_scope');
+    await expect(create(remote.host, { ...ARGS, correlationId: '' })).rejects.toThrow('ticket_create_correlation_required');
+    await expect(create(remote.host, { ...ARGS, title: '' })).rejects.toThrow('ticket_create_content_invalid');
+    expect(remote.calls).toHaveLength(0);
+  });
+
+  it('an existing issue with that id in another team is a scope violation, not a recovery', async () => {
+    const remote = linear();
+    await create(remote.host);
+    const id = (remote.created[0] as { id: string }).id;
+    remote.issues.set(id, { ...remote.issues.get(id)!, team: { id: 'team-other' } });
+    await expect(create(remote.host)).rejects.toThrow('ticket_create_recovery_scope_invalid');
+    expect(remote.created).toHaveLength(1);
+  });
+
+  it('ticket.containers { purpose: create } offers only the configured teams the app can read', async () => {
+    const fake = fakeHost(() => page('teams', [
+      { id: 'team-eng', key: 'ENG', name: 'Engineering' },
+      { id: 'team-ops', key: 'OPS', name: 'Operations' },
+    ]));
+    const config = { teamIds: ['team-eng', 'team-gone'] };
+    await expect(adapter.invoke({ source: SOURCE, capability: 'ticket.containers', args: { purpose: 'create' }, config }, fake.host))
+      .resolves.toEqual({ containers: [{ id: 'team-eng', name: 'Engineering', kind: 'team', key: 'ENG' }], truncated: false });
+    await expect(adapter.invoke({ source: SOURCE, capability: 'ticket.containers', args: {}, config }, fake.host))
+      .resolves.toMatchObject({ containers: [{ id: 'team-eng' }, { id: 'team-ops' }] });
   });
 });
