@@ -7,10 +7,11 @@
 // the ReactFlow canvas render itself is e2e territory.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ phase: 'staging', mindmap: null }] }) }));
+let syncResult: { data: unknown[] | undefined; loading: boolean; error: Error | null };
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => syncResult }));
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }));
 vi.mock('@xyflow/react', async importOriginal => ({
   ...await importOriginal<typeof import('@xyflow/react')>(),
@@ -29,10 +30,35 @@ import {
   seedTree,
 } from './MapView';
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => { syncResult = { data: [{ phase: 'staging', mindmap: null }], loading: false, error: null }; vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('MapView save responses', () => {
+  it('waits for the initial Sync response before saving a hydrated map', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}')));
+    syncResult = { data: [], loading: true, error: null };
+    const view = render(<MapView slug="h" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByText(/loading mindmap/i)).toBeTruthy();
+    const tree = { nodes: [{ id: 'root', position: { x: 10, y: 20 }, data: { text: 'saved private map', kind: 'idea' } }], edges: [] };
+    syncResult = { data: [{ phase: 'staging', mindmap: tree }], loading: false, error: null };
+    view.rerender(<MapView slug="h" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string);
+    expect(body.tree.nodes[0].data.text).toBe('saved private map');
+  });
+
+  it('does not replace unavailable data with a writable seed after a failed read', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}')));
+    syncResult = { data: [], loading: false, error: new Error('private read denied') };
+    render(<MapView slug="h" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([403, 500])('reports a resolved HTTP %i save rejection', async status => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('private save denied', { status })));

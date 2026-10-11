@@ -139,7 +139,7 @@ function MapInner({ slug }: Props) {
   // Eager Zero subscription — replaces the lazy REST fetch so the mindmap
   // hydrates same-frame on open. The mindmap field on the brainstorm row
   // contains the tree shape directly (no /brainstorm-mindmap wrapper).
-  const { data: brainstormRows } = useSyncQuery<{ harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number }>({
+  const { data: brainstormRows, loading, error } = useSyncQuery<{ harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number }>({
     queryName: 'harnessBrainstorm.byHarness',
     args: { harnessSlug: slug },
     enabled: !!slug,
@@ -166,7 +166,9 @@ function MapInner({ slug }: Props) {
   const hasLoadedRef = useRef(false);
   useEffect(() => {
     if (hasLoadedRef.current) return;
-    if (brainstormRows === undefined) return; // still loading
+    // Sync's pending adapter returns [] while loading. Treating it as a
+    // completed empty read seeds and saves over the real row when it arrives.
+    if (loading || error || brainstormRows === undefined) return;
     hasLoadedRef.current = true;
     try {
       const tree = normalize(brainstormRow?.mindmap as never);
@@ -180,7 +182,7 @@ function MapInner({ slug }: Props) {
       setEdges(seed.edges);
       setLoaded(true);
     }
-  }, [brainstormRow, brainstormRows]);
+  }, [brainstormRow, brainstormRows, loading, error]);
 
   const persist = useMemo(() =>
     debounce(async (tree: Tree) => {

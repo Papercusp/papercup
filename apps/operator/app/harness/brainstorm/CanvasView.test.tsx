@@ -15,10 +15,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { toast } from 'sonner';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-let syncResult: { data: unknown[] | undefined };
+let syncResult: { data: unknown[] | undefined; loading?: boolean; error?: Error | null };
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ data: syncResult.data, loading: false, error: null, fetching: false, invalidate: vi.fn() }),
+  useSyncQuery: () => ({ data: syncResult.data, loading: syncResult.loading ?? false, error: syncResult.error ?? null, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@excalidraw/excalidraw/index.css', () => ({}));
@@ -53,6 +53,14 @@ beforeEach(() => { syncResult = { data: undefined }; vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('CanvasView (brainstorm canvas layer)', () => {
+  it.each(['loading', 'failed'])('does not mount a writable empty scene while the initial Sync read is %s', async state => {
+    syncResult = { data: [], loading: state === 'loading', error: state === 'failed' ? new Error('private read denied') : null };
+    render(<CanvasView slug="h" />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/loading canvas/i)).toBeTruthy();
+    expect(screen.queryByTestId('excalidraw')).toBeNull();
+  });
+
   it.each([403, 500])('reports a resolved HTTP %i save rejection', async status => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('private save denied', { status })));
     syncResult = { data: [row()] };
