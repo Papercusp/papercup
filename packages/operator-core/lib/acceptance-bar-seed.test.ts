@@ -298,6 +298,29 @@ describe('acceptance BAR seed builder', () => {
     expect(buildAcceptanceBarSeed({ ...input, planContent: consistent }).ok).toBe(true);
   });
 
+  // WI-10008304: an activation dry run once passed a block whose explicit passRatings were
+  // off the seeded rubric's rating scale, and the real run then refused it. Preview and writer
+  // both build through this function, so the refusal is pinned HERE, where they converge.
+  it('refuses a requirement pass rating that is not on the rubric rating scale', () => {
+    const sections = {
+      intent: { request: 'Keep the rubric gradeable.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The seeded rubric accepts the declared pass rating.',
+        falsifier: 'A pass rating outside the rating scale is seeded.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['unit'], passRatings: ['pass'] },
+      verification: { method: 'Seed the rubric and read its criteria.',
+        check: { kind: 'tests', files: ['lib/evidence.test.ts'] } },
+    };
+    const content = plan({ requirements: '**R-1 — Gradeable rubric.**\n```requirement\n' + JSON.stringify(sections) + '\n```',
+      map: '| R-1 | P-001 | tree |' });
+    const refused = buildAcceptanceBarSeed({ ...input, planContent: content });
+    expect(refused).toMatchObject({ ok: false, error: 'bar_rubric_conflict' });
+    if (refused.ok) throw new Error('an off-scale pass rating was seeded');
+    expect(refused.problems[0]!.detail).toMatch(/passRatings.*not present in the rubric ratingScale/);
+    const onScale = content.replace('"passRatings":["pass"]', '"passRatings":["healthy"]');
+    expect(onScale).not.toBe(content);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: onScale }).ok).toBe(true);
+  });
+
   it('authors one unified requirement and derives all mapped proof contracts without rewriting its promise', () => {
     const sections = {
       intent: { request: 'Export every matching customer.', sourceRefs: ['session_turn:export'] },
