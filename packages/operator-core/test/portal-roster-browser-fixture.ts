@@ -455,16 +455,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
   }
+  // CSS-enabled graphs must also resolve packages' style-conditioned exports.
+  // Keep the loader and resolution predicates together as new modes are added.
+  const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git);
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': input.brainstorm || input.calendar || input.workflows || input.stats ? 'css' : 'empty', '.module.css': 'local-css',
+    loader: { '.css': retainBrowserCss ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
     // Excalidraw). Use the real production export instead of a fixture alias.
-    conditions: ['browser', 'production', ...(input.brainstorm ? ['style'] : [])],
+    conditions: ['browser', 'production', ...(retainBrowserCss ? ['style'] : [])],
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
     outfile: join(portal, 'private-roster-browser.js'),
     logLevel: 'silent',
@@ -472,7 +475,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       builder.onLoad({ filter: /\.css$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
-        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm || input.calendar || input.workflows ? 'css' : 'empty' };
+        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : retainBrowserCss ? 'css' : 'empty' };
       });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
@@ -717,7 +720,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
-    } else if ((options.brainstormHydration || options.workflowsRead) && pathname === '/docs-preflight.css') {
+    } else if ((options.brainstormHydration || options.workflowsRead || input.git) && pathname === '/docs-preflight.css') {
       response.writeHead(200, { 'content-type': 'text/css' });
       response.end(readFileSync(join(built.portal, 'app/tokens.css'), 'utf8') + '\n'
         + readFileSync(join(built.portal, 'app/globals.css'), 'utf8') + '\n'
@@ -727,7 +730,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
-      response.end((options.brainstormHydration || options.workflowsRead ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
+      response.end((options.brainstormHydration || options.workflowsRead || input.git ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
         + '<div id="root"></div><script src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
@@ -761,7 +764,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
-    try { await (input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
+    try { await (input.git ? page.locator('.pc-adv-git')
+      : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
       : input.workflows ? page.getByTestId('workflows-control-deck')
       : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
       : input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
@@ -937,6 +941,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
+    if (input.git) {
+      // Module initialization only. The empty selector state does not establish
+      // private API, dock hydration, commit selection or diff acceptance.
+      assert.equal(await page.locator('.pc-adv-git__empty').count(), 1);
+      assert.ok(built.css.includes('.pc-adv-dock'), 'Git mount must retain its real dock stylesheet');
+    }
     if (input.workflows) {
       assert.equal(await page.getByRole('textbox', { name: 'Search workflows', exact: true }).count(), 1);
       assert.equal(await page.getByRole('button', { name: 'Refresh workflows', exact: true }).count(), 1);
@@ -971,6 +981,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(await page.getByRole('heading', { name: 'Calendar', exact: true }).count(), 1);
       assert.equal(await page.locator('.pc-sched-cal .fc').count(), 1);
       assert.equal(await page.locator('.pc-routines').count(), 1);
+    } else if (input.git) {
+      assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
     } else if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
       assert.match(await page.locator('body').innerText(), /Select a /);
     }
