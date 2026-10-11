@@ -1,25 +1,76 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
+import { isEmbedSidecarRunning, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES } from './subject-evidence.fixtures';
 import '../agent-tools/index';
 
 describe('registered subject evidence with the real local scorer', () => {
   let configuredPrivateWarmup = false;
-  beforeAll(() => {
+  let privateHome: string | undefined;
+  let privateDb: MigratedTestDb | undefined;
+  const savedHome = process.env.PAPERCUSP_HOME;
+  const savedPort = process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+  const databaseEnvKeys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL',
+    'DATABASE_URL', 'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
+  const savedDatabaseEnv = databaseEnvKeys.map(key => [key, process.env[key]] as const);
+  beforeAll(async () => {
     // A scorer-only test owns its lazily spawned sidecar. The default Gemma
     // startup is unrelated to this fixture and can overlap the first bounded
     // measurements. Reuse the maintained reranker-only warm profile; explicit
     // shared-sidecar URLs and caller-selected profiles retain their settings.
     if (process.env.PAPERCUSP_EMBED_SIDECAR === '1' &&
-        !process.env.PAPERCUSP_EMBED_SIDECAR_URL &&
-        process.env.PAPERCUSP_EMBED_SIDECAR_WARM === undefined) {
-      process.env.PAPERCUSP_EMBED_SIDECAR_WARM = 'rerank';
-      configuredPrivateWarmup = true;
+        !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
+      // No explicit URL does not imply a private scorer: the spawner otherwise
+      // adopts a sibling from the tenant's home or its inherited fixed port.
+      // Reuse its maintained tenant boundary so this run executes source code.
+      privateHome = mkdtempSync(join(tmpdir(), 'subject-scorer-'));
+      process.env.PAPERCUSP_HOME = privateHome;
+      delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+      // The non-Vitest child opens the admission governor's real PG pool.
+      // An ambient explicit DSN outranks the wrapper's private port, so pin
+      // every product resolver to an owned, fully migrated database instead.
+      privateDb = await createFreshTestDb({ prefix: 'subjectscorer', template: {
+        key: orgTemplateKey(), provision: provisionOrgTemplate,
+      } });
+      process.env.HARNESS_ADMIN_DATABASE_URL = privateDb.url;
+      process.env.HARNESS_DATABASE_URL = privateDb.url;
+      process.env.DATABASE_URL = privateDb.url;
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      if (process.env.PAPERCUSP_EMBED_SIDECAR_WARM === undefined) {
+        process.env.PAPERCUSP_EMBED_SIDECAR_WARM = 'rerank';
+        configuredPrivateWarmup = true;
+      }
     }
-  });
-  afterAll(() => {
+  }, 120_000);
+  afterAll(async () => {
+    if (privateHome) {
+      try {
+        await stopEmbedSidecar();
+      } finally {
+        try {
+          await privateDb?.drop();
+        } finally {
+          for (const [key, value] of savedDatabaseEnv) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+          if (savedHome === undefined) delete process.env.PAPERCUSP_HOME;
+          else process.env.PAPERCUSP_HOME = savedHome;
+          if (savedPort === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+          else process.env.PAPERCUSP_EMBED_SIDECAR_PORT = savedPort;
+          if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
+          rmSync(privateHome, { recursive: true, force: true });
+        }
+      }
+    }
     if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
   });
 
@@ -35,6 +86,13 @@ describe('registered subject evidence with the real local scorer', () => {
       build: health?.sha ?? null, modelState: health?.models?.rerank ?? null,
       execution: health?.rerankExecutionHealth?.active ?? null };
     console.info('subject-scorer-preflight', JSON.stringify(runtime));
+    if (privateHome) {
+      // Fail before measurements if a shared/installed runtime was adopted.
+      expect(isEmbedSidecarRunning(), 'owned scorer must be spawned by this test').toBe(true);
+      expect(readEmbedSidecarRecord()?.pid, 'owned scorer record must match the serving process').toBe(health?.pid);
+      expect(privateDb?.name).toMatch(/^subjectscorer_/);
+      expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(privateDb?.url);
+    }
     const failures: { contracts: string[]; reason: string }[] = [];
     const baseScorer = await buildSidecarAwareReranker();
     const scorer: typeof baseScorer = async (query, contracts, opts) => {
