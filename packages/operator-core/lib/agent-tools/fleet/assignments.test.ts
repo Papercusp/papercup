@@ -331,6 +331,47 @@ describe('reconcileWakeability (EI-6077)', () => {
     ).not.toBe('dead');
   });
 
+  // P-011(a) / D-011: fleet:assignments trusts a live psu host as proof of life, so
+  // it runs the same host-condition leg as resolveSessionStates and coord:presence.
+  const reconcileWithHost = async (owner: string, host: Record<string, unknown>) => {
+    const tailReads: string[] = [];
+    const readHostTailFn = async (id: string) => {
+      tailReads.push(id);
+      return [];
+    };
+    const [row] = await reconcileWakeability(
+      [baseAgent({ agentId: owner, alive: true })],
+      fakeFetch({ [owner]: { wakeable: true, liveTurn: false } }),
+      async () => new Set(),
+      async () => new Map(),
+      async () => new Set(),
+      {
+        hydratePresence: true,
+        psuHostPositiveAuthority: true,
+        fetchPresenceFn: async () =>
+          new Map([[owner, { heartbeatAt: new Date().toISOString(), stale: false, host: 'h', pid: null, source: 'psu', agentRole: 'su' }]]),
+        findHostFn: (id) => (id === owner ? { ownerId: id, ...host } : null),
+        readHostTailFn,
+      },
+    );
+    const out = row as typeof row & { wedged?: string | null };
+    return { out, tailReads };
+  };
+
+  it('P-011: a healthy live psu host keeps a wakeable member parked (positive control)', async () => {
+    const { out, tailReads } = await reconcileWithHost('su-host-healthy', { authBlocked: false });
+    expect(out.sessionState).toBe('parked');
+    expect(out.wedged ?? null).toBeNull();
+    expect(tailReads).toEqual(['su-host-healthy']);
+  });
+
+  it('P-011: a live psu host with dead provider auth reads suspect + wedged auth-blocked, not parked', async () => {
+    const { out } = await reconcileWithHost('su-host-dead-auth', { authBlocked: true });
+    expect(out.sessionState).toBe('suspect');
+    expect(out.wedged).toBe('auth-blocked');
+    expect(out.alive).toBe(false);
+  });
+
   it('WI-4400: stale wakeable holder gets confirmLiveness before takeover', async () => {
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });

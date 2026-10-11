@@ -50,7 +50,12 @@ import {
 } from "./executed-source-map.mjs";
 import { runVitestProcess } from "../run-vitest-pure-lane.mjs";
 import { defaultRunnerIdentity } from "./targeted-task-reuse.mjs";
-import { TEST_REUSE_SKIP_LIST_ENV, testReuseMaxAgeMs } from "./test-pass-reuse.mjs";
+import {
+  REUSE_PROOF_FORMAT,
+  TEST_REUSE_SKIP_LIST_ENV,
+  judgedTreeProofFormat,
+  testReuseMaxAgeMs,
+} from "./test-pass-reuse.mjs";
 
 export const PURE_PROOF_CAPTURE_ENV = "PC_PURE_PROOF_CAPTURE";
 export const PURE_PROOF_CAPTURE_BUDGET_ENV = "PC_PURE_PROOF_CAPTURE_BUDGET_MS";
@@ -499,7 +504,8 @@ export async function runPureLaneProofCapture({
   if (laneFiles.length === 0) return skip("no-lane-files");
 
   const nowMs = d.now();
-  const runnerIdentity = d.runnerIdentity(root, env) ?? null;
+  // WI-6554700010008589: the judged tree's recorder writes the captured proofs, so match ITS format.
+  const runnerIdentity = d.runnerIdentity(root, env, judgedTreeProofFormat(root) ?? REUSE_PROOF_FORMAT) ?? null;
   let plan;
   let passedInSuite;
   try {

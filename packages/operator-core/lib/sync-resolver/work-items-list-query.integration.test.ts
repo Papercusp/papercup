@@ -211,6 +211,62 @@ afterAll(async () => {
 });
 
 describe('workItems.byHarness + workItems.summary real-PG contract', () => {
+  it('keeps non-work records out of queue pages, fair slices, counts and facets', async () => {
+    const queueHarness = `${harnessSlug}-nature`;
+    const contactId = 'PER-8bb3f65b4bfceccd6673b885';
+    const fixtures = [
+      { id: 'WI-QUEUE-FEATURE', kind: 'feature', nature: 'work', audience: 'agent' },
+      { id: 'WI-QUEUE-BUG', kind: 'bug', nature: 'work', audience: 'agent' },
+      { id: 'WI-QUEUE-CUSTOM', kind: 'queue-custom-work', nature: 'work', audience: 'agent' },
+      { id: 'WI-QUEUE-HUMAN', kind: 'email-draft-proposal', nature: 'work', audience: 'human' },
+      { id: contactId, kind: 'person', nature: 'record', audience: null },
+      { id: 'ORG-QUEUE-RECORD', kind: 'organization', nature: 'record', audience: null },
+      { id: 'DOC-QUEUE-DOCUMENT', kind: 'feature', nature: 'document', audience: null },
+      { id: 'EVT-QUEUE-EVENT', kind: 'queue-event', nature: 'event', audience: null },
+    ];
+    await sql`INSERT INTO harness_shared.work_items ${sql(fixtures.map((row, index) => ({
+      workspace_id: workspaceId, harness_slug: queueHarness, feature_id: row.id,
+      item_kind: row.kind, nature: row.nature, audience: row.audience,
+      title: row.id, summary: '', status: 'open', payload: {},
+      created_ts: BASE_TS, updated_ts: BASE_TS + index,
+    })))}`;
+    const predicateFor = (args: WorkItemsListWireArgs = {}) =>
+      buildWorkItemsPredicate(normalizeWorkItemsListArgs({ harnessSlug: queueHarness, ...args }));
+    const workIds = fixtures.filter((row) => row.nature === 'work').map((row) => row.id).sort();
+
+    const page = await readWorkItemsPageFromStore(sql, workspaceId, predicateFor());
+    expect(page.rows.map((row) => row.id).sort()).toEqual(workIds);
+    expect(page.hasMore).toBe(false);
+    const first = await readWorkItemsPageFromStore(sql, workspaceId, predicateFor({ limit: 1 }));
+    expect(first.rows.map((row) => row.id)).toEqual(['WI-QUEUE-HUMAN']);
+    expect(first.hasMore).toBe(true);
+    const next = await readWorkItemsPageFromStore(sql, workspaceId, predicateFor({ cursor: first.nextCursor }));
+    expect(next.rows.map((row) => row.id).sort()).toEqual(workIds.filter((id) => id !== 'WI-QUEUE-HUMAN'));
+
+    const fair = await readWorkItemsPageFromStore(sql, workspaceId,
+      predicateFor({ states: ['open'], perState: 10 }));
+    expect(fair.rows.map((row) => row.id).sort()).toEqual(workIds);
+    const summary = await readWorkItemsSummaryFromStore(sql, workspaceId, predicateFor());
+    expect(summary.find((row) => row.kind === 'totals')).toEqual({ kind: 'totals', total: 4, matched: 4 });
+    expect(summary.filter((row) => row.kind === 'facet' && row.facet === 'kind')
+      .map((row) => row.kind === 'facet' ? row.value : '').sort())
+      .toEqual(['bug', 'email-draft-proposal', 'feature', 'queue-custom-work']);
+    expect(summary.find((row) => row.kind === 'facet' && row.facet === 'state'))
+      .toMatchObject({ value: 'open', count: 4 });
+
+    // Searches and explicit kind filters narrow the work queue; they cannot opt data into it.
+    for (const args of [{ q: contactId }, { kind: 'person' }, { filters: { kinds: ['person', 'organization'] } }]) {
+      const predicate = predicateFor(args);
+      expect((await readWorkItemsPageFromStore(sql, workspaceId, predicate)).rows).toEqual([]);
+      expect((await readWorkItemsSummaryFromStore(sql, workspaceId, predicate))
+        .find((row) => row.kind === 'totals')).toEqual({ kind: 'totals', total: 4, matched: 0 });
+    }
+    // Data remains stored and available to the relationship graph.
+    const [contact] = await sql`SELECT nature, audience FROM harness_shared.work_items
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${queueHarness} AND feature_id = ${contactId}`;
+    expect(contact).toEqual({ nature: 'record', audience: null });
+  });
+
   it('reads item progress and exact registered wait refs without turning reservations into native work', async () => {
     const id = rowFor(DEEP).id;
     const blocker = rowFor(DEEP - 1).id;

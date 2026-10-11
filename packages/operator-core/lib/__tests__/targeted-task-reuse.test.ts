@@ -158,6 +158,51 @@ describe('armTargetedTaskReuse', () => {
     expect(existsSync(listPath)).toBe(false);
   });
 
+  // WI-6554700010008589: gate run 762a13a6 judged a frozen repair head whose recorder writes proof-v2
+  // while this selector's constant is newer, and reused nothing (every proof `otherRunner`). The arm
+  // must take the JUDGED tree's format for the identity, the skip list and the legacy drift rule.
+  it('matches the judged tree recorder format and applies the legacy drift rule to its proofs', async () => {
+    const LEGACY_RUNNER = `proof-v2 ${RUNNER}`;
+    const legacyProofs = async () => ({
+      proofs: new Map([
+        ['packages/lane-ws/a.test.ts', { ...proof(OLD, ['packages/lane-ws/a.test.ts', 'packages/lane-ws/src/a.ts']), runnerIdentity: LEGACY_RUNNER }],
+        ['packages/lane-ws/b.test.ts', { ...proof(OLD, ['packages/lane-ws/b.test.ts', 'packages/lane-ws/src/b.ts']), runnerIdentity: LEGACY_RUNNER }],
+      ]),
+      rows: 2,
+    });
+    const legacyDeps = (drift: string[]) =>
+      deps({
+        proofFormat: () => 'proof-v2',
+        runnerIdentity: (_root: string, _env: unknown, format: string) => `${format} ${RUNNER}`,
+        loadProofs: legacyProofs,
+        changedBetween: () => (a: string, b: string) => (a === OLD && b === HEAD ? new Set(drift) : new Set<string>()),
+      });
+
+    fixture();
+    const armed = await armTargetedTaskReuse({
+      root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), scope: 'targeted-gate',
+      deps: legacyDeps(['packages/lane-ws/c.test.ts']),
+    });
+    expect(armed.reused).toBe(2);
+    expect(armed.lines[0]).toMatch(/ otherRunner=0 /);
+    expect(armed.lines[0]).toMatch(/ proofFormat=proof-v2\(legacy\)$/);
+    const list = parseReuseSkipList(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
+    expect(list.runnerIdentity).toBe(LEGACY_RUNNER);
+    // The judged tree's own consumer computes ITS identity, so it accepts the list.
+    expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: LEGACY_RUNNER })).toMatchObject({ applied: true });
+    armed.finish();
+
+    // A non-test drift path may be a module a legacy proof loaded without recording it: run both.
+    fixture();
+    const strict = await armTargetedTaskReuse({
+      root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), scope: 'targeted-gate',
+      deps: legacyDeps(['packages/lane-ws/c.test.ts', 'packages/lane-ws/src/unrecorded.ts']),
+    });
+    expect(strict.reused).toBe(0);
+    expect(strict.lines[0]).toMatch(/ legacyFormatDrift=2 /);
+    strict.finish();
+  });
+
   // gate-test-reuse-yield-2026-10-01 P-006 (D-005): the pure-lane runner's script never names
   // --passWithNoTests, yet it runs zero files as a pass, so the repair-head rerun may reuse too.
   it('arms reuse for the pure-lane runner script, which runs an all-reused lane as a pass', async () => {

@@ -22,6 +22,9 @@ const {
   formatTestReuseTotalLine,
   isGlobalRunnerInput,
   isRunnerAffectingScript,
+  judgedTreeProofFormat,
+  LEGACY_PROOF_SAFE_DRIFT_RE,
+  RECORDER_PROOF_FORMAT_FILE,
   laneOfFromSplit,
   laneOfTaskScript,
   laneScopedCandidates,
@@ -101,6 +104,96 @@ function run(files: string[], proofs: Map<string, Proof>, drift: Set<string> | n
 }
 
 const T = 'pkg/src/a.test.ts';
+
+/**
+ * WI-6554700010008589: gate run 762a13a6 judged a frozen repair head whose recorder writes proof-v2
+ * while the selector (staging) compared against proof-v3, so all 7,689 candidates were `otherRunner`
+ * and nothing was reused. The selector must take the JUDGED tree's format, and treat an older one
+ * as legacy: its proofs may omit dynamically loaded modules (EI-25597096188717078), so only drift
+ * made entirely of OTHER test files may leave them reusable.
+ */
+describe('judged-tree proof format (legacy proofs on a frozen lineage)', () => {
+  const LEGACY = 'proof-v2';
+  const legacyIdentity = `${LEGACY} ${RUNNER}`;
+  const legacyRun = (files: string[], proofs: Map<string, Proof>, drift: Set<string> | null, proofFormat?: string) =>
+    selectReusablePasses({
+      candidates: files,
+      proofs,
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: reuseRunnerIdentity(RUNNER, LEGACY) ?? '',
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      ...(proofFormat === undefined ? {} : { proofFormat }),
+    });
+  const legacyProof = (file: string) => proof(file, { runnerIdentity: legacyIdentity });
+
+  it('labels the runner identity with the format it is given', () => {
+    expect(reuseRunnerIdentity(RUNNER, LEGACY)).toBe(legacyIdentity);
+    expect(reuseRunnerIdentity(RUNNER)).toBe(`${REUSE_PROOF_FORMAT} ${RUNNER}`);
+  });
+
+  it('reads the format the judged tree records, and null when it cannot', () => {
+    const root = mkdtempSync(join(tmpdir(), 'judged-proof-format-'));
+    try {
+      expect(judgedTreeProofFormat(root)).toBeNull();
+      mkdirSync(join(root, 'libs/test-config/src'), { recursive: true });
+      writeFileSync(join(root, RECORDER_PROOF_FORMAT_FILE), "export const REUSE_PROOF_FORMAT = 'proof-v2';\n");
+      expect(judgedTreeProofFormat(root)).toBe('proof-v2');
+      writeFileSync(join(root, RECORDER_PROOF_FORMAT_FILE), 'export const SOMETHING_ELSE = 1;\n');
+      expect(judgedTreeProofFormat(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads THIS tree as the selector format (recorder and selector are pinned equal at one revision)', () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    expect(judgedTreeProofFormat(repoRoot)).toBe(REUSE_PROOF_FORMAT);
+  });
+
+  it('reuses legacy proofs when every drift path is another test file', () => {
+    const other = 'pkg/src/other.test.ts';
+    const r = legacyRun([T], new Map([[T, legacyProof(T)]]), new Set([other, 'desktop/test/x.test.js']), LEGACY);
+    expect(r.skip).toEqual([T]);
+    expect(r.summary.otherRunner).toBe(0);
+    expect(r.summary.legacyFormatDrift).toBe(0);
+  });
+
+  it('runs a legacy proof whose drift holds ANY non-test file, even one it never recorded executing', () => {
+    // 'pkg/src/lazy.ts' is not in the proof's executedModules: under the current format that drift
+    // would be harmless, but a legacy proof may have loaded it dynamically without recording it.
+    for (const changed of ['pkg/src/lazy.ts', 'pkg/src/helpers.shared.ts', 'scripts/x.mjs', 'pkg/package.json']) {
+      const r = legacyRun([T], new Map([[T, legacyProof(T)]]), new Set(['pkg/src/other.test.ts', changed]), LEGACY);
+      expect(r.skip, changed).toEqual([]);
+      expect(r.summary.legacyFormatDrift, changed).toBe(1);
+    }
+  });
+
+  it('runs a legacy proof whose own test file drifted', () => {
+    const r = legacyRun([T], new Map([[T, legacyProof(T)]]), new Set([T]), LEGACY);
+    expect(r.skip).toEqual([]);
+    expect(r.summary.legacyFormatDrift).toBe(1);
+  });
+
+  it('applies no legacy restriction when the judged tree records the selector format', () => {
+    const r = run([T], new Map([[T, proof(T)]]), new Set(['pkg/src/lazy.ts']));
+    expect(r.skip).toEqual([T]);
+    expect(r.summary.legacyFormatDrift).toBe(0);
+  });
+
+  it('still refuses a proof from a different format than the judged one (otherRunner)', () => {
+    const r = legacyRun([T], new Map([[T, proof(T, { runnerIdentity: `${REUSE_PROOF_FORMAT} ${RUNNER}` })]]), new Set(), LEGACY);
+    expect(r.skip).toEqual([]);
+    expect(r.summary.otherRunner).toBe(1);
+  });
+
+  it('classifies only test files as legacy-safe drift', () => {
+    for (const f of ['a.test.ts', 'b/c.spec.tsx', 'd.test.mjs', 'e.test.js']) expect(LEGACY_PROOF_SAFE_DRIFT_RE.test(f), f).toBe(true);
+    for (const f of ['a.ts', 'a.shared.ts', 'test/helpers.js', 'a.test.ts.tmp', 'package.json']) expect(LEGACY_PROOF_SAFE_DRIFT_RE.test(f), f).toBe(false);
+  });
+});
 
 describe('selectReusablePasses', () => {
   it('reuses a valid proof when nothing it depends on drifted', () => {

@@ -17,7 +17,7 @@
 // Everything else runs. PURE: every input is a value or a seam, so the unit tests pin the rule.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { GENERATED_SCHEMA_FILES } from "./schema-symbol-drift.mjs";
 
@@ -63,12 +63,47 @@ export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT = 1_000_000;
  * `process.version process.platform process.arch` of the node the task will spawn.
  *
  * @param {string | null | undefined} nodeIdentity
+ * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
-export function reuseRunnerIdentity(nodeIdentity) {
+export function reuseRunnerIdentity(nodeIdentity, proofFormat = REUSE_PROOF_FORMAT) {
   const node = typeof nodeIdentity === "string" ? nodeIdentity.trim() : "";
-  return node ? `${REUSE_PROOF_FORMAT} ${node}` : null;
+  return node ? `${proofFormat} ${node}` : null;
 }
+
+/** Where the judged tree's RECORDER declares the proof format it writes (and its skip-list consumer accepts). */
+export const RECORDER_PROOF_FORMAT_FILE = "libs/test-config/src/test-pass-reuse-skip.ts";
+
+/**
+ * WI-6554700010008589: the proof format the JUDGED tree records, read from its own recorder source.
+ *
+ * The selector runs from the gate's code (the staging tree), but the tests run in the judged checkout,
+ * whose recorder writes proofs and whose consumer validates the skip list under ITS format. On a frozen
+ * repair lineage older than a format bump, comparing against this module's REUSE_PROOF_FORMAT rejected
+ * every proof as `otherRunner` (run 762a13a6: 0 of 7,689 reused) — and a skip list labelled with the newer
+ * format would be refused by the judged consumer anyway. Null when the file is missing or unparseable, in
+ * which case callers keep REUSE_PROOF_FORMAT (the pre-fix behaviour).
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {string | null}
+ */
+export function judgedTreeProofFormat(root, readFile = (f) => readFileSync(f, "utf8")) {
+  let body;
+  try {
+    body = readFile(path.join(root, RECORDER_PROOF_FORMAT_FILE));
+  } catch {
+    return null;
+  }
+  const m = /\bREUSE_PROOF_FORMAT\s*=\s*['"](proof-v\d+)['"]/.exec(String(body));
+  return m ? m[1] : null;
+}
+
+/**
+ * A test file: a leaf no other test imports. An older-format (legacy) proof may omit modules its test
+ * loaded dynamically (EI-25597096188717078), so it is only reusable when every drift path is one of these.
+ */
+export const LEGACY_PROOF_SAFE_DRIFT_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
@@ -501,6 +536,9 @@ function invalidates(rel, o) {
  *        proof, so that drift path does not invalidate it (summary.schemaNarrowed). Any other
  *        result, or a throw, keeps the whole-file rule. Omitted = nothing is narrowed. Implemented
  *        over git by gitSchemaDriftJudge (scripts/lib/schema-symbol-drift.mjs).
+ * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
+ *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
+ *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
@@ -520,13 +558,21 @@ export function selectReusablePasses({
   testConfigMainProcess = null,
   toolchainTsconfigs = null,
   schemaDriftJudge = null,
+  proofFormat = REUSE_PROOF_FORMAT,
 }) {
+  // WI-6554700010008589: the judged tree records an OLDER format than this selector's (a frozen
+  // repair lineage cut before a format bump). Its proofs may omit dynamically loaded modules, so
+  // none of the narrowed rules below may trust their executedModules: reuse only when every drift
+  // path is another test file (LEGACY_PROOF_SAFE_DRIFT_RE), which nothing else loads.
+  const legacyFormat = proofFormat !== REUSE_PROOF_FORMAT;
   const summary = {
     candidates: 0,
     reused: 0,
     noProof: 0,
     otherContext: 0,
     otherRunner: 0,
+    // WI-6554700010008589: legacy-format proofs rejected because a non-test file drifted.
+    legacyFormatDrift: 0,
     expired: 0,
     notCaptured: 0,
     opaque: 0,
@@ -652,6 +698,10 @@ export function selectReusablePasses({
     const { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
       reject("unknownDrift");
+      continue;
+    }
+    if (legacyFormat && [...drift].some((rel) => rel === file || !LEGACY_PROOF_SAFE_DRIFT_RE.test(rel))) {
+      reject("legacyFormatDrift");
       continue;
     }
     if (global) {
@@ -943,7 +993,10 @@ export function formatTestReuseLine(wsName, summary, extra = "", runtime = undef
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
     `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
     `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0} ` +
-    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}${extra}` +
+    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}` +
+    // WI-6554700010008589: only on a legacy-format judged tree, so every other line is unchanged.
+    (s.legacyFormatDrift ? ` legacyFormatDrift=${s.legacyFormatDrift}` : "") +
+    `${extra}` +
     (runtime === undefined ? "" : ` runtime=${encodeURIComponent(JSON.stringify(runtime))}`)
   );
 }

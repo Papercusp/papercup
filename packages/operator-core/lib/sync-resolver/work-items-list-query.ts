@@ -22,6 +22,7 @@ import type {
 } from '@papercusp/facets';
 import type { BoundedListPage } from './bounded-list-read';
 import {
+  natureWhereSql,
   observationLaneExclusionSql,
   type OrgSql,
 } from '../work-items';
@@ -226,6 +227,8 @@ function workItemScopeSql(
           : sql`FALSE`
     }
     AND (wi.parent_id IS NULL OR wi.parent_id = '')
+    -- Kind/search filters only narrow this queue; they must not opt stored data into work.
+    AND ${natureWhereSql(sql, undefined, undefined)}
     AND ${observationLaneExclusionSql(sql)}`;
 }
 

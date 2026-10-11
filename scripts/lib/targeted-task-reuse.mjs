@@ -50,8 +50,10 @@ import {
   readExecutedMapResults,
 } from "./executed-source-map.mjs";
 import {
+  REUSE_PROOF_FORMAT,
   TEST_REUSE_SKIP_LIST_ENV,
   formatTestReuseLine,
+  judgedTreeProofFormat,
   reuseCandidates,
   reuseRunnerIdentity,
   selectReusablePasses,
@@ -140,7 +142,13 @@ function defaultGit(root, args) {
  * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
  * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
  */
-export function defaultRunnerIdentity(root, env) {
+/**
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @returns {string | null}
+ */
+export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT) {
   try {
     return reuseRunnerIdentity(
       execFileSync("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {
@@ -150,6 +158,7 @@ export function defaultRunnerIdentity(root, env) {
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 30_000,
       }),
+      proofFormat,
     );
   } catch {
     return null;
@@ -159,6 +168,7 @@ export function defaultRunnerIdentity(root, env) {
 const defaultDeps = {
   git: defaultGit,
   runnerIdentity: defaultRunnerIdentity,
+  proofFormat: (root) => judgedTreeProofFormat(root),
   connect: (env) => connectExecutedMapPg({ env }),
   loadProofs: loadReuseProofs,
   changedBetween: (root) => gitChangedBetween({ repoRoot: root, relative: true }),
@@ -292,7 +302,11 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   if (status == null) return off("checkout-status-unknown");
   const dirty = status.split("\n").filter((l) => l.trim().length > 0);
   if (dirty.length > 0) return off(`dirty-checkout(${dirty.length})`);
-  const runnerIdentity = d.runnerIdentity(root, out);
+  // WI-6554700010008589: match the JUDGED tree's recorder, not this module's constant. Its proofs and
+  // its skip-list consumer both use that format; on a frozen lineage older than a format bump the
+  // constant made every proof `otherRunner` (gate run 762a13a6: 0 of 7,689 reused).
+  const proofFormat = (typeof d.proofFormat === "function" ? d.proofFormat(root) : null) ?? REUSE_PROOF_FORMAT;
+  const runnerIdentity = d.runnerIdentity(root, out, proofFormat);
   if (!runnerIdentity) return off("no-runner-identity");
   const runContext = out.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
 
@@ -327,6 +341,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     changedBetween: d.changedBetween(root),
     runContext,
     runnerIdentity,
+    proofFormat,
     nowMs: d.now(),
     maxAgeMs: testReuseMaxAgeMs(out),
     auditRate: testReuseAuditRate(out),
@@ -366,7 +381,12 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   }
   lines.push(
     TARGETED_REUSE_LINE_PREFIX +
-      formatTestReuseLine(label, summary, ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}`),
+      formatTestReuseLine(
+        label,
+        summary,
+        ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}` +
+          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`),
+      ),
   );
   return result(reused);
 }

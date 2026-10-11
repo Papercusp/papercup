@@ -29,7 +29,8 @@ import {
   type SelfWakeSignals,
   type SelfWakeSource,
 } from '../coordination/presence-selfwake';
-import { deriveVerdict } from '../coordination/liveness-oracle';
+import { applyHostConditionLeg, deriveVerdict, type LivenessVerdict } from '../coordination/liveness-oracle';
+import type { HostTailEvent, PickupRecoverable } from '../../events/await/turn-proof';
 import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
@@ -337,6 +338,8 @@ export interface ReconcileWakeabilityOptions {
   findHostFn?: (ownerId: string) => unknown | null;
   /** Injectable async lookup; production request paths use this to keep filesystem waits off the event loop. */
   findHostAsyncFn?: (ownerId: string) => Promise<unknown | null>;
+  /** P-011(a): injectable host lifecycle-tail read for the host-condition leg (PG/fs-free tests). */
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
 }
 
 /** Production roster readers all need the same presence-backed psu-host leg. */
@@ -362,7 +365,7 @@ const fetchReconcilePresence: NonNullable<ReconcileWakeabilityOptions['fetchPres
   );
 };
 
-export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource; wedged?: PickupRecoverable | null }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
   fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
@@ -402,6 +405,8 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   }
   const findHostForVerdict = options.findHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const nowMs = Date.now();
+  const verdicts = new Map<string, LivenessVerdict>();
+  const subjects: { ownerId: string; agentRole?: string | null }[] = [];
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
@@ -434,6 +439,31 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
       selfWake.get(a.agentId),
       recordedEnded,
     );
+    if (!verdicts.has(a.agentId)) subjects.push({ ownerId: a.agentId, agentRole: p?.agentRole ?? null });
+    verdicts.set(a.agentId, v);
+  }
+  // P-011(a) / D-011: positive psu-host authority rescues a row to parked/recorded,
+  // so this surface must also ask whether that host can take a turn. Same shared
+  // leg as resolveSessionStates and coord:presence: a dead-auth / quota-walled /
+  // unbound / stuck-pending host reads `suspect` with its class in `wedged`.
+  // Hosts were already looked up above (or injected), so no fallback lookup.
+  // Fail-soft: an unjudged row keeps its plain derivation.
+  if (options.psuHostPositiveAuthority === true) {
+    try {
+      await applyHostConditionLeg(verdicts, subjects, {
+        nowMs,
+        findHostFn: findHostForVerdict,
+        findHostAsyncFn: null,
+        ...(options.readHostTailFn ? { readHostTailFn: options.readHostTailFn } : {}),
+      });
+    } catch {
+      /* fail-soft */
+    }
+  }
+  for (const a of agents) {
+    const v = verdicts.get(a.agentId);
+    if (!v) continue;
+    if (v.wedged != null) a.wedged = v.wedged;
     a.sessionState = v.sessionState;
     // EI-21125380796386851: `suspect` is recoverable when the coordinator can
     // still deliver a wake. Keep the oracle's wakeability axis alongside the
