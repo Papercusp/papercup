@@ -98,6 +98,27 @@ describe('pg_textsearch (BM25) configuration page', () => {
     expect(DOC).toContain('(/internal/docs/agent-insights/lexical-leg-is-ts-rank-cd-not-bm25)');
   });
 
+  it('documents the D-016 exact list with the real cap, the merge function and the kept corpora', () => {
+    const exact = section('Exact-list corpora (D-016)');
+    const cap = RANK.match(/export const EXACT_LIST_MAX_AND_ROWS = (\d+);/);
+    expect(cap, 'EXACT_LIST_MAX_AND_ROWS not found in rank.ts').not.toBeNull();
+    expect(exact).toContain(`\`EXACT_LIST_MAX_AND_ROWS\` (\`${cap![1]}\`)`);
+    expect(RANK).toContain('export function mergeExactAndBm25');
+    expect(exact).toContain('`mergeExactAndBm25()`');
+
+    // The page must name exactly the corpora the registry keeps, so adding or dropping an
+    // exact list without updating the page fails here.
+    const keeps = (c: (typeof BM25_CORPORA)[number]) => 'keepLegacyColumn' in c && c.keepLegacyColumn === 'exact-list';
+    expect(BM25_CORPORA.filter(keeps).length).toBeGreaterThan(0);
+    for (const c of BM25_CORPORA) {
+      const named = exact.includes(`\`harness_shared.${c.table}\` (\`${c.legacyTsvColumn}\`)`);
+      expect(named, `${c.table}: page and registry disagree on keepLegacyColumn`).toBe(keeps(c));
+    }
+
+    // Retirement must say it skips them.
+    expect(section('Compaction is manual, and maintenance owns it')).toContain('`kept:exact-list`');
+  });
+
   it('pins the CONCURRENTLY lock_timeout and the advisory lock name to the maintenance module', () => {
     const trap = section('Compaction is manual, and maintenance owns it');
     expect(trap).toContain(`\`lock_timeout\` of \`${CONCURRENT_DDL_LOCK_TIMEOUT}\``);
