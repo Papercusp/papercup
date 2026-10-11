@@ -84,8 +84,17 @@ export type IntegrityFailureKind =
 /** Frozen completion criteria, supplied by the existing workload's declaration. */
 export interface WorkloadCompletionRequirements {
   artifacts: Array<{ id: string; minBytes: number; sha256?: string }>;
-  transitions: Array<{ id: string; subjectRef: string; from: string; to: string }>;
-  context: Array<{ id: string; consumer: string; sha256: string }>;
+  /** Required transitions in their causal order. */
+  transitions: Array<{
+    id: string; subjectRef: string; from: string; to: string;
+    /** Omitted means all declared inputs; [] explicitly needs no input. */
+    afterContextIds?: string[];
+  }>;
+  context: Array<{
+    id: string; consumer: string; sha256: string;
+    /** A result/checkpoint input must be delivered after its producer receipt. */
+    afterTransitionId?: string;
+  }>;
   downstream: { id: string; value: string | number | boolean; graderRef: string };
 }
 
@@ -131,6 +140,8 @@ export interface VerifyEvidenceInput {
   unresolvedRefs?: string[];
   /** Exit status is never a substitute for these declared outcome observations. */
   completionRequirements?: WorkloadCompletionRequirements;
+  /** Required for workload completion: actual bytes read from each artifact ref. */
+  resolvedArtifactContents?: Array<{ id: string; ref?: string | null; content: Uint8Array }>;
 }
 
 const textPresent = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -142,15 +153,26 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
   const requirementsHash = sha256(canonicalJson(requirements));
   const validNames = (rows: Array<{ id: string }>) => rows.every(row => textPresent(row.id)) && new Set(rows.map(row => row.id)).size === rows.length;
   const digestValid = (value: string) => /^[a-f0-9]{64}$/.test(value);
+  const contexts = new Map(requirements.context.map(row => [row.id, row]));
+  const transitionOrder = new Map(requirements.transitions.map((row, index) => [row.id, index]));
+  const contextPrerequisites = (row: WorkloadCompletionRequirements['transitions'][number]) => row.afterContextIds ?? [...contexts.keys()];
   if (!requirements.artifacts.length || !requirements.transitions.length ||
       ![requirements.artifacts, requirements.transitions, requirements.context].every(validNames) ||
       requirements.artifacts.some(row => !Number.isSafeInteger(row.minBytes) || row.minBytes < 1 || row.sha256 !== undefined && !digestValid(row.sha256)) ||
       requirements.transitions.some(row => ![row.subjectRef, row.from, row.to].every(textPresent) || row.from === row.to) ||
       requirements.context.some(row => !textPresent(row.consumer) || !digestValid(row.sha256)) ||
+      requirements.context.some(row => row.afterTransitionId !== undefined && !transitionOrder.has(row.afterTransitionId)) ||
+      requirements.transitions.some((row, index) => {
+        const ids = contextPrerequisites(row);
+        return !Array.isArray(ids) || new Set(ids).size !== ids.length || ids.some(id => {
+          const context = contexts.get(id);
+          return !context || context.afterTransitionId !== undefined && transitionOrder.get(context.afterTransitionId)! >= index;
+        });
+      }) ||
       !textPresent(requirements.downstream.id) || !textPresent(requirements.downstream.graderRef) ||
       !['string', 'number', 'boolean'].includes(typeof requirements.downstream.value) ||
       typeof requirements.downstream.value === 'number' && !Number.isFinite(requirements.downstream.value)) {
-    findings.push({ kind: 'completion-contract-invalid', detail: 'Completion needs nonempty artifact/transition criteria and valid context/outcome criteria.' });
+    findings.push({ kind: 'completion-contract-invalid', detail: 'Completion needs valid artifact/transition/context/outcome criteria and acyclic prerequisites referencing declared inputs and earlier transitions.' });
     return requirementsHash;
   }
   if (!input.trial || !input.expectedIdentity?.bindingComplete || !input.envelope?.contentHash) {
@@ -163,29 +185,43 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
   for (const required of requirements.artifacts) {
     const matches = input.evidence.artifacts.filter(artifact => artifact.id === required.id);
     const artifact = matches[0];
+    const resolved = input.resolvedArtifactContents?.filter(value => value.id === required.id) ?? [];
+    const content = resolved[0];
     if (matches.length !== 1 || !artifact || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < required.minBytes ||
-        !digestValid(artifact.sha256) || required.sha256 !== undefined && artifact.sha256 !== required.sha256) {
-      findings.push({ kind: 'completion-artifact-missing', part: required.id, detail: 'Required completion artifact is missing, duplicated, empty or differs from its declared content.' });
+        !digestValid(artifact.sha256) || required.sha256 !== undefined && artifact.sha256 !== required.sha256 ||
+        resolved.length !== 1 || !(content?.content instanceof Uint8Array) || content.ref !== artifact.ref ||
+        content.content.byteLength !== artifact.bytes || createHash('sha256').update(content.content).digest('hex') !== artifact.sha256) {
+      findings.push({ kind: 'completion-artifact-missing', part: required.id, detail: 'Required completion artifact is missing, duplicated, empty or its resolved ref/bytes differ from the declared content.' });
     }
   }
+  const transitionReceipts = new Map(requirements.transitions.map(required => [required.id, input.evidence.trajectory.filter(step => {
+    if (step.kind !== 'tool-result' || !observed(step.metadata)) return false;
+    const transition = step.metadata?.durableTransition as Record<string, unknown> | undefined;
+    return transition?.id === required.id && transition.subjectRef === required.subjectRef && transition.from === required.from && transition.to === required.to;
+  })]));
+  const contextIndices = new Map<string, number>();
   let latestRequiredInput = -1;
   for (const required of requirements.context) {
     const matches = input.evidence.trajectory.filter(step => step.kind === 'input' && step.role === required.consumer &&
       step.metadata?.contextId === required.id && observed(step.metadata) && sha256(step.content) === required.sha256);
-    if (matches.length !== 1) {
-      findings.push({ kind: 'context-delivery-mismatch', part: required.id, detail: 'Required context bytes lack a unique sealed input for the declared consumer and run.' });
-    } else latestRequiredInput = Math.max(latestRequiredInput, matches[0].index);
+    const producer = required.afterTransitionId === undefined ? undefined : transitionReceipts.get(required.afterTransitionId);
+    if (matches.length !== 1 || producer !== undefined && (producer.length !== 1 || matches[0].index <= producer[0].index)) {
+      findings.push({ kind: 'context-delivery-mismatch', part: required.id, detail: 'Required context bytes lack a unique sealed input for the declared consumer and run after their producing transition.' });
+    } else {
+      contextIndices.set(required.id, matches[0].index);
+      latestRequiredInput = Math.max(latestRequiredInput, matches[0].index);
+    }
   }
   let latestRequiredTransition = -1;
+  let priorTransitionMissing = false;
   for (const required of requirements.transitions) {
-    const matches = input.evidence.trajectory.filter(step => {
-      if (step.kind !== 'tool-result' || !observed(step.metadata)) return false;
-      const transition = step.metadata?.durableTransition as Record<string, unknown> | undefined;
-      return transition?.id === required.id && transition.subjectRef === required.subjectRef && transition.from === required.from && transition.to === required.to;
-    });
-    if (matches.length !== 1 || matches[0].index <= latestRequiredInput) {
-      findings.push({ kind: 'durable-transition-missing', part: required.id, detail: 'Required durable transition lacks a unique run-bound receipt after the required input.' });
-    } else latestRequiredTransition = Math.max(latestRequiredTransition, matches[0].index);
+    const matches = transitionReceipts.get(required.id)!;
+    const inputs = contextPrerequisites(required);
+    if (matches.length !== 1 || priorTransitionMissing || matches[0].index <= latestRequiredTransition ||
+        inputs.some(id => !contextIndices.has(id) || matches[0].index <= contextIndices.get(id)!)) {
+      findings.push({ kind: 'durable-transition-missing', part: required.id, detail: 'Required durable transition lacks a unique run-bound receipt after its prerequisite inputs and preceding transitions.' });
+      priorTransitionMissing = true;
+    } else latestRequiredTransition = matches[0].index;
   }
   const results = input.evidence.trajectory.filter(step => {
     if (step.kind !== 'tool-result' || !observed(step.metadata) || step.index <= Math.max(latestRequiredInput, latestRequiredTransition)) return false;
@@ -380,6 +416,7 @@ export function replayTrialEvidence(input: {
   expectedIdentity?: TrialIdentity;
   unresolvedRefs?: string[];
   completionRequirements?: WorkloadCompletionRequirements;
+  resolvedArtifactContents?: VerifyEvidenceInput['resolvedArtifactContents'];
   storedJudgeView?: CompactJudgeView;
   policy?: JudgeViewPolicy;
 }): ReplayReport {
@@ -390,6 +427,7 @@ export function replayTrialEvidence(input: {
     evidence: input.evidence,
     envelope: input.envelope,
     completionRequirements: input.completionRequirements,
+    resolvedArtifactContents: input.resolvedArtifactContents,
     trial: input.trial,
     expectedIdentity: input.expectedIdentity,
     unresolvedRefs: input.unresolvedRefs,

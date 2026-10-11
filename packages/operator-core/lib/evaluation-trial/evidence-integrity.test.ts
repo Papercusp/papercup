@@ -133,13 +133,14 @@ describe('declared workload completion integrity', () => {
         ...metadata, workloadOutcome: { id: 'answer-correctness', value: true, graderRef: 'deterministic-answer-v1' },
       } },
     ] };
-    const verify = (value = preserved, completion = requirements()) => {
+    const contents = [{ id: 'answer.txt', ref: 'fixture:answer', content: Buffer.from('answer') }];
+    const verify = (value = preserved, completion = requirements(), resolvedArtifactContents = contents) => {
       // Re-sealing mutations isolates completion semantics from generic corruption.
       const sealed = sealEvidence(value);
       return verifyEvidence({ trial: t, expectedIdentity: identity, evidence: value, manifest: sealed.manifest,
-        envelope: sealed.envelope, completionRequirements: completion });
+        envelope: sealed.envelope, completionRequirements: completion, resolvedArtifactContents });
     };
-    return { preserved, verify };
+    return { preserved, verify, contents };
   }
 
   it('checks artifacts, actual input bytes, durable transitions and downstream outcome together', () => {
@@ -158,6 +159,27 @@ describe('declared workload completion integrity', () => {
     expect(verify(exited).findings.map(f => f.kind)).toEqual(expect.arrayContaining([
       'completion-artifact-missing', 'context-delivery-mismatch', 'durable-transition-missing', 'downstream-outcome-missing',
     ]));
+  });
+
+  it.each(['absent', 'changed', 'truncated', 'duplicate', 'foreign-ref'])
+    ('checks resolved completion artifact bytes rather than trusting descriptors: %s', defect => {
+      const { verify, contents } = fixture();
+      let resolved = contents;
+      if (defect === 'absent') resolved = [];
+      if (defect === 'changed') resolved = [{ ...contents[0], content: Buffer.from('wrong!') }];
+      if (defect === 'truncated') resolved = [{ ...contents[0], content: Buffer.from('ans') }];
+      if (defect === 'duplicate') resolved = [contents[0], contents[0]];
+      if (defect === 'foreign-ref') resolved = [{ ...contents[0], ref: 'fixture:other-arm-answer' }];
+      // The evidence, seal and declared descriptor are all unchanged.
+      expect(verify(undefined, undefined, resolved).findings.map(f => f.kind)).toContain('completion-artifact-missing');
+    });
+
+  it('forwards resolved workload artifact bytes through replay', () => {
+    const { preserved, contents } = fixture(); const t = trial(); const sealed = sealEvidence(preserved);
+    const input = { trial: t, expectedIdentity: computeTrialIdentity(t), evidence: preserved,
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements() };
+    expect(replayTrialEvidence({ ...input, resolvedArtifactContents: contents }).ok).toBe(true);
+    expect(replayTrialEvidence(input).integrity.findings.map(f => f.kind)).toContain('completion-artifact-missing');
   });
 
   it.each(['wrong-bytes', 'retrieved-only', 'wrong-consumer', 'foreign-run', 'foreign-binding', 'missing-receipt', 'duplicate-input'])
@@ -208,4 +230,58 @@ describe('declared workload completion integrity', () => {
       manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements() }).integrity.findings
       .map(f => f.kind)).toContain('completion-artifact-missing');
   });
+
+  function dependencyFixture() {
+    const { preserved, verify } = fixture();
+    const dependencyContext = 'Observed dependency result: answer';
+    const first = { id: 'dependency-finish', subjectRef: 'WI-dependency', from: 'wip', to: 'done', afterContextIds: ['dependency-context'] };
+    const completion: WorkloadCompletionRequirements = {
+      ...requirements(),
+      transitions: [first, { ...requirements().transitions[0], afterContextIds: ['result-context'] }],
+      context: [...requirements().context, {
+        id: 'result-context', consumer: 'solver', sha256: hash(dependencyContext), afterTransitionId: first.id,
+      }],
+    };
+    const receipt = preserved.trajectory[1];
+    preserved.trajectory.splice(1, 0,
+      { ...receipt, metadata: { ...receipt.metadata, durableTransition: first } },
+      { ...preserved.trajectory[0], content: dependencyContext,
+        metadata: { ...receipt.metadata, contextId: 'result-context' } });
+    preserved.trajectory.forEach((step, index) => { step.index = index; });
+    return { preserved, verify, completion };
+  }
+
+  it('accepts dependency completion followed by consumed result context and dependent completion', () => {
+    const { verify, completion } = dependencyFixture();
+    expect(verify(undefined, completion)).toMatchObject({ ok: true, findings: [] });
+  });
+
+  it('refuses declared transitions observed in reverse order', () => {
+    const { preserved, verify } = fixture();
+    const start = { id: 'start', subjectRef: 'WI-fixture', from: 'open', to: 'wip' };
+    const completion = requirements();
+    completion.transitions.unshift(start);
+    // Correct subject/states, receipts and context; only the order is wrong.
+    const receipt = preserved.trajectory[1];
+    preserved.trajectory.splice(2, 0, { ...receipt, metadata: { ...receipt.metadata, durableTransition: start } });
+    preserved.trajectory.forEach((step, index) => { step.index = index; });
+    expect(verify(undefined, completion).findings.map(f => f.kind)).toContain('durable-transition-missing');
+  });
+
+  it('refuses dependency-result context delivered before its producing transition', () => {
+    const { preserved, verify, completion } = dependencyFixture();
+    [preserved.trajectory[1], preserved.trajectory[2]] = [preserved.trajectory[2], preserved.trajectory[1]];
+    preserved.trajectory.forEach((step, index) => { step.index = index; });
+    expect(verify(undefined, completion).findings.map(f => f.kind)).toContain('context-delivery-mismatch');
+  });
+
+  it.each(['unknown-context', 'duplicate-context', 'unknown-transition', 'cyclic-dependency'])
+    ('refuses completion prerequisite defect %s', defect => {
+      const { verify, completion } = dependencyFixture();
+      if (defect === 'unknown-context') completion.transitions[0].afterContextIds = ['missing-context'];
+      if (defect === 'duplicate-context') completion.transitions[0].afterContextIds = ['dependency-context', 'dependency-context'];
+      if (defect === 'unknown-transition') completion.context[1].afterTransitionId = 'missing-transition';
+      if (defect === 'cyclic-dependency') completion.transitions[0].afterContextIds = ['result-context'];
+      expect(verify(undefined, completion).findings.map(f => f.kind)).toContain('completion-contract-invalid');
+    });
 });
