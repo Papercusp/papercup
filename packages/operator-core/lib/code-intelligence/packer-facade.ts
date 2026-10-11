@@ -537,6 +537,14 @@ export interface NativeChangeReport {
   readonly changed: readonly { path: string; line1: number | null; patch: string }[];
   readonly consumers: readonly SymbolSite[];
   readonly relevantTests: readonly SymbolSite[];
+  readonly interfaces: {
+    readonly status: 'measured' | 'unknown';
+    readonly diagnostics: NonNullable<import('./first-party-callers').FirstPartyCallersAnswer['interfaces']>['diagnostics'];
+    readonly registrations: NonNullable<import('./first-party-callers').FirstPartyCallersAnswer['interfaces']>['registrations'];
+    readonly mismatchedConsumers: readonly SymbolSite[];
+    readonly truncated: boolean;
+    readonly limitations: readonly string[];
+  };
   readonly testReach: {
     readonly symbol: string;
     readonly file: string;
@@ -604,7 +612,7 @@ export async function nativeChangeReport(args: PackerArgs, subject: ChangeReport
   if (!patch && subject.phase !== 'pre-edit') limitations.push('No diff was measured; a named subject alone does not establish an edited behavior.');
   const graph = effects.graph ?? ((request: ChangeReportRequest, graphRoot: string) => firstPartyCallersOffthread({
     vendorDir: LSP_VENDOR_DIR, root: graphRoot, op: 'impact', name: request.symbol,
-    filePath: request.file, line1: request.line1, paths, limit, direction: 'downstream', maxDepth: 5, maxPaths: 20,
+    filePath: request.file, line1: request.line1, paths, limit, direction: 'downstream', maxDepth: 5, maxPaths: 20, includeInterfaces: true,
   }));
   const answer = await graph(subject, root);
   if (answer.error) limitations.push(answer.error);
@@ -669,7 +677,15 @@ export async function nativeChangeReport(args: PackerArgs, subject: ChangeReport
     gapSuggestion: reachStatus === 'not-found-in-scope'
       ? `No static test reach for ${subject.symbol} was found in the requested scope; add a calling test and run the baseline suite.` : null };
   limitations.push('Static test reach suggests tests to run; it does not establish executed coverage or passing tests.');
-  return { answer, report: { subject, changed, consumers, relevantTests, testReach, recheck, sourceFingerprint,
+  const capturedInterfaces = (answer as import('./first-party-callers').FirstPartyCallersAnswer).interfaces;
+  const interfaceMeasured = measured && !answer.error && capturedInterfaces?.status === 'measured';
+  const interfaces: NativeChangeReport['interfaces'] = { status: interfaceMeasured ? 'measured' : 'unknown',
+    diagnostics: interfaceMeasured ? capturedInterfaces.diagnostics : [], registrations: interfaceMeasured ? capturedInterfaces.registrations : [],
+    mismatchedConsumers: interfaceMeasured ? capturedInterfaces.diagnostics.filter(diagnostic =>
+      consumers.some(consumer => consumer.path === diagnostic.site.path)).map(diagnostic => diagnostic.site) : [],
+    truncated: capturedInterfaces?.truncated ?? false,
+    limitations: capturedInterfaces?.limitations ?? ['Interface diagnostics and static registrations were not supplied by the compiler worker.'] };
+  return { answer, report: { subject, changed, consumers, relevantTests, interfaces, testReach, recheck, sourceFingerprint,
     freshness: !measured ? 'unmeasured' : !subject.previousFingerprint ? 'first-read'
       : subject.previousFingerprint === sourceFingerprint ? 'unchanged' : 'changed',
     provenance: { ...git, runtime: getBuildInfo(), graph: answer.evidence }, limitations: [...new Set(limitations)],
