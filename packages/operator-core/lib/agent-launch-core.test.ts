@@ -1537,6 +1537,39 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  function codexTargetFixture() {
+    const f = fixture();
+    f.target.agent = 'codex';
+    f.port.targetBackend = 'codex';
+    (f.port.metadata.summary as { target: { backend: string } }).target.backend = 'codex';
+    const host = { ...f.host, command: 'codex', args: ['resume', 'target-native'],
+      nativeSessionId: null as string | null | undefined };
+    return { ...f, host, options: { ...f.options,
+      expectedPort: { sourceAdvSessionId: 11, targetBackend: 'codex' as const },
+      findHost: () => host as never } };
+  }
+
+  it.each([undefined, null])('keeps a delivered Codex conversion without observed identity unconfirmed (%s)', async (nativeSessionId) => {
+    const f = codexTargetFixture();
+    f.host.nativeSessionId = nativeSessionId;
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: null, mismatch: false, expectedSessionId: 'target-native', actualSessionId: null,
+    });
+  });
+
+  it('waits for observed Codex conversion identity and rejects a contradictory child UUID', async () => {
+    const f = codexTargetFixture();
+    const sleep = vi.fn(async () => { f.host.nativeSessionId = 'target-native'; });
+    f.host.args = ['resume', 'requested-predecessor'];
+    expect(await verifyResumeStarted(OWNER, { ...f.options, sleep, timeoutMs: 1000, pollMs: 1 }))
+      .toMatchObject({ started: true, mismatch: false, actualSessionId: 'target-native' });
+    expect(sleep).toHaveBeenCalledTimes(1);
+    f.host.nativeSessionId = 'unrelated-child';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: false, mismatch: true, actualSessionId: 'unrelated-child',
+    });
+  });
+
   it('does not use a port receipt to override an ordinary same-backend UUID mismatch', async () => {
     const f = fixture();
     const { expectedPort: _port, ...ordinary } = f.options;

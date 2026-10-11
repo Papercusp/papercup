@@ -2393,7 +2393,10 @@ export async function verifyResumeStarted(
                          typeof port.metadata.bootstrapRequestHash === 'string' && port.metadata.bootstrapRequestHash.length > 0 &&
                          proof?.persisted === true && typeof proof.nativeRef === 'string' && proof.nativeRef.length > 0 &&
                          proof.renderedHash === port.renderedHash && portExpected != null) {
-                verdict = actual === portExpected;
+                // The delivered port attests its intended target. An absent
+                // physical child UUID is still unknown, so allow the host
+                // observation to arrive before declaring a mismatch.
+                verdict = actual == null ? null : actual === portExpected;
               }
             }
           }
