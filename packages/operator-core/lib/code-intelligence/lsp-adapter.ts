@@ -77,10 +77,30 @@ import {
 export const LSP_LANGUAGES = ['typescript', 'rust', 'python', 'go'] as const;
 export type LspLanguage = typeof LSP_LANGUAGES[number];
 
-/** Where the pinned pilot environment lives (P-007). */
-export const LSP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'lsp');
+/** Select once at daemon bootstrap, so a warm client cannot change installations. */
+export function resolveLspVendorDir(setting: string | undefined = process.env.PAPERCUSP_LSP_VENDOR_DIR): string {
+  if (setting === undefined) return join(homedir(), '.papercusp', 'vendor', 'lsp');
+  if (!isAbsolute(setting) || resolvePath(setting) !== setting)
+    throw new Error('PAPERCUSP_LSP_VENDOR_DIR must be an absolute canonical directory');
+  try {
+    if (realpathSync(setting) === setting && statSync(setting).isDirectory()) return setting;
+  } catch { /* report the configured installation, never fall back to home */ }
+  throw new Error(`PAPERCUSP_LSP_VENDOR_DIR must be an existing canonical directory: ${setting}`);
+}
+
+/** Pinned installation; isolated daemons may select an independently copied tree. */
+export const LSP_VENDOR_DIR = resolveLspVendorDir();
 export const PYRIGHT_VERSION = '1.1.414';
 export const GOPLS_VERSION = 'v0.22.0';
+
+function pinnedVendorFile(path: string, vendorDir: string): string | null {
+  if (!existsSync(path)) return null;
+  const canonical = realpathSync(path);
+  const local = relative(realpathSync(vendorDir), canonical);
+  if (local === '..' || local.startsWith('../') || isAbsolute(local))
+    throw new Error(`Pinned LSP runtime escapes vendor root: ${path} -> ${canonical}`);
+  return path;
+}
 
 /**
  * Resolve the tsserver entrypoint — D-009, and the single most confusing
@@ -102,17 +122,18 @@ export function resolveTsserverPath(vendorDir: string = LSP_VENDOR_DIR): string 
   const req = createRequire(join(vendorDir, 'noop.js'));
   const candidates = ['@typescript/old/lib/tsserver.js', 'typescript/lib/tsserver.js'];
   for (const spec of candidates) {
+    let resolved: string;
     try {
-      const resolved = req.resolve(spec);
-      if (existsSync(resolved)) return resolved;
+      resolved = req.resolve(spec);
     } catch {
-      /* try the next candidate */
+      continue;
     }
+    if (pinnedVendorFile(resolved, vendorDir)) return resolved;
   }
   // Direct path fallback before giving up, so a resolution quirk does not mask
   // an install that is actually fine.
   const direct = join(vendorDir, 'node_modules', '@typescript', 'old', 'lib', 'tsserver.js');
-  if (existsSync(direct)) return direct;
+  if (pinnedVendorFile(direct, vendorDir)) return direct;
 
   throw new Error(
     `No tsserver.js found under ${vendorDir}. This is the D-009 failure: the repo's ` +
@@ -251,12 +272,12 @@ interface LanguageSpec {
   /** The `textDocument.languageId` this server expects. */
   readonly languageId: string;
   /** Absolute path to the pinned server binary, or null when not provisioned. */
-  readonly resolveBin: () => string | null;
+  readonly resolveBin: (vendorDir?: string) => string | null;
   readonly serverArgs: readonly string[];
   readonly projectMarkers: readonly string[];
-  readonly initializationOptions: (rootPath: string, plugin?: SemanticCompletionPluginDeclaration) => unknown;
+  readonly initializationOptions: (rootPath: string, plugin?: SemanticCompletionPluginDeclaration, vendorDir?: string) => unknown;
   /** Interpreted server payloads belong in the binary identity too. */
-  readonly identityFiles?: () => readonly string[];
+  readonly identityFiles?: (vendorDir?: string) => readonly string[];
   /**
    * Readiness is per intent, never per server. Missing entries use the
    * conservative canary-query default; they can answer positively, but cannot
@@ -272,10 +293,12 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
     languageId: 'typescript',
     serverArgs: ['--stdio'],
     projectMarkers: ['tsconfig.json', 'jsconfig.json'],
-    initializationOptions: (root, plugin) => typescriptInitializationOptions(resolveTsserverPath(), undefined, root, plugin),
-    resolveBin: () => {
-      const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
-      return existsSync(bin) ? bin : null;
+    initializationOptions: (root, plugin, vendorDir = LSP_VENDOR_DIR) =>
+      typescriptInitializationOptions(resolveTsserverPath(vendorDir), undefined, root, plugin),
+    identityFiles: (vendorDir = LSP_VENDOR_DIR) => [resolveTsserverPath(vendorDir)],
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const bin = join(vendorDir, 'node_modules', '.bin', 'typescript-language-server');
+      return pinnedVendorFile(bin, vendorDir);
     },
     readinessStrategy: {
       // The only tsserver intents with measured readiness mechanisms so far.
@@ -311,14 +334,19 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
     serverArgs: ['--stdio'],
     projectMarkers: ['pyrightconfig.json', 'pyproject.toml', 'setup.cfg', 'setup.py'],
     initializationOptions: () => ({}),
-    identityFiles: () => [join(LSP_VENDOR_DIR, 'pyright', PYRIGHT_VERSION, 'node_modules', 'pyright', 'dist', 'pyright-internal.js')],
-    resolveBin: () => {
-      const dir = join(LSP_VENDOR_DIR, 'pyright', PYRIGHT_VERSION);
+    identityFiles: (vendorDir = LSP_VENDOR_DIR) => {
+      const file = join(vendorDir, 'pyright', PYRIGHT_VERSION, 'node_modules', 'pyright', 'dist', 'pyright-internal.js');
+      if (!pinnedVendorFile(file, vendorDir)) throw new Error(`Pinned pyright identity file is missing: ${file}`);
+      return [file];
+    },
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const dir = join(vendorDir, 'pyright', PYRIGHT_VERSION);
       const bin = join(dir, 'node_modules', '.bin', 'pyright-langserver');
       try {
         const pkg = JSON.parse(readFileSync(join(dir, 'node_modules', 'pyright', 'package.json'), 'utf8'));
-        return pkg.version === PYRIGHT_VERSION && existsSync(bin) ? bin : null;
+        if (pkg.version !== PYRIGHT_VERSION) return null;
       } catch { return null; }
+      return pinnedVendorFile(bin, vendorDir);
     },
     // Pyright does not offer rust-analyzer's authoritative quiescence signal.
     // Positive navigation is useful; an unproven empty remains degraded.
@@ -329,9 +357,9 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
     serverArgs: ['serve'],
     projectMarkers: ['go.mod', 'go.work'],
     initializationOptions: () => ({ vulncheck: 'Off' }),
-    resolveBin: () => {
-      const bin = join(LSP_VENDOR_DIR, 'gopls', GOPLS_VERSION, 'bin', 'gopls');
-      return existsSync(bin) ? bin : null;
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const bin = join(vendorDir, 'gopls', GOPLS_VERSION, 'bin', 'gopls');
+      return pinnedVendorFile(bin, vendorDir);
     },
     readinessStrategy: {},
   },
@@ -1538,7 +1566,7 @@ async function startClient(language: LspLanguage, rootPath: string, semanticPlug
   try {
     const result = initialized as { serverInfo?: unknown; capabilities?: unknown } | null;
     client.capabilityServerIdentity = lspServerIdentity(
-      bin, result?.serverInfo, spec.identityFiles?.() ?? (language === 'typescript' ? [resolveTsserverPath()] : []),
+      bin, result?.serverInfo, spec.identityFiles?.() ?? [],
     );
     await Promise.all(initializeCapabilityObservations(language, client.capabilityServerIdentity, result?.capabilities)
       .map(observation => lspCapabilityStore.observe(observation)));

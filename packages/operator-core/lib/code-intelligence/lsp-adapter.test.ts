@@ -10,9 +10,9 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, stat, truncate, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,8 @@ import {
   typescriptInitializationOptions,
   typescriptWorkspaceMemoryMb,
   resolveServerBin,
+  resolveLspVendorDir,
+  resolveTsserverPath,
   symbolSearchEmptyCaveat,
   type LspReadinessIntent,
   type LspReadinessStrategy,
@@ -515,6 +517,104 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
     await expect(ensureOpen(client, file)).rejects.toThrow('closed connection');
     expect(client.openDocs.has(uri)).toBe(false);
     expect(client.certifiedReadiness.size).toBe(0);
+  });
+});
+
+describe('WI-41095 — independently copied vendor binding', () => {
+  let parent: string;
+  let vendor: string;
+  let tsserver: string;
+  let launcher: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', undefined);
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '8192');
+    parent = await mkdtemp(join(tmpdir(), 'wi41095-vendor-binding-'));
+    vendor = join(parent, 'copied-vendor');
+    const compiler = join(vendor, 'node_modules', '@typescript', 'old');
+    await mkdir(join(compiler, 'lib'), { recursive: true });
+    await writeFile(join(compiler, 'package.json'), '{"name":"typescript","version":"6.0.3"}');
+    tsserver = join(compiler, 'lib', 'tsserver.js');
+    await writeFile(tsserver, '// declared server entry');
+    await writeFile(join(compiler, 'lib', 'typescript.js'), "module.exports = { version: 'declared-copy' };");
+    const server = join(vendor, 'node_modules', 'typescript-language-server');
+    await mkdir(server);
+    await writeFile(join(server, 'cli.js'), '// declared wrapper entry');
+    await mkdir(join(vendor, 'node_modules', '.bin'));
+    launcher = join(vendor, 'node_modules', '.bin', 'typescript-language-server');
+    await symlink('../typescript-language-server/cli.js', launcher);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(parent, { recursive: true, force: true });
+  });
+
+  it('retains the maintained default and selects only a canonical configured root', async () => {
+    expect(resolveLspVendorDir()).toBe(join(homedir(), '.papercusp', 'vendor', 'lsp'));
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', vendor);
+    expect(resolveLspVendorDir()).toBe(vendor);
+    const alias = join(parent, 'vendor-alias');
+    await symlink(vendor, alias);
+    for (const invalid of ['', './vendor', `${vendor}/..`, alias, tsserver, join(parent, 'missing')])
+      expect(() => resolveLspVendorDir(invalid)).toThrow('PAPERCUSP_LSP_VENDOR_DIR');
+  });
+
+  it('binds the launcher, tsserver initialization, identity and cache compiler to the same copy', () => {
+    const spec = specForLanguage('typescript');
+    expect(spec.resolveBin(vendor)).toBe(launcher);
+    expect(resolveTsserverPath(vendor)).toBe(tsserver);
+    expect(spec.initializationOptions(parent, undefined, vendor)).toMatchObject({ tsserver: { path: tsserver } });
+    expect(spec.identityFiles!(vendor)).toEqual([tsserver]);
+    expect(createRequire(resolveTsserverPath(vendor))('./typescript.js').version).toBe('declared-copy');
+  });
+
+  it('captures the selected root at module bootstrap across every production lookup', async () => {
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', vendor);
+    vi.resetModules();
+    try {
+      const adapter = await import('./lsp-adapter.ts');
+      vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', join(parent, 'later-installation'));
+      expect(adapter.LSP_VENDOR_DIR).toBe(vendor);
+      expect(adapter.resolveServerBin('typescript')).toBe(launcher);
+      expect(adapter.resolveTsserverPath()).toBe(tsserver);
+      const spec = adapter.specForLanguage('typescript');
+      expect(spec.initializationOptions(parent)).toMatchObject({ tsserver: { path: tsserver } });
+      expect(spec.identityFiles!()).toEqual([tsserver]);
+    } finally { vi.resetModules(); }
+  });
+
+  it('refuses an ancestor compiler rather than borrowing from the donor installation', async () => {
+    const ancestor = join(parent, 'node_modules', '@typescript', 'old', 'lib');
+    await mkdir(ancestor, { recursive: true });
+    await writeFile(join(ancestor, 'tsserver.js'), '// ambient compiler');
+    await rm(join(vendor, 'node_modules', '@typescript'), { recursive: true });
+    expect(() => resolveTsserverPath(vendor)).toThrow('escapes vendor root');
+    expect(() => specForLanguage('typescript').initializationOptions(parent, undefined, vendor))
+      .toThrow('escapes vendor root');
+  });
+
+  it('refuses a compiler symlink outside the declared root', async () => {
+    const outside = join(parent, 'external-tsserver.js');
+    await writeFile(outside, '// external compiler');
+    await rm(tsserver);
+    await symlink(outside, tsserver);
+    expect(() => resolveTsserverPath(vendor)).toThrow('escapes vendor root');
+  });
+
+  it('refuses a wrapper symlink outside the declared root before launch', async () => {
+    const outside = join(parent, 'external-wrapper.js');
+    await writeFile(outside, '// external wrapper');
+    await rm(launcher);
+    await symlink(outside, launcher);
+    expect(() => specForLanguage('typescript').resolveBin(vendor)).toThrow('escapes vendor root');
+  });
+
+  it('reports an incomplete selected installation instead of returning a home server', async () => {
+    await rm(launcher);
+    expect(specForLanguage('typescript').resolveBin(vendor)).toBeNull();
+    await rm(join(vendor, 'node_modules', '@typescript'), { recursive: true });
+    expect(() => resolveTsserverPath(vendor)).toThrow(`No tsserver.js found under ${vendor}`);
   });
 });
 
