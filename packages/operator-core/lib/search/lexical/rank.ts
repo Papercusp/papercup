@@ -33,7 +33,7 @@ import type { PendingQuery, Row, Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { RRF_K_DEFAULT } from '@papercusp/rrf';
+import { RRF_K_DEFAULT, rrfCombine } from '@papercusp/rrf';
 import { BM25_CORPORA, bm25Corpus, renderBm25TextExpr, type Bm25Corpus, type Bm25CorpusTable } from './corpora';
 
 /** A postgres.js SQL fragment, spliced with `${fragment}` into a tagged template. */
@@ -180,6 +180,45 @@ export function rrfTerm(sql: Sql, matched: SqlFragment, score: SqlFragment): Sql
   return sql`(CASE WHEN ${matched}
                 THEN 1.0 / (${k} + rank() OVER (ORDER BY (CASE WHEN ${matched} THEN ${score} END) DESC NULLS LAST))
                 ELSE 0 END)`;
+}
+
+/** One best-first result list from one corpus, for `fuseByPosition`. */
+export interface PositionedList<T> {
+  name: string;
+  rows: readonly T[];
+  /** Identity of a row within the fused result. */
+  key: (row: T) => string;
+}
+
+export interface PositionFusedRow<T> {
+  row: T;
+  /** Reciprocal-rank-fusion score: the merged order, comparable across lists. */
+  score: number;
+  /** Name of the list the row came from. */
+  list: string;
+  /** 1-based position of the row in that list. */
+  position: number;
+}
+
+/**
+ * Merge best-first result lists from DIFFERENT corpora into one ranking by position
+ * (reciprocal rank fusion), never by raw score. A lexical score is not comparable across
+ * corpora (each BM25 index has its own IDF statistics) or across engines (BM25 is unbounded,
+ * ts_rank sits in [0,1)), so sorting the union by score lets whichever list happens to use
+ * the larger scale take every slot. Equal positions keep the lists' input order. Keys are
+ * scoped by list, so rows of different corpora that share an id stay distinct.
+ * Plan bm25-lexical-search-evoke-adoption-2026-10-10 D-006.
+ */
+export function fuseByPosition<T>(lists: ReadonlyArray<PositionedList<T>>): Array<PositionFusedRow<T>> {
+  const inputs = lists.map(({ name, rows, key }) => ({
+    name,
+    list: rows.map((row, idx) => ({
+      key: `${name}\u0000${key(row)}`,
+      score: 0,
+      row: { row, list: name, position: idx + 1 },
+    })),
+  }));
+  return rrfCombine(inputs).map(fused => ({ ...fused.row, score: fused.score }));
 }
 
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
