@@ -18,6 +18,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { withPgRetry } from '../../pg-transient-retry';
@@ -1561,11 +1562,11 @@ type Globals = typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
  * (timeout_behavior 'wake' → a TIMEOUT wake delivery; 'expire' → visible
  * lapse), then pump anything due (incl. parked rows whose process died).
  *
- * A background reader has no request to scope it, so each tick sweeps every
- * workspace `backgroundWorkspaceIds()` names (per-window-workspace-context
- * P-020) — under the shared-operator model that is EVERY registered
- * workspace, so an await registered in a non-global workspace still times
- * out / resumes. Each sweep runs inside that workspace's ALS scope so nested
+ * Await rows live in DEFAULT_COORD_WORKSPACE, while source reconcilers can
+ * depend on each background workspace (per-window-workspace-context P-020).
+ * Sweep both contexts: default rows get a pump running under their storage
+ * context, and each registered workspace still gets its own reconciliation
+ * pass. Each sweep runs inside that workspace's ALS scope so nested
  * `activeWorkspaceId()` reads (reconcilers, wake delivery) resolve it.
  */
 export function startAwaitSweeper(): void {
@@ -1577,9 +1578,10 @@ export function startAwaitSweeper(): void {
   }, { category: 'global-sweep' });
 }
 
-/** One tick of the sweeper: sweepOnce per background workspace (P-020). */
+/** One tick of the sweeper: sweep the coordination workspace and each background workspace. */
 export async function sweepAllWorkspaces(): Promise<void> {
-  for (const ws of backgroundWorkspaceIds()) {
+  const workspaces = new Set([DEFAULT_COORD_WORKSPACE, ...backgroundWorkspaceIds()]);
+  for (const ws of workspaces) {
     // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776). The sweeper is documented
     // restart-safe (all state is PG, every op state-guarded), so re-running it is
     // equivalent to the next tick — and a CONNECT_TIMEOUT fires in the connect phase, so
