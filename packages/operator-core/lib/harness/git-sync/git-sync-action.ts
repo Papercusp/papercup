@@ -3327,7 +3327,7 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
  * subject IS the authoring agent's intent). Deterministic git reads, best-effort: returns [] on
  * any failure — the merge-resolver.md prompt has a git-log fallback. Bounded to 20 files/scope.
  */
-async function computeConflictAuthorship(
+export async function computeConflictAuthorship(
   repoRoot: string,
   conflicts: RepoConflict[],
 ): Promise<

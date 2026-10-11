@@ -664,6 +664,7 @@ import {
   resetIntegratorErrorWarningsForTest,
   runBootstrapLeg,
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
+  computeConflictAuthorship,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -6070,11 +6071,21 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
 });
 
 describe('WI-10005972: sidecar Git entrypoint attribution', () => {
-  it('isolates conflict-authorship and docs reads at the shared execution seam', () => {
+  it('isolates conflict-authorship and docs reads at the shared execution seam', async () => {
+    // Drive the conflict-authorship read HERE and assert only on the calls this
+    // body made. It used to pass only because earlier tests had already pushed a
+    // matching call into the never-cleared file-level array, so a focused
+    // `-t` run of it alone went red (WI-6554700010008433).
+    const start = sidecarGitCalls.length;
+    await computeConflictAuthorship(repoDir, [
+      { scope: 'superproject', conflictedFiles: ['conflicted.ts'] },
+    ]);
     const conflictPrefix = ['log', '-n', '5', '--format=%H%x1f%B%x1e', '--'];
-    expect(sidecarGitCalls.some(({ args }) =>
-      JSON.stringify(args.slice(0, 5)) === JSON.stringify(conflictPrefix),
+    const own = sidecarGitCalls.slice(start);
+    expect(own.some(({ args, cwd }) =>
+      JSON.stringify(args) === JSON.stringify([...conflictPrefix, 'conflicted.ts']) && cwd === repoDir,
     )).toBe(true);
+    // File-wide invariant: no sidecar call from any test escapes the fixture repo.
     for (const { cwd } of sidecarGitCalls) {
       expect(cwd === repoDir || cwd.startsWith(repoDir + '/'), cwd).toBe(true);
     }
