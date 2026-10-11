@@ -10,27 +10,51 @@ describe('mergeExactAndBm25 (R-13, D-016)', () => {
   type R = { id: string; rank: number };
   const id = (r: R) => r.id;
 
-  it('counts a row both lists found ONCE, with both contributions, ahead of single-list rows', () => {
+  it('interleaves BM25 then exact, and keeps a row both lists found once, at its earlier slot', () => {
     const exact: R[] = [{ id: 'target', rank: 0.9 }, { id: 'e2', rank: 0.5 }];
     const bm25: R[] = [{ id: 'b1', rank: 30 }, { id: 'target', rank: 20 }, { id: 'b3', rank: 10 }];
     const merged = mergeExactAndBm25(exact, bm25, id, 10);
-    expect(merged.map(r => r.id)).toEqual(['target', 'b1', 'e2', 'b3']);
+    expect(merged.map(r => r.id)).toEqual(['b1', 'target', 'e2', 'b3']);
     expect(merged.filter(r => r.id === 'target')).toHaveLength(1);
-    expect(merged[0].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1) + 1 / (RRF_K_DEFAULT + 2), 12);
   });
 
   it('keeps a fragment target the exact list ranks first inside the top results even when BM25 never found it', () => {
-    // The R-13 failure shape: BM25 ranks the target past its whole list, the exact list ranks it 1.
+    // BM25 ranks the target past its whole list, the exact list ranks it 1.
     const bm25: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `b${i}`, rank: 100 - i }));
     const exact: R[] = [{ id: 'target', rank: 0.4 }];
     const merged = mergeExactAndBm25(exact, bm25, id, 10);
-    expect(merged.map(r => r.id).indexOf('target')).toBe(0);
+    expect(merged.map(r => r.id).indexOf('target')).toBe(1);
   });
 
-  it('breaks a tie in favour of the exact list and scores rows by fused rank, not by either scale', () => {
+  it('keeps the exact rank-1 row in the top two when many rows overlap both lists (R-13 run 12, D-032)', () => {
+    // The measured shape: exact rank 1 / BM25 rank 58 for the target, and 21 of the two
+    // top-30 lists' rows in both. Reciprocal-rank fusion put the target at position 22.
+    const pairs: Array<[number, number]> = [
+      [2, 3], [3, 5], [4, 20], [6, 12], [8, 1], [9, 16], [10, 22], [11, 2], [12, 18], [13, 21], [14, 4],
+      [15, 26], [16, 24], [17, 27], [18, 6], [19, 23], [22, 14], [24, 13], [25, 9], [29, 11], [30, 29],
+    ];
+    const exact: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `e${i + 1}`, rank: 1 - i / 100 }));
+    const bm25: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `b${i + 1}`, rank: 50 - i }));
+    exact[0] = { id: 'target', rank: 1 };
+    for (const [e, b] of pairs) bm25[b - 1] = { id: `e${e}`, rank: 50 - (b - 1) };
+    const merged = mergeExactAndBm25(exact, bm25, id, 30);
+    expect(merged.map(r => r.id).indexOf('target')).toBe(1);
+    expect(new Set(merged.map(r => r.id)).size).toBe(merged.length);
+  });
+
+  it('bounds every row by its better list: exact rank r at position <= 2r, BM25 rank r at <= 2r-1', () => {
+    const exact: R[] = Array.from({ length: 20 }, (_, i) => ({ id: `x${(i * 7) % 20}`, rank: 20 - i }));
+    const bm25: R[] = Array.from({ length: 20 }, (_, i) => ({ id: `x${(i * 3) % 20}`, rank: 20 - i }));
+    const pos = new Map(mergeExactAndBm25(exact, bm25, id, 40).map((r, i) => [r.id, i + 1]));
+    exact.forEach((r, i) => expect(pos.get(r.id)!).toBeLessThanOrEqual(2 * (i + 1)));
+    bm25.forEach((r, i) => expect(pos.get(r.id)!).toBeLessThanOrEqual(2 * (i + 1) - 1));
+  });
+
+  it('scores rows by merged position on the RRF scale, never by either list scale', () => {
     const merged = mergeExactAndBm25([{ id: 'e', rank: 0.001 }], [{ id: 'b', rank: 999 }], id, 10);
-    expect(merged.map(r => r.id)).toEqual(['e', 'b']);
-    expect(merged[0].rank).toBe(merged[1].rank);
+    expect(merged.map(r => r.id)).toEqual(['b', 'e']);
+    expect(merged[0].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1), 12);
+    expect(merged[1].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 2), 12);
   });
 
   it('returns the BM25 list unchanged in order when the exact list is empty, and honours limit', () => {

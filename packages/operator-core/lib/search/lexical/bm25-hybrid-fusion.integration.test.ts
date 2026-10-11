@@ -68,11 +68,11 @@ describe('the exact list beside the BM25 list (R-13, plan D-016)', () => {
     expect(ids).not.toContain(TARGET);
   });
 
-  it('the AND list admits only the target, and the merged list ranks it first', async () => {
+  it('the AND list admits only the target, and the merged list keeps it in the top two (D-032 interleave)', async () => {
     const exact = await exactList();
     expect(exact.map(r => r.id)).toEqual([TARGET]);
     const merged = mergeExactAndBm25(exact, await bm25List(), r => String(r.id), 10);
-    expect(merged[0].id).toBe(TARGET);
+    expect(merged.slice(0, 2).map(r => r.id)).toContain(TARGET);
     expect(merged).toHaveLength(10);
   });
 });
