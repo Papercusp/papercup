@@ -138,7 +138,7 @@ import {
   resolveSnapshotPath,
   unionSuperset,
 } from "./lib/graph-dependency-suggestions.mjs";
-import { emptySuiteGuardArgs, scriptRunsZeroFilesAsPass } from "./lib/empty-suite-guard.mjs";
+import { emptySuiteGuardArgs, scriptSupportsPassReuse } from "./lib/empty-suite-guard.mjs";
 // EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
 // declaring-path set rather than restating any of it — fields (`declaredIn`), columns (their
 // migration), and the registry module itself. Import-safe: check-declared-consumed.mjs runs
@@ -2063,6 +2063,14 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 ]);
 
 const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    workspace: "@papercusp/operator-core",
+    script: "lint:condition-rail",
+    // Match the inventory's source domain and its audit/baseline inputs. This executes
+    // the tree scan even when the edited file belongs to a different workspace.
+    appliesTo: (f) => /^(packages|apps|orchestrator|bin|scripts|libs)\//.test(f) ||
+      f.startsWith("docs/evidence/condition-rail-") || f === "package.json",
+  },
   {
     // WI-10005302: workflow/config-only changes are outside npm workspaces.
     // Catch misplaced label rules before GitHub rejects a push with zero jobs.
@@ -5734,15 +5742,14 @@ if (dry) {
 // switch, dirty checkout, no HEAD, no database, a slow read — each yields no skip list.
 async function armTestPassReuse(taskList) {
   const allUnitTasks = taskList.filter((t) => t.script === 'test' || LANE_SCRIPTS.includes(t.script));
-  for (const t of allUnitTasks.filter((task) => !scriptRunsZeroFilesAsPass(task.ws.scripts?.[task.script] ?? ''))) {
+  for (const t of allUnitTasks.filter((task) => !scriptSupportsPassReuse(task.ws.scripts?.[task.script] ?? ''))) {
     await recordGateReuseDecision(`${t.ws.name}::${t.script}`, { offReason: 'script-cannot-run-zero-files', eligible: t.relatedFiles?.length });
   }
   const unitTasks = taskList.filter(
     (t) =>
       (t.script === "test" || LANE_SCRIPTS.includes(t.script)) &&
-      // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-      // The pure-lane runner does, without naming the flag (gate-test-reuse-yield P-006, D-005).
-      scriptRunsZeroFilesAsPass(t.ws.scripts?.[t.script] ?? ""),
+      // The empty-suite guard supplies Vitest's zero-file flag only with full reuse coverage.
+      scriptSupportsPassReuse(t.ws.scripts?.[t.script] ?? ""),
   );
   if (unitTasks.length === 0) return;
   const off = async (reason) => {

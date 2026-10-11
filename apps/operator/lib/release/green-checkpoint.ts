@@ -277,6 +277,7 @@ import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reus
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
 import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { applyGitOptionalLocksDefault } from "../../../../scripts/lib/git-optional-locks.mjs";
 // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
 // isolated pass proofs for the pure lane, which records none during the suite (isolate:false).
 import {
@@ -5350,6 +5351,7 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // — but nothing measured that, and the streak reached 19 consecutive reds. Same bar as its
   // siblings: one fast, deterministic, repo-wide node script, no PG or network.
   "lint:no-raw-setinterval": ["lint:no-raw-setinterval"],
+  "lint:condition-rail": ["lint:condition-rail"],
   // WI-10004205 / D-099: deterministic, repo-wide, no PG or network. Slower than its siblings
   // (~50s, still far below the suite), and registering it keeps one unregistered leg from
   // vetoing the rescue for every registered leg beside it (see lint:tsc:papercusp-libs above).
@@ -9192,6 +9194,7 @@ export const WORKER_CRASH_MAX_WORKSPACES = 2;
  */
 export const GREEN_CHECKPOINT_SOURCE_ENV_KEYS = [
   "DBUS_SESSION_BUS_ADDRESS",
+  "GIT_OPTIONAL_LOCKS",
   "HOME",
   "LANG",
   "LOGNAME",
@@ -9412,6 +9415,9 @@ export function buildGreenCheckpointEnv(
   frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // Targeted repair tasks bypass affected-tests, so their Git reads need the same
+  // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
+  applyGitOptionalLocksDefault(env);
   // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
   delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
   if (frozenCandidateOpenedAtMs !== undefined) {
@@ -16980,6 +16986,7 @@ interface PostSuiteLegs {
   lintDesignPrimitives: LegOutcome;
   lintNoControlBytes: LegOutcome;
   lintGuardReachability: LegOutcome;
+  lintConditionRail: LegOutcome;
   lintMockCastEscape: LegOutcome;
   /** P-026: D-004's push-don't-poll classification on every NEW recurring timer. Its
    *  only blocking path was .github/workflows/test.yml, which fires on push/PR to
@@ -17052,6 +17059,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintDesignPrimitives: skipped,
     lintNoControlBytes: skipped,
     lintGuardReachability: skipped,
+    lintConditionRail: skipped,
     lintMockCastEscape: skipped,
     lintTimerClassification: skipped,
     lintNoRawSetinterval: skipped,
@@ -17769,6 +17777,7 @@ export async function runPostSuiteLegs(
     | "lintDesignPrimitives"
     | "lintNoControlBytes"
     | "lintGuardReachability"
+    | "lintConditionRail"
     | "lintMockCastEscape"
     | "lintTimerClassification"
     | "lintNoRawSetinterval";
@@ -17826,6 +17835,13 @@ export async function runPostSuiteLegs(
         "an unwired guard rots silently and its green gets quoted as evidence",
     },
     {
+      script: "lint:condition-rail",
+      outcomeKey: "lintConditionRail",
+      signature: "lint:condition-rail",
+      label: "CONDITION RAIL BYPASS RATCHET",
+      failureBanner: "a new silent degradation site or a grown bypass baseline",
+    },
+    {
       script: "lint:mock-cast-escape",
       outcomeKey: "lintMockCastEscape",
       signature: "lint:mock-cast-escape",
@@ -17856,6 +17872,7 @@ export async function runPostSuiteLegs(
     "lintDesignPrimitives",
     "lintNoControlBytes",
     "lintGuardReachability",
+    "lintConditionRail",
     "lintMockCastEscape",
     "lintTimerClassification",
     "lintNoRawSetinterval",
@@ -18232,6 +18249,7 @@ export async function runPostSuiteLegs(
     legs.lintDesignPrimitives,
     legs.lintNoControlBytes,
     legs.lintGuardReachability,
+    legs.lintConditionRail,
     // P-026 / 2026-08-09: was MISSING from this list while its leg (5111) both set
     // `status:'failed'` and `haltedBy` — so a `lint:mock-cast-escape` red skipped
     // `lintPlane` + `build` and STILL reported green. Every leg above must appear
@@ -18362,6 +18380,9 @@ export async function runPostSuiteLegs(
     ]),
     record("lint:guard-reachability", legs.lintGuardReachability, [
       "lint:guard-reachability",
+    ]),
+    record("lint:condition-rail", legs.lintConditionRail, [
+      "lint:condition-rail",
     ]),
     record("lint:mock-cast-escape", legs.lintMockCastEscape, [
       "lint:mock-cast-escape",
@@ -21177,7 +21198,10 @@ export function realCheckpointDeps(
         // WI-10006055: a live-plane lint re-run here needs the operator DSN too.
         const taskEnv = gateScriptEnv(script, armed?.env ?? env);
         try {
-          return await exec(invocation.cmd, invocation.args, {
+          const taskArgs = armed?.args?.length
+            ? [...invocation.args, "--", ...armed.args]
+            : invocation.args;
+          return await exec(invocation.cmd, taskArgs, {
             cwd: invocation.cwd,
             env: taskEnv,
             allowNonZero: true,
@@ -22150,6 +22174,8 @@ export function runCmd(
 
 // CLI: `tsx green-checkpoint.ts [--candidate <ref>] [--no-push]`
 if (require.main === module) {
+  // This controller also kills child trees; cover its own read-only Git commands.
+  applyGitOptionalLocksDefault();
   const {
     releaseConfig,
     integrationRootEvidence,
