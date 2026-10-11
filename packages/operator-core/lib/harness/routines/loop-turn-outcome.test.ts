@@ -304,7 +304,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const autoPause = vi.fn(async () => {
       order.push('pause');
     });
-    const availability = vi.fn(() => ({
+    const availability = vi.fn(async () => ({
       available: true as const,
       reason: null,
       host: { ownerId: 'su-owner', sock: '/tmp/su-owner.sock' },
@@ -347,7 +347,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
         sql: sql as never,
         recordFire,
         autoPause,
-        selfCompactionAvailability: availability as never,
+        selfCompactionAvailabilityAsync: availability as never,
         buildRespawnSpec: buildRespawnSpec as never,
         injectPsuHost: injectPsuHost as never,
         markRespawnExpected: markRespawnExpected as never,
@@ -365,6 +365,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     });
     expect(res.rearmedMs).toBeUndefined();
     expect(order).toEqual(['pause', 'inject', 'mark', 'epoch', 'materialize']);
+    expect(availability).toHaveBeenCalledWith('su-owner');
     expect(buildRespawnSpec).toHaveBeenCalledWith(
       'su-owner',
       expect.objectContaining({
@@ -415,7 +416,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
     const recordFire = vi.fn(async () => {});
     const autoPause = vi.fn(async () => {});
-    const availability = vi.fn(() => ({ available: false as const, reason: 'no_live_pty_host' as const, host: null }));
+    const availability = vi.fn(async () => ({ available: false as const, reason: 'no_live_pty_host' as const, host: null }));
     const buildRespawnSpec = vi.fn(async () => null);
     const injectPsuHost = vi.fn(async () => true);
     const markRespawnExpected = vi.fn(async () => {});
@@ -436,7 +437,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
         sql: sql as never,
         recordFire,
         autoPause,
-        selfCompactionAvailability: availability as never,
+        selfCompactionAvailabilityAsync: availability as never,
         buildRespawnSpec: buildRespawnSpec as never,
         injectPsuHost: injectPsuHost as never,
         markRespawnExpected: markRespawnExpected as never,
@@ -467,7 +468,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
     const recordFire = vi.fn(async () => {});
     const autoPause = vi.fn(async () => {});
-    const availability = vi.fn(() => ({
+    const availability = vi.fn(async () => ({
       available: true as const,
       reason: null,
       host: { ownerId: 'su-owner', sock: '/tmp/su-owner.sock' },
@@ -492,7 +493,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
         sql: sql as never,
         recordFire,
         autoPause,
-        selfCompactionAvailability: availability as never,
+        selfCompactionAvailabilityAsync: availability as never,
         buildRespawnSpec: buildRespawnSpec as never,
         injectPsuHost: injectPsuHost as never,
         markRespawnExpected: markRespawnExpected as never,

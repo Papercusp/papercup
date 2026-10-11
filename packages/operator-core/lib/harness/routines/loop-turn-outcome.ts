@@ -48,7 +48,7 @@ import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../c
 import { modelWindowForSpec } from '../../agent-config-constants';
 import {
   injectIntoHost as defaultInjectIntoHost,
-  selfCompactionAvailability as defaultSelfCompactionAvailability,
+  selfCompactionAvailabilityAsync as defaultSelfCompactionAvailabilityAsync,
   type SelfCompactionAvailability,
 } from '../../events/await/psu-pty-discovery';
 import { bumpSessionEpoch as defaultBumpSessionEpoch } from '../../memory/session-epoch-ledger';
@@ -212,7 +212,7 @@ export interface LoopTurnOutcomeDeps {
   /** Injected pause seam for terminal context-overflow deaths. */
   autoPause?: typeof defaultAutoPauseLoopRoutine;
   /** Context-overflow recovery seams. Each defaults to the production carry-respawn path. */
-  selfCompactionAvailability?: typeof defaultSelfCompactionAvailability;
+  selfCompactionAvailabilityAsync?: typeof defaultSelfCompactionAvailabilityAsync;
   buildRespawnSpec?: typeof buildOwnerRespawnLaunchSpec;
   injectPsuHost?: typeof defaultInjectIntoHost;
   markRespawnExpected?: typeof defaultMarkRespawnExpected;
@@ -331,8 +331,8 @@ async function recoverContextOverflow(
 
   let availability: SelfCompactionAvailability;
   try {
-    const canCompact = deps.selfCompactionAvailability ?? defaultSelfCompactionAvailability;
-    availability = canCompact(ownerId);
+    const canCompact = deps.selfCompactionAvailabilityAsync ?? defaultSelfCompactionAvailabilityAsync;
+    availability = await canCompact(ownerId);
   } catch (e) {
     return {
       queued: false,
