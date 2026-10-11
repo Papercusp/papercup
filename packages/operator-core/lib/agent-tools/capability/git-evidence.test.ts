@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCache } from '@papercusp/cache';
@@ -90,6 +90,41 @@ describe('capability:git-evidence', () => {
     expect(result).toMatchObject({ ok: true, op: 'readFileAtCommit', content: 'pinned contents\n' });
   });
 
+  it('follows the superproject commit’s pinned gitlink and exposes the resolved blob identity', async () => {
+    const root = repository();
+    const submodule = join(root, 'nested');
+    mkdirSync(submodule, { recursive: true });
+    git(submodule, ['init', '--quiet']);
+    git(submodule, ['config', 'user.name', 'Judge Evidence Test']);
+    git(submodule, ['config', 'user.email', 'judge-evidence@example.invalid']);
+    writeFileSync(join(submodule, 'source.ts'), 'pinned submodule source\n');
+    git(submodule, ['add', 'source.ts']);
+    git(submodule, ['commit', '--quiet', '-m', 'submodule first']);
+    const pinnedSubmoduleCommit = git(submodule, ['rev-parse', 'HEAD']);
+
+    git(root, ['add', 'nested']);
+    git(root, ['commit', '--quiet', '-m', 'pin nested repository']);
+    const superprojectCommit = git(root, ['rev-parse', 'HEAD']);
+
+    writeFileSync(join(submodule, 'source.ts'), 'later submodule source\n');
+    git(submodule, ['commit', '--quiet', '-am', 'advance nested repository']);
+    const pinnedBlob = git(submodule, ['rev-parse', `${pinnedSubmoduleCommit}:source.ts`]);
+
+    const result = await runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha: superprojectCommit, path: 'nested/source.ts' },
+      { repositoryDir: root, signal: never },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'readFileAtCommit',
+      commitSha: superprojectCommit,
+      path: 'nested/source.ts',
+      resolved: { repositoryPath: 'nested', commitSha: pinnedSubmoduleCommit, blobSha: pinnedBlob },
+      content: 'pinned submodule source\n',
+    });
+  });
+
   it('routes concurrent historical reads through the dedicated read-only Git runner', async () => {
     const root = repository();
     const paths = ['first.txt', 'second.txt', 'third.txt'];
@@ -159,7 +194,7 @@ describe('capability:git-evidence', () => {
       path: 'large.txt',
       rootHarnessSlug: 'portal',
     };
-    const stages = ['commit', 'type', 'size', 'blob', 'size-failure'] as const;
+    const stages = ['commit', 'tree', 'size', 'blob', 'size-failure'] as const;
 
     for (const stage of stages) {
       const controller = new AbortController();
@@ -169,8 +204,8 @@ describe('capability:git-evidence', () => {
         const interrupted =
           stage === 'commit'
             ? argv[0] === 'rev-parse' && argv[1] === '--verify'
-            : stage === 'type'
-              ? argv[0] === 'cat-file' && argv[1] === '-t'
+            : stage === 'tree'
+              ? argv[0] === 'ls-tree'
               : stage === 'size'
                 ? argv[0] === 'cat-file' && argv[1] === '-s'
                 : stage === 'blob'
@@ -184,7 +219,9 @@ describe('capability:git-evidence', () => {
           return { code: 0, output: '/registered/portal\n' };
         }
         if (argv[0] === 'rev-parse' && argv[1] === '--verify') return { code: 0, output: `${commitSha}\n` };
-        if (argv[0] === 'cat-file' && argv[1] === '-t') return { code: 0, output: 'blob\n' };
+        if (argv[0] === 'ls-tree') {
+          return { code: 0, output: `100644 blob ${'b'.repeat(40)}\tlarge.txt\0` };
+        }
         if (argv[0] === 'cat-file' && argv[1] === '-s') {
           return stage === 'size-failure'
             ? { code: 128, output: 'fatal: simulated size probe failure' }
@@ -211,8 +248,8 @@ describe('capability:git-evidence', () => {
         expect.arrayContaining(
           stage === 'commit'
             ? ['rev-parse', '--verify']
-            : stage === 'type'
-              ? ['cat-file', '-t']
+            : stage === 'tree'
+              ? ['ls-tree', '-z']
               : stage === 'size' || stage === 'size-failure'
                 ? ['cat-file', '-s']
                 : ['cat-file', 'blob'],

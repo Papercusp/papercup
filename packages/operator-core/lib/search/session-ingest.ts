@@ -3616,9 +3616,13 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       }
       // Newest first: recent sessions index first; history back-fills over ticks.
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      if (candidates.length === 0) continue;
       // Bulk-load this adapter's ingest state ONCE — a per-file SELECT at ~23k
       // candidate files was minutes of serial round-trips (perf anti-pattern
       // A1: per-item queries in a loop; observed live 2026-07-05).
+      // Only discovered files can consume these cursors. Reading the adapter's
+      // entire history returned 123k rows per sweep (WI-10008237), including
+      // archived and removed files. Historical repair has separate bounded reads.
       const stateRows = await measure('state', () => sql<Array<{
         file_path: string; byte_offset: string | number; turn_count: number; part_count: number | null;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
@@ -3630,6 +3634,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
                counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at, short_user_turns_offset
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
+           AND file_path = ANY(${sql.array(candidates.map((candidate) => candidate.path))}::text[])
       `);
       const stateMap = new Map<string, IngestState>(
         stateRows.map((r) => [r.file_path, {

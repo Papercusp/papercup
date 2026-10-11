@@ -4,13 +4,15 @@
  * compare two full commit ids or read one bounded file from a full commit id
  * in their resolved harness repository.
  */
-import { isAbsolute } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { createCache, type Cache } from '@papercusp/cache';
 import { defineTool } from '@papercusp/agent-mcp';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
+import { locateCommittedBlobs, type CommittedBlobLocation } from '../plans/committed-tree-reader';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { runGitReadOnlyEvidence } from './git';
@@ -112,14 +114,24 @@ const gitEvidenceArgs = z.discriminatedUnion('op', [
 
 export type GitEvidenceArgs = z.infer<typeof gitEvidenceArgs>;
 
+export interface GitEvidenceResolvedBlob {
+  /** Owning repository relative to the registered root (`.` for the root itself). */
+  repositoryPath: string;
+  /** Exact commit in the owning repository, including a gitlink-pinned child commit. */
+  commitSha: string;
+  /** Exact Git blob object read from that commit and path. */
+  blobSha: string;
+}
+
 export type GitEvidenceResult =
   | { ok: true; op: 'isAncestor'; ancestorSha: string; descendantSha: string; isAncestor: boolean }
-  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; bytes: number; content: string }
+  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; resolved: GitEvidenceResolvedBlob; bytes: number; content: string }
   | {
       ok: true;
       op: 'readFileAtCommit';
       commitSha: string;
       path: string;
+      resolved: GitEvidenceResolvedBlob;
       encoding: 'base64';
       byte_offset: number;
       byte_length: number;
@@ -139,6 +151,7 @@ export function doorSafeGitEvidencePageBytes(
   path: string,
   requestedBytes: number,
   rootHarnessSlug?: string,
+  resolved?: GitEvidenceResolvedBlob,
 ): number {
   const envelopeChars = JSON.stringify({
     ok: true,
@@ -146,6 +159,7 @@ export function doorSafeGitEvidencePageBytes(
     commitSha,
     path,
     ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+    ...(resolved ? { resolved } : {}),
     encoding: 'base64',
     byte_offset: Number.MAX_SAFE_INTEGER,
     byte_length: Number.MAX_SAFE_INTEGER,
@@ -221,10 +235,10 @@ async function runJudgeGitEvidenceInner(
     repositoryDir = registeredRoot;
   }
   const runner = options.runner ?? runGitReadOnlyEvidence;
-  const invoke = async (argv: string[]) => {
+  const invokeAt = async (cwd: string, argv: string[]) => {
     const result = await runner(
       argv,
-      repositoryDir,
+      cwd,
       options.stateDir,
       options.signal,
       options.sandboxEnabled,
@@ -238,6 +252,7 @@ async function runJudgeGitEvidenceInner(
     }
     return result;
   };
+  const invoke = (argv: string[]) => invokeAt(repositoryDir, argv);
 
   const resolveCommit = async (input: string): Promise<string | null> => {
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input)) return null;
@@ -258,7 +273,7 @@ async function runJudgeGitEvidenceInner(
       };
     }
 
-    const loadPinnedBlob = async (): Promise<{ commitSha: string; contentBytes: Buffer }> => {
+    const loadPinnedBlob = async (): Promise<{ commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob }> => {
       const top = await invoke(['rev-parse', '--show-toplevel']);
       if (top.code !== 0) {
         const message = top.output.slice(0, 300);
@@ -293,16 +308,71 @@ async function runJudgeGitEvidenceInner(
       if (!commitSha) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'commit_not_found_or_not_pinned' });
       }
-      const object = `${commitSha}:${args.path}`;
-      const type = await invoke(['cat-file', '-t', object]);
-      if (type.code !== 0) {
+      let rootRealPath: string | null = null;
+      try {
+        rootRealPath = await realpath(repositoryDir);
+      } catch (error) {
+        // Unit tests may supply a virtual repository root through the injected runner.
+        // Production always uses the filesystem-backed runner and must resolve the root.
+        if (!options.runner) throw error;
+      }
+      const existsInsideRoot = async (repo: string): Promise<boolean> => {
+        if (!rootRealPath) return false;
+        try {
+          const candidate = resolve(repositoryDir, repo);
+          const candidateRealPath = await realpath(candidate);
+          const relativePath = relative(rootRealPath, candidateRealPath);
+          if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return false;
+          await lstat(resolve(candidate, '.git'));
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const lookupGit = async (cwd: string, argv: readonly string[]): Promise<string> => {
+        const result = await invokeAt(cwd, [...argv]);
+        if (result.code !== 0) {
+          const message = result.output.slice(0, 300);
+          throw new Error(`git_file_lookup_failed:${message || `git ${argv.join(' ')} exited ${result.code}`}`);
+        }
+        return result.output;
+      };
+      let location: CommittedBlobLocation | null;
+      try {
+        location = (await locateCommittedBlobs(repositoryDir, commitSha, [args.path], {
+          git: lookupGit,
+          exists: existsInsideRoot,
+        })).get(args.path) ?? null;
+      } catch (error) {
+        if (evidenceFailureFrom(error)) throw error;
+        if (options.signal.aborted) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'file_lookup_failed', message: message.slice(0, 300) });
+      }
+      if (!location) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'file_not_found_at_commit' });
       }
-      if (type.output.trim() !== 'blob') {
+      if (location.type !== 'blob') {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'path_is_not_a_file' });
       }
 
-      const sizeResult = await invoke(['cat-file', '-s', object]);
+      const blobRepositoryDir = location.repo === '.' ? repositoryDir : resolve(repositoryDir, location.repo);
+      if (location.repo !== '.') {
+        if (!rootRealPath) {
+          throw new GitEvidenceReadFailure({ ok: false, reason: 'resolved_repository_unavailable' });
+        }
+        const blobRepositoryRealPath = await realpath(blobRepositoryDir);
+        const relativeRepositoryPath = relative(rootRealPath, blobRepositoryRealPath);
+        if (relativeRepositoryPath === '..' || relativeRepositoryPath.startsWith(`..${sep}`) || isAbsolute(relativeRepositoryPath)) {
+          throw new GitEvidenceReadFailure({ ok: false, reason: 'resolved_repository_outside_root' });
+        }
+      }
+      const resolved: GitEvidenceResolvedBlob = {
+        repositoryPath: location.repo,
+        commitSha: location.commitSha,
+        blobSha: location.object,
+      };
+      const sizeResult = await invokeAt(blobRepositoryDir, ['cat-file', '-s', location.object]);
       const size = Number(sizeResult.output.trim());
       if (sizeResult.code !== 0 || !Number.isSafeInteger(size) || size < 0) {
         throw new GitEvidenceReadFailure({
@@ -312,7 +382,7 @@ async function runJudgeGitEvidenceInner(
         });
       }
 
-      const contentResult = await invoke(['cat-file', 'blob', object]);
+      const contentResult = await invokeAt(blobRepositoryDir, ['cat-file', 'blob', location.object]);
       if (contentResult.code !== 0) {
         throw new GitEvidenceReadFailure({
           ok: false,
@@ -324,7 +394,7 @@ async function runJudgeGitEvidenceInner(
       if (contentBytes.length !== size) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'file_is_not_valid_utf8' });
       }
-      return { commitSha, contentBytes };
+      return { commitSha, contentBytes, resolved };
     };
 
     const workspaceId = options.workspaceId;
@@ -338,7 +408,7 @@ async function runJudgeGitEvidenceInner(
       options.sandboxEnabled ?? false,
       options.sandboxRequired ?? false,
     ])}`;
-    let pinnedBlob: { commitSha: string; contentBytes: Buffer };
+    let pinnedBlob: { commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob };
     try {
       pinnedBlob = cacheableScope
         ? await cache!.getOrSet(workspaceId, cacheKey, loadPinnedBlob, {
@@ -354,7 +424,7 @@ async function runJudgeGitEvidenceInner(
       cache!.forget(workspaceId, cacheKey);
     }
 
-    const { commitSha, contentBytes } = pinnedBlob;
+    const { commitSha, contentBytes, resolved } = pinnedBlob;
     const size = contentBytes.length;
     if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
       return {
@@ -362,13 +432,14 @@ async function runJudgeGitEvidenceInner(
         op: 'readFileAtCommit',
         commitSha,
         path: args.path,
+        resolved,
         bytes: size,
         content: contentBytes.toString('utf8'),
       };
     }
 
     const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
-    const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug);
+    const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug, resolved);
     if (pageLimit <= 0) {
       return {
         ok: false,
@@ -384,6 +455,7 @@ async function runJudgeGitEvidenceInner(
       op: 'readFileAtCommit',
       commitSha,
       path: args.path,
+      resolved,
       encoding: 'base64',
       byte_offset: byteOffset,
       byte_length: page.length,
@@ -452,12 +524,12 @@ async function runJudgeGitEvidenceInner(
 export default defineTool({
   name: 'capability:git-evidence',
   description:
-    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Oversized files return bounded byte pages.',
+    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Historical reads follow gitlinks pinned by the commit and return the resolved repository, commit, and blob identity. Oversized files return bounded byte pages.',
   guidance: {
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
     chaining:
-      'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:"base64", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null.',
+      'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:"base64", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',

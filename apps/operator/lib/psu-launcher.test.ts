@@ -7962,6 +7962,7 @@ describe("resumeModelMenuFor — the resume menu is scoped to the session backen
 describe("cross-backend resume target + protocol-v1 launcher contract", () => {
   const source = {
     id: 42,
+    sessionId: "bb06937a-2054-4f27-945b-225b84dc3ccb",
     agent: "claude",
     role: null,
     workspaceId: "papercusp-workspace",
@@ -8294,6 +8295,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       transformVersion: SESSION_PORT_TRANSFORM_VERSION,
       workspace: "papercusp-workspace",
       sourceAdvSessionId: 42,
+      sourceNativeSessionId: source.sessionId,
       targetBackend: "codex",
       targetModel: "gpt-5.6-sol:high",
       targetAccount: "acct-openai",
@@ -8313,6 +8315,23 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(() =>
       sessionPortRequestBody({ ...source, id: null }, target, {}, {}),
     ).toThrow(/tracked source/);
+  });
+
+  it("binds a port to the requested earlier incarnation instead of its tracking row's current session", () => {
+    const earlier = "2d90f85e-90f0-4d92-8a5e-2a9154dbd9fb";
+    const selected = rehydrateOutOfWindowTrackedSession(
+      { id: source.id, psuTracked: true, sessionId: earlier },
+      { sessions: [source] },
+    );
+    expect(selected).not.toBeNull();
+    const request = sessionPortRequestBody(selected, resolveResumeTarget(selected, { agent: "codex" }), {}, {});
+    expect(request).toMatchObject({ sourceAdvSessionId: source.id, sourceNativeSessionId: earlier });
+  });
+
+  it("uses the tracked OMP thread id for the exact port source", () => {
+    const selected = { ...source, agent: "omp", ompThreadId: "exact-omp-thread", sessionId: null };
+    expect(sessionPortRequestBody(selected, resolveResumeTarget(selected, { agent: "codex" }), {}, {}))
+      .toMatchObject({ sourceNativeSessionId: "exact-omp-thread" });
   });
 
   it("selects isolated ports for the complete backend matrix and preserves ordinary native resume", () => {
@@ -8663,7 +8682,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     const sessionPortApiImpl = vi
       .fn()
       .mockResolvedValueOnce({
-        inspection: { source: { sha256: "a".repeat(64) } },
+        inspection: { source: { nativeSessionId: source.sessionId, sha256: "a".repeat(64) } },
       })
       .mockResolvedValueOnce({
         portId: "22222222-2222-4222-8222-222222222222",
@@ -8707,6 +8726,16 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       }),
       launchFailure,
     );
+  });
+
+  it.each(["another-native-session", undefined])("refuses substituted or missing inspected native session %s before preparation", async (nativeSessionId) => {
+    const sessionPortApiImpl = vi.fn(async () => ({ inspection: { source: { nativeSessionId } } }));
+    const launchFreshSuImpl = vi.fn();
+    await expect(launchSessionPort(source, resolveResumeTarget(source, { agent: "codex" }), {},
+      { picker: false }, { sessionPortApiImpl, launchFreshSuImpl }))
+      .rejects.toThrow(/did not preserve the selected native session.*upgrade/);
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
   it("converts only session-port preflight exits into finalizable exceptions", () => {

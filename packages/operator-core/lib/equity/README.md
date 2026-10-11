@@ -18,4 +18,16 @@ Returns are additional equity, never cash dividends. Governance declares a fixed
 
 Recovery requires old-wallet or previously designated recovery-agent authorization and acceptance by the new wallet of the issuer terms. It moves balances and keeps stable grant/return identities; the old wallet cannot receive new shares or reuse that identity. The issuer/governor has no unilateral seizure/recovery power. If no consent or agent was recorded, this contract has no lost-key override.
 
-Verification lives in compile.test.ts, equity.test.ts, governor.test.ts and runtime.test.ts. It compiles pinned OpenZeppelin 5.6.1 with solc 0.8.37 and executes signed transactions on EthereumJS 10.1.3 in Cancun mode, including hostile calls. Run the registered suites with the root `npm run test:file -- packages/operator-core/lib/equity/compile.test.ts packages/operator-core/lib/equity/equity.test.ts packages/operator-core/lib/equity/governor.test.ts packages/operator-core/lib/equity/runtime.test.ts`. Software shipment is distinct from issuer activation or public-chain deployment.
+## Version 2: HR grants with a bounded admin (dao-hr-people-2026-10-11 D-004, D-008, D-013)
+
+`PapercuspEquityV2` and `EquityGovernorV2` are a second contract pair for DAO HR. The V1 contracts stay as they are. In V2 the members vote only on hiring and firing; routine operations go to a bounded admin role with no vote.
+
+- **Vote required** (only the timelock, after a passed member proposal): `registerHolder` + `commitGrant` (hire), `stopGrant` (fire; earned equity stays), `setEligibility` (legal freeze), `replaceAdmin` (lost or compromised admin). `EquityGovernorV2` refuses a proposal for anything else.
+- **Admin, no vote, bounded**: `transferAdmin`; `setGrantLimit` (at most the immutable `maxGrantLimit`); `setReturnPolicy` (rate at most `ANNUAL_RETURN_CAP_BPS` = 10% per 365 days, interval at least `MIN_RETURN_INTERVAL` = 30 days); `raiseGrant` (an unvested grant, within the limit); `triggerPayout` (only when due and within the ceiling).
+- **The caller's own position only**: `claimGrant`, `resignGrant` (resignation: the holder stops their own vesting and keeps what they earned; no vote), `claimReturn`, terms, recovery, transfers and delegation.
+
+Grants have a cliff: nothing is earned before it. The return ceiling and minimum interval are compile-time constants with no setter. `v2-function-classes.ts` is the caller-class table; `equity-v2.test.ts` checks it against the compiled ABI, makes hostile calls into every governed function, and fuzzes call sequences to show that none of them lowers earned equity. `inspectEquity` still reads V1 only.
+
+To show a mutated `.sol` to the EVM tests (for example with `scripts/mutation-probe.sh`), set `PAPERCUSP_EQUITY_COMPILE_FROM_SOURCE=1`. The helpers then compile the sources in memory instead of reading `artifacts.json`, which takes about 2 minutes per run.
+
+Verification lives in compile.test.ts, equity.test.ts, equity-v2.test.ts, governor.test.ts and runtime.test.ts. It compiles pinned OpenZeppelin 5.6.1 with solc 0.8.37 and executes signed transactions on EthereumJS 10.1.3 in Cancun mode, including hostile calls. Run the registered suites with the root `npm run test:file -- packages/operator-core/lib/equity/compile.test.ts packages/operator-core/lib/equity/equity.test.ts packages/operator-core/lib/equity/governor.test.ts packages/operator-core/lib/equity/runtime.test.ts`. Software shipment is distinct from issuer activation or public-chain deployment.

@@ -418,6 +418,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     properties.some(([name]) => name === 'checkpointChecks') &&
     properties.some(([name]) => name === 'checkpointAgeMs') &&
     properties.some(([name]) => name === 'workItem');
+  const isSpecAdequacyCompletion = [
+    'classRef', 'evidenceRefs', 'specRevision', 'specFingerprint', 'replaySnapshot', 'current',
+  ].every((field) => properties.some(([name]) => name === field));
   // `work_items:complete.specAdequacy.current` is a bounded array of evidence
   // tuples. The first seven identity fields are the structural join key; the
   // four optional dimension fingerprints are still available from the full
@@ -456,6 +459,10 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       properties.some(([field]) => field === 'subject') &&
       properties.some(([field]) => field === 'confidence');
     if (isObservationCapture && name === 'subject') return 110;
+    // `work_items:complete.specAdequacy.current` selects the exact evidence
+    // fingerprints being attested. Keep it ahead of optional clause metadata
+    // so the bounded object retains the callable evidence shape.
+    if (isSpecAdequacyCompletion && name === 'current') return 105;
     if (name === 'rootCauseVerification') return 100;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
@@ -852,7 +859,15 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
       'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
       'assumptions', 'specAdequacy', 'completion',
     ]);
-    const canonical = entries.filter(([name]) => canonicalFields.has(name));
+    const canonicalOrder = [
+      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
+      'assumptions', 'specAdequacy', 'completion',
+    ];
+    const canonicalByName = new Map(entries);
+    const canonical = canonicalOrder.flatMap((name) => {
+      const entry = canonicalByName.get(name);
+      return entry ? [[name, entry] as [string, unknown]] : [];
+    });
     const aliases = entries.filter(([name]) => !canonicalFields.has(name));
     return { entries: [...canonical, ...aliases], required, unionHint, conditionalHint };
   }

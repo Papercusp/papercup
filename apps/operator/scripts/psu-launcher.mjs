@@ -15052,11 +15052,16 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
       delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
     }
   }
+  // Carry-respawn reuses the adv row for its newest native session. Preserve
+  // the incarnation actually selected on disk (or by consult evidence).
+  const sourceNativeSessionId = consultEvidenceSpan?.sessionId ??
+    (source.agent === "omp" ? source.ompThreadId ?? source.sessionId : source.sessionId);
   return {
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     workspace: source.workspaceId,
     sourceAdvSessionId: Number(source.id),
+    ...(sourceNativeSessionId ? { sourceNativeSessionId } : {}),
     targetBackend: target.targetAgent,
     targetModel: target.modelSpec,
     targetAccount: sessionPortTargetAccount(account),
@@ -15889,6 +15894,12 @@ export async function launchSessionPort(
     method: "POST",
     body: JSON.stringify(request),
   });
+  if (request.sourceNativeSessionId &&
+      inspected?.inspection?.source?.nativeSessionId !== request.sourceNativeSessionId) {
+    throw new Error(
+      "session-port inspection did not preserve the selected native session; upgrade psu and the operator together before retrying",
+    );
+  }
   for (const line of formatSessionPortInspection(inspected))
     console.error(line);
   if (args.picker && !args.yes) {

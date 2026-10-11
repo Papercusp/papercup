@@ -9,6 +9,7 @@ const probe = vi.hoisted(() => ({
   failOwners: false,
   ownerParams: [] as string[][],
   queries: [] as string[],
+  statePaths: [] as string[][],
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -32,6 +33,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     }
     if (query.includes('FROM harness_shared.session_ingest_state') &&
         query.includes('last_inference_id') && !query.includes('LIMIT')) {
+      if (query.includes('file_path = ANY')) probe.statePaths.push(values[1] as string[]);
       return Promise.resolve([{
         file_path: probe.unchangedPath, byte_offset: probe.unchangedSize,
         turn_count: 1, part_count: 1, prompt_count: 1, response_count: 0,
@@ -93,6 +95,7 @@ beforeEach(async () => {
   FILE_ADAPTERS.splice(0, FILE_ADAPTERS.length, { ...codex, roots: () => [{ root: day, dirDepth: 0 }] });
   probe.clock = 0;
   probe.queries = [];
+  probe.statePaths = [];
   probe.failInsert = false;
   probe.failOwners = false;
   probe.ownerParams = [];
@@ -106,6 +109,32 @@ afterEach(async () => {
 });
 
 describe('ingestion phase attribution', () => {
+  it('loads cursor state only for discovered files while preserving unchanged-file offsets', async () => {
+    const stats = await runSessionIngestOnce();
+    expect(probe.statePaths).toHaveLength(1);
+    expect(new Set(probe.statePaths[0])).toEqual(new Set([
+      probe.unchangedPath,
+      probe.unchangedPath.replace('019f4fa9-4a09-78c0-8a35-d7e3382d1f8f', '019f4fa9-4a09-78c0-8a35-d7e3382d1f80'),
+    ]));
+    expect(stats.filesScanned).toBe(2);
+    expect(stats.filesIngested).toBe(1);
+    expect(stats.turnsInserted).toBe(1);
+    expect(probe.queries.filter(q => q.includes('INSERT INTO harness_shared.session_ingest_state'))).toHaveLength(1);
+  });
+
+  it('does not fetch historical cursor state when an adapter discovers no files', async () => {
+    const codex = FILE_ADAPTERS[0];
+    FILE_ADAPTERS.splice(0, FILE_ADAPTERS.length, {
+      ...codex, roots: () => [{ root: join(root, 'no-sessions'), dirDepth: 0 }],
+    });
+    const stats = await runSessionIngestOnce();
+    expect(stats.errors).toBe(0);
+    expect(stats.filesScanned).toBe(0);
+    expect(stats.phaseMs!.state).toBe(0);
+    expect(probe.queries.some(q => q.includes('FROM harness_shared.session_ingest_state') &&
+      q.includes('last_inference_id') && !q.includes('LIMIT'))).toBe(false);
+  });
+
   it('separates discovery, unchanged metadata, decoding and writes without rereading unchanged bytes', async () => {
     const stats = await runSessionIngestOnce();
     expect(stats.errors).toBe(0);

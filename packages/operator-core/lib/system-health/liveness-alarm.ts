@@ -1253,9 +1253,13 @@ export function resolveEvidenceFor(
       ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
       : null;
     const perInstall = dp?.data?.gitSyncMissedIntervalsByInstall;
-    // Absent from the per-install list = 0 missed (the list keeps every install with missed > 0).
+    const installCandidate = slug && Array.isArray(perInstall)
+      ? perInstall.find((e) => e.installSlug === slug)
+      : undefined;
     const installNote = slug && Array.isArray(perInstall)
-      ? ` ${slug} missedIntervals=${perInstall.find((e) => e.installSlug === slug)?.missedIntervals ?? 0}`
+      ? installCandidate
+        ? ` ${slug} starvationCandidateMissedIntervals=${installCandidate.missedIntervals}`
+        : ` ${slug} absentFromCurrentStarvationCandidates (not a raw zero; a progressing in-flight fire can leave routines:list degraded until completion)`
       : '';
     return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
   }

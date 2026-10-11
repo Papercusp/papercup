@@ -3960,13 +3960,14 @@ export function sessionPortRequestBody(source: any, target: any, account: any, a
     launchContext: any;
     currentInstruction: any;
     targetOwnerId?: any;
+    targetBackend: any;
+    targetModel: any;
+    targetAccount: any;
+    sourceNativeSessionId?: any;
     protocolVersion: number;
     transformVersion: number;
     workspace: any;
     sourceAdvSessionId: number;
-    targetBackend: any;
-    targetModel: any;
-    targetAccount: any;
 };
 export function formatSessionPortInspection(result: any): any[];
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's

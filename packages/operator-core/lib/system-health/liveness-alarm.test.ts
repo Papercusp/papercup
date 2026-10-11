@@ -168,10 +168,20 @@ describe('git-sync missed-interval alarm', () => {
     expect(livenessSignatureOf(unnamed)).toBe(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
   });
 
-  it('resolve evidence names the install a per-install signature measured', () => {
+  it('resolve evidence distinguishes a missing starvation candidate from a raw zero-missed reading', () => {
     const h = withDeploy({ gitSyncMaxMissedIntervals: 40, gitSyncMissedIntervalsByInstall: [{ installSlug: DEAD, missedIntervals: 40 }] });
-    expect(resolveEvidenceFor('git-sync-missed-intervals:papercusp', h)).toBe(
-      `observed deploy status=ok gitSyncMaxMissedIntervals=40 papercusp missedIntervals=0 (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
+    const evidence = resolveEvidenceFor('git-sync-missed-intervals:papercusp', h);
+    expect(evidence).toContain('papercusp absentFromCurrentStarvationCandidates');
+    expect(evidence).toContain('not a raw zero');
+    expect(evidence).toContain('gitSyncMaxMissedIntervals=40');
+    expect(evidence).toContain(`alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM}`);
+    expect(evidence).not.toContain('papercusp missedIntervals=0');
+  });
+
+  it('resolve evidence names the starved candidate count for a measured install', () => {
+    const h = withDeploy({ gitSyncMaxMissedIntervals: 40, gitSyncMissedIntervalsByInstall: [{ installSlug: 'papercusp', missedIntervals: 4 }] });
+    expect(resolveEvidenceFor('git-sync-missed-intervals:papercusp', h)).toContain(
+      'papercusp starvationCandidateMissedIntervals=4',
     );
   });
 
