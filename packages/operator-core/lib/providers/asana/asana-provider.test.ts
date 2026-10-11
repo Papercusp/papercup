@@ -813,6 +813,21 @@ describe('ticket.containers lists what the source can be configured with (D-014)
     expect(result.containers.some((c: { sections?: unknown }) => c.sections !== undefined)).toBe(false);
   });
 
+  it("purpose 'create' lists only the configured projects a ticket can be filed in: no workspaces, no sections", async () => {
+    const fake = catalogue();
+    const result = await adapter.invoke(containersReq({ purpose: 'create' }), fake.host);
+    expect(result).toEqual({
+      truncated: false,
+      containers: [
+        { id: 'proj-eng', name: 'Engineering', kind: 'project', parentId: 'ws-1' },
+        { id: 'proj-ops', name: 'Operations', kind: 'project', parentId: 'ws-1' },
+      ],
+    });
+    expect(fake.calls.some((c) => c.path.endsWith('/sections'))).toBe(false);
+    // A fresh source has nothing to file into yet, so the picker is empty rather than wrong.
+    expect((await adapter.invoke(containersReq({ purpose: 'create' }, {}), catalogue().host)).containers).toEqual([]);
+  });
+
   it('stops after 20 pages of one list and says the result is truncated', async () => {
     let n = 0;
     const endless = fakeHost((c) => {
