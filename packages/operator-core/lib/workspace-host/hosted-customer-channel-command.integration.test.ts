@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
+import type postgres from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildLoopbackIdentitySpawn } from '@papercusp/papercusp-shared/agent';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -20,17 +21,35 @@ import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 import { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
 import { bindHostedCustomerCommandExecutor } from './hosted-customer-command';
+import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
+import { setAutoPumpEnabledForTests } from '../events/await/engine';
 
-// Measure real process side effects, without writing to the shared task ledger.
-vi.mock('../task-manager/enroll-sync', () => ({
-  beginSyncEnrolment: vi.fn(() => ({ taskId: randomUUID(), enrolled: false })),
-  completeSyncEnrolment: vi.fn(), finishSyncEnrolment: vi.fn(),
+// Keep the actual enrollment/store/event code on the migrated private database.
+const privateLedger = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: privateLedger.sql }),
+}));
+vi.mock('../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-registry')>()),
+  activeWorkspaceId: () => 'hosted-command-acceptance',
+  backgroundWorkspaceIds: () => ['hosted-command-acceptance'],
 }));
 
 const CONTROL = 'hosted-command-acceptance';
 let db: OrgTestDb;
-beforeAll(async () => { db = await createOrgTestDb({ adminPoolMax: 4 }); }, 180_000);
-afterAll(async () => { await db?.cleanup(); });
+beforeAll(async () => {
+  db = await createOrgTestDb({ adminPoolMax: 4 });
+  privateLedger.sql = db.adminSql;
+  setTaskManagerEnabledForTest(true);
+  // Persist terminal events without delivering any host wake from this fixture.
+  setAutoPumpEnabledForTests(false);
+}, 180_000);
+afterAll(async () => {
+  setTaskManagerEnabledForTest();
+  setAutoPumpEnabledForTests(true);
+  await db?.cleanup();
+});
 afterEach(() => { vi.unstubAllEnvs(); });
 
 async function tenant(label: string, root: string) {
@@ -90,9 +109,43 @@ async function tenant(label: string, root: string) {
   return { binding, ticket, session, store, project, transform };
 }
 
+async function terminalTask(taskId: string, t: Awaited<ReturnType<typeof tenant>>,
+  state: 'exited' | 'killed' | 'timed_out', exitCode?: number) {
+  const read = async () => (await db.adminSql`
+    SELECT task_id, workspace_id, launched_by, session_id, class, state,
+           exit_code, exit_reason, ended_at, detail
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}
+  `)[0];
+  await expect.poll(async () => (await read())?.state).toBe(state);
+  const row = await read();
+  expect(row).toMatchObject({ task_id: taskId, workspace_id: CONTROL,
+    launched_by: t.session.userId, session_id: t.session.id, class: 'other', state,
+    detail: { customerWorkspaceId: t.binding.customerWorkspaceId,
+      organizationId: t.binding.organizationId, foreground: true } });
+  expect(row!.ended_at).toBeTruthy();
+  if (exitCode !== undefined) expect(row!.exit_code).toBe(exitCode);
+  // closeTask's real terminal bridge must also finish before DB teardown.
+  await expect.poll(async () => (await db.adminSql`
+    SELECT fire_count FROM harness_shared.event_key_fires
+     WHERE event_key = ${`task:terminal:${taskId}`}
+  `)[0]?.fire_count).toBe(1);
+  return row!;
+}
+
+async function taskCount(t: Awaited<ReturnType<typeof tenant>>) {
+  return (await db.adminSql`
+    SELECT count(*)::int AS count FROM harness_shared.task_ledger
+     WHERE workspace_id = ${CONTROL} AND session_id = ${t.session.id}
+  `)[0]!.count as number;
+}
+
 describe.sequential('persisted hosted channel command acceptance', () => {
-  it.each(['session-expiry', 'session-revocation', 'role-version', 'membership-revocation'] as const)(
-    'refuses command side effects after %s on the original native channel while tenant B executes', async (ending) => {
+  it.each([
+    ...(['session-expiry', 'session-revocation', 'role-version', 'membership-revocation'] as const).map(ending => [
+      `refuses command side effects after ${ending} on the original native channel while tenant B executes`, ending,
+    ] as const),
+    ['accounts for success, nonzero exit, cancellation, timeout and retry on the native channel', 'task-ledger-lifecycle'] as const,
+  ])('%s', async (_title, ending) => {
       const root = mkdtempSync(join(tmpdir(), 'hosted-channel-command-'));
       const sockets: WebSocket[] = [];
       const adapters: HostedWorkspaceHostSessionAdapter[] = [];
@@ -157,12 +210,47 @@ describe.sequential('persisted hosted channel command acceptance', () => {
         }
         const [a, b] = connections;
         const first = await a.executor.run({ command: 'printf tenant-a > before; printf "%s|%s" "$OPERATOR_DB_URL" "$PAPERCUSP_SID"' });
-        expect(first).toMatchObject({ exitCode: 0, stdout: '|', stderr: '', signal: null, taskEnrolled: false });
+        expect(first).toMatchObject({ exitCode: 0, stdout: '|', stderr: '', signal: null, taskEnrolled: true });
+        await terminalTask(first.taskId, a.t, 'exited', 0);
+        expect(await taskCount(a.t)).toBe(1);
+        expect(await taskCount(b.t)).toBe(0);
         expect(readFileSync(join(a.t.project, 'before'), 'utf8')).toBe('tenant-a');
         expect(existsSync(join(b.t.project, 'before'))).toBe(false);
         expect(a.t.transform).toHaveBeenCalledTimes(1);
 
-        if (ending === 'session-expiry') {
+        if (ending === 'task-ledger-lifecycle') {
+          const nonzero = await b.executor.run({ command: 'printf failed >&2; exit 7' });
+          expect(nonzero).toMatchObject({ exitCode: 7, stdout: '', stderr: 'failed', taskEnrolled: true });
+          await terminalTask(nonzero.taskId, b.t, 'exited', 7);
+          for (const reason of ['cancelled', 'deadline'] as const) {
+            const abort = new AbortController();
+            const pidFile = join(b.t.project, `${reason}.pid`);
+            const operation = b.executor.run({
+              command: `printf '%s' "$$" > ${reason}.pid; exec sleep 300`,
+              signal: abort.signal, timeoutMs: reason === 'deadline' ? 1_000 : 20_000,
+            });
+            const rejected = expect(operation).rejects.toThrow('hosted_customer_execution_aborted');
+            await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+            const payloadPid = Number(readFileSync(pidFile, 'utf8'));
+            expect(Number.isSafeInteger(payloadPid) && payloadPid > 0).toBe(true);
+            await expect.poll(async () => (await db.adminSql`
+              SELECT task_id FROM harness_shared.task_ledger
+               WHERE workspace_id = ${CONTROL} AND session_id = ${b.t.session.id}
+                 AND state = 'running'
+            `).length).toBe(1);
+            const [running] = await db.adminSql`
+              SELECT task_id FROM harness_shared.task_ledger
+               WHERE workspace_id = ${CONTROL} AND session_id = ${b.t.session.id}
+                 AND state = 'running'
+            `;
+            if (reason === 'cancelled') abort.abort();
+            await rejected;
+            const stopped = await terminalTask(running!.task_id, b.t,
+              reason === 'deadline' ? 'timed_out' : 'killed');
+            expect(stopped.exit_reason).toBe('hosted_customer_execution_aborted');
+            expect(() => process.kill(payloadPid, 0)).toThrowError(expect.objectContaining({ code: 'ESRCH' }));
+          }
+        } else if (ending === 'session-expiry') {
           const changed = await db.adminSql<Array<{ id: string }>>`
             UPDATE papercusp_auth.hosted_sessions
                SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
@@ -188,17 +276,22 @@ describe.sequential('persisted hosted channel command acceptance', () => {
           `;
           expect(changed).toEqual([{ user_id: a.t.session.userId }]);
         }
-        // Reuse the bound executor/channel, rather than reconnecting after revocation.
-        await expect(a.executor.run({ command: 'printf forbidden > forbidden' }))
-          .rejects.toThrow('hosted_customer_execution_denied');
+        if (ending !== 'task-ledger-lifecycle') {
+          // Reuse the bound executor/channel, rather than reconnecting after revocation.
+          await expect(a.executor.run({ command: 'printf forbidden > forbidden' }))
+            .rejects.toThrow('hosted_customer_execution_denied');
+        }
         expect(a.t.transform).toHaveBeenCalledTimes(1);
+        expect(await taskCount(a.t)).toBe(1);
         expect(existsSync(join(a.t.project, 'forbidden'))).toBe(false);
         expect(readFileSync(join(a.t.project, 'before'), 'utf8')).toBe('tenant-a');
         const survivor = await b.executor.run({ command: 'printf tenant-b > survivor; printf survivor' });
-        expect(survivor).toMatchObject({ exitCode: 0, stdout: 'survivor', stderr: '', signal: null });
+        expect(survivor).toMatchObject({ exitCode: 0, stdout: 'survivor', stderr: '', signal: null, taskEnrolled: true });
+        await terminalTask(survivor.taskId, b.t, 'exited', 0);
         expect(readFileSync(join(b.t.project, 'survivor'), 'utf8')).toBe('tenant-b');
         expect(existsSync(join(a.t.project, 'survivor'))).toBe(false);
-        expect(b.t.transform).toHaveBeenCalledTimes(1);
+        expect(b.t.transform).toHaveBeenCalledTimes(ending === 'task-ledger-lifecycle' ? 4 : 1);
+        expect(await taskCount(b.t)).toBe(ending === 'task-ledger-lifecycle' ? 4 : 1);
         for (const connection of connections) {
           expect(connection.host.socket.readyState).toBe(WebSocket.OPEN);
           expect(connection.browser.socket.readyState).toBe(WebSocket.OPEN);
