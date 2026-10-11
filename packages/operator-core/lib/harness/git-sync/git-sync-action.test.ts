@@ -49,6 +49,7 @@ import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/gith
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 import { GitSyncLeaseLostError } from './git-sync-lease-fence';
 import { TURN_HOLD_INTENT } from '../../personal-vault/git-sync-hold';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../../fleet/git-via-sidecar';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -321,6 +322,7 @@ afterAll(() => {
   else process.env.PAPERCUSP_SPAWNER_SIDECAR = savedSpawnerSidecar;
   if (savedSpawnerSidecarMode === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
   else process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE = savedSpawnerSidecarMode;
+  resetSpawnOffloadHostForTest();
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -993,7 +995,13 @@ beforeEach(() => {
   process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
   // Recreate the host rollout gate while the runner seam is mocked, so each
   // recorded invocation is one that would otherwise select the sidecar path.
+  // Since 2026-10-10 the global var selects the sidecar ONLY in a process
+  // marked as a spawn-offload host (gitSidecarEnabled in fleet/git-via-sidecar),
+  // so the env var alone silently routed every seam to local Git and the
+  // WI-10005972 attribution test saw no sidecar calls (WI-6554700010008409).
+  // The marker is pinned on globalThis: afterAll resets it.
   process.env.PAPERCUSP_SPAWNER_SIDECAR = '1';
+  markSpawnOffloadHost();
   defaultRunGitMock.mockReset().mockImplementation(async (...args: unknown[]) => {
     defaultRunGitCallHistory.push({
       testName: expect.getState().currentTestName ?? '<unknown>',
