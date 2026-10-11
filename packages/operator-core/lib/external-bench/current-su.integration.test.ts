@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import postgres from 'postgres';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import http from 'node:http';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
   currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader, currentBenchWorkloadProviderInputReader,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader, currentBenchWorkloadGradeReader,
+  currentBenchWorkloadProviderInputCapture,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -361,7 +362,7 @@ describe('private workload stored grade authority', () => {
     await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'done')`;
     await sql`INSERT INTO harness_shared.benchmark_prereg
       (prereg_hash, run_id, workspace_id, config, suites, file_path, git_committed, git_commit_sha, created_at)
-      VALUES (${preregHash}, ${binding.runId}, ${workspaceId}, ${JSON.stringify(protocol)}::jsonb,
+      VALUES (${preregHash}, ${binding.runId}, ${workspaceId}, ${JSON.stringify(protocol)}::text::jsonb,
         '["swe-bench-pro"]'::jsonb, 'fixture-prereg.json', true, ${'1'.repeat(40)}, '2026-10-10T23:00:00Z')`;
     const submission = 'private graded submission π\n', rawOutput = canonicalJson({ resolved });
     const input = { ...binding, preregHash, suite: 'swe-bench-pro' as const, modality: 'diff' as const,
@@ -388,6 +389,30 @@ describe('private workload stored grade authority', () => {
   }
   it.each([true, false])('resolves actual emitted grade bytes, including resolved=%s', async resolved => {
     const f = await fixture(resolved);
+    const [stored] = await sql`SELECT to_jsonb(result) AS result, to_jsonb(rollout) AS rollout, to_jsonb(prereg) AS prereg
+      FROM harness_shared.benchmark_run_result result
+      JOIN harness_shared.benchmark_rollout rollout USING (rollout_id)
+      JOIN harness_shared.benchmark_prereg prereg ON prereg.prereg_hash = result.prereg_hash`;
+    const decode = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value) as Record<string, unknown>;
+    const result = decode(stored.result), rollout = decode(stored.rollout), prereg = decode(stored.prereg);
+    // Keep fixture/emission failures distinguishable from reader refusals.
+    expect(f.receipt.resultSha256, `result JSON transport type: ${typeof stored.result}`).toBe(sha(canonicalJson(result)));
+    expect(f.receipt.rolloutSha256, `rollout JSON transport type: ${typeof stored.rollout}`).toBe(sha(canonicalJson(rollout)));
+    const identity = { workspace_id: workspaceId, run_id: binding.runId, rollout_id: f.receipt.rolloutId,
+      prereg_hash: f.options.preregHash, suite: f.input.suite, task_id: f.input.taskId, arm: f.input.arm,
+      seed: f.input.seed, model_id: f.input.generation.modelId, harness_version: f.input.generation.harnessVersion,
+      grader_family: f.input.grading.family, grader_version: f.input.grading.version };
+    expect(result).toMatchObject({ ...identity, generation_status: 'completed', generation_error: null, resolved,
+      grader_status: resolved ? 'passed' : 'failed', submission_ref: `rollout:${f.receipt.rolloutId}#submission`,
+      raw_grader_output_ref: `rollout:${f.receipt.rolloutId}#grader` });
+    expect(rollout).toMatchObject({ ...identity, submission: f.input.generation.submission,
+      raw_grader_output: f.input.grading.rawOutput, config_snapshot: f.options.protocol });
+    expect(prereg).toMatchObject({ workspace_id: workspaceId, run_id: binding.runId,
+      prereg_hash: f.options.preregHash, suites: [f.input.suite], config: f.options.protocol,
+      git_committed: true, git_commit_sha: '1'.repeat(40) });
+    expect(sha(canonicalJson(prereg.config))).toBe(f.options.preregHash);
+    expect(Date.parse(String(prereg.created_at))).toBeLessThan(Date.parse(f.options.notBefore));
+    for (const row of [result, rollout]) expect(Date.parse(String(row.created_at))).toBeGreaterThanOrEqual(Date.parse(f.options.notBefore));
     const rows = await currentBenchWorkloadGradeReader(f.options)(f.receipt.receiptRef, binding);
     expect(rows?.[0]).toMatchObject({ index: 8, kind: 'tool-result', name: 'benchmark:grade',
       metadata: { ...binding, workloadOutcome: { id: 'answer-correctness', value: resolved,
@@ -830,13 +855,20 @@ describe('private workload provider input authority', () => {
       client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ session_id: f.receipt.nativeSessionId,
         thread_id: f.receipt.nativeSessionId, turn_id: f.receipt.nativeTurnId }) },
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: f.text }] }] };
-    const bodyPath = 'provider-input.json', bytes = JSON.stringify(body);
-    writeFileSync(join(repoRoot, bodyPath), bytes);
+    const bytes = JSON.stringify(body);
     const identity = { attemptId: reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
       nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId, transport: 'bearer-http' as const,
       accountId: 'private-provider-account', credentialHeader: 'authorization' as const, credentialSha256: 'c'.repeat(64),
       bodySha256: createHash('sha256').update(bytes).digest('hex'), clockId: 'private-provider-clock',
       target: 'https://api.openai.com/v1/responses' };
+    const candidateCheckoutRoot = join(repoRoot, 'candidate'); mkdirSync(candidateCheckoutRoot);
+    const captureOptions = { accountingBinding: host, captureRoot: repoRoot, candidateCheckoutRoot,
+      model: body.model, effort: body.reasoning.effort, accountId: identity.accountId, maxRequests: 2, maxBytes: 16_384 };
+    const capture = currentBenchWorkloadProviderInputCapture(captureOptions);
+    const attempt = { ...identity, body: bytes, signal: new AbortController().signal };
+    await capture.captureProviderInput(attempt);
+    const captured = capture.readCapture(reservationId);
+    expect(captured).not.toBeNull();
     const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 10, armIds: [host.assignmentId],
       usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 60_000, wallClockMsPerArm: 60_000 };
     await registerLearningLoop(sql, { workspaceId, loopId: host.loopId, budgetKind: 'lifetime', budgetUsd: 60,
@@ -857,11 +889,127 @@ describe('private workload provider input authority', () => {
       WHERE id = ${reservationId}`;
     const [row] = await sql`SELECT note FROM harness_shared.learning_spend_reservations WHERE id = ${reservationId}`;
     const receipt = { ...f.receipt, reservationId, reservationNoteSha256: createHash('sha256').update(row.note).digest('hex'),
-      bodyRef: 'provider-body:private-input', bodyPath, maxBytes: 16_384, inputIndex: 0, textIndex: 0,
+      bodyRef: captured!.bodyRef, bodyPath: captured!.bodyPath, maxBytes: 16_384, inputIndex: 0, textIndex: 0,
       model: 'configured-alias', effort: 'high', accountId: identity.accountId };
-    return { ...f, body, identity, result, headers, host, note: JSON.parse(row.note), receipt,
+    return { ...f, body, identity, result, headers, host, capture, captureOptions, attempt, captured: captured!, note: JSON.parse(row.note), receipt,
       options: { ...f.options, checkoutRoot: repoRoot, accountingBinding: host, receipts: [receipt] } };
   }
+  it('publishes exact private request bytes and an immutable credential-free host receipt', async () => {
+    const f = await fixture();
+    expect(readFileSync(join(repoRoot, f.captured.bodyPath), 'utf8')).toBe(f.attempt.body);
+    expect(JSON.stringify(f.captured)).not.toMatch(/credential|authorization|signal/);
+    expect(Object.isFrozen(f.captured)).toBe(true);
+    expect(Object.isFrozen(f.captured.accountingBinding)).toBe(true);
+    expect(f.capture.readCapture(randomUUID())).toBeNull();
+    f.captureOptions.accountingBinding.assignmentId = 'candidate-arm'; f.captureOptions.model = 'candidate-model';
+    expect(f.capture.readCapture(f.identity.attemptId)).toEqual(f.captured);
+    await expect(f.capture.captureProviderInput(f.attempt)).rejects.toThrow();
+    expect(f.capture.readCapture(f.identity.attemptId)).toEqual(f.captured);
+  });
+  it('bounds capture allocation and isolates arms even when native attempt ids coincide', async () => {
+    const f = await fixture(), second = { ...f.attempt, attemptId: randomUUID() };
+    await f.capture.captureProviderInput(second);
+    await expect(f.capture.captureProviderInput({ ...second, attemptId: randomUUID() })).rejects.toThrow(/exhausted/);
+    const otherBinding = { ...f.host, assignmentId: currentBenchAssignmentId(binding.runId, 'stock', 't1', 1) };
+    const other = currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, accountingBinding: otherBinding });
+    await expect(other.captureProviderInput(f.attempt)).rejects.toThrow(/foreign/);
+    await other.captureProviderInput({ ...f.attempt, armId: otherBinding.assignmentId });
+    expect(other.readCapture(f.identity.attemptId)?.bodyRef).not.toBe(f.captured.bodyRef);
+    expect(f.capture.readCapture(f.identity.attemptId)).toEqual(f.captured);
+  });
+  it('restores retained host pins from serialized state without resetting the request cap', async () => {
+    const f = await fixture(), state = f.capture.recoveryState();
+    expect(Object.isFrozen(state)).toBe(true);
+    expect(Object.isFrozen(state.captures)).toBe(true);
+    expect(Object.isFrozen(state.captures[0])).toBe(true);
+    expect(JSON.stringify(state)).not.toMatch(/credential|authorization|signal/);
+    const checkpointPath = join(repoRoot, 'host-recovery.json');
+    writeFileSync(checkpointPath, JSON.stringify(state), { flag: 'wx', mode: 0o600 });
+    const restored = currentBenchWorkloadProviderInputCapture({ ...f.captureOptions,
+      recovery: JSON.parse(readFileSync(checkpointPath, 'utf8')) });
+    expect(restored.readCapture(f.identity.attemptId)).toEqual(f.captured);
+    const second = { ...f.attempt, attemptId: randomUUID() };
+    await restored.captureProviderInput(second);
+    expect(restored.readCapture(second.attemptId)).not.toBeNull();
+    await expect(restored.captureProviderInput({ ...second, attemptId: randomUUID() })).rejects.toThrow(/exhausted/);
+    // An old retained snapshot cannot reset slots or discover newly published
+    // evidence, even if the original host instance is still reachable.
+    const stale = currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, recovery: state });
+    expect(stale.readCapture(second.attemptId)).toBeNull();
+    await expect(stale.captureProviderInput({ ...second, attemptId: randomUUID() })).rejects.toThrow(/exhausted/);
+    await expect(f.capture.captureProviderInput({ ...second, attemptId: randomUUID() })).rejects.toThrow(/exhausted/);
+  });
+  it('retains an interrupted slot without treating a partial receipt as published evidence', async () => {
+    const f = await fixture(), state = f.capture.recoveryState();
+    const directory = join(repoRoot, f.captured.bodyPath.split('/')[0]), interrupted = randomUUID();
+    writeFileSync(join(directory, 'allocation-1'), '', { flag: 'wx', mode: 0o600 });
+    mkdirSync(join(directory, interrupted), { mode: 0o700 });
+    writeFileSync(join(directory, interrupted, 'body.json'), f.attempt.body, { flag: 'wx', mode: 0o600 });
+    const restored = currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, recovery: state });
+    expect(restored.readCapture(f.identity.attemptId)).toEqual(f.captured);
+    expect(restored.readCapture(interrupted)).toBeNull();
+    await expect(restored.captureProviderInput({ ...f.attempt, attemptId: interrupted })).rejects.toThrow(/exhausted/);
+  });
+  it.each(['policy', 'account', 'root', 'namespace', 'duplicate-pin', 'receipt-pin', 'body', 'receipt', 'slot-symlink',
+    'extra-slot', 'permissions'])('refuses %s recovery drift', async fault => {
+    const f = await fixture(), recovery = structuredClone(f.capture.recoveryState());
+    const options = { ...f.captureOptions, recovery }, directory = join(repoRoot, f.captured.bodyPath.split('/')[0]);
+    if (fault === 'policy') options.maxRequests++;
+    if (fault === 'account') options.accountId = 'other-account';
+    if (fault === 'root') recovery.rootIdentity += '1';
+    if (fault === 'namespace') recovery.directoryIdentity += '1';
+    if (fault === 'duplicate-pin') recovery.captures = [...recovery.captures, { ...recovery.captures[0] }];
+    if (fault === 'receipt-pin') recovery.captures = [{ ...recovery.captures[0], receiptSha256: 'e'.repeat(64) }];
+    if (fault === 'body') writeFileSync(join(repoRoot, f.captured.bodyPath), f.attempt.body + ' ');
+    if (fault === 'receipt') writeFileSync(join(directory, f.identity.attemptId, 'receipt.json'), '{}');
+    if (fault === 'slot-symlink') { rmSync(join(directory, 'allocation-0')); symlinkSync(join(repoRoot, 'host-slot'), join(directory, 'allocation-0')); }
+    if (fault === 'extra-slot') writeFileSync(join(directory, 'allocation-2'), '', { mode: 0o600 });
+    if (fault === 'permissions') chmodSync(directory, 0o755);
+    expect(() => currentBenchWorkloadProviderInputCapture(options)).toThrow();
+    if (['body', 'receipt', 'permissions'].includes(fault)) expect(() => f.capture.recoveryState()).toThrow();
+  });
+  it('refuses a hash-pinned receipt whose contents borrow another assignment', async () => {
+    const f = await fixture(), recovery = structuredClone(f.capture.recoveryState());
+    const path = join(repoRoot, f.captured.bodyPath.replace('/body.json', '/receipt.json'));
+    const borrowed = canonicalJson({ ...f.captured, accountingBinding: { ...f.host, assignmentId: 'bench-assignment:foreign' } });
+    writeFileSync(path, borrowed);
+    recovery.captures = [{ reservationId: f.identity.attemptId,
+      receiptSha256: createHash('sha256').update(borrowed).digest('hex') }];
+    expect(() => currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, recovery })).toThrow(/altered/);
+  });
+  it.each(['manifest', 'arm', 'account', 'hash', 'turn', 'model', 'effort', 'too-large', 'aborted'])
+  ('refuses %s before publishing a request capture', async fault => {
+    const f = await fixture(), attempt = { ...f.attempt, attemptId: randomUUID() };
+    if (fault === 'manifest') attempt.manifestSha256 = 'e'.repeat(64);
+    if (fault === 'arm') attempt.armId = 'foreign';
+    if (fault === 'account') attempt.accountId = 'foreign';
+    if (fault === 'hash') attempt.bodySha256 = 'e'.repeat(64);
+    if (fault === 'turn') attempt.nativeTurnId = randomUUID();
+    if (fault === 'model') attempt.body = JSON.stringify({ ...f.body, model: 'foreign' });
+    if (fault === 'effort') attempt.body = JSON.stringify({ ...f.body, reasoning: { effort: 'low' } });
+    if (fault === 'too-large') attempt.body += ' '.repeat(f.captureOptions.maxBytes);
+    if (['model', 'effort', 'too-large'].includes(fault)) attempt.bodySha256 = createHash('sha256').update(attempt.body).digest('hex');
+    if (fault === 'aborted') { const controller = new AbortController(); controller.abort(); attempt.signal = controller.signal; }
+    await expect(f.capture.captureProviderInput(attempt)).rejects.toThrow();
+    expect(f.capture.readCapture(attempt.attemptId)).toBeNull();
+    expect(f.capture.readCapture(f.identity.attemptId)).toEqual(f.captured);
+  });
+  it.each(['body', 'receipt', 'symlink', 'root'])('refuses %s capture substitution', async fault => {
+    const f = await fixture(), bodyPath = join(repoRoot, f.captured.bodyPath);
+    if (fault === 'body') writeFileSync(bodyPath, f.attempt.body + ' ');
+    if (fault === 'receipt') writeFileSync(bodyPath.replace('/body.json', '/receipt.json'), '{}');
+    if (fault === 'symlink') { renameSync(bodyPath, join(repoRoot, 'elsewhere.json')); symlinkSync(join(repoRoot, 'elsewhere.json'), bodyPath); }
+    if (fault === 'root') { renameSync(repoRoot, `${repoRoot}-old`); roots.push(`${repoRoot}-old`); mkdirSync(repoRoot); }
+    expect(f.capture.readCapture(f.identity.attemptId)).toBeNull();
+    if (fault === 'root') await expect(f.capture.captureProviderInput({ ...f.attempt, attemptId: randomUUID() })).rejects.toThrow();
+  });
+  it('refuses shared/candidate roots, duplicate assignment allocation and unbounded capture policy', async () => {
+    const f = await fixture();
+    expect(() => currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, captureRoot: f.captureOptions.candidateCheckoutRoot })).toThrow(/private host/);
+    expect(() => currentBenchWorkloadProviderInputCapture(f.captureOptions)).toThrow();
+    expect(() => currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, maxRequests: 0 })).toThrow(/bounded/);
+    expect(() => currentBenchWorkloadProviderInputCapture({ ...f.captureOptions, maxBytes: 16 * 1024 * 1024 + 1 })).toThrow(/bounded/);
+  });
   it('joins recorded native bytes, captured request bytes and the completed provider reservation', async () => {
     const f = await fixture(), reader = currentBenchWorkloadProviderInputReader(f.options);
     const rows = await reader(f.receipt.receiptRef, binding);
