@@ -179,6 +179,22 @@ export function defaultRollupSource(
   return source ?? (rollup ? 'ci' : null);
 }
 
+/**
+ * A count alone does not say how to see the hidden rows. Under the default
+ * browse exclusion every omitted row is a mutation-probe row, so name the
+ * argument that returns them; under an explicit source, name the writer filter.
+ */
+export function sourceOmissionHint(
+  omitted: number,
+  explicitSource?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe',
+): string | null {
+  if (omitted <= 0) return null;
+  if (explicitSource === undefined) {
+    return `${omitted} matching row(s) hidden by the default mutation-probe exclusion; pass source:"mutation-probe" (or their testRunIds) to read them.`;
+  }
+  return `${omitted} matching row(s) from other writers hidden by source:"${explicitSource}"; omit source or name another writer to read them.`;
+}
+
 /** Accept the output-shaped `runGroupId` spelling as an input compatibility
  * alias while keeping `runGroup` as the canonical selector name. When both
  * are supplied, the canonical spelling wins. */
@@ -448,6 +464,7 @@ export default defineTool({
       source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
       effectiveSourceFilter: z.string().optional(),
       omittedBySourceFilter: z.number().int().nonnegative().optional(),
+      sourceFilterHint: z.string().optional(),
       notRecorded: z.literal(true).optional(),
       reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
       runs: z.array(testingRunResultSchema).optional(),
@@ -685,6 +702,7 @@ export default defineTool({
              AND NOT COALESCE((${sourceFilter}), false)`
       : [];
     const omittedBySourceFilter = Number(omittedRows[0]?.omitted_by_source_filter ?? 0);
+    const sourceFilterHint = sourceOmissionHint(omittedBySourceFilter, args.source);
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
     return {
@@ -696,6 +714,7 @@ export default defineTool({
         latestPerFile,
         effectiveSourceFilter,
         omittedBySourceFilter,
+        ...(sourceFilterHint ? { sourceFilterHint } : {}),
         runs: rows.map((r) => {
           const parsedDetails = parseStoredExecutionDetails(r.execution_details);
           const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id

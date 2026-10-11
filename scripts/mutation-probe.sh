@@ -1840,6 +1840,50 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     VERDICT="caught"
     log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
   elif [ "$HISTORICAL_RC" -eq 0 ]; then
+    # ── consumption control (EI-25263495315968521, WI-10006508) ─────────────
+    # A guard that imports its subject by a FIXED path never reads `{}`. It
+    # then passes against the historical snapshot because it never saw it,
+    # and the probe used to report SURVIVED ("your guard is weaker than you
+    # think") about a guard that was never measured. Before that verdict, run
+    # the guard once against a POISONED snapshot: it carries none of the
+    # positive controls and throws/exits on load. A guard that consumes `{}`
+    # fails there; one that still passes is not reading the subject at all.
+    POISONED_SNAPSHOT="$SCRATCH/poisoned.snapshot"
+    case "$SNAPSHOT_EXT" in
+      .ts|.tsx|.mts|.cts|.js|.jsx|.mjs|.cjs)
+        printf 'throw new Error("mutation-probe consumption control: this poisoned subject must never load");\n' > "$POISONED_SNAPSHOT" ;;
+      .sh|.bash)
+        printf 'echo "mutation-probe consumption control: poisoned subject" >&2\nexit 97\n' > "$POISONED_SNAPSHOT" ;;
+      .py)
+        printf 'raise SystemExit("mutation-probe consumption control: poisoned subject")\n' > "$POISONED_SNAPSHOT" ;;
+      *)
+        printf 'MUTATION_PROBE_POISONED_SUBJECT\n' > "$POISONED_SNAPSHOT" ;;
+    esac
+    for control in "${POSITIVE_CONTROLS[@]}"; do
+      if grep -Fq -- "$control" "$POISONED_SNAPSHOT"; then
+        : > "$POISONED_SNAPSHOT"
+        break
+      fi
+    done
+    CONSUMPTION_LOG="$SCRATCH/consumption-control.log"
+    CONSUMPTION_RC=0
+    if run_snapshot_command consumption-control "consumption control (poisoned snapshot)" "$POISONED_SNAPSHOT" "$TEST_CMD" "$CONSUMPTION_LOG"; then
+      :
+    else
+      CONSUMPTION_RC=$?
+    fi
+    if [ "$CONSUMPTION_RC" -eq 0 ]; then
+      log "VERDICT: INCONCLUSIVE — the guard also PASSED against a poisoned snapshot, so it never read {}"
+      printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d consumption_exit=%d against_commit=%s reason=guard-ignores-subject\n' \
+        "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CONSUMPTION_RC" "$HISTORICAL_SHA"
+      die "the guard passed against the historical snapshot AND against a poisoned snapshot that cannot load and carries none of your positive controls. It is not reading the file {} names, so 'survived' would be a verdict about a source it never saw.
+
+      LIKELY CAUSE: the guard imports or reads the subject by a FIXED path (an
+      \`import ... from './<subject>'\` or a hard-coded repo path) instead of the
+      path substituted for {}. Make the subject path overridable (an env var
+      defaulting to the real path, e.g. PROBE_SUBJECT={}) and pass it from --test."
+    fi
+    log "consumption control: the guard FAILED against a poisoned snapshot (exit $CONSUMPTION_RC), so it does read {}"
     VERDICT="survived"
     log "VERDICT: HISTORICAL SOURCE SURVIVED (guard exited 0) — the guard does NOT constrain this historical source ✗"
   else
