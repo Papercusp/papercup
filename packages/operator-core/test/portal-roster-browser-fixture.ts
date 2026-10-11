@@ -13,6 +13,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getMessageById, readAckedMsgIds, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
+import type { PrRowData } from '../lib/pr-host/pr-row-data';
+import type { PrViewerDetails } from '../lib/pr-host/pr-viewer';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -120,6 +122,7 @@ type PortalRosterBrowserInput = {
   hud?: boolean;
   health?: boolean;
   brainstorm?: boolean;
+  prs?: boolean;
   brainstormHarnesses?: { selected: string; neighbor: string; foreign: string };
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
@@ -138,7 +141,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -226,7 +229,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
-  ` : input.docs || input.brainstorm ? `
+  ` : input.docs || input.brainstorm || input.prs ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -236,11 +239,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const panel = React.createElement(React.Fragment, null,
-      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.brainstorm ? 'brainstorm' : 'docs')} }),
-      ${input.brainstorm ? 'React.createElement(Toaster)' : 'null'},
+      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
+      ${input.brainstorm || input.prs ? 'React.createElement(Toaster)' : 'null'},
       ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'});
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      ${input.brainstorm ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, panel)" : 'panel'}) });
+      ${input.brainstorm || input.prs ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, panel)" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -337,8 +340,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.overview || input.hud || input.health || input.harnesses
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.prs || input.overview || input.hud || input.health || input.harnesses
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.prs || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -384,7 +387,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
     ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.brainstorm
-    ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.docs
+    ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.prs
+    ? '/apps/operator/app/harness/PrsTab.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -430,12 +434,35 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 }
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
-  options: { brainstormHydration?: boolean } = {}) {
+  options: { brainstormHydration?: boolean; prsRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
+  assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const writes: Array<{ surface: string; body: any }> = [];
   const reads: Array<{ name: string | null; args: any }> = [];
+  // These are explicit component fixtures, never provider or private API proof.
+  const prRows: PrRowData[] = [
+    { remote: 'github.com/preflight/selected', number: 101, title: 'preflight-selected-open', author_login: 'fixture-viewer',
+      author_github_id: 101, html_url: 'https://example.invalid/pr/101', state: 'open', review_decision: 'none',
+      check_conclusion: 'success', trusted: false, reviewerRoleEnabled: false },
+    { remote: 'github.com/preflight/selected', number: 102, title: 'preflight-selected-merged', author_login: 'fixture-neighbor',
+      author_github_id: 102, html_url: 'https://example.invalid/pr/102', state: 'merged', review_decision: 'approved',
+      check_conclusion: 'success', trusted: false, reviewerRoleEnabled: false },
+  ];
+  const prDetails: PrViewerDetails = {
+    pr: { ref: { remote: prRows[0].remote, number: 101 }, state: 'open', title: prRows[0].title, body: null,
+      head_ref: 'fixture-head', base_ref: 'staging', head_sha: 'a'.repeat(40), merge_commit_sha: null,
+      author: { github_user_id: 101, github_login: 'fixture-viewer' }, reviewers_requested: [], review_decision: 'none',
+      checks_state: 'success', mergeable_state: 'unknown', is_draft: false, url: prRows[0].html_url, updated_at: 1 },
+    row: prRows[0], files: [{ filename: 'fixture-selected.ts', status: 'modified', additions: 1, deletions: 1,
+      patch: '-fixture-before\n+fixture-after' }], commits: [], checks: [], diff: 'fixture-combined-diff',
+    diffTruncated: false, targetSha: 'b'.repeat(40), permissions: { review: false, close: false, sendGreen: false },
+    standing: false, mergeTest: null, mergeTestStatus: 'not-tested', mergeBlocker: null,
+  };
+  let prsFail = false;
+  let detailsFail = false;
+  const prWrites: string[] = [];
   let releaseHydration!: () => void;
   const hydration = new Promise<void>(done => { releaseHydration = done; });
   const savedMap = 'preflight-saved-map';
@@ -451,7 +478,22 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (pathname.startsWith('/vditor/')) {
+    if (options.prsRead && request.method !== 'GET') {
+      prWrites.push(pathname); response.writeHead(405); response.end();
+    } else if (options.prsRead && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
+      reads.push({ name, args });
+      if ((name === 'harnessPrs.byHarness' && prsFail) || (name === 'harnessPrs.detail' && detailsFail)) {
+        response.writeHead(500, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'fixture PR read unavailable' })); return;
+      }
+      const rows = args.harnessSlug !== input.selected ? [] : name === 'harnessPrs.byHarness' ? [{ prs: prRows }]
+        : name === 'harnessPrs.detail' && args.number === 101 ? [prDetails]
+        : name === 'prReviewerSettings.byHarness' ? [{ viewer: { github_user_id: 101 }, trustList: [],
+          settings: { pr_reviewer_role_enabled: false, auto_review: false, auto_merge: false }, autoModeEditable: false }] : [];
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
+    } else if (pathname.startsWith('/vditor/')) {
       const asset = resolve(vditorAssets, decodeURIComponent(pathname.slice('/vditor/'.length)));
       if (!asset.startsWith(vditorAssets + sep) || !existsSync(asset) || !statSync(asset).isFile()) {
         response.writeHead(404); response.end(); return;
@@ -527,11 +569,48 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     // replaceState even when the component itself initialized correctly.
     const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
       ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
-    if (options.brainstormHydration) url.searchParams.set('slug', input.selected);
+    if (options.brainstormHydration || options.prsRead) url.searchParams.set('slug', input.selected);
+    if (options.prsRead) {
+      url.searchParams.set('app', 'prs'); url.searchParams.set('q', 'preflight-search');
+      url.searchParams.set('ws', 'preflight-workspace');
+    }
     await page.goto(url.href);
     try { await (input.harnesses ? page.getByTestId('pot-workspace-cards')
-      : page.getByRole('region', { name: input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
+      : page.getByRole('region', { name: input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.prsRead) {
+      await page.getByText(prRows[0].title, { exact: true }).waitFor();
+      await page.getByText(prRows[1].title, { exact: true }).waitFor();
+      const filters = page.getByRole('tablist', { name: 'PR filters' });
+      await filters.getByRole('tab', { name: 'merged', exact: true }).focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('prs_filter') === 'merged');
+      await page.getByText(prRows[0].title, { exact: true }).waitFor({ state: 'hidden' });
+      await filters.getByRole('tab', { name: 'all', exact: true }).click();
+      const expand = page.getByRole('button', { name: 'Expand details for PR #101' });
+      await expand.focus(); await page.keyboard.press('Enter');
+      const details = page.getByRole('region', { name: 'PR #101 details' });
+      await details.getByLabel('PR diff', { exact: true }).getByText('fixture-combined-diff', { exact: true }).waitFor();
+      const assertQuery = () => {
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'prs'); assert.equal(params.get('slug'), input.selected);
+        assert.equal(params.get('q'), 'preflight-search'); assert.equal(params.get('ws'), 'preflight-workspace');
+        assert.equal(params.get('prs_selected'), '101'); assert.equal(params.get('prs_member'), input.selected);
+        assert.equal(params.get('prs_report'), 'true');
+      };
+      assertQuery(); await page.reload(); await details.waitFor(); assertQuery();
+      detailsFail = true; await details.getByRole('button', { name: 'Refresh details' }).click();
+      await page.getByRole('alert').filter({ hasText: 'Could not load PR details' }).waitFor();
+      detailsFail = false; await page.getByRole('button', { name: 'Retry details' }).click(); await details.waitFor();
+      prsFail = true; await page.getByRole('button', { name: 'Refresh PRs' }).click();
+      await page.locator('.pc-adv-prs__msg--err').waitFor();
+      prsFail = false; await page.getByRole('button', { name: 'Refresh PRs' }).click();
+      await page.getByText(prRows[0].title, { exact: true }).waitFor();
+      assert.ok(reads.some(r => r.name === 'harnessPrs.detail' && r.args.number === 101));
+      assert.ok(reads.filter(r => ['harnessPrs.byHarness', 'harnessPrs.detail', 'prReviewerSettings.byHarness'].includes(r.name ?? ''))
+        .every(r => r.args.harnessSlug === input.selected), 'PR query subjects must remain the selected harness');
+      assert.deepEqual(prWrites, [], 'read-only journey must send no review, merge or settings writes');
+      assertQuery();
+    }
     if (options.brainstormHydration) {
       // Real SyncProvider, delayed fixture response: pending [] must never
       // become a writable default. This catches the production adapter shape
@@ -625,7 +704,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (!input.harnesses && !options.brainstormHydration) assert.match(await page.locator('body').innerText(), /Select a /);
+    if (!input.harnesses && !options.brainstormHydration && !options.prsRead) assert.match(await page.locator('body').innerText(), /Select a /);
     if (input.brainstorm) {
       // Both preflights compile the real lazy editor graph. The selected-row
       // variant supplies an HTTP response, not private API persistence proof.
@@ -635,9 +714,11 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       }
     }
     return { sourceCount: built.originals.size, mounted: true, ...(options.brainstormHydration
-      ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}) };
+      ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}),
+      ...(options.prsRead ? { prsRead: true, filterKeyboard: true, detailReload: true, readRecovery: true,
+        subjectPreserved: true, noOutwardWrites: true, providerUsed: false } : {}) };
   } catch (error) {
-    if (page && options.brainstormHydration) {
+    if (page && (options.brainstormHydration || options.prsRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence, error, errors);
       console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);

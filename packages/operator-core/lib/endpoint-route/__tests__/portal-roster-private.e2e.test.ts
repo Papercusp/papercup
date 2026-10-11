@@ -9,6 +9,15 @@ import { buildPortalRosterBrowser, retainPortalResponse, verifyPortalOverviewNav
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal PR panel filters and reloads exact details with read failure recovery using explicit component fixtures', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const result = await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', prs: true }, { prsRead: true });
+    expect(result).toMatchObject({ mounted: true, prsRead: true, filterKeyboard: true, detailReload: true,
+      readRecovery: true, subjectPreserved: true, noOutwardWrites: true, providerUsed: false });
+  }, 180_000);
+
 it('retains a browser response rejection while an earlier UI action is still running', async () => {
   const failure = new Error('original browser response deadline');
   const pending = retainPortalResponse(Promise.reject(failure));
