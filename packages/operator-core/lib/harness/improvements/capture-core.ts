@@ -25,6 +25,7 @@
  * Deps are injectable so the core is unit-testable without PG.
  */
 
+import type { EmitAwaitedEventOpts } from '../../events/await/engine';
 import {
   createIssue,
   getIssue,
@@ -687,6 +688,8 @@ export interface CaptureDeps {
     patch: Record<string, unknown>,
     opts?: { unset?: readonly string[] },
   ) => Promise<EngineerIssue | null>;
+  /** WI-6554700010008444: the awaited-event emitter for `work-item:tool-failure-reporter:<id>`. */
+  emitAwaitedEvent?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
   tagIssue?: (id: string, topic: string, by?: string) => Promise<void>;
   untagIssue?: (id: string, topic: string) => Promise<void>;
   /** P-004 append-only evidence seam. Optional so pure callers can inject a
@@ -1959,6 +1962,10 @@ async function coalesceWatchdogWinner(args: {
     ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
   ];
   const independentReporter = reporters.some((reporter) => !priorReporters.includes(reporter));
+  // WI-6554700010008444: a tool-failure row gaining a reporter it never had is new evidence.
+  const reporterAdvance = priorProbation && incomingProbation && independentReporter
+    ? newToolFailureReporterAdvance(priorPayload, reporters, incomingProbation, input.workspaceId)
+    : null;
 
   // Preserve the probation→promoted transition if two observation captures
   // raced before either could observe the other's newly-created row.
@@ -1972,6 +1979,9 @@ async function coalesceWatchdogWinner(args: {
   ) {
     const promoted = await promoteToolFailureProbation(prior, input, deps, undefined, preserveCanonicalWatchdogKey);
     if (promoted) {
+      if (reporterAdvance && promoted.id === prior.id) {
+        await noteNewToolFailureReporter(deps, prior.id, reporterAdvance, { stamped: false });
+      }
       await appendCaptureOccurrence(
         deps,
         input,
@@ -2024,7 +2034,9 @@ async function coalesceWatchdogWinner(args: {
   if ((input.sourceRole ?? 'human') !== 'human') mergePatch.sourceRole = input.sourceRole;
   // P-010: the corroboration record names every reporter KIND that filed this.
   mergePatch.reporterKinds = mergeReporterKinds(priorPayload, reporterOf(input).kind);
+  if (reporterAdvance) mergePatch.evidenceAdvancedAt = reporterAdvance.at;
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
+  if (reporterAdvance && merged) await noteNewToolFailureReporter(deps, prior.id, reporterAdvance, { stamped: true });
   const refreshed = keepPriorText
     ? null
     : await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
@@ -2214,7 +2226,9 @@ export async function captureToolInvocationFriction(
     rowKey === normalized.watchdogKey && priorPayload.watchdogKey === rowKey;
   if (!signatureRow || sameCompleteClass || sameExactReportClass) {
     // A new signature, or the row's own class: the ordinary class-key route
-    // mints, coalesces or corroborates exactly as it did before D-010.
+    // mints, coalesces or corroborates exactly as it did before D-010. A reporter
+    // new to the row is recorded where that route merges reporters
+    // (coalesceWatchdogWinner / the class-key corroboration), not here.
     return captureImprovement({
       ...base,
       payloadExtra: {
@@ -2223,6 +2237,12 @@ export async function captureToolInvocationFriction(
       },
     }, deps);
   }
+  // WI-6554700010008444: another class of this signature row from a reporter the row has
+  // never had is NEW evidence. It ends the scheduler's release damping for the row and fires
+  // work-item:tool-failure-reporter:<id>.
+  const reporterAdvance = toolFailureRowHasReporter(priorPayload, ownerId)
+    ? null
+    : { ownerId, classKey: normalized.classKey, at: new Date().toISOString(), workspaceId };
   const identity = admissionIdentity(base.title, rowKey);
   const coverage: DedupCoverage = { lexical: 'skipped', semantic: 'skipped', degraded: false };
   const harness = harnessFromScope(signatureRow.scope);
@@ -2245,7 +2265,11 @@ export async function captureToolInvocationFriction(
     const promoted = await promoteToolFailureProbation(classView, input, deps, signatureHits, true);
     if (promoted) {
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(promoted.id,
-        { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally }).catch(() => null);
+        { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally,
+          ...(reporterAdvance ? { evidenceAdvancedAt: reporterAdvance.at } : {}) }).catch(() => null);
+      if (reporterAdvance && promoted.id === signatureRow.id) {
+        await noteNewToolFailureReporter(deps, promoted.id, reporterAdvance, { stamped: merged !== null });
+      }
       await appendCaptureOccurrence(deps, input, identity, 'promoted', promoted.id, [], coverage, harness);
       return {
         ok: true, created: false, reason: 'promoted', kind: promoted.kind as 'bug' | 'change',
@@ -2258,7 +2282,8 @@ export async function captureToolInvocationFriction(
   // tally move; the row's probation, disposition, title and body do not.
   const input = { ...base, payloadExtra: { toolFailureSignature: tally, toolInvocation } };
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(signatureRow.id,
-    { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally });
+    { repeatCount, lastSeenAt: new Date().toISOString(), toolFailureSignature: tally,
+      ...(reporterAdvance ? { evidenceAdvancedAt: reporterAdvance.at } : {}) });
   if (!merged) {
     // The row left the open set under us: file through the ordinary door.
     return captureImprovement({
@@ -2266,11 +2291,72 @@ export async function captureToolInvocationFriction(
       payloadExtra: { toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation },
     }, deps);
   }
+  if (reporterAdvance) await noteNewToolFailureReporter(deps, merged.id, reporterAdvance, { stamped: true });
   await appendCaptureOccurrence(deps, input, identity, 'coalesced', merged.id, [], coverage, harness);
   return {
     ok: true, created: false, reason: 'coalesced', kind: merged.kind as 'bug' | 'change',
     improvementKind: kind, issue: merged, possibleDuplicates: [], dedupCoverage: coverage,
   };
+}
+
+/** WI-6554700010008444: one reporter's first report on a tool-failure row. */
+interface ToolFailureReporterAdvance {
+  ownerId: string;
+  classKey: string;
+  at: string;
+  workspaceId?: string;
+}
+
+/**
+ * The first reporter in `reporters` that the prior row never had (in its probation or any
+ * signature class), as an advance to record; null when every reporter is already known.
+ */
+function newToolFailureReporterAdvance(
+  priorPayload: Record<string, unknown>,
+  reporters: readonly string[],
+  incomingProbation: ToolFailureProbationPayload,
+  workspaceId: string | undefined,
+): ToolFailureReporterAdvance | null {
+  const ownerId = reporters.find((reporter) => !toolFailureRowHasReporter(priorPayload, reporter));
+  if (!ownerId) return null;
+  return { ownerId, classKey: incomingProbation.classKey ?? '', at: new Date().toISOString(), workspaceId };
+}
+
+/** True when `ownerId` already reported this signature row, in any class or in its probation. */
+export function toolFailureRowHasReporter(payload: Record<string, unknown>, ownerId: string): boolean {
+  const signature = toolFailureSignatureOf(payload);
+  if (signature && Object.values(signature.classes).some((cls) => cls.reporters.includes(ownerId))) return true;
+  return (toolFailureProbationOf(payload)?.reporters ?? []).includes(ownerId);
+}
+
+/**
+ * WI-6554700010008444: record that a tool-failure signature row gained a reporter it never
+ * had. Stamps `payload.evidenceAdvancedAt` (the epoch the scheduler's release damping in
+ * work-items.ts counts releases from) unless the caller's own merge already wrote it, then
+ * fires `work-item:tool-failure-reporter:<id>` so a parked waiter wakes on real new evidence.
+ * Fail-soft: neither a lost stamp nor a lost emit fails the capture.
+ */
+async function noteNewToolFailureReporter(
+  deps: CaptureDeps,
+  rowId: string,
+  advance: ToolFailureReporterAdvance,
+  opts: { stamped: boolean },
+): Promise<void> {
+  if (!opts.stamped) {
+    await (deps.mergeIssuePayload ?? mergeIssuePayload)(rowId, { evidenceAdvancedAt: advance.at }).catch(() => null);
+  }
+  try {
+    const emit = deps.emitAwaitedEvent ?? (await import('../../events/await/engine')).emitAwaitedEvent;
+    await emit({
+      key: `work-item:tool-failure-reporter:${rowId}`,
+      payload: { id: rowId, reporter: advance.ownerId, classKey: advance.classKey, at: advance.at },
+      summary: `${rowId}: tool failure reported by a new agent (${advance.ownerId})`,
+      source: 'capture-core',
+      workspaceId: advance.workspaceId,
+    });
+  } catch {
+    // The stamp above is the durable half; a parked waiter still has its timeout backstop.
+  }
 }
 
 /** One build/contract class inside a signature row (D-010). */
@@ -3326,6 +3412,10 @@ export async function captureImprovement(
         ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
       ];
       const independentReporter = reporters.some((r) => !priorReporters.includes(r));
+      // WI-6554700010008444: a tool-failure row gaining a reporter it never had is new evidence.
+      const reporterAdvance = priorProbation && incomingProbation && independentReporter
+        ? newToolFailureReporterAdvance(priorPayload, reporters, incomingProbation, input.workspaceId)
+        : null;
       if (
         priorProbation?.state === 'probation' &&
         incomingProbation &&
@@ -3334,6 +3424,9 @@ export async function captureImprovement(
       ) {
         const promoted = await promoteToolFailureProbation(prior, input, deps, priorHits);
         if (promoted) {
+          if (reporterAdvance && promoted.id === prior.id) {
+            await noteNewToolFailureReporter(deps, prior.id, reporterAdvance, { stamped: false });
+          }
           await appendCaptureOccurrence(
             deps,
             input,
@@ -3376,7 +3469,9 @@ export async function captureImprovement(
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
       mergePatch.reporterKinds = mergeReporterKinds(prior.payload, reporter.kind);
+      if (reporterAdvance) mergePatch.evidenceAdvancedAt = reporterAdvance.at;
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
+      if (reporterAdvance && merged) await noteNewToolFailureReporter(deps, prior.id, reporterAdvance, { stamped: true });
       // Best-effort title/body refresh — never blocks the coalesce (a shrink-guard
       // trip or transient error just keeps the prior text; the payload bump above is
       // the load-bearing part). Silent: a routine status refresh shouldn't fan out

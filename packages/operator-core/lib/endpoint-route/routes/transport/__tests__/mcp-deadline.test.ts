@@ -75,12 +75,14 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
 
 describe('read-only MCP deadline guidance (EI-25270415606873353)', () => {
   it('explains that retries execute a fresh read instead of replaying the timed-out result', () => {
-    const message = formatMcpReadOnlyDeadlineMessage('coord:presence', 55_000);
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const message = formatMcpReadOnlyDeadlineMessage('coord:presence', 55_000, traceId);
 
     expect(message).toContain('request_timeout');
     expect(message).toContain('read-only tool "coord:presence"');
     expect(message).toContain('results are not stored for idempotent replay');
     expect(message).toContain('retrying will execute a fresh read');
+    expect(message).toContain(`request trace id: ${traceId}`);
     expect(message).not.toContain('same _meta.idempotencyKey');
     expect(message).not.toContain('commit status is UNKNOWN');
   });

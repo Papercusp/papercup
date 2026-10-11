@@ -2130,6 +2130,8 @@ function acceptanceBarHashInputFromTrace(
     evidenceRuntime: bar.requirement?.acceptance.evidenceRuntime ?? undefined,
     requiredTestLayers: bar.requiredTestLayers,
     check: bar.check ?? undefined,
+    // P-011: hashed only when declared, so undeclared bars keep their pre-P-011 hash.
+    productionConfiguration: bar.requirement?.verification.productionConfiguration ?? undefined,
     role: bar.role ?? undefined,
     mandatory: bar.mandatory ?? undefined,
     passRatings: bar.passRatings,

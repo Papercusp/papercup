@@ -288,6 +288,26 @@ export function isMigrationArtifactFile(file) {
   return file.endsWith('.sql') || PARKED_SUFFIXES.some((suffix) => file.endsWith(`.sql${suffix}`));
 }
 
+/**
+ * The artifacts the BLOCKING destructive-DDL scan enforces on, sorted by
+ * migration number: armed `NNN-*.sql` plus `.sql.PENDING-CODE-DEPLOY` (parking
+ * an applied migration must not evade the scan), never `.sql.DRAFT`. A draft is
+ * the authoring window: the runner never applies it, the PostToolUse nudge is
+ * what covers it, and only the draft dependency check below reads it. Enforcing
+ * DDL on it froze staging-sync on a committed draft (WI-6554700010008502).
+ *
+ * @param {string[]} files
+ * @returns {{ file: string, num: number }[]}
+ */
+export function selectDdlEnforcedArtifacts(files) {
+  return files
+    .filter((file) => !file.endsWith('.sql.DRAFT'))
+    .map((file) => ({ file, effective: effectiveMigrationName(file) }))
+    .filter(({ effective }) => isEnforcedMigrationFile(effective))
+    .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
+    .sort((a, b) => a.num - b.num);
+}
+
 /** True when `file` is an enforced migration that has not been armed yet. */
 export function isDraftMigrationFile(file) {
   const suffix = PARKED_SUFFIXES.find((candidate) => file.endsWith(`.sql${candidate}`));
@@ -1294,11 +1314,7 @@ function main() {
     process.exit(1);
   }
 
-  const inScope = all
-    .map((file) => ({ file, effective: effectiveMigrationName(file) }))
-    .filter(({ effective }) => isEnforcedMigrationFile(effective))
-    .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
-    .sort((a, b) => a.num - b.num);
+  const inScope = selectDdlEnforcedArtifacts(all);
 
   const isAncestorOfHead = makeAncestorResolver();
   let frozenCandidateOpenedAt;

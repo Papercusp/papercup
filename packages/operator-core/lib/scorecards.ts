@@ -141,6 +141,7 @@ import {
   type GenerationFreshness,
 } from './scout/generation-watermark';
 import { trackDetached } from './detached-imports';
+import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -3274,7 +3275,8 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   const readLiveBoundary = filter.deps?.readBgHostActiveEnterMs ?? readBgHostActiveEnterMs;
   // Best-effort by construction: a freshness verdict must never fail the read it rides
   // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
-  const liveHostStartedAtMs = anyStamped ? await readLiveBoundary().catch(() => null) : null;
+  const liveHostStartedAtMs = anyStamped
+    ? await traceNamedQueryStage('scorecards-generation', () => readLiveBoundary().catch(() => null)) : null;
   let gradingAuditRubricRead = false;
   let gradingAuditRubric: Rubric | null = null;
   const subjectRubrics = new Map<string, Rubric | null>();
@@ -3285,7 +3287,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // payload yields no structured view) so a bad row degrades, never throws.
     if (!observation?.rubricRef || !observation.ratings) continue;
     if (!rubricMeta.has(observation.rubricRef)) {
-      const rubric = await getRubricWithoutSeeding(observation.rubricRef);
+      const rubric = await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(observation.rubricRef!));
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
@@ -3313,13 +3315,13 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       : undefined;
     if (gradingAudit && !gradingAuditRubricRead) {
       gradingAuditRubricRead = true;
-      gradingAuditRubric = await getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
+      gradingAuditRubric = await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null));
     }
     let subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | undefined;
     if (observation.subject?.kind === 'rubric') {
       const subjectRef = observation.subject.ref;
       if (!subjectRubrics.has(subjectRef)) {
-        subjectRubrics.set(subjectRef, await getRubricWithoutSeeding(subjectRef).catch(() => null));
+        subjectRubrics.set(subjectRef, await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(subjectRef).catch(() => null)));
       }
       subjectRubricCurrentness = classifySubjectRubricCurrentness(
         subjectRef,

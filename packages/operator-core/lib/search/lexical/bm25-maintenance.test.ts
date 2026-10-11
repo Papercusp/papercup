@@ -1,0 +1,129 @@
+/**
+ * Pure parts of the BM25 maintenance RECLAIM step (plan bm25-lexical-search-evoke-adoption-2026-10-10,
+ * decision D-010): reading segment totals out of `bm25_summarize_index`, the live-bytes estimate the
+ * bloat ratio divides by, and the report line.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  estimateBm25LiveBytes,
+  formatBm25MaintenanceReport,
+  orderBuildCandidates,
+  parseBm25SegmentTotals,
+  type Bm25MaintenanceReport,
+} from './bm25-maintenance';
+
+describe('orderBuildCandidates', () => {
+  it('tries never-attempted builds before indexes whose earlier build died, so one failing index cannot starve the rest', () => {
+    const ordered = orderBuildCandidates([
+      { corpusIndex: 'work_items_bm25', outcome: 'invalid' },
+      { corpusIndex: 'harness_plans_bm25', outcome: 'present' },
+      { corpusIndex: 'session_turns_bm25', outcome: 'deferred:build-concurrently' },
+      { corpusIndex: 'carry_notes_bm25', outcome: 'invalid' },
+      { corpusIndex: 'coord_thread_posts_bm25', outcome: 'deferred:build-concurrently' },
+      { corpusIndex: null, outcome: 'deferred:build-concurrently' },
+    ]);
+    expect(ordered.map(r => r.corpusIndex)).toEqual([
+      'session_turns_bm25',
+      'coord_thread_posts_bm25',
+      'work_items_bm25',
+      'carry_notes_bm25',
+    ]);
+  });
+
+  it('still retries an invalid index once nothing else is waiting', () => {
+    expect(orderBuildCandidates([{ corpusIndex: 'work_items_bm25', outcome: 'invalid' }]).map(r => r.corpusIndex))
+      .toEqual(['work_items_bm25']);
+  });
+});
+
+// Verbatim output of bm25_summarize_index on pg_textsearch 1.5.1 (scratch probe, 2026-10-11).
+const SUMMARY_WITH_DEAD = `Index: t_bm25
+
+Corpus Statistics:
+  total_docs: 31372
+  total_len: 254469
+
+Segments:
+  L0 Segment 1: block=998, pages=35, size=0.3MB, terms=3430, docs=1506
+  L0 Segment 6: block=1, pages=335, size=2.6MB, terms=32364, docs=17143 (alive=13714, dead=3429)
+  Total: 6 segments, 740 pages (5.8MB), 72780 terms, 31372 docs (alive=26143, dead=5229)
+
+Index Size:
+  on-disk: 8470528 bytes
+`;
+
+const SUMMARY_NO_DEAD = `Segments:
+  L0 Segment 1: block=1, pages=335, size=2.6MB, terms=32364, docs=17143
+  Total: 1 segments, 335 pages (2.6MB), 32364 terms, 17143 docs
+`;
+
+function report(over: Partial<Bm25MaintenanceReport> = {}): Bm25MaintenanceReport {
+  return {
+    ensure: [],
+    engineSkipped: null,
+    built: null,
+    rebuiltInvalid: false,
+    droppedOrphans: [],
+    pendingBuilds: [],
+    compacted: [],
+    reclaimed: null,
+    pendingReclaims: [],
+    retired: [],
+    errors: [],
+    ...over,
+  };
+}
+
+describe('parseBm25SegmentTotals', () => {
+  it('reads segments, pages, docs and the alive count from the Total line', () => {
+    expect(parseBm25SegmentTotals(SUMMARY_WITH_DEAD)).toEqual({ segments: 6, pages: 740, docs: 31372, alive: 26143 });
+  });
+
+  it('treats every doc as alive when the Total line has no alive/dead part', () => {
+    expect(parseBm25SegmentTotals(SUMMARY_NO_DEAD)).toEqual({ segments: 1, pages: 335, docs: 17143, alive: 17143 });
+  });
+
+  it('never reads a per-segment line as the total', () => {
+    const segmentsOnly = SUMMARY_WITH_DEAD.split('\n').filter(l => !l.includes('Total:')).join('\n');
+    expect(parseBm25SegmentTotals(segmentsOnly)).toBeNull();
+  });
+
+  it('returns null for output it does not recognise', () => {
+    expect(parseBm25SegmentTotals('')).toBeNull();
+    expect(parseBm25SegmentTotals('Segments:\n  (none)\n')).toBeNull();
+  });
+});
+
+describe('estimateBm25LiveBytes', () => {
+  it('scales segment pages by the alive share', () => {
+    const t = { segments: 6, pages: 740, docs: 31372, alive: 26143 };
+    expect(estimateBm25LiveBytes(t)).toBe(Math.round(740 * 8192 * (26143 / 31372)));
+  });
+
+  it('is zero for an index with no docs', () => {
+    expect(estimateBm25LiveBytes({ segments: 0, pages: 0, docs: 0, alive: 0 })).toBe(0);
+  });
+});
+
+describe('formatBm25MaintenanceReport', () => {
+  it('is quiet when nothing happened', () => {
+    expect(formatBm25MaintenanceReport(report())).toBeNull();
+  });
+
+  it('names every dropped REINDEX leftover', () => {
+    expect(formatBm25MaintenanceReport(report({
+      droppedOrphans: ['harness_shared.carry_notes_bm25_ccnew', 'harness_shared.work_items_bm25_ccold1'],
+    }))).toBe('[bm25-maintenance] dropped orphan harness_shared.carry_notes_bm25_ccnew,harness_shared.work_items_bm25_ccold1');
+  });
+
+  it('names a reclaimed index with its sizes and the ratio that triggered it, and pending reclaims', () => {
+    const line = formatBm25MaintenanceReport(report({
+      reclaimed: { index: 'harness_shared.work_items_bm25', beforeBytes: 11_362_304, afterBytes: 2_547_712, ratio: 4.46 },
+      pendingReclaims: ['harness_shared.session_turns_bm25'],
+    }));
+    expect(line).toBe(
+      '[bm25-maintenance] reclaimed harness_shared.work_items_bm25 10.8MB->2.4MB (was 4.46x live); '
+      + 'reclaim pending harness_shared.session_turns_bm25',
+    );
+  });
+});

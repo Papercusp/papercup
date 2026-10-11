@@ -23,6 +23,90 @@ import { unmeasuredSourceEvidence } from './contracts';
 import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 import { computeGraphSuggestions, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import { refreshDependencySnapshot } from '../harness/routines/gitnexus-reindex-action';
+import { createHash } from 'node:crypto';
+import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-tools/plans/code-dependency-evidence';
+import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
+import { evaluateServingRuntime } from '../serving-runtimes';
+import { evaluateAcceptedSourceContainment } from '../git-pipeline-position';
+import type { SourceRuntimeProvenance } from './source-runtime-provenance';
+
+describe('native P015 required BAR compiler dependency proof', () => {
+  it('requires re-verification after a compiler-resolved dependency changes or disappears', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-proof-compiler-'));
+    try {
+      writeFileSync(join(project, 'consumer.ts'), 'import { dependency } from "./dependency";\nexport function consumer() { return dependency(); }\n');
+      writeFileSync(join(project, 'dependency.ts'), 'export function dependency() { return 1; }\n');
+      const captured = await captureCodeDependencies(project,
+        { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['consumer.ts'] },
+        [{ name: 'consumer', file: 'consumer.ts', paths: ['.'] }]);
+      expect(captured.measurement.sourcePaths).toEqual(['consumer.ts', 'dependency.ts']);
+      expect(captured.evidence.sources).toEqual(expect.arrayContaining([expect.objectContaining({
+        path: 'dependency.ts', contentHash: createHash('sha256').update(readFileSync(join(project, 'dependency.ts'))).digest('hex'),
+      })]));
+      const measured = await measureAndPinRepoFilesEvidenceAtRoot(project, captured.measurement);
+      assertCodeDependencyVersions(captured.evidence.sources, measured.pin);
+      const row = { spec_is_current: true, source_fingerprint: measured.sourceFingerprint,
+        test_fingerprint: null, fixture_fingerprint: null, rubric_fingerprint: null, environment_fingerprint: null,
+        coverage_evidence_ref: null, coverage_evidence_present: false, test_run_id: null, test_run_present: false };
+      const current = (sourceFingerprint: string) => classifySpecEvidenceCurrentness(row,
+        { evidenceKind: 'test', evidenceRef: 'reference-proof', sourceFingerprint }, { provenance: 'server-measured' });
+      expect(current(measured.sourceFingerprint).overall).toBe('current');
+      writeFileSync(join(project, 'dependency.ts'), 'export function dependency() { return 2; }\n');
+      const edited = await measureAndPinRepoFilesEvidenceAtRoot(project, captured.measurement);
+      expect(current(edited.sourceFingerprint)).toMatchObject({ overall: 'stale', staleReasons: ['source-stale'] });
+      expect(() => assertCodeDependencyVersions(captured.evidence.sources, edited.pin)).toThrow('does_not_match_measured_source');
+      rmSync(join(project, 'dependency.ts'));
+      await expect(measureAndPinRepoFilesEvidenceAtRoot(project, captured.measurement)).rejects.toThrow();
+      expect(row.source_fingerprint).toBe(measured.sourceFingerprint);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, 120_000);
+});
+
+describe('native P017 required BAR registered compiler runtime join', () => {
+  it('identifies the loaded artifact and refuses to substitute a later compiler source version', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-runtime-compiler-'));
+    const file = join(project, 'target.ts');
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: project, encoding: 'utf8', timeout: 10_000 });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      writeFileSync(file, 'export function target() { return 1; }\n');
+      git(['init', '-q']); git(['config', 'user.name', 'native runtime BAR fixture']);
+      git(['config', 'user.email', 'fixture@example.invalid']); git(['add', '-A']);
+      git(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'loaded artifact']);
+      const buildSha = git(['rev-parse', 'HEAD']);
+      const loadedHash = createHash('sha256').update(readFileSync(file)).digest('hex');
+      const dispatchTool = async (name: string, args: Record<string, unknown>) => {
+        expect(name).toBe('dev:pipeline_position');
+        expect(args.path).toBe('target.ts');
+        const runtime = evaluateServingRuntime({ runtime: 'staging-operator', role: 'owner', pid: 42,
+          startedAtMs: Date.now(), buildSha, buildShaSource: 'health', blobContains: args.expectedSourceSha256 === loadedHash,
+          blobUnknown: null, fileMtimeMs: null, instances: null });
+        return { data: { repoRoot: project, submodule: null, servingRuntimes: [runtime],
+          acceptedSource: evaluateAcceptedSourceContainment(args.expectedSourceSha256 as string, readFileSync(file), null, [runtime]) } };
+      };
+      const query = async () => (await graphQuery.handler(graphQuery.args.parse({ op: 'symbol', name: 'target', file_path: 'target.ts',
+        paths: ['.'], runtime: 'staging-operator' }), { projectDir: project, dispatchTool } as never) as {
+          data: CodeIntelAnswer & { runtimeProvenance: SourceRuntimeProvenance } }).data;
+      const before = await query();
+      expect(before.error).toBeNull();
+      expect(before.runtimeProvenance.repositoryId).toBe(before.evidence!.sourceScope.repositoryId);
+      expect(before.runtimeProvenance.files).toEqual([expect.objectContaining({ capturedSourceSha256: loadedHash,
+        artifact: expect.objectContaining({ buildSha }), containsCapturedSource: true })]);
+      writeFileSync(file, 'export function target() { return 2; }\n');
+      const editedHash = createHash('sha256').update(readFileSync(file)).digest('hex');
+      const after = await query();
+      expect(after.error).toBeNull();
+      expect(after.evidence!.siteIdentities[0]!.contentHash).toBe(editedHash);
+      expect(after.runtimeProvenance.sourceFingerprint).not.toBe(before.runtimeProvenance.sourceFingerprint);
+      expect(after.runtimeProvenance.files).toEqual([expect.objectContaining({ capturedSourceSha256: editedHash,
+        editedSourceSha256: editedHash, artifact: expect.objectContaining({ buildSha }), containsCapturedSource: false })]);
+      expect(after.runtimeProvenance.limitations.join(' ')).toMatch(/neither establishes runtime execution/);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, 120_000);
+});
 
 describe('native P010 registered diff handler compiler integration', () => {
   it('cites the edited symbol reference consumer and rechecks it before review', async () => {

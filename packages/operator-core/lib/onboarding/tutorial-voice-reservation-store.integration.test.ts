@@ -9,6 +9,7 @@ import { PostgresTutorialVoiceReservationStore, type TutorialVoiceQuotaAuthority
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
+import { readGlobalFlagOverridesForUpdate } from '../flag-override-store';
 
 let db: OrgTestDb;
 const run: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>) => db.appSql.begin(async tx => {
@@ -35,6 +36,35 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => { await db.adminSql`TRUNCATE papercusp_auth.tutorial_voice_reservations`; });
+
+  it('locks persisted global policy through admission and refuses absent or malformed authority', async () => {
+    await expect(readGlobalFlagOverridesForUpdate(db.adminSql))
+      .rejects.toThrow('flag_override_lock_requires_transaction');
+    await db.adminSql`DELETE FROM harness_shared.operator_flag_overrides WHERE workspace_id = '@global'`;
+    await db.adminSql.begin(async tx => {
+      expect(await readGlobalFlagOverridesForUpdate(tx)).toBeNull();
+    });
+    await db.adminSql`INSERT INTO harness_shared.operator_flag_overrides (workspace_id, payload)
+      VALUES ('@global', '{"fixture-policy":true}'::jsonb)`;
+    await db.adminSql.begin(async tx => {
+      expect(await readGlobalFlagOverridesForUpdate(tx)).toEqual({ 'fixture-policy': true });
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE harness_shared.operator_flag_overrides
+          SET payload = '{"fixture-policy":false}'::jsonb WHERE workspace_id = '@global'`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    await db.adminSql`UPDATE harness_shared.operator_flag_overrides
+      SET payload = '{"fixture-policy":false}'::jsonb WHERE workspace_id = '@global'`;
+    await db.adminSql.begin(async tx => {
+      expect(await readGlobalFlagOverridesForUpdate(tx)).toEqual({ 'fixture-policy': false });
+    });
+    await db.adminSql`UPDATE harness_shared.operator_flag_overrides
+      SET payload = '{"fixture-policy":"true"}'::jsonb WHERE workspace_id = '@global'`;
+    await db.adminSql.begin(async tx => {
+      expect(await readGlobalFlagOverridesForUpdate(tx)).toBeNull();
+    });
+  });
 
   it('holds workspace tenant ownership against deletion and reassignment until commit', async () => {
     const control = randomUUID(); const workspace = randomUUID(); const host = randomUUID(); const connection = randomUUID();

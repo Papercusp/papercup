@@ -34,6 +34,11 @@ import {
 } from './plan-audits';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+// Git-backed fixture assertions must not start the operator's shared sidecar.
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => false,
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./rubrics', () => ({

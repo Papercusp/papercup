@@ -23,6 +23,7 @@ import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
 import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
+import { formatBm25MaintenanceReport, runBm25Maintenance } from '../search/lexical/bm25-maintenance';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
@@ -206,6 +207,35 @@ const embedBackfillWorkflow = idempotentRegisterWorkflow('embedBackfill', () =>
   }),
 );
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
+
+// Every 15min (offset 30s from the 5-min ticks): BM25 index maintenance (plan
+// bm25-lexical-search-evoke-adoption-2026-10-10 P-006). Ensures the corpus indexes,
+// builds at most one deferred large-table index CONCURRENTLY, and runs bounded
+// compaction passes. Indexes are created with compaction='manual', so this workflow is
+// their only compactor. runBm25Maintenance never throws; the catch below is the same
+// belt-and-braces as embedBackfill (a throw would exhaust maxRecoveryAttempts and stop
+// the schedule).
+async function bm25MaintenanceTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { sql } = getOrgPg();
+        const line = formatBm25MaintenanceReport(await runBm25Maintenance(sql));
+        if (line) console.log(line);
+      } catch (err) {
+        console.warn(`[bm25-maintenance] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'bm25-maintenance' },
+  );
+}
+const bm25MaintenanceWorkflow = idempotentRegisterWorkflow('bm25Maintenance', () =>
+  DBOS.registerWorkflow(bm25MaintenanceTick, {
+    name: 'bm25Maintenance',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(bm25MaintenanceWorkflow, { name: 'bm25Maintenance', crontab: '30 */15 * * * *' });
 
 // Every 15min: embedding-space self-check (EI-8913 detector half, WI-3644).
 // Cheap (one read + at most one embed call) relative to the backfill sweep,

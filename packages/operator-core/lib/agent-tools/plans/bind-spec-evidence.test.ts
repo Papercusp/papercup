@@ -6,6 +6,18 @@ import {
   measureBindingForStore,
   parseDerivedBinding,
 } from './bind-spec-evidence';
+import tool from './bind-spec-evidence';
+
+describe('native compiler dependency binding input', () => {
+  it('requires a repo-files measurement or a recorded test run', () => {
+    const base = { slug: 'native-plan', dependencies: [{ name: 'target', file: 'src/target.ts', paths: ['src'] }],
+      binding: { workItemId: 'WI-1', specId: 'SPEC-001', evidenceKind: 'test', evidenceRef: 'test.ts', sourceFingerprint: 'opaque' } };
+    const invalid = tool.args.safeParse(base);
+    expect(invalid.success).toBe(false);
+    if (!invalid.success) expect(invalid.error.issues.some(issue => issue.path[0] === 'dependencies')).toBe(true);
+    expect(tool.args.safeParse({ ...base, binding: { workItemId: 'WI-1', specId: 'SPEC-001', fromTestRun: 42 } }).success).toBe(true);
+  });
+});
 
 describe('evidence-binding timeout diagnostics', () => {
   it('retains confirmed writes and identifies an advisory failure after storage', async () => {

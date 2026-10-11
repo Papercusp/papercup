@@ -29,6 +29,8 @@ import { __markSessionConfinementsPrimedForTest, __setSessionConfinementCacheFor
   declareSessionConfinement, readSessionConfinement, refreshSessionConfinements,
   releaseSessionConfinement } from './session-confinement-store';
 import type { SessionToolConfinement } from './session-confinement';
+import { BLIND_REVIEW_TOOL } from '../blind-review-gate';
+import { blindReviewerConfinement } from '../blind-reviewer-mint';
 
 const WORKSPACE = 'private-benchmark-confinement';
 const OWNER = 'su-private-benchmark';
@@ -197,6 +199,23 @@ describe('durable launch confinement at the dispatch boundary', () => {
     expect(target).not.toHaveBeenCalled();
     expect(await dispatch('tools:invoke', { name: 'coord:whoami' })).toMatchObject({ ok: true });
     expect(target).toHaveBeenCalledTimes(1);
+  });
+
+  // WI-6554700010008492 / verification-system-improvements-2026-10-10#D-042: the blind gap
+  // reviewer's real ceiling, through the same seat and the same nested invoke.
+  it('confines the blind gap reviewer: plan reads refused direct and nested, the door reachable', async () => {
+    await declare(OWNER, blindReviewerConfinement('demo-plan'));
+    for (const name of ['plans:get', 'rubrics:get', 'scorecards:list', 'sessions:search', 'work_items:get']) {
+      expect(await dispatch(name), name).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      const nested = await dispatch('tools:invoke', { name });
+      expect(nested.ok, `tools:invoke ${name}`).toBe(false);
+      expect(JSON.stringify(nested)).toContain('outside the launch-declared ceiling');
+    }
+    expect(target).not.toHaveBeenCalled();
+    expect(await dispatch('tools:invoke', { name: BLIND_REVIEW_TOOL, args: { op: 'brief', slug: 'demo-plan' } }))
+      .toMatchObject({ ok: true });
+    expect(await dispatch('coord:whoami')).toMatchObject({ ok: true });
+    expect(target).toHaveBeenCalledTimes(2);
   });
 
   it('reads another process connection immediately and ignores a stale or empty local cache', async () => {

@@ -36,6 +36,7 @@ import {
   isEnforcedMigrationFile,
   isMigrationArtifactFile,
   readScannedFiles,
+  selectDdlEnforcedArtifacts,
   SOURCE_ROOTS,
   violationsFor,
 } from '../../../scripts/check-migration-forward-compat.mjs';
@@ -154,6 +155,42 @@ describe('the nudge covers the DRAFT window, which IS the authoring window', () 
     expect(isCandidateFile('libs/papercusp/libs/db/sql/archive/001-x.sql')).toBe(false);
     expect(isCandidateFile('apps/operator/lib/foo.ts')).toBe(false);
     expect(isCandidateFile('libs/papercusp/libs/db/sql/README.md')).toBe(false);
+  });
+});
+
+describe('the BLOCKING destructive-DDL scan stops at armed SQL (WI-6554700010008502)', () => {
+  // A committed 1451-*.sql.DRAFT with a narrowing unique index failed
+  // papercup-staging-sync and pinned :3170 on a stale build. The draft is never
+  // applied; the nudge above covers it, and arming makes it an armed .sql that
+  // this scan then enforces.
+  const n = (k: number) => ENFORCE_FROM + k;
+
+  it('excludes a .sql.DRAFT, keeps armed and .PENDING-CODE-DEPLOY artifacts, in number order', () => {
+    const selected = selectDdlEnforcedArtifacts([
+      `${n(30)}-later-armed.sql`,
+      `${n(10)}-draft.sql.DRAFT`,
+      `${n(20)}-parked.sql.PENDING-CODE-DEPLOY`,
+      `${n(5)}-armed.sql`,
+    ]);
+    expect(selected).toEqual([
+      { file: `${n(5)}-armed.sql`, num: n(5) },
+      { file: `${n(20)}-parked.sql.PENDING-CODE-DEPLOY`, num: n(20) },
+      { file: `${n(30)}-later-armed.sql`, num: n(30) },
+    ]);
+  });
+
+  it('still enforces the same migration once it is armed', () => {
+    const draft = `${n(10)}-x.sql.DRAFT`;
+    expect(selectDdlEnforcedArtifacts([draft])).toEqual([]);
+    expect(selectDdlEnforcedArtifacts([draft.replace('.DRAFT', '')])).toEqual([{ file: `${n(10)}-x.sql`, num: n(10) }]);
+    // The draft stays visible to the dependency check, which reads parked artifacts.
+    expect(isDraftMigrationFile(draft)).toBe(true);
+  });
+
+  it('keeps the historical cutoff for every artifact kind', () => {
+    expect(
+      selectDdlEnforcedArtifacts([`${ENFORCE_FROM - 1}-old.sql`, `${ENFORCE_FROM - 1}-old.sql.PENDING-CODE-DEPLOY`]),
+    ).toEqual([]);
   });
 });
 

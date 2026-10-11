@@ -45,6 +45,22 @@ vi.mock('./source', async (importOriginal) => {
 vi.mock('../../plan-acceptance-gate', () => ({
   evaluatePlanAcceptanceGate: M.evaluate,
 }));
+// P-006 (verification-system-improvements-2026-10-10 D-039): the drain transition now
+// asks the blind gap review door before moving a plan to awaiting-acceptance. This
+// lifecycle suite is not about that door, whose real DB reads would hit the mocked sql
+// above and fail closed; it reads as not applicable here. The door itself is exercised by
+// plan-acceptance-gate-blind-review.integration.test.ts.
+vi.mock('../../blind-review-gate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../blind-review-gate')>()),
+  evaluateBlindReviewGate: async () => ({
+    satisfied: true,
+    applicable: false,
+    notApplicableReason: 'pre-cohort',
+    acceptedReviewIds: [],
+    rejectedReviews: [],
+    undispositionedGaps: [],
+  }),
+}));
 vi.mock('../../coord/condition-upsert', () => ({
   upsertConditionWorkItem: M.upsert,
 }));

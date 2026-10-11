@@ -740,6 +740,33 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
   });
 
+  it('does not warn on a successful work_items:park receipt during the retry window', () => {
+    // The observed park response had this receipt shape with released:true and noted:true.
+    // Lengths are deterministic fixture values; the classification depends on the receipt.
+    const body = {
+      ok: true,
+      id: 'WI-10005876',
+      harness: 'papercusp',
+      priorLength: 96,
+      checkpointChars: 420,
+      released: true,
+      noted: true,
+      by: 'su-5bcbcf19-e213-4f86-b2c6-185c12636983',
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-07T04:44:01.054Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
   it('uses _meta for non-JSON text and composes with the scope warning', () => {
     const result: McpCallResult = {
       content: [{ type: 'text', text: 'plain text result' }],

@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fastGlob from 'fast-glob';
@@ -20,6 +20,7 @@ import {
   listCommittedGlobMatches,
   parseCatFileBatch,
   readCommittedFiles,
+  readHeadCommitFromFiles,
   resolveMeasurementCommit,
   type BlobBatchReader,
 } from './committed-tree-reader';
@@ -86,6 +87,86 @@ describe('resolveMeasurementCommit', () => {
     expect(await resolveMeasurementCommit(join(root, 'src'))).toBeNull();
     // A nested repository is its own top level and resolves to its own HEAD.
     expect(await resolveMeasurementCommit(sub)).toBe(git(sub, 'rev-parse', 'HEAD'));
+  });
+
+  it('keeps exact git semantics for an injected runner: the in-process read is the default path only', async () => {
+    const calls: string[][] = [];
+    const counting: GitRunner = async (cwd, args) => {
+      calls.push([...args]);
+      return defaultGitRunner(cwd, args);
+    };
+    expect(await resolveMeasurementCommit(root, counting)).toBe(git(root, 'rev-parse', 'HEAD'));
+    expect(calls).toEqual([['rev-parse', '--show-toplevel', 'HEAD^{commit}']]);
+  });
+});
+
+// WI-6554700010008489: HEAD read from the repository files instead of a git child. The
+// oracle in every case is `git rev-parse HEAD` on the same checkout.
+describe('readHeadCommitFromFiles', () => {
+  it('matches git for a branch ref while it is loose and after it is packed', async () => {
+    expect(await readHeadCommitFromFiles(root)).toBe(git(root, 'rev-parse', 'HEAD'));
+    git(root, 'pack-refs', '--all');
+    expect(readFileSync(join(root, '.git/packed-refs'), 'utf8')).toContain('refs/heads/main');
+    expect(await readHeadCommitFromFiles(root)).toBe(git(root, 'rev-parse', 'HEAD'));
+    expect(await readHeadCommitFromFiles(sub)).toBe(git(sub, 'rev-parse', 'HEAD'));
+  });
+
+  it('reads fresh on every call, so a commit landed in between is seen at once', async () => {
+    const before = await readHeadCommitFromFiles(root);
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'next');
+    const after = await readHeadCommitFromFiles(root);
+    expect(after).toBe(git(root, 'rev-parse', 'HEAD'));
+    expect(after).not.toBe(before);
+  });
+
+  it('matches git for a detached HEAD and for a linked worktree whose .git is a gitdir pointer', async () => {
+    const first = git(root, 'rev-parse', 'HEAD');
+    const wt = mkdtempSync(join(tmpdir(), 'committed-tree-wt-'));
+    rmSync(wt, { recursive: true, force: true });
+    try {
+      git(root, 'worktree', 'add', '-q', '-b', 'side', wt);
+      expect(readFileSync(join(wt, '.git'), 'utf8')).toMatch(/^gitdir:/);
+      expect(await readHeadCommitFromFiles(wt)).toBe(git(wt, 'rev-parse', 'HEAD'));
+      git(root, 'checkout', '-q', '--detach', first);
+      expect(await readHeadCommitFromFiles(root)).toBe(first);
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  it('declines (undefined) wherever only git can answer, so the caller falls back to it', async () => {
+    expect(await readHeadCommitFromFiles(join(root, 'src'))).toBeUndefined();
+    const plain = mkdtempSync(join(tmpdir(), 'committed-tree-plain-'));
+    const unborn = mkdtempSync(join(tmpdir(), 'committed-tree-unborn-'));
+    try {
+      expect(await readHeadCommitFromFiles(plain)).toBeUndefined();
+      git(unborn, 'init', '-q', '-b', 'main');
+      expect(await readHeadCommitFromFiles(unborn)).toBeUndefined();
+      expect(await resolveMeasurementCommit(unborn)).toBeNull();
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+      rmSync(unborn, { recursive: true, force: true });
+    }
+    // A core.worktree that moves the work tree elsewhere: git answers (and the root is no
+    // longer the top level, so it resolves null).
+    git(root, 'config', 'core.worktree', join(root, 'src'));
+    expect(await readHeadCommitFromFiles(root)).toBeUndefined();
+    git(root, 'config', '--unset', 'core.worktree');
+  });
+
+  it('answers for the submodule layout: a gitdir pointer whose core.worktree names the checkout', async () => {
+    // Build the layout `git submodule add` / `absorbgitdirs` produce: the git dir lives in
+    // the superproject's .git/modules, `.git` is a relative pointer, and the gitdir records
+    // a relative core.worktree back to the checkout.
+    const modules = join(root, '.git/modules');
+    mkdirSync(modules, { recursive: true });
+    renameSync(join(sub, '.git'), join(modules, 'sub'));
+    writeFileSync(join(sub, '.git'), 'gitdir: ../../.git/modules/sub\n');
+    execFileSync('git', ['--git-dir', join(modules, 'sub'), 'config', 'core.worktree', '../../../libs/sub']);
+    expect(readFileSync(join(sub, '.git'), 'utf8')).toMatch(/^gitdir:/);
+    expect(git(sub, 'config', 'core.worktree')).not.toBe('');
+    expect(await readHeadCommitFromFiles(sub)).toBe(git(sub, 'rev-parse', 'HEAD'));
   });
 });
 

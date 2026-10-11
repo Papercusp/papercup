@@ -14,6 +14,7 @@ import {
   MEASUREMENT_PIN_DETAILS_KEY,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtCommitForScope,
+  resolveMeasurementRoot,
   listSpecEvidence,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
@@ -21,10 +22,23 @@ import {
   type SupersessionKeepReason,
 } from './spec-evidence-store';
 import { isAcceptedMutationTarget, mutationTargetRequirement, supersedeEligibilityGaps } from './spec-test-adequacy';
-import { listSpecClauses, SPEC_PROOF_OBLIGATION_ID_RE, SPEC_TARGET_ID_RE } from './spec-clauses-store';
+import {
+  listSpecClauses,
+  SPEC_PROOF_OBLIGATION_ID_RE,
+  SPEC_TARGET_ID_RE,
+  type SpecClauseBarPin,
+} from './spec-clauses-store';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
-import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { getAcceptanceRubricsForPlan, getRubric } from '../../rubrics';
+import { withWorkspace } from '@papercusp/db-org';
+import {
+  judgeDeclaredConfiguration,
+  parseProductionConfiguration,
+  readConfigurationSnapshot,
+  type DeclaredConfigurationRefusalCode,
+} from './declared-configuration';
 import { listScorecards } from '../../scorecards';
+import { assertCodeDependencyVersions, captureCodeDependencies, dependencyQueriesSchema } from './code-dependency-evidence';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { unvettedRubricBindAdvisory, VET_BEFORE_PROOF_ORDER } from './bind-vetting-advisory';
 import {
@@ -48,6 +62,8 @@ import {
 /** Test seam: substitute the git/registry deps of the P-010 instrument-provenance check. */
 export const bindSpecEvidenceTestSeams: {
   instrumentDeps?: (harnessSlug: string) => InstrumentProvenanceDeps;
+  /** P-011: substitute the clause/rubric/snapshot reads of the declared-configuration check. */
+  declaredConfigurationDeps?: (harnessSlug: string) => DeclaredConfigurationBindDeps;
 } = {};
 
 const fingerprint = z.string().trim().min(1).max(256);
@@ -295,6 +311,9 @@ const argsSchema = refineEvenWithShapeIssues(
       ),
     binding: bindingOrTestRunSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
     items: z.array(bindingOrTestRunSchema).min(1).max(500).optional(),
+    dependencies: dependencyQueriesSchema.optional().describe(
+      'Bounded native compiler dependency queries. Expand repo-files sourcePaths before hashing; retain graph provenance and refuse unmeasured or truncated answers. This never revalidates a prior passing proof.',
+    ),
     retract: z
       .array(retractionSchema)
       .min(1)
@@ -315,6 +334,13 @@ const argsSchema = refineEvenWithShapeIssues(
     }
     if (args.supersedeAtRevision && args.retract) {
       ctx.addIssue({ code: 'custom', path: [], message: 'supersedeAtRevision applies to binding/items, not retract' });
+    }
+    if (args.dependencies && args.retract) {
+      ctx.addIssue({ code: 'custom', path: ['dependencies'], message: 'dependencies apply to binding/items, not retract' });
+    }
+    if (args.dependencies && (args.items ?? (args.binding ? [args.binding] : [])).some(binding =>
+      !isTestRunBinding(binding) && binding.measurement?.kind !== 'repo-files')) {
+      ctx.addIssue({ code: 'custom', path: ['dependencies'], message: 'dependencies require a repo-files measurement or a recorded test run' });
     }
   },
 );
@@ -419,7 +445,13 @@ async function supersedeSiblings(input: {
  * doc-claims/verification-system-map.ts, whose test demands a map entry and a
  * triggering test for every member.
  */
-export type BindSpecEvidenceRefusalCode = 'derived_binding_invalid' | 'mutation_target_rejected';
+export type BindSpecEvidenceRefusalCode =
+  | 'derived_binding_invalid'
+  | 'mutation_target_rejected'
+  // P-011: spelled out (not the imported DeclaredConfigurationRefusalCode) because the map
+  // test resolves this union with noResolve, so an imported alias would not read as literals.
+  | 'declared_configuration_fingerprint_missing'
+  | 'declared_configuration_fingerprint_mismatch';
 
 /**
  * A binding expanded from a test run must still satisfy the hand-written binding schema;
@@ -540,6 +572,107 @@ export async function mutationTargetingRefusal(
           details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
         },
       },
+    },
+  };
+}
+
+/** What a matched binding records in `details.declaredConfiguration` (P-011). */
+export interface DeclaredConfigurationStamp {
+  required: true;
+  testRunId: number;
+  declaredFingerprint: string;
+  fingerprint: string;
+}
+
+export interface DeclaredConfigurationBindRefusal {
+  error: DeclaredConfigurationRefusalCode;
+  clause: string;
+  testRunId: number | null;
+  declaredFingerprint: string;
+  fingerprint: string | null;
+  differing: string[];
+  message: string;
+}
+
+export type DeclaredConfigurationBindCheck =
+  | { kind: 'undeclared' }
+  | { kind: 'refused'; refusal: DeclaredConfigurationBindRefusal }
+  | { kind: 'matched'; stamp: DeclaredConfigurationStamp };
+
+export interface DeclaredConfigurationBindDeps {
+  loadClauses: typeof listSpecClauses;
+  /** The pinned BAR criterion the clause was projected from, or null when it cannot be read. */
+  loadCriterion: (pin: SpecClauseBarPin) => Promise<{ productionConfiguration?: unknown } | null>;
+  /** The run's raw `test_runs.configuration_snapshot`, or null when the run is not in scope. */
+  readSnapshot: (testRunId: number) => Promise<unknown>;
+}
+
+export function defaultDeclaredConfigurationDeps(workspaceId: () => Promise<string>): DeclaredConfigurationBindDeps {
+  return {
+    loadClauses: listSpecClauses,
+    async loadCriterion(pin) {
+      const rubric = await getRubric(pin.rubricSlug, pin.rubricRevision);
+      return rubric?.criteria.find((criterion) => (criterion.barKey?.trim() || criterion.key) === pin.barKey) ?? null;
+    },
+    async readSnapshot(testRunId) {
+      const scope = await workspaceId();
+      return withWorkspace(scope, async (tx) => {
+        const rows = await tx<{ configuration_snapshot: unknown }[]>`
+          SELECT configuration_snapshot FROM harness_shared.test_runs
+           WHERE id = ${testRunId} AND workspace_id = ${scope}`;
+        return rows[0]?.configuration_snapshot ?? null;
+      });
+    },
+  };
+}
+
+/**
+ * P-011 (verification-system-improvements-2026-10-10, AUTO-BAR-R-11): a bar that declares
+ * `verification.productionConfiguration` accepts only evidence from a recorded run whose
+ * configuration snapshot matches that declaration. Evidence naming no run, or a run with no
+ * snapshot, has no declared-configuration fingerprint and is refused as missing; a run whose
+ * snapshot projects onto different values is refused as a mismatch. A matched binding is
+ * stamped so currentness can tell a configuration-checked proof from one that predates the
+ * declaration. Clauses with no source BAR, and BARs that declare nothing, are untouched.
+ */
+export async function declaredConfigurationBindCheck(
+  binding: z.infer<typeof bindingSchema>,
+  scope: { planSlug: string; harnessSlug: string | undefined },
+  deps: DeclaredConfigurationBindDeps,
+): Promise<DeclaredConfigurationBindCheck> {
+  if (!binding.specId) return { kind: 'undeclared' };
+  const [clause] = await deps.loadClauses({
+    harnessSlug: scope.harnessSlug,
+    planSlug: scope.planSlug,
+    specIds: [binding.specId],
+    ...(binding.specRevision !== undefined ? { revision: binding.specRevision } : {}),
+    limit: 1,
+  });
+  if (!clause?.sourceBar) return { kind: 'undeclared' };
+  const criterion = await deps.loadCriterion(clause.sourceBar);
+  const declared = parseProductionConfiguration(criterion?.productionConfiguration);
+  if (!declared) return { kind: 'undeclared' };
+  const label = `${clause.specId}@${clause.revision}`;
+  const testRunId = binding.testRunId ?? null;
+  const snapshot = testRunId === null ? null : readConfigurationSnapshot(await deps.readSnapshot(testRunId));
+  const verdict = judgeDeclaredConfiguration(declared, snapshot);
+  if (verdict.ok) {
+    return {
+      kind: 'matched',
+      stamp: { required: true, testRunId: testRunId!, declaredFingerprint: verdict.declaredFingerprint, fingerprint: verdict.fingerprint },
+    };
+  }
+  const noRun = testRunId === null ? ' This binding names no testRunId: bind it with { fromTestRun: <id> }.' : '';
+  return {
+    kind: 'refused',
+    refusal: {
+      error: verdict.code,
+      clause: label,
+      testRunId,
+      declaredFingerprint: verdict.declaredFingerprint,
+      fingerprint: verdict.fingerprint,
+      differing: verdict.differing,
+      message: `${label}: ${verdict.message}${noRun}`,
     },
   };
 }
@@ -720,6 +853,13 @@ export default defineTool({
             async () => (measurementScope ?? (await resolvePlanScope({ harnessSlug }))).workspaceId,
             harnessSlug,
           ));
+      let declaredConfigurationDepsMemo: DeclaredConfigurationBindDeps | undefined;
+      const declaredConfigurationDeps = () =>
+        (declaredConfigurationDepsMemo ??=
+          bindSpecEvidenceTestSeams.declaredConfigurationDeps?.(harnessSlug) ??
+          defaultDeclaredConfigurationDeps(
+            async () => (measurementScope ?? (await resolvePlanScope({ harnessSlug }))).workspaceId,
+          ));
       const env = await timing.phase('bindRows', () =>
         runBulk(
           resolved,
@@ -728,10 +868,24 @@ export default defineTool({
               const { error, testRunId, message } = entry;
               return { ok: false as const, slug: reportedSlug, error, fromTestRun: testRunId, message };
             }
-            const { binding } = entry;
+            let { binding: requested } = entry;
             const derived = entry.derived ? { derivedFromTestRun: entry.derived } : {};
+            let dependencies: Awaited<ReturnType<typeof captureCodeDependencies>> | undefined;
+            if (args.dependencies) {
+              if (requested.measurement?.kind !== 'repo-files') {
+                return { ok: false as const, slug: reportedSlug, error: 'derived_binding_invalid' satisfies BindSpecEvidenceRefusalCode,
+                  message: 'Compiler dependencies require a repo-files measurement from the recorded test run.', ...derived };
+              }
+              const dependencyMeasurement = requested.measurement;
+              dependencies = await timing.phase('captureCodeDependencies', async () => {
+                const root = await resolveMeasurementRoot(measurementScope!.workspaceId, harnessSlug, dependencyMeasurement);
+                return captureCodeDependencies(root, dependencyMeasurement, args.dependencies!);
+              });
+              requested = { ...requested, measurement: dependencies.measurement,
+                details: { ...(requested.details ?? {}), codeDependencies: dependencies.evidence } };
+            }
             const targetingRefusal = await timing.phase('mutationTargeting', () =>
-              mutationTargetingRefusal(binding, {
+              mutationTargetingRefusal(requested, {
                 planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
                 harnessSlug,
                 ...(args.slug ? { slugArg: args.slug } : {}),
@@ -747,6 +901,22 @@ export default defineTool({
                 ...targetingRefusal,
               };
             }
+            // P-011: a BAR that declares its production configuration accepts only a run whose
+            // recorded snapshot matches it. A match is stamped into details for currentness.
+            const configuration = await timing.phase('declaredConfiguration', () =>
+              declaredConfigurationBindCheck(
+                requested,
+                { planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE, harnessSlug },
+                declaredConfigurationDeps(),
+              ),
+            );
+            if (configuration.kind === 'refused') {
+              return { ok: false as const, slug: reportedSlug, ...derived, ...configuration.refusal };
+            }
+            const binding =
+              configuration.kind === 'matched'
+                ? { ...requested, details: { ...(requested.details ?? {}), declaredConfiguration: configuration.stamp } }
+                : requested;
             // P-010 (verification-system-improvements-2026-10-10): measurement-kind evidence must
             // name a committed, tested instrument or declare it used none. BIND TIME ONLY — the
             // store and every re-measure path never call this, so pre-rule rows are not re-judged.
@@ -764,6 +934,7 @@ export default defineTool({
               : await timing.phase('measureAndPin', () =>
                   measureBindingForStore(measurementScope!.workspaceId, harnessSlug, measurement, entry.asCommitted),
                 );
+            if (dependencies) assertCodeDependencyVersions(dependencies.evidence.sources, measured?.pin);
             const result = await timing.phase('storeBinding', () =>
               bindSpecEvidence({
                 ...declared,

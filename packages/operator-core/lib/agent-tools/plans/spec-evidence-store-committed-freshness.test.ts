@@ -17,6 +17,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Real fixture Git stays local, independent of the operator's shared sidecar.
+vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => false,
+}));
+
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   measurementRoot: '',

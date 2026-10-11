@@ -223,6 +223,7 @@ import {
 import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
+import { loadOperatorToolCatalogue } from '../../../agent-tools/operator-tool-catalogue';
 
 export { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 export { withMcpDiagnosticWarnings } from './mcp-diagnostic-warnings';
@@ -239,20 +240,11 @@ export type { McpCallResult } from './mcp-diagnostic-warnings';
  * tool graph there arms host listeners/timers before a request exists and can
  * keep a one-shot process alive indefinitely. The promise is shared so
  * concurrent HTTP/UDS initializers register the catalog exactly once, and a
- * failed load can retry on the next real request.
+ * failed load can retry on the next real request. A completed static HTTP
+ * registration also satisfies this gate, without a second CJS/ESM graph load.
  */
-let operatorToolsLoad: Promise<void> | null = null;
-
 export function ensureOperatorToolsLoaded(): Promise<void> {
-  if (!operatorToolsLoad) {
-    operatorToolsLoad = import('../../../agent-tools/index')
-      .then(() => undefined)
-      .catch((error) => {
-        operatorToolsLoad = null;
-        throw error;
-      });
-  }
-  return operatorToolsLoad;
+  return loadOperatorToolCatalogue(() => import('../../../agent-tools/index'));
 }
 
 const ENTITY_REF_SCHEMA_PRESENCE = new WeakMap<object, boolean>();
@@ -4881,6 +4873,7 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
+                  requestTraceId: traceId,
                     runId: dispatchSpawnCtx.runId ?? null,
                     ownerId: (() => {
                       try {
@@ -5014,7 +5007,7 @@ export function registerMcpHost(server: McpServer): void {
               content: [
                 {
                   type: 'text' as const,
-                  text: formatMcpReadOnlyDeadlineMessage(toolName, deadlineMs),
+                  text: formatMcpReadOnlyDeadlineMessage(toolName, deadlineMs, traceId),
                 },
               ],
             };
@@ -5175,6 +5168,7 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
+                  requestTraceId: traceId,
                   onLateScratchWriteSettled: (settlement) => {
                     const settledAt = new Date().toISOString();
                     return backfillResultDoorOutputRef({
@@ -5216,11 +5210,27 @@ export function registerMcpHost(server: McpServer): void {
                     }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
                       count: 0, quotaWaitMs: 0, refreshWaitMs: 0,
-                      quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
+                      quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
+                      markerProbeMs: 0, writeMs: 0, totalMs: 0,
                     };
                     total.count += 1;
-                    for (const phase of ['quotaWaitMs', 'refreshWaitMs', 'quotaRecoveryMs', 'writeMs', 'totalMs'] as const) {
-                      total[phase] += timings[phase];
+                    for (const phase of [
+                      'quotaWaitMs',
+                      'refreshWaitMs',
+                      'quotaRecoveryMs',
+                      'quotaStateReadMs',
+                      'quotaStatePublishMs',
+                      'markerProbeMs',
+                      'writeMs',
+                      'totalMs',
+                    ] as const) {
+                      total[phase] = (total[phase] ?? 0) + (timings[phase] ?? 0);
+                    }
+                    if (timings.awaitSubphaseTimingsMs) {
+                      const subphases = total.awaitSubphaseTimingsMs ??= {};
+                      for (const [name, elapsedMs] of Object.entries(timings.awaitSubphaseTimingsMs)) {
+                        subphases[name] = (subphases[name] ?? 0) + elapsedMs;
+                      }
                     }
                     const recovery = timings.quotaRecoveryDiagnostics;
                     if (recovery) {
@@ -6104,8 +6114,8 @@ export function effectiveMcpDeadlineMs(
 }
 
 /** Read-only MCP results are not stored for idempotent replay. */
-export function formatMcpReadOnlyDeadlineMessage(toolName: string, deadlineMs: number): string {
-  return `request_timeout: read-only tool "${toolName}" exceeded ${deadlineMs}ms (the operation may still be running server-side; this request was not canceled. Read-only results are not stored for idempotent replay, so retrying will execute a fresh read instead of replaying this attempt's result).`;
+export function formatMcpReadOnlyDeadlineMessage(toolName: string, deadlineMs: number, traceId: string): string {
+  return `request_timeout: read-only tool "${toolName}" exceeded ${deadlineMs}ms (the operation may still be running server-side; this request was not canceled. Read-only results are not stored for idempotent replay, so retrying will execute a fresh read instead of replaying this attempt's result; request trace id: ${traceId}).`;
 }
 
 /**

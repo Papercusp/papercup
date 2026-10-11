@@ -27,6 +27,7 @@
  */
 import { initFlagOverrideStore, isOverrideStoreConfigured } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
+import type { Sql } from 'postgres';
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -46,6 +47,26 @@ export const FLAG_OVERRIDES_STATE_KEY = 'operator_flag_overrides';
  * existing workspace_id partition avoids a parallel store or schema migration.
  */
 export const GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID = '@global';
+
+/** Persisted authority for security-sensitive admission, held until commit.
+ * An absent global row refuses authority: neither legacy workspace overrides
+ * nor cached/default flags may authorize spending a server credential. This
+ * read never creates the global cutover marker as a side effect.
+ */
+export async function readGlobalFlagOverridesForUpdate(
+  tx: Sql,
+): Promise<Partial<Record<FlagKey, boolean>> | null> {
+  if (typeof (tx as { begin?: unknown }).begin === 'function') {
+    throw new Error('flag_override_lock_requires_transaction');
+  }
+  const [row] = await tx<{ payload: unknown }[]>`
+    SELECT payload FROM harness_shared.operator_flag_overrides
+    WHERE workspace_id = ${GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID} FOR UPDATE`;
+  const payload = row?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.values(payload).some(value => typeof value !== 'boolean')) return null;
+  return payload as Partial<Record<FlagKey, boolean>>;
+}
 
 /**
  * PG NOTIFY channel announcing an override write to EVERY listening process

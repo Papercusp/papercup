@@ -1052,6 +1052,9 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   // agent outside the implementer lineage. Not 'grader': the recruiter is not widened to
   // this code, and it does not recruit a verifier.
   independent_verification_missing: 'author',
+  // P-006: the author recruits a blind reviewer and dispositions its gaps.
+  blind_review_missing: 'author',
+  blind_review_gap_undispositioned: 'author',
 
   // --- the gate could not measure the plan ----------------------------------
   // A failed measurement is not a repair. Ranking these as author work would send
@@ -1060,6 +1063,7 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   design_evidence_unavailable: 'unmeasured',
   spec_coverage_unavailable: 'unmeasured',
   independent_verification_unavailable: 'unmeasured',
+  blind_review_unavailable: 'unmeasured',
 
   // --- the repair belongs to another node -----------------------------------
   // WI-10004178 / endgame D-095: a federated receiver cannot grade or ship; the

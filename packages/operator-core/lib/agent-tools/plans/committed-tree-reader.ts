@@ -22,8 +22,8 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
-import { posix } from 'node:path';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import { join, posix, resolve as resolvePath } from 'node:path';
 import { minimatch } from 'minimatch';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createTextCollector } from '../../child-output';
@@ -77,6 +77,83 @@ export function repoFileSetFingerprint(entries: ReadonlyArray<{ path: string; sh
   return `sha256-file-set-v1:${digest}`;
 }
 
+const HEX_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** Config that changes where the refs live, or makes the repository bare: only git can answer. */
+const UNSUPPORTED_CONFIG_RE = /^\s*refstorage\s*=|^\s*bare\s*=\s*true\b/im;
+/** `core.worktree` — set in every submodule's gitdir, pointing back at the checkout. */
+const WORKTREE_CONFIG_RE = /^\s*worktree\s*=\s*(.+?)\s*$/gim;
+
+/**
+ * HEAD's commit read straight from the repository files, with no git child process
+ * (WI-6554700010008489). Every measurement used to spawn `git rev-parse` from the
+ * multi-GB bg-host, whose fork cost scales with its RSS. The answer is read fresh on
+ * every call, never cached: a reused HEAD would make a commit landed in between read as
+ * an uncommitted edit (see evidence-measurement-pin's memo note).
+ *
+ * Returns the commit only when it is POSITIVELY resolved: `root` holds the `.git` entry
+ * (so it is the top level), HEAD is a detached object id or `ref: refs/heads/<b>`, and that
+ * ref is a loose or packed id. Anything else returns `undefined` and the caller asks git:
+ * GIT_DIR/GIT_WORK_TREE overrides, a repository owned by another user (git's
+ * safe.directory refusal), core.worktree / reftable / bare config, an unborn branch, a
+ * subdirectory, a non-git directory.
+ */
+export async function readHeadCommitFromFiles(root: string): Promise<string | undefined> {
+  if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_COMMON_DIR) return undefined;
+  try {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (uid !== null && (await lstat(root)).uid !== uid) return undefined;
+    const dotGit = join(root, '.git');
+    const entry = await lstat(dotGit);
+    let gitDir: string;
+    if (entry.isDirectory()) {
+      gitDir = dotGit;
+    } else if (entry.isFile()) {
+      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(await readFile(dotGit, 'utf8'));
+      if (!pointer) return undefined;
+      gitDir = resolvePath(root, pointer[1]);
+    } else {
+      return undefined;
+    }
+    const commonDir = await readFile(join(gitDir, 'commondir'), 'utf8').then(
+      (text) => resolvePath(gitDir, text.trim()),
+      () => gitDir,
+    );
+    const [config, worktreeConfig] = await Promise.all([
+      readFile(join(commonDir, 'config'), 'utf8').catch(() => ''),
+      readFile(join(gitDir, 'config.worktree'), 'utf8').catch(() => ''),
+    ]);
+    if (UNSUPPORTED_CONFIG_RE.test(config) || UNSUPPORTED_CONFIG_RE.test(worktreeConfig)) return undefined;
+    // A core.worktree is accepted only when it names `root` itself (the submodule layout);
+    // one pointing anywhere else moves the work tree, and git must answer.
+    const worktrees = [...`${config}\n${worktreeConfig}`.matchAll(WORKTREE_CONFIG_RE)].map((m) => m[1]);
+    if (worktrees.length > 0) {
+      const realRoot = await realpath(root);
+      for (const worktree of worktrees) {
+        const target = await realpath(resolvePath(gitDir, worktree.replace(/^"(.*)"$/, '$1'))).catch(() => null);
+        if (target !== realRoot) return undefined;
+      }
+    }
+    const head = (await readFile(join(gitDir, 'HEAD'), 'utf8')).trim();
+    if (HEX_OID_RE.test(head)) return head;
+    const ref = /^ref:\s*(refs\/heads\/\S+)$/.exec(head)?.[1];
+    if (!ref || ref.includes('..')) return undefined;
+    const loose = await readFile(join(commonDir, ref), 'utf8').then((text) => text.trim(), () => null);
+    if (loose !== null) return HEX_OID_RE.test(loose) ? loose : undefined;
+    const packed = await readFile(join(commonDir, 'packed-refs'), 'utf8').catch(() => null);
+    if (packed === null) return undefined;
+    for (const line of packed.split('\n')) {
+      const space = line.indexOf(' ');
+      if (space > 0 && line.slice(space + 1).trimEnd() === ref) {
+        const oid = line.slice(0, space);
+        return HEX_OID_RE.test(oid) ? oid : undefined;
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The commit a measurement root's HEAD points at, or null when the root is not the TOP
  * LEVEL of a git checkout. A non-git root, a root with no commit yet, and a root that is a
@@ -85,6 +162,12 @@ export function repoFileSetFingerprint(entries: ReadonlyArray<{ path: string; sh
  * level, so a subdirectory root would silently read the wrong objects.
  */
 export async function resolveMeasurementCommit(root: string, git: GitRunner = defaultGitRunner): Promise<string | null> {
+  // The in-process read is the DEFAULT runner's fast path only (WI-6554700010008489): an
+  // injected runner is a test double or a deliberate route and keeps exact git semantics.
+  if (git === defaultGitRunner) {
+    const fromFiles = await readHeadCommitFromFiles(root);
+    if (fromFiles !== undefined) return fromFiles;
+  }
   try {
     const [top, commit] = (await git(root, ['rev-parse', '--show-toplevel', 'HEAD^{commit}'])).trim().split('\n');
     if (!top || !commit || !COMMIT_RE.test(commit)) return null;

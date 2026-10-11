@@ -107,6 +107,18 @@ function isPopulatedGitEvidenceResult(body: Record<string, unknown>): boolean {
     'next_cursor' in body;
 }
 
+function isPopulatedWorkItemParkResult(body: Record<string, unknown>): boolean {
+  // work_items:park returns a lifecycle receipt rather than a generic results array. Its
+  // booleans are domain outcomes, not evidence that the result is empty: the item id,
+  // checkpoint size, release/note outcomes, and actor identify the completed park attempt.
+  return body.ok === true &&
+    typeof body.id === 'string' && body.id.trim().length > 0 &&
+    typeof body.checkpointChars === 'number' && Number.isSafeInteger(body.checkpointChars) && body.checkpointChars >= 0 &&
+    typeof body.released === 'boolean' &&
+    typeof body.noted === 'boolean' &&
+    typeof body.by === 'string' && body.by.trim().length > 0;
+}
+
 function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (Array.isArray(parsed)) return parsed.length > 0;
   if (!parsed || typeof parsed !== 'object') return false;
@@ -119,6 +131,7 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   // capability:git-evidence reports authoritative values in operation-specific fields;
   // empty files and a negative ancestry result are still successful, populated reads.
   if (isPopulatedGitEvidenceResult(body)) return true;
+  if (isPopulatedWorkItemParkResult(body)) return true;
   // code:run wraps the script's returned summary with orchestration metadata instead of a
   // conventional `results` field. Only recognize this distinctive successful envelope, then
   // classify the summary itself so an empty script result still keeps the warning.

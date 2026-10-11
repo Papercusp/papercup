@@ -116,7 +116,8 @@ beforeAll(async () => {
   // A name-filtered run may start with the deadline regression. Keep Vitest's
   // cold module transforms in suite setup, outside its per-case timer; a timed
   // out async test keeps running and would otherwise race the next SQL fixture.
-  await Promise.all([import('./goals'), import('../goal-launch-settings'), import('../agent-obligation-reader')]);
+  await Promise.all([import('./goals'), import('../goal-launch-settings'), import('../agent-obligation-reader'),
+    import('../goal-rubric-stewardship')]);
 }, 600_000);
 
 afterAll(async () => {
@@ -482,6 +483,61 @@ describe('goals.* resolvers against real SQL', () => {
     ]);
     const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
     expect(stored.properties.worklist_policy).toEqual(policy);
+  });
+
+  it('starts stewardship while the shared portfolio read is pending', async () => {
+    await goal();
+    await plan('concurrent-plan', { harness: 'alpha', title: 'Concurrent evidence', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: false } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } } };
+    const properties = { worklist: { value: ['plan:alpha/concurrent-plan'], version: 1 },
+      worklist_policy: { value: { order: ['plan:alpha/concurrent-plan'],
+        included: ['plan:alpha/concurrent-plan'], excluded: [] }, version: 1,
+        provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' } };
+    expect(readTypedPropertyCollection({ propertySchema: schema, properties, property: 'worklist',
+      source: { ok: true, items: ['plan:alpha/concurrent-plan'] } }))
+      .toMatchObject({ ok: true, selected: ['plan:alpha/concurrent-plan'] });
+    await sql`UPDATE harness_shared.goals SET property_schema=${sql.json(schema)}, properties=${sql.json(properties)}
+      WHERE workspace_id=${WS} AND id=${GOAL}`;
+    const [{ resolveGoalDetail }, portfolioReader, stewardshipReader] = await Promise.all([
+      import('./goals'), import('../goal-launch-settings'), import('../goal-rubric-stewardship'),
+    ]);
+    let markPortfolioStarted!: () => void, releasePortfolio!: () => void;
+    const portfolioStarted = new Promise<void>(resolve => { markPortfolioStarted = resolve; });
+    const portfolioPending = new Promise<void>(resolve => { releasePortfolio = resolve; });
+    const original = portfolioReader.readGoalPortfolioBrief;
+    const portfolio = vi.spyOn(portfolioReader, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      markPortfolioStarted();
+      await portfolioPending;
+      return original(args);
+    });
+    const stewardship = vi.spyOn(stewardshipReader, 'readGoalRubricStewardship');
+    const read = resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    try {
+      await portfolioStarted;
+      // A serial implementation cannot reach stewardship until this test
+      // releases the portfolio. No timing sum or widened resolver clock can
+      // make that ordering pass.
+      await expect.poll(() => stewardship.mock.calls.length, { timeout: 1000 }).toBe(1);
+    } finally {
+      releasePortfolio();
+      // Drain even on an assertion failure before the next TRUNCATE fixture.
+      try { await read; } finally {
+        portfolio.mockRestore();
+        stewardship.mockRestore();
+      }
+    }
+    const detail = await read as { rubricStewardship: unknown; goalData: { collections: { worklist: {
+      selection: { ok: boolean; selected: string[] };
+    } } } };
+    expect(detail.rubricStewardship).not.toBeNull();
+    expect(detail.goalData.collections.worklist.selection.ok).toBe(true);
+    expect(detail.goalData.collections.worklist.selection.selected).toEqual(['plan:alpha/concurrent-plan']);
+    const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
+    expect(saved.properties).toEqual(properties);
   });
 
   it.each(['late success', 'failure'] as const)(

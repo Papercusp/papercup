@@ -87,6 +87,7 @@ import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdi
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { evaluateIndependentVerificationGate } from './independent-verification-gate';
+import { evaluateBlindReviewGate } from './blind-review-gate';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { beginPlanClosureObservation, isCanonicalClosureGateCall } from './goals/plan-closure-observations';
 
@@ -151,6 +152,12 @@ export type PlanAcceptanceGateCode =
   | 'independent_verification_missing'
   // The same door could not READ its scope, bindings or lineage, and refused rather than guess.
   | 'independent_verification_unavailable'
+  // verification-system-improvements-2026-10-10 P-006 (D-006, D-039) — no counted blind gap
+  // review for the plan's latest activation audit, or a counted review's gap is undispositioned.
+  | 'blind_review_missing'
+  | 'blind_review_gap_undispositioned'
+  // The blind-review door could not read its inputs and refused rather than guess.
+  | 'blind_review_unavailable'
   /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
   | 'spec_coverage_unavailable';
 
@@ -1249,6 +1256,22 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         satisfied: false,
         code: independentVerification.code ?? 'independent_verification_missing',
         message: independentVerification.message ?? `plan '${planSlug}' lacks independent verification of live evidence.`,
+      };
+    }
+  }
+
+  // ── BLIND GAP REVIEW (verification-system-improvements-2026-10-10 P-006) ──────────
+  // The awaiting-acceptance writers already require it (D-006 (1)); the ship door
+  // re-checks it for the revision being shipped, because a plan can be re-activated
+  // after its review or reach ship without passing through awaiting-acceptance.
+  // Not waivable by force (D-039 (5)): an independence check, like the door above.
+  if (planHarnessSlug) {
+    const blindReview = await evaluateBlindReviewGate({ planSlug, harnessSlug: planHarnessSlug });
+    if (!blindReview.satisfied) {
+      return {
+        satisfied: false,
+        code: blindReview.code ?? 'blind_review_missing',
+        message: blindReview.message ?? `plan '${planSlug}' has no blind gap review for its current revision.`,
       };
     }
   }

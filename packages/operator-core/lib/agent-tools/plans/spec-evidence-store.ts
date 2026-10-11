@@ -21,6 +21,7 @@ import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
+import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
@@ -749,7 +750,7 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
   };
 }
 
-async function resolveMeasurementRoot(
+export async function resolveMeasurementRoot(
   workspaceId: string,
   harnessSlug: string,
   measurement?: Pick<RepoFilesEvidenceMeasurement, 'rootHarnessSlug' | 'fixtureRootHarnessSlug'>,
@@ -1675,6 +1676,91 @@ interface CurrentnessClassificationOptions {
   attestedDimensions?: OpaqueFingerprintDimension[];
   /** Internal independent certification only; never admitted through current-input schemas. */
   sourceEquivalence?: StaticGuidanceSourceEquivalence;
+  /**
+   * P-011: the bar this evidence proves declares `verification.productionConfiguration`.
+   * `declaredFingerprint` is that declaration's fingerprint; `unresolved` means the bar's
+   * declaration could not be read, which is never treated as "declares nothing".
+   */
+  declaredConfiguration?: { declaredFingerprint: string } | { unresolved: string };
+}
+
+/** The bind-time stamp `plans:bind-spec-evidence` writes on a configuration-checked binding. */
+function declaredConfigurationStampOf(
+  details: Record<string, unknown> | undefined,
+): { declaredFingerprint: string; fingerprint: string } | null {
+  const stamp = details?.declaredConfiguration;
+  if (!stamp || typeof stamp !== 'object' || Array.isArray(stamp)) return null;
+  const { required, declaredFingerprint, fingerprint } = stamp as Record<string, unknown>;
+  if (required !== true || typeof declaredFingerprint !== 'string' || typeof fingerprint !== 'string') return null;
+  return { declaredFingerprint, fingerprint };
+}
+
+/**
+ * SPEC-P-011-NULL-FINGERPRINT: evidence without a declared-configuration fingerprint never
+ * counts as current for a bar that declares a production configuration. Only a binding the
+ * bind door checked and stamped, under the declaration the bar still makes, is current.
+ */
+function declaredConfigurationState(
+  row: CurrentnessRow,
+  declared: NonNullable<CurrentnessClassificationOptions['declaredConfiguration']>,
+): FingerprintState {
+  if ('unresolved' in declared) return 'unknown';
+  const stamp = declaredConfigurationStampOf(row.details);
+  if (!stamp || stamp.fingerprint !== stamp.declaredFingerprint) return 'unknown';
+  return stamp.declaredFingerprint === declared.declaredFingerprint ? 'current' : 'stale';
+}
+
+type DeclaredConfigurationResolution = NonNullable<CurrentnessClassificationOptions['declaredConfiguration']>;
+
+function declaredConfigurationPinKey(row: {
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | null;
+  source_bar_key?: string | null;
+}): string | null {
+  if (!row.source_rubric_slug || row.source_rubric_revision == null || !row.source_bar_key) return null;
+  return `${row.source_rubric_slug}@${Number(row.source_rubric_revision)}:${row.source_bar_key}`;
+}
+
+/** Test seam: replace the pinned-rubric read the P-011 currentness check performs. */
+export const declaredConfigurationReadSeam: {
+  loadRubricCriteria?: (rubricSlug: string, revision: number) => Promise<
+    Array<{ key: string; barKey?: string; productionConfiguration?: unknown }> | null
+  >;
+} = {};
+
+/**
+ * P-011: which pinned BARs declare a production configuration. One rubric read per distinct
+ * (rubric, revision); a BAR whose rubric is gone declares nothing, while a read that throws
+ * is `unresolved` so its evidence cannot read as current on an unknown declaration.
+ */
+export async function resolveDeclaredConfigurations(
+  rows: ReadonlyArray<{ source_rubric_slug?: string | null; source_rubric_revision?: number | null; source_bar_key?: string | null }>,
+): Promise<Map<string, DeclaredConfigurationResolution>> {
+  const out = new Map<string, DeclaredConfigurationResolution>();
+  const rubricReads = new Map<string, Promise<Array<{ key: string; barKey?: string; productionConfiguration?: unknown }> | null>>();
+  const loadCriteria =
+    declaredConfigurationReadSeam.loadRubricCriteria ??
+    (async (slug: string, revision: number) => {
+      const { getRubric } = await import('../../rubrics');
+      return (await getRubric(slug, revision))?.criteria ?? null;
+    });
+  for (const row of rows) {
+    const key = declaredConfigurationPinKey(row);
+    if (!key || out.has(key)) continue;
+    const rubricKey = `${row.source_rubric_slug}@${Number(row.source_rubric_revision)}`;
+    if (!rubricReads.has(rubricKey)) {
+      rubricReads.set(rubricKey, loadCriteria(row.source_rubric_slug!, Number(row.source_rubric_revision)));
+    }
+    try {
+      const criteria = await rubricReads.get(rubricKey)!;
+      const criterion = criteria?.find((c) => (c.barKey?.trim() || c.key) === row.source_bar_key);
+      const declared = parseProductionConfiguration(criterion?.productionConfiguration);
+      if (declared) out.set(key, { declaredFingerprint: declaredConfigurationFingerprint(declared) });
+    } catch (error: unknown) {
+      out.set(key, { unresolved: (error instanceof Error ? error.message : String(error)).slice(0, 160) });
+    }
+  }
+  return out;
 }
 
 interface StaticGuidanceSourceEquivalence {
@@ -1708,6 +1794,8 @@ export interface EvidenceCurrentness {
     environment: FingerprintState;
     coverageEvidence: FingerprintState;
     testRun: FingerprintState;
+    /** P-011: present only when the bar declares a production configuration. */
+    configuration?: FingerprintState;
   };
   staleReasons: string[];
   unknownReasons: string[];
@@ -1796,6 +1884,10 @@ export function classifySpecEvidenceCurrentness(
           : row.test_run_worktree_dirty === false
             ? 'current'
             : 'unknown',
+    // Additive only: a bar that declares nothing classifies exactly as before P-011.
+    ...(options.declaredConfiguration
+      ? { configuration: declaredConfigurationState(row, options.declaredConfiguration) }
+      : {}),
   };
   const sourceEquivalence = options.provenance === 'server-measured' && options.sourceEquivalence
     && options.sourceEquivalence.storedFingerprint === row.source_fingerprint
@@ -1814,7 +1906,11 @@ export function classifySpecEvidenceCurrentness(
           : 'test-run-worktree-cleanliness-unproven'
         : dimension === 'environment' && environmentFingerprintMissing
           ? 'environment-evidence-fingerprint-not-recorded'
-          : `${dimension}-current-fingerprint-not-supplied`,
+          : dimension === 'configuration'
+            ? options.declaredConfiguration && 'unresolved' in options.declaredConfiguration
+              ? `declared-configuration-unresolved:${options.declaredConfiguration.unresolved}`
+              : 'declared-configuration-fingerprint-not-recorded'
+            : `${dimension}-current-fingerprint-not-supplied`,
     );
   const attestedDimensions = [...new Set(options.attestedDimensions ?? [])].sort();
   const provenance: EvidenceCurrentnessProvenance =
@@ -1891,6 +1987,10 @@ export function mutationFailedCaseTitles(executionDetails?: unknown): string[] |
 }
 
 interface EvidenceRow extends CurrentnessRow {
+  /** P-011: the BAR pin of the bound clause revision, when it was projected from a rubric. */
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | null;
+  source_bar_key?: string | null;
   id: number;
   work_item_id: string;
   plan_slug: string;
@@ -2931,6 +3031,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
              ELSE NULL
            END AS mutation_execution_details,
            ${specIsCurrent} AS spec_is_current,
+           r.source_rubric_slug, r.source_rubric_revision, r.source_bar_key,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
               JOIN harness_shared.testing_surfaces s ON s.id = ce.surface_ref
@@ -3297,6 +3398,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     );
   }
   recordPhase('postReadProbeFence', postReadProbeStartedAt);
+  const declaredConfigurations = await resolveDeclaredConfigurations(rows);
   const classificationStartedAt = diagnostics ? Date.now() : 0;
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
@@ -3344,12 +3446,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       options.replaySnapshot && options.currentProvenance
         ? { provenance: options.currentProvenance }
         : {};
+    const declaredConfiguration = declaredConfigurations.get(declaredConfigurationPinKey(row) ?? '');
     const currentness = classifySpecEvidenceCurrentness(
       row,
       current,
-      measured?.status === 'measured'
-        ? { provenance: 'server-measured', attestedDimensions, sourceEquivalence: measured.sourceEquivalence }
-        : replayProvenance,
+      {
+        ...(measured?.status === 'measured'
+          ? { provenance: 'server-measured' as const, attestedDimensions, sourceEquivalence: measured.sourceEquivalence }
+          : replayProvenance),
+        ...(declaredConfiguration ? { declaredConfiguration } : {}),
+      },
     );
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];

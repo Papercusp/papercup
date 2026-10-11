@@ -828,8 +828,25 @@ function bindingIdentityMatchesClause(row: SpecEvidenceForAdequacy, clause: Spec
     row.specFingerprint === clause.contentHash;
 }
 
+/**
+ * The `adequacy.targeted` spellings that name a clause ITSELF: its specId, or that id
+ * lowercased (the long-standing binder convention). ONE set for every rater: the layer,
+ * coverage-census and mutation-target rules all read it, so a binding can never target the
+ * clause for falsifiability and miss it for correct-layer (WI-6554700010008391: the exact
+ * `=== clause.specId` here rated a lowercase-targeted proof `unknown` that
+ * mutationTargetRequirement accepted).
+ */
+export function clauseSelfTargetIds(clause: { specId: string }): string[] {
+  return [...new Set([clause.specId, clause.specId.toLowerCase()])];
+}
+
 function bindingTargetsClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
-  return bindingIdentityMatchesClause(row, clause) && detailsOf(row).targeted === clause.specId;
+  const targeted = detailsOf(row).targeted;
+  return (
+    bindingIdentityMatchesClause(row, clause) &&
+    typeof targeted === 'string' &&
+    clauseSelfTargetIds(clause).includes(targeted)
+  );
 }
 
 function clauseProbe(clause: SpecClauseRevision, harness?: string): string {
@@ -1863,8 +1880,7 @@ export function mutationTargetRequirement(clause: MutationTargetClause): {
 } {
   const scenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])];
   const selfTarget = scenarios.length === 0 ? clause.specId : null;
-  const acceptedSelfTargets =
-    selfTarget === null ? scenarios : [...new Set([selfTarget, selfTarget.toLowerCase()])];
+  const acceptedSelfTargets = selfTarget === null ? scenarios : clauseSelfTargetIds(clause);
   return {
     acceptedTargets: acceptedSelfTargets,
     selfTarget,

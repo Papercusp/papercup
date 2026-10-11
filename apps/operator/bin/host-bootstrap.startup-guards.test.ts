@@ -38,6 +38,30 @@ const agentToolsCatchallSrc = readFileSync(
   'utf8',
 );
 
+/** Executable calls only: comments and quoted examples cannot satisfy wiring. */
+function directCallPositions(source: string, name: string): number[] {
+  const file = ts.createSourceFile('host.ts', source, ts.ScriptTarget.Latest, true);
+  const positions: number[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === name) positions.push(node.getStart(file));
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return positions;
+}
+
+describe('startup call-site detector', () => {
+  it('accepts return and fire-and-forget calls while rejecting comments and strings', () => {
+    expect(directCallPositions('function boot() { return runBootstrap(); }', 'runBootstrap'))
+      .toHaveLength(1);
+    expect(directCallPositions('function boot() { runBootstrap(); }', 'runBootstrap'))
+      .toHaveLength(1);
+    expect(directCallPositions('// runBootstrap();\nconst example = "runBootstrap();";', 'runBootstrap'))
+      .toEqual([]);
+  });
+});
+
 /** Each guard, with the module it lives in — both must appear at the boot site. */
 const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
   {
@@ -236,7 +260,8 @@ describe('background admission recovery loads the live kernel resolver before ro
     // boot); sibling named imports from the same module are fine (e.g. externalIngressHandler).
     expect(honoHostSrc).toMatch(/^import \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
     expect(honoHostSrc).not.toMatch(/^import type \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
-    expect(honoHostSrc).toContain('return runBootstrap();');
+    // Bootstrap callbacks may be fire-and-forget before the migration gate.
+    expect(directCallPositions(honoHostSrc, 'runBootstrap').length).toBeGreaterThan(0);
     const packagedHost = readFileSync(join(__dirname, 'serve.ts'), 'utf8');
     const handlerImport = packagedHost.indexOf('const { handler } = await import("./host-handler");');
     const bootstrapCall = packagedHost.indexOf('runBootstrap();', handlerImport);
@@ -527,12 +552,13 @@ describe('hono-host rejects persistent main-port conflicts before bootstrap', ()
     const preflightImport = honoHostSrc.indexOf("import './hono-host-port-preflight';");
     const bootstrapImport = honoHostSrc.indexOf("import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';");
     const clusterStart = honoHostSrc.indexOf('startCluster({');
-    const bootstrapCall = honoHostSrc.indexOf('return runBootstrap();');
+    const bootstrapCalls = directCallPositions(honoHostSrc, 'runBootstrap');
 
     expect(preflightImport).toBeGreaterThan(honoHostSrc.indexOf("import './boot-flag-store';"));
     expect(preflightImport).toBeLessThan(bootstrapImport);
     expect(clusterStart).toBeGreaterThan(preflightImport);
-    expect(bootstrapCall).toBeGreaterThan(preflightImport);
+    expect(bootstrapCalls.length).toBeGreaterThan(0);
+    for (const position of bootstrapCalls) expect(position).toBeGreaterThan(preflightImport);
     expect(honoHostPortPreflightSrc).toContain('portAvailableSync(port, hostname)');
     expect(honoHostPortPreflightSrc).toContain('fatal EADDRINUSE during pre-bootstrap port check');
     expect(honoHostPortPreflightSrc).toContain('cluster.isPrimary && !sidecarMode');

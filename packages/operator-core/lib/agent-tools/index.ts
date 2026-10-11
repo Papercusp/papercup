@@ -331,6 +331,7 @@ import './calendar/propose';
 import './calendar/update';
 import './calendar/delete';
 import './chat/reply';
+import './ticket/file';
 import './social/delete';
 import './social/post';
 import './social/read';
@@ -1357,6 +1358,8 @@ import './plans/list';
 import './plans/get';
 import './plans/get-properties';
 import './plans/set-property';
+import './plans/acceptance-disposition';
+import './plans/blind-review';
 // first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
 // identities + immutable revisions, with exact/current/history reads.
 import './plans/get-specs';
@@ -1453,6 +1456,7 @@ import './plans/revisions-list';
 import './plans/revisions-backfill';
 import './plans/acceptance-bar-migration';
 import './plans/acceptance-bar-census';
+import './plans/verification-health';
 import './plans/backfill-dependency-edges';
 import './plans/revision-transcript';
 import './plans/revision-summary';
@@ -1954,3 +1958,9 @@ whenOperatorHostProcess('interest-watch-sweeper', startInterestWatchSweeper);
 // never under vitest) when a tool is over budget, so an over-budget guidance EDIT
 // surfaces at hot-reload time instead of hours later at the fleet-blocking gate.
 import './tool-weight-selfcheck';
+
+// EI-25644552827273063: static HTTP registration has already completed when
+// desktop MCP starts. Avoid re-loading that graph through tsx's ESM loader.
+// Keep this call last: partial/failed registration must never count as ready.
+import { markOperatorToolCatalogueLoaded } from './operator-tool-catalogue';
+markOperatorToolCatalogueLoaded();

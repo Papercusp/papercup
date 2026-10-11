@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 // Static (hoisted-mock-aware) import: the tool's module graph is heavy, so loading it at
 // collection time keeps that cost out of the first test's timeout budget.
-import tool from './bind-spec-evidence';
+import tool, { bindSpecEvidenceTestSeams } from './bind-spec-evidence';
 
 /**
  * P-004 of review-system-rework-reduction-2026-09-23 — VET BEFORE PROOF, at the DOOR.
@@ -98,6 +98,13 @@ describe('plans:bind-spec-evidence — unvetted-rubric advisory at the tool door
     mocks.bindSpecEvidence.mockReset().mockResolvedValue({ status: 'created', bindingId: 1 });
     mocks.getAcceptanceRubricsForPlan.mockReset().mockResolvedValue([{ rubricId: RUBRIC_REF }]);
     mocks.getAcceptanceRubricVettingStatus.mockReset().mockResolvedValue(vetting());
+    // P-011's declared-configuration check reads the clause, its BAR and the run snapshot;
+    // these bars declare no configuration, so the check stays out of the advisory under test.
+    bindSpecEvidenceTestSeams.declaredConfigurationDeps = () => ({
+      loadClauses: vi.fn().mockResolvedValue([]),
+      loadCriterion: vi.fn().mockResolvedValue(null),
+      readSnapshot: vi.fn().mockResolvedValue(null),
+    });
   });
 
   it('writes the BAR binding AND returns a warning naming the unvetted rubric revision', async () => {

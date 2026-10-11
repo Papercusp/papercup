@@ -19,8 +19,19 @@ import { loadAccountPool } from '../packages/operator-core/lib/deployment/accoun
 import { buildExpected } from './templates-mirror-sync.mjs';
 import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { fileURLToPath } from 'node:url';
+import { reapArchiveCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
+import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 
 const installed = installedRootCensusProducers();
+// The existing reader is bounded to 2000 rows per workspace. Missing/GCed
+// identities remain residue; this read never establishes whole-install coverage.
+const retainedTaskIds: string[] = [];
+if (process.argv.includes('--host-catalogs')) {
+  for (const workspace of readRegistry().workspaces) {
+    retainedTaskIds.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, limit: 2000 })).map(task => task.taskId));
+  }
+}
+const reapArchive = await reapArchiveCensusProducer(undefined, retainedTaskIds);
 const affectedCache = await affectedTestCacheCensusProducer();
 const sidefiles = await runtimeSidefileCensusProducer();
 const setupHomes = await cliSetupHomeCensusProducer();
@@ -38,6 +49,9 @@ const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affect
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
 }] });
+const withReapArchive = mergeNestedCensusRoots({ roots: [...producers.roots, ...reapArchive.roots], declarations: [...producers.declarations, ...reapArchive.declarations] });
+producers.roots = withReapArchive.roots;
+producers.declarations = withReapArchive.declarations;
 const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
 const catalogEntries: CensusEntry[] = [];

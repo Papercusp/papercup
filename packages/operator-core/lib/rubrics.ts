@@ -39,6 +39,7 @@ import {
   type RequirementIntent,
   type RequirementAcceptance,
   type RequirementVerification,
+  type RequirementProductionConfiguration,
 } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
@@ -229,6 +230,9 @@ export interface RubricCriterion {
    *  from being silently dropped on re-propose, and rubricCompleteness reports criteria
    *  still lacking one. */
   replication?: string;
+  /** P-011: the configuration this bar's proof must run under. When set, bind-spec-evidence
+   *  refuses evidence whose recorded configuration fingerprint is missing or differs. */
+  productionConfiguration?: RequirementProductionConfiguration;
   /** Stable machine-readable instrument binding. `none` means explicitly manual. */
   instrumentKey?: string;
   /** The criterion's STRUCTURED evidence window (EI-12146) — resolve via
@@ -611,6 +615,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         driftMarkers: c.driftMarkers ?? '',
         ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
         ...(c.replication ? { replication: c.replication } : {}),
+        ...(c.productionConfiguration ? { productionConfiguration: c.productionConfiguration } : {}),
         ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
         ...(c.window ? { window: c.window } : {}),
         ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
@@ -1771,6 +1776,7 @@ export type AcceptanceBarHashInput = Pick<
   | 'mandatory'
   | 'passRatings'
   | 'coversBarKeys'
+  | 'productionConfiguration'
 >;
 
 function normalizedBarText(value: string | undefined): string {
@@ -1843,6 +1849,12 @@ function acceptanceBarHashMaterial(criterion: AcceptanceBarHashInput): readonly 
       ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]]
       : []),
     ...(criterion.check !== undefined ? [['check', canonicalAcceptanceBarCheck(criterion.check)]] : []),
+    // P-011, conditional like evidenceRuntime: declaring the configuration a proof must run
+    // under changes which evidence satisfies the bar, so it re-hashes; undeclared bars keep
+    // their hash byte-for-byte.
+    ...(criterion.productionConfiguration
+      ? [['productionConfiguration', canonicalAcceptanceBarCheck(criterion.productionConfiguration)]]
+      : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
@@ -1910,7 +1922,8 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     criterion.requiredTestLayers !== undefined ||
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||
-    criterion.barProvenance !== undefined;
+    criterion.barProvenance !== undefined ||
+    criterion.productionConfiguration !== undefined;
   const model = normalizedBarText(criterion.model);
   const alias = normalizedBarText(criterion.bar);
   // The read projection mirrors canonical model text into `bar` for every

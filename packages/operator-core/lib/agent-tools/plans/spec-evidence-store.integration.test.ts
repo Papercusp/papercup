@@ -78,6 +78,7 @@ const MIGRATION_930 = migration('930-spec-clause-falsifier-null-safe.sql');
 // append-only trigger with a strict superset of it. Applied LAST so the guards below
 // exercise the trigger this migration installs, not the one 855 installed.
 const MIGRATION_1174 = migration('1174-spec-evidence-binding-retraction.sql');
+const MIGRATION_1445 = migration('1445-spec-evidence-independent-verification.sql');
 // 1175 scopes the dedup index to live rows so a retracted binding releases its
 // slot for an identical corrected binding (WI-10001850 / D-011).
 const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql');
@@ -269,6 +270,12 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1176); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1378);
   await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1445);
+  const [{ present }] = await db.sql<{ present: boolean }[]>`SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared'
+      AND table_name = 'spec_evidence_bindings' AND column_name = 'verifies_binding_id'
+  ) AS present`;
+  expect(present, 'the fixture must support the current evidence writer before compiler scenarios run').toBe(true);
 }, 90_000);
 
 afterAll(async () => {
@@ -460,6 +467,40 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const changed = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(changed.every(row => row.currentness.overall === 'stale')).toBe(true);
   });
+});
+
+describe('native P015 compiler dependency evidence', () => {
+  it('marks persisted proof stale after a dependency changes without revising the requirement or test run', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    await writeFile(path.join(h.repoRoot, 'src/reconnect.ts'),
+      'import { dependency } from "./reconnect-dependency";\nexport function reconnect() { return dependency(); }\n');
+    await writeFile(path.join(h.repoRoot, 'src/reconnect-dependency.ts'), 'export function dependency() { return 1; }\n');
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan',
+      dependencies: [{ name: 'reconnect', file: 'src/reconnect.ts', paths: ['src'] }],
+      binding: { workItemId: 'WI-101', specId: 'SPEC-003-01', specRevision: 1,
+        evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+        measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'] } } });
+    const bound = await bindTool.handler(args as never, CTX) as { data: { results: Array<{ ok: boolean }> } };
+    expect(bound.data.results[0]?.ok, JSON.stringify(bound.data.results)).toBe(true);
+    const read = () => evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
+    const [before] = await read();
+    expect(before!.currentness.overall).toBe('current');
+    expect(before!.details.currentMeasurement).toMatchObject({
+      sourcePaths: ['src/reconnect-dependency.ts', 'src/reconnect.ts'],
+    });
+    expect(before!.details.codeDependencies).toMatchObject({ schemaVersion: 1, sources: expect.arrayContaining([
+      expect.objectContaining({ path: 'src/reconnect-dependency.ts', representation: 'full-source' }),
+    ]) });
+    await writeFile(path.join(h.repoRoot, 'src/reconnect-dependency.ts'), 'export function dependency() { return 2; }\n');
+    const [after] = await read();
+    expect(after!.currentness.overall).toBe('stale');
+    expect(after!.currentness.dimensions.source).toBe('stale');
+    expect(after!.id).toBe(before!.id);
+    expect(after!.specRevision).toBe(1);
+    expect(after!.testRunId).toBe(testRunId);
+    expect(after!.fingerprints).toEqual(before!.fingerprints);
+  }, 120_000);
 });
 
 describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', () => {
@@ -657,7 +698,7 @@ describe('exact spec evidence bindings', () => {
       passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
       commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
       runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
-    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
       WHERE id = ${testRunId}`;
     const input = { workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
       planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test' as const,
@@ -669,7 +710,7 @@ describe('exact spec evidence bindings', () => {
     const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
     expect(pinned.environment_fingerprint).toBe(witness.fingerprint);
     execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
-    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
       WHERE id = ${testRunId}`;
     const drift = await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#drift' });
     expect(drift).toMatchObject({ status: 'created' });
@@ -848,7 +889,7 @@ describe('exact spec evidence bindings', () => {
         passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
         commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
         runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
-      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
         WHERE id = ${testRunId}`;
 
       const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
@@ -882,11 +923,24 @@ describe('exact spec evidence bindings', () => {
         expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
         const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
           workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] };
-        const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+        const binding = {
           workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind,
           evidenceRef: `live-${evidenceKind}-probe`, measurement, details: { evidencePlane: 'live' },
+        };
+        // The live-runtime fixture uses only the binder's built-in server measurements.
+        // An omitted declaration must still fail closed before any binding is written.
+        const undeclared = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding }, CTX);
+        expect(undeclared).toMatchObject({ data: { ok: false, results: [
+          { ok: false, error: 'instrument_undeclared', instrument: null },
+        ] } });
+        expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings
+          WHERE evidence_ref = ${binding.evidenceRef}`).toHaveLength(0);
+        const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+          ...binding, details: { ...binding.details, instrument: {
+            none: true, reason: 'Only the binder built-in work-item and runtime-vintage measurements are used; no external probe is run.',
+          } },
         } }, CTX);
-        expect(JSON.stringify(result)).toContain('"status":"created"');
+        expect(result).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
         const [stored] = await db.sql`SELECT test_run_id, environment_fingerprint
           FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${`live-${evidenceKind}-probe`}`;
         expect(stored.test_run_id).toBeNull();

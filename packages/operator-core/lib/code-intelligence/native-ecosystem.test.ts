@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-admission';
@@ -10,6 +11,79 @@ import { unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts';
 import { nativeChangeReport } from './packer-facade';
 import { produceSnapshotFromSource } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 import { suggestFromSnapshot, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-tools/plans/code-dependency-evidence';
+import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
+import { sourceRuntimeProvenance } from './source-runtime-provenance';
+
+describe('native P015 required BAR dependent proof currentness', () => {
+  it('invalidates proof after a dependent edit while preserving its requirement and test identity', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'native-proof-contract-')));
+    const sha = (file: string) => createHash('sha256').update(readFileSync(join(root, file))).digest('hex');
+    try {
+      writeFileSync(join(root, 'consumer.ts'), 'export function consumer() { return dependency(); }\n');
+      writeFileSync(join(root, 'dependency.ts'), 'export function dependency() { return 1; }\n');
+      const base: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'consumer',
+        sites: [{ path: 'consumer.ts', line1: 1, kind: 'function' }],
+        truncation: { truncated: false, totalAvailable: 1, continuation: null },
+        freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+      const evidence = unmeasuredSourceEvidence(base, { repositoryId: `local-root:${createHash('sha256').update(root).digest('hex')}`,
+        identityKind: 'local-root', paths: ['.'], basis: 'compiler-project' }, []);
+      const answer: CodeIntelAnswer = { ...base, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope,
+        supportingFiles: ['consumer.ts', 'dependency.ts'].map(path => ({ path, contentHash: sha(path),
+          language: 'typescript', representation: 'full-source' })) }, relationships: [
+        { siteIndex: 0, kind: 'definition', origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown' },
+      ] } };
+      const captured = await captureCodeDependencies(root, { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['consumer.ts'] },
+        [{ name: 'consumer', file: 'consumer.ts', paths: ['.'] }], async () => answer);
+      const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, captured.measurement);
+      assertCodeDependencyVersions(captured.evidence.sources, measured.pin);
+      const proof = { specRevision: 1, testRunId: 42, sourceFingerprint: measured.sourceFingerprint };
+      const row = { spec_is_current: true, source_fingerprint: proof.sourceFingerprint,
+        test_fingerprint: null, fixture_fingerprint: null, rubric_fingerprint: null, environment_fingerprint: null,
+        coverage_evidence_ref: null, coverage_evidence_present: false, test_run_id: proof.testRunId,
+        test_run_present: true, test_run_worktree_dirty: false };
+      const current = (sourceFingerprint: string) => classifySpecEvidenceCurrentness(row,
+        { evidenceKind: 'test', evidenceRef: 'reference-proof', sourceFingerprint }, { provenance: 'server-measured' });
+      expect(current(measured.sourceFingerprint).overall).toBe('current');
+      writeFileSync(join(root, 'dependency.ts'), 'export function dependency() { return 2; }\n');
+      const edited = await measureAndPinRepoFilesEvidenceAtRoot(root, captured.measurement);
+      expect(current(edited.sourceFingerprint)).toMatchObject({ overall: 'stale', staleReasons: ['source-stale'],
+        dimensions: { source: 'stale', spec: 'current', testRun: 'current' } });
+      expect(() => assertCodeDependencyVersions(captured.evidence.sources, edited.pin)).toThrow('does_not_match_measured_source');
+      expect(proof).toEqual({ specRevision: 1, testRunId: 42, sourceFingerprint: measured.sourceFingerprint });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('native P017 required BAR captured source and loaded artifact', () => {
+  it('keeps a staging source version distinct from the selected release artifact', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'native-runtime-contract-')));
+    const captured = createHash('sha256').update('new staging source').digest('hex');
+    const base: CodeIntelAnswer = { backend: 'typescript-service', intent: 'definition', query: 'target', sites: [],
+      truncation: { truncated: false, totalAvailable: 0, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    const evidence = unmeasuredSourceEvidence(base, { repositoryId: 'reference-repo', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const answer: CodeIntelAnswer = { ...base, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope,
+      sourceFingerprint: captured, supportingFiles: [{ path: 'target.ts', contentHash: captured, language: 'typescript', representation: 'full-source' }] } } };
+    const pipeline = { repoRoot: root, acceptedSource: { expectedSha256: captured, observedSha256: captured, matches: true,
+      runtimeContainment: { 'staging-operator': true, 'release-operator': false } }, servingRuntimes: [
+      { runtime: 'release-operator', buildSha: 'a'.repeat(40), containsChange: false },
+      { runtime: 'staging-operator', buildSha: 'b'.repeat(40), containsChange: true },
+    ] };
+    const dispatch = async () => ({ data: pipeline });
+    try {
+      const release = await sourceRuntimeProvenance(answer, 'release-operator', root, dispatch);
+      expect(release).toMatchObject({ repositoryId: 'reference-repo', sourceFingerprint: captured,
+        files: [{ capturedSourceSha256: captured, artifact: { buildSha: 'a'.repeat(40) }, containsCapturedSource: false }] });
+      expect((await sourceRuntimeProvenance(answer, 'staging-operator', root, dispatch)).files[0]!.containsCapturedSource).toBe(true);
+      pipeline.acceptedSource.observedSha256 = createHash('sha256').update('later edit').digest('hex');
+      pipeline.acceptedSource.matches = false;
+      expect((await sourceRuntimeProvenance(answer, 'staging-operator', root, dispatch)).files[0]).toMatchObject({
+        capturedSourceSha256: captured, editedSourceSha256: pipeline.acceptedSource.observedSha256,
+        artifact: { buildSha: 'b'.repeat(40) }, containsCapturedSource: null });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('native P010 report consumer coverage contract', () => {
   it('retains the reference consumer and discloses any omitted bounded consumers', async () => {
