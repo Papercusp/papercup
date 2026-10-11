@@ -424,7 +424,7 @@ export async function exportSeedUuidIdempotencySource(inp: {
     sourceInput: { ...span, sourceHead: source.sourceHead, foldNow, winners,
       ...(inp.executionBinding ? { executionBinding: inp.executionBinding } : {}) },
     privacyProjectionContext: { schema: 'papercusp-seed-privacy-projection-v1',
-      literalsSha256: createHash('sha256').update(JSON.stringify(inp.redactValues ?? SEED_BUILD_IDENTITY_LITERALS)).digest('hex'),
+      literalsSha256: createHash('sha256').update(JSON.stringify(inp.redactValues ?? seedBuildIdentityLiterals())).digest('hex'),
       excludedTablesSha256: createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex') } };
 }
 
@@ -538,8 +538,11 @@ function gitConfig(key: string): string | undefined {
   }
 }
 
-/** Build-box identity values are not content and must not survive a public projection. */
+let cachedSeedBuildIdentityLiterals: readonly string[] | undefined;
+
+/** Discover identity only when projecting a seed, never while importing its provider. */
 function seedBuildIdentityLiterals(): readonly string[] {
+  if (cachedSeedBuildIdentityLiterals) return cachedSeedBuildIdentityLiterals;
   const realHostname = process.env[SEED_REAL_HOSTNAME_ENV] || hostname();
   let username: string | undefined;
   try {
@@ -562,10 +565,8 @@ function seedBuildIdentityLiterals(): readonly string[] {
     gitConfig('user.name'),
     gitConfig('user.email'),
   ];
-  return [...new Set(values.filter((value): value is string => !!value && value.length >= 3))];
+  return cachedSeedBuildIdentityLiterals = [...new Set(values.filter((value): value is string => !!value && value.length >= 3))];
 }
-
-const SEED_BUILD_IDENTITY_LITERALS = seedBuildIdentityLiterals();
 
 function needsWordBoundary(literal: string): boolean {
   return literal.length < 6 && /^[a-zA-Z0-9]+$/.test(literal);
@@ -657,7 +658,7 @@ function redactEncodedJson(value: Uint8Array | ArrayBuffer, literals: readonly s
   return redacted === decoded.json ? value : redacted;
 }
 
-export function redactSeedValue(value: unknown, literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS): unknown {
+export function redactSeedValue(value: unknown, literals: readonly string[] = seedBuildIdentityLiterals()): unknown {
   if (typeof value === 'string') {
     return redactString(value, literals);
   }
@@ -694,7 +695,7 @@ export function redactSeedValue(value: unknown, literals: readonly string[] = SE
  */
 function seedKeyCarriesBuildIdentity(
   hbKey: string,
-  literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS,
+  literals: readonly string[] = seedBuildIdentityLiterals(),
 ): boolean {
   return redactString(hbKey, literals) !== hbKey;
 }
@@ -742,7 +743,7 @@ function logProjectionReport(r: SeedProjectionReport): void {
  * Returns the transform plus a live stats object the cut logs once the fold finishes.
  */
 export function seedSnapshotValueTransform(
-  literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS,
+  literals: readonly string[] = seedBuildIdentityLiterals(),
   uuidDrops?: { plan: SeedUuidIdempotencyDropPlan; ownerKeyHex: string; sourceLength: number },
 ): { transform: SnapshotValueTransform; stats: SeedProjectionStats; finishUuidRedaction?: () => void } {
   const dropper = uuidDrops ? uuidIdempotencyRowDropper(uuidDrops.plan, uuidDrops) : undefined;
@@ -932,7 +933,7 @@ export async function mintFilteredSeedContentCore(inp: {
       (inp.onProjection ?? logProjectionReport)({
         ...projection.stats,
         rows: produced.rowCount,
-        literals: (inp.redactValues ?? SEED_BUILD_IDENTITY_LITERALS).length,
+        literals: (inp.redactValues ?? seedBuildIdentityLiterals()).length,
         ownerKeyHex: inp.ownerKeyHex,
       });
       if (!produced.appended) {
