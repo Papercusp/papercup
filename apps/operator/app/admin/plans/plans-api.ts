@@ -637,16 +637,6 @@ export interface PlanGetResult {
   /** P-006: Map of plan-item-id → { featureId, status }. Present when the
    *  plan has features promoted from it; absent for legacy / no-features plans. */
   linkedFeatures?: Record<string, { featureId: string; status: string }>;
-  /** P-083: per-plan-item test coverage (plan↔test rollup via the VAL). */
-  planItemTests?: Record<
-    string,
-    {
-      valsTotal: number;
-      valsRequiringTest: number;
-      valsCovered: number;
-      valsPassing: number;
-    }
-  >;
   /** The first document response deferred live status/test decorations. */
   enrichmentsDeferred?: boolean;
   /** The document is readable, but its later decoration request failed. */
@@ -1618,7 +1608,6 @@ export function usePlan(
             items:
               current.items === initial.items ? decorated.items : current.items,
             linkedFeatures: decorated.linkedFeatures,
-            planItemTests: decorated.planItemTests,
             enrichmentsDeferred: false,
           };
         });
