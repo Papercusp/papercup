@@ -484,12 +484,12 @@ describe('enrollGoalAuthoredPlanOnWorklist', () => {
   type WriteArgs = Parameters<NonNullable<Parameters<typeof enrollGoalAuthoredPlanOnWorklist>[0]['write']>>[1];
   const base = { workspaceId: WS, goalId: 'goal-42', harnessSlug: 'papercusp', planSlug: 'p', actorId: 'agent-a' };
   /** A goals row read behind a postgres.js-shaped tag; `undefined` = no such goal. */
-  function goalSql(worklist: unknown) {
+  function goalSql(worklist: unknown, definition: unknown = null) {
     const seen: string[] = [];
     const fn = (first: unknown): unknown => {
       const text = (first as string[]).join('?').replace(/\s+/g, ' ');
       seen.push(text);
-      if (text.includes('FROM harness_shared.goals')) return Promise.resolve(worklist === undefined ? [] : [{ worklist }]);
+      if (text.includes('FROM harness_shared.goals')) return Promise.resolve(worklist === undefined ? [] : [{ worklist, definition }]);
       return Promise.resolve([]);
     };
     return { sql: fn as unknown as Sql, seen };
@@ -516,6 +516,25 @@ describe('enrollGoalAuthoredPlanOnWorklist', () => {
     const { writes, write } = recordingWrite();
     await enrollGoalAuthoredPlanOnWorklist({ ...base, sql: goalSql(null).sql, write });
     expect(writes).toEqual([expect.objectContaining({ value: ['plan:papercusp/p'], expectedVersion: 0 })]);
+  });
+
+  it.each([null, { value: ['plan:papercusp/owner-picked'], version: 16 }])(
+    'leaves an owner-selected worklist unchanged on automatic enrollment (stored=%j)',
+    async (worklist) => {
+      const { writes, write } = recordingWrite();
+      const { sql } = goalSql(worklist, { collection: { defaultSelected: false } });
+      expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql, write }))
+        .toEqual({ outcome: 'not-selected', ref: 'plan:papercusp/p' });
+      expect(writes).toHaveLength(0);
+    },
+  );
+
+  it('continues automatic enrollment for a default-selected collection', async () => {
+    const { writes, write } = recordingWrite();
+    const { sql } = goalSql({ value: [], version: 3 }, { collection: { defaultSelected: true } });
+    expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql, write }))
+      .toEqual({ outcome: 'enrolled', ref: 'plan:papercusp/p', version: 4 });
+    expect(writes).toEqual([expect.objectContaining({ value: ['plan:papercusp/p'], expectedVersion: 3 })]);
   });
 
   it('is idempotent for an already-listed plan in either ref shape', async () => {

@@ -263,6 +263,7 @@ export function goalWorklistRef(harnessSlug: string, planSlug: string): string {
 export type GoalWorklistEnrollment =
   | { outcome: 'enrolled'; ref: string; version: number }
   | { outcome: 'already-listed'; ref: string }
+  | { outcome: 'not-selected'; ref: string }
   | { outcome: 'refused'; ref: string; code: string };
 
 /**
@@ -280,6 +281,10 @@ export type GoalWorklistEnrollment =
  * `goals:set-property` uses (agent-edit provenance; the canonical declaration
  * is `editable_by: 'both'`).
  *
+ * An owner-selected collection (`defaultSelected: false`) keeps attribution
+ * separate from selection: authoring a plan must never widen its saved picks.
+ * The plan stays stamped and discoverable until the owner selects it.
+ *
  * Runs in its own transaction: the goal row is locked, the current version is
  * read under that lock, and the write is CAS-guarded against it.
  */
@@ -296,8 +301,9 @@ export async function enrollGoalAuthoredPlanOnWorklist(args: {
   const write = args.write ?? (await import('../typed-properties-db')).applyGoalPropertyWrite;
   const { CANONICAL_WORKLIST_PROPERTY } = await import('../goals/package-property-datatypes');
   const run = async (tx: Sql): Promise<GoalWorklistEnrollment> => {
-    const rows = await tx<Array<{ worklist: unknown }>>`
-      SELECT properties -> ${CANONICAL_WORKLIST_PROPERTY}::text AS worklist
+    const rows = await tx<Array<{ worklist: unknown; definition: { collection?: { defaultSelected?: boolean } } | null }>>`
+      SELECT properties -> ${CANONICAL_WORKLIST_PROPERTY}::text AS worklist,
+             property_schema -> ${CANONICAL_WORKLIST_PROPERTY}::text AS definition
         FROM harness_shared.goals
        WHERE id = ${args.goalId} AND workspace_id = ${args.workspaceId}
        FOR UPDATE`;
@@ -305,6 +311,7 @@ export async function enrollGoalAuthoredPlanOnWorklist(args: {
     const current = (rows[0].worklist ?? null) as { value?: unknown; version?: unknown } | null;
     const listed: unknown[] = Array.isArray(current?.value) ? [...current.value] : [];
     if (listed.includes(ref) || listed.includes(`plan:${args.planSlug}`)) return { outcome: 'already-listed', ref };
+    if (rows[0].definition?.collection?.defaultSelected === false) return { outcome: 'not-selected', ref };
     const expectedVersion = typeof current?.version === 'number' ? current.version : 0;
     const result = await write(tx, {
       workspaceId: args.workspaceId,

@@ -23,6 +23,12 @@ import { canonicalWorklistDeclaration } from './goals/package-property-datatypes
 import { ADMIN_COORD_UI_OWNER } from './agent-tools/coordination/identity';
 import setGoalProperty from './agent-tools/goals/set-property';
 import { readGoalPortfolioBrief } from './goal-launch-settings';
+import { setInheritedGoalContext, stampPlanGoalProvenance } from './modes/goal-context';
+import { readTypedPropertyCollection } from './typed-properties';
+import { setupBaselineCoordFixture } from './_baseline-coord-fixture';
+import { gatherCleanupInputs } from './plan-cleanup/gather';
+import { scanForCleanupFindings } from './plan-cleanup/scanner';
+import { cleanupAutomationEligibility } from './plan-cleanup/automation-policy';
 import {
   applyGoalPropertyWrite,
   extendGoalPropertySchema,
@@ -87,6 +93,62 @@ describe('typed-properties-db (real PG, migration 923)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it.each([false, true])('plan attribution honors the worklist defaultSelected=%s declaration (real PG)', async (defaultSelected) => {
+    const sql = db.adminSql;
+    // Enrollment seeds built-in datatypes; keep the legacy suite's unseeded
+    // workspace independent of these cases and each selection mode.
+    const workspaceId = `${WS}-auto-selection-${defaultSelected}`;
+    const goalId = `g-tp-auto-selection-${defaultSelected}`;
+    const planSlug = `tp-agent-authored-${defaultSelected}`;
+    const actorId = `tp-author-${defaultSelected}`;
+    const pickedRef = `plan:${HARNESS}/owner-picked`;
+    const authoredRef = `plan:${HARNESS}/${planSlug}`;
+    const schema = {
+      worklist: { ...canonicalWorklistDeclaration(), collection: {
+        source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected,
+      } },
+      worklist_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
+    };
+    const original = { worklist: { value: [pickedRef], version: 16,
+      edited_by: 'owner', edited_at: '2026-10-11T00:00:00.000Z', provenance: 'owner-edit' } };
+    await sql`INSERT INTO harness_shared.goals
+      (id, install_slug, workspace_id, title, status, standing, metadata, property_schema, properties)
+      VALUES (${goalId}, ${HARNESS}, ${workspaceId}, 'Automatic enrollment fixture', 'active', true,
+        ${sql.json({ goalPackageRef: 'work-on-everything' })}, ${JSON.stringify(schema)}::text::jsonb, ${sql.json(original)})`;
+    await sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status)
+      VALUES (${workspaceId}, ${HARNESS}, ${planSlug}, 'Agent-authored plan', 'active')`;
+    expect(await setInheritedGoalContext(workspaceId, actorId, goalId, sql)).toBe(true);
+    const globalPg = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    try {
+      const inputs = await gatherCleanupInputs({ workspaceId, harnessSlug: HARNESS, planSlugs: [planSlug] });
+      expect(inputs.goalWorklist).toMatchObject({ goalId, ownerSelectionRequired: !defaultSelected });
+      const enlist = scanForCleanupFindings(inputs, { nowMs: Date.now() }).find((finding) => finding.kind === 'enlist-plan');
+      expect(enlist).toBeDefined();
+      expect(cleanupAutomationEligibility({ mode: 'safe-high', minConfidence: 'high',
+        riskLevels: { low: 'automatic', medium: 'automatic', high: 'automatic' } }, enlist!).allowed)
+        .toBe(defaultSelected);
+    } finally {
+      await globalPg.dispose();
+    }
+    expect(await stampPlanGoalProvenance({ workspaceId, harnessSlug: HARNESS, planSlug, ownerId: actorId, sql }))
+      .toBe(goalId);
+    const [plan] = await sql`SELECT goal_id FROM harness_shared.harness_plans
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
+    expect(plan.goal_id).toBe(goalId);
+    const [goal] = await sql`SELECT property_schema, properties FROM harness_shared.goals
+      WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
+    const expectedRefs = defaultSelected ? [pickedRef, authoredRef] : [pickedRef];
+    if (defaultSelected) expect(goal.properties.worklist).toMatchObject({ value: expectedRefs, version: 17,
+      edited_by: actorId, provenance: 'agent-edit' });
+    else expect(goal.properties).toEqual(original);
+    expect(goal.property_schema).toEqual(schema);
+    expect(readTypedPropertyCollection({ propertySchema: goal.property_schema, properties: goal.properties,
+      property: 'worklist', source: { ok: true, items: [pickedRef, authoredRef] } }))
+      .toMatchObject({ ok: true, configured: true, selected: expectedRefs });
   });
 
   it('persists draft-apply reasons in the same CAS write and rejects an obsolete edit', async () => {
