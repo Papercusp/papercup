@@ -1288,13 +1288,17 @@ const UNGUARDED_HALT_RESCUE_SOURCE = 'unguarded-halt-rescue';
  */
 export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
-): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt' | 'rootId' | 'boundTo'>>> {
+): Promise<
+  Array<
+    Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'timeoutBehavior' | 'createdAt' | 'rootId' | 'boundTo'>
+  >
+> {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, event_key, note, expires_ts, created_at, root_id, bound_to
+    SELECT subscriber_id, event_key, note, expires_ts, timeout_behavior, created_at, root_id, bound_to
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -1336,6 +1340,10 @@ export async function listParkedAwaitsForSubscribers(
     eventKey: r.event_key,
     note: r.note ?? null,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
+    // P-009: loop:end asks whether a park GUARANTEES a re-wake (bounded AND wakes on its deadline).
+    // Without this column a bounded `on_timeout:'expire'` park defaulted to 'wake' there and read as
+    // a guarantee it is not — it lapses silently.
+    timeoutBehavior: r.timeout_behavior as AwaitRow['timeoutBehavior'],
     createdAt: new Date(r.created_at).toISOString(),
     rootId: r.root_id != null ? Number(r.root_id) : null,
     // Loop suppression needs the writer's provenance: an automatically bound

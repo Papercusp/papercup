@@ -665,7 +665,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(parseScratchReference(readFileSync(join(spillDir(), files[0])))!.payload.toString()).toContain('line 0');
   });
 
-  it('returns a readable spill after stale-cache recovery overlaps an active reservation', async () => {
+  it('returns a readable spill after an active reservation releases the workspace mutex', async () => {
     const writerDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'writers', RUN_ID);
     mkdirSync(writerDir, { recursive: true });
     _setScratchUsageForTests('ws-1', 0);
@@ -680,8 +680,20 @@ describe('result-door deferred spill (WI-10004533)', () => {
     });
     await began;
     _setScratchUsageForTests('ws-1', 5_400_804_525);
+    let signalSpillWriter!: () => void;
+    const spillWriterStarted = new Promise<void>((resolve) => { signalSpillWriter = resolve; });
+    const originalWriteWithScratchQuota = scratchGc.writeWithScratchQuota;
+    const spillWriter = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((opts, write) => {
+      const pending = originalWriteWithScratchQuota(opts, write);
+      if (opts.filePath !== heldPath) signalSpillWriter();
+      return pending;
+    });
+    let spill: Promise<DoorableResult> | undefined;
     try {
-      const out = await applyResultDoorAsync(oversized(), OPTS);
+      spill = applyResultDoorAsync(oversized(), OPTS);
+      await spillWriterStarted;
+      finish();
+      const out = await spill;
       const files = spillFiles();
       expect(files).toHaveLength(1);
       expect(JSON.stringify(out)).toContain(files[0]);
@@ -690,6 +702,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
     } finally {
       finish();
       await held;
+      await spill?.catch(() => undefined);
+      spillWriter.mockRestore();
     }
     await refreshScratchUsage('ws-1');
   });

@@ -6,6 +6,9 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 // Reuse the maintained frozen-SPA/compiled-Tauri rig and its real sync transport.
 // This acceptance covers the isolated, unauthenticated state. Paid receipt data
 // remains covered separately by the canonical transport, Worker and UI suites.
+// VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Identity usage statement' selects the
+// emitted section label. The tab's full DOM id is concatenated at runtime and
+// cannot serve as a literal frozen-bundle marker.
 test('native Statements preserve unavailable amounts across refresh', async ({}, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires scripts/verify-tauri-headless.sh');
   test.setTimeout(120_000);

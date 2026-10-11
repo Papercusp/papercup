@@ -27,8 +27,9 @@ Every task is a self-contained Docker env with a uniform contract:
 - `tasks/<task>/oracle.yaml` / `job.yaml` — the Harbor run configs (the `job.yaml` `agents:`
   list IS the public competitor pool: opus-4-6, gpt-5.4, gemini-3.1-pro, qwen, kimi, glm-5).
 
-Our TS grader reads **`reward.txt`** (falls back to `reward.json` `reward`/`score`). A
-present-and-numeric reward (incl. `0`) is SCORED; an absent reward is a `graderError`.
+**v1 rows only:** our TS grader reads **`reward.txt`** (falls back to `reward.json` `reward`/`score`). A
+present-and-numeric reward (incl. `0`) is SCORED; an absent reward is a `graderError`. v2 rows use Harbor
+precedence instead (see the v2 section below).
 
 ## FrontierSWE v2 (plan benchmark-coverage-frontierswe-v2-2026-10-10, D-002)
 
@@ -38,7 +39,17 @@ present-and-numeric reward (incl. `0`) is SCORED; an absent reward is a `graderE
 > the verifier in a SEPARATE fresh container (`environment_mode = "separate"`), offline verifiers spelled
 > `network_mode = "no-network"`, and five tasks needing a `job.yaml` runtime profile (Modal VM runtime and/or a
 > `px-evals-gcr-secret` registry secret). No LICENSE (research/eval only). The smoke, envelope table and
-> `ghcr.io/...:vN` images further down are the **v1 history** until P-003 moves the grader to v2.
+> `ghcr.io/...:vN` images further down are **v1 history**.
+>
+> **v2 grading (P-003 / D-003).** A v2 row is graded in a fresh container started from the task's digest-pinned
+> verifier image (as root): every `task.toml` `artifacts` entry is copied out of the agent container and
+> re-materialized at its original source path, then `/tests/test.sh` runs with `[verifier.env]`. Reward precedence
+> is Harbor's: `reward.json` is primary whenever it exists; `reward.txt` is read only when it is absent; an empty,
+> non-numeric or non-finite file (or neither file) is a `graderError` — a malformed `reward.json` never falls back
+> to `reward.txt`. Each row is pinned `frontier-swe@v2+<commit12> verifier=<image@sha256:…>`. Use the v2 task sets
+> `frontier-swe-v2` · `frontier-swe-v2-pilot` (one distinct task per README suite category) · `frontier-swe-v2-cpu`
+> (no GPU, no external service) · `frontier-swe-v2-custom`; the v1 ids (`frontier-swe-pilot`, …) read only the v1
+> corpus, and the report refuses to mix the two. GPU passthrough for v2 GPU verifiers is not wired yet.
 
 **Vendor (data only — nothing from the checkout is ever executed).** A sparse, shallow fetch of just the task
 definitions (~2 MB); the GB-scale images are a separate, later step:

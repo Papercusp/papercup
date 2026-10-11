@@ -603,7 +603,11 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
   });
 });
 
-test('native declared collections persist controls and reject a barrier-controlled stale save', async ({ request }, info) => {
+// Each declaration is an independent journey with its own unchanged deadline.
+// Combining them spent 139s on plans before tea exhausted the shared 180s
+// budget (EI-25643731791540466); separate cases also permit a focused re-run.
+for (const kind of ['plans', 'tea'] as const) {
+test(`native declared collections persist controls and reject a barrier-controlled stale save (${kind})`, async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Run with scripts/run-operator-e2e-isolated.sh for the owned Tauri bridge');
   await recordJourney(info, async () => {
   test.setTimeout(180_000);
@@ -613,18 +617,22 @@ test('native declared collections persist controls and reject a barrier-controll
   expect(workspaceId).toMatch(/^verify-tauri-isolated-/);
   expect(adminUrl).toBeTruthy();
   expect(adminUrl).not.toBe(process.env.PAPERCUSP_TEST_RUNS_DB_URL);
+  console.log(`WOE_NATIVE_POPULATION kind=${kind} stage=load-writer`);
   const { postgres, applyGoalPropertyWrite, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype,
-    claimNextWorkItem, releaseWorkItem, readGoalPortfolioBrief, schedulerFixtureFlags } = await loadNativeCollectionWriter();
+    claimNextWorkItem, releaseWorkItem, readGoalPortfolioBrief, schedulerFixtureFlags } = await test.step(
+      `Load ${kind} native fixture writer`, loadNativeCollectionWriter);
   const sql = postgres(adminUrl, { max: 1, connect_timeout: 5 });
   const run = promisify(execFile);
   const bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
   expect(bridge).toBeTruthy();
   const evidence: unknown[] = [];
   async function native(command: string, ...args: string[]) {
-    const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
-    const result = await run(bridge, invocation.args, { timeout: 15_000, env: invocation.env });
-    if (command === 'screenshot') return result.stdout.trim();
-    return decodeNativeBridgeJson(result.stdout);
+    return test.step(`native ${command}: ${(args[0] ?? '').slice(0,100)}`, async () => {
+      const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
+      const result = await run(bridge, invocation.args, { timeout: 15_000, env: invocation.env });
+      if (command === 'screenshot') return result.stdout.trim();
+      return decodeNativeBridgeJson(result.stdout);
+    });
   }
   const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
   const editor = '[data-testid="goal-data"]';
@@ -672,7 +680,7 @@ test('native declared collections persist controls and reject a barrier-controll
     schedulerFixtureFlags(true);
     await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
     await ensurePlanRefListDatatype(sql, workspaceId);
-    for (const kind of ['plans', 'tea'] as const) {
+    console.log(`WOE_NATIVE_POPULATION kind=${kind} stage=seed-and-controls`);
       const goalId = `native-collection-${kind}`;
       const harness = 'native-collection';
       const labels = kind === 'plans' ? ['Native alpha', 'Native beta', 'Native blocked'] : ['mint', 'chamomile', 'rooibos'];
@@ -869,7 +877,7 @@ test('native declared collections persist controls and reject a barrier-controll
       await info.attach(`native-collection-${kind}`, { path: screenshot, contentType: 'image/png' });
       // Positive subject guard precedes the deliberately missing selector.
       await expect(run(bridge, ['check', '--pid', process.env.VERIFY_TAURI_PID!, '--selector', `${editor} .native-missing-control`, '--json'], { timeout: 15_000 })).rejects.toThrow();
-    }
+    console.log(`WOE_NATIVE_POPULATION kind=${kind} stage=controls-complete`);
   } finally {
     try {
       evidence.push({ finalWrites: await measure('window.__nativeCollectionWrites ?? []'),
@@ -886,3 +894,4 @@ test('native declared collections persist controls and reject a barrier-controll
   }
   });
 });
+}

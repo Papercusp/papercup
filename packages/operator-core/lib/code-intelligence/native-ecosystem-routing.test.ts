@@ -81,14 +81,17 @@ describe('native baseline against the exposed graph handler', () => {
     expect(calls.indexed).not.toHaveBeenCalled();
   });
 
-  it('reports unknown indexed versions without assigning current-source identities', async () => {
+  it('refuses indexed edges with unknown versions instead of assigning current-source identities', async () => {
     calls.indexed.mockResolvedValue({ backend: 'gitnexus', intent: 'callees', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
       error: null, freshness: { health: 'healthy', indexedAt: null, indexedCommit: 'older-index', staleVsDisk: true } });
     const out = await graphQuery.handler(graphQuery.args.parse({ op: 'impact', name: 'target' }),
       { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
     expect(out.data.evidence!.sourceScope).toMatchObject({ repositoryId: null, identityKind: 'unknown', sourceFingerprint: null, supportingFiles: [] });
-    expect(out.data.evidence!.siteIdentities).toEqual([{ siteIndex: 0, sourcePath: 'src/old.ts', contentHash: null, versionedSymbolId: null }]);
-    expect(out.data.evidence!.relationships[0]).toMatchObject({ knowledge: 'unknown', runtimeExecution: 'unknown' });
+    expect(out.data.sites).toEqual([]);
+    expect(out.data.evidence!.siteIdentities).toEqual([]);
+    expect(out.data.evidence!.relationships).toEqual([]);
+    expect(out.data.error).toContain('source versions are unavailable');
+    expect(out.data.freshness.health).toBe('unknown');
     expect(out.data.freshness.indexedCommit).toBe('older-index');
   });
 
@@ -116,6 +119,34 @@ describe('native baseline against the exposed graph handler', () => {
       { projectDir: '/baseline-repo' } as never);
     expect(calls.compiler).toHaveBeenCalledWith(expect.objectContaining({ op: 'context', name: 'target', filePath: 'src/a.ts', line1: 3 }));
     expect(calls.indexed).not.toHaveBeenCalled();
+  });
+
+  it('rejects incomplete compiler evidence while allowing a measured site and target from the producer snapshot', async () => {
+    const hash = 'a'.repeat(64);
+    const source = { path: 'src/a.ts', contentHash: hash, language: 'typescript', representation: 'full-source' as const };
+    const answer = { backend: 'typescript-service', intent: 'definition', sites: [{ path: source.path, line1: 1, kind: 'class' }], error: null,
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false },
+      evidence: { schemaVersion: 1, sourceScope: { repositoryId: 'fixture', identityKind: 'registry', sourceFingerprint: hash, paths: ['src'], supportingFiles: [source] },
+        graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [] }, languageCapabilities: [],
+        siteIdentities: [{ siteIndex: 0, sourcePath: source.path, contentHash: hash, versionedSymbolId: 'site-v1' }],
+        relationships: [{ siteIndex: 0, kind: 'definition', origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown' }] } };
+    const run = async () => (await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'target' }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer }).data;
+    calls.compiler.mockResolvedValue(answer);
+    expect((await run()).sites).toEqual(answer.sites);
+    for (const corrupt of [
+      { ...answer, evidence: undefined },
+      { ...answer, evidence: { ...answer.evidence, siteIdentities: [] } },
+      { ...answer, evidence: { ...answer.evidence, sourceScope: { ...answer.evidence.sourceScope, supportingFiles: [] } } },
+      { ...answer, evidence: { ...answer.evidence, relationships: [{ ...answer.evidence.relationships[0], target: {
+        site: { path: 'unmeasured.ts', line1: 1, kind: 'class' }, contentHash: hash, versionedSymbolId: 'target-v1',
+      } }] } },
+    ]) {
+      calls.compiler.mockResolvedValue(corrupt);
+      const refused = await run();
+      expect(refused.sites).toEqual([]);
+      expect(refused.error).toContain('source versions are unavailable');
+    }
   });
 
   it('refuses unsupported index selectors on native operations before either backend runs', async () => {

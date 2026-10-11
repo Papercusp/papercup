@@ -75,12 +75,23 @@
  * session, so it is not a wake source the session can count on. Counting it hid every normally
  * parked AUTO session: measured 2026-10-10, 115 of 115 exemptions were 'pending-await', and 51
  * claim-holding AUTO sessions had that watcher as their only await.
+ *
+ * That exclusion, and every other "this await can never fire" rule (a self-held
+ * `work-item:done:<X>`, an await on a terminal or absent item), lives in ONE place:
+ * `events/await/wake-source-predicate.ts` (D-008 (1)). `loop:end`'s wake-less guard reads the same
+ * predicate, so the two can no longer disagree about what is dead. This detector stays lenient
+ * about UNTIMED live awaits (D-009); only `loop:end` demands a guaranteed (bounded) source.
  */
 
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
+import {
+  countWakeSourcesBySubscriber,
+  readOpenAwaitsForSubscribers,
+  readWorkItemAwaitTargets,
+} from '../../events/await/wake-source-predicate';
 import { hasAutonomyPosture } from './loop-dead-man';
 import { getLoopStatuses } from './loop';
 import { readEngineLoopRowsByOwner } from './engine-loop-standdown';
@@ -371,6 +382,21 @@ export interface SilentHaltSweepResult {
  * and silently disables the no-pending-await term while returning a clean, confident result —
  * measured live while writing this file, and the reason the term is joined this way.
  */
+/**
+ * owner → how many of its open awaits are wake sources, per the shared predicate. Exported for the
+ * test: it is the seam where this detector meets `wake-source-predicate`.
+ */
+export async function countPendingWakeSources(
+  ownerIds: readonly string[],
+  inboxWakePrefix: string,
+  sql: Sql,
+): Promise<Map<string, number>> {
+  const awaits = await readOpenAwaitsForSubscribers(ownerIds, sql);
+  if (awaits.length === 0) return new Map();
+  const targets = await readWorkItemAwaitTargets(awaits, sql);
+  return countWakeSourcesBySubscriber(awaits, targets, inboxWakePrefix);
+}
+
 async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<SilentHaltCandidate[]> {
   // Lazy, like the wake leg's `wakeRecipients` import: keeps inbox-wake's graph out of this module.
   const { COORD_INBOX_WAKE_PREFIX: inboxWakePrefix } = await import('../../agent-tools/coordination/inbox-wake');
@@ -383,7 +409,6 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       fleet_slug: string | null;
       heartbeat_age_ms: string | number | null;
       inactive_for_ms: string | number | null;
-      pending_awaits: string | number | null;
       held_work_items: string | number | null;
       modes: string[] | null;
     }>
@@ -396,21 +421,11 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
          AND r.target_owner_id IS NOT NULL
          AND r.workspace_id = ${workspaceId}
          AND r.active = false
-    ), awaits AS (
-      -- The session's own inbox-wake watcher is NOT a wake source (D-006 (1)): it fires only
-      -- on an inbound message, and every parked session holds one.
-      SELECT subscriber_id, count(*)::int AS n
-        FROM harness_shared.event_awaits
-       WHERE fired_at IS NULL AND cancelled_at IS NULL
-         AND (expires_ts IS NULL OR expires_ts > now())
-         AND event_key <> (${inboxWakePrefix}::text || subscriber_id)
-       GROUP BY 1
     )
     SELECT l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
            p.fleet_slug,
            round(extract(epoch from (now() - p.heartbeat_at)) * 1000)     AS heartbeat_age_ms,
            round(extract(epoch from (now() - l.active_changed_at)) * 1000) AS inactive_for_ms,
-           COALESCE(a.n, 0)                                                AS pending_awaits,
            -- lane <> 'observation' is load-bearing: work_items also holds agents' own turn-end
            -- notes, which are never claimed work and would make every session look loaded.
            (SELECT count(*)::int FROM harness_shared.work_items w
@@ -424,10 +439,19 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
         ON m.owner_id = l.owner_id AND m.workspace_id = l.workspace_id
       JOIN harness_shared.coord_presence p
         ON p.owner_id = l.owner_id AND p.workspace_id = l.workspace_id
-      LEFT JOIN awaits a ON a.subscriber_id = l.owner_id
      WHERE p.heartbeat_at > now() - make_interval(secs => ${SILENT_HALT_HEARTBEAT_FRESH_MS / 1000})
      GROUP BY l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
-              p.fleet_slug, p.heartbeat_at, l.active_changed_at, a.n`;
+              p.fleet_slug, p.heartbeat_at, l.active_changed_at`;
+
+  // The wake-source count comes from the ONE shared predicate (D-008 (1)), never re-derived here:
+  // it drops the session's own inbox watcher (D-006), a self-held `work-item:done:<X>`, and an
+  // await on a terminal or absent item. Untimed live awaits still count (D-009: this detector
+  // stays lenient; only loop:end demands a GUARANTEED wake source).
+  const pending = await countPendingWakeSources(
+    rows.map((r) => r.owner_id),
+    inboxWakePrefix,
+    sql,
+  );
 
   return rows.map((r) => ({
     ownerId: r.owner_id,
@@ -436,7 +460,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
     intervalSec: r.interval_sec == null ? null : Number(r.interval_sec),
     heartbeatAgeMs: r.heartbeat_age_ms == null ? null : Number(r.heartbeat_age_ms),
     inactiveForMs: r.inactive_for_ms == null ? null : Number(r.inactive_for_ms),
-    pendingAwaits: Number(r.pending_awaits ?? 0),
+    pendingAwaits: pending.get(r.owner_id) ?? 0,
     heldWorkItems: Number(r.held_work_items ?? 0),
     modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
     fleetSlug: r.fleet_slug ?? null,

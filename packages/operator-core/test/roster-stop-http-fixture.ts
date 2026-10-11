@@ -227,6 +227,32 @@ async function coordCanary(health: unknown) {
         project(harnesses!.foreign, { harness_kind: 'hive' })] }), workspace + '-foreign');
       writeFileSync(join(evidence, 'portal-work-seed.json'), JSON.stringify(harnesses, null, 2));
     }
+    let brainstormHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
+    if (process.env.ROSTER_BRAINSTORM_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const stem = `private-brainstorm-${process.pid}`;
+      brainstormHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
+      const seedRoot = join(evidence, 'brainstorm-harnesses');
+      const project = (slug: string) => {
+        const path = join(seedRoot, slug);
+        mkdirSync(join(path, '.papercusp'), { recursive: true });
+        return { slug, path };
+      };
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(brainstormHarnesses!.selected), project(brainstormHarnesses!.neighbor)] }), workspace);
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(brainstormHarnesses!.foreign)] }), workspace + '-foreign');
+      for (const [label, slug] of Object.entries(brainstormHarnesses)) {
+        const scene = { elements: [], appState: {}, files: {} };
+        const tree = { nodes: [{ id: 'root', type: 'mind', position: { x: 100, y: 200 },
+          data: { text: `private-brainstorm-${label}-map`, kind: 'idea' } }], edges: [] };
+        await sql`INSERT INTO harness_shared.harness_brainstorm
+          (workspace_id, harness_slug, phase, content, canvas, mindmap, updated_at)
+          VALUES (${label === 'foreign' ? workspace + '-foreign' : workspace}, ${slug}, 'staging',
+            ${`private-brainstorm-${label}-text`}, ${sql.json(scene)}, ${sql.json(tree)}, ${Date.now()})`;
+      }
+      writeFileSync(join(evidence, 'portal-brainstorm-seed.json'), JSON.stringify(brainstormHarnesses, null, 2));
+    }
     let docs: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string } | undefined;
     if (process.env.ROSTER_DOCS_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
@@ -297,6 +323,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
       ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
+      ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),
       ...(harnesses ? { harnesses } : {}),
       ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),

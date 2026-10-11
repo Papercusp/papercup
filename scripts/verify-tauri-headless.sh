@@ -2855,6 +2855,29 @@ fi
 # always a valid, runnable path for the caller, in both branches above.
 vh_run_step freshness-check-script write_freshness_check_script
 
+# Check a caller's literal marker as soon as both immutable artifacts exist.
+# A missing or runtime-concatenated marker must not consume a Postgres/native
+# boot before failing. The post-boot containment check remains the final guard.
+verify_snapshot_marker_preflight() {
+  local needle="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"
+  [ -n "$needle" ] || return 0
+  local artifact=""
+  case "$SNAPSHOT_SCOPE" in
+    spa) artifact="${SPA_DIST:-}" ;;
+    host) artifact="${OPERATOR_HOST_BUNDLE:-}" ;;
+  esac
+  if [ -n "$artifact" ] && [ -e "$artifact" ] && grep -rqF -- "$needle" "$artifact" 2>/dev/null; then
+    log "snapshot marker preflight OK: literal '$needle' exists in frozen $SNAPSHOT_SCOPE artifact."
+    return 0
+  fi
+  echo "VERIFY_TAURI_SNAPSHOT_MARKER_ABSENT scope=$SNAPSHOT_SCOPE — refusing before database/native boot." >&2
+  echo "Choose a literal that survives bundling; a runtime-concatenated DOM id is not a bundle marker." >&2
+  echo "Check the frozen artifact and VERIFY_TAURI_REQUIRE_BUILT inputs before retrying." >&2
+  return 3
+}
+
+vh_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?
+
 # ── EI-10387: boot a genuinely isolated, throwaway embedded Postgres ────────
 vh_step isolated-database-prepare
 # Opt-in (VERIFY_TAURI_ISOLATED_DB=1). Reuses the SAME primitive

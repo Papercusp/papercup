@@ -35,9 +35,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join, relative } from 'node:path';
+import { delimiter, extname, isAbsolute, join, relative } from 'node:path';
 import type * as TsModule from 'typescript';
-import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceEvidence, type CodeIntelSourceFile, type SymbolSite } from './contracts.ts';
+import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelRelationshipKind, type CodeIntelSourceEvidence, type CodeIntelSourceFile, type SymbolSite } from './contracts.ts';
 // Explicit `.ts`: the off-thread worker runs this graph under Node's native type
 // stripping, which resolves no extension-less relative import.
 import {
@@ -48,6 +48,8 @@ import {
   tsDeclarations,
   tsSiteOf,
   type Ts,
+  type TsDeclaration,
+  type TsTree,
 } from './typescript-service.ts';
 
 /** ripgrep glob for every extension the program takes (typescript-service TS_TREE_EXTENSIONS). */
@@ -246,6 +248,122 @@ const posix = (p: string): string => p.split('\\').join('/');
 const keyOf = (s: Pick<SymbolSite, 'path' | 'line1'>): string => `${s.path}:${s.line1 ?? '?'}`;
 const bySite = (a: SymbolSite, b: SymbolSite): number => a.path.localeCompare(b.path) || (a.line1 ?? 0) - (b.line1 ?? 0);
 
+interface SourceRelationship {
+  readonly site: SymbolSite;
+  readonly kind: CodeIntelRelationshipKind;
+  readonly target?: SymbolSite;
+}
+
+/** Compiler bindings, not same-spelled names, join context's source sites. */
+function contextRelationships(tree: TsTree, program: TsModule.Program, selected: TsDeclaration): SourceRelationship[] {
+  const { ts } = tree;
+  const checker = program.getTypeChecker();
+  const sf = program.getSourceFile(selected.file)!;
+  let nameNode: TsModule.Node | undefined;
+  // Navigate-to sites omit name; the exact token identifies the declaration.
+  const findToken = (node: TsModule.Node): void => {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node)) && node.getStart(sf) === selected.namePos) nameNode = node;
+    if (!nameNode && node.pos <= selected.namePos && node.end >= selected.namePos) ts.forEachChild(node, findToken);
+  };
+  findToken(sf);
+  if (!nameNode) return [];
+  const declaration = nameNode.parent;
+  const out: SourceRelationship[] = [];
+  const seen = new Set<string>();
+  const siteOf = (node: TsModule.Node, name?: string): SymbolSite => ({
+    ...tsSiteOf(tree, program, node.getSourceFile().fileName, node.getStart(), ts.SyntaxKind[node.parent.kind].toLowerCase()),
+    ...(name ? { name } : {}),
+  });
+  const unalias = (sym: TsModule.Symbol | undefined): TsModule.Symbol | undefined =>
+    sym && sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
+  const targetOf = (sym: TsModule.Symbol | undefined): SymbolSite | undefined => {
+    const d = unalias(sym)?.declarations?.[0];
+    if (!d) return undefined;
+    const file = d.getSourceFile();
+    if (isExternalPath(posix(relative(tree.root, file.fileName))) || program.isSourceFileDefaultLibrary(file)) return undefined;
+    const named = d as TsModule.NamedDeclaration;
+    return siteOf(named.name ?? d, sym?.name);
+  };
+  const add = (kind: CodeIntelRelationshipKind, node: TsModule.Node, target?: SymbolSite, name?: string): void => {
+    const site = siteOf(node, name);
+    const key = JSON.stringify([kind, site.path, site.line1, name, target?.path, target?.line1]);
+    if (!seen.has(key)) { seen.add(key); out.push({ kind, site, ...(target ? { target } : {}) }); }
+  };
+  // Imports actually referenced by this declaration; module bindings are resolved by TS.
+  const imports = (node: TsModule.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const sym = checker.getSymbolAtLocation(node);
+      for (const d of sym?.flags && sym.flags & ts.SymbolFlags.Alias ? sym.declarations ?? [] : []) {
+        if (ts.isImportSpecifier(d) || ts.isImportClause(d) || ts.isNamespaceImport(d) || ts.isImportEqualsDeclaration(d)) {
+          const target = targetOf(sym);
+          if (target) add('imports', d.name!, target, d.name!.getText());
+        }
+      }
+    }
+    ts.forEachChild(node, imports);
+  };
+  imports(declaration);
+  const containers = ts.isClassLike(declaration) || ts.isInterfaceDeclaration(declaration) ? [declaration]
+    : ts.isClassLike(declaration.parent) || ts.isInterfaceDeclaration(declaration.parent) ? [declaration.parent] : [];
+  for (const container of containers) {
+    if (container === declaration) {
+      for (const clause of container.heritageClauses ?? []) for (const type of clause.types) {
+        const target = targetOf(checker.getSymbolAtLocation(type.expression));
+        if (target) add(clause.token === ts.SyntaxKind.ImplementsKeyword ? 'implementations' : 'inheritance',
+          type.expression, target, type.expression.getText());
+      }
+      for (const member of container.members) {
+        const named = member as TsModule.NamedDeclaration;
+        if (named.name) add('members', named.name, siteOf(named.name), named.name.getText());
+      }
+    }
+    const type = checker.getTypeAtLocation(container) as TsModule.InterfaceType;
+    const bases = type.flags & ts.TypeFlags.Object ? checker.getBaseTypes(type) ?? [] : [];
+    for (const member of container === declaration ? container.members : [declaration]) {
+      const named = member as TsModule.NamedDeclaration;
+      if (!named.name) continue;
+      const name = nameText(ts, named.name);
+      for (const base of bases) {
+        const target = targetOf(base.getProperty(name));
+        if (target) add('overrides', named.name, target, name);
+      }
+    }
+  }
+  const fields = (ts.isClassLike(declaration) || ts.isInterfaceDeclaration(declaration) ? declaration.members : [declaration])
+    .filter((member): member is TsModule.PropertyDeclaration | TsModule.PropertySignature =>
+      ts.isPropertyDeclaration(member) || ts.isPropertySignature(member));
+  const fieldSymbols = new Set(fields.map(field => checker.getSymbolAtLocation(field.name)).filter(Boolean));
+  for (const file of program.getSourceFiles()) {
+    if (isExternalPath(posix(relative(tree.root, file.fileName))) || program.isSourceFileDefaultLibrary(file)) continue;
+    const accesses = (node: TsModule.Node): void => {
+      const token = ts.isPropertyAccessExpression(node) ? node.name
+        : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression : undefined;
+      if (token) {
+        const sym = ts.isPropertyAccessExpression(node) ? checker.getSymbolAtLocation(token)
+          : checker.getTypeAtLocation((node as TsModule.ElementAccessExpression).expression).getProperty(nameText(ts, token));
+        if (sym && fieldSymbols.has(sym)) {
+          const target = targetOf(sym)!;
+          let expression: TsModule.Node = node;
+          while (ts.isParenthesizedExpression(expression.parent) || ts.isNonNullExpression(expression.parent)) expression = expression.parent;
+          const parent = expression.parent;
+          const assignment = ts.isBinaryExpression(parent) && parent.left === expression &&
+            parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+          const increment = (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+            (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken);
+          const deletion = ts.isDeleteExpression(parent);
+          const write = assignment || increment || deletion;
+          const read = (!assignment || parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken) && !deletion;
+          if (read) add('field-read', token, target, nameText(ts, token));
+          if (write) add('field-write', token, target, nameText(ts, token));
+        }
+      }
+      ts.forEachChild(node, accesses);
+    };
+    accesses(file);
+  }
+  return out.sort((a, b) => bySite(a.site, b.site) || a.kind.localeCompare(b.kind));
+}
+
 /** Why the checker did not put this call in the hierarchy, as a reason and a human detail. */
 function classify(
   ts: Ts,
@@ -354,6 +472,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   if (!['callers', 'symbol', 'callees', 'context'].includes(op)) {
     return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
   }
+  if (op !== 'callers' && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
+    const unsupported = answer(q.name, started, now, { error: `Native graph ${op} is unsupported for '${extname(q.filePath)}'; this compiler route admits JS/TS only. Use the registered language's lsp:query or code:structural route.` });
+    return { ...unsupported, evidence: { ...unsupported.evidence!, languageCapabilities: [{
+      language: ({ '.rs': 'rust', '.py': 'python', '.go': 'go' } as Record<string, string>)[extname(q.filePath)] ?? 'unknown',
+      intent, status: 'unsupported',
+    }] } };
+  }
   if (!IDENTIFIER.test(q.name)) {
     return answer(q.name, started, now, { error: `callers needs one identifier; "${q.name}" is not one` });
   }
@@ -407,6 +532,8 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
        (q.line1 === undefined || d.site.line1 === q.line1) &&
        (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase())));
     const nativeOutgoing: SymbolSite[] = [];
+    const nativeRelations = new Map<SymbolSite, SourceRelationship>();
+    let unsupportedTargets = 0;
     let nativeError: string | null = null;
     if (op !== 'callers') {
       if (decls.length !== 1) nativeError = decls.length === 0
@@ -417,15 +544,20 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         if (items.length === 0 && op === 'callees') nativeError = 'Outgoing call hierarchy is unsupported for this declaration';
         for (const item of items) {
           for (const call of tree.service.provideCallHierarchyOutgoingCalls(item.file, item.selectionSpan.start)) {
-            for (const span of call.fromSpans) nativeOutgoing.push({
-              ...tsSiteOf(tree, program, item.file, span.start, call.to.kind), name: call.to.name,
-              detail: `calls ${call.to.name}; target ${posix(relative(q.root, call.to.file))}:${tsSiteOf(tree, program, call.to.file, call.to.selectionSpan.start, call.to.kind).line1}`,
-            });
+            const target = { ...tsSiteOf(tree, program, call.to.file, call.to.selectionSpan.start, call.to.kind), name: call.to.name };
+            if (isExternalPath(target.path)) { unsupportedTargets += 1; continue; }
+            for (const span of call.fromSpans) {
+              const site = { ...tsSiteOf(tree, program, item.file, span.start, call.to.kind), name: call.to.name,
+                detail: `calls ${call.to.name}; target ${target.path}:${target.line1}` };
+              nativeOutgoing.push(site);
+              nativeRelations.set(site, { site, kind: 'callees', target });
+            }
           }
         }
       }
     }
-    const nativeOutgoingSet = new Set(nativeOutgoing);
+    const context = op === 'context' && !nativeError ? contextRelationships(tree, program, decls[0]!) : [];
+    for (const relation of context) nativeRelations.set(relation.site, relation);
     const resolved = op === 'callers' ? incomingCallSites(tree, program, decls) : nativeOutgoing;
     const resolvedKeys = new Set(resolved.map(keyOf));
     const declKeys = new Set(decls.map((d) => keyOf(d.site)));
@@ -449,7 +581,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
 
     const all = op === 'callers' ? [...resolved.sort(bySite), ...unattributed.sort(bySite)]
       : nativeError || op === 'symbol' ? decls.map(d => d.site)
-      : op === 'context' ? [...decls.map(d => d.site), ...nativeOutgoing.sort(bySite)] : nativeOutgoing.sort(bySite);
+      : op === 'context' ? [...decls.map(d => d.site), ...nativeOutgoing.sort(bySite), ...context.map(r => r.site)] : nativeOutgoing.sort(bySite);
     const reported = all.slice(0, limit);
     // Hash the exact compiler snapshots, including re-export stubs. Reading disk
     // after the worker answers could attach a different version to the old sites.
@@ -463,6 +595,10 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
     const sourceByPath = new Map(sources.map(source => [source.path, source]));
     const supporting = new Set(reported.map(site => site.path));
+    for (const site of reported) {
+      const target = nativeRelations.get(site)?.target;
+      if (target) supporting.add(target.path);
+    }
     const evidence: CodeIntelSourceEvidence = {
       schemaVersion: 1,
       sourceScope: { repositoryId, identityKind: q.repositoryId ? 'registry' : 'local-root',
@@ -478,16 +614,25 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         contentHash: sourceByPath.get(site.path)?.contentHash ?? null,
         versionedSymbolId: versionedSymbolIdentity(repositoryId, site, sourceByPath.get(site.path)) })),
       relationships: reported.map((site, siteIndex) => ({ siteIndex,
-        kind: op === 'callers' ? 'callers' : nativeOutgoingSet.has(site) ? 'callees' : 'definition',
+        kind: op === 'callers' ? 'callers' : nativeRelations.get(site)?.kind ?? 'definition',
         origin: op !== 'callers' || resolvedKeys.has(keyOf(site)) ? 'compiler' : 'syntax',
-        knowledge: op !== 'callers' || resolvedKeys.has(keyOf(site)) ? 'observed' : 'unknown', runtimeExecution: 'unknown' })),
+        knowledge: op !== 'callers' || resolvedKeys.has(keyOf(site)) ? 'observed' : 'unknown', runtimeExecution: 'unknown',
+        ...(nativeRelations.get(site)?.target ? { target: {
+          site: nativeRelations.get(site)!.target!,
+          contentHash: sourceByPath.get(nativeRelations.get(site)!.target!.path)!.contentHash,
+          versionedSymbolId: versionedSymbolIdentity(repositoryId, nativeRelations.get(site)!.target!, sourceByPath.get(nativeRelations.get(site)!.target!.path)),
+        } } : {}),
+      })),
     };
     return answer(q.name, started, now, {
       sites: reported,
       evidence,
       error: nativeError,
       total: all.length,
-      limitations: partial,
+      limitations: [...partial,
+        ...(op === 'context' ? ['Context joins resolved in-repository imports, declared heritage, members, overrides and typed property accesses within the bounded compiler program. Structural implementations use lsp:query op:implementations; dynamic/computed fields and unresolved/external context targets are unsupported.'] : []),
+        ...(unsupportedTargets ? [`Omitted ${unsupportedTargets} external call targets whose source repository/version this query cannot certify.`] : []),
+      ],
       attribution: {
         resolved: resolved.length,
         unattributed: counts,

@@ -64,6 +64,7 @@ import {
   sealImplementationAcceptance,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   mintAgentReviewClaimAdmission,
+  mintAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
   readImplementationReadiness,
   type AgentReviewState,
@@ -821,9 +822,23 @@ export async function adoptAgentReviewRevision(
     const goneHolder = !alreadySubmitter && workItem.assignee != null && authority.submitterHolds
       ? workItem.assignee
       : null;
+    // The issue intake floor admits a revision-requested row only for its CURRENT payload
+    // submitter, and the rebind below happens after this claim. Without this admission the
+    // shared writer refuses every adoption (measured: adopt-next 0/25, 16 claim-refused).
+    // Keyed on the payload submitter, not alreadySubmitter: an effective submitter behind
+    // a synthetic payload submitter is also not the payload submitter.
+    const revisionAdoptionAdmission = current.submittedBy !== input.adopter
+      ? mintAgentReviewRevisionAdoptionAdmission({
+          itemId: workItem.id,
+          adopter: input.adopter,
+          harnessSlug: input.harnessSlug,
+          review: current,
+        })
+      : null;
     const claimed = await deps.claimWorkItem(workItem.id, input.adopter, {
       harness: input.harnessSlug,
       ...(goneHolder ? { expectedAssignee: goneHolder } : {}),
+      ...(revisionAdoptionAdmission ? { revisionAdoptionAdmission } : {}),
     });
     if (!claimed) return { adopted: false, workItem: null, state: current, reason: 'claim-refused' };
   }

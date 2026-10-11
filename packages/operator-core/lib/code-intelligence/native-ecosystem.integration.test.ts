@@ -204,10 +204,54 @@ describe('native baseline admitted operation inventory across real interfaces', 
     expect(result.data.sites).toEqual([
       expect.objectContaining({ path: 'src/graph-context.ts', line1: 2 }),
       expect.objectContaining({ path: 'src/graph-context.ts', line1: 3, name: 'nativeHelper' }),
+      expect.objectContaining({ path: 'src/graph-context.ts', line1: 1, name: 'nativeHelper' }),
     ]);
-    expect(result.data.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees']);
+    expect(result.data.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees', 'imports']);
     expect(result.data.evidence!.sourceScope.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(result.data.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);
+  }, 60_000);
+
+  it('P007 real context worker consolidates heritage, members, overrides and typed field accesses', async () => {
+    put('src/context-model.ts', [
+      'export interface Runner { run(): number; }',
+      'export class Base {',
+      '  value = 0;',
+      '  run() { return this.value; }',
+      '}',
+      'export class Derived extends Base implements Runner {',
+      '  override run() { this.value++; return this.value; }',
+      '}',
+      '',
+    ].join('\n'));
+    const run = async (name: string, line1?: number) => (await graphQuery.handler(graphQuery.args.parse({
+      op: 'context', name, file_path: 'src/context-model.ts', line1,
+    }), { projectDir: root } as never) as { data: CodeIntelAnswer }).data;
+    const derived = await run('Derived');
+    expect(derived.error).toBeNull();
+    const edges = derived.evidence!.relationships.map(edge => [edge.kind, derived.sites[edge.siteIndex]!.line1, edge.target?.site.line1]);
+    expect(edges).toEqual(expect.arrayContaining([
+      ['inheritance', 6, 2], ['implementations', 6, 1], ['members', 7, 7], ['overrides', 7, 4],
+    ]));
+    const field = await run('value', 3);
+    expect(field.error).toBeNull();
+    expect(field.evidence!.relationships.filter(edge => edge.kind === 'field-write')
+      .map(edge => field.sites[edge.siteIndex]!.line1)).toEqual([7]);
+    expect(field.evidence!.relationships.filter(edge => edge.kind === 'field-read')
+      .map(edge => field.sites[edge.siteIndex]!.line1)).toEqual([4, 7]);
+    for (const answer of [derived, field]) {
+      expect(answer.evidence!.siteIdentities.every(site => site.contentHash && site.versionedSymbolId)).toBe(true);
+      expect(answer.evidence!.relationships.every(edge => edge.runtimeExecution === 'unknown')).toBe(true);
+      expect(answer.evidence!.relationships.filter(edge => edge.target).every(edge => edge.target!.contentHash && edge.target!.versionedSymbolId)).toBe(true);
+    }
+  }, 60_000);
+
+  it.each([['rust', '.rs'], ['python', '.py'], ['go', '.go']])('P007 exposed context labels %s as unsupported rather than compiler-backed', async (language, extension) => {
+    put(`src/unadmitted${extension}`, 'target();\n');
+    const result = await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'target',
+      file_path: `src/unadmitted${extension}` }), { projectDir: root } as never) as { data: CodeIntelAnswer };
+    expect(result.data.error).toContain('unsupported');
+    expect(result.data.sites).toEqual([]);
+    expect(result.data.evidence!.languageCapabilities).toEqual([{ language, intent: 'definition', status: 'unsupported' }]);
   }, 60_000);
 
   it.each(operations('lsp:query'))('LSP $op crosses the real daemon RPC route', async ({ op, backend }) => {

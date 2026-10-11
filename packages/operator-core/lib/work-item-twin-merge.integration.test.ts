@@ -236,6 +236,30 @@ describe('migration 1443: same-workspace work-item twins', () => {
     expect(notes).toEqual([{ scope: 'workitem:sidestage:WI-300', note: '## State\nhalf way' }]);
   });
 
+  it('merges into a survivor that is itself renamed because it collided with a different item', async () => {
+    // papercup + papercusp are one item recorded twice (same title); beta is a
+    // different item on the same id and keeps it (remote origin), so the merge
+    // survivor (papercusp) is renamed after the merge.
+    await insert({ harness: 'papercup', id: 'EI-600', title: 'Gate stall', status: 'done', updatedTs: 2000, terminalOwner: 'su-z' });
+    await insert({ harness: 'papercusp', id: 'EI-600', title: 'Gate stall', status: 'open', updatedTs: 1500 });
+    await insert({ harness: 'beta', id: 'EI-600', title: 'Unrelated item', origin: 'remote' });
+
+    await applyMigration();
+
+    expect((await rows('EI-600')).map((r) => r.harness_slug)).toEqual(['beta']);
+    const newId = await renamed('papercusp', 'EI-600');
+    const survivor = await rows(newId);
+    expect(survivor.map((r) => r.harness_slug)).toEqual(['papercusp']);
+    expect(survivor[0]!.status).toBe('done');
+    expect(survivor[0]!.terminal_owner).toBe('su-z');
+    expect(survivor[0]!.payload?._twinMerge?.sources).toEqual([
+      expect.objectContaining({ harness: 'papercup', status: 'done' }),
+    ]);
+    expect(survivor[0]!.payload?._physicalTwinRekey).toEqual(
+      expect.objectContaining({ oldId: 'EI-600', keptBy: 'beta' }),
+    );
+  });
+
   it('renames the local side of a divergent collision deterministically and moves what belongs to it', async () => {
     await insert({ harness: 'papercusp', id: 'WI-400', title: 'Write the spec triad', origin: 'remote', createdTs: 2000 });
     await insert({ harness: 'pot', id: 'WI-400', title: 'green-checkpoint stall', status: 'done', createdTs: 1000 });

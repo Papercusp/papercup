@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
+  countPendingWakeSources,
   evaluateSilentHalt,
   sweepSilentHalts,
   disarmEpochToken,
@@ -585,21 +586,72 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
     remedy: 'Relaunch the session (psu --resume).',
   };
 
+  /**
+   * Drives the REAL default candidate read end to end against a routing fake: the candidate query
+   * yields one AUTO session with its loop off, and `event_awaits` yields `awaitRows` for it.
+   */
+  async function sweepWithAwaits(awaitRows: Array<Record<string, unknown>>, items: Array<Record<string, unknown>> = []) {
+    const fakeSql = ((strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      if (text.includes('WITH loops AS')) {
+        return Promise.resolve([
+          {
+            owner_id: 'su-x',
+            workspace_id: 'ws',
+            routine_id: 'loop-su-x',
+            interval_sec: 300,
+            fleet_slug: null,
+            heartbeat_age_ms: 30_000,
+            inactive_for_ms: 120 * MIN,
+            held_work_items: 1,
+            modes: ['auto'],
+          },
+        ]);
+      }
+      if (text.includes('harness_shared.event_awaits')) return Promise.resolve(awaitRows);
+      if (text.includes('FROM harness_shared.work_items')) return Promise.resolve(items);
+      return Promise.resolve([]);
+    }) as never;
+    return sweepSilentHalts({
+      workspaceId: 'ws',
+      sql: fakeSql,
+      dryRun: true,
+      deps: {
+        nowMs: now,
+        notify: vi.fn() as never,
+        readLoopStatuses: (async () =>
+          new Map([['su-x', { active: false, lastRealTurnAt: oldTurn }]])) as never,
+      },
+    });
+  }
+
   it("the candidate read does NOT count the session's own inbox-wake watcher as a wake source", async () => {
     // The measured blind spot: every parked session holds coord:inbox-wake:<self>, which fires
     // only on an inbound message — counting it exempted 115 of 115 candidates on 2026-10-10.
-    const seen: { text: string; values: unknown[] }[] = [];
-    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      seen.push({ text: strings.join('$?'), values });
-      return Promise.resolve([]);
-    }) as never;
-    const r = await sweepSilentHalts({ workspaceId: 'ws', sql: fakeSql, deps: { notify: vi.fn() as never } });
+    // Since P-009 the exclusion lives in the shared wake-source predicate (D-008 (1)).
+    const r = await sweepWithAwaits([
+      { subscriber_id: 'su-x', event_key: 'coord:inbox-wake:su-x', expires_ts: null, timeout_behavior: 'expire', once: false },
+    ]);
+    expect(r.checked).toBe(1);
+    expect(r.exempt['su-x'] ?? '').not.toMatch(/pending-await/);
+    expect(r.halted).toEqual(['su-x']);
+  });
 
-    expect(r.checked).toBe(0);
-    const read = seen.find((q) => q.text.includes('harness_shared.event_awaits'));
-    expect(read, 'candidate read must query event_awaits').toBeDefined();
-    expect(read!.text).toMatch(/AND event_key <> \(\$\?::text \|\| subscriber_id\)/);
-    expect(read!.values).toContain('coord:inbox-wake:');
+  it('a dead work-item await does not exempt the session either (D-008 (1), via the shared predicate)', async () => {
+    const r = await sweepWithAwaits(
+      [{ subscriber_id: 'su-x', event_key: 'work-item:done:WI-7', expires_ts: null, timeout_behavior: null, once: true }],
+      [{ feature_id: 'WI-7', status: 'wip', taken_by: 'su-x' }],
+    );
+    expect(r.exempt['su-x'] ?? '').not.toMatch(/pending-await/);
+    expect(r.halted).toEqual(['su-x']);
+  });
+
+  it('a live untimed await still exempts the session (D-009: the detector stays lenient)', async () => {
+    const r = await sweepWithAwaits([
+      { subscriber_id: 'su-x', event_key: 'work-item:claimable', expires_ts: null, timeout_behavior: null, once: true },
+    ]);
+    expect(r.exempt['su-x']).toMatch(/pending-await x1/);
+    expect(r.halted).toEqual([]);
   });
 
   it('a host that needs a relaunch is NOT woken; it is paged at once with the HOST UNHEALTHY remedy', async () => {
@@ -705,5 +757,85 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
     const r = await h.run();
     expect(r.paged).toEqual(['su-halted']);
     expect(h.alertFleetLeader).not.toHaveBeenCalled();
+  });
+});
+
+// ── P-009 / D-008 (1): the candidate read's await count comes from the shared predicate ──────────
+describe('countPendingWakeSources — the seam to wake-source-predicate', () => {
+  const INBOX = 'coord:inbox-wake:';
+  type AwaitRow = {
+    subscriber_id: string;
+    event_key: string;
+    expires_ts: string | null;
+    timeout_behavior: string | null;
+    once: boolean | null;
+  };
+  type ItemRow = { feature_id: string; status: string; taken_by: string | null };
+
+  /** A tagged-template stand-in for `Sql`: routes by the table the statement reads. */
+  function fakeSql(awaits: AwaitRow[], items: ItemRow[]) {
+    const queries: string[] = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      const ids = (values.find(Array.isArray) as string[] | undefined) ?? [];
+      if (text.includes('harness_shared.event_awaits')) {
+        return Promise.resolve(awaits.filter((a) => ids.includes(a.subscriber_id)));
+      }
+      if (text.includes('harness_shared.work_items')) {
+        return Promise.resolve(items.filter((i) => ids.includes(i.feature_id)));
+      }
+      throw new Error(`unexpected statement: ${text}`);
+    };
+    return { sql: fn as unknown as Parameters<typeof countPendingWakeSources>[2], queries };
+  }
+  const row = (subscriber_id: string, event_key: string, over: Partial<AwaitRow> = {}): AwaitRow => ({
+    subscriber_id,
+    event_key,
+    expires_ts: null,
+    timeout_behavior: null,
+    once: true,
+    ...over,
+  });
+
+  it('counts none of the four dead shapes, so a stranded session reads as having no wake source', async () => {
+    const { sql } = fakeSql(
+      [
+        // the session's own standing inbox keepalive (D-006)
+        row('su-a', `${INBOX}su-a`, { once: false, timeout_behavior: 'expire' }),
+        // waiting for its OWN held item to finish: a self-deadlock
+        row('su-a', 'work-item:done:WI-1'),
+        // the item already closed: the event already happened
+        row('su-a', 'work-item:done:WI-2'),
+        // the item does not exist: the event can never happen
+        row('su-a', 'work-item:done:WI-3'),
+      ],
+      [
+        { feature_id: 'WI-1', status: 'wip', taken_by: 'su-a' },
+        { feature_id: 'WI-2', status: 'done', taken_by: 'su-z' },
+      ],
+    );
+    const counts = await countPendingWakeSources(['su-a'], INBOX, sql);
+    expect(counts.get('su-a') ?? 0).toBe(0);
+  });
+
+  it('still counts an UNTIMED live watch (D-009: this detector stays lenient) and a bounded inbox await', async () => {
+    const { sql } = fakeSql(
+      [
+        row('su-a', 'work-item:claimable'),
+        row('su-b', `${INBOX}su-b`, { expires_ts: '2099-01-01T00:00:00.000Z', timeout_behavior: 'wake' }),
+        row('su-c', 'work-item:done:WI-9'),
+      ],
+      [{ feature_id: 'WI-9', status: 'wip', taken_by: 'su-peer' }],
+    );
+    const counts = await countPendingWakeSources(['su-a', 'su-b', 'su-c'], INBOX, sql);
+    expect(Object.fromEntries(counts)).toEqual({ 'su-a': 1, 'su-b': 1, 'su-c': 1 });
+  });
+
+  it('does not query work_items when no candidate has an open await', async () => {
+    const { sql, queries } = fakeSql([], []);
+    const counts = await countPendingWakeSources(['su-a'], INBOX, sql);
+    expect(counts.size).toBe(0);
+    expect(queries.filter((q) => q.includes('harness_shared.work_items'))).toEqual([]);
   });
 });

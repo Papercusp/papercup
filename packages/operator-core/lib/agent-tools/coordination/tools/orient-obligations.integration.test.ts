@@ -148,7 +148,8 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       expect(read.goalPortfolio?.goal.id).toBe(GOAL);
       expect(read.obligations.evaluations.map(entry => entry.ruleId)).toContain('goal-plan-placement');
       expect(agendaRead).toHaveBeenCalledTimes(1);
-      const canonical = await agendaRead.mock.results[0].value;
+      const canonical: Awaited<ReturnType<typeof obligationReader.readAgentObligationAgenda>> =
+        await agendaRead.mock.results[0].value;
       expect(canonical.degradedSources.filter(source => source.includes('waiting-on'))).toEqual([]);
       expect(read.obligations.evaluations.map(entry => entry.family)).not.toContain('consult-reconciliation');
       expect(JSON.stringify(read.obligations)).not.toContain('consult:reconcile');

@@ -131,10 +131,12 @@ import {
   agentReviewPendingAdmissionSql,
   intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
+  matchesAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
   verificationTaskConflict,
   verificationTaskConflictSql,
   type AgentReviewClaimAdmission,
+  type AgentReviewRevisionAdoptionAdmission,
 } from './harness/improvements/agent-review-policy';
 import { hasActiveStrictHumanAsk } from './hold-registry';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
@@ -5551,6 +5553,11 @@ export async function claimWorkItem(
     legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
     /** Agent-review-only exception for the exact pending review snapshot being picked up. */
     agentReviewAdmission?: AgentReviewClaimAdmission;
+    /**
+     * BQL D-008 revision adoption: exception to the issue intake floor for one exact content
+     * revision. Feature-family rows have no intake floor, so the feature branch ignores it.
+     */
+    revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-23701433507513915: the WRITE backstop — a truncated su- owner id is never persisted as
@@ -5597,6 +5604,13 @@ export async function claimWorkItem(
     const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
       ? opts.agentReviewAdmission
       : null;
+    const revisionAdoptionAdmission = matchesAgentReviewRevisionAdoptionAdmission(
+      opts.revisionAdoptionAdmission,
+      prior,
+      assignee,
+    )
+      ? opts.revisionAdoptionAdmission
+      : null;
     // EI-217141: thread only the server-derived current-leader dispatch
     // capability into the issue mutation. Feature-family rows have no
     // assignedBy provenance, so they never mint this exception and keep the
@@ -5636,6 +5650,7 @@ export async function claimWorkItem(
         ? { legacyFleetScopeDowngradeAdmission: opts.legacyFleetScopeDowngradeAdmission }
         : {}),
       ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
+      ...(revisionAdoptionAdmission ? { revisionAdoptionAdmission } : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {

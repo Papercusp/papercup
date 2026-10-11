@@ -220,7 +220,7 @@ async function measureAndAdoptSharedScratchUsage(
   const workspaceRoot = scratchRootForWorkspace(workspaceId);
   const bytes = await sizeOfDirAsync(workspaceRoot, undefined, undefined, 0, undefined, diagnostics);
   if (diagnostics.directoryReadErrors > 0 || diagnostics.fileStatErrors > 0) {
-    throw new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
+    throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics);
   }
   const measuredAt = Date.now();
   await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt);
@@ -975,9 +975,13 @@ async function sizeOfDirAsync(
         readdirAsync(dir, { withFileTypes: true }),
       ),
     );
-  } catch {
-    if (diagnostics) diagnostics.directoryReadErrors += 1;
-    return 0; // missing or unreadable — counts as empty
+  } catch (error) {
+    if (scratchFsErrorCode(error) === 'ENOENT') return 0; // an absent or concurrently removed directory is empty
+    if (diagnostics) {
+      diagnostics.directoryReadErrors += 1;
+      rememberScratchSizeWalkErrorCode(diagnostics, error);
+    }
+    return 0; // unreadable — the caller sees the diagnostic and rejects an incomplete measurement
   }
   if (diagnostics) diagnostics.sizeWalkEntries += entries.length;
   let total = 0;
@@ -1011,9 +1015,13 @@ async function sizeOfDirAsync(
           if (runDir && runBytesByPath) {
             runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
           }
-        } catch {
-          if (diagnostics) diagnostics.fileStatErrors += 1;
-          /* vanished mid-walk (GC) — skip */
+        } catch (error) {
+          if (scratchFsErrorCode(error) === 'ENOENT') continue; // removed after readdir; it no longer consumes quota
+          if (diagnostics) {
+            diagnostics.fileStatErrors += 1;
+            rememberScratchSizeWalkErrorCode(diagnostics, error);
+          }
+          /* Other stat failures make the measurement incomplete. */
         }
       }
     }
@@ -1098,7 +1106,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
         diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
       }
       if (diagnostics.directoryReadErrors > 0 || diagnostics.fileStatErrors > 0) {
-        throw new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
+        throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics);
       }
       if (entry.writes.size > 0 || entry.writeGeneration !== writeGeneration) {
         entry.refreshDeferred = true;
@@ -1323,6 +1331,34 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     runsDeleted: 0,
     deletedBytes: 0,
   };
+}
+
+const scratchSizeWalkErrorCodes = new WeakMap<ScratchQuotaRecoveryDiagnostics, string>();
+
+function scratchFsErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function rememberScratchSizeWalkErrorCode(
+  diagnostics: ScratchQuotaRecoveryDiagnostics,
+  error: unknown,
+): void {
+  const code = scratchFsErrorCode(error);
+  if (code && !scratchSizeWalkErrorCodes.has(diagnostics)) {
+    scratchSizeWalkErrorCodes.set(diagnostics, code);
+  }
+}
+
+function incompleteScratchQuotaMeasurementError(
+  workspaceId: string,
+  diagnostics: ScratchQuotaRecoveryDiagnostics,
+): Error {
+  const error = new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
+  const code = scratchSizeWalkErrorCodes.get(diagnostics);
+  if (code) Object.assign(error, { code });
+  return error;
 }
 
 interface ActiveScratchQuotaRecoveryOperation {

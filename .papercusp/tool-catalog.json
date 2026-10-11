@@ -14823,7 +14823,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation; context includes outgoing call sites. Callers retains labelled unresolved calls. Impact/health use the GitNexus index. Other languages and refused intents require their named native/structural routes. Sites are one-indexed and carry measured source versions; missing/ambiguous symbols and unsupported selectors carry errors.",
+      "description": "Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation. Context joins outgoing calls, used imports, declared inheritance/implements, members, overrides and typed field reads/writes with source versions. Structural implementations use lsp:query. Callers retains labelled unresolved calls. Index edges without measured repository/content versions are refused. Other languages and selectors receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],
@@ -14885,7 +14885,7 @@
       ],
       "guidance": {
         "when": "You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.",
-        "notWhen": "Use lsp:query for compiler semantics and scoped rg for literals/current source; runtime diagnosis needs state/log tools. Use gitnexus.context or trace for known-symbol intents outside this operation set, with source corroboration.",
+        "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
         "chaining": "op:\"symbol\" to locate the symbol → op:\"callers\"/\"callees\" for its edges → op:\"impact\" for the change radius. If results look stale, op:\"health\" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect."
       }
     },
@@ -18522,7 +18522,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters; the call is owner-scoped and ignores `harness`. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters; the call is owner-scoped and ignores `harness`. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` (first call; even for a finished goal). Still HOLDING work-items? That flag does not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop."
       }

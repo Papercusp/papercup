@@ -4,6 +4,7 @@ import type { WorkItem } from '../../work-items';
 import {
   agentReviewIsReproductionValidation,
   intakeStageAdmitsClaim,
+  isAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
   reproductionValidationBrief,
 } from './agent-review-policy';
@@ -1785,7 +1786,17 @@ describe('adoptAgentReviewRevision — discover and adopt a content revision und
     h.state.submitterLiveness = { sessionState: 'ended' };
     await expect(adopt(h)).resolves.toMatchObject({ adopted: true });
     expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: true });
-    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-adopter', { harness: 'papercusp', expectedAssignee: 'su-gone' });
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-adopter', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-gone',
+      // BQL D-008: the claim must carry the minted revision-adoption admission, or the
+      // shared issue writer's intake floor refuses it (only the payload submitter passes).
+      revisionAdoptionAdmission: { itemId: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp', previousSubmitter: 'su-gone', round: 2 },
+    });
+    const opts = h.claimWorkItem.mock.calls.at(-1)?.[2] as { revisionAdoptionAdmission?: unknown };
+    // A plain object with the same fields is NOT an admission; only the minted one is.
+    expect(isAgentReviewRevisionAdoptionAdmission(opts.revisionAdoptionAdmission)).toBe(true);
+    expect(isAgentReviewRevisionAdoptionAdmission({ ...(opts.revisionAdoptionAdmission as object) })).toBe(false);
     expect(h.state.issue.assignee).toBe('su-adopter');
   });
 

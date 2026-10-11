@@ -103,7 +103,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation; context includes outgoing call sites. Callers retains labelled unresolved calls. Impact/health use the GitNexus index. Other languages and refused intents require their named native/structural routes. Sites are one-indexed and carry measured source versions; missing/ambiguous symbols and unsupported selectors carry errors.',
+    'Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation. Context joins outgoing calls, used imports, declared inheritance/implements, members, overrides and typed field reads/writes with source versions. Structural implementations use lsp:query. Callers retains labelled unresolved calls. Index edges without measured repository/content versions are refused. Other languages and selectors receive explicit unsupported results.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
@@ -169,13 +169,33 @@ export default defineTool({
   async handler(args, ctx) {
     const op = args.op as string;
     const native = ['callers', 'symbol', 'callees', 'context'].includes(op);
-    const scoped = (answer: CodeIntelAnswer) => answer.evidence ? answer : { ...answer,
+    const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
+      const measured = answer.evidence ? answer : { ...answer,
       evidence: unmeasuredSourceEvidence(answer, { repositoryId: null, identityKind: 'unknown',
         paths: native ? args.paths ?? (args.file_path ? [args.file_path] : ['.']) : [],
         basis: native ? 'compiler-project' : 'indexed-code' }, [
         'The producer supplied no measured repository/content snapshot. Resolve source versions before treating these sites as source-backed relationships.',
         'A repository selector and current disk contents do not identify the indexed source snapshot.',
       ]) };
+      const evidence = measured.evidence!;
+      const sourceByPath = new Map(evidence.sourceScope.supportingFiles.map(source => [source.path, source]));
+      const hash = (value: string | null | undefined) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+      const sourceBacked = measured.sites.length === 0 || (Boolean(evidence.sourceScope.repositoryId) &&
+        hash(evidence.sourceScope.sourceFingerprint) && measured.sites.every((site, index) => {
+          const identity = evidence.siteIdentities.find(row => row.siteIndex === index);
+          return identity?.sourcePath === site.path && hash(identity.contentHash) && Boolean(identity.versionedSymbolId) &&
+            identity.contentHash === sourceByPath.get(site.path)?.contentHash;
+        }) && evidence.relationships.every(relation => !relation.target || (
+          hash(relation.target.contentHash) && Boolean(relation.target.versionedSymbolId) &&
+          relation.target.contentHash === sourceByPath.get(relation.target.site.path)?.contentHash)));
+      if (sourceBacked) return measured;
+      const reason = 'Graph source versions are unavailable: refusing sites whose repository/content snapshot cannot be determined. Re-query through an admitted current compiler route.';
+      return { ...measured, sites: [], error: [measured.error, reason].filter(Boolean).join(' '),
+        freshness: { ...measured.freshness, health: 'unknown' },
+        truncation: { truncated: false, totalAvailable: null, continuation: null },
+        evidence: { ...evidence, siteIdentities: [], relationships: [],
+          graphScope: { ...evidence.graphScope, limitations: [...evidence.graphScope.limitations, reason] } } };
+    };
     if (!GITNEXUS_FACADE_OPS.includes(op as GitnexusFacadeOp)) {
       // OP_VALUES admits these intentionally so the refusal map is reachable
       // through the actual agent-facing tool, not just through unit imports.

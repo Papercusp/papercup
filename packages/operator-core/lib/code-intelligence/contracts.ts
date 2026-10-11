@@ -204,6 +204,10 @@ export interface CodeIntelSourceFile {
   readonly representation: 'full-source' | 'reexport-stub';
 }
 
+/** Context joins source relationships without adding duplicate semantic query tools. */
+export type CodeIntelRelationshipKind = CodeIntelIntent | 'imports' | 'inheritance' | 'members'
+  | 'field-read' | 'field-write' | 'overrides';
+
 export interface CodeIntelSourceEvidence {
   readonly schemaVersion: 1;
   readonly sourceScope: {
@@ -232,10 +236,12 @@ export interface CodeIntelSourceEvidence {
   }[];
   readonly relationships: readonly {
     readonly siteIndex: number;
-    readonly kind: CodeIntelIntent;
+    readonly kind: CodeIntelRelationshipKind;
     readonly origin: 'compiler' | 'syntax' | 'index' | 'unknown';
     readonly knowledge: 'observed' | 'inferred' | 'unknown';
     readonly runtimeExecution: 'unknown';
+    /** Same repository as sourceScope; measured from the same compiler program. */
+    readonly target?: { readonly site: SymbolSite; readonly contentHash: string; readonly versionedSymbolId: string | null };
   }[];
 }
 

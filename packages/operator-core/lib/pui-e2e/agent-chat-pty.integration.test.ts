@@ -8683,7 +8683,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           const events = scriptedEngine.events.slice(eventsBefore);
           if (scriptedEngine.real) throwIfProviderRateLimited(events, `P-005 ${label}`);
           const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
-          const blocked = reviewBlockingReason(replies.map((event) => String(event.content)).join('\n'));
+          // Only delta/completed transcript events carry `content`; `started` has none.
+          const blocked = reviewBlockingReason(replies.map((event) => ('content' in event ? String(event.content ?? '') : '')).join('\n'));
           if (blocked) {
             frame(`${label}-blocked`, pane.screen());
             throw new Error(`${label} cannot run: ${blocked}`);

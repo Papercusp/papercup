@@ -91,9 +91,12 @@ import {
   intakeStageClaimFloorSql,
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
+  agentReviewRevisionAdoptionSql,
   isAgentReviewClaimAdmission,
+  isAgentReviewRevisionAdoptionAdmission,
   verificationTaskConflict,
   type AgentReviewClaimAdmission,
+  type AgentReviewRevisionAdoptionAdmission,
 } from './harness/improvements/agent-review-policy';
 import {
   isLegacyFleetScopeDowngradeAdmission,
@@ -3069,6 +3072,12 @@ export async function claimIssue(
     forceTakeoverAdmission?: ForceTakeoverAdmission;
     /** Exact reviewer-lane exception for a still-pending agent-review snapshot. */
     agentReviewAdmission?: AgentReviewClaimAdmission;
+    /**
+     * BQL D-008: exact intake-stage exception for adopting one content revision whose
+     * submitter is someone else. Minted only by adoptAgentReviewRevision after the
+     * orphan proof; it lifts ONLY the "revision-requested is the submitter's" leg.
+     */
+    revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
@@ -3109,6 +3118,13 @@ export async function claimIssue(
     opts.agentReviewAdmission.reviewer === assignee &&
     opts.agentReviewAdmission.submittedBy !== assignee
       ? opts.agentReviewAdmission
+      : null;
+  const revisionAdoptionAdmission =
+    isAgentReviewRevisionAdoptionAdmission(opts.revisionAdoptionAdmission) &&
+    opts.revisionAdoptionAdmission.itemId === id &&
+    opts.revisionAdoptionAdmission.adopter === assignee &&
+    opts.revisionAdoptionAdmission.previousSubmitter !== assignee
+      ? opts.revisionAdoptionAdmission
       : null;
   const admissionFloor = agentReviewAdmission
     ? sql`(
@@ -3325,6 +3341,10 @@ export async function claimIssue(
            COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
            AND COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${assignee}
          )
+         -- BQL D-008: revision adoption claims BEFORE it rebinds submittedBy (the CAS is
+         -- what a concurrent adopter loses), so the submitter leg above cannot admit it.
+         -- The admission re-checks the exact revision snapshot the orphan proof inspected.
+         OR ${agentReviewRevisionAdoptionSql(sql, revisionAdoptionAdmission, 'target.payload')}
          OR ${intakeStageClaimFloorSql(sql, 'target.payload', 'engineer_issues')}
        )
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an

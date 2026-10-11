@@ -29,12 +29,20 @@ const CORPUS = [
   { instanceId: 'git-to-zig', tier: 'implementation', prompt: 'port git', dockerImage: 'img/git:v4', gpus: 0, verifierCmd: 'bash /tests/test.sh', rewardPath: '/logs/verifier/reward.txt', rewardJsonPath: '/logs/verifier/reward.json' },
 ];
 
-/** Fake docker for the seam: run→cid, exec-cat reward.txt→`reward`, verifier exec→0, rm→ok. */
+/**
+ * Fake docker for the seam: run→cid, verifier exec→0, rm→ok, and a container filesystem holding ONLY reward.txt.
+ * The live reward reader probes before it reads (`test -e <path>` → 0 present / 1 absent, then `cat`), so an absent
+ * reward.json must probe 1 — a probe that said "present" followed by a failing `cat` is a docker fault (graderError).
+ */
 function fakeSeamExec(reward = '0.5'): ProcExec {
   let n = 0;
   return async (_cmd, args) => {
     if (args[0] === 'run') return { stdout: `cid-${n++}\n`, stderr: '', code: 0 };
     if (args[0] === 'rm') return { stdout: '', stderr: '', code: 0 };
+    if (args[0] === 'exec' && args[2] === 'test') {
+      const path = args[args.length - 1];
+      return { stdout: '', stderr: '', code: path.endsWith('reward.txt') ? 0 : 1 };
+    }
     if (args[0] === 'exec' && args.includes('cat')) {
       const path = args[args.length - 1];
       return path.endsWith('reward.txt') ? { stdout: reward, stderr: '', code: 0 } : { stdout: '', stderr: 'no', code: 1 };

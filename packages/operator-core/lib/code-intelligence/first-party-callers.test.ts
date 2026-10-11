@@ -23,6 +23,34 @@ const FILES: Record<string, string> = {
   'src/a.ts': 'export function target(n: number): number {\n  return n + 1;\n}\n',
   'src/dependency.ts': 'export function helper(n: number) { return n + 1; }\n',
   'src/compose.ts': 'import { helper } from "./dependency";\nexport function compose(n: number) {\n  return helper(n);\n}\n',
+  'src/model.ts': [
+    'import { helper } from "./dependency";',
+    'export interface Runner { run(n: number): number; }',
+    'export class Base {',
+    '  value = 0;',
+    '  run(n: number) { return n; }',
+    '}',
+    'export class Derived extends Base implements Runner {',
+    '  override run(n: number) {',
+    '    this.value += helper(n);',
+    '    return this.value;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'),
+  'src/model-use.ts': [
+    'import { Base, Derived } from "./model";',
+    'const base = new Base();',
+    'const derived = new Derived();',
+    'base.value = 2;',
+    'derived.value++;',
+    'export const read = base.value;',
+    'const dynamic: any = base;',
+    'dynamic.value = 99;',
+    'const other = { value: 0 };',
+    'other.value = 3;',
+    '',
+  ].join('\n'),
   'src/b.test.ts': 'function target(): string {\n  return "stub";\n}\nexport const fromStub = target();\n',
   // The barrel does not contain the word, so it is served as a re-export stub.
   'src/barrel.ts': 'export * from "./a";\nexport const unrelated = 1;\n',
@@ -135,11 +163,11 @@ describe('P007 first-party symbol/context/callees', () => {
   it('joins the declaration and outgoing source-site evidence in context', () => {
     const answer = firstPartyCallers({ ts, root, op: 'context', name: 'compose' });
     expect(answer.error).toBeNull();
-    expect(lines(answer.sites)).toEqual(['src/compose.ts:2', 'src/compose.ts:3']);
-    expect(answer.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees']);
+    expect(lines(answer.sites)).toEqual(['src/compose.ts:1', 'src/compose.ts:2', 'src/compose.ts:3']);
+    expect(answer.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees', 'imports']);
     expect(answer.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);
     const capped = firstPartyCallers({ ts, root, op: 'context', name: 'compose', limit: 1 });
-    expect(capped.truncation).toEqual({ truncated: true, totalAvailable: 2, continuation: null });
+    expect(capped.truncation).toEqual({ truncated: true, totalAvailable: 3, continuation: null });
     expect(capped.evidence!.siteIdentities).toHaveLength(1);
   });
 
@@ -163,6 +191,43 @@ describe('P007 first-party symbol/context/callees', () => {
       expect(answer.error).toMatch(/No declaration/);
       expect(answer.freshness.health).toBe('unhealthy');
     }
+  });
+
+  it('joins declared heritage, used imports, members and actual base overrides with versioned targets', () => {
+    const answer = firstPartyCallers({ ts, root, op: 'context', name: 'Derived', filePath: 'src/model.ts' });
+    expect(answer.error).toBeNull();
+    const relationships = answer.evidence!.relationships.map(edge => ({
+      kind: edge.kind, line: answer.sites[edge.siteIndex]!.line1,
+      target: edge.target ? `${edge.target.site.path}:${edge.target.site.line1}` : null,
+    }));
+    expect(relationships).toEqual(expect.arrayContaining([
+      { kind: 'imports', line: 1, target: 'src/dependency.ts:1' },
+      { kind: 'inheritance', line: 7, target: 'src/model.ts:3' },
+      { kind: 'implementations', line: 7, target: 'src/model.ts:2' },
+      { kind: 'members', line: 8, target: 'src/model.ts:8' },
+      { kind: 'overrides', line: 8, target: 'src/model.ts:5' },
+    ]));
+    expect(answer.evidence!.relationships.filter(edge => edge.target).every(edge =>
+      /^[a-f0-9]{64}$/.test(edge.target!.contentHash) && edge.target!.versionedSymbolId)).toBe(true);
+    expect(answer.coverage!.limitations.join(' ')).toContain('Structural implementations use lsp:query');
+  });
+
+  it('separates property reads, writes and read-modify-write from same-name fields and untyped receivers', () => {
+    const answer = firstPartyCallers({ ts, root, op: 'context', name: 'value', filePath: 'src/model.ts', line1: 4 });
+    expect(answer.error).toBeNull();
+    const fieldSites = (kind: string) => answer.evidence!.relationships.filter(edge => edge.kind === kind)
+      .map(edge => `${answer.sites[edge.siteIndex]!.path}:${answer.sites[edge.siteIndex]!.line1}`).sort();
+    expect(fieldSites('field-read')).toEqual(['src/model-use.ts:5', 'src/model-use.ts:6', 'src/model.ts:10', 'src/model.ts:9']);
+    expect(fieldSites('field-write')).toEqual(['src/model-use.ts:4', 'src/model-use.ts:5', 'src/model.ts:9']);
+    expect(answer.evidence!.relationships.filter(edge => edge.kind.startsWith('field-')).every(edge =>
+      edge.target?.site.path === 'src/model.ts' && edge.target.site.line1 === 4)).toBe(true);
+  });
+
+  it.each([['rust', '.rs'], ['python', '.py'], ['go', '.go']])('refuses unadmitted %s graph operations explicitly', (language, extension) => {
+    const answer = firstPartyCallers({ ts, root, op: 'context', name: 'target', filePath: `src/unsupported${extension}` });
+    expect(answer.error).toContain('unsupported');
+    expect(answer.sites).toEqual([]);
+    expect(answer.evidence!.languageCapabilities).toEqual([{ language, intent: 'definition', status: 'unsupported' }]);
   });
 });
 

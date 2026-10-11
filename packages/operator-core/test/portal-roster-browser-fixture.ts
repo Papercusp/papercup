@@ -120,6 +120,7 @@ type PortalRosterBrowserInput = {
   hud?: boolean;
   health?: boolean;
   brainstorm?: boolean;
+  brainstormHarnesses?: { selected: string; neighbor: string; foreign: string };
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
@@ -230,12 +231,15 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { SyncProvider } from '@papercusp/sync';
+    import { Toaster } from 'sonner';
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      React.createElement(React.Fragment, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(React.Fragment, null,
         React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.brainstorm ? 'brainstorm' : 'docs')} }),
-        ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'})) });
+        React.createElement(Toaster),
+        ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'}))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -580,6 +584,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     + (input.inbox ? '\n' + ['app/_components/inbox/inbox-pane.css', 'app/admin/plans/plans.css']
       .map(path => readFileSync(resolve(import.meta.dirname, '../../../apps/operator', path), 'utf8')).join('\n')
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
+    + (input.brainstorm ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/harness/harness.css'), 'utf8')
+      + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '')
     + (input.harnesses ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
@@ -604,10 +610,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
-    if (input.inbox || input.plans || input.hud || input.health || input.harnesses) page.on('response', response => {
+    if (input.inbox || input.plans || input.hud || input.health || input.harnesses || input.brainstorm) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
-      const queryNames = input.health ? ['health.snapshot', 'health.history'] : input.harnesses ? ['harnessProjects.lite', 'workItems.byHarness']
+      const queryNames = input.brainstorm ? ['harnessBrainstorm.byHarness'] : input.health ? ['health.snapshot', 'health.history'] : input.harnesses ? ['harnessProjects.lite', 'workItems.byHarness']
         : [input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention'];
       if (!url.pathname.endsWith('/rest-query') || !queryNames.some(query => name?.startsWith(query))) return;
       const observation = { at: new Date().toISOString(), url: response.url(), name, args: url.searchParams.get('args'),
@@ -617,7 +623,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       }, error => {
         syncReads.push({ ...observation, error: String(error) });
       }).then(() => {
-        writeFileSync(join(evidence, input.health ? 'portal-health-reads.json' : input.harnesses ? 'portal-work-reads.json' : input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
+        writeFileSync(join(evidence, input.brainstorm ? 'portal-brainstorm-reads.json' : input.health ? 'portal-health-reads.json' : input.harnesses ? 'portal-work-reads.json' : input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
           JSON.stringify(syncReads, null, 2));
       });
       syncReadCaptures.add(capture);
@@ -625,6 +631,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     });
     const url = new URL(input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
+      : input.brainstorm ? '/?app=brainstorm&q=retained-shell-search'
       : input.docs ? '/?app=docs&q=retained-shell-search'
       : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
@@ -634,7 +641,15 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('slug', input.docs.harness);
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
+    if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     await page.goto(url.href);
+    if (input.brainstormHarnesses) {
+      const receipt = await runPrivateBrainstormPage(page, context, input, syncReads, syncReadCaptures);
+      assert.deepEqual(pageErrors, [], 'actual Brainstorm editors must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.health) {
       const receipt = await runPrivateHealthPage(page, context, input, syncReads, syncReadCaptures);
       assert.deepEqual(pageErrors, [], 'actual Health controls must complete without browser errors');
