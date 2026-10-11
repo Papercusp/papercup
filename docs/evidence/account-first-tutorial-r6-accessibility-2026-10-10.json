@@ -579,7 +579,7 @@
       "verifierRoot": "/dev/shm/pcv/tutorial-verifier-1344-3f29-01a128ab",
       "verifierReceipt": "/dev/shm/tutorial-verifier-1344-3f29-01a128ab.receipt.json",
       "archivedFiles": 586,
-      "sourceManifest": "/home/marsh-office/.papercusp/launch-context/tutorial-candidate-01a128ab.manifest.json",
+      "sourceManifest": "/home/builduser/.papercusp/launch-context/tutorial-candidate-01a128ab.manifest.json",
       "custody": "Maintained runtimeArtifacts, actual core imports and assertTutorialSourceCustody pass; both retained source roots held against exact release."
     },
     "servedAcceptance": {
@@ -604,6 +604,40 @@
     "runtimeQualification": "Private operator-api migrations plus maintained hosted-handler/host-handler. Independent health HTTP200 core3f29. Full Hono startup acceptance is excluded and EI-25644552827273063 remains open. All private processes stopped; cleanup removed PG and runtime state.",
     "residue": ["WI-6554700010008344 owns Mail/Calendar summary503", "WI-10007627 owns selected-workspace refusal", "EI-25644552827273063 owns full startup delay"],
     "limitations": "Scoped preference persistence/reload/Help and absence of desktop Settings probes only. No native screen-reader, human-heard/provider voice, novice, full-affected, wider full-product or production shipment claim. Prior failedYLeY21023502 is retained."
+  },
+  "companionProxyDiagnostics": {
+    "observedAt": "2026-10-11T02:32:00Z",
+    "workItemId": "WI-6554700010008344",
+    "historicalBrowserEvidence": "/dev/shm/tutorial-preference-served-1344-3f29-01a128ab.log",
+    "historicalQualification": "Both Settings traversals recorded Mail and Calendar summary503. The old observer retained status only; these are not newly recovered historical response bodies.",
+    "launchCustody": {
+      "originalSession": "01a126ac-7675-7a41-9915-1248f2da4bfc",
+      "originalLaunchTimes": ["2026-10-10T16:44:37.577Z", "2026-10-10T16:47:33.862Z"],
+      "candidateSession": "01a1289b-0565-7e13-94bb-19b4c2503b3c",
+      "candidateTransformTimes": ["2026-10-11T01:46:16.699Z", "2026-10-11T01:47:48.721Z"],
+      "configurationReceipt": "/home/builduser/.papercusp/launch-context/tutorial-candidate-api-hosted-01a128ab.env",
+      "configurationInspection": "Only key presence was returned. Mail and Calendar origins, primary and fallback signing keys were absent in candidate/base/current parent. Browser HOME selects the removed private runtime; no companion discovery file was provisioned by the recovered launcher."
+    },
+    "distinguishingMeasurement": {
+      "sourceCommit": "1344ca950b9b4941504723ddde7b79aa9c411cf0",
+      "sourcePath": "apps/host/src/app-proxy.ts",
+      "procedure": "Call both retained proxies with an authenticated account and workspaceId:null, absent origin/discovery and a counting upstream. Then supply a synthetic valid origin and signer to the same proxy and identity.",
+      "absentConfiguration": { "status": 503, "errorCode": "portal_app_origin_unavailable", "upstreamCalls": 0 },
+      "configuredControl": { "status": 200, "workspaceId": null, "authenticatedBearer": true, "upstreamCalls": 1 },
+      "scope": "Both Mail and Calendar proxy contracts; excludes live companion-service and production measurements."
+    },
+    "diagnosticRepair": {
+      "portalCommit": "2b6cfb50d04e7b042ca08c532b85d82f48d64067",
+      "files": ["e2e/guide-write-observer.ts", "tests/guide-write-observer.test.ts", "tests/app-proxy.test.ts"],
+      "behavior": "Existing observer immediately records status and later only a sanitized public JSON error code, including nested codes. Cancellation preserves status. Bodies, messages, headers and queries are excluded. Existing app-proxy tests guard absent origin, absent signer and valid account access without a workspace.",
+      "tests": { "passed": 42, "failed": 0, "skipped": 0, "testRunIds": [21024633, 21024634], "worktreeDirty": false },
+      "log": "/dev/shm/tutorial-wi8344-committed-2b6cfb50-20261011.log",
+      "logSha256": "cf1c137155ba4ee337f18ae86623d6e16969c4930c259d93a3c4c81c405d2392",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-2b6cfb50d0-AJJRsx",
+      "ledgerQualification": "Committed Portal test/source root independently verified. testing:runs summary root is null; no summary field is filled in by inference."
+    },
+    "classification": "The isolated fixture did not configure optional companion apps. Account-wide proxies intentionally refuse unavailable origins; workspace selection is not their authority boundary. The communications lesson explains disconnected apps. No workspace gate or proxy permission change is justified.",
+    "limitations": "Diagnostic guards only. Wider full-product journeys must retain actual destination and unavailable-state evidence. No companion deployment, R6 full acceptance, full bootstrap, affected-suite or production shipment claim. Historical Settings2PASS and outstanding WI-10007627/EI-25644552827273063 are preserved."
   },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
