@@ -19,6 +19,8 @@
  * new key name.
  */
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
+import { createHash } from 'node:crypto';
+import { captureElevenLabsCredentialReceipt, type ElevenLabsCredentialReceipt } from './voice-engines/elevenlabs-agent-sync';
 
 export type IntegrationCredentials = Record<string, string>;
 
@@ -45,6 +47,54 @@ export async function readIntegrationKey(name: string): Promise<string | undefin
 export async function writeIntegrationCredentials(
   partial: Record<string, string | null>,
 ): Promise<IntegrationCredentials> {
+  if (Object.keys(partial).some(name => name.startsWith(TRUSTED_RECEIPT_PREFIX))) {
+    throw new Error('Trusted credential receipts require server provisioning');
+  }
+  return updateIntegrationCredentials(partial);
+}
+
+// Outside setup:save_integration_key's SCREAMING_SNAKE_CASE namespace. Receipt
+// metadata is server-only, including its masked form.
+const TRUSTED_RECEIPT_PREFIX = '__papercusp_trusted_elevenlabs_receipt:';
+
+/** Server-only persistence boundary. The provisioning host must authenticate
+ * the create response itself; this function must never be exposed as a route
+ * accepting browser-supplied receipts or provider list metadata. */
+export async function storeElevenLabsCreatedCredential(options: {
+  name: string; serviceAccountUserId: string; createResponse: unknown;
+}): Promise<boolean> {
+  if (!/^[A-Z][A-Z0-9_]{2,254}$/.test(options.name)) return false;
+  const captured = captureElevenLabsCredentialReceipt({ secretRef: `integration:${options.name}`,
+    serviceAccountUserId: options.serviceAccountUserId, createResponse: options.createResponse });
+  if (!captured) return false;
+  await updateIntegrationCredentials({ [options.name]: captured.apiKey,
+    [TRUSTED_RECEIPT_PREFIX + options.name]: JSON.stringify(captured.receipt) });
+  return true;
+}
+
+/** Resolve both halves from ONE encrypted snapshot. This proves local binding,
+ * not current provider permissions; callers still need fresh remote admission. */
+export async function readElevenLabsCredentialPair(name: string): Promise<{
+  apiKey: string; receipt: ElevenLabsCredentialReceipt;
+} | null> {
+  if (!/^[A-Z][A-Z0-9_]{2,254}$/.test(name)) return null;
+  const all = await readAll();
+  const apiKey = all[name];
+  const raw = all[TRUSTED_RECEIPT_PREFIX + name];
+  if (typeof apiKey !== 'string' || !apiKey || typeof raw !== 'string') return null;
+  try {
+    const receipt = JSON.parse(raw);
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+    const captured = captureElevenLabsCredentialReceipt({ secretRef: `integration:${name}`,
+      serviceAccountUserId: receipt.serviceAccountUserId,
+      createResponse: { 'xi-api-key': apiKey, key_id: receipt.keyId } });
+    if (!captured || receipt.secretRef !== captured.receipt.secretRef
+      || receipt.secretSha256 !== createHash('sha256').update(apiKey).digest('hex')) return null;
+    return captured;
+  } catch { return null; }
+}
+
+async function updateIntegrationCredentials(partial: Record<string, string | null>): Promise<IntegrationCredentials> {
   // Snapshot before awaiting the store; callers cannot mutate a pending save.
   const entries = Object.entries(partial);
   return updateOperatorState<IntegrationCredentials>('operator_integration_credentials', {}, (current) => {
@@ -70,6 +120,8 @@ export function maskIntegrationKey(value: string | undefined | null): string | n
 export async function readMaskedIntegrationView(): Promise<Record<string, string | null>> {
   const all = await readAll();
   const out: Record<string, string | null> = {};
-  for (const k of Object.keys(all)) out[k] = maskIntegrationKey(all[k]);
+  for (const k of Object.keys(all)) {
+    if (!k.startsWith(TRUSTED_RECEIPT_PREFIX)) out[k] = maskIntegrationKey(all[k]);
+  }
   return out;
 }
