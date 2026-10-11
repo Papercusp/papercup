@@ -7,6 +7,7 @@
  * mode, schedule, lock timeout, advisory lock, reclaim thresholds) is read from that code
  * here, so a change to any of them fails this test until the page is updated with it.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FLAGS } from '@papercusp/flags';
@@ -76,6 +77,48 @@ describe('pg_textsearch (BM25) configuration page', () => {
     expect(RANK).toContain('to_bm25query(');
     expect(BM25_CORPORA.map(c => c.indexName)).toContain('work_items_bm25');
     expect(naming).toContain('`lexicalLeg()`');
+  });
+
+  // SPEC-P-010: the docs identify the lexical seam as the ONLY entry point for lexical ranking.
+  // Falsifier: a doc names another lexical entry point. The entry points are derived from the
+  // code: every rank.ts export that returns a ranking leg AND is imported by production code.
+  it('names the seam as the only lexical entry point, with exactly the leg functions production code uses (SPEC-P-010)', () => {
+    const legReturning = new Set(
+      [...RANK.matchAll(/export (?:async )?function (\w+)\([^)]*\):\s*(?:Promise<)?LexicalLeg\b/g)].map(m => m[1]!),
+    );
+    const importers = execFileSync(
+      'git',
+      ['grep', '-l', '-E', String.raw`from '([./a-z@-]*/lexical/rank|\./rank)'`, '--', '*.ts', ':!*.test.ts', ':!*.spec.ts'],
+      { cwd: REPO, encoding: 'utf8' },
+    ).trim().split('\n').filter(f => f && !f.endsWith('search/lexical/rank.ts'));
+    const imported = new Set<string>();
+    for (const f of importers) {
+      for (const m of read(f).matchAll(/import\s*\{([^}]*)\}\s*from\s*'[^']*rank'/g)) {
+        for (const name of m[1]!.split(',').map(s => s.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0]!)) imported.add(name);
+      }
+    }
+    const entryPoints = [...legReturning].filter(n => imported.has(n)).sort();
+    // Detector-shaped: the derivation must find the seam's main entry point, or this test is vacuous.
+    expect(entryPoints).toContain('lexicalLeg');
+
+    const fnsIn = (s: string) => [...s.matchAll(/`(\w+)\(\)`/g)].map(m => m[1]!);
+    const sentences = (text: string) => text.split(/(?<=[.:;])\s+(?=[A-Z`])/);
+    const claim = sentences(section('Name the index explicitly in every query')).filter(s => /only entry point/i.test(s));
+    expect(claim, 'exactly one sentence states the only entry point').toHaveLength(1);
+    expect(claim[0]).toContain('`packages/operator-core/lib/search/lexical/rank.ts`');
+    expect([...new Set(fnsIn(claim[0]!))].sort(), 'the entry-point sentence names exactly the leg functions in use').toEqual(entryPoints);
+
+    const ARCH = read(
+      process.env.BM25_ARCH_DOC_PATH ??
+        'apps/operator-docs/src/content/docs/agent-insights/lexical-leg-is-ts-rank-cd-not-bm25.mdx',
+    );
+    for (const [name, text] of [['configuration page', DOC], ['architecture page', ARCH]] as const) {
+      for (const s of sentences(text).filter(x => /entry point|one seam|goes? through/i.test(x))) {
+        for (const fn of fnsIn(s)) {
+          expect(entryPoints, `${name} names \`${fn}()\` as a way into lexical ranking: "${s.slice(0, 160)}"`).toContain(fn);
+        }
+      }
+    }
   });
 
   it('pins manual compaction, the maintenance schedule and the reclaim thresholds to the code', () => {
