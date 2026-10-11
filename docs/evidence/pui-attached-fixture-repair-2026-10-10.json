@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "scope": {
+    "plane": "local current-build fixture",
+    "backend": "claude",
+    "publicRelease": false,
+    "immutableCandidateAcceptance": false
+  },
+  "workItems": [
+    "EI-25629382681124496",
+    "EI-25629013485041838",
+    "WI-10003592"
+  ],
+  "testFile": "packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+  "testFileSha256": "6c0223ca8e731509221d8518c9258cf71f9f71bfb5ec9f54c5694298bf82a3db",
+  "testFileCommit": "6977f24609f59f40b0a790eb04b3f8c3ec5e6d23",
+  "taskId": "0mv2zlv7ifd85ixfkb2",
+  "logPath": ".papercusp/scratch/bash-c40221d3-14b.log",
+  "logSha256": "903cdb8a47190913ab2322fbaa57e6651d0eded9dfd71c7af98b0230caa9077b",
+  "frameworkResultLines": [
+    " Test Files  1 passed (1)",
+    "      Tests  7 passed (7)",
+    "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=9d860ad90e uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-10T22:50:05.668Z skippedTests=0",
+    "[capability:bash] JOB END: status=completed exit=0 at 2026-10-10T22:53:12.728Z — this line was recorded by the transient-service runner; its file-backed sink survives loss of the operator host and is authoritative for durable output.",
+    "[capability:bash] JOB END: status=completed exit=0 at 2026-10-10T22:53:12.789Z — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has been durably recorded yet: the job may still be running, or it may have died before its close handler wrote JOB END. Check capability:bash_output/task ledger; recovery writes JOB DIED after a ledger-confirmed unobserved death."
+  ],
+  "receipt": {
+    "acceptance": "attached-su-identity",
+    "workspaceId": "papercusp-workspace",
+    "harness": "papercusp",
+    "chatId": "b3a25c92-c17e-4145-9fb3-15d4311d1a4d",
+    "ownerId": "su-6099db35-39f4-4f62-a66d-17c82e353fce",
+    "nativeSessionId": "99e57318-d05e-477b-a0df-30ba09ccda64",
+    "requestedModel": "sonnet",
+    "nativeModel": "sonnet[1m]",
+    "actualModel": "sonnet[1m]",
+    "accountRoute": "auto",
+    "toolIdentity": true,
+    "reply": true
+  },
+  "reproductionCommand": "set -euo pipefail\ncd \"$(git rev-parse --show-toplevel)\"\nexport PAPERCUSP_REAL_ATTACHED_ENGINE=1\nexport PAPERCUSP_ATTACHED_TEST_MODEL=sonnet\nexport PAPERCUSP_ATTACHED_TEST_ACCOUNT=auto\nexport PAPERCUSP_ATTACHED_TEST_HARNESS=papercusp\nexport PUI_NATIVE_ACCOUNT_CATALOG=\"$PWD/.papercusp/scratch/pui-account-catalog-47a6-7534f-20261010.json\"\nexport TMPDIR=/tmp/pui-acceptance-7534f\nexport PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core\nexport PC_EXECUTED_SOURCE_MAP_ROOT=\"$PWD\"\nexport PC_EXECUTED_SOURCE_MAP_OUT=/tmp/pui-acceptance-7534f/attached-identity-full-source-map-20261010-2250.json\nexport PC_EXECUTED_SOURCE_MAP_NO_PERSIST=1\nnpm run test:file -- packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+  "fixtureRepairs": [
+    "Dedicated test-owned PostgreSQL and private Hono operator; admin DSN port must match the owned PG process.",
+    "Reuse actual Claude configuration materialization with the private operator bearer; assert advertised protocol tool names before launching the provider.",
+    "Explicit sonnet launch input and real native argv assertion, preserving the exact sonnet[1m] value.",
+    "Answer only the correlated empty-argument coord:whoami approval through the existing card-response HTTP route; unrelated requests fail immediately.",
+    "Maintain six native-card regression checks and redacted pending-card/tool timeout diagnostics."
+  ],
+  "sourceCapture": {
+    "path": "/tmp/pui-acceptance-7534f/attached-identity-full-source-map-20261010-2250.json",
+    "sha256": "377e94c104f7c14ec300dcb8d6dda3c9faad8b5a91061b8678fcf66b11733916",
+    "scope": "repository-worker-vite-original-sources",
+    "status": "changed",
+    "changedSources": [
+      {
+        "path": "packages/operator-core/lib/scratch-gc.ts",
+        "sha256": "7850f971bbb037cf9a3eddb9b1b1f5d4d20256b2b2cb23e6b2c290e72f3a5659",
+        "currentSha256": "61d1288fb3407881b1230ea4562a7bf4cc52d98dc61fe76fd50142376603277b"
+      }
+    ],
+    "missingAtCollectionReasons": 4436,
+    "otherReasons": [
+      "collection-source-mismatch:packages/operator-core/lib/scratch-gc.ts",
+      "source-changed:packages/operator-core/lib/scratch-gc.ts"
+    ]
+  },
+  "limitations": [
+    "The recorded auto value is account routing, not proof of the serving account.",
+    "Shared HEAD moved. Captured repository sources include a changed scratch-gc.ts and dynamic modules absent at collection. This pass is not an immutable commit or exact installed-candidate verdict.",
+    "No BAR adequacy, independent product grading, final candidate approval or public shipment is asserted."
+  ],
+  "nextEvidence": {
+    "archiveSource": "47a681df756563cd9f260b00bb3ad9e20527f796",
+    "archiveSha256": "6d98c2ef536329b2feb3fb00fac6b881a8e9f3e8f1dffc5229c0bc0f33127964",
+    "acceptanceTaskId": "0mv2zua6eub49n6xokb",
+    "acceptanceLogPath": ".papercusp/scratch/bash-563c3668-af7.log",
+    "acceptanceOutPath": "/tmp/pui-acceptance-7534f/candidates/source-47a681df756563cd9f260b00bb3ad9e20527f796/pui-47a6-cache-guard-2256.acceptance.json",
+    "state": "running at launch; consult durable task ledger for current state"
+  }
+}
