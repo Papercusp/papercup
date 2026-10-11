@@ -975,6 +975,7 @@ export async function restorePlanItemStatusForCompensation(input: {
         priorStatus: input.priorStatus,
       }),
   );
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return result.kind === 'busy' ? 'busy' : result.value;
 }
 
@@ -1633,6 +1634,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   );
   markPhase('planWrite');
 
+  if (result.kind === 'refused') {
+    const claimRollback = await releaseNewWipClaim();
+    return { slug: it.slug, itemId: it.itemId, error: result.value.code, ...result.value, ...claimRollback };
+  }
   if (result.kind === 'busy') {
     const claimRollback = await releaseNewWipClaim();
     return {
