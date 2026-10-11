@@ -681,7 +681,23 @@ describe('component author payouts on the existing settlement resource', () => {
     expect(await verifyLedgerStream(h.db, 'treasury.transfers')).toMatchObject({ ok: true, unchainedCount: 0 });
   });
 
-  it.each(['missing', 'other-chain', 'not-allowlisted', 'cap', 'mainnet', 'paused', 'not-final', 'tampered'] as const)(
+  it('binds each author into the signed transfer identity even when wallet and amount are identical', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    h.raw.prepare('UPDATE wallet_bindings SET wallet_address = ? WHERE principal_id = ?').run(ALICE, 'gh:12');
+    const response = await payout(h);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { transfers: Array<{ payeeId: string; safeTxHash: string; proofEventId: string }> };
+    expect(submitTransfer.mock.calls.map(([transfer]) => [transfer.recipient, transfer.amountMicros]))
+      .toEqual([[ALICE, 250n], [ALICE, 250n]]);
+    expect(body.transfers.map((transfer) => transfer.payeeId)).toEqual(['gh:11', 'gh:12']);
+    expect(new Set(body.transfers.map((transfer) => transfer.safeTxHash)).size).toBe(2);
+    expect(new Set(body.transfers.map((transfer) => transfer.proofEventId)).size).toBe(2);
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['missing', 'other-chain', 'not-allowlisted', 'cap', 'mainnet', 'paused', 'not-final', 'tampered', 'no-safe'] as const)(
     'refuses %s evidence before any author transfer', async (failure) => {
       const { adapter, submitTransfer } = fakeTreasuryAdapter();
       const h = await prepared({}, adapter);
@@ -692,6 +708,7 @@ describe('component author payouts on the existing settlement resource', () => {
       if (failure === 'mainnet') await recordDeployment(h.api, h.env, { network: 'mainnet' });
       if (failure === 'paused') h.raw.prepare('UPDATE treasury_transfer_gate SET open = 0').run();
       if (failure === 'not-final') h.raw.prepare("UPDATE settlement_batches SET state = 'claimed', finalized_at_ms = NULL WHERE batch_id = ?").run(h.batchId);
+      if (failure === 'no-safe') h.raw.prepare('DELETE FROM treasury_safe_deployments').run();
       if (failure === 'tampered') {
         const row = h.raw.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?').get(h.batchId) as { allocations_micros: string };
         const allocations = JSON.parse(row.allocations_micros);

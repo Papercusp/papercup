@@ -9,6 +9,7 @@ import {
   identityPerUseOfferTerms,
   identityReleaseSkuRef,
   parseIdentityMarkupPriceVersion,
+  identityMarkupPriceVersion,
   parseIdentityReleaseSkuRef,
   quoteIdentityInferenceTurn,
   verifyIdentityPerUseOffer,
@@ -128,6 +129,24 @@ describe('identityPerUseOfferTerms', () => {
     expect(verifyIdentityPerUseOffer({ ...offered.terms, priceVersion: offered.terms.priceVersion + '!' })).toMatchObject({ ok: false });
     expect(identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies: [] }))
       .toMatchObject({ ok: false, code: 'invalid-split' });
+  });
+
+  it('refuses an oversized exact component closure while accepting a populated closure below the term limit', () => {
+    const components = (count: number) => Array.from({ length: count }, (_, i) => ({
+      packageKind: 'blueprint', ref: `component-${i}-${'x'.repeat(384)}`, revision: '1.0.0',
+      contentHash: 'a'.repeat(64), author: 'alice',
+    }));
+    const valid = identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies: components(80) });
+    if (!valid.ok) throw new Error(valid.detail);
+    expect(valid.terms.priceVersion.length).toBeLessThanOrEqual(64_000);
+    expect(verifyIdentityPerUseOffer(valid.terms)).toMatchObject({ ok: true });
+    const oversizedPins = components(160);
+    const oversized = identityMarkupPriceVersion({ markupBps: 2000, creatorBps: 6000, componentBps: 3000,
+      componentDependencies: oversizedPins });
+    expect(oversized.length).toBeGreaterThan(64_000);
+    expect(parseIdentityMarkupPriceVersion(oversized)).toBeNull();
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies: oversizedPins }))
+      .toMatchObject({ ok: false, code: 'invalid-split', detail: expect.stringContaining('size limit') });
   });
 
   it('defaults to the suggested 20% markup with the whole seller share to the creator', () => {

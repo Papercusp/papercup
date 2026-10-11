@@ -43,11 +43,29 @@ describe('identity dependency author split (P-019)', () => {
     }
   });
 
+  it('assigns equal remainders by code-unit author order rather than locale or input order', () => {
+    const componentDependencies = [dependency('accent', 'é'), dependency('lower', 'a'), dependency('upper', 'Z')];
+    for (const pins of [componentDependencies, [...componentDependencies].reverse()]) {
+      const tied = revenueSplitManifest({ ...manifest, componentDependencies: pins });
+      for (const [gross, authors] of [
+        [2n, { Z: 1n, a: 0n, é: 0n }],
+        [3n, { Z: 1n, a: 1n, é: 0n }],
+        [19n, { Z: 6n, a: 6n, é: 5n }],
+      ] as const) {
+        const result = settle(gross, tied);
+        if (!result.ok) throw new Error(result.detail);
+        expect(result.receipt.componentAllocationsMicros).toEqual(authors);
+        expect(reconcileSettlement({ receipt: result.receipt, splitManifest: tied }).ok).toBe(true);
+      }
+    }
+  });
+
   it('pins exact dependency versions and authors while ignoring enumeration order', () => {
     const reversed = revenueSplitManifest({ ...manifest, componentDependencies: [...dependencies].reverse() });
     expect(reversed.manifestHash).toBe(manifest.manifestHash);
     expect(settle(19n, reversed)).toEqual(settle(19n));
-    for (const changed of [{ ...dependencies[0], revision: '2.0.0' },
+    for (const changed of [{ ...dependencies[0], packageKind: 'pack' }, { ...dependencies[0], ref: 'other-base' },
+      { ...dependencies[0], revision: '2.0.0' },
       { ...dependencies[0], contentHash: 'b'.repeat(64) }, { ...dependencies[0], author: 'mallory' }]) {
       expect(revenueSplitManifest({ ...manifest, componentDependencies: [changed, ...dependencies.slice(1)] }).manifestHash)
         .not.toBe(manifest.manifestHash);
@@ -77,6 +95,20 @@ describe('identity dependency author split (P-019)', () => {
 });
 
 describe('DAO revenue settlement', () => {
+  it('preserves the legacy manifest digest and anonymous component allocation without dependency pins', () => {
+    // Golden digest of the pre-components canonical body, independent of the
+    // manifest writer. Adding an empty components field must change this test.
+    const legacy = revenueSplitManifest({ version: 'legacy-v1', sharesBps: split.sharesBps });
+    expect(legacy.manifestHash).toBe('sha256:81e487aa2aa09c698551f3c1fee3b731f94c870d8c2c0c798a63c4c07c50bfa3');
+    expect(legacy).not.toHaveProperty('componentDependencies');
+    const result = settleRevenue({ settlementId: 'legacy', grossMicros: 100n, providerCostMicros: 0n,
+      splitManifest: legacy, daoTreasury: 'dao' });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.receipt).not.toHaveProperty('componentAllocationsMicros');
+    expect(result.receipt.allocationsMicros.component).toBe(10n);
+    expect(reconcileSettlement({ receipt: result.receipt, splitManifest: legacy }).ok).toBe(true);
+  });
+
   it('allocates integer stablecoin micros after provider cost and assigns rounding remainder to DAO', () => {
     const result = settleRevenue({ settlementId: 's-1', grossMicros: 1_000_001n, providerCostMicros: 1n, splitManifest: split, daoTreasury: '0xdao' });
     expect(result.ok).toBe(true);

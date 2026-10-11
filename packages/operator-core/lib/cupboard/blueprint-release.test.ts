@@ -79,6 +79,10 @@ describe('immutable blueprint release lifecycle', () => {
     const identity = pinPackageInput({ packageKind: 'blueprint', ref: 'identity', revision: '1.0.0', files: [],
       value: { publisher: { id: 'creator' } }, dependencies: [reference(component)] });
     const archive = buildBlueprintReleaseArchive([identity, component], 'identity');
+    expect(() => blueprintReleaseRevenueDependencies({ ...archive,
+      root: { ...archive.root, contentHash: 'f'.repeat(64) } })).toThrow(/retained release/);
+    expect(() => blueprintReleaseRevenueDependencies({ ...archive,
+      package: { ...archive.package, rootHash: 'f'.repeat(64) } })).toThrow(/retained release/);
     expect(() => blueprintReleaseRevenueDependencies(archive)).toThrow(/no pinned publisher id/);
     archive.pins.find((pin) => pin.ref === 'component')!.value = { publisher: { id: 'forged' } };
     expect(() => blueprintReleaseRevenueDependencies(archive)).toThrow(/hash/i);
@@ -106,6 +110,20 @@ describe('immutable blueprint release lifecycle', () => {
       .rejects.toThrow(/retained closure hash mismatch/);
     await expect(readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '9.0.0' }))
       .rejects.toThrow(/one exact retained release/);
+  });
+
+  it('refuses two distinct retained releases with the same version instead of selecting the active one', async () => {
+    const first = await source('1.0.0', 'first release', 2);
+    await commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity', version: '1.0.0',
+      source: 'https://github.com/example/identity', pins: [first.pin] });
+    expect(await readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' })).toEqual([]);
+    const second = await source('1.0.0', 'different bytes at the same version', 2);
+    await commitBlueprintRelease({ installedDir, sourceDir: second.dir, id: 'identity', version: '1.0.0',
+      source: 'https://github.com/example/identity', pins: [second.pin] });
+    const lifecycle = await readBlueprintLifecycle(installedDir, 'identity');
+    expect(lifecycle.releases.map((release) => release.version)).toEqual(['1.0.0', '1.0.0']);
+    await expect(readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' }))
+      .rejects.toThrow(/one exact retained release; found 2/);
   });
 
   it('stores mode policy approval only for the exact moderated artifact', async () => {
