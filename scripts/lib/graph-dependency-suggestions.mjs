@@ -233,8 +233,9 @@ function packageSpecifierResolves(spec, imported, packages) {
 
 /**
  * Does `source` (the importer's current text) actually import `imported`? Relative specifiers
- * by resolution; non-relative ones by path tail, or — when `packageNameAt` is supplied — by
- * re-resolving a workspace-package specifier against the enclosing package's manifest.
+ * by resolution; explicit @/ and ~/ directory aliases by path tail; package specifiers
+ * only by re-resolving against the enclosing package's manifest. A package's path tail
+ * cannot identify its owning workspace (WI-6554700010008389).
  * @param {string} source
  * @param {string} importer
  * @param {string} imported
@@ -246,8 +247,8 @@ export function sourceCorroborates(source, importer, imported, packageNameAt = n
   for (const spec of extractSpecifiers(source)) {
     if (spec.startsWith("./") || spec.startsWith("../")) {
       if (relativeCandidates(importer, spec).has(imported)) return true;
-    } else if (aliasTailMatches(spec, imported)) {
-      return true;
+    } else if (spec.startsWith("@/") || spec.startsWith("~/")) {
+      if (aliasTailMatches(spec, imported)) return true;
     } else if (packageNameAt !== null) {
       packages ??= enclosingPackages(imported, packageNameAt);
       if (packageSpecifierResolves(spec, imported, packages)) return true;
