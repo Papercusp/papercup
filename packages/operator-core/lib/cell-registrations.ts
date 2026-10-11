@@ -2932,7 +2932,7 @@ export const VERIFICATION_HEALTH_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'plans:verification-health', path: 'health.breaches' },
   shape:
-    '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
+    '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, unreachablePlans, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, staleAcceptanceScopeExcluded, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
 };
 
 export const BUILTIN_CELLS: CellSpec[] = [
