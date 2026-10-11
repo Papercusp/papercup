@@ -179,6 +179,34 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
         (workspace_id, harness_slug, feature_id, item_kind, status, goal_id, updated_ts, payload)
       VALUES (${WS}, 'papercusp', 'WI-report-old-wall', 'task', 'done', ${goal}, ${Date.parse(t0)},
               ${sql.json({ needsOwnerAction: true, ownerAsk: 'obsolete approval' })})`;
+    // EI-25697679635517900: production owner asks are active human blockers,
+    // without ownerAction/ownerAsk. The old deployed query lost those actions.
+    const blockerActions = [
+      { ref: 'WI-report-github', summary: 'Register the GitHub App and set the three Worker secrets',
+        nextVerb: 'Register the App, set its secrets, and install it on the mirrors' },
+      { ref: 'WI-report-release', summary: 'Authorize the Worker bundle deploy or rescope the acceptance bars',
+        nextVerb: 'Record the release decision before deploying the bundle' },
+      { ref: 'WI-report-inference', summary: '',
+        nextVerb: 'Reply with a request/USD cap or decline the paid quality fixture and startup experiment' },
+    ];
+    for (const wall of blockerActions) {
+      await sql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, goal_id, updated_ts, payload)
+        VALUES (${WS}, 'papercusp', ${wall.ref}, 'task', 'needs-human', ${goal}, ${Date.parse(t2)},
+          ${sql.json({ externalBlockers: [
+            { kind: 'human', status: 'cleared', summary: 'superseded owner ask', createdAt: t0 },
+            { kind: 'human', status: 'active', summary: wall.summary, nextVerb: wall.nextVerb, createdAt: t2 },
+          ] })})`;
+    }
+    // Distinguish missing stored asks from a reader that ignores the blocker
+    // writer's shape: the legacy expression loses all three on these SAME rows.
+    const legacy = await sql`SELECT feature_id,
+      COALESCE(NULLIF(payload->>'ownerAction', ''), NULLIF(payload->>'ownerAsk', ''),
+        'open this work item for the exact owner action') AS action
+      FROM harness_shared.work_items WHERE workspace_id = ${WS} AND goal_id = ${goal}
+        AND feature_id = ANY(${blockerActions.map((wall) => wall.ref)}::text[])`;
+    expect(legacy).toHaveLength(blockerActions.length);
+    expect(legacy.every((wall) => wall.action === 'open this work item for the exact owner action')).toBe(true);
     await sql`
       INSERT INTO harness_shared.goal_pots
         (workspace_id, goal_id, harness_slug, role, kill_criterion, removed_at)
@@ -206,7 +234,12 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
     expect(unread?.reporting?.draft.fields.cost).toContain('340c / 1000c; coverage=measured; source=goal-lineage-rollup');
     expect(unread?.reporting?.draft.fields.ownerWalled).toContain('WI-report-wall: provide the domain credential');
     expect(unread?.reporting?.draft.fields.ownerWalled).not.toContain('obsolete approval');
-    expect(unread?.queue.needsHuman).toBe(1);
+    for (const wall of blockerActions) {
+      expect(unread?.reporting?.draft.fields.ownerWalled).toContain(`${wall.ref}: ${wall.summary || wall.nextVerb}`);
+    }
+    expect(unread?.reporting?.draft.fields.ownerWalled).not.toContain('superseded owner ask');
+    expect(unread?.reporting?.draft.fields.ownerWalled).not.toContain('open this work item');
+    expect(unread?.queue.needsHuman).toBe(4);
     expect(unread?.reporting?.draft.fields.killed).toContain('pot:papercusp');
     expect(unread?.reporting?.draft.fields.moved).toContain('completion unverified (artifact unread)');
     expect(unread?.reporting?.draft.unreadArtifacts).toEqual(expect.arrayContaining([
