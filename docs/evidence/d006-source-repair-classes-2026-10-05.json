@@ -2447,6 +2447,60 @@
       "class": "missing-schema",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "historicalQualification": {
+        "observedAt": "2026-10-11T21:21:00Z",
+        "originalCensus": "Immutable file-census records2collected/2executed/1failed/0skipped. Original clean receipt20746981 and dirty20766460 name column d.satisfaction does not exist in the kill-authority/readiness case.",
+        "existingAccountableRepair": {
+          "item": "WI-10006495",
+          "plan": "composition-rig-canonical-schema-2026-10-06#P-002",
+          "state": "done",
+          "completionAuthority": "committed",
+          "recordedScope": "Actual composition cells now use createOrgTestDb's maintained migration-keyed factory, preserving original seed/authority/HLC/CDC/federation contracts. Terminal record retains focused real-cell and caught mutation proof; no terminal test was replayed.",
+          "relatedOpenItem": "WI-10005120",
+          "relatedOpenScope": "Historical layered fixture repair records the satisfaction gap but remains open; do not silently dispose it or infer its unrelated residue is finished.",
+          "differentTerminalScope": "EI-21064357831596389 covers plan_items/watchdog_ticks/outbox/cursor gaps, not the original satisfaction failure."
+        },
+        "cleanStoredReceipts": [
+          {
+            "id": 21104234,
+            "passed": 2,
+            "failed": 0,
+            "skipped": 0,
+            "caseCoverage": "Both original partition and kill-authority cases are present in passedCaseTitles."
+          },
+          {
+            "id": 21104095,
+            "passed": 9,
+            "failed": 0,
+            "skipped": 0,
+            "caseCoverage": "Real two-cell schema/readiness guards include dropping satisfaction, observing42703 from the real predicate, and verifying rollback restoration."
+          },
+          {
+            "id": 21104202,
+            "passed": 5,
+            "failed": 0,
+            "skipped": 0,
+            "caseCoverage": "Canonical-template controls include the satisfaction column, independent cells, original seed constraints, RLS and actual CDC/stamp triggers."
+          }
+        ],
+        "receiptScope": "All three are clean, nonscratch, literal-file local integration receipts at f419975deb2dbad5228f3499e51db32238f3be5b; no selector or collection failure. Before/after runtime capture is not-configured. These are retained stored executions, not fresh tests.",
+        "repositoryComparison": {
+          "canonicalAdoptionCommit": "2763fadb52",
+          "testSha256": "c8cd788e7ee718bc0b87f2a4e5347973e2d1fce7c72f85657a9320fcd65ba1ca",
+          "rigSha256": "8bd9ee7629dd7325dbadb1e28baa146738b2fc3f43e6122a4c4b8995736ea540",
+          "comparedFiles": [
+            "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+            "packages/operator-core/lib/shared-pot-loop/composition-rig.ts",
+            "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+            "packages/operator-core/lib/shared-pot-loop/composition-rig-canonical-template.integration.test.ts",
+            "packages/operator-core/lib/work-items.ts",
+            "packages/operator-core/test/_org-test-db.ts"
+          ],
+          "matchesCleanReceiptCommit": true,
+          "scope": "Selected repository-byte equality only. Original/current actual loaded imports, full transitive graph, configuration, applied schema and environment are not inferred."
+        },
+        "limits": "Historical source/terminal/clean focused control qualification only. Preserve this row open-unknown,124unique/33focused/20peer/71unknown and all final readiness/acceptance/shipment limits; independent D006/P004 final TEST and D011/P003 custody remain separate."
+      },
       "lines": [
         14420
       ]
