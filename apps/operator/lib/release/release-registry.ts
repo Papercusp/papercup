@@ -482,7 +482,7 @@ export async function recordRelease(
       (${workspaceId}, ${row.version}, ${row.channel}, ${row.cutAt},
        ${row.publishedAt}, ${row.changelogMd},
        ${sql.array(row.workItemIds)}, ${sql.array(row.planSlugs)},
-       ${sql.json(row.artifacts as unknown as object)},
+       ${sql.json(row.artifacts as unknown as Parameters<Sql['json']>[0])},
        ${row.gitSha}, ${row.cutBy}, ${row.notes})
     ON CONFLICT (workspace_id, channel, version) DO UPDATE SET
       cut_at        = EXCLUDED.cut_at,
