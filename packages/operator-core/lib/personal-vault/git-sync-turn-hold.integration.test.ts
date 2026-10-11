@@ -42,7 +42,8 @@ const RESPAWN = 'su-turn-respawned';
 const NO_SESSION = 'su-turn-no-session';
 const NEVER_JOURNALED = 'su-turn-never-journaled';
 const OLD_JOURNAL = 'su-turn-old-journal';
-const OWNERS = [LIVE, LAG, NULL_TS, ENDED, RESPAWN, NO_SESSION, NEVER_JOURNALED, OLD_JOURNAL];
+const LONG_TURN = 'su-turn-long-turn';
+const OWNERS = [LIVE, LAG, NULL_TS, ENDED, RESPAWN, NO_SESSION, NEVER_JOURNALED, OLD_JOURNAL, LONG_TURN];
 
 let org: OrgTestDb;
 let sql: postgres.Sql;
@@ -135,6 +136,14 @@ beforeAll(async () => {
   await session(OLD_JOURNAL, null);
   await turnEnd(OLD_JOURNAL, ago(3 * 24 * 60), ago(3 * 24 * 60));
   await edit(OLD_JOURNAL, REPO, 'long-turn.ts', ago(3));
+
+  // LONG_TURN: one turn, now past the 60-minute cap, edited a source early and its
+  // importer recently. D-005: the cap is per turn, so BOTH are released together; a
+  // per-edit cap would commit source.ts and keep importer.ts held.
+  await session(LONG_TURN, null);
+  await turnEnd(LONG_TURN, ago(90), ago(90));
+  await edit(LONG_TURN, REPO, 'source.ts', ago(65));
+  await edit(LONG_TURN, REPO, 'importer.ts', ago(10));
 });
 
 afterAll(async () => {
@@ -181,12 +190,20 @@ describe('readTurnHoldings (real Postgres)', () => {
     ]);
   });
 
-  it('releases an edit once it is older than the maximum age', async () => {
-    // A 7-minute cap drops recent.ts (10 min) and mid-turn.ts's older-than-cap rows
-    // cannot resurrect it; the 5-minute and 1-minute edits remain.
+  it('releases a turn\'s files together once the turn outlives the cap, never one at a time (D-005)', async () => {
+    const held = await heldPaths();
+    // Neither file of the over-cap turn is held: they commit in the same run.
+    expect(held.filter((p) => p.startsWith(`${LONG_TURN} `))).toEqual([]);
+    // Positive control: a journaling owner within the cap is still held.
+    expect(held).toContain(`${LIVE} mid-turn.ts`);
+  });
+
+  it('measures the cap from the turn\'s OLDEST edit, so a newer edit cannot keep the turn held', async () => {
+    // A 7-minute cap: LIVE edited mid-turn.ts 8 min ago (and again 5 min ago), so its
+    // whole turn is released; NO_SESSION's 10-minute edit releases it too. Turns whose
+    // every edit is within 7 minutes stay held.
     expect(await heldPaths({ maxAgeMs: 7 * 60_000 })).toEqual([
       `${LAG} next-turn.ts`,
-      `${LIVE} mid-turn.ts`,
       `${NULL_TS} null-ts-after.ts`,
       `${OLD_JOURNAL} long-turn.ts`,
       `${RESPAWN} respawned.ts`,
