@@ -8,6 +8,7 @@
  * deployed control plane uses.
  */
 import { EventEmitter, once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
@@ -679,7 +680,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     }
   });
 
-  it.each(['disconnect', 'rotation'] as const)('keeps native WebSocket relay tenant-bound through %s with persisted credentials', async (ending) => {
+  it.each(['disconnect', 'rotation', 'session-expiry', 'session-revocation', 'role-change', 'membership-revocation'] as const)('keeps native WebSocket relay tenant-bound through %s with persisted credentials', async (ending) => {
     // Compose the actual HTTP upgrade handler with the migrated two-tenant
     // runtime. Provider classification is synthetic; auth, ticket consumption,
     // relay frames and close handshakes cross real PostgreSQL and loopback TCP.
@@ -725,8 +726,25 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         await once(socket, 'open');
         return peer;
       };
+      const rechecksAuthority = ending !== 'disconnect' && ending !== 'rotation';
+      let channelSession = sessionA;
+      if (rechecksAuthority) {
+        // Change a dedicated membership, so the shared A fixture and later
+        // acceptance cases retain their original permission-version binding.
+        const userId = randomUUID();
+        await sql`
+          INSERT INTO papercusp_auth.hosted_users (id, primary_email, display_name)
+          VALUES (${userId}::uuid, ${`${userId}@example.test`}, 'Channel authority probe')
+        `;
+        await sql`
+          INSERT INTO papercusp_auth.organization_memberships
+            (organization_id, user_id, role, status, authority, created_via)
+          VALUES (${ORG_A}::uuid, ${userId}::uuid, 'owner', 'active', 'papercusp', 'organization_bootstrap')
+        `;
+        channelSession = await createSession(plane, userId, ORG_A, WORKSPACE_A, ending);
+      }
       const tenants = [
-        { session: sessionA, workspaceId: WORKSPACE_A, hostId: HOST_A, routeLabel: `network-a-${ending}` },
+        { session: channelSession, workspaceId: WORKSPACE_A, hostId: HOST_A, routeLabel: `network-a-${ending}` },
         { session: sessionB, workspaceId: WORKSPACE_B, hostId: HOST_B, routeLabel: `network-b-${ending}` },
       ];
       const connections = [];
@@ -743,7 +761,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         const issueTicket = async () => (await post(`/hosted/workspaces/${tenant.workspaceId}/connectors/session-ticket`, tenant.session,
           { ...binding, audience: 'workspace-operator' }) as { ticket: string }).ticket;
         const ticket = await issueTicket();
-        const browser = await dial(`${socketUrl}?ticket=${ticket}`, tenant.routeLabel);
+        const browser = await dial(`${socketUrl}?ticket=${ticket}${rechecksAuthority ? '&kind=operator-http' : ''}`, tenant.routeLabel);
         await vi.waitFor(() => expect(browser.frames).toContainEqual(expect.objectContaining({
           type: 'session.bound', binding: expect.objectContaining({
             organizationId: tenant.session.organizationId, customerWorkspaceId: tenant.workspaceId, hostedSessionId: tenant.session.id,
@@ -754,6 +772,37 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         connections.push({ tenant, host, browser, channelId, ticket, credential, issueTicket });
       }
       const [a, b] = connections;
+      const authorize = async (connection: typeof a) => {
+        const requestId = randomUUID();
+        // Subject-shaped fields from the connector must never become authority.
+        // Only the server's consumed ticket and current persisted records may.
+        connection.host.socket.send(JSON.stringify({ type: 'session.authorize', channelId: connection.channelId, requestId,
+          userId: USER_B, organizationId: ORG_B, customerWorkspaceId: WORKSPACE_B,
+          hostedSessionId: sessionB.id, permissions: ['*'] }));
+        await vi.waitFor(() => expect(connection.host.frames).toContainEqual(expect.objectContaining({
+          type: 'session.authorized', channelId: connection.channelId, requestId,
+        })));
+        return connection.host.frames.find((frame) => frame.type === 'session.authorized' && frame.requestId === requestId)!.authority;
+      };
+      const expectBoundAuthority = (authority: unknown, connection: typeof a) => {
+        expect(authority).toEqual({
+          userId: connection.tenant.session.userId, sessionId: connection.tenant.session.id,
+          sessionVersion: connection.tenant.session.permissionVersion,
+          controlPlaneWorkspaceId: CONTROL, organizationId: connection.tenant.session.organizationId,
+          customerWorkspaceId: connection.tenant.workspaceId,
+          permissions: expect.arrayContaining(['workspace:operate']),
+        });
+        expect((authority as { permissions: string[] }).permissions).not.toContain('*');
+      };
+      if (rechecksAuthority) {
+        const foreignRequestId = randomUUID();
+        b.host.socket.send(JSON.stringify({ type: 'session.authorize', channelId: a.channelId, requestId: foreignRequestId }));
+        // The valid same-socket exchange is a processing barrier: a foreign
+        // channel is silently refused, rather than yielding an authority grant.
+        expectBoundAuthority(await authorize(b), b);
+        expect(b.host.frames.some((frame) => frame.requestId === foreignRequestId)).toBe(false);
+        expectBoundAuthority(await authorize(a), a);
+      }
       const replay = new WebSocket(`${socketUrl}?ticket=${a.ticket}`, { headers: { host: `${a.tenant.routeLabel}.workspaces.papercusp.com` } });
       const replayResult = new Promise<number>((resolve, reject) => {
         replay.once('unexpected-response', (_request, response) => {
@@ -765,18 +814,20 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       });
       try { expect(await replayResult).toBe(401); } finally { replay.terminate(); }
 
-      const input = { type: 'pty.input', data: 'dGVuYW50LWE=' };
+      const input = rechecksAuthority
+        ? { type: 'http.request', requestId: randomUUID(), method: 'GET', path: '/api/health' }
+        : { type: 'pty.input', data: 'dGVuYW50LWE=' };
       a.browser.socket.send(JSON.stringify(input));
       await vi.waitFor(() => expect(a.host.frames).toContainEqual({ type: 'relay', channelId: a.channelId, payload: input }));
-      const outputA = { type: 'pty.output', data: 'cmVzcG9uc2UtYQ==' };
+      const outputA = { type: rechecksAuthority ? 'http.response' : 'pty.output', data: 'cmVzcG9uc2UtYQ==' };
       a.host.socket.send(JSON.stringify({ type: 'relay', channelId: a.channelId, payload: outputA }));
       await vi.waitFor(() => expect(a.browser.frames).toContainEqual(outputA));
 
       // A same-socket valid response is a processing barrier for the preceding
       // forged cross-tenant channel id, so absence is not a timing-only check.
-      const foreignOutput = { type: 'pty.output', data: 'Zm9yZWlnbi1zZWNyZXQ=' };
+      const foreignOutput = { type: rechecksAuthority ? 'http.response' : 'pty.output', data: 'Zm9yZWlnbi1zZWNyZXQ=' };
       b.host.socket.send(JSON.stringify({ type: 'relay', channelId: a.channelId, payload: foreignOutput }));
-      const outputB = { type: 'pty.output', data: 'cmVzcG9uc2UtYg==' };
+      const outputB = { type: rechecksAuthority ? 'http.response' : 'pty.output', data: 'cmVzcG9uc2UtYg==' };
       b.host.socket.send(JSON.stringify({ type: 'relay', channelId: b.channelId, payload: outputB }));
       await vi.waitFor(() => expect(b.browser.frames).toContainEqual(outputB));
       expect(a.browser.frames).not.toContainEqual(foreignOutput);
@@ -789,15 +840,49 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         await vi.waitFor(() => expect(reconnected.frames).toContainEqual(expect.objectContaining({ type: 'session.bound', role: 'controller' })));
         a.host.socket.close();
         await vi.waitFor(() => expect(reconnected.close).toEqual({ code: 4412, reason: 'connector_disconnected' }));
-      } else {
+      } else if (ending === 'rotation') {
         await post(`/hosted/workspaces/${WORKSPACE_A}/connectors/rotate`, sessionA,
           { hostId: HOST_A, routeLabel: `network-a-${ending}-next`, transport: 'websocket' });
         await vi.waitFor(() => {
           expect(a.browser.close).toEqual({ code: 4001, reason: 'connector_rotated' });
           expect(a.host.close).toEqual({ code: 4001, reason: 'connector_rotated' });
         });
+      } else {
+        if (ending === 'session-expiry') {
+          const expired = await sql<Array<{ id: string }>>`
+            UPDATE papercusp_auth.hosted_sessions
+               SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
+             WHERE id = ${channelSession.id}
+            RETURNING id
+          `;
+          expect(expired).toEqual([{ id: channelSession.id }]);
+        } else if (ending === 'session-revocation') {
+          expect(await plane.components.sessionStore.revoke(channelSession.id, 'channel_acceptance_logout')).toBe(true);
+        } else if (ending === 'role-change') {
+          const changed = await sql<Array<{ user_id: string }>>`
+            UPDATE papercusp_auth.organization_memberships
+               SET role = 'member', updated_at = updated_at + interval '2 seconds'
+             WHERE organization_id = ${ORG_A}::uuid AND user_id = ${channelSession.userId}::uuid
+            RETURNING user_id
+          `;
+          expect(changed).toEqual([{ user_id: channelSession.userId }]);
+        } else {
+          const revoked = await sql<Array<{ user_id: string }>>`
+            UPDATE papercusp_auth.organization_memberships
+               SET status = 'revoked', revoked_at = now(), updated_at = updated_at + interval '2 seconds'
+             WHERE organization_id = ${ORG_A}::uuid AND user_id = ${channelSession.userId}::uuid
+            RETURNING user_id
+          `;
+          expect(revoked).toEqual([{ user_id: channelSession.userId }]);
+        }
+        // Keep the already-open channel and original consumed ticket. A fresh
+        // request must re-read authority, rather than reuse the prior grant.
+        expect(await authorize(a)).toBeNull();
+        expectBoundAuthority(await authorize(b), b);
+        expect(a.browser.socket.readyState).toBe(WebSocket.OPEN);
+        expect(a.host.socket.readyState).toBe(WebSocket.OPEN);
       }
-      const survivor = { type: 'pty.output', data: 'c3Vydml2b3I=' };
+      const survivor = { type: rechecksAuthority ? 'http.response' : 'pty.output', data: 'c3Vydml2b3I=' };
       b.host.socket.send(JSON.stringify({ type: 'relay', channelId: b.channelId, payload: survivor }));
       await vi.waitFor(() => expect(b.browser.frames).toContainEqual(survivor));
       expect(b.browser.socket.readyState).toBe(WebSocket.OPEN);
