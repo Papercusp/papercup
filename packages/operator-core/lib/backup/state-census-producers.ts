@@ -111,8 +111,9 @@ export async function accountCredentialCensusProducer(accounts: ReadonlyArray<{ 
     try { await lstat(directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     let root = roots.find(entry => entry.path === directory);
-    if (!root) { root = { id: `account-credential-${roots.length}`, path: directory }; roots.push(root); }
+    if (!root) { root = { id: `account-credential-${roots.length}`, path: directory, fileNames: [] }; roots.push(root); }
     const add = (name: string) => {
+      if (!root!.fileNames!.includes(name)) root!.fileNames!.push(name);
       if (!declarations.some(entry => entry.root === root!.id && entry.name === name)) {
         declarations.push({ kind: 'path', root: root!.id, name, classification: 'secret', producer: 'account-pool-credential-reference' });
       }
@@ -317,10 +318,17 @@ export function mergeNestedCensusRoots(input: { roots: CensusRoot[]; declaration
   const normalized = input.roots.map(root => ({ ...root, path: resolve(root.path) }));
   const contains = (parent: CensusRoot, child: CensusRoot) => {
     const suffix = relative(parent.path, child.path);
-    return !suffix || (!suffix.startsWith(`..${sep}`) && suffix !== '..' && !suffix.startsWith(sep));
+    return !suffix || (parent.fileNames === undefined &&
+      !suffix.startsWith(`..${sep}`) && suffix !== '..' && !suffix.startsWith(sep));
   };
   const roots = normalized.filter((root, index) => !normalized.some((other, otherIndex) =>
-    otherIndex !== index && contains(other, root) && (other.path !== root.path || otherIndex < index)));
+    otherIndex !== index && contains(other, root) && (other.path !== root.path ||
+      (other.fileNames === undefined && root.fileNames !== undefined) ||
+      ((other.fileNames === undefined) === (root.fileNames === undefined) && otherIndex < index))));
+  for (const root of roots) {
+    if (root.fileNames !== undefined) root.fileNames = [...new Set(normalized
+      .filter(other => other.path === root.path).flatMap(other => other.fileNames ?? []))].sort();
+  }
   const declarations = input.declarations.map(declaration => {
     const source = normalized.find(root => root.id === declaration.root);
     if (!source) throw new Error('Census declaration has no root');

@@ -15,6 +15,7 @@ import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
+import { collectStateCensus } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { templateDatabaseCensusDeclarations, maintenanceDatabaseCensusDeclarations } from './state-census-producers';
 import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from './state-census-producers';
@@ -257,7 +258,7 @@ describe('secret census producer adapters', () => {
       for (const name of ['template-gym', 'last-run.json', 'runs.jsonl']) expect(gym).toContain(`'${name}'`);
     } finally { await rm(home, { recursive: true, force: true }); }
   });
-  it('owns referenced auth and atomic refresh files while leaving copied source and unknown siblings visible', async () => {
+  it('inventories referenced auth and atomic refresh files without importing unrelated CLI state', async () => {
     const home = await mkdtemp(join(tmpdir(), 'account-census-'));
     try {
       await mkdir(join(home, 'build'));
@@ -268,9 +269,26 @@ describe('secret census producer adapters', () => {
       const result = await accountCredentialCensusProducer([{ credentialRef: `codex-cli:${home}` }, { credentialRef: `codex-cli:${home}` }, { credentialRef: 'keychain:external' }]);
       expect(result.declarations.map(entry => entry.name).sort()).toEqual(['auth.json', 'auth.json.123.tmp']);
       expect(result.declarations.every(entry => entry.classification === 'secret' && !entry.descendants && !entry.prune)).toBe(true);
+      const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+      expect(census.ok).toBe(true);
+      expect(census.inventory.map(entry => entry.name).sort()).toEqual(['auth.json', 'auth.json.123.tmp']);
+      const full = mergeNestedCensusRoots({ roots: [...result.roots, { id: 'installed', path: home }], declarations: result.declarations });
+      expect(full.roots).toEqual([{ id: 'installed', path: home }]);
+      expect((await collectStateCensus({ ...full, readCatalogs: async () => [] })).residue.map(entry => entry.name)).toContain('unknown');
       const writer = await readFile(new URL('../inference-gateway/codex-oauth-proxy.ts', import.meta.url), 'utf8');
       expect(writer).toContain('`${target}.${process.pid}.tmp`');
     } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('unions external references without allowing a selected parent to hide an installed child', () => {
+    const result = mergeNestedCensusRoots({ roots: [
+      { id: 'a', path: '/external', fileNames: ['auth.json'] },
+      { id: 'b', path: '/external', fileNames: ['token'] },
+      { id: 'child', path: '/external/installed' },
+    ], declarations: [] });
+    expect(result.roots).toEqual([
+      { id: 'a', path: '/external', fileNames: ['auth.json', 'token'] },
+      { id: 'child', path: '/external/installed' },
+    ]);
   });
   it('recognizes exact affected-test cache writers without claiming unrelated files or symlinks', async () => {
     const home = await mkdtemp(join(tmpdir(), 'affected-cache-census-'));
