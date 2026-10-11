@@ -100,6 +100,11 @@ export interface PsuPtyHost {
   quotaBlocked?: boolean;
   /** Start of the current detected quota episode, epoch milliseconds. */
   quotaBlockedSinceMs?: number | null;
+  /** WI-6554700010008412: the reset the provider stated for the current episode
+   * (codex copy), epoch milliseconds; null when none was stated or parsed. The
+   * host releases its latch shortly after this, so a value here means "walled
+   * until then", not wedged. */
+  quotaResetAtMs?: number | null;
   /** Host-observed provider-auth failure (codex only today): the child's own
    * screen shows that its in-memory login can no longer be refreshed, so every
    * turn it runs fails at once. Only a fresh child, which re-reads the shared

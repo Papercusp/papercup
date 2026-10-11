@@ -58,6 +58,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
   ) return 'recovered';
 
   if (
+    // D-014: a latched codex quota wall let one deferred wake through as a probe;
+    // routine whether or not the wall is still up (it re-latches if so).
+    kind === 'quota-block-probe-released' ||
     kind === 'stale-fire-dropped' ||
     kind === 'respawn-rearm-superseded' ||
     kind === 'wake-turn-deferred-for-pending-respawn' ||
