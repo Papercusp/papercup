@@ -2062,11 +2062,20 @@ dependency_generation_subtree_io() {
     }')"
   for p in $pids; do
     [ -r "/proc/$p/io" ] || continue
-    if [ "$mode" = cp-written ]; then
-      [ "$(cat "/proc/$p/comm" 2>/dev/null)" = cp ] || continue
+    if [ "$mode" = cp-written ] || [ "$mode" = copy-written ] || [ "$mode" = copy-read ]; then
+      if [ "$mode" = cp-written ]; then
+        [ "$(cat "/proc/$p/comm" 2>/dev/null)" = cp ] || continue
+      elif [ "$p" != "$root" ]; then
+        case "$(cat "/proc/$p/comm" 2>/dev/null)" in cp|rsync) ;; *) continue ;; esac
+      fi
       # copy_file_range grows write_bytes; userspace/tmpfs copies grow wchar.
-      r="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
-        "/proc/$p/io" 2>/dev/null || true)"
+      if [ "$mode" = copy-read ]; then
+        r="$(awk '/^(rchar|read_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
+          "/proc/$p/io" 2>/dev/null || true)"
+      else
+        r="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
+          "/proc/$p/io" 2>/dev/null || true)"
+      fi
       case "$r" in ''|*[!0-9]*) continue ;; esac
       total=$(( ${total:-0} + r ))
       continue
@@ -2325,7 +2334,7 @@ dependency_generation_check_headroom() {
 # Publish callers return 1 for any copy failure, except the typed infra exits,
 # which pass through so the gate can classify them.
 dependency_generation_copy_failure_rc() {
-  case "$1" in 76|77) printf '%s\n' "$1" ;; *) printf '1\n' ;; esac
+  case "$1" in 73|76|77|130|143) printf '%s\n' "$1" ;; *) printf '1\n' ;; esac
 }
 
 dependency_generation_copy_independent() {
@@ -2336,8 +2345,10 @@ dependency_generation_copy_independent() {
   if [ "$rc" -eq 0 ]; then
     # GNU cp uses a CoW clone where available and a regular independent copy
     # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
-    if ! dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto; then
+    dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 73 ] && [ "$rc" -ne 130 ] && [ "$rc" -ne 143 ]; then
       rm -rf -- "$dest"
+      rc=0
       dependency_generation_copy_with_progress "$src" "$dest" || rc=$?
     fi
   fi
@@ -2348,13 +2359,44 @@ dependency_generation_copy_independent() {
 # WI-10004094: a changed root tree is one ~16 GB `cp -a` on ext4 (no reflink),
 # and it prints nothing. Callers judge liveness by output (green-checkpoint's
 # 30m no-output budget), so a copy starved to ~1 MB/s was killed as a hang.
-# Report the bytes the copy has written, but only when they have grown since the
-# last report: a copy that stops writing stays silent, so it still reads as wedged.
-dependency_generation_copy_with_progress() {
-  local src="$1" dest="$2" reflink="${3:-}" pid rc=0 interval started now next
-  local written='' reported='' read_bytes='' read_reported=0 nap=0.05
+# WI-41095: own the inactivity budget here, where actual copy I/O is visible.
+# Elapsed copy time is not a failure; neither polling nor log output earns
+# progress. Reuse the in-flight stall policy and include rsync checksum readers.
+# A subshell confines cancellation traps to this copy, preserving caller traps.
+dependency_generation_copy_with_progress() (
+  local src="$1" dest="$2" reflink="${3:-}" pid='' rc=0 interval started now next stall_sec last_change
+  local written='' reported='' read_bytes='' read_reported=0 last_written='' last_read='' nap=0.05
+  local copy_epoch='' record fields
+  # Only our unreaped child and its observed descendants are targets. Check
+  # starttime at each signal so an exited/recycled descendant cannot be killed.
+  dependency_generation_stop_copy_child() {
+    local node="$1" expected="$2" record children child epoch
+    local -a fields
+    [ -r "/proc/$node/stat" ] || return 0
+    read -r record < "/proc/$node/stat" || return 0
+    read -ra fields <<< "${record##*) }"
+    [ "${fields[19]:-}" = "$expected" ] || return 0
+    children="$(cat "/proc/$node/task/$node/children" 2>/dev/null || true)"
+    for child in $children; do
+      [ -r "/proc/$child/stat" ] || continue
+      read -r record < "/proc/$child/stat" || continue
+      read -ra fields <<< "${record##*) }"
+      epoch="${fields[19]:-}"
+      [ -n "$epoch" ] && dependency_generation_stop_copy_child "$child" "$epoch"
+    done
+    [ -r "/proc/$node/stat" ] || return 0
+    read -r record < "/proc/$node/stat" || return 0
+    read -ra fields <<< "${record##*) }"
+    [ "${fields[19]:-}" != "$expected" ] || kill -KILL "$node" 2>/dev/null || true
+  }
+  trap 'if [ -n "$pid" ]; then dependency_generation_stop_copy_child "$pid" "$copy_epoch"; wait "$pid" 2>/dev/null || true; fi' EXIT
+  trap 'dependency_generation_log "COPY_CANCELLED signal=TERM path=$dest pid=$pid"; exit 143' TERM
+  trap 'dependency_generation_log "COPY_CANCELLED signal=INT path=$dest pid=$pid"; exit 130' INT
   interval="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
   case "$interval" in ''|*[!0-9]*|0) interval=60 ;; esac
+  stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
+  case "$stall_sec" in ''|*[!0-9]*|0) stall_sec=1500 ;; esac
+  [ "$interval" -le "$stall_sec" ] || interval="$stall_sec"
   if [ "$reflink" = --rsync-checksum ]; then
     # Pinned independent snapshots keep their staging tree across interruption.
     # Checksums, rather than size/mtime, authorize reuse of a completed file.
@@ -2365,7 +2407,13 @@ dependency_generation_copy_with_progress() {
     cp -a "$src" "$dest" &
   fi
   pid=$!
+  if [ -r "/proc/$pid/stat" ]; then
+    read -r record < "/proc/$pid/stat" || true
+    read -ra fields <<< "${record##*) }"
+    copy_epoch="${fields[19]:-}"
+  fi
   started="$(date +%s)"
+  last_change="$started"
   next=$((started + interval))
   while kill -0 "$pid" 2>/dev/null; do
     # Short first naps keep the many small copies fast; long copies poll at 1s.
@@ -2374,17 +2422,26 @@ dependency_generation_copy_with_progress() {
     now="$(date +%s)"
     [ "$now" -ge "$next" ] || continue
     next=$((now + interval))
-    # write_bytes misses tmpfs and wchar misses copy_file_range; either grows
-    # while the copy makes progress, so report the larger.
-    written="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
-      "/proc/$pid/io" 2>/dev/null || true)"
-    case "$written" in ''|*[!0-9]*) continue ;; esac
+    written="$(dependency_generation_subtree_io "$pid" copy-written)"
     read_bytes=0
     if [ "$reflink" = --rsync-checksum ]; then
-      read_bytes="$(awk '/^(rchar|read_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
-        "/proc/$pid/io" 2>/dev/null || true)"
-      case "$read_bytes" in ''|*[!0-9]*) read_bytes=0 ;; esac
+      read_bytes="$(dependency_generation_subtree_io "$pid" copy-read)"
     fi
+    # A disappearing rsync worker changes the measured live population too.
+    # Missing counters never authorize indefinite waiting or fabricate progress.
+    if { [ -n "$written" ] && [ "$written" != "$last_written" ] && [ "$written" != 0 ]; } ||
+       { [ -n "$read_bytes" ] && [ "$read_bytes" != "$last_read" ] && [ "$read_bytes" != 0 ]; }; then
+      last_change="$now"
+    fi
+    last_written="$written"
+    last_read="$read_bytes"
+    kill -0 "$pid" 2>/dev/null || break
+    if [ $((now - last_change)) -ge "$stall_sec" ]; then
+      dependency_generation_log "COPY_STALLED idle=$((now - last_change))s budget=${stall_sec}s elapsed=$((now - started))s pid=$pid written=${written:-unmeasured} read=${read_bytes:-unmeasured} path=$dest"
+      return 73
+    fi
+    case "$written" in ''|*[!0-9]*) written=0 ;; esac
+    case "$read_bytes" in ''|*[!0-9]*) read_bytes=0 ;; esac
     if [ "$written" -gt "${reported:-0}" ] || [ "$read_bytes" -gt "$read_reported" ]; then
       reported="$written"
       read_reported="$read_bytes"
@@ -2396,8 +2453,9 @@ dependency_generation_copy_with_progress() {
     fi
   done
   wait "$pid" || rc=$?
+  pid=''
   return "$rc"
-}
+)
 
 # P-012 (WI-10004927): incremental copy of a CHANGED dependency tree.
 #

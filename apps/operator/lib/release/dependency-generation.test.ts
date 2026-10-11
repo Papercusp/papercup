@@ -3439,6 +3439,59 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     expect(result.stdout).toContain('RC=0');
     expect(result.stderr).toMatch(/checksum read progress: .* read=[1-9]\d*MiB/);
   }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['writes', 'checksum-reads', 'stalled', 'unmeasured'] as const)
+    ('uses measured copy inactivity rather than elapsed time: %s', activity => {
+      const root = mkdtempSync(join(tmpdir(), 'dependency-copy-stall-')); roots.push(root);
+      const wrapper = [
+        'set -uo pipefail; source "$SCRIPT"',
+        'echo 0 > "$ROOT/tick"',
+        'date() { cat "$ROOT/tick"; }',
+        'cp() { echo "$BASHPID" > "$ROOT/child"; while [ ! -f "$ROOT/done" ]; do command sleep 0.01; done; }',
+        'rsync() { cp; }',
+        'dependency_generation_subtree_io() { local tick; tick=$(cat "$ROOT/tick"); if { [ "$ACTIVITY" = writes ] && [ "$2" = copy-written ]; } || { [ "$ACTIVITY" = checksum-reads ] && [ "$2" = copy-read ]; }; then echo $((tick * 1048576)); elif [ "$ACTIVITY" != unmeasured ]; then echo 0; fi; }',
+        'sleep() { local tick; tick=$(( $(cat "$ROOT/tick") + 1 )); echo "$tick" > "$ROOT/tick"; if [ "$tick" -ge 6 ]; then touch "$ROOT/done"; fi; command sleep 0.03; }',
+        'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
+        'printf "RC=%s TICK=%s\\n" "$rc" "$(cat "$ROOT/tick")"',
+        'child=$(cat "$ROOT/child"); if kill -0 "$child" 2>/dev/null; then echo CHILD_ALIVE; kill -KILL "$child"; fi',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', wrapper], { encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+        env: { ...process.env, SCRIPT, ROOT: root, ACTIVITY: activity,
+          DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1', DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('CHILD_ALIVE');
+      if (activity === 'writes' || activity === 'checksum-reads') {
+        expect(result.stdout).toMatch(/RC=0 TICK=[6-9]/);
+        expect(result.stderr).not.toContain('COPY_STALLED');
+      } else {
+        expect(result.stdout).toContain('RC=73 TICK=2');
+        expect(result.stderr).toMatch(/COPY_STALLED idle=2s budget=2s .*path=/);
+      }
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('cancels and reaps only its copy subtree while preserving the caller EXIT trap', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-copy-cancel-')); roots.push(root);
+    const wrapper = [
+      'set -uo pipefail; source "$SCRIPT"',
+      'trap \'echo CALLER_EXIT\' EXIT',
+      'cp() { echo "$BASHPID" > "$ROOT/child"; ps -o ppid= -p "$BASHPID" > "$ROOT/supervisor"; command sleep 60 & nested=$!; echo "$nested" > "$ROOT/nested"; wait "$nested"; }',
+      'dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" & runner=$!',
+      'while [ ! -f "$ROOT/nested" ]; do sleep 0.01; done',
+      // Bash backgrounds a subshell-bodied function through an extra wrapper.
+      // Signal the observed copy supervisor, rather than bypassing its trap.
+      'kill -TERM "$(tr -d \' \' < "$ROOT/supervisor")"; rc=0; wait "$runner" || rc=$?; echo RC=$rc',
+      // A descendant killed before its parent can briefly remain as a zombie;
+      // neither a running copy nor a live nested worker may survive the return.
+      'for file in child nested; do pid=$(cat "$ROOT/$file"); if [ -r "/proc/$pid/stat" ]; then state=$(awk \'{print $3}\' "/proc/$pid/stat"); [ "$state" = Z ] || { echo SURVIVING_WORKER; kill -KILL "$pid"; }; fi; done',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], { encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RC=143');
+    expect(result.stdout).toContain('CALLER_EXIT');
+    expect(result.stdout).not.toContain('SURVIVING_WORKER');
+    expect(result.stderr).toContain('COPY_CANCELLED signal=TERM');
+  }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
 describe('WI-10004825: scratch trees stranded by dead runs are reaped', () => {

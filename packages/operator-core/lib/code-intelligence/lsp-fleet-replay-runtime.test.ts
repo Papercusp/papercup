@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import childProcess from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import ts from 'typescript';
 import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayRepositorySources, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
@@ -625,6 +626,31 @@ describe('independent replay source materialization', () => {
       enumerateSources: () => ['source.ts', 'tsconfig.json', 'compiler.cjs'] });
     expect(copied.compilerEntry).toBe(join(f.target, 'compiler.cjs'));
     expect(readFileSync(copied.compilerEntry!, 'utf8')).toBe(readFileSync(compilerEntry, 'utf8'));
+  });
+  it('delegates snapshot execution to the maintained helper without a whole-copy wall deadline', () => {
+    const f = fixture();
+    const helper = join(f.input.rootPath, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, '#!/usr/bin/env bash\n[ "$1" = snapshot-locked ] && [ "$4" = copy ] || exit 2\nprintf "mode=copy\\ntrees=0\\n" > "$3/.papercusp-pinned-deps"\n');
+    const execute = childProcess.execFileSync;
+    let snapshotCalls = 0;
+    const spy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command: string, args: string[], options: { timeout?: number }) => {
+      if (args.includes('snapshot-locked')) {
+        snapshotCalls++;
+        // Model a still-progressing snapshot past the former deadline without
+        // spending ten minutes. The real helper still executes and stamps it.
+        if (options.timeout !== undefined && options.timeout <= 600_001)
+          throw Object.assign(new Error('snapshot still progressing'), { code: 'ETIMEDOUT' });
+      }
+      return execute(command, args, options);
+    }) as typeof childProcess.execFileSync);
+    syncBuiltinESMExports();
+    try {
+      const copied = materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: undefined });
+      expect(snapshotCalls).toBe(1);
+      expect(readFileSync(join(f.target, '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
+      expect(copied.sourceSnapshot).toBeDefined();
+    } finally { spy.mockRestore(); syncBuiltinESMExports(); }
   });
   it('refuses an external compiler or an escaping alias before creating the source copy', () => {
     const f = fixture();

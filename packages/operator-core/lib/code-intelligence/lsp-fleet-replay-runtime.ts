@@ -695,7 +695,9 @@ dependency_generation_acquire_copy_lock "replay source $3" || exit $?
 trap dependency_generation_release_copy_lock EXIT
 DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom "$2" "$3" "$4"`,
       'replay-source-headroom', join(donor, 'apps/operator/bin/release/dependency-generation.sh'), root, out, String(bytes)],
-    { encoding: 'utf8', timeout: 600_000 });
+    // The maintained copy-lock waiter owns stall/lock diagnostics and bounds.
+    // A second elapsed-time deadline would kill a progressing lock holder wait.
+    { encoding: 'utf8' });
   }))(dependencyDonor, target, sourceBytes);
   options.onProgress?.({ phase: 'source-admitted', completed: 0, total: paths.length });
   // Exclusive creation refuses a previous run; failures leave forensic inputs.
@@ -747,7 +749,10 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
   options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
     execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
-      { stdio: 'inherit', timeout: 600_000 });
+      // The maintained helper detects stalled copy I/O and cleans up its child.
+      // A whole-snapshot deadline includes mutex waits and every dependency tree,
+      // so it can terminate a healthy copy without a completed snapshot stamp.
+      { stdio: 'inherit' });
   }))(dependencyDonor, target);
   const dependencyStamp = join(target, '.papercusp-pinned-deps');
   if (!/^mode=copy$/m.test(readFileSync(dependencyStamp, 'utf8')))
