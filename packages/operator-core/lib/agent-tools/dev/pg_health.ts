@@ -8,6 +8,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  acquireSnapshot,
+  acquireTicketSnapshot,
   describeStoreIdentityMismatch,
   pgResultDiagnosticSnapshot,
   storeIdentityViolation,
@@ -18,10 +20,10 @@ export default defineTool({
   name: 'dev:pg_health',
   profile: 'engineer',
   description:
-    'PostgreSQL version + connection counts and bounded completed-query diagnostics, including a separate recent-failure ring, from this process. localOnly skips the database health query.',
+    'PostgreSQL version + connection counts, bounded completed-query diagnostics and separate registered acquisition snapshots from this process. localOnly skips the database health query.',
   capability: 'intel:read',
   guidance: {
-    when: `Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results without a health query; this does not measure in-flight queries or other processes.`,
+    when: `Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results and registered acquisition tickets without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.`,
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
     seeAlso: [
       'dev:pg_active_queries (currently-running queries)',
@@ -76,6 +78,17 @@ export default defineTool({
     const result = {
       ...(args.localOnly ? {} : await pgHealth()),
       processDiagnostics,
+      acquisitionDiagnostics: {
+        source: 'current-process' as const,
+        pid: process.pid,
+        capturedAt: new Date().toISOString(),
+        coverage: 'registered-acquisition-tickets-in-selected-pools-only' as const,
+        limitations: 'Logical acquisition tickets, not physical connection occupancy. Unregistered clients and other processes are not covered; an empty snapshot does not prove health. Active tickets are bounded and sanitized by the existing registry.',
+        pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => ({
+          counters: acquireSnapshot(pool),
+          tickets: acquireTicketSnapshot(pool),
+        })),
+      },
     };
     // DELIVERY, not detection (plan outage-must-not-be-silent-2026-08-02, D-004).
     //

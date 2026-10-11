@@ -36,6 +36,31 @@ function pgError(code: string): Error & { code: string } {
 }
 
 describe('boundedOrgTxn', () => {
+  it.each([undefined, 'org-admin'])('attributes injected acquisition only with explicit pool %s', async (acquirePool) => {
+    vi.useFakeTimers();
+    const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    try {
+      const caller = vi.fn();
+      const caught = boundedOrgTxn(caller, {
+        client: { begin: () => new Promise(() => {}) } as never,
+        acquirePool,
+        acquireTimeoutMs: 100,
+        acquireRetries: 0,
+      }).catch((error) => error as DbCallDeadlineError);
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await caught;
+      expect(error).toBeInstanceOf(DbCallDeadlineError);
+      expect(error.pool).toBe(acquirePool ?? null);
+      if (acquirePool) expect(error.measured).toMatch(/1 acquisition\(s\) WAITING/);
+      else expect(error.measured).toBeNull();
+      expect(caller).not.toHaveBeenCalled();
+    } finally {
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+
   it('runs fn in the txn, returns its value, and SET LOCALs both timeouts (bound params)', async () => {
     const vals: unknown[] = [];
     const client = fakeClient((_text, v) => vals.push(...v));

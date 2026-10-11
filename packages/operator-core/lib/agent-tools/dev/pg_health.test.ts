@@ -64,6 +64,21 @@ beforeEach(() => {
 });
 
 describe('dev:pg_health completed-result delivery', () => {
+  it('delivers pending acquisition separately from completed results without a database query', async () => {
+    beginAcquire('org-admin');
+    const { data } = await run({ localOnly: true });
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(data.acquisitionDiagnostics).toMatchObject({
+      source: 'current-process',
+      pid: process.pid,
+      coverage: 'registered-acquisition-tickets-in-selected-pools-only',
+    });
+    expect(data.acquisitionDiagnostics.pools[1]).toMatchObject({
+      counters: { pool: 'org-admin', waiting: 1, held: 0 },
+      tickets: { pool: 'org-admin', active: 1, tickets: [{ state: 'waiting' }] },
+    });
+    expect(data.processDiagnostics.pools[1].results).toEqual([]);
+  });
   it('delivers safe current-process records through the public production reader', async () => {
     recordResult();
 

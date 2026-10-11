@@ -326,6 +326,8 @@ export interface BoundedOrgTxnOptions {
   readOnly?: boolean;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
   client?: OrgSql;
+  /** Attribute an injected production client's acquisition to its existing pool registry. */
+  acquirePool?: string;
   /** Cancel in-flight postgres-js queries when the caller abandons this transaction. */
   signal?: AbortSignal;
 }
@@ -348,7 +350,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
   // against the process's org-admin acquisition registry. Production calls use
   // getOrgPg() and therefore share the same measured queue-pressure signal as
   // the other admin-pool callers.
-  const acquirePool = opts.client ? undefined : 'org-admin';
+  const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
   const acquireMs = opts.acquireTimeoutMs ?? DEFAULT_TX_ACQUIRE_DEADLINE_MS;
   let result: unknown;
   try {
