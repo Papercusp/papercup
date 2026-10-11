@@ -7,6 +7,11 @@ import { once } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import type { Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+// Keep the required ecosystem BAR suite on the real subsystem integration paths.
+import '../harness/docs/native-source-change.integration.test';
+import '../agent-tools/plans/native-planning-advice.integration.test';
+import './task-brief.integration.test';
+import './task-brief-ledger.integration.test';
 // Enable the interfaces in this isolated fixture; analysis/transport code is real.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));
 import graphQuery from '../agent-tools/gitnexus/query';
