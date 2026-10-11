@@ -387,6 +387,24 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
     expect(rows.map((r) => r.filename)).toEqual(['954-candidate-exact.sql']);
   });
 
+  it('retains ordered migration preflight progress through actual client cleanup', async () => {
+    h.bootSqlDir = makeSqlDir({ '956-preflight-phases.sql': 'CREATE TABLE harness_shared.boot_preflight_phases (id int);' });
+    await seedMigrationReservations(['956-preflight-phases.sql']);
+    const progress = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let lines: string[] = [];
+    try {
+      const result = await applyPendingMigrationsNow({ broadcast: false });
+      expect(result?.failed).toEqual([]);
+      expect((await bootClient`SELECT to_regclass('harness_shared.boot_preflight_phases') AS relation`)[0].relation).toBeTruthy();
+      lines = progress.mock.calls.map(([line]) => String(line)).filter(line => line.startsWith('[boot-migrate] preflight phase='));
+    } finally { progress.mockRestore(); }
+    const phases = lines.map(line => line.match(/phase=(.*?) elapsedMs=/)?.[1]);
+    expect(phases).toEqual(['read cooldown', 'backup rendezvous', 'apply pending migrations', 'reconcile reservations',
+      'schema drift diagnostics', 'complete', 'close client', 'client closed']);
+    const times = lines.map(line => Number(line.match(/elapsedMs=(\d+)$/)?.[1]));
+    expect(times.every((time, i) => Number.isFinite(time) && time >= 0 && (i === 0 || time >= times[i - 1]))).toBe(true);
+  });
+
   it('applies pending files, collects the broken one in failed, broadcasts, and does not throw', async () => {
     // The wired entry resolves resolveSqlDir() → this dir and builds its own
     // max:1 client from getHarnessAdminUrl() → the test DB (both mocked above).

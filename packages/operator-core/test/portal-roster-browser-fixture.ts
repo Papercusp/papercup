@@ -352,7 +352,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
     // Excalidraw). Use the real production export instead of a fixture alias.
-    conditions: ['browser', 'production'],
+    conditions: ['browser', 'production', ...(input.brainstorm ? ['style'] : [])],
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
     outfile: join(portal, 'private-roster-browser.js'),
     logLevel: 'silent',
@@ -421,9 +421,25 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
   return verifyPrivateWorkspaceBrowserMount(input);
 }
 
-export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
+export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
+  options: { brainstormHydration?: boolean } = {}) {
+  assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+  const writes: Array<{ surface: string; body: any }> = [];
+  const reads: Array<{ name: string | null; args: any }> = [];
+  let releaseHydration!: () => void;
+  const hydration = new Promise<void>(done => { releaseHydration = done; });
+  const savedMap = 'preflight-saved-map';
+  const savedShape = 'preflight-saved-shape';
+  const savedRow = { harnessSlug: input.selected, phase: 'staging', content: 'preflight-saved-text', updatedAt: 1,
+    mindmap: { nodes: [{ id: 'root', type: 'mind', position: { x: 100, y: 200 },
+      data: { text: savedMap, kind: 'idea' } }], edges: [] },
+    canvas: { elements: [{ id: savedShape, type: 'rectangle', x: 40, y: 40, width: 90, height: 70,
+      angle: 0, strokeColor: '#ffffff', backgroundColor: 'transparent', fillStyle: 'hachure',
+      strokeWidth: 1, strokeStyle: 'solid', roughness: 1, opacity: 100, groupIds: [], frameId: null,
+      roundness: null, seed: 1, version: 1, versionNonce: 1, isDeleted: false, boundElements: null,
+      updated: 1, link: null, locked: false }], appState: {}, files: {} } };
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
@@ -434,6 +450,24 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       }
       response.writeHead(200, { 'content-type': asset.endsWith('.js') ? 'text/javascript' : asset.endsWith('.css') ? 'text/css' : 'application/octet-stream' });
       response.end(readFileSync(asset));
+    } else if (options.brainstormHydration && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
+      reads.push({ name, args });
+      void hydration.then(() => {
+        if (response.destroyed) return;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ rows: name === 'harnessBrainstorm.byHarness'
+          && args.harnessSlug === input.selected ? [savedRow] : [] }));
+      });
+    } else if (options.brainstormHydration && request.method === 'PUT'
+      && pathname.startsWith(`/api/harness/${input.selected}/brainstorm`)) {
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        writes.push({ surface: pathname.split('/').at(-1)!, body: JSON.parse(body) });
+        response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"ok":true}');
+      });
     } else if (input.harnesses && pathname === '/api/zero-harness/rest-query') {
       const work = input.harnesses;
       const rows = requestUrl.searchParams.get('name') === 'harnessProjects.lite' ? [
@@ -444,11 +478,18 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
+    } else if (options.brainstormHydration && pathname === '/docs-preflight.css') {
+      response.writeHead(200, { 'content-type': 'text/css' });
+      response.end(readFileSync(join(built.portal, 'app/tokens.css'), 'utf8') + '\n'
+        + readFileSync(join(built.portal, 'app/globals.css'), 'utf8') + '\n'
+        + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/harness/harness.css'), 'utf8')
+        + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}\n' + built.css);
     } else if (pathname === '/docs-preflight.js') {
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
-      response.end('<div id="root"></div><script src="/docs-preflight.js"></script>');
+      response.end((options.brainstormHydration ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
+        + '<div id="root"></div><script src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
   const errors: string[] = [];
@@ -469,10 +510,37 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     page.on('response', response => { if (response.status() >= 400) failedRequests.push(`HTTP ${response.status()} ${response.url()}`); });
     // History-backed query state needs a real origin; about:blank cannot run
     // replaceState even when the component itself initialized correctly.
-    await page.goto(`http://127.0.0.1:${address.port}/${input.harnesses ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
+    const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
+      ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
+    if (options.brainstormHydration) url.searchParams.set('slug', input.selected);
+    await page.goto(url.href);
     try { await (input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.brainstormHydration) {
+      // Real SyncProvider, delayed fixture response: pending [] must never
+      // become a writable default. This catches the production adapter shape
+      // cheaply, before allocating the private API/PG workflow.
+      await page.getByText('loading mindmap…', { exact: true }).waitFor({ state: 'attached' });
+      await page.getByText('loading canvas…', { exact: true }).waitFor({ state: 'attached' });
+      await page.waitForTimeout(1_400); // longer than both actual save debounces
+      assert.deepEqual(writes, [], 'no editor may persist before the selected Sync row arrives');
+      assert.equal(await page.locator('.excalidraw').count(), 0, 'pending canvas must not mount writable');
+      const mapWrite = page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-mindmap'));
+      const canvasWrite = page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-canvas'));
+      releaseHydration();
+      await page.locator('.rf-mind-label').getByText(savedMap, { exact: true }).waitFor({ state: 'attached' });
+      await page.locator('.excalidraw').waitFor({ state: 'attached' });
+      await Promise.all([mapWrite, canvasWrite]);
+      assert.ok(reads.some(read => read.name === 'harnessBrainstorm.byHarness' && read.args.harnessSlug === input.selected));
+      for (const write of writes) {
+        if (write.surface === 'brainstorm-mindmap') assert.equal(write.body.tree.nodes[0].data.text, savedMap);
+        if (write.surface === 'brainstorm-canvas') assert.ok(write.body.scene.elements.some((element: { id: string }) => element.id === savedShape),
+          'first writable canvas must retain the saved scene');
+      }
+    }
     if (input.markdownPreflight) {
       try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
       catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
@@ -499,17 +567,19 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (!input.harnesses) assert.match(await page.locator('body').innerText(), /Select a /);
+    if (!input.harnesses && !options.brainstormHydration) assert.match(await page.locator('body').innerText(), /Select a /);
     if (input.brainstorm) {
-      // This preflight mounts the actual no-selection panel and compiles the
-      // real lazy editor graph. It does not claim editor/API persistence.
+      // Both preflights compile the real lazy editor graph. The selected-row
+      // variant supplies an HTTP response, not private API persistence proof.
       for (const module of ['BrainstormFull', 'WriteView', 'MapView', 'CanvasView', 'BrainstormChat']) {
         assert.ok([...built.originals.keys()].some(path => path.endsWith(`/app/harness/brainstorm/${module}.tsx`)),
           `Brainstorm preflight must compile the real ${module} module`);
       }
     }
-    return { sourceCount: built.originals.size, mounted: true };
+    return { sourceCount: built.originals.size, mounted: true, ...(options.brainstormHydration
+      ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}) };
   } finally {
+    releaseHydration();
     await browser.close();
     await new Promise<void>(done => server.close(() => done()));
   }

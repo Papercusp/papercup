@@ -455,6 +455,7 @@ export async function applyPendingMigrationsNow(
   let preflightPhase = 'start';
   const tracePreflight = (phase: string): void => {
     preflightPhase = phase;
+    console.info(`[boot-migrate] preflight phase=${phase} elapsedMs=${Date.now() - preflightStartedAt}`);
   };
   const signal = options.signal;
   if (signal?.aborted) return null;
@@ -837,7 +838,12 @@ export async function applyPendingMigrationsNow(
         );
       });
     }
-    signal?.removeEventListener('abort', closeClientOnAbort);
-    await closeClient(signal?.aborted ? 0 : 5);
+    tracePreflight('close client');
+    try {
+      await closeClient(signal?.aborted ? 0 : 5);
+    } finally {
+      signal?.removeEventListener('abort', closeClientOnAbort);
+      tracePreflight('client closed');
+    }
   }
 }
