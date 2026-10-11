@@ -7,7 +7,7 @@ import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-a
 import { astGrepSyntaxIndex } from './ast-grep-facade';
 import { LspDaemonAnswerCache, type MeasuredLspInputs } from './lsp-daemon-cache';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
-import { unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts';
+import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer } from './contracts';
 import { nativeChangeReport } from './packer-facade';
 import { produceSnapshotFromSource } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 import { suggestFromSnapshot, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
@@ -73,6 +73,30 @@ describe('native P015 required BAR dependent proof currentness', () => {
       expect(() => assertCodeDependencyVersions(captured.evidence.sources, edited.pin)).toThrow('does_not_match_measured_source');
       expect(proof).toEqual({ specRevision: 1, testRunId: 42, sourceFingerprint: measured.sourceFingerprint });
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('native P017 R3 source-scope contract', () => {
+  it('binds site identity to repository and captured bytes while leaving unmeasured graph versions explicit', () => {
+    const site = { path: 'target.ts', line1: 1, kind: 'function', name: 'target' };
+    const source = { path: site.path, contentHash: createHash('sha256').update('export function target() { return 1; }').digest('hex'),
+      language: 'typescript', representation: 'full-source' as const };
+    const identity = versionedSymbolIdentity('captured-repository', site, source);
+    expect(identity).not.toBeNull();
+    expect(versionedSymbolIdentity('another-repository', site, source)).not.toBe(identity);
+    expect(versionedSymbolIdentity('captured-repository', site, { ...source,
+      contentHash: createHash('sha256').update('export function target() { return 2; }').digest('hex') })).not.toBe(identity);
+    expect(versionedSymbolIdentity('captured-repository', site, { ...source, representation: 'reexport-stub' })).toBeNull();
+    for (const sites of [[site], []]) {
+      const evidence = unmeasuredSourceEvidence({ intent: 'callers', sites }, {
+        repositoryId: 'captured-repository', identityKind: 'registry', paths: ['src'], basis: 'indexed-code',
+      }, ['No captured compiler input is available.']);
+      expect(evidence.sourceScope).toMatchObject({ repositoryId: 'captured-repository', paths: ['src'],
+        sourceFingerprint: null, supportingFiles: [] });
+      expect(evidence.siteIdentities).toEqual(sites.map((entry, siteIndex) => ({ siteIndex,
+        sourcePath: entry.path, contentHash: null, versionedSymbolId: null })));
+      expect(evidence.relationships.every(edge => edge.knowledge === 'unknown' && edge.runtimeExecution === 'unknown')).toBe(true);
+    }
   });
 });
 

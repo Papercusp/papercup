@@ -1,5 +1,5 @@
 /** P-001 baseline proof through the actual handler, compiler and forked worker. */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,43 @@ describe('native P015 required BAR compiler dependency proof', () => {
       rmSync(join(project, 'dependency.ts'));
       await expect(measureAndPinRepoFilesEvidenceAtRoot(project, captured.measurement)).rejects.toThrow();
       expect(row.source_fingerprint).toBe(measured.sourceFingerprint);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, 120_000);
+});
+
+describe('native P017 R3 registered graph source scope', () => {
+  it('versions both ends of a compiler edge and re-resolves the target after an unchanged caller sees a dependency edit', async () => {
+    const project = realpathSync(mkdtempSync(join(tmpdir(), 'native-edge-source-scope-')));
+    const sha = (path: string) => createHash('sha256').update(readFileSync(join(project, path))).digest('hex');
+    const repositoryId = `local-root:${createHash('sha256').update(project).digest('hex')}`;
+    const query = async () => (await graphQuery.handler(graphQuery.args.parse({ op: 'callees',
+      name: 'runtimeSourceCaller', file_path: 'caller.ts', paths: ['caller.ts'] }),
+    { projectDir: project } as never) as { data: CodeIntelAnswer }).data;
+    try {
+      writeFileSync(join(project, 'dependency.ts'), 'export function runtimeSourceTarget() { return 1; }\n');
+      writeFileSync(join(project, 'caller.ts'), 'import { runtimeSourceTarget } from "./dependency";\nexport function runtimeSourceCaller() { return runtimeSourceTarget(); }\n');
+      const before = await query();
+      const assertScope = (answer: CodeIntelAnswer) => {
+        expect(answer.error).toBeNull();
+        expect(answer.evidence!.sourceScope).toMatchObject({ repositoryId, identityKind: 'local-root', paths: ['caller.ts'] });
+        expect(answer.evidence!.sourceScope.supportingFiles).toEqual(expect.arrayContaining([
+          expect.objectContaining({ path: 'caller.ts', contentHash: sha('caller.ts'), representation: 'full-source' }),
+          expect.objectContaining({ path: 'dependency.ts', contentHash: sha('dependency.ts'), representation: 'full-source' }),
+        ]));
+        expect(answer.evidence!.siteIdentities).toEqual([expect.objectContaining({ sourcePath: 'caller.ts',
+          contentHash: sha('caller.ts'), versionedSymbolId: expect.stringContaining(repositoryId) })]);
+        const edge = answer.evidence!.relationships.find(row => row.kind === 'callees');
+        expect(edge).toMatchObject({ origin: 'compiler', runtimeExecution: 'unknown',
+          target: { contentHash: sha('dependency.ts'), versionedSymbolId: expect.stringContaining(repositoryId) } });
+        return edge!.target!.versionedSymbolId;
+      };
+      const beforeTarget = assertScope(before);
+      writeFileSync(join(project, 'dependency.ts'), 'export function runtimeSourceTarget() { return 2; }\n');
+      const after = await query();
+      const afterTarget = assertScope(after);
+      expect(after.evidence!.siteIdentities).toEqual(before.evidence!.siteIdentities);
+      expect(afterTarget).not.toBe(beforeTarget);
+      expect(after.evidence!.sourceScope.sourceFingerprint).not.toBe(before.evidence!.sourceScope.sourceFingerprint);
     } finally { rmSync(project, { recursive: true, force: true }); }
   }, 120_000);
 });
