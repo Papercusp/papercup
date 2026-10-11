@@ -1346,6 +1346,15 @@ snapshot_verifier_pinned_deps() {
       snapshot-locked "$REPO_DIR" "$snapshot_root" "$mode"
     return $?
   fi
+  # WI-6554700010008536: pinned-deps.sh sources dependency-generation.sh
+  # relative to BASH_SOURCE (WI-41095), and that helper loads its own .mjs
+  # siblings the same way. A lone $WORK/pinned-deps.sh resolves the import
+  # outside any tree, so the frozen copy keeps its repo-relative layout,
+  # beside a link to the snapshot's own (already frozen) apps/ tree.
+  local helper_root="$WORK/pinned-deps-helper"
+  pinned_deps_copy="$helper_root/papercusp-desktop/bin/lib/pinned-deps.sh"
+  mkdir -p -- "$(dirname "$pinned_deps_copy")" || return 1
+  ln -sfn -- "$snapshot_root/apps" "$helper_root/apps" || return 1
   cp -- "$helper_source" "$pinned_deps_copy" || return 1
   . "$pinned_deps_copy" || return 1
   papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" "$mode"

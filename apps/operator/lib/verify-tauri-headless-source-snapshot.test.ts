@@ -23,7 +23,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const SCRIPT = resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
+// PROBE_SCRIPT lets scripts/mutation-probe.sh point this guard at a mutated copy.
+const SCRIPT = process.env.PROBE_SCRIPT ?? resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
 const src = readFileSync(SCRIPT, "utf8");
 const HOST_ENTRY = resolve(__dirname, "../bin/hono-host.ts");
 const hostEntrySrc = readFileSync(HOST_ENTRY, "utf8");
@@ -63,7 +64,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'VERIFY_TAURI_SOURCE_INPUTS_FILE="$TEST_INPUTS_FILE"',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
         'node() { printf "%s\\n" "$@" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
-        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
         src.slice(start, end),
         'snapshot_committed_operator_source',
@@ -71,7 +72,8 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       expect(result.status, result.stderr).toBe(0);
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
-      expect(order).toContain('scripts/verify-tauri-headless.sh,scripts/source-preview.mjs');
+      // The mandatory tooling profile is owned by source-preview (TAURI_VERIFIER_INPUTS).
+      expect(order).toContain('--tauri-inputs\n');
       expect(order.indexOf('verifier-inputs-check')).toBeLessThan(order.indexOf('verifier-measure'));
       expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
       expect(order.indexOf('\ndeps\n')).toBeGreaterThan(order.indexOf('verifier-verify'));
@@ -91,7 +93,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
         'node() { printf "%s\\n" "$*" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; if [[ "$*" == *verifier-verify* ]] && [ "$TEST_TAMPER" = 1 ]; then return 2; fi; }',
-        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo "deps:$1:$2" >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo "deps:$1:$2" >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
         committed,
         'snapshot_committed_operator_source',
@@ -129,7 +131,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'write_run_marker() { :; }; log() { :; }',
         'node() { echo "$*" >> "$WORK/order"; if [[ "$*" == *verifier-measure* ]]; then case "$TEST_MODE" in unmeasured) echo unknown ;; empty) echo 0 ;; *) echo 5242880 ;; esac; fi; }',
         'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; test "$1" = 5242880; test "$TEST_MODE" != capacity-refusal || return 7; }',
-        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
         src.slice(start, end), 'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_MODE: mode } });
@@ -855,6 +857,11 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
       }
       writeFileSync(resolve(desktop, "bin/lib/pinned-deps.sh"),
         readFileSync(resolve(__dirname, "../../../papercusp-desktop/bin/lib/pinned-deps.sh"), "utf8"));
+      // WI-41095: pinned-deps.sh sources dependency-generation.sh relative to its
+      // own path (desktop/bin/lib/../../../apps/...). Give the copied helper the
+      // real release dir at that layout so its .mjs siblings resolve too.
+      mkdirSync(resolve(fixture, "apps/operator/bin"), { recursive: true });
+      symlinkSync(resolve(__dirname, "../bin/release"), resolve(fixture, "apps/operator/bin/release"));
       // Exercise the real shared reservation writer with deterministic device
       // measurements. Each test has a private ledger and reserves no real disk.
       writeFileSync(
@@ -1025,8 +1032,15 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
   it("uses the same maintained helper seam in both source routes, with copy tooling in committed provenance", () => {
     expect(operatorSnapshotSource.match(/snapshot_verifier_pinned_deps "\$snapshot_root"/g)).toHaveLength(2);
     const committed = src.slice(src.indexOf("snapshot_committed_operator_source() {"), operatorSnapshotCallIdx);
+    // The committed route asks source-preview for its owned tooling profile.
+    expect(committed).toContain("--tauri-inputs");
+    const previewSrc = readFileSync(resolve(__dirname, "../../../scripts/source-preview.mjs"), "utf8");
+    const profile = previewSrc.slice(
+      previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS"),
+      previewSrc.indexOf("]);", previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS")),
+    );
     for (const path of ["scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
-      expect(committed).toContain(path);
+      expect(profile).toContain(`'${path}'`);
     }
   });
 });
@@ -1071,5 +1085,81 @@ describe("P-008 J1G — a file vanishing from the live tree does not fail the sn
     expect(result.status).toBe(1);
     expect(result.stdout).not.toContain("copied");
     expect(result.stderr).toContain(`rsync exit ${rc}`);
+  });
+});
+
+describe("WI-6554700010008536 — the frozen pinned-deps helper keeps its relative imports resolvable", () => {
+  // The REAL helper's import line, so this guard follows pinned-deps.sh if the import moves.
+  const helperSrc = readFileSync(
+    resolve(__dirname, "../../../papercusp-desktop/bin/lib/pinned-deps.sh"),
+    "utf8",
+  );
+  const importLine = helperSrc
+    .split("\n")
+    .find((line) =>
+      /source "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)\/.*dependency-generation\.sh"/.test(line),
+    );
+
+  it("pinned-deps.sh still sources dependency-generation.sh relative to BASH_SOURCE", () => {
+    expect(
+      importLine,
+      "pinned-deps.sh no longer imports dependency-generation.sh relative to BASH_SOURCE; re-check the verifier's helper staging",
+    ).toBeTruthy();
+  });
+
+  it("hardlink mode stages the helper so the generation import and its .mjs siblings resolve inside the snapshot", () => {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-pinned-helper-layout-"));
+    try {
+      const snapshot = resolve(fixture, "snapshot");
+      const release = resolve(snapshot, "apps/operator/bin/release");
+      mkdirSync(release, { recursive: true });
+      writeFileSync(
+        resolve(release, "dependency-generation.sh"),
+        'dependency_generation_probe() { [ -f "$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs" ] && echo generation-sibling-ok; }\n',
+      );
+      writeFileSync(resolve(release, "dependency-lock-tree-audit.mjs"), "");
+      const helper = resolve(fixture, "donor/papercusp-desktop/bin/lib/pinned-deps.sh");
+      mkdirSync(resolve(helper, ".."), { recursive: true });
+      writeFileSync(
+        helper,
+        [
+          "papercusp_pinned_deps_snapshot_locked() (",
+          `  ${(importLine ?? "false").trim()}`,
+          "  dependency_generation_probe || return 1",
+          '  echo "locked:$1:$2:$3"',
+          ")",
+          "",
+        ].join("\n"),
+      );
+      const work = resolve(fixture, "work");
+      mkdirSync(work);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -euo pipefail",
+            'REPO_DIR=/donor; WORK="$TEST_WORK"',
+            dependencySnapshotSource,
+            'snapshot_verifier_pinned_deps "$TEST_SNAPSHOT" "$TEST_HELPER"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            TEST_WORK: work,
+            TEST_SNAPSHOT: snapshot,
+            TEST_HELPER: helper,
+            VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: "hardlink",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("generation-sibling-ok");
+      expect(result.stdout).toContain(`locked:/donor:${snapshot}:hardlink`);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
