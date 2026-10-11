@@ -25,6 +25,8 @@ import {
   autoArmFleetMemberLoop,
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
+  routeStalledLoopToHostRecovery,
+  retainStalledLoopRecoveryWall,
 } from './loop';
 import {
   decideMonitorAdmission,
@@ -76,6 +78,44 @@ async function rawRow(ownerId: string) {
   `;
   return rows[0] ?? null;
 }
+
+describe('stalled host recovery ownership (real PG)', () => {
+  async function seed() {
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER,
+      intervalSec: 120, kickoff: 'retained goal', carry: 'warm', sql });
+    const [row] = await sql<Array<{ id: string; next_fire_at: Date; payload_template: Record<string, unknown> }>>`
+      SELECT id, next_fire_at, payload_template FROM harness_shared.routines WHERE target_owner_id = ${OWNER}`;
+    return row;
+  }
+  it('concurrent reservations cannot overspend and do not start an ordinary fire before the carry ACK', async () => {
+    const row = await seed();
+    const results = await Promise.all(Array.from({ length: 5 }, () => routeStalledLoopToHostRecovery(
+      sql, row.id, 'binding recovery', 'unbound-successor', { max: 2, deferFire: true })));
+    expect(results.filter(result => result.routed)).toHaveLength(2);
+    const [current] = await sql<Array<{ count: number; next_fire_at: Date; payload_template: Record<string, unknown> }>>`
+      SELECT (metadata->'stalled_host_recovery'->>'count')::int AS count, next_fire_at, payload_template
+        FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(current.count).toBe(2);
+    expect(current.next_fire_at).toEqual(row.next_fire_at);
+    expect(current.payload_template).toEqual(row.payload_template);
+  });
+  it('retains one owned wall without sliding its retry or undoing loop:end', async () => {
+    const row = await seed();
+    const wall = { ownerId: OWNER, condition: 'unbound-successor', reason: 'carry refused', remedy: 'preserve the original route' };
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: true, changed: true });
+    const [first] = await sql<Array<{ active: boolean; next_fire_at: Date; metadata: Record<string, any> }>>`
+      SELECT active, next_fire_at, metadata FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(first.active).toBe(true);
+    expect(first.metadata.stalled_host_recovery.wall).toMatchObject({ ...wall, responsible: 'stalled-loops-guard' });
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: true, changed: false });
+    const [second] = await sql<Array<{ next_fire_at: Date }>>`SELECT next_fire_at FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(second.next_fire_at).toEqual(first.next_fire_at);
+    await deactivateLoop(OWNER, { sql });
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: false, changed: false });
+    expect(await routeStalledLoopToHostRecovery(sql, row.id, 'stale retry', wall.condition)).toEqual({ routed: false });
+    expect((await rawRow(OWNER))?.active).toBe(false);
+  });
+});
 
 describe('loop surface round-trip (real PG)', () => {
   it('materializeLoop writes a PURE loop row the B-LOOP-3 fire consumes', async () => {
