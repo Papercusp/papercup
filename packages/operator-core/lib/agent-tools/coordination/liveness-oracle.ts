@@ -809,39 +809,79 @@ export async function resolveSessionStates(
   // derivation) left looking actionable, with the SAME judge the pickup sweep and
   // the stalled-loops guard use, and report a wedged one as `suspect`.
   if (opts.hostCondition ?? opts.psuHostPositiveAuthority === true) {
-    const readTail = opts.readHostTailFn ?? ((ownerId: string) => readHostEventTailAsync(ownerId));
-    const candidates = hydrated.filter((s) => {
-      const v = out.get(s.ownerId);
-      return (
-        s.agentRole != null &&
-        s.agentRole !== 'cup' &&
-        v?.sessionState != null &&
-        WEDGE_ELIGIBLE.has(v.sessionState)
-      );
+    await applyHostConditionLeg(out, hydrated, {
+      nowMs,
+      findHostFn,
+      findHostAsyncFn: explicitFindHostFn ? null : findHostAsyncFn,
+      readHostTailFn: opts.readHostTailFn,
+      readProviderErrorFn: opts.readProviderErrorFn,
     });
-    for (let i = 0; i < candidates.length; i += 16) {
-      await Promise.all(
-        candidates.slice(i, i + 16).map(async (s) => {
-          let host = findHostFn(s.ownerId);
-          if (host == null && !explicitFindHostFn) {
-            host = await findHostAsyncFn(s.ownerId).catch(() => null);
-          }
-          if (host == null || typeof host !== 'object') return;
-          // Best-effort like the pickup sweep: an unreadable tail is "no tail
-          // reading", which can still surface the record's own auth/quota flags
-          // but never invents an unbound or stuck verdict.
-          const tail = await readTail(s.ownerId).catch(() => [] as HostTailEvent[]);
-          // A host record without `authBlocked` predates P-004: corroborate from the codex
-          // rollout rather than read the missing field as healthy (WI-6554700010008461).
-          const judged = await corroborateHostAuth(host as AuthCorroborationHost, opts.readProviderErrorFn);
-          const condition = hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, nowMs));
-          const v = out.get(s.ownerId);
-          if (v) out.set(s.ownerId, applyHostCondition(v, condition));
-        }),
-      );
-    }
   }
   return out;
+}
+
+/** Dependencies of {@link applyHostConditionLeg}. */
+export interface HostConditionLegDeps {
+  nowMs: number;
+  /** Host lookup the verdicts were derived with (a pre-fetched map, or a DI fake). */
+  findHostFn: (ownerId: string) => unknown | null;
+  /** Fallback lookup for a subject `findHostFn` has no entry for. `null` = no
+   *  fallback (the caller already looked up every subject, or injected a fake). */
+  findHostAsyncFn?: ((ownerId: string) => Promise<unknown | null>) | null;
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+  readProviderErrorFn?: ReadProviderErrorAfter;
+}
+
+/**
+ * P-011(a) / D-011: THE host-condition leg, shared by every surface that trusts a
+ * live psu host as proof of life — `resolveSessionStates` (fleet:status,
+ * fleet:assignments, the send-miss report) AND the coord:presence snapshot, which
+ * derives its verdicts row by row with `deriveVerdict` and so never passed through
+ * `resolveSessionStates` (EI-25695434826164414: coord:presence kept reporting a
+ * dead-auth live-host session as `parked`).
+ *
+ * A live host is not proof the session can think. For every non-cup subject whose
+ * verdict is still actionable (WEDGE_ELIGIBLE) and that HAS a live host, judge the
+ * host's condition with the SAME judge the pickup sweep and the stalled-loops guard
+ * use, and replace the verdict with `applyHostCondition`'s. Mutates `verdicts` in
+ * place. Cost is bounded to that candidate set, 16 at a time.
+ */
+export async function applyHostConditionLeg(
+  verdicts: Map<string, LivenessVerdict>,
+  subjects: readonly { ownerId: string; agentRole?: string | null }[],
+  deps: HostConditionLegDeps,
+): Promise<void> {
+  const readTail = deps.readHostTailFn ?? ((ownerId: string) => readHostEventTailAsync(ownerId));
+  const candidates = subjects.filter((s) => {
+    const v = verdicts.get(s.ownerId);
+    return (
+      s.agentRole != null &&
+      s.agentRole !== 'cup' &&
+      v?.sessionState != null &&
+      WEDGE_ELIGIBLE.has(v.sessionState)
+    );
+  });
+  for (let i = 0; i < candidates.length; i += 16) {
+    await Promise.all(
+      candidates.slice(i, i + 16).map(async (s) => {
+        let host = deps.findHostFn(s.ownerId);
+        if (host == null && deps.findHostAsyncFn) {
+          host = await deps.findHostAsyncFn(s.ownerId).catch(() => null);
+        }
+        if (host == null || typeof host !== 'object') return;
+        // Best-effort like the pickup sweep: an unreadable tail is "no tail
+        // reading", which can still surface the record's own auth/quota flags
+        // but never invents an unbound or stuck verdict.
+        const tail = await readTail(s.ownerId).catch(() => [] as HostTailEvent[]);
+        // A host record without `authBlocked` predates P-004: corroborate from the codex
+        // rollout rather than read the missing field as healthy (WI-6554700010008461).
+        const judged = await corroborateHostAuth(host as AuthCorroborationHost, deps.readProviderErrorFn);
+        const condition = hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, deps.nowMs));
+        const v = verdicts.get(s.ownerId);
+        if (v) verdicts.set(s.ownerId, applyHostCondition(v, condition));
+      }),
+    );
+  }
 }
 
 /**
