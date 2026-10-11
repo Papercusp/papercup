@@ -333,10 +333,31 @@ describe('instrument provenance — bind time only (SPEC-P-010-BIND-TIME-ONLY)',
       return /\.[cm]?tsx?$/.test(entry.name) && !/\.(test|spec)\.[cm]?tsx?$/.test(entry.name) ? [full] : [];
     });
 
+  // Matches a module SPECIFIER only (static import/export-from, dynamic import(), require()). A data
+  // string that merely names the file — e.g. the doc-claims verification-system map listing
+  // 'agent-tools/plans/instrument-provenance.ts' as a refusal-type source — is not an import and
+  // cannot make the rule reachable, so it must not count.
+  const IMPORTS_RULE =
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s*)['"][^'"]*\/instrument-provenance(?:\.[cm]?[jt]s)?['"]/m;
+
+  it('import detector counts specifiers and ignores data strings that name the file', () => {
+    for (const real of [
+      "import { instrumentProvenanceRefusal } from './instrument-provenance';",
+      "export { x } from '../plans/instrument-provenance.js';",
+      "const m = await import('./instrument-provenance');",
+      "const m = require('./instrument-provenance');",
+      "import './instrument-provenance';",
+    ]) expect(IMPORTS_RULE.test(real), real).toBe(true);
+    for (const notImport of [
+      "{ door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/instrument-provenance.ts' },",
+      "const doc = 'see agent-tools/plans/instrument-provenance.ts';",
+    ]) expect(IMPORTS_RULE.test(notImport), notImport).toBe(false);
+  });
+
   it('is imported by plans:bind-spec-evidence and by no other production module', () => {
     const importers = sourceFiles(LIB)
       .filter((file) => !file.endsWith('instrument-provenance.ts'))
-      .filter((file) => /['"][^'"]*\/instrument-provenance(?:\.[cm]?[jt]s)?['"]/.test(readFileSync(file, 'utf8')))
+      .filter((file) => IMPORTS_RULE.test(readFileSync(file, 'utf8')))
       .map((file) => relative(LIB, file));
     expect(importers).toEqual(['agent-tools/plans/bind-spec-evidence.ts']);
   });
@@ -355,5 +376,19 @@ describe('instrument provenance — bind time only (SPEC-P-010-BIND-TIME-ONLY)',
 describe('instrument provenance — refusal code coverage', () => {
   it('provokes every declared refusal code in the cases above', () => {
     expect([...provoked].sort()).toEqual([...INSTRUMENT_REFUSAL_CODES].sort());
+  });
+
+  // A code enters `provoked` only after expectRefused's toBe(code) passed, so each line
+  // below asserts that a case really produced that refusal. The literals are spelled out
+  // (not iterated) so the verification-system map's assertion scan can see each one, and
+  // so dropping a code from the source union fails here as well as above.
+  it('asserts each refusal code by name', () => {
+    expect(provoked.has('instrument_undeclared')).toBe(true);
+    expect(provoked.has('instrument_scratch_probe')).toBe(true);
+    expect(provoked.has('instrument_outside_repo')).toBe(true);
+    expect(provoked.has('instrument_not_committed')).toBe(true);
+    expect(provoked.has('instrument_test_not_importing')).toBe(true);
+    expect(provoked.has('instrument_sibling_unpinned')).toBe(true);
+    expect(INSTRUMENT_REFUSAL_CODES).toHaveLength(6);
   });
 });
