@@ -23,8 +23,9 @@ import {
   recordBlindGapDispositions,
   recordBlindReview,
 } from '../../blind-review-gate';
+import { runBlindReviewMintOp } from './blind-review-mint-op';
 
-const text = (payload: Record<string, unknown>, isError = false) => ({
+const text =(payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
   ...(isError ? { isError: true as const } : {}),
 });
@@ -41,12 +42,12 @@ const dispositionSchema = z.object({
 export default defineTool({
   name: 'plans:blind-review',
   description:
-    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision. Required before a plan reaches awaiting-acceptance and at ship.",
+    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision; op 'mint' launches a fresh confined reviewer. Required before a plan reaches awaiting-acceptance and at ship.",
   guidance: {
     when: "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
     notWhen: 'Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.',
     chaining:
-      "reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
+      "author: op 'mint' { howToRun }. reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -55,7 +56,8 @@ export default defineTool({
   args: z.object({
     harness: harnessArg,
     slug: z.string().min(1).describe('The plan under review.'),
-    op: z.enum(['brief', 'post', 'dispose']),
+    op: z.enum(['brief', 'post', 'dispose', 'mint']),
+    howToRun: z.string().max(4000).optional().describe('mint: how the reviewer runs the product.'),
     activationAuditSeq: z.number().int().positive().optional().describe("post: the brief's activationAuditSeq."),
     gaps: z.array(z.object({ text: z.string().min(1).max(4000) })).max(100).optional().describe('post: one entry per gap; [] when none.'),
     dispositions: z.array(dispositionSchema).min(1).max(200).optional().describe('dispose: one per gap.'),
@@ -72,6 +74,9 @@ export default defineTool({
     }
     if (args.op !== 'dispose' && args.dispositions !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dispositions'], message: "dispositions is op 'dispose' only" });
+    }
+    if (args.op !== 'mint' && args.howToRun !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['howToRun'], message: "howToRun is op 'mint' only" });
     }
   }),
   async handler(args, ctx) {
@@ -92,6 +97,18 @@ export default defineTool({
         excludedRefs: brief.excludedRefs,
         brief: brief.text,
       });
+    }
+
+    if (args.op === 'mint') {
+      // D-041/D-042: launches a fresh reviewer confined to the blind-review tool ceiling.
+      const minted = await runBlindReviewMintOp({
+        slug: args.slug,
+        harness: harnessSlug,
+        workspaceId,
+        howToRun: args.howToRun,
+        ctx: ctx as unknown as Record<string, unknown>,
+      });
+      return text(minted.payload, minted.isError);
     }
 
     let createdBy: string;
