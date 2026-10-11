@@ -239,8 +239,8 @@ export interface SweepOpts extends DriftDeps {
   // (fresh→stale/review), false when it's a retry re-confirm of an already-drifted doc
   // (the ~30min retry-clock re-fire). Lets a consumer edge-trigger a notification on new
   // drift while still driving the steward retry off every due re-fire.
-  onRegenNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean) => Promise<void> | void;
-  onReverifyNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean) => Promise<void> | void;
+  onRegenNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean, drift?: DriftResult) => Promise<void> | void;
+  onReverifyNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean, drift?: DriftResult) => Promise<void> | void;
   /** Wall-clock for the steward retry backoff (mig 386). Injectable for tests. */
   now?: number;
 }
@@ -301,7 +301,7 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
     // Capture the prior status BEFORE any mutation — an in-memory store may alias
     // `doc`, and store.setStatus could otherwise change what we compare against.
     const priorStatus = doc.status;
-    const { status, detail: baseDetail } = await recomputeDocStatus(doc, opts);
+    const { status, detail: baseDetail, drift } = await recomputeDocStatus(doc, opts);
 
     // Attempt counter for THIS doc's drift family (read pre-dispatch).
     const attempts = status === 'stale' ? (doc.regenAttempts ?? 0)
@@ -329,7 +329,8 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
         // see the doc-comment above. The caller spends the attempt only once it
         // confirms a doc-steward actually launched.
         await store.touchRegen(doc.docId);
-        await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameStale);
+        if (drift.sourceChanges?.length) await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameStale, drift);
+        else await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameStale);
         result.regenEnqueued.push(doc.docId);
       }
     } else if (status === 'review') {
@@ -337,7 +338,8 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
       if (due) {
         // Touch the retry-clock but do NOT bump reverify_attempts — see above.
         await store.touchReverify(doc.docId);
-        await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameReview);
+        if (drift.sourceChanges?.length) await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameReview, drift);
+        else await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameReview);
         result.reverifyFlagged.push(doc.docId);
       }
     } else {

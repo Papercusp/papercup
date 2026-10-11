@@ -8,6 +8,7 @@
  */
 
 import { SYNC_TRIGGERED_SCHEDULES } from '../../schedule-descriptors.mjs';
+import type { DocumentedSourceChange } from './drift';
 
 /** Stable inventory identity for the optional LLM repair writer. */
 const DOC_STEWARD_DISPATCH_NAME = SYNC_TRIGGERED_SCHEDULES.docStewardDispatch.name;
@@ -31,6 +32,9 @@ export interface DriftedDoc {
   workItems?: string[];
   /** File-authoritative corpus: edit this repo-relative file, not docs:author. */
   sourceFile?: string;
+  /** P-016: pinned code/symbol evidence for the existing review/authoring route. */
+  sourceChanges?: DocumentedSourceChange[];
+  sourceChangesTruncated?: boolean;
 }
 
 const DOC_STEWARD_ACTIVE_WINDOW_MIN = 50;

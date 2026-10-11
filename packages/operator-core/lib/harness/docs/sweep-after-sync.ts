@@ -354,13 +354,15 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     // EI-2826/WI-2007: collect every retry-due doc into staleDocs (drives the doc-steward),
     // and the NEWLY-transitioned subset into newlyDrifted (drives the edge-triggered '*'
     // broadcast below). Same object ref in both so attribution enrichment applies once.
-    onRegenNeeded: (doc, detail, becameDrifted) => {
-      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source };
+    onRegenNeeded: (doc, detail, becameDrifted, drift) => {
+      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source,
+        ...(drift?.sourceChanges ? { sourceChanges: drift.sourceChanges, sourceChangesTruncated: drift.sourceChangesTruncated } : {}) };
       staleDocs.push(d);
       if (becameDrifted) newlyDrifted.push(d);
     },
-    onReverifyNeeded: (doc, detail, becameDrifted) => {
-      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source };
+    onReverifyNeeded: (doc, detail, becameDrifted, drift) => {
+      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source,
+        ...(drift?.sourceChanges ? { sourceChanges: drift.sourceChanges, sourceChangesTruncated: drift.sourceChangesTruncated } : {}) };
       staleDocs.push(d);
       if (becameDrifted) newlyDrifted.push(d);
     },

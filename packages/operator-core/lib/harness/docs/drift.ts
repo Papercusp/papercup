@@ -17,6 +17,7 @@
  */
 
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { GitRunner, SubjectRef, FeatureCommitLookup } from './subject-ref';
 import { resolveAnchorPaths } from './subject-ref';
@@ -34,6 +35,104 @@ export interface DriftResult {
    * "can't tell" status rather than a confident fresh/stale.
    */
   error?: string;
+  /** P-016: review candidates from the same pinned source range, never a doc write. */
+  sourceChanges?: DocumentedSourceChange[];
+  sourceChangesTruncated?: boolean;
+}
+
+export interface DocumentedSourceChange {
+  path: string;
+  status: 'measured' | 'unknown';
+  before: { commit: string; sha256: string | null };
+  after: { commit: string; sha256: string | null };
+  removedSymbols: string[];
+  addedSymbols: string[];
+  changedSymbols: string[];
+  truncated?: boolean;
+  reason: string;
+}
+
+/** Bound the existing drift/steward payload; unsupported source stays explicit. */
+export const DOC_SOURCE_CHANGE_MAX_FILES = 4;
+export const DOC_SOURCE_CHANGE_MAX_BYTES = 65_536;
+
+/** Pin both endpoints before reading source; a moving working tree is not evidence. */
+export async function documentedSourceChanges(
+  refs: readonly SubjectRef[], changedPaths: readonly string[], baselineSha: string,
+  opts: { runGit: GitRunner; repoRoot: string; submodulePaths?: string[] },
+): Promise<DocumentedSourceChange[]> {
+  const paths = [...new Set(changedPaths)].filter(path => path && !path.startsWith('/')
+    && !path.split('/').includes('..') && !/[\\\0\r\n*?\[\]{}]/.test(path))
+    .slice(0, DOC_SOURCE_CHANGE_MAX_FILES);
+  if (!SHA_RE.test(baselineSha) || !paths.length) return [];
+  const { default: ts } = await import('typescript');
+  const results: DocumentedSourceChange[] = [];
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const symbols = (path: string, text: string) => {
+    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const out = new Map<string, string>();
+    for (const statement of source.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) out.set(declaration.name.text, declaration.getText(source));
+        }
+      } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)
+        || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
+        || ts.isEnumDeclaration(statement)) && statement.name) {
+        out.set(statement.name.text, statement.getText(source));
+      }
+    }
+    return { out, valid: (source as typeof source & { parseDiagnostics: readonly unknown[] }).parseDiagnostics.length === 0 };
+  };
+  for (const path of paths) {
+    const sub = submoduleForPath(path, opts.submodulePaths ?? []);
+    const cwd = sub ? join(opts.repoRoot, sub.sub) : opts.repoRoot;
+    const rel = sub ? sub.rel : path;
+    const base = sub ? await submoduleBaselineSha(opts.runGit, opts.repoRoot, baselineSha, sub.sub) : baselineSha;
+    const head = await opts.runGit(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd);
+    const current = head.code === 0 ? head.stdout.trim() : '';
+    const change: DocumentedSourceChange = { path, status: 'unknown',
+      before: { commit: base ?? baselineSha, sha256: null }, after: { commit: current, sha256: null },
+      removedSymbols: [], addedSymbols: [], changedSymbols: [], reason: 'source endpoints unavailable' };
+    results.push(change);
+    if (!base || !SHA_RE.test(current) || !rel) continue;
+    const baseCheck = await opts.runGit(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], cwd);
+    if (baseCheck.code !== 0) continue;
+    change.before.commit = baseCheck.stdout.trim();
+    if (!SHA_RE.test(change.before.commit)) continue;
+    // ls-tree distinguishes a deletion from a failed source read. Never infer a
+    // removed symbol from an unreadable blob or an unsupported parser.
+    const read = async (commit: string): Promise<string | null | undefined> => {
+      const tree = await opts.runGit(['ls-tree', commit, '--', rel], cwd);
+      if (tree.code !== 0) return undefined;
+      if (!tree.stdout.trim()) return null;
+      if (!/^100(?:644|755) blob [0-9a-f]+\t/m.test(tree.stdout)) return undefined;
+      const blob = await opts.runGit(['show', `${commit}:${rel}`], cwd);
+      if (blob.code !== 0 || Buffer.byteLength(blob.stdout) > DOC_SOURCE_CHANGE_MAX_BYTES) return undefined;
+      return blob.stdout;
+    };
+    const [before, after] = await Promise.all([read(change.before.commit), read(current)]);
+    if (before === undefined || after === undefined) { change.reason = 'source unreadable or over byte budget'; continue; }
+    change.before.sha256 = before === null ? null : digest(before);
+    change.after.sha256 = after === null ? null : digest(after);
+    if (!/\.[cm]?[jt]sx?$/.test(path)) { change.reason = 'symbol parser unsupported; file change needs review'; continue; }
+    const old = symbols(path, before ?? ''), next = symbols(path, after ?? '');
+    if (!old.valid || !next.valid) { change.reason = 'source parse errors; symbol changes unknown'; continue; }
+    const anchored = refs.filter((ref): ref is Extract<SubjectRef, { kind: 'symbol' }> => ref.kind === 'symbol' && ref.file === path);
+    const names = anchored.length ? anchored.map(ref => ref.name) : [...old.out.keys()];
+    const removed = names.filter(name => old.out.has(name) && !next.out.has(name));
+    const added = [...next.out.keys()].filter(name => !old.out.has(name));
+    const changed = names.filter(name => old.out.has(name) && next.out.has(name) && old.out.get(name) !== next.out.get(name));
+    change.removedSymbols = removed.slice(0, 20);
+    change.addedSymbols = added.slice(0, 20);
+    change.changedSymbols = changed.slice(0, 20);
+    change.truncated = [removed, added, changed].some(names => names.length > 20);
+    change.status = 'measured';
+    change.reason = change.removedSymbols.length ? 'documented symbol missing or renamed; update candidate'
+      : change.changedSymbols.length ? 'documented implementation or interface changed; update candidate'
+        : 'anchored file changed; review documented workflow';
+  }
+  return results;
 }
 
 const SHA_RE = /^[0-9a-f]{7,64}$/i;
@@ -367,7 +466,12 @@ export async function checkDocDrift(
   }
   const results = await Promise.all(refs.map((r) => checkSubjectRefDrift(r, baselineSha, opts)));
   const stale = results.find((r) => r.stale);
-  if (stale) return stale;
+  if (stale) {
+    const changedPaths = [...new Set(results.filter(result => result.stale).flatMap(result => result.changedPaths))];
+    const sourceChanges = await documentedSourceChanges(refs, changedPaths, baselineSha, opts);
+    return { ...stale, changedPaths, ...(sourceChanges.length ? { sourceChanges,
+      sourceChangesTruncated: sourceChanges.length < changedPaths.length } : {}) };
+  }
   const clean = results.find((r) => !r.error);
   if (clean) return clean;
   // All errored — propagate the first error (e.g. no-baseline / unresolved).
