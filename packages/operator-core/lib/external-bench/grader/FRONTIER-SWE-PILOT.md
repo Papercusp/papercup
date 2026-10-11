@@ -1,15 +1,18 @@
-# FrontierSWE grader — pilot runbook (plan benchmark-suite-frontier-swe-2026-06-18)
+# FrontierSWE grader — v2 controls and pilot runbook
 
 Operational "how to actually run it + what it costs" for the **FrontierSWE** suite
 (`frontier-swe.ts` + `frontier-swe-live.ts` + the `task-sets.ts` loaders). Methodology
-narrative: `apps/operator-docs/.../benchmarks/frontier-swe.mdx`. **Confirmed against the
-real vendored repo `Proximal-Labs/frontier-swe` on 2026-06-18.**
+narrative: `apps/operator-docs/.../benchmarks/frontier-swe.mdx`. Current plan:
+`benchmark-coverage-frontierswe-v2-2026-10-10`. The v1 sections below preserve the
+2026-06-18 integration as history; they do not launch a current v2 treatment.
 
-> ⚠ The full ≥5-trial / 17-task / multi-topology run is **owner-gated** (compute + `$` +
-> wall-clock: 4–20 h agent/trial). This runbook makes it one-command-ready and documents a
-> bounded one-task smoke; the headline run stays a deliberate owner action (D-004).
+> Paid execution is **owner-gated**. D-001 authorizes only the bounded P-012 smoke under
+> an owner-set hard USD cap; inference cannot start until that cap is recorded. P-013
+> calibration and P-014 headline need fresh approval; P-015 canary was declined for now.
+> D-014 pins **gpt-6-luna / reasoning effort max for every initial setup**. This document
+> describes preparation and no-LLM controls, not approval or proof that a runtime is ready.
 
-## What was confirmed against the real harness
+## What was confirmed against the v1 harness (history)
 
 Every task is a self-contained Docker env with a uniform contract:
 
@@ -88,6 +91,75 @@ It writes, under `~/.papercusp/bench-results/frontier-swe-v2/` (`--out` to overr
 The ingest REFUSES (exit 1, every problem listed) a non-40-hex commit, an empty checkout, an unparseable
 `task.toml` or `job.yaml`, and any task whose agent or verifier image is not digest-pinned.
 
+## V2 controls and scored-task admission (no LLM spend)
+
+D-013 places grading on the dedicated **750 GB `/mnt/bench`** volume with its own Docker
+daemon at `unix:///run/docker-bench.sock`. Honor each task's declared limits: the ingested
+v2 corpus includes `storageMb = 524288` (512 GiB), beyond the old v1 envelope below.
+
+The maintained control runner is `scripts/frontier-swe-controls.ts`. It checks the checkout
+against the corpus pin, runs one CPU-runnable task at a time, appends durable rows, and
+removes images between tasks. A completed non-error `(task, mode)` pair is skipped on resume.
+Attach an already-running control job by its saved task id; do not launch a second copy.
+For a new or stopped run, from the canonical repository root:
+
+```bash
+DOCKER_HOST=unix:///run/docker-bench.sock npx tsx scripts/frontier-swe-controls.ts \
+  --repo /mnt/bench/work/frontier-swe-v2 \
+  --out /mnt/bench/work/controls/2026-10-11
+```
+
+Gold mirrors Harbor's oracle user/environment and stages `solution/solve.sh`. V2 oracle
+scripts write a fresh `HARBOR_ORACLE_FLAG` marker; the separate verifier then scores its
+image's reference. A performance baseline can earn **0 by construction**, so inspect
+`oracle.logTail`, `exitCode`, `timedOut` and grading detail before calling it a failed solve.
+Empty grades the untouched scaffold. A real numeric zero is a scored result; infrastructure
+failure has no usable score.
+
+`frontier-swe-control-ledger.ts` enforces FSWE-P007-GOLD/EMPTY: **gold = 1, empty = 0** at
+the task's corpus commit and agent image. Missing, errored or mismatched evidence excludes;
+the latest `finishedAt` wins. Positive empty floors and baseline gold below 1 stay excluded;
+no tolerance is authorized. This is a conservative cohort-admission rule, not a claim that
+every excluded task or reference solution is broken.
+
+After the existing whole control job finishes, tabulate the latest rows and inspect gold
+failures. Publish the validated `results.jsonl` to
+`~/.papercusp/bench-results/frontier-swe-v2/controls.jsonl`, then use
+`readFrontierSweControlLedger` / `admitByFrontierSweControls` to record admitted and excluded
+tasks and verify `loadFrontierSweTaskSet('frontier-swe-v2-cpu')`. The override is
+`PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL`. Every scored v2 set is gated by default and
+refuses if nothing is admitted. `controls: 'ignore'` is only for producing controls.
+
+D-015 enforces agent network policy fail-closed: `no-network` uses `--network none`;
+`allowlist` also does so unless an arm supplies an egress-restricted network. Initial
+controls started before enforcement retain their open-egress caveat in the measured
+acceptance decision; they do not prove campaign network fidelity.
+
+## Current v2 runtime and reporting contract
+
+D-004 keeps the integration on the modernization plan's maintained surfaces: P-003
+current-su/native-fleet launch adapter, P-004 stock/native references and scoped ablations,
+P-005 complete aggregate accounting, P-006 frozen protocol and P-008 Evaluation UI.
+The bespoke `makeFrontierSweRunAgent` example below is historical. A setup is runnable
+only after observed model/effort/account/runtime identity, container checkpoint/resume,
+terminal artifacts, cancellation and all-role accounting are verified. A configured
+model label alone does not prove `gpt-6-luna/max` support in a reference client.
+
+For v2, **mean@5 is primary**; best@5, AVG RANK and dominance are secondary. Complete
+task means receive equal weight. The report freezes assigned tasks/arms when supplied;
+an incomplete task makes that arm's headline and interval unavailable, while its
+complete-task conditional rollup remains explicitly labelled. Intervals resample task
+means and paired differences resample matched tasks, not individual seeds. Report
+excluded pairs, category overlap, small task counts and trials. V1 history stays separate.
+
+The portable report shows measured USD per assigned task, token totals and a descriptive
+cost/score Pareto view. Unknown cost, incomplete grades, absent attempts, observed-only
+assignments or incompatible cost bases cannot establish efficiency. Positive per-task
+winner ties retain each winner's full recorded task-trial cost; zero-outcome ties have no
+successful winner. These projections do not replace missing worker/leader/consult/retry/
+recovery telemetry, which remains modernization P-005. No headline or efficiency claim
+follows from preparation, local report tests or a conditional score.
+
 ## Prerequisites — v1 (history; provision on a dedicated grading volume, NOT the shared dev box)
 
 1. **Docker** (daemon up). 5 tasks additionally need a **datacenter GPU** (see the table).
@@ -98,7 +170,7 @@ The ingest REFUSES (exit 1, every problem listed) a non-40-hex commit, an empty 
 4. **The corpus JSONL** — the v1 corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl` is kept as
    history; its hand-pasted Python ingest is retired in favour of the committed ingest above.
 
-## Preflight (no spend)
+## V1 preflight (history; no spend)
 
 ```ts
 import { preflightFrontierSwe, describeFrontierSweRun } from './grader/frontier-swe-live';
@@ -107,7 +179,7 @@ const pf = await preflightFrontierSwe({ repoDir: process.env.PAPERCUSP_FRONTIER_
 console.log(describeFrontierSweRun('<container>'));
 ```
 
-## Bounded smoke — the gold/empty controls (P-003)
+## V1 bounded smoke — historical gold/empty controls
 
 > ✅ **VALIDATED 2026-06-18 on `libexpat-to-x86asm`** (no LLM): gold (oracle solution) → `reward.txt = 0.98511`
 > (correctness 1.0 + performance 0.9702, weights 0.5/0.5); empty (unsolved) → `0.0` ("No .so found"). This
@@ -134,7 +206,7 @@ docker rm -f "$cid" "$cid2"
 The TS path: `buildLiveFrontierSweGrader().grade([{modality:'in-container', instanceId, envRef: cid, prefix:'seed-0'}], tasks)`
 → runs `test.sh` → reads `reward.txt` → `GradeResult{ score }` → the run-result row.
 
-## Per-task envelope (from the corpus)
+## V1 per-task envelope (history)
 
 | task | bucket | gpu | agent h | mem GB | gold? |
 |---|---|---|---|---|---|
@@ -158,18 +230,18 @@ The TS path: `buildLiveFrontierSweGrader().grade([{modality:'in-container', inst
 
 `frontier-swe-cpu` = the 12 GPU-free tasks. The 5 GPU tasks need B200/H100.
 
-## Env vars
+## V1 env vars (history)
 
 - `PAPERCUSP_FRONTIER_SWE_VERSION` — the grader version pin (repo commit / image-set tag). **Required.**
 - `PAPERCUSP_FRONTIER_SWE_DIR` — the vendored checkout (preflight + gold control + ingest).
 - `PAPERCUSP_BENCH_FRONTIER_SWE_JSONL` — override the corpus path.
 - `TINKER_API_KEY` — only for `frogsgame-rl`.
 
-## Running the topology arms (code path)
+## V1 topology-arm code path (history; not the maintained v2 launch)
 
-Once a dedicated volume + ghcr auth + compute are available, the arms run through the shared topology driver —
-no bespoke launcher. Wire the FrontierSWE in-container runAgent (drives opus inside the task container) + the
-self-healing resume:
+This preserves the original v1 wiring for historical replay only. Current v2 treatment
+integration consumes the maintained modernization adapter described above; do not use
+this bespoke in-container loop to claim current Papercusp or same-model reference support:
 
 ```ts
 import { makeFrontierSweRunAgent } from '../frontier-swe-runagent';   // adapts metr-hcast singleOpusDriveArm
