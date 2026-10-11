@@ -425,7 +425,11 @@ describe('completed isolated runtime certification', () => {
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('keeps exact certification receipts through actual harness retention pruning', async () => {
-    await setup();
+    const state = await setup();
+    // A completed verifier must satisfy the retention policy's terminal-result
+    // contract; without endedAt this fixture exercises the 24-hour grace instead.
+    Object.assign(state.verifier, { startedAt: at(0), endedAt: at(50) });
+    await state.save();
     await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
     const { pruneRuns } = await import('@papercusp/verification-harness');
     for (const [harness, runId] of [['verify-tauri-headless', verifierRunId], ['native-journey', journeyRunId]]) {
