@@ -5513,6 +5513,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             attempts,
             postConnectRetries,
             klass: fwd.klass,
+            connected: Boolean(last?.connected),
             elapsedMs: Date.now() - started,
             detail: String(last?.err?.message ?? last?.err ?? "unknown"),
             forwardingResult: forwardingResultForUpstreamFailure(
