@@ -10,6 +10,16 @@ const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Testing browser graph compiles through the maintained standalone boundary before private allocation', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const built = await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
+      selected: 'testing-boundary-selected', neighbor: 'testing-boundary-neighbor', testing: true });
+    expect([...built.originals.keys()]).toContain(join(portalSource, 'apps/host/src/operator-surface-build.mjs'));
+    expect([...built.originals.keys()]).toContain(join(root, 'apps/operator/app/adv/harnesses/HarnessTestsView.tsx'));
+    expect([...built.originals.keys()].some(path => path.endsWith('/psu-connection-front-controller.mjs'))).toBe(false);
+  }, 120_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private ADV Testing scopes registry and files across pot changes, Host denial recovery and reload', async context => {
     preparePrivateRosterSocketRoot();
     await verifyPrivateHudReadPolicy();
