@@ -89,6 +89,26 @@ vi.mock('./promote-issue', async () => {
 // so coordScopeWorkspace() would return activeWorkspaceId() (=PINNED_WS), collapsing the
 // split and breaking the cross-boundary resolution the test asserts. Restore it to
 // 'default'; the pure scope helpers stay real.
+// WI-6554700010008366: claimIssue re-verifies an accepted bug's reproduction before its
+// CAS (b63ef6942f), resolving the TARGET build from the harness registry. This fixture's
+// harness (`operator:<ws>`) has no registered checkout, so the real resolver yields null and
+// every accepted bug reads `unresolved` and is refused. Pin only the build resolution at the
+// explicit AcceptedBugReproductionDeps seam (the intake-acceptance-journey precedent); the
+// build-match and ledger checks stay real, so a receipt on another build is still refused.
+vi.mock('./attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('./attention/intake-promotion')>();
+  // Inside the (hoisted) factory: a module-scope const would be in its TDZ here.
+  const currentTargetBuild = async () => `abcdef1${'0'.repeat(33)}`;
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 vi.mock('./agent-tools/coordination/log', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, coordScopeWorkspace: () => 'default' };
