@@ -10,7 +10,7 @@ import {
   authorizeWorkItemDispatch,
   assignAndWakeActionableWorkItems,
 } from './agent-tools/coordination/actionable-work-item-dispatch';
-import { WORK_ITEM_ADMISSION_PROMOTER } from './work-items-admission-promoter';
+import { WORK_ITEM_ADMISSION_PROMOTER, type PromoterRunResult } from './work-items-admission-promoter';
 import { issueOwnAuthorWhereSql } from './work-items-admission';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { getModes } from './modes/store';
@@ -84,7 +84,8 @@ interface RecoveryItem {
 }
 export interface AdmissionRecoveryDeps {
   authorize: (scope: AdmissionRecoveryScope, request: Pick<AdmissionRecoveryRequest, 'caller' | 'target' | 'authority' | 'note' | 'body'>) => Promise<void>;
-  screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) => Promise<unknown>;
+  screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) =>
+    Promise<Pick<PromoterRunResult, 'runId' | 'guardRefusals'> | void>;
   dispatch: typeof assignAndWakeActionableWorkItems;
   /** Test seam for an isolated direct-PG database; production creates a direct lock client. */
   lockSql?: Sql;
@@ -372,21 +373,28 @@ export async function runAdmissionRecoveries(
         try {
           await assertAllowed();
           const item = await readItem(sql, exact);
+          let screening: Awaited<ReturnType<AdmissionRecoveryDeps['screen']>> = undefined;
           if (item.admission === 'pending' || item.admission === 'unreviewed') {
             stage = 'screen';
-            await deps.screen(exact, assertAllowed);
+            screening = await deps.screen(exact, assertAllowed);
           }
           await assertAllowed();
           const screened = await readItem(sql, exact);
           if (screened.admission === 'pending') {
-            // WI-6554700010008443: the promoter persists every hold as payload.admissionHold, so
-            // this refusal can name the hold it asks the caller to repair.
+            // Guarded component writes leave the rows unchanged, so their current
+            // refusal lives in the screening receipt rather than admissionHold.
+            const refusals = screening?.guardRefusals?.filter(({ itemId }) => itemId === exact.workItemId) ?? [];
             const hold = screened.payload?.admissionHold as { reason?: unknown; runId?: unknown } | undefined;
-            const named = typeof hold?.reason === 'string' && hold.reason.trim()
-              ? ` (admission hold${typeof hold.runId === 'string' ? ` from run ${hold.runId}` : ''}: ${hold.reason.trim()})`
-              : ' (the promoter recorded no hold reason)';
+            const named = refusals.length > 0
+              ? ` (admission guard from run ${screening!.runId}: ${refusals.map(({ reason, detail }) => `${reason}: ${detail}`).join('; ')})`
+              : typeof hold?.reason === 'string' && hold.reason.trim()
+                ? ` (admission hold${typeof hold.runId === 'string' ? ` from run ${hold.runId}` : ''}: ${hold.reason.trim()})`
+                : ' (the promoter recorded no hold reason)';
+            const repair = refusals.some(({ reason }) => reason === 'outside-mutation-scope')
+              ? 'use the ordinary component screening/review route, then retry this same item within its authorized scope'
+              : 'repair its named admission hold and retry this same item';
             throw new AdmissionRecoveryRefused(
-              `screening left the original item pending${named}; repair its named admission hold and retry this same item`,
+              `screening left the original item pending${named}; ${repair}`,
             );
           }
           stage = 'assign';

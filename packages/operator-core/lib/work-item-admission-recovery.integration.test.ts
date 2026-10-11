@@ -150,6 +150,50 @@ describe('original-item durable admission recovery', () => {
     });
   });
 
+  it('reports current target guard refusals before a stale stored hold without changing protected rows', async () => {
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = payload || ${db.sql.json({ admissionHold: { reason: 'old ambiguity', runId: 'old-run' } })}`;
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ screen: vi.fn(async () => ({
+      runId: 'current-screen',
+      guardRefusals: [
+        { itemId: 'WI-other', canonicalId: null, reason: 'remote-owned' as const, detail: 'unrelated refusal' },
+        { itemId: scope.workItemId, canonicalId: null, reason: 'outside-mutation-scope' as const,
+          detail: 'screened component requires mutations outside the exact target set; no component writes authorized' },
+      ],
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const original = await current();
+    expect(original).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(original.payload.admissionHold).toEqual({ reason: 'old ambiguity', runId: 'old-run' });
+    expect(original.payload._admissionRecovery).toMatchObject({
+      requestId: first.request.requestId, state: 'held', stage: 'screen', pickupConfirmed: false,
+    });
+    expect(original.payload._admissionRecovery.reason).toContain('current-screen');
+    expect(original.payload._admissionRecovery.reason).toContain('outside-mutation-scope');
+    expect(original.payload._admissionRecovery.reason).toContain('no component writes authorized');
+    expect(original.payload._admissionRecovery.reason).toContain('ordinary component screening/review');
+    expect(original.payload._admissionRecovery.reason).not.toMatch(/old ambiguity|unrelated refusal/);
+    expect(d.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not attribute another item\'s guard refusal to the original stored hold', async () => {
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = payload || ${db.sql.json({ admissionHold: { reason: 'needs review', runId: 'hold-run' } })}`;
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ screen: vi.fn(async () => ({
+      runId: 'other-screen',
+      guardRefusals: [
+        { itemId: 'WI-other', canonicalId: null, reason: 'claimed' as const, detail: 'other holder' },
+      ],
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const reason = (await current()).payload._admissionRecovery.reason;
+    expect(reason).toContain('admission hold from run hold-run: needs review');
+    expect(reason).not.toMatch(/other-screen|other holder|ordinary component screening/);
+    expect(d.dispatch).not.toHaveBeenCalled();
+  });
+
   it('concurrent/repeated requests persist one identity and atomically accelerate the real routine', async () => {
     // First commit establishes the visible identity; racing retries must preserve it.
     const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
