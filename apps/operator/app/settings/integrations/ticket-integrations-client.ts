@@ -96,8 +96,13 @@ export function useTicketIntegrations(): TicketIntegrationsState {
   useEffect(() => {
     let cancelled = false;
     integrationRequest<TicketIntegrationsOverview & { userId: string }>('')
-      .then(({ userId, providers, sources, triggerPacks }) => {
-        if (!cancelled) setInitial({ userId, overview: { providers, sources, triggerPacks: triggerPacks ?? [] } });
+      .then(({ userId, providers, sources, triggerPacks, availableTriggerPacks }) => {
+        if (!cancelled) {
+          setInitial({
+            userId,
+            overview: { providers, sources, triggerPacks: triggerPacks ?? [], availableTriggerPacks: availableTriggerPacks ?? [] },
+          });
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));

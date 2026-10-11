@@ -99,7 +99,10 @@ describe('writes', () => {
     const res = await config(req('PATCH', { patch: { teamIds: ['team-a'] } }), { sourceId: SOURCE });
     expect(await res.json()).toEqual({ ok: true, config: { teamIds: ['team-a'] }, missingConfig: [] });
     expect(m.config).toHaveBeenCalledWith(m.sql, { ...SCOPE, sourceId: SOURCE, patch: { teamIds: ['team-a'] } });
-    expect(m.notify).toHaveBeenCalledWith(TICKET_INTEGRATIONS_QUERY, { workspaceId: 'workspace-1', userId: OWNER });
+    // Unscoped on purpose: the page's key is { userId }, so a { workspaceId, userId } notify
+    // never matched it (WI-6554700010008519). toHaveBeenCalledWith is exact, so a scoped
+    // notify fails here.
+    expect(m.notify).toHaveBeenCalledWith(TICKET_INTEGRATIONS_QUERY);
   });
 
   it('PATCH config without a patch object is a 400 that reaches nothing', async () => {
@@ -117,7 +120,7 @@ describe('writes', () => {
     expect(m.setRule).toHaveBeenCalledWith(m.sql, {
       ...SCOPE, sourceId: SOURCE, preset: 'label', value: 'bug', harness: 'papercusp', workKind: 'task', createdBy: `owner:${OWNER}`,
     });
-    expect(m.notify).toHaveBeenCalledWith(TICKET_INTEGRATIONS_QUERY, { workspaceId: 'workspace-1', userId: OWNER });
+    expect(m.notify).toHaveBeenCalledWith(TICKET_INTEGRATIONS_QUERY);
   });
 
   it('DELETE a rule disables it by the path ids', async () => {
