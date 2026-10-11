@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "pg_textsearch (BM25) configuration: preload is mandatory, name the index, compact by hand"
-description: "How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be in shared_preload_libraries (CREATE EXTENSION is not enough), every query names its index explicitly through to_bm25query, and indexes use compaction = 'manual' so the bm25Maintenance workflow compacts, rebuilds and reclaims them. Covers the per-call engine choice, the kill-switch flag, the lock_timeout trap for CONCURRENTLY builds, and how to check a host."
+description: "How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be preloaded (CREATE EXTENSION is not enough), every query names its index through to_bm25query, indexes use compaction = 'manual' under the bm25Maintenance workflow, and work_items and session_turns also fuse a legacy exact list (D-016), so they keep their tsvector columns. Covers the kill-switch, the lock_timeout trap and host checks."
 type: Convention
 discovered: 2026-10-11
 tags: ["search", "bm25", "pg_textsearch", "postgres", "lexical-ranking"]
@@ -16,6 +16,7 @@ documents:
   - "packages/operator-core/lib/search/lexical/rank.ts"
   - "packages/operator-core/lib/search/lexical/bm25-maintenance.ts"
   - "packages/operator-core/lib/search/lexical/corpora.ts"
+  - "packages/operator-core/lib/agent-tools/search/sources.ts"
   - "packages/operator-core/lib/dbos/periodic-workflows.ts"
   - "libs/papercusp/libs/db/sql/1447-bm25-pg-textsearch-indexes.sql"
 plans:
@@ -71,6 +72,18 @@ A BM25 query names its index by schema-qualified name:
 
 Do not hand-write this. Every call site goes through `lexicalLeg()` in `packages/operator-core/lib/search/lexical/rank.ts`. It takes the corpus table, the query, and the call site's legacy fragments, picks the engine per call, and renders the expression from the corpus registry in `packages/operator-core/lib/search/lexical/corpora.ts`. The registry lists each corpus's table, index name, text config (`english`, except `audit_log`, which uses `simple`) and its legacy tsvector column.
 
+## Exact-list corpora (D-016)
+
+pg_textsearch 1.5.1 has only `to_bm25query`: OR semantics, with no AND, phrase or proximity operator. On a long document whose terms are each common, BM25 alone can rank a verbatim fragment's target far down (measured: ranks 11 to over 500), where the legacy `plainto_tsquery` AND filter with `ts_rank_cd` cover density ranks it first or second. So, whenever BM25 is live, the `work_item` and `session_turn` sources of `search:semantic` (`packages/operator-core/lib/agent-tools/search/sources.ts`) also run the legacy AND query as an **exact list**, and fuse it with the BM25 list by reciprocal-rank fusion over row identity: `mergeExactAndBm25()` in `rank.ts`.
+
+The exact list is gated. A capped GIN probe counts the AND set first, and the list runs only when that count is above 0 and at most `EXACT_LIST_MAX_AND_ROWS` (`5000`), defined in `rank.ts`. A larger AND set skips the exact list and returns the BM25 list alone.
+
+The kept corpora are `harness_shared.work_items` (`_search`) and `harness_shared.session_turns` (`text_tsv`).
+
+- The exact list reads the stored legacy tsvector column and its GIN index, so these corpora keep both. The registry marks them `keepLegacyColumn: 'exact-list'` (`corpora.ts`), and retirement skips them (step 6 below).
+- `corpora.test.ts` pins the kept set to the exact-list sources in both directions. If an exact list is removed, that test fails until `keepLegacyColumn` is dropped too, which returns the column to retirement.
+- The other BM25 sources rank with BM25 alone. Whether they lose fragment queries is unmeasured; WI-6554700010008535 owns that. Reclaiming the two kept columns once pg_textsearch can express AND or phrase matching is WI-6554700010008546.
+
 ## Compaction is manual, and maintenance owns it
 
 Indexes are created `WITH (text_config = ..., compaction = 'manual')` (`bm25_index_ddl`, migration 1447), so pg_textsearch never compacts on its own. The `bm25Maintenance` DBOS scheduled workflow (`packages/operator-core/lib/dbos/periodic-workflows.ts`, crontab `30 */15 * * * *`, so every 15 minutes) runs `runBm25Maintenance()` from `packages/operator-core/lib/search/lexical/bm25-maintenance.ts`:
@@ -80,7 +93,7 @@ Indexes are created `WITH (text_config = ..., compaction = 'manual')` (`bm25_ind
 3. **BUILD**: at most one `CREATE INDEX CONCURRENTLY` per run. Never-attempted builds go before ones that already failed, so one failing index cannot starve the rest. An INVALID index is dropped first, because the DDL is `IF NOT EXISTS` and would otherwise skip it forever.
 4. **COMPACT**: `bm25_compact_step(idx)` while `bm25_needs_compaction(idx)` is true, up to a per-run step budget.
 5. **RECLAIM** (plan decision D-010): compaction merges segments but never shrinks the index file. An index whose file exceeds 1.4x its estimated live bytes (and is at least 8 MB) is rebuilt with `REINDEX INDEX CONCURRENTLY`, at most one per run.
-6. **RETIRE**: once migration 1452 is armed, swaps each legacy stored tsvector column for a VIRTUAL generated column (D-012) when its corpus has a valid BM25 index.
+6. **RETIRE**: once migration 1452 is armed, swaps each legacy stored tsvector column for a VIRTUAL generated column (D-012) when its corpus has a valid BM25 index. The exact-list corpora are skipped and reported `kept:exact-list` (D-016), because their exact list reads the stored column and its GIN index.
 
 The workflow runs whether or not the flag is on. The indexes take every write either way, so turning the flag back on never lands on a degraded index.
 
@@ -90,7 +103,7 @@ The workflow runs whether or not the flag is on. The indexes take every write ei
 
 ## The kill-switch
 
-Turning `papercusp-bm25-lexical-ranking` OFF (via `/admin/features`) puts every call site back on the legacy `ts_rank_cd` fragments. Before migration 1452 runs, that path is still indexed by the legacy GIN indexes. After it, the legacy columns are virtual and unindexed, so flag-off still returns correct results but is slow on large corpora. That is why 1452 is armed only after the recorded soak (plan decision D-013).
+Turning `papercusp-bm25-lexical-ranking` OFF (via `/admin/features`) puts every call site back on the legacy `ts_rank_cd` fragments. Before migration 1452 runs, that path is still indexed by the legacy GIN indexes. After it, the retired legacy columns are virtual and unindexed, so flag-off still returns correct results but is slow on those corpora; the two exact-list corpora stay indexed. That is why 1452 is armed only after the recorded soak (plan decision D-013).
 
 ## Health
 
@@ -98,5 +111,5 @@ Turning `papercusp-bm25-lexical-ranking` OFF (via `/admin/features`) puts every 
 
 ## Related
 
-- [The lexical leg is ts_rank_cd, not BM25](/internal/docs/agent-insights/lexical-leg-is-ts-rank-cd-not-bm25) describes the legacy ranker, which is still what runs when any condition above fails.
-- Plan `bm25-lexical-search-evoke-adoption-2026-10-10` (decisions D-002 engine choice, D-010 reclaim, D-012 retirement, D-013 soak).
+- [The lexical leg is ts_rank_cd, not BM25](/internal/docs/agent-insights/lexical-leg-is-ts-rank-cd-not-bm25) describes the legacy ranker, which is still what runs when any condition above fails, and what the exact list uses.
+- Plan `bm25-lexical-search-evoke-adoption-2026-10-10` (decisions D-002 engine choice, D-010 reclaim, D-012 retirement, D-013 soak, D-016 exact list).
