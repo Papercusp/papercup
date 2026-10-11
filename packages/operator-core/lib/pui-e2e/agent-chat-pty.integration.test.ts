@@ -1084,7 +1084,7 @@ class PuiPane {
   async waitForSendReady(opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const { ok, maxLateMs } = await pollUntil(() => isSendReady(
-      this.screen(), this.setupDriverArmed || this.setupDriverRunning,
+      this.screen(), this.setupDriverRunning,
     ), {
       timeoutMs,
       beforeCheck: () => this.checkProviderCapacity('Waiting for send readiness'),
@@ -8044,7 +8044,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           responses: second.responses.slice(-20),
           frames,
           readiness: second.readiness,
-          screen: resumedPane.screen(),
+          screen: resumedPane.failureScreen(),
         }),
       );
       throw error;

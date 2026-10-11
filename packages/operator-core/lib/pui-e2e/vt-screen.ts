@@ -209,8 +209,8 @@ export const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 
 /** Composer readiness shared by the PTY journeys and their frame regressions. */
 export function screenIsSendReady(screen: string, setupPending = false): boolean {
   // The setup modal is painted over a composer whose ready footer remains
-  // visible. Its asynchronous PTY driver can also be armed before the first
-  // modal frame arrives. Neither state accepts an owner message yet.
+  // visible. Wait while its asynchronous PTY driver is running. Merely
+  // arming that driver still permits the first draft that opens the wizard.
   if (setupPending || screenContains(screen, '┌ New session —')) return false;
   return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));
 }

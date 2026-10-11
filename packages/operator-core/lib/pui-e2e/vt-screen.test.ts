@@ -10,13 +10,18 @@ describe('composer readiness during new-session setup', () => {
     expect(screenIsSendReady(marker)).toBe(true);
   });
 
-  test('waits for the armed asynchronous setup driver before its first frame arrives', () => {
+  test('waits for a running asynchronous setup driver until its final frame arrives', () => {
     expect(screenIsSendReady('Message — Enter send', true)).toBe(false);
     expect(screenIsSendReady('Message — Enter send', false)).toBe(true);
   });
 
   test('does not mistake ordinary transcript wording for a setup modal', () => {
     expect(screenIsSendReady('agent: New session setup is complete.\nEnter sends')).toBe(true);
+  });
+
+  test('accepts the initial draft composer before submission opens setup', () => {
+    const frame = 'Message — Enter send · ↑↓ history · Esc cancel\n>\npot papercusp · role operator · session new';
+    expect(screenIsSendReady(frame, false)).toBe(true);
   });
 });
 
