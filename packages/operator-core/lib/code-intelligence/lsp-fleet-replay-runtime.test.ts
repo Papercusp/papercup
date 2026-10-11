@@ -631,10 +631,16 @@ describe('independent replay source materialization', () => {
     const f = fixture();
     const helper = join(f.input.rootPath, 'papercusp-desktop/bin/lib/pinned-deps.sh');
     mkdirSync(dirname(helper), { recursive: true });
-    writeFileSync(helper, '#!/usr/bin/env bash\n[ "$1" = snapshot-locked ] && [ "$4" = copy ] || exit 2\nprintf "mode=copy\\ntrees=0\\n" > "$3/.papercusp-pinned-deps"\n');
+    writeFileSync(helper, '#!/usr/bin/env bash\nif [ "$1" = preflight ]; then cat >/dev/null; exit 0; fi\n[ "$1" = snapshot-locked ] && [ "$4" = copy ] && [ -f "$5" ] || exit 2\nprintf "mode=copy\\ntrees=0\\n" > "$3/.papercusp-pinned-deps"\n');
     const execute = childProcess.execFileSync;
     let snapshotCalls = 0;
+    let preflightCalls = 0;
     const spy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command: string, args: string[], options: { timeout?: number }) => {
+      if (args.includes('preflight')) {
+        preflightCalls++;
+        expect(existsSync(f.target)).toBe(false);
+        expect(f.options.checkSourceHeadroom).not.toHaveBeenCalled();
+      }
       if (args.includes('snapshot-locked')) {
         snapshotCalls++;
         // Model a still-progressing snapshot past the former deadline without
@@ -648,9 +654,27 @@ describe('independent replay source materialization', () => {
     try {
       const copied = materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: undefined });
       expect(snapshotCalls).toBe(1);
+      expect(preflightCalls).toBe(1);
       expect(readFileSync(join(f.target, '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
       expect(copied.sourceSnapshot).toBeDefined();
     } finally { spy.mockRestore(); syncBuiltinESMExports(); }
+  });
+  it.each(['dangling-bin', 'unplanned-workspace'])('WI-41095 actual helper refuses %s before source admission/allocation', kind => {
+    const f = fixture();
+    for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh']) {
+      mkdirSync(dirname(join(f.input.rootPath, path)), { recursive: true });
+      cpSync(join(process.cwd(), path), join(f.input.rootPath, path));
+    }
+    mkdirSync(join(f.input.rootPath, 'node_modules/.bin'), { recursive: true });
+    if (kind === 'dangling-bin') symlinkSync('../vitest/vitest.mjs', join(f.input.rootPath, 'node_modules/.bin/vitest'));
+    else {
+      mkdirSync(join(f.input.rootPath, 'excluded')); writeFileSync(join(f.input.rootPath, 'excluded/index.js'), 'omitted');
+      symlinkSync('../excluded', join(f.input.rootPath, 'node_modules/workspace'));
+    }
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: undefined }))
+      .toThrow(kind === 'dangling-bin' ? 'dangling-pinned-dependency-link' : 'unplanned-pinned-dependency-target');
+    expect(existsSync(f.target)).toBe(false);
+    expect(f.options.checkSourceHeadroom).not.toHaveBeenCalled();
   });
   it('refuses an external compiler or an escaping alias before creating the source copy', () => {
     const f = fixture();

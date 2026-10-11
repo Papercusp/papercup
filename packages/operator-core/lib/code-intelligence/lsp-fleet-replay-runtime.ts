@@ -685,6 +685,12 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     sourceBytes += Number(info.size) + 4096 * (relative(donor, source).split('/').length + 1);
     if (!Number.isSafeInteger(sourceBytes)) throw new Error('replay-source-size-unmeasured');
   }
+  if (!options.snapshotDependencies) {
+    // WI-41095: share the maintained source boundary and check .bin too,
+    // before headroom admission or allocating evidence. The locked copy rechecks.
+    execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'preflight', dependencyDonor, '-'],
+      { encoding: 'utf8', input: JSON.stringify(paths) });
+  }
   (options.checkSourceHeadroom ?? ((root, out, bytes) => {
     // Reuse the host copy lease and donor-scoped reserve policy. Check-only
     // never invokes the generation reaper on retained replay evidence. This
@@ -748,7 +754,8 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
     donor, rootPath: target, sourcePopulation, sourceFiles: hashes, absent, loadedRuntime: 'unmeasured' }, null, 2), { flag: 'wx' });
   options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
-    execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
+    execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy',
+      join(out, '.replay-source-capture.json')],
       // The maintained helper detects stalled copy I/O and cleans up its child.
       // A whole-snapshot deadline includes mutex waits and every dependency tree,
       // so it can terminate a healthy copy without a completed snapshot stamp.
