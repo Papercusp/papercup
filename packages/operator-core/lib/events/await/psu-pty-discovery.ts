@@ -38,6 +38,27 @@ import { mapWithConcurrency } from '../../gym/concurrency';
 // and disposable probes to redirect both sides away from the live corpus.
 export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
 
+/** Mirror of psu-pty-host.mjs HOST_HANDOFF_FILE_SUFFIX (WI-6554700010008431). */
+export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';
+
+/**
+ * Mirror of psu-pty-host.mjs isDiscoveryRecordFileName (WI-6554700010008431): is this
+ * directory entry a host discovery record (`<key>.json`)? The host-code adoption handoff
+ * (`<key>.handoff.json`) also ends in `.json`; a sweep that globbed bare `.json` read it
+ * as a pid-less dead host and unlinked it, so a re-exec'd successor found no orders and
+ * cold-booted without its carry. Every lister/sweeper here goes through this predicate;
+ * psu-pty-dir-async-sweeps.test.ts pins it against the host's own `handoffPathFor`.
+ */
+export function isDiscoveryRecordFileName(name: string): boolean {
+  return name.endsWith('.json') && !name.endsWith(HOST_HANDOFF_FILE_SUFFIX);
+}
+
+/** Mirror of psu-pty-host.mjs looksLikeDiscoveryRecord: a parsed record counts as a
+ *  discovery record only if it carries `pid` or `sock`; any other JSON is left alone. */
+export function looksLikeDiscoveryRecord(rec: unknown): boolean {
+  return !!rec && typeof rec === 'object' && ('pid' in rec || 'sock' in rec);
+}
+
 /** Shared wire ceiling with psu-pty-host.mjs. Enforce it before opening a
  * socket as well as host-side so an accidental giant wake fails cheaply and
  * never depends on backpressure or the receiver's implementation age. */
@@ -767,7 +788,7 @@ export async function listLiveHostsAsync(
   const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
   let files: string[];
   try {
-    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+    files = (await fsp.readdir(dir)).filter(isDiscoveryRecordFileName);
   } catch {
     return [];
   }
@@ -876,7 +897,7 @@ export async function pruneDeadDiscoveryFilesAsync(
   } catch {
     return 0; // no discovery dir yet — nothing to prune
   }
-  const files = entries.filter((f) => f.endsWith('.json'));
+  const files = entries.filter(isDiscoveryRecordFileName);
   let pruned = await pruneAbandonedTempFilesAsync(
     dir,
     entries,
@@ -893,6 +914,9 @@ export async function pruneDeadDiscoveryFilesAsync(
       pruned += 1;
       continue;
     }
+    // WI-6554700010008431: parseable JSON that is not a discovery record (no pid/sock)
+    // is some other writer's file — never ours to reap as a "dead host".
+    if (!looksLikeDiscoveryRecord(h)) continue;
     const alive = !!(h && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid));
     if (alive) continue;
     await safeUnlinkAsync(metaPath);
