@@ -26,6 +26,9 @@ import { harnessArg } from '../_harness-scope';
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { emitScorecardForToolContext, scorecardEmitArgs, SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
+import { listScorecards } from '../../scorecards';
+import { getBuildInfo } from '../../build-info';
+import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -51,6 +54,8 @@ type EvaluatorRow = {
   scorecardDraft?: unknown;
 };
 
+type StrandedCard = { issueId: string; evaluatorBuild: { sha: string; version: string } };
+
 type ClauseOutcome = {
   specId: string;
   specRevision: number | null;
@@ -61,10 +66,51 @@ type ClauseOutcome = {
     | { status: 'would-file' }
     | { status: 'not-passing' }
     | { status: 'refused'; code: string | null; error: string };
+  /** The build-stranded pending card this clause's new card superseded (or, under dryRun, would). */
+  strandedSuperseded?: StrandedCard;
 };
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
+ * WI-6554700010008541: find a pending card whose grading audit this host can never dispatch.
+ *
+ * The grading-integrity sweep dispatches a pending card only on a host serving the card's
+ * recorded evaluator build (grading-integrity.ts, evaluatorBuildDriftPendingCards). Emit
+ * refuses every new same-rubric, same-subject card while that card is pending. Once the host
+ * that minted the card moves to a newer build, nothing settles it, and the clause cannot be
+ * certified again. Superseding the card with a freshly reproduced one is emit's own exit
+ * (its grading_audit_required refusal names it).
+ *
+ * This returns a card only when superseding it cannot cut across live work:
+ *   - it is the ONLY pending same-subject card (otherwise which card blocks is ambiguous);
+ *   - it records an evaluator build that differs from this host's build;
+ *   - it holds no unexpired dispatch reservation, so no auditor is working on it now.
+ */
+async function findBuildStrandedPendingCard(
+  rubricRef: string,
+  subject: { kind?: string | null; ref: string },
+  now: number = Date.now(),
+): Promise<StrandedCard | null> {
+  const pending = ((await listScorecards({ rubricRef, subjectRef: subject.ref, limit: 100 })) ?? []).filter(
+    (card) =>
+      card.gradingAudit?.state === 'pending' &&
+      card.subject?.ref === subject.ref &&
+      (card.subject?.kind ?? null) === (subject.kind ?? null) &&
+      card.supersededBy == null &&
+      !card.retracted,
+  );
+  if (pending.length !== 1) return null;
+  const card = pending[0]!;
+  const recorded = card.rerunRecipe?.evaluatorBuild;
+  if (!recorded) return null;
+  const live = getBuildInfo();
+  if (recorded.sha === live.sha && recorded.version === live.version) return null;
+  const reservedAt = Date.parse(card.gradingAudit?.dispatchReservation?.reservedAt ?? '');
+  if (Number.isFinite(reservedAt) && now - reservedAt < GRADING_AUDIT_RESERVATION_TTL_MS) return null;
+  return { issueId: card.issueId, evaluatorBuild: { sha: recorded.sha, version: recorded.version } };
 }
 
 export default defineTool({
@@ -77,7 +123,7 @@ export default defineTool({
       "Reading one clause's ratings without filing — plans:evaluate-spec-test-adequacy. Filing any other rubric — scorecards:emit.",
     chaining: 'plans:bind-spec-evidence → plans:certify-spec-clauses → work_items:complete.',
     returns:
-      '{ ok, dryRun, counts, clauses } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
+      '{ ok, dryRun, counts, clauses } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). A row also carries strandedSuperseded { issueId, evaluatorBuild } when its card superseded a pending card whose audit no host can dispatch (recorded on a different evaluator build, no live reservation). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
     seeAlso: ['plans:evaluate-spec-test-adequacy', 'scorecards:emit'],
   },
   capability: 'coord:write',
@@ -171,7 +217,7 @@ export default defineTool({
         });
         continue;
       }
-      const emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as {
+      type EmitReply = {
         ok?: unknown;
         created?: unknown;
         issueId?: unknown;
@@ -180,6 +226,22 @@ export default defineTool({
         code?: unknown;
         error?: unknown;
       };
+      let emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as EmitReply;
+      // A card stranded on a retired evaluator build blocks this clause forever (see
+      // findBuildStrandedPendingCard). Supersede it once with the card just reproduced.
+      let strandedSuperseded: StrandedCard | undefined;
+      if (emitted.code === 'grading_audit_required' && !parsed.data.supersedes && parsed.data.subject) {
+        const stranded = await findBuildStrandedPendingCard(parsed.data.rubricRef, parsed.data.subject);
+        if (stranded) {
+          strandedSuperseded = stranded;
+          emitted = (await emitScorecardForToolContext(
+            { ...parsed.data, supersedes: stranded.issueId },
+            ctx,
+            { previewOnly: dryRun },
+          )) as EmitReply;
+        }
+      }
+      const strandedField = strandedSuperseded ? { strandedSuperseded } : {};
       if (emitted.ok === true) {
         const unchanged = emitted.created === false && emitted.reason === 'unchanged-evidence';
         const card = dryRun && !unchanged
@@ -193,6 +255,7 @@ export default defineTool({
         clauses.push({
           ...base,
           card,
+          ...strandedField,
         });
       } else {
         clauses.push({
@@ -202,6 +265,7 @@ export default defineTool({
             code: typeof emitted.code === 'string' ? emitted.code : null,
             error: typeof emitted.error === 'string' ? emitted.error : 'scorecards:emit refused without an error message',
           },
+          ...strandedField,
         });
       }
     }

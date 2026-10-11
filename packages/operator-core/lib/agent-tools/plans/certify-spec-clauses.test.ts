@@ -104,9 +104,11 @@ vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...args: unknown[]) => captureImprovement(...args),
 }));
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: async () => null }));
+// Emit's supersede validation reads the superseded card through getIssue.
+const getIssue = vi.fn(async (_id: string): Promise<unknown> => null);
 vi.mock('../../issues-engineer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../issues-engineer')>()),
-  getIssue: async () => null,
+  getIssue: (id: string) => getIssue(id),
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
@@ -325,6 +327,7 @@ beforeEach(async () => {
   getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: null, meaningRevision: null });
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
   listScorecards.mockResolvedValue([]);
+  getIssue.mockImplementation(async () => null);
   let seq = 0;
   captureImprovement.mockImplementation(async () => ({ ok: true, created: true, issue: { id: `EI-CERT-${++seq}` } }));
 });
@@ -546,6 +549,105 @@ describe('plans:certify-spec-clauses', () => {
     });
     expect(result.clauses?.[0]?.card.error).toContain('pending grading audit');
     expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010008541: the grading-integrity sweep dispatches a pending card only on a
+  // host serving its recorded evaluator build. Once that build is retired the card can
+  // never be audited, and emit's grading_audit_required refusal would block the clause
+  // forever. Certify supersedes such a card with the card it just reproduced.
+  describe('a pending card stranded on a retired evaluator build', () => {
+    const LIVE_BUILD = { sha: 'certify-evaluator-sha', version: '1.0.0' };
+    const RETIRED_BUILD = { sha: 'retired-evaluator-sha', version: '1.0.0' };
+
+    /** File one real card so the stranded card's stored observation is emit-shaped. */
+    const realObservation = async () => {
+      const filed = await certify({ specIds: ['SPEC-PASS'] });
+      expect(filed.clauses?.[0]?.card.status).toBe('filed');
+      const raw = (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } })
+        .payloadExtra.observation;
+      captureImprovement.mockClear();
+      dispatchTool.mockClear();
+      return raw;
+    };
+
+    const arrangeStranded = async (
+      evaluatorBuild: { sha: string; version: string },
+      gradingAudit: Record<string, unknown> = {},
+    ) => {
+      const observation = await realObservation();
+      const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+      const stranded = {
+        issueId: 'EI-stranded-pending',
+        createdBy: 'su-certifier',
+        sourceHive: 'papercusp',
+        rubricRef: 'spec-test-adequacy',
+        subject: { kind: 'plan', ref: subjectRef },
+        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-11T12:36:00.000Z', ...gradingAudit },
+        supersededBy: null,
+        rerunRecipe: { evaluatorBuild },
+        missingKeys: [],
+        extraKeys: [],
+      };
+      listScorecards.mockImplementation(async (filter: { rubricRef?: string; subjectRef?: string }) =>
+        filter.rubricRef === 'spec-test-adequacy' && filter.subjectRef === subjectRef ? [stranded] : []);
+      getIssue.mockImplementation(async (id: string) =>
+        id === stranded.issueId ? { id, payload: { observation } } : null);
+    };
+
+    it('supersedes the stranded card and reports it on the clause row', async () => {
+      await arrangeStranded(RETIRED_BUILD);
+
+      const preview = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+
+      expect(preview).toMatchObject({
+        ok: true,
+        counts: { passing: 1, refused: 0 },
+        clauses: [{
+          specId: 'SPEC-PASS',
+          card: { status: 'would-file' },
+          strandedSuperseded: { issueId: 'EI-stranded-pending', evaluatorBuild: RETIRED_BUILD },
+        }],
+      });
+
+      const filed = await certify({ specIds: ['SPEC-PASS'] });
+
+      expect(filed).toMatchObject({
+        ok: true,
+        counts: { filed: 1, refused: 0 },
+        clauses: [{ card: { status: 'filed' }, strandedSuperseded: { issueId: 'EI-stranded-pending' } }],
+      });
+      const written = asStructuredObservation(
+        (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation,
+      );
+      expect(written?.supersedes).toBe('EI-stranded-pending');
+    });
+
+    it('still refuses while the pending card was minted by the live evaluator build', async () => {
+      await arrangeStranded(LIVE_BUILD);
+
+      const result = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+
+      expect(result).toMatchObject({
+        ok: false,
+        clauses: [{ card: { status: 'refused', code: 'grading_audit_required' } }],
+      });
+      expect(result.clauses?.[0]).not.toHaveProperty('strandedSuperseded');
+      expect(getIssue).not.toHaveBeenCalled();
+    });
+
+    it('still refuses while an auditor holds a live dispatch reservation on the card', async () => {
+      await arrangeStranded(RETIRED_BUILD, {
+        dispatchReservation: { key: 'grading-audit:EI-stranded-pending', reservedAt: new Date().toISOString() },
+      });
+
+      const result = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+
+      expect(result).toMatchObject({
+        ok: false,
+        clauses: [{ card: { status: 'refused', code: 'grading_audit_required' } }],
+      });
+      expect(result.clauses?.[0]).not.toHaveProperty('strandedSuperseded');
+    });
   });
 
   it('dryRun reports unchanged when the same evaluator evidence is already filed', async () => {
