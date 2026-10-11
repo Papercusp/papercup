@@ -421,6 +421,26 @@ async function supersedeSiblings(input: {
  */
 export type BindSpecEvidenceRefusalCode = 'derived_binding_invalid' | 'mutation_target_rejected';
 
+/**
+ * A binding expanded from a test run must still satisfy the hand-written binding schema;
+ * anything else is refused as `derived_binding_invalid`, naming the run it came from.
+ */
+export function parseDerivedBinding(
+  binding: unknown,
+  testRunId: number,
+):
+  | { ok: true; binding: z.infer<typeof bindingSchema> }
+  | { ok: false; error: 'derived_binding_invalid'; testRunId: number; message: string } {
+  const parsed = bindingSchema.safeParse(binding);
+  if (parsed.success) return { ok: true, binding: parsed.data };
+  return {
+    ok: false,
+    error: 'derived_binding_invalid' satisfies BindSpecEvidenceRefusalCode,
+    testRunId,
+    message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+  };
+}
+
 export interface MutationTargetRefusal {
   clause: string;
   targeted: unknown;
@@ -666,19 +686,12 @@ export default defineTool({
             if (!isTestRunBinding(item)) return { ok: true, binding: item };
             const expansion = await expandTestRunBinding(item, runScope!);
             if (!expansion.ok) return expansion;
-            const parsed = bindingSchema.safeParse(expansion.binding);
-            if (!parsed.success) {
-              return {
-                ok: false,
-                error: 'derived_binding_invalid' satisfies BindSpecEvidenceRefusalCode,
-                testRunId: item.fromTestRun,
-                message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
-              };
-            }
+            const parsed = parseDerivedBinding(expansion.binding, item.fromTestRun);
+            if (!parsed.ok) return parsed;
             const asCommitted = asCommittedRunOf(expansion.binding.details);
             return {
               ok: true,
-              binding: parsed.data,
+              binding: parsed.binding,
               ...(asCommitted ? { asCommitted } : {}),
               derived: {
                 testRunId: expansion.binding.testRunId,
