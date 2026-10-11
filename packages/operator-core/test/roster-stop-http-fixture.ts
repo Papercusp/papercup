@@ -326,10 +326,30 @@ async function coordCanary(health: unknown) {
         [foreignWorkspace, overviewPlans.foreignSlug]]) {
         const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: active\n---\n\n## Now\nPrivate Overview read canary.\n`;
         await sql`INSERT INTO harness_shared.harness_plans
-          (workspace_id, harness_slug, plan_slug, title, status, content, content_hash)
-          VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'active', ${content}, ${createHash('sha256').update(content).digest('hex')})`;
+          (workspace_id, harness_slug, plan_slug, title, status, op_status, content, content_hash)
+          VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'active', 'started', ${content}, ${createHash('sha256').update(content).digest('hex')})`;
       }
       writeFileSync(join(evidence, 'portal-overview-seed.json'), JSON.stringify({ ...overviewPlans, workspace, foreignWorkspace }, null, 2));
+      // The real list read creates built-in rubric plans with newer timestamps.
+      // Overview prioritizes operationally started rows, ahead of merely active
+      // rows. Check that eligibility on the actual API before allocating Chrome.
+      const url = new URL('/api/zero-harness/rest-query', base);
+      url.searchParams.set('name', 'plans.list');
+      url.searchParams.set('args', JSON.stringify({ includeFinished: false, includeArchived: true, includeLegacy: true }));
+      const response = await fetch(url, { headers: { cookie: cookie(ownSession.token) }, signal: AbortSignal.timeout(25_000) });
+      const body = await response.json() as { rows?: Array<{ slug: string; status: string; startStatus: string | null; updated: string | null }> };
+      writeFileSync(join(evidence, 'portal-overview-preflight.json'), JSON.stringify({ status: response.status(), body,
+        expectation: 'selected and neighbor must be among six started-priority rows before the browser; foreign excluded' }, null, 2));
+      assert.equal(response.status, 200);
+      assert.ok(Array.isArray(body.rows), 'Overview preflight requires actual plan rows');
+      const started = body.rows.filter(row => row.startStatus === 'started')
+        .sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? '')).slice(0, 6);
+      for (const slug of [overviewPlans.selectedSlug, overviewPlans.neighborSlug]) {
+        assert.ok(started.some(row => row.slug === slug && row.status === 'active'),
+          `Overview preflight: ${slug} is not eligible for the bounded started-priority tile`);
+      }
+      assert.ok(!body.rows.some(row => row.slug === overviewPlans!.foreignSlug), 'Overview API preflight must exclude foreign workspace');
+      console.log('ROSTER_STOP_HTTP_PHASE overview-plan-preflight-ready');
     }
     if (process.env.ROSTER_PLANS_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
