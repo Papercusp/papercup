@@ -18,7 +18,7 @@ import type { CensusDeclaration } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { templateDatabaseCensusDeclarations, maintenanceDatabaseCensusDeclarations } from './state-census-producers';
 import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from './state-census-producers';
-import { migrationProducerTables, migrationDatabaseCensusDeclarations } from './state-census-producers';
+import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources } from './state-census-producers';
 import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer, accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer } from './state-census-producers';
 import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration, affectedTestCacheCensusProducer } from './state-census-producers';
 import { planTemplateStoreCensusProducer, historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from './state-census-producers';
@@ -316,6 +316,24 @@ describe('secret census producer adapters', () => {
     expect(migrationDatabaseCensusDeclarations(entry, tables, sources)[0]).toMatchObject({ name: 'arbitrary', classification: 'state', producer: 'fixture:migrations' });
     expect(migrationDatabaseCensusDeclarations(entry, tables, [{ producer: 'fixture:migrations', tables: [...tables, 'public.new_feature'] }])[0])
       .toMatchObject({ classification: 'state', producer: 'fixture:migrations:migration-prefix:2/3' });
+  });
+  it('discovers registered sibling migrations while excluding linked and missing sources', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'registered-migration-census-'));
+    try {
+      const app = join(directory, 'sibling');
+      const linked = join(directory, 'linked');
+      for (const path of [app, linked]) await mkdir(join(path, 'packages/data/src'), { recursive: true });
+      const source = join(app, 'packages/data/src/migrations.ts');
+      await writeFile(source, 'export const CALENDAR_MIGRATIONS = [`CREATE TABLE calendars (id text)`, `CREATE TABLE calendar_events (id text)`]; throw new Error("must not execute");');
+      await symlink(source, join(linked, 'packages/data/src/migrations.ts'));
+      const result = await registeredProjectMigrationSources([
+        { slug: 'calendar', path: app }, { slug: 'duplicate', path: app },
+        { slug: 'linked', path: linked }, { slug: 'missing', path: join(directory, 'absent') },
+      ]);
+      expect(result).toEqual([{ producer: `app-migrations:registry:calendar:${app}`, tables: ['public.calendars', 'public.calendar_events'] }]);
+      expect(migrationDatabaseCensusDeclarations({ kind: 'database', root: 'postgres-cluster:123', name: 'calendar_app' }, result[0].tables, result)[0])
+        .toMatchObject({ classification: 'state', producer: result[0].producer });
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it('joins local service database config with the measured catalogue and excludes remote endpoints', async () => {
     const path = await mkdtemp(join(tmpdir(), 'unit-db-census-'));

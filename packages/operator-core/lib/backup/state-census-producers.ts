@@ -594,6 +594,32 @@ export function migrationProducerTables(source: string): string[] {
   return [...tables];
 }
 
+/** Read literal app migrations from canonical registered project paths without executing source. */
+export async function registeredProjectMigrationSources(projects: readonly { slug: string; path: string }[]): Promise<Array<{ producer: string; tables: string[] }>> {
+  const sources: Array<{ producer: string; tables: string[] }> = [];
+  const seen = new Set<string>();
+  for (const project of projects) {
+    if (seen.has(project.path)) continue;
+    seen.add(project.path);
+    const path = join(project.path, 'packages', 'data', 'src', 'migrations.ts');
+    let handle;
+    try {
+      if (!(await lstat(path)).isFile()) continue;
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+      throw error;
+    }
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || metadata.size > 1_048_576) continue;
+      const tables = migrationProducerTables(await handle.readFile('utf8'));
+      if (tables.length >= 2) sources.push({ producer: `app-migrations:registry:${project.slug}:${project.path}`, tables });
+    } finally { await handle.close(); }
+  }
+  return sources;
+}
+
 /** A producer's consecutive migration-table prefix establishes retained state.
  * Older schemas stay exportable without claiming the latest migrations applied.
  * This identifies schema provenance, not live application identity or contents.

@@ -13,7 +13,8 @@ import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-di
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
-import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { migrationProducerTables, migrationDatabaseCensusDeclarations, registeredProjectMigrationSources } from '../packages/operator-core/lib/backup/state-census-producers';
+import { loadHarnessRegistry } from '../packages/operator-core/lib/harness-registry';
 import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
 import { buildExpected } from './templates-mirror-sync.mjs';
@@ -56,6 +57,12 @@ const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
 const catalogEntries: CensusEntry[] = [];
 const migrationSources: Array<{ producer: string; tables: string[] }> = [];
+if (hostCatalogs) {
+  for (const workspace of readRegistry().workspaces) {
+    const registry = await loadHarnessRegistry(workspace.id, { fresh: true });
+    migrationSources.push(...await registeredProjectMigrationSources(registry.projects));
+  }
+}
 if (process.argv.includes('--restore-events') || hostCatalogs) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
