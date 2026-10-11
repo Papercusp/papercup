@@ -8615,7 +8615,208 @@
      "summary": "plan lane android-public-release-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "androidP004EvidenceQualification": {
+    "status": "retained-current-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004771",
+    "auditProofs": [
+     "WI-10005820#comment:1174792",
+     "WI-10005820#comment:1174796",
+     "WI-10005820#comment:1174801"
+    ],
+    "proofQualification": {
+     "sourcePostChars": 6235,
+     "sourcePostSha256": "fedb40df9208d61e1265f45fc2646511d0ef8d69c0f242bce361ae95aec41232",
+     "readback": "The final distinguishing comparison verified the full submitted body against the full durable SELF post. The earlier comparator used a clipped receipt and its equality claim was withdrawn.",
+     "lineCountCorrection": "Comment1174796 corrects WorkspaceSwitchTest.kt from139 to129 lines; the source hash and behavior observations are unchanged."
+    },
+    "sourceAuthority": {
+     "plan": "android-public-release-2026-10-01",
+     "version": 94,
+     "contentHash": "d4177567ac7433db054f39d74460b1175bd6ca6be78e870508a3c0b4074734e5",
+     "planState": "ready",
+     "item": "P-004",
+     "storedStatus": "todo",
+     "effectiveStatus": "todo",
+     "dependencies": [
+      "P-001",
+      "P-002"
+     ],
+     "unresolvedBlockers": [],
+     "workItemState": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "hasCompletionEvidence": false,
+     "formerExternalBlocker": "The saved child lifecycle records the former plan-lane blocker cleared on2026-10-07. This is a dated status qualification; the original blocked row remains historical provenance.",
+     "provenanceLimit": "No child claim, state, hold, dependency or acceptance authority is changed by this audit."
+    },
+    "specificationQualification": {
+     "scope": "The three current registered P-004 specs returned in the complete finite planItemIds[P-004] read.",
+     "specs": [
+      {
+       "specId": "ANDROID-P-004-OUTCOME",
+       "currentRevision": 1,
+       "contentHash": "815cfb88b316ecba781affd27f08d1f2787b40f25fde2282abfa7c84678d5a2b",
+       "lifecycleStatus": "active",
+       "requiredEvidence": [
+        "live"
+       ],
+       "requiredTestLayers": [
+        "e2e"
+       ],
+       "acceptedBy": "su-ed889d13-ba80-4ae6-abd9-46dbe7ab74c1",
+       "acceptedAt": "2026-10-01T09:26:00.675Z",
+       "acceptanceRef": "session_turn:codex:01a0f6a2-0749-7f00-b7ed-d3e1f5880f3c:12",
+       "sourceBar": null
+      },
+      {
+       "specId": "AUTO-BAR-R-2-P-004",
+       "currentRevision": 5,
+       "contentHash": "6c930ab463d99cd03a84963e98886117478e4b1827c824fa58b373c810fed3d7",
+       "lifecycleStatus": "active",
+       "requiredEvidence": [
+        "tree"
+       ],
+       "requiredTestLayers": [
+        "integration",
+        "unit"
+       ],
+       "acceptedBy": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+       "acceptedAt": "2026-10-06T20:07:06.845Z",
+       "acceptanceRef": "acceptance-android-public-release-2026-10-01@4:R-2",
+       "sourceBar": {
+        "barKey": "R-2",
+        "barHash": "985ebd60e0e653e0c1e222ee6199a6c24c687eede2764659a3eda474d3328aa9",
+        "barSetHash": "4d3c11915c0f9d25dbca4cf7e85b6e2b20bca0d40b146a786a9eb25a5b290cfc",
+        "rubricSlug": "acceptance-android-public-release-2026-10-01",
+        "rubricRevision": 4,
+        "evidencePlane": "tree"
+       }
+      },
+      {
+       "specId": "AUTO-BAR-R-4-P-004",
+       "currentRevision": 5,
+       "contentHash": "75bd57dbb1542d308c8710465bbb82447c733341c8cf928f9b45328add228254",
+       "lifecycleStatus": "active",
+       "requiredEvidence": [
+        "live"
+       ],
+       "requiredTestLayers": [
+        "manual-provenance"
+       ],
+       "acceptedBy": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+       "acceptedAt": "2026-10-06T20:59:37.990Z",
+       "acceptanceRef": "acceptance-android-public-release-2026-10-01@5:R-4",
+       "sourceBar": {
+        "barKey": "R-4",
+        "barHash": "70b5d38a009734d3607b594e8b2639db613a2bbfe8793a21adf9ab328583c22e",
+        "barSetHash": "777d1b468793e6ab9908eafbd0da1c0de02cb17b6b17b5ad6698177a5efd231e",
+        "rubricSlug": "acceptance-android-public-release-2026-10-01",
+        "rubricRevision": 5,
+        "evidencePlane": "live"
+       }
+      }
+     ],
+     "acceptanceLimit": "Accepted specification authority is not executed evidence or product acceptance."
+    },
+    "rubricQualification": {
+     "rubric": "acceptance-android-public-release-2026-10-01",
+     "revision": 7,
+     "criteriaHash": "2fd1083a85896b1b4c127b5536bae4c87e1bdde9ac387eb2b83a3c4351d7df15",
+     "barSetHash": "777d1b468793e6ab9908eafbd0da1c0de02cb17b6b17b5ad6698177a5efd231e",
+     "serverVetting": {
+      "satisfied": true,
+      "state": "vetted",
+      "reason": "current",
+      "attestedRevision": 5,
+      "attestationIssueId": "EI-25266987060747297"
+     },
+     "vettingLimit": "Server-reported vetting is recorded by reference. No independent rubric re-audit or product grade is inferred from this read.",
+     "R2Method": "Meaningful maintained Rust/current-device contract scenarios, sanitized response/error/token fixture replay, token rotation/revocation, workspace scope, synchronization and streaming failure cases; zero relevant ignores. Tree/unit+integration evidence must retain exact current identities.",
+     "R4Method": "Exact signed APK hash and sanitized physical-phone encrypted-route/token/storage/off-LAN recovery matrix: valid QR/manual and invalid/replayed/HTTP cases, revocation/rotation and workspace isolation. Pairing and authenticated requests are rated separately for every supported Wi-Fi/cellular/mesh/tunnel route. Source review or tree tests cannot replace this live requirement."
+    },
+    "governingDecisions": {
+     "refs": [
+      "android-public-release-2026-10-01#D-013",
+      "android-public-release-2026-10-01#D-014",
+      "android-public-release-2026-10-01#D-015",
+      "android-public-release-2026-10-01#D-023"
+     ],
+     "routeQualification": "D-013 declares opaque HTTPS relay base URLs, VM token authority, workspace_offline distinction and sealed BYOC content; P-015 owns the Rust relay layer. D-023 makes direct download first and removes store readiness as an engineering blocker, while preserving signed/current provenance and installation evidence."
+    },
+    "finiteBindingQualification": {
+     "reads": [
+      {
+       "scope": {
+        "workItemIds": [
+         "WI-10004771"
+        ]
+       },
+       "limit": 100,
+       "truncatedByLimit": false,
+       "registeredEvidenceCount": 0
+      },
+      {
+       "scope": {
+        "specIds": [
+         "ANDROID-P-004-OUTCOME",
+         "AUTO-BAR-R-2-P-004",
+         "AUTO-BAR-R-4-P-004"
+        ]
+       },
+       "limit": 100,
+       "truncatedByLimit": false,
+       "registeredEvidenceCount": 0
+      }
+     ],
+     "limit": "Both complete fresh registered scopes are empty. This establishes no universal absence of tests, native observations or capability; empty currentness is not PASS."
+    },
+    "maintainedSourceQualification": {
+     "harnessRoot": "../papercup-rust-mobile",
+     "readOnly": true,
+     "files": [
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/EndpointSecurity.kt",
+       "sha256": "e65c04b98f73ae1d436b23df52edef24c613b17689e74f04267db70ac365439e",
+       "lines": 19,
+       "sourceObservation": "HTTPS requires a nonempty host; HTTP is accepted only for explicit debug loopbacks."
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/Credentials.kt",
+       "sha256": "3a2e69126a02b46f9d32b95ee73fc461e4a688c823407ccdb34ab1c0f9a84b60",
+       "lines": 131,
+       "sourceObservation": "Keystore-backed EncryptedSharedPreferences persist JWT and Noise identity; partial identities are rejected, private diagnostics are redacted, and workspace/token responses are validated before persistence."
+      },
+      {
+       "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/EndpointSecurityTest.kt",
+       "sha256": "35c0c843563c000a8171cab8b30acb4d7783c02fd7e25c4bbc6d16cf81d8e709",
+       "lines": 26,
+       "sourceObservation": "Maintained unit cases cover HTTPS, release HTTP/malformed rejection and debug-only loopbacks."
+      },
+      {
+       "path": "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/SealedCredentialsTest.kt",
+       "sha256": "adf0e4c73b09d9a377fee0c897a8a0104fba77274b16f43954b3be9bf08ccc7b",
+       "lines": 110,
+       "sourceObservation": "Android instrumentation source exercises real JNI/Keystore on an owned unpaired emulator, QR pin validation, sealed identity restore and partial rejection, and a closed MockWebServer sealed channel without plaintext Authorization/retry."
+      },
+      {
+       "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/WorkspaceSwitchTest.kt",
+       "sha256": "f45935c4d76a6862408bcd91b6efba90a6be610f95126789a7d744c38019fee1",
+       "lines": 129,
+       "sourceObservation": "Maintained unit cases cover replacement-token ordering, invalid/mismatched/blank responses, Unauthorized/cancellation/storage-failure propagation, and identity/redacted diagnostics."
+      }
+     ],
+     "executionLimit": "These are complete selected maintained source observations with remeasured unchanged hashes, not executed test passes, current operator enforcement, signed physical-phone results, full implementation coverage or shipment. PairScreen and underlying Rust/operator implementation are outside this selected review.",
+     "finiteAbsence": "The selected EndpointSecurityTest body has no D-013 HTTPS path-prefix case; that finite absence does not prove a supported route fails."
+    },
+    "dispositionQualification": {
+     "disposition": "retain-current",
+     "reason": "The secure pairing and remote recovery outcome remains required. Cleared historical dependencies, source tests and rubric vetting do not establish current physical-phone release acceptance, duplication or supersession.",
+     "preservation": "All original172 row values, root fields, population and disposition counts remain unchanged; original200/frozen172 reconciliation stays open. Phone9 R68/1156678, repair05218, archive1160078, exclusions, peer claims,12loop+1parent checks and two already-asked Avi walls are retained.",
+     "actionsExcluded": "No child/product/test/native/runtime/provider/Actions/LIVE_GATE_OPS/killed-goal/shipment/delegation action."
+    }
+   }
   },
   {
    "id": "WI-10004772",
