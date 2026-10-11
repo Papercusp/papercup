@@ -1550,6 +1550,31 @@ describe('wakeTurnText', () => {
       await degradeToInboxOrDrop(work({ eventKey: DONE_KEY, payload: null }), 'no live pty', send);
       expect(sent[0].summary).toBe(`[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`);
     });
+
+    it('labels a positive lock grant as a snapshot when it is deferred to the inbox', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+      const original = 'file lock GRANTED — you now hold src/example.ts';
+
+      await degradeToInboxOrDrop(
+        work({
+          eventKey: 'lock:grant:ticket-1',
+          payload: { granted: true, lock_id: 'lock-1', ticket_id: 'ticket-1' },
+          summary: original,
+        }),
+        'no live pty',
+        send,
+      );
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body).toContain('INBOX SNAPSHOT');
+      expect(sent[0].body).toContain('Re-check current ownership with locks:queue before acting');
+      expect(sent[0].body).toContain('Original grant notification (snapshot only)');
+      expect(sent[0].body!.indexOf('INBOX SNAPSHOT')).toBeLessThan(sent[0].body!.indexOf(original));
+    });
   });
 
   // ambient-semantic-push P-003 seam: a prepared ambient push block rides the wake

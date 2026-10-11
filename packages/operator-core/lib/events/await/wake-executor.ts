@@ -2223,13 +2223,14 @@ export async function degradeToInboxOrDrop(
   reason: string,
   send: typeof sendMessage,
 ): Promise<WakeOutcome> {
+  const inboxDelivery = deferredLockGrantInboxSnapshot(d);
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
-      to: [d.subscriberId],
-      summary: `${wakeSummaryHeadline(d.eventKey, d.payload)} — delivered to your coord inbox (${reason})`,
-      body: wakeTurnText(d),
+      to: [inboxDelivery.subscriberId],
+      summary: `${wakeSummaryHeadline(inboxDelivery.eventKey, inboxDelivery.payload)} — delivered to your coord inbox (${reason})`,
+      body: wakeTurnText(inboxDelivery),
       category: 'event',
-      extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },
+      extra: { auto: true, event_key: inboxDelivery.eventKey, wake_delivery_id: inboxDelivery.id },
     });
     return { kind: 'delivered', channel: 'inbox' };
   } catch (err) {
@@ -2238,6 +2239,31 @@ export async function degradeToInboxOrDrop(
       reason: `${reason} — inbox delivery also failed (no resolvable owner): ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+}
+
+/**
+ * A positive lock grant may be valid when its event first reaches the delivery
+ * pump, then become invalid while the durable inbox waits for the recipient's
+ * next turn. The lock-grant ownership check in executeWake protects immediate
+ * injection; this inbox path is consumed later and cannot inherit that earlier
+ * snapshot as present-tense authority. Keep the original notice for audit, but
+ * lead with a mandatory current-ownership check before the recipient acts.
+ */
+function deferredLockGrantInboxSnapshot(d: DeliveryWork): DeliveryWork {
+  if (!d.eventKey.startsWith(LOCK_GRANT_PREFIX)) return d;
+  const grant = parseLockGrantPayload(d.payload);
+  if (!grant) return d;
+  const summary = d.summary ?? '';
+  if (summary.includes('⚠ STALE') && summary.includes('RETRACTED')) return d;
+
+  const original = summary.trim() || 'No grant summary was provided.';
+  return {
+    ...d,
+    summary:
+      `⚠ INBOX SNAPSHOT — lock grant ${grant.lockId} may be stale by the time you read this. ` +
+      `Re-check current ownership with locks:queue before acting. ` +
+      `Original grant notification (snapshot only): ${original}`,
+  };
 }
 
 /**
