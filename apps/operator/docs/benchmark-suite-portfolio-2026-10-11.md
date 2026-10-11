@@ -146,7 +146,17 @@ These are verdict inputs. Ownership of what to build stays with that plan (D-004
    SWE-rebench (Harbor Hub split), RoadmapBench, then SWE-Lancer Diamond IC (needs disk planning).
 2. Re-pin SWE-bench Pro explicitly. The current HF load path changes population silently when unpinned.
    Treat v1 and v2 results as separate suites in reporting.
+   *Correction, 2026-10-11 06:25Z (su-b7657, WI-6554700010008394):* the adapter does not load from HF at
+   run time. It reads a local, untracked `swe_bench_pro_full.csv` (731 rows, still v1 on this host after the
+   checkout moved to v2.0.0) [measured]; the silent-swap risk is a CSV re-exported from the HF `default`
+   config. Done: `external-bench/swe-bench-pro-pin.ts` pins the v1 population (731, CSV sha256), the
+   grader preflight refuses any other CSV, and the catalog and estimate read the count from the pin.
 3. Move the Terminal-Bench pin to `@2.1` and install Harbor (pinned version) as a declared prerequisite.
+   *Correction, 2026-10-11 06:25Z (su-b7657):* Harbor's `registry.json` on `harbor-framework/harbor` main
+   lists `terminal-bench` 2.0 (89 tasks), `terminal-bench-pro` 1.0 and `terminal-bench-sample` 2.0, and no
+   2.1 entry [measured]. So `terminal-bench@2.1` is not a resolvable registry id there; confirm the 2.1
+   dataset id (Harbor Hub or a local-path dataset of `harbor-framework/terminal-bench-2-1`) with Harbor
+   installed before changing the pin.
 4. Do not publish Harness-Bench numbers until upstream licenses it. Ask upstream, or drop it from
    `REPORT_ON_SUITES`. That is a scope call for the modernization implementer and the owner.
 5. SWE-bench-Live and SWE-EVO fit the existing M1 diff-batch grader shape. Resolve SWE-EVO's license
