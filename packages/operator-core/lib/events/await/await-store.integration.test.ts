@@ -307,6 +307,26 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ awaitId: target.id, payload, summary: 'composed verdict' });
   });
 
+  it('lists recent deliveries only from the coordination workspace', async () => {
+    const subscriberId = 'su-workspace-scoped-delivery-history';
+    const awaited = await store.registerAwait({ subscriberId, eventKey: 'workspace-scope:local' });
+    await store.insertDeliveries({ awaits: [awaited], summary: 'local delivery' });
+
+    const foreign = await db.adminSql`
+      INSERT INTO harness_shared.event_wake_deliveries (
+        workspace_id, await_id, subscriber_id, event_key, summary, status
+      )
+      VALUES ('ws-other', ${awaited.id}, ${subscriberId}, 'workspace-scope:foreign', 'foreign delivery', 'parked')
+      RETURNING id
+    `;
+
+    const recent = await store.listRecentDeliveries(subscriberId, 10, awaited.id);
+
+    expect(recent).toHaveLength(1);
+    expect(recent[0]).toMatchObject({ awaitId: awaited.id, summary: 'local delivery' });
+    expect(recent.map((delivery) => delivery.id)).not.toContain(Number(foreign[0].id));
+  });
+
   it('a newer loop fire drops older pending/parked wakes from the same loop instance', async () => {
     const awaited = await store.registerAwait({
       subscriberId: 'su-loop-supersession',
