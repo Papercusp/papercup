@@ -200,16 +200,20 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
   });
 
   it('returns the semantic matching body section for a paraphrase without keyword overlap', async () => {
-    const report = await publish('workspace', 'ordinary filler '.repeat(300)
-      + '\n## Diagnostic repair\nPrerequisite: keep the snapshot. zephyrquartz recovery.');
+    const query = 'restore the diagnostic snapshot';
+    const section = '## Contingency\nPrerequisite: recover archived reference copy; zephyrquartz marker.';
+    const queryTerms = new Set(query.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    const sectionTerms = section.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+    expect(sectionTerms.filter(term => queryTerms.has(term))).toEqual([]);
+    const report = await publish('workspace', 'ordinary filler '.repeat(300) + '\n' + section);
     const rows = await runHybridSearch([createReportSearchSource()], { ...context(),
-      query: 'restore the diagnostic snapshot', embedder: embed, mode: 'embeddings' });
+      query, embedder: embed, mode: 'embeddings' });
     const match = rows.results.find(r=>r.source_id === report.reportId);
     expect(match?.rankers).toContain('embeddings');
     expect(match?.excerpt).toContain('zephyrquartz');
-    expect(match?.excerpt).toContain('keep the snapshot');
-    expect(match?.meta?.section).toBe('Diagnostic repair');
-    expect(await createReportSearchSource().lexical!({ ...context(), query: 'restore the diagnostic snapshot' }))
+    expect(match?.excerpt).toContain('recover archived reference copy');
+    expect(match?.meta?.section).toBe('Contingency');
+    expect(await createReportSearchSource().lexical!({ ...context(), query }))
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ row: expect.objectContaining({ source_id: report.reportId }) })]));
   });
 

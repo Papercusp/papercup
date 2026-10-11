@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "pg_textsearch (BM25) configuration: preload is mandatory, name the index, compact by hand"
-description: "How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be preloaded (CREATE EXTENSION is not enough), every query names its index through to_bm25query, indexes use compaction = 'manual' under the bm25Maintenance workflow, and work_items and session_turns also fuse a legacy exact list (D-016), so they keep their tsvector columns. Covers the kill-switch, the lock_timeout trap and host checks."
+description: "How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be preloaded (CREATE EXTENSION is not enough), every query names its index through to_bm25query, indexes use compaction = 'manual' under the bm25Maintenance workflow, and work_items and session_turns also merge a legacy exact list into the BM25 list (D-016, interleaved per D-032), so they keep their tsvector columns. Covers the kill-switch, the lock_timeout trap and host checks."
 type: Convention
 discovered: 2026-10-11
 tags: ["search", "bm25", "pg_textsearch", "postgres", "lexical-ranking"]
@@ -74,7 +74,7 @@ Do not hand-write this. The lexical seam, `packages/operator-core/lib/search/lex
 
 ## Exact-list corpora (D-016)
 
-pg_textsearch 1.5.1 has only `to_bm25query`: OR semantics, with no AND, phrase or proximity operator. On a long document whose terms are each common, BM25 alone can rank a verbatim fragment's target far down (measured: ranks 11 to over 500), where the legacy `plainto_tsquery` AND filter with `ts_rank_cd` cover density ranks it first or second. So, whenever BM25 is live, the `work_item` and `session_turn` sources of `search:semantic` (`packages/operator-core/lib/agent-tools/search/sources.ts`) also run the legacy AND query as an **exact list**, and fuse it with the BM25 list by reciprocal-rank fusion over row identity: `mergeExactAndBm25()` in `rank.ts`.
+pg_textsearch 1.5.1 has only `to_bm25query`: OR semantics, with no AND, phrase or proximity operator. On a long document whose terms are each common, BM25 alone can rank a verbatim fragment's target far down (measured: ranks 11 to over 500), where the legacy `plainto_tsquery` AND filter with `ts_rank_cd` cover density ranks it first or second. So, whenever BM25 is live, the `work_item` and `session_turn` sources of `search:semantic` (`packages/operator-core/lib/agent-tools/search/sources.ts`) also run the legacy AND query as an **exact list**, and merge it with the BM25 list by interleaving over row identity: `mergeExactAndBm25()` in `rank.ts`. The merged order is BM25 row 1, exact row 1, BM25 row 2, exact row 2, and so on; a row both lists hold appears once, at its earlier slot, so a row at rank r in either list lands at position 2r or better. Until plan decision D-032 the merge was reciprocal-rank fusion, which sorts a row only one list found below every row both lists found. On R-13 run 12 that put a fragment's exact rank-1 target at position 22 of the merged list, outside the hybrid top 10.
 
 The exact list is gated. A capped GIN probe counts the AND set first, and the list runs only when that count is above 0 and at most `EXACT_LIST_MAX_AND_ROWS` (`5000`), defined in `rank.ts`. A larger AND set skips the exact list and returns the BM25 list alone.
 
