@@ -412,6 +412,13 @@ export async function synchronizeAcceptanceBarRevision(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
     );
   }
+  // Validate the complete mapping before reading or writing projections. Preview
+  // and apply must both refuse a plan BAR omitted from the candidate rubric.
+  for (const mapping of mappings.mappings) {
+    if (!byKey.has(mapping.barKey)) {
+      throw new Error(`acceptance_bar_revision_mapping_missing:${mapping.barKey}`);
+    }
+  }
   // A clause this amendment owns is identified by its stored bar linkage OR by the canonical
   // AUTO-BAR identity its mapping implies. Identity alone is load-bearing: a clause write that
   // omits `sourceBar` writes NULL source_bar_key on the new current revision (the store carries
@@ -793,6 +800,11 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     throw new Error(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
     );
+  }
+  for (const mapping of mappings.mappings) {
+    if (!byKey.has(mapping.barKey)) {
+      throw new Error(`acceptance_bar_revision_mapping_missing:${mapping.barKey}`);
+    }
   }
 
   const barKeyBySpecId = new Map<string, string>();
