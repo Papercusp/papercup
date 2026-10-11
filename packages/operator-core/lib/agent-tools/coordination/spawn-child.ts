@@ -301,10 +301,8 @@ export function describeSpawnStart(start: SpawnStartOutcome): string {
 
 /**
  * A seed-plan write that the locked plan-write seam REFUSED (the conversation
- * activation gate, dependency validation, …). withPlanLock reports those refusals as
- * `kind:'applied'` with the refusal object cast to the caller's value type, so a dep
- * that returned `r.value` unchecked reported a refused seed as success-shaped
- * (WI-6554700010008416). The dep narrows them out into this shape instead.
+ * activation gate, dependency validation, …). withPlanLock returns a distinct
+ * `kind:'refused'` result; the dep preserves its typed domain failure here.
  */
 export interface SeedPlanRefusal {
   refused: true;
@@ -546,9 +544,7 @@ export function buildDefaultSpawnChildDeps(io: {
         },
       );
       if (r.kind === 'busy') return 'busy';
-      // A refused write (activation gate, invalid dependencies) also arrives as
-      // kind:'applied', its refusal object cast to the value type. Only the two
-      // success literals mean the seed exists.
+      if (r.kind === 'refused') return seedPlanRefusalOf(r.value);
       if (r.value === 'created' || r.value === 'already_existed') return r.value;
       return seedPlanRefusalOf(r.value);
     },

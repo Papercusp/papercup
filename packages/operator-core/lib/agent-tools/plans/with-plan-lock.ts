@@ -414,7 +414,20 @@ export interface AppliedResult<T> {
   dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
 }
 
-export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
+/** A domain gate rejected the candidate; no write or post-write hook ran. */
+export interface RefusedResult {
+  kind: 'refused';
+  value:
+    | ReturnType<typeof invalidPlanDependenciesValue>
+    | ReturnType<typeof childSeedTemplateRefusalValue>
+    | ReturnType<typeof activationGateRefusalValue>;
+  filePath: string;
+  version: number;
+  scope: { workspaceId: string; harnessSlug: string };
+  dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
+}
+
+export type WithPlanLockResult<T> = AppliedResult<T> | RefusedResult | BusyError;
 
 /**
  * Acquire a PG advisory lock on the plan, read its current body, run the
@@ -556,20 +569,13 @@ export async function withPlanLock<T>(
       );
       if (verdict.state === 'rejected') {
         return {
-          kind: 'applied',
-          value: invalidPlanDependenciesValue(slug, verdict) as T,
+          kind: 'refused',
+          value: invalidPlanDependenciesValue(slug, verdict),
           filePath,
           version: curVersion,
           scope: { workspaceId, harnessSlug },
           dependencyDiagnostics: verdict.diagnostics,
-          writtenBody: null,
-          writtenTemplateData: cur?.template_data ?? null,
-          priorBody: cur?.content ?? null,
-        } satisfies AppliedResult<T> & {
-          writtenBody: string | null;
-          writtenTemplateData: unknown;
-          priorBody: string | null;
-        };
+        } satisfies RefusedResult;
       }
       if (verdict.state === 'invalid-draft' || verdict.state === 'legacy-residual') {
         dependencyDiagnostics = verdict.diagnostics;
@@ -590,19 +596,12 @@ export async function withPlanLock<T>(
         introducesChildSeedTemplate(beforeIndex?.template, afterIndex.template)
       ) {
         return {
-          kind: 'applied',
-          value: childSeedTemplateRefusalValue(slug) as T,
+          kind: 'refused',
+          value: childSeedTemplateRefusalValue(slug),
           filePath,
           version: curVersion,
           scope: { workspaceId, harnessSlug },
-          writtenBody: null,
-          writtenTemplateData: cur?.template_data ?? null,
-          priorBody: cur?.content ?? null,
-        } satisfies AppliedResult<T> & {
-          writtenBody: string | null;
-          writtenTemplateData: unknown;
-          priorBody: string | null;
-        };
+        } satisfies RefusedResult;
       }
       if (
         entersActivationPlanStatus(beforeIndex?.status, afterIndex.status) &&
@@ -615,19 +614,12 @@ export async function withPlanLock<T>(
         });
         if (!gate.satisfied) {
           return {
-            kind: 'applied',
-            value: activationGateRefusalValue(slug, gate) as T,
+            kind: 'refused',
+            value: activationGateRefusalValue(slug, gate),
             filePath,
             version: curVersion,
             scope: { workspaceId, harnessSlug },
-            writtenBody: null,
-            writtenTemplateData: cur?.template_data ?? null,
-            priorBody: cur?.content ?? null,
-          } satisfies AppliedResult<T> & {
-            writtenBody: string | null;
-            writtenTemplateData: unknown;
-            priorBody: string | null;
-          };
+          } satisfies RefusedResult;
         }
       }
     }
