@@ -145,6 +145,9 @@ describe.sequential('persisted hosted channel command acceptance', () => {
       `refuses command side effects after ${ending} on the original native channel while tenant B executes`, ending,
     ] as const),
     ['accounts for success, nonzero exit, cancellation, timeout and retry on the native channel', 'task-ledger-lifecycle'] as const,
+    ...(['browser-detach', 'connector-disconnect'] as const).map(ending => [
+      `settles a running command after ${ending} and refuses the old channel while tenant B executes`, ending,
+    ] as const),
   ])('%s', async (_title, ending) => {
       const root = mkdtempSync(join(tmpdir(), 'hosted-channel-command-'));
       const sockets: WebSocket[] = [];
@@ -194,6 +197,7 @@ describe.sequential('persisted hosted channel command acceptance', () => {
           });
           adapters.push(adapter);
           host.socket.on('message', data => { void adapter.accept(JSON.parse(data.toString())).catch(error => errors.push(error)); });
+          host.socket.on('close', () => adapter.close());
           const browser = await dial(`/browser/${index}`);
           await vi.waitFor(() => expect(browser.frames).toContainEqual(expect.objectContaining({ type: 'session.bound' })));
           const channelId = browser.frames.find(frame => frame.type === 'session.bound')!.channelId as string;
@@ -218,7 +222,39 @@ describe.sequential('persisted hosted channel command acceptance', () => {
         expect(existsSync(join(b.t.project, 'before'))).toBe(false);
         expect(a.t.transform).toHaveBeenCalledTimes(1);
 
-        if (ending === 'task-ledger-lifecycle') {
+        const transportLost = ending === 'browser-detach' || ending === 'connector-disconnect';
+        if (transportLost) {
+          // Use the production channel lifetime, rather than aborting the command
+          // directly: the native transport must be what revokes the invocation.
+          const lifetime = a.adapter.customerInvocationSignal(a.channelId);
+          const pidFile = join(a.t.project, 'transport-loss.pid');
+          const operation = a.executor.run({
+            command: 'printf \'%s\' "$$" > transport-loss.pid; exec sleep 300',
+            signal: lifetime, timeoutMs: 20_000,
+          });
+          const rejected = expect(operation).rejects.toThrow('hosted_customer_execution_aborted');
+          await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+          const payloadPid = Number(readFileSync(pidFile, 'utf8'));
+          expect(Number.isSafeInteger(payloadPid) && payloadPid > 0).toBe(true);
+          const runningTask = async () => (await db.adminSql`
+            SELECT task_id FROM harness_shared.task_ledger
+             WHERE workspace_id = ${CONTROL} AND session_id = ${a.t.session.id}
+               AND state = 'running'
+          `);
+          await expect.poll(async () => (await runningTask()).length).toBe(1);
+          const [running] = await runningTask();
+          if (ending === 'browser-detach') {
+            a.browser.socket.send(JSON.stringify({ type: 'session.detach' }));
+          } else {
+            a.host.socket.close(1000, 'acceptance_connector_disconnect');
+          }
+          await rejected;
+          expect(lifetime.aborted).toBe(true);
+          const stopped = await terminalTask(running!.task_id, a.t, 'killed');
+          expect(stopped.exit_reason).toBe('hosted_customer_execution_aborted');
+          expect(() => process.kill(payloadPid, 0)).toThrowError(expect.objectContaining({ code: 'ESRCH' }));
+          await expect.poll(() => a.browser.socket.readyState).toBe(WebSocket.CLOSED);
+        } else if (ending === 'task-ledger-lifecycle') {
           const nonzero = await b.executor.run({ command: 'printf failed >&2; exit 7' });
           expect(nonzero).toMatchObject({ exitCode: 7, stdout: '', stderr: 'failed', taskEnrolled: true });
           await terminalTask(nonzero.taskId, b.t, 'exited', 7);
@@ -281,8 +317,8 @@ describe.sequential('persisted hosted channel command acceptance', () => {
           await expect(a.executor.run({ command: 'printf forbidden > forbidden' }))
             .rejects.toThrow('hosted_customer_execution_denied');
         }
-        expect(a.t.transform).toHaveBeenCalledTimes(1);
-        expect(await taskCount(a.t)).toBe(1);
+        expect(a.t.transform).toHaveBeenCalledTimes(transportLost ? 2 : 1);
+        expect(await taskCount(a.t)).toBe(transportLost ? 2 : 1);
         expect(existsSync(join(a.t.project, 'forbidden'))).toBe(false);
         expect(readFileSync(join(a.t.project, 'before'), 'utf8')).toBe('tenant-a');
         const survivor = await b.executor.run({ command: 'printf tenant-b > survivor; printf survivor' });
@@ -292,10 +328,12 @@ describe.sequential('persisted hosted channel command acceptance', () => {
         expect(existsSync(join(a.t.project, 'survivor'))).toBe(false);
         expect(b.t.transform).toHaveBeenCalledTimes(ending === 'task-ledger-lifecycle' ? 4 : 1);
         expect(await taskCount(b.t)).toBe(ending === 'task-ledger-lifecycle' ? 4 : 1);
-        for (const connection of connections) {
+        for (const connection of transportLost ? [b] : connections) {
           expect(connection.host.socket.readyState).toBe(WebSocket.OPEN);
           expect(connection.browser.socket.readyState).toBe(WebSocket.OPEN);
         }
+        if (ending === 'browser-detach') expect(a.host.socket.readyState).toBe(WebSocket.OPEN);
+        if (ending === 'connector-disconnect') expect(a.host.socket.readyState).toBe(WebSocket.CLOSED);
         expect(errors).toEqual([]);
       } finally {
         for (const adapter of adapters) adapter.close();
