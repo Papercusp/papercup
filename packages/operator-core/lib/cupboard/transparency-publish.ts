@@ -386,6 +386,7 @@ export async function publishTransparency(src: TransparencySources): Promise<Tra
         entries,
         period: monthPeriod(month),
         provisional: true,
+        asOfMs: nowMs,
         treasury,
         latestAnchor: latest ? reportAnchor(latest) : null,
       });

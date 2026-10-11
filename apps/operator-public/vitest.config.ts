@@ -18,7 +18,8 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          exclude: [...participation.exclude, '**/treasury.test.ts'],
+          exclude: [...participation.exclude, '**/treasury.test.ts', '**/transparency-routes.test.ts',
+            '**/funded-turn-host.integration.test.ts'],
           provide: { papercuspTestLayer: 'unit' },
         },
       },
@@ -26,7 +27,15 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'treasury-integration',
-          include: ['src/__tests__/treasury.test.ts'],
+          include: ['src/__tests__/treasury.test.ts', 'src/__tests__/transparency-routes.test.ts'],
+          provide: { papercuspTestLayer: 'integration' },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'funded-turn-host-integration',
+          include: ['src/__tests__/funded-turn-host.integration.test.ts'],
           provide: { papercuspTestLayer: 'integration' },
         },
       },
