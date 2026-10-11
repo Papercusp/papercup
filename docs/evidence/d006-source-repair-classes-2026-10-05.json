@@ -1930,8 +1930,20 @@
           "diagnosticGap": "Each output_tail is4000chars ending mid-payload. execution_details retains failedCaseTitles but no failed-case message/stack; the exact later assertion origin is not established. No cause is inferred from the original token failure.",
           "ownerItem": "EI-25722406556193713"
         },
-        "repositoryComparison": "Current named test SHA352e159835a12ff70dd6cc2bf09cdcdbb1362493568bf1842ea6709fcc529de9, dream-sink.ts SHAd385271cdc29cbd4fe3463ffacc2e8a6c93c5baa8ecbf54f318f7985225211a5 and _org-test-db.ts SHAb3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746 all match54c6f7604a and both later failing receipt commits. This selected repository comparison does not identify all actual loaded imports/schema/config/environment.",
-        "limits": "Historical original repair is qualified but later clean failures prevent a repaired disposition. Keep row open-unknown, source admission1164395, strict whole-terminal-payload oracle, independent TEST/D006 STOP and all final readiness/acceptance/shipment limits. No source implementation or new focused attempt is admitted by this record."
+        "repositoryComparison": "Before the D-018 diagnostic edit, named test SHA352e159835a12ff70dd6cc2bf09cdcdbb1362493568bf1842ea6709fcc529de9, dream-sink.ts SHAd385271cdc29cbd4fe3463ffacc2e8a6c93c5baa8ecbf54f318f7985225211a5 and _org-test-db.ts SHAb3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746 all matched54c6f7604a and both later failing receipt commits. This is a historical selected-byte observation, not current test-byte equality after the diagnostic edit or complete loaded imports/schema/config/environment assurance.",
+        "diagnosticAllocation": {
+          "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-018",
+          "item": "EI-25722406556193713",
+          "goal": "work-on-everything-fresh-grading-and-improvement-60d3a8",
+          "parent": "WI-10006170",
+          "investigator": "su-8df00c9a-c33a-4292-a81c-7a2bc6e0d307",
+          "testSha256": "a2e7907bf435024ab8e7f5b12c122aa6bb054f814c7001a66fe3d9f5179b85f4",
+          "editScope": "Confined conventional-test capture retains reached failure phase, complete before/after snapshots, assertion/stack, private database identity, native Node and actual test SHA. Both original cases and token-at-UPDATE/strict terminal replay assertions remain unchanged; ancillary capture failures preserve the original assertion.",
+          "execution": "not-started: diagnostic test must be committed before the ONE maintained immutable literal-file run. Background git-sync is in flight; exact resource-release await276192 unlocks commit verification.",
+          "capturePaths": [".papercusp/scratch/ei257224-d018-diagnostic.log", ".papercusp/scratch/ei257224-d018-failures.json", ".papercusp/scratch/ei257224-d018-receipts.jsonl"],
+          "bounds": "D-018 grants diagnosis only. No production repair, old terminal-repair replay, new actor, broad/final sweep, oracle relaxation, gate action or fullarm/trial expansion; full cause/source/environment assurance and final readiness remain unknown."
+        },
+        "limits": "Historical original repair is qualified but later clean failures prevent a repaired disposition. Keep row open-unknown, ordinary source admission, strict whole-terminal-payload oracle, independent TEST/D006 STOP and all final readiness/acceptance/shipment limits. The specific D-018 diagnostic allocation is separate from final source admission; this evidence record grants no production repair or repaired verdict."
       },
       "lines": [
         13396
