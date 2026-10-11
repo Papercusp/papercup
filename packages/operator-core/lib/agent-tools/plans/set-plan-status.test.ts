@@ -173,6 +173,39 @@ describe('set-plan-status dryRun ship preflight (plan-verification-friction-redu
       ok: true, slug: 'plan-a', dryRun: true, wouldShip: true,
     });
   });
+
+  // R-1 (acceptance-plan-verification-friction-reduction-2026-10-11): the two halves of the
+  // bar that live in the HANDLER, not in the pure response builder above. Both are pinned on
+  // the source because the handler's ordering is the property: the gate must be asked for
+  // every blocker, and the preflight must return before the first side effect.
+  const handlerSource = () => {
+    const source = readFileSync(resolve(ROOT, 'packages/operator-core/lib/agent-tools/plans/set-plan-status.ts'), 'utf8');
+    const start = source.indexOf('async handler(args, ctx)');
+    expect(start).toBeGreaterThan(-1);
+    return source.slice(start);
+  };
+
+  it('the ship path asks the acceptance gate for every independent blocker', () => {
+    const handler = handlerSource();
+    const call = handler.indexOf('evaluatePlanAcceptanceGate(slug, {');
+    expect(call).toBeGreaterThan(-1);
+    const gateArgs = handler.slice(call, handler.indexOf('readGradingAuditDispatchSuppression', call));
+    expect(gateArgs).toMatch(/^\s*collectAllBlockers: true,$/m);
+  });
+
+  it('a dryRun preflight returns before grader recruitment, the forced-past stamp and the status write', () => {
+    const handler = handlerSource();
+    const preflight = handler.indexOf('if (args.dryRun) return shipGatePreflightResult(slug, gate);');
+    expect(preflight).toBeGreaterThan(-1);
+    for (const sideEffect of [
+      'await launchAcceptanceGraderForGate(',
+      'stampForcedPastWaiver(',
+      'await withPlanLock<SetPlanStatusValue>(',
+    ]) {
+      const at = handler.indexOf(sideEffect);
+      expect(at, sideEffect).toBeGreaterThan(preflight);
+    }
+  });
 });
 
 describe('set-plan-status terminal repair gate (WI-38303)', () => {

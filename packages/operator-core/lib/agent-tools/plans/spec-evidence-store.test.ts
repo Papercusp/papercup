@@ -1855,6 +1855,94 @@ describe('listSpecEvidence timestamp normalization', () => {
     });
   });
 
+  // R-2 / P-002 (acceptance-plan-verification-friction-reduction-2026-10-11, plan D-001):
+  // the ship path hands the store NO caller `current`, so these read exactly that way.
+  // Each test pins one drift marker of R-2: unchanged proof must rate current, moved
+  // proof must not, and a failed re-measurement must say so instead of rating current.
+  describe('R-2 server-measured currentness without caller fingerprints (P-002)', () => {
+    const boundRow = (
+      recipe: Record<string, unknown>,
+      fingerprints: { source: string | null; test: string | null },
+    ) => ({
+      id: 4,
+      work_item_id: 'WI-4',
+      plan_slug: 'plan-one',
+      spec_id: 'SPEC-001-01',
+      source_val_id: 'VAL-001-01',
+      spec_revision: 1,
+      current_revision: 1,
+      spec_fingerprint: 'sha256:spec-v1',
+      evidence_kind: 'test',
+      evidence_ref: 'vitest:p002',
+      source_fingerprint: fingerprints.source,
+      test_fingerprint: fingerprints.test,
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      details: { currentMeasurement: recipe },
+      observed_at: '2026-10-11 11:00:00-04',
+      binding_fingerprint: 'sha256:binding-p002',
+      created_by: 'su-test',
+      created_at: '2026-10-11T15:00:01.000Z',
+      spec_is_current: true,
+    });
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+    };
+    const readWithoutCallerCurrent = async () => {
+      const [row] = await listSpecEvidence({
+        harnessSlug: 'papercusp',
+        planSlugs: ['plan-one'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+      });
+      return row;
+    };
+
+    it('rates an unchanged measured binding current with server provenance when no caller fingerprints are supplied', async () => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [boundRow(recipe, { source: measured.sourceFingerprint, test: measured.testFingerprint })];
+
+      const row = await readWithoutCallerCurrent();
+
+      expect(row).toHaveProperty('serverMeasurement.status', 'measured');
+      expect(row).toMatchObject({
+        currentness: { overall: 'current', provenance: 'server-measured', staleReasons: [], unknownReasons: [] },
+      });
+    });
+
+    it('rates a measured binding stale when its source moved since binding and no caller fingerprints are supplied', async () => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [boundRow(recipe, { source: 'sha256:source-at-binding-time', test: measured.testFingerprint })];
+
+      const row = await readWithoutCallerCurrent();
+
+      expect(row).toHaveProperty('serverMeasurement.status', 'measured');
+      expect(row?.currentness.overall).toBe('stale');
+      expect(row?.currentness.staleReasons).toContain('source-stale');
+    });
+
+    it('names server-measurement-unavailable instead of rating current when the server cannot re-measure', async () => {
+      const unmeasurable = { ...recipe, sourcePaths: ['src/p002-absent-source.ts'] };
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [boundRow(unmeasurable, { source: measured.sourceFingerprint, test: measured.testFingerprint })];
+
+      const row = await readWithoutCallerCurrent();
+
+      expect(row?.currentness.overall).not.toBe('current');
+      expect(row?.currentness.unknownReasons).toEqual(
+        expect.arrayContaining([expect.stringMatching(/^server-measurement-unavailable:.+/)]),
+      );
+    });
+  });
+
   it('pins a multi-clause replay by each row’s full clause identity', async () => {
     const current = [
       {
