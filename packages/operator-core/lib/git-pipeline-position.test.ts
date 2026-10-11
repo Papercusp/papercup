@@ -400,6 +400,37 @@ const snap = (
     deploy: snapDeploy(deployOver),
   }) as GitPipelineSnapshot;
 
+/**
+ * Supply the evidence that makes a candidate authoritative at the full pipeline entry point.
+ * `resolveGateCandidates` alone is only the checkout probe; reconciliation trusts the run's
+ * published marker only when the separately mapped checkpoint snapshot says a run is active.
+ */
+const activeCandidateDeps = (candidate: string) => {
+  const observedAtMs = Date.now();
+  return {
+    loadSnapshot: async () =>
+      snap({
+        inFlightCandidate: {
+          candidate,
+          candidateSource: 'pinned',
+          base: null,
+          selectedAtMs: observedAtMs,
+          quietCutApplied: false,
+          tipAtSelection: candidate,
+          refireDepth: 0,
+          pid: 4242,
+          observedAtMs,
+          verdictWrittenAtMs: null,
+        },
+      }),
+    readCheckpointRunSnapshot: async () => ({
+      activeRun: { active: true, candidate, startedAtMs: observedAtMs - 5_000, elapsedSec: 5 },
+      computedAtMs: observedAtMs,
+    }),
+    readCheckpointRunLock: async () => null,
+  };
+};
+
 describe('accepted-source pipeline containment (WI-10007982)', () => {
   const acceptedBytes = Buffer.from('accepted recovery source\n');
   const expectedSourceSha256 = createHash('sha256').update(acceptedBytes).digest('hex');
@@ -5366,7 +5397,7 @@ describe('changeInCandidate (P-004)', () => {
         {
           git,
           loadDeploy: async () => deploy(),
-          loadSnapshot: async () => snap(),
+          ...activeCandidateDeps('judging1'),
           resolveGateCandidates: async () => ({
             judgingSha: 'judging1',
             judgingShaSource: 'in-flight-candidate',
@@ -5453,7 +5484,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: peerEditedGit(contents),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('judging1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'judging1',
               judgingShaSource: 'in-flight-candidate',
@@ -5562,7 +5593,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: splitGit(atJudging, atNext),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('judging1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'judging1',
               judgingShaSource: 'in-flight-candidate',
@@ -5714,7 +5745,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: submoduleGit(o),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('cand1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'cand1',
               judgingShaSource: 'in-flight-candidate',
