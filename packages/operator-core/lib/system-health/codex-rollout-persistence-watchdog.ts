@@ -136,13 +136,32 @@ function retryAtFromMessage(message: string | null): string | null {
  * when an earlier event_msg:error described the same failure.
  */
 export function classifyCodexProviderError(line: string): CodexProviderError | null {
-  let record: Record<string, unknown>;
+  const record = parseEventMsgLine(line);
+  return record ? classifyCodexProviderRecord(record) : null;
+}
+
+/**
+ * Parse a rollout line only when it can be a terminal record. Both terminal
+ * classifiers require `type: 'event_msg'`, and nearly every rollout line is a
+ * `response_item` (often a large tool output), so the substring prefilter skips
+ * their JSON.parse entirely. Codex writes serde_json, which never \u-escapes
+ * ASCII, so a real event_msg record always carries the literal `"event_msg"`.
+ * Each line is parsed at most once (WI-6554700010008587: the recurrence scan
+ * used to parse every line twice, ~2.7% of bg-host main thread).
+ */
+function parseEventMsgLine(line: string): Record<string, unknown> | null {
+  if (!line.includes('"event_msg"')) return null;
+  let parsed: unknown;
   try {
-    record = JSON.parse(line) as Record<string, unknown>;
+    parsed = JSON.parse(line);
   } catch {
     return null;
   }
-  if (record.type !== 'event_msg') return null;
+  const record = asRecord(parsed);
+  return record && record.type === 'event_msg' ? record : null;
+}
+
+function classifyCodexProviderRecord(record: Record<string, unknown>): CodexProviderError | null {
   const payload = asRecord(record.payload);
   if (!payload) return null;
   const payloadType = typeof payload.type === 'string' ? payload.type : '';
@@ -202,14 +221,7 @@ export function classifyCodexProviderError(line: string): CodexProviderError | n
   };
 }
 
-function isCodexSuccessfulTerminal(line: string): boolean {
-  let record: Record<string, unknown>;
-  try {
-    record = JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return false;
-  }
-  if (record.type !== 'event_msg') return false;
+function isCodexSuccessfulTerminalRecord(record: Record<string, unknown>): boolean {
   const payload = asRecord(record.payload);
   if (!payload) return false;
   const payloadType = typeof payload.type === 'string' ? payload.type : '';
@@ -240,7 +252,9 @@ export function evaluateCodexProviderFailureRecurrence(
   const terminals: Terminal[] = [];
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const error = classifyCodexProviderError(lines[lineIndex] ?? '');
+    const record = parseEventMsgLine(lines[lineIndex] ?? '');
+    if (!record) continue;
+    const error = classifyCodexProviderRecord(record);
     if (error) {
       const previous = terminals[terminals.length - 1];
       const duplicateTaskError =
@@ -265,7 +279,7 @@ export function evaluateCodexProviderFailureRecurrence(
       }
       continue;
     }
-    if (isCodexSuccessfulTerminal(lines[lineIndex] ?? '')) terminals.push({ kind: 'success' });
+    if (isCodexSuccessfulTerminalRecord(record)) terminals.push({ kind: 'success' });
   }
 
   const failures: CodexProviderError[] = [];
@@ -419,16 +433,10 @@ export function latestCodexProviderErrorAfter(
   if (!Number.isFinite(afterMs)) return null;
   let latest: CodexProviderError | null = null;
   for (const line of tailText.split(/\r?\n/)) {
-    const error = classifyCodexProviderError(line);
-    if (!error && !isCodexSuccessfulTerminal(line)) continue;
-
-    let record: Record<string, unknown>;
-    try {
-      record = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      latest = null;
-      continue;
-    }
+    const record = parseEventMsgLine(line);
+    if (!record) continue;
+    const error = classifyCodexProviderRecord(record);
+    if (!error && !isCodexSuccessfulTerminalRecord(record)) continue;
     const payload = asRecord(record.payload);
     const timestamp = firstString(record.timestamp, payload?.timestamp);
     const timestampMs = timestamp ? Date.parse(timestamp) : Number.NaN;
@@ -513,6 +521,30 @@ export interface CodexRolloutPersistenceWatchdogOptions extends CodexRolloutPers
   providerFailureConsecutive?: number;
   providerErrorTailBytes?: number;
   readRolloutTail?: typeof readCodexRolloutTail;
+  /**
+   * Per-rollout memo of the provider-failure scan, keyed by the rollout's size,
+   * mtime, tail bound and threshold (WI-6554700010008587). The verdict is a pure
+   * function of the tail bytes and the rollout is append-only, so an unchanged
+   * (size, mtime) means an unchanged tail: the 512KB read and the parse are
+   * skipped. Most open adv_sessions rows are idle or dead, so most passes hit.
+   * Entries not seen in a pass are pruned. The process watchdog supplies one;
+   * callers that omit it scan every rollout as before.
+   */
+  providerTailScanCache?: Map<string, ProviderTailScanCacheEntry>;
+}
+
+export interface ProviderTailScanCacheEntry {
+  key: string;
+  recurrence: CodexProviderFailureRecurrence | null;
+}
+
+async function statSizeMtime(path: string): Promise<{ size: number; mtimeMs: number } | null> {
+  try {
+    const st = await fs.stat(path);
+    return { size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
 }
 
 interface ProviderFailureObservation {
@@ -578,6 +610,7 @@ export async function checkCodexRolloutPersistence(
       workspaceId: string | null;
     }> = [];
     const providerFailures: ProviderFailureObservation[] = [];
+    const scannedPaths = new Set<string>();
     for (const row of rows) {
       const read = await readSnapshot(row, alive);
       const snapshot = read.snapshot;
@@ -600,31 +633,53 @@ export async function checkCodexRolloutPersistence(
       // stale open row whose rollout ends in repeated provider failures should
       // be closed by this cleanup too.
       if (read.rolloutPath) {
-        let tail: string | null = null;
-        try {
-          tail = await (opts.readRolloutTail ?? readCodexRolloutTail)(
-            read.rolloutPath,
-            opts.providerErrorTailBytes ?? CODEX_PROVIDER_ERROR_TAIL_BYTES,
-          );
-        } catch (e) {
-          console.warn(
-            `[codex-rollout-watchdog] provider tail read failed for session ${snapshot.sessionId}: ` +
-              `${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-        if (tail != null) {
-          const recurrence = scanCodexProviderFailureTail(tail, {
-            consecutiveFailures: opts.providerFailureConsecutive,
-          });
-          if (recurrence.dead) {
-            providerFailures.push({
-              advSessionId: row.id,
-              snapshot,
-              recurrence,
-              workspaceId: row.workspace_id,
-            });
+        const tailBytes = opts.providerErrorTailBytes ?? CODEX_PROVIDER_ERROR_TAIL_BYTES;
+        const cache = opts.providerTailScanCache;
+        let cacheKey: string | null = null;
+        let cached: ProviderTailScanCacheEntry | undefined;
+        if (cache) {
+          scannedPaths.add(read.rolloutPath);
+          const st = await statSizeMtime(read.rolloutPath);
+          if (st) {
+            cacheKey = `${st.size}:${st.mtimeMs}:${tailBytes}:${opts.providerFailureConsecutive ?? ''}`;
+            const hit = cache.get(read.rolloutPath);
+            if (hit && hit.key === cacheKey) cached = hit;
           }
         }
+        let recurrence: CodexProviderFailureRecurrence | null;
+        if (cached) {
+          recurrence = cached.recurrence;
+        } else {
+          let tail: string | null = null;
+          try {
+            tail = await (opts.readRolloutTail ?? readCodexRolloutTail)(read.rolloutPath, tailBytes);
+          } catch (e) {
+            console.warn(
+              `[codex-rollout-watchdog] provider tail read failed for session ${snapshot.sessionId}: ` +
+                `${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+          recurrence = tail != null
+            ? scanCodexProviderFailureTail(tail, { consecutiveFailures: opts.providerFailureConsecutive })
+            : null;
+          // Cache only a completed read; a failed read is retried next pass. A rollout
+          // that grows between the stat and the read stores a newer verdict under the
+          // older key, which the next pass's larger size invalidates.
+          if (cache && cacheKey && recurrence) cache.set(read.rolloutPath, { key: cacheKey, recurrence });
+        }
+        if (recurrence?.dead) {
+          providerFailures.push({
+            advSessionId: row.id,
+            snapshot,
+            recurrence,
+            workspaceId: row.workspace_id,
+          });
+        }
+      }
+    }
+    if (opts.providerTailScanCache) {
+      for (const path of opts.providerTailScanCache.keys()) {
+        if (!scannedPaths.has(path)) opts.providerTailScanCache.delete(path);
       }
     }
     out.stalledSessionIds = stalled.map((item) => item.snapshot.sessionId);
@@ -752,8 +807,12 @@ export function startCodexRolloutPersistenceWatchdog(
 ): void {
   if (process.env.PAPERCUSP_CODEX_ROLLOUT_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
+  const passOpts: CodexRolloutPersistenceWatchdogOptions = {
+    ...opts,
+    providerTailScanCache: opts.providerTailScanCache ?? new Map(),
+  };
   const run = (): void => {
-    void checkCodexRolloutPersistence(sql, opts).then((result) => {
+    void checkCodexRolloutPersistence(sql, passOpts).then((result) => {
       if (
         result.alarmed.length > 0 ||
         result.recovered.length > 0 ||

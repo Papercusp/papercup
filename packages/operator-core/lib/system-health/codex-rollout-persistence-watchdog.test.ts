@@ -324,3 +324,104 @@ describe('checkCodexRolloutPersistence provider preservation', () => {
     }
   });
 });
+
+describe('WI-6554700010008587 provider tail scan cost', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lifecycleMocks.endSession.mockResolvedValue(undefined);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('parses only event_msg lines and tolerates non-object JSON without changing the verdict', () => {
+    const noise = [
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', content: 'mentions "event_msg" and task_complete' } }),
+      'null',
+      '"event_msg"',
+      '[1,2]',
+      '{"type":"event_msg"',
+    ];
+    const failures = [
+      providerErrorLine('t-1'), providerTaskCompleteLine('t-1'),
+      providerErrorLine('t-2'), providerTaskCompleteLine('t-2'),
+      providerErrorLine('t-3'), providerTaskCompleteLine('t-3'),
+    ];
+    const interleaved = failures.flatMap((line) => [...noise, line]);
+    const clean = evaluateCodexProviderFailureRecurrence(failures);
+    const noisy = evaluateCodexProviderFailureRecurrence(interleaved);
+    expect(noisy).toMatchObject({ consecutiveFailures: 3, dead: true });
+    expect(noisy.consecutiveFailures).toBe(clean.consecutiveFailures);
+    expect(noisy.failures.map((f) => f.turnKey)).toEqual(clean.failures.map((f) => f.turnKey));
+    for (const line of noise) expect(classifyCodexProviderError(line)).toBeNull();
+  });
+
+  it('re-reads a rollout only when its size or mtime changes, and prunes vanished rollouts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-watchdog-cache-'));
+    const previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    const day = join(root, 'session-42', 'sessions', '2026', '08', '27');
+    await mkdir(day, { recursive: true });
+    const rolloutPath = join(day, 'rollout-2026-08-27T00-00-00-session-42.jsonl');
+    await writeFile(join(root, 'session-42', 'history.jsonl'), '{}\n', 'utf8');
+    const failing = [
+      providerErrorLine('t-1'), providerTaskCompleteLine('t-1'),
+      providerErrorLine('t-2'), providerTaskCompleteLine('t-2'),
+      providerErrorLine('t-3'), providerTaskCompleteLine('t-3'),
+    ].join('\n') + '\n';
+    await writeFile(rolloutPath, failing, 'utf8');
+    let rows: unknown[] = [{ id: 42, owner_id: 'owner-42', pid: null, workspace_id: 'workspace-1' }];
+    const sql = (async (strings: TemplateStringsArray): Promise<unknown[]> => {
+      const query = strings.join('');
+      if (query.includes('SELECT id, coord_owner_id AS owner_id')) return rows;
+      if (query.includes('INSERT INTO harness_shared.harness_escalations')) return [{ phase: 'codex-provider-failure:42' }];
+      return [];
+    }) as unknown;
+    const reads: string[] = [];
+    const readRolloutTail: typeof readCodexRolloutTail = async (path, maxBytes) => {
+      reads.push(path);
+      return readCodexRolloutTail(path, maxBytes);
+    };
+    const cache = new Map();
+    const pass = () =>
+      checkCodexRolloutPersistence(sql as never, { pidAlive: () => false, readRolloutTail, providerTailScanCache: cache });
+
+    try {
+      expect((await pass()).providerFailureSessionIds).toEqual(['42']);
+      expect(reads).toHaveLength(1);
+
+      // Unchanged rollout: the cached verdict is reused and the tail is not read again.
+      expect((await pass()).providerFailureSessionIds).toEqual(['42']);
+      expect(reads).toHaveLength(1);
+
+      // An appended success changes the size: the tail is re-read and the streak resets.
+      await writeFile(
+        rolloutPath,
+        failing + JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', status: 'completed' } }) + '\n',
+        'utf8',
+      );
+      expect((await pass()).providerFailureSessionIds).toEqual([]);
+      expect(reads).toHaveLength(2);
+
+      // A session that is no longer open drops out of the cache.
+      expect(cache.size).toBe(1);
+      rows = [];
+      await pass();
+      expect(cache.size).toBe(0);
+
+      // Without a cache every pass reads the tail, as before.
+      rows = [{ id: 42, owner_id: 'owner-42', pid: null, workspace_id: 'workspace-1' }];
+      await checkCodexRolloutPersistence(sql as never, { pidAlive: () => false, readRolloutTail });
+      await checkCodexRolloutPersistence(sql as never, { pidAlive: () => false, readRolloutTail });
+      expect(reads).toHaveLength(4);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+      else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
