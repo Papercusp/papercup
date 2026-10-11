@@ -40,6 +40,8 @@
 // imports the surfacing helper from here, and a cycle would leave constants
 // undefined under the tsx CJS preflight.
 
+import { isHarnessInScope, primeWorkScopePolicy, workScopePolicy } from '../../work-scope-policy';
+
 /** The drain surfaces a plan once it has been idle MORE than this many days. */
 export const ACCEPTANCE_STALE_SURFACE_AFTER_DAYS = 14;
 
@@ -162,12 +164,21 @@ export interface StaleAcceptanceMeasurement {
   staleAcceptanceSurfaced: number;
   /** Idle more than 17 days, never surfaced by the drain, no typed disposition. */
   staleAcceptanceNeverSurfaced: number;
-  /** The sum — the R-5 probe value. */
+  /** The sum — the R-5 probe value. In-scope harnesses only (D-029). */
   staleAcceptanceUndispositioned: number;
   /**
-   * Non-archived, non-rubric plans in scope, ANY status (D-019 denominator). The
-   * verification-health cell reports the R-5 reading as null when this is 0, so a wrong
-   * workspace filter or an empty population cannot pass an `eq 0` probe.
+   * Stale, undispositioned plans (surfaced or never-surfaced, same thresholds) homed in a
+   * harness the workspace work-scope policy excludes (D-029). The drain skips these by
+   * design, so they are not stalls and are NOT in {@link staleAcceptanceUndispositioned};
+   * they are counted here so they are never silently dropped (workspace-work-scope-policy
+   * P-007 "counted, never dropped"). Widening the policy is the owner's lever.
+   */
+  staleAcceptanceScopeExcluded: number;
+  /**
+   * Non-archived, non-rubric plans in scope, ANY status (D-019 denominator), filtered by
+   * the work-scope policy too (D-029). The verification-health cell reports the R-5
+   * reading as null when this is 0, so a wrong workspace filter, an empty population, or
+   * a policy that excludes everything cannot pass an `eq 0` probe.
    */
   acceptancePlansConsidered: number;
   thresholds: { surfaceAfterDays: number; graceDays: number; neverSurfacedAfterDays: number };
@@ -179,16 +190,37 @@ export interface StaleAcceptanceMeasurement {
  * Every filing for the plan's ref is read regardless of status: a disposition
  * recorded on a filing that was later closed still disposes of the plan, and a
  * plan is "surfaced" if any filing for it ever carried the stamp.
+ *
+ * Scope (D-029): the counting population is the drain's population. The sweep never
+ * files a plan homed in a harness the workspace work-scope policy excludes (same
+ * `isHarnessInScope` predicate), so such a plan is reported in
+ * `staleAcceptanceScopeExcluded`, never as a stall, and is left out of
+ * `acceptancePlansConsidered`. The policy is primed first, exactly as the sweep does
+ * (WI-10002448: an unprimed cache reads as "not enforced"), and snapshotted once so every
+ * harness is judged against the same policy. No stored policy keeps every harness in
+ * scope. `opts.inScope` replaces the predicate (tests).
  */
 export async function measureStaleAcceptance(
   sql: Sql,
-  opts: { workspaceId: string; harnessSlug?: string | null; now?: Date },
+  opts: {
+    workspaceId: string;
+    harnessSlug?: string | null;
+    now?: Date;
+    inScope?: (harnessSlug: string) => boolean;
+  },
 ): Promise<StaleAcceptanceMeasurement> {
   const now = (opts.now ?? new Date()).toISOString();
   const harness = opts.harnessSlug ?? null;
-  const rows = (await sql`
+  let inScope = opts.inScope;
+  if (!inScope) {
+    await primeWorkScopePolicy();
+    const policy = workScopePolicy();
+    inScope = (slug: string) => isHarnessInScope(slug, policy);
+  }
+  const staleRows = (await sql`
     WITH plans AS (
-      SELECT p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug AS ref,
+      SELECT p.harness_slug,
+             p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug AS ref,
              CASE WHEN p.updated ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
                   THEN (substring(p.updated FROM 1 FOR 10) || 'T00:00:00Z')::timestamptz
                   ELSE p.updated_at END AS idle_since
@@ -210,6 +242,7 @@ export async function measureStaleAcceptance(
        GROUP BY 1
     )
     SELECT
+      p.harness_slug,
       count(*) FILTER (
         WHERE f.surfaced_at IS NOT NULL
           AND f.surfaced_at < ${now}::timestamptz - make_interval(days => ${ACCEPTANCE_STALE_GRACE_DAYS})
@@ -219,24 +252,45 @@ export async function measureStaleAcceptance(
         WHERE f.surfaced_at IS NULL
           AND p.idle_since < ${now}::timestamptz - make_interval(days => ${ACCEPTANCE_NEVER_SURFACED_AFTER_DAYS})
           AND COALESCE(f.dispositioned, false) = false
-      )::int AS never_surfaced,
-      (SELECT count(*)
-         FROM harness_shared.harness_plans q
-        WHERE q.workspace_id = ${opts.workspaceId}
-          AND q.archived IS NOT TRUE
-          AND (q.template IS NULL OR q.template <> 'rubric')
-          AND (${harness}::text IS NULL OR q.harness_slug = ${harness}::text))::int AS considered
+      )::int AS never_surfaced
       FROM plans p
       LEFT JOIN filings f ON f.ref = p.ref
-  `) as Array<{ surfaced: number | null; never_surfaced: number | null; considered: number | null }>;
-  if (!rows[0]) throw new Error('measureStaleAcceptance: the measurement query returned no row');
-  const surfaced = Number(rows[0].surfaced ?? 0);
-  const neverSurfaced = Number(rows[0].never_surfaced ?? 0);
+     GROUP BY p.harness_slug
+  `) as Array<{ harness_slug: string; surfaced: number | null; never_surfaced: number | null }>;
+  const consideredRows = (await sql`
+    SELECT q.harness_slug, count(*)::int AS considered
+      FROM harness_shared.harness_plans q
+     WHERE q.workspace_id = ${opts.workspaceId}
+       AND q.archived IS NOT TRUE
+       AND (q.template IS NULL OR q.template <> 'rubric')
+       AND (${harness}::text IS NULL OR q.harness_slug = ${harness}::text)
+     GROUP BY q.harness_slug
+  `) as Array<{ harness_slug: string; considered: number | null }>;
+  // Grouped per harness and judged in JS: the policy's harness patterns are matched by
+  // matchHarnessPattern, which SQL cannot reproduce faithfully.
+  let surfaced = 0;
+  let neverSurfaced = 0;
+  let scopeExcluded = 0;
+  for (const r of staleRows) {
+    const s = Number(r.surfaced ?? 0);
+    const n = Number(r.never_surfaced ?? 0);
+    if (inScope(r.harness_slug)) {
+      surfaced += s;
+      neverSurfaced += n;
+    } else {
+      scopeExcluded += s + n;
+    }
+  }
+  let considered = 0;
+  for (const r of consideredRows) {
+    if (inScope(r.harness_slug)) considered += Number(r.considered ?? 0);
+  }
   return {
     staleAcceptanceSurfaced: surfaced,
     staleAcceptanceNeverSurfaced: neverSurfaced,
     staleAcceptanceUndispositioned: surfaced + neverSurfaced,
-    acceptancePlansConsidered: Number(rows[0].considered ?? 0),
+    staleAcceptanceScopeExcluded: scopeExcluded,
+    acceptancePlansConsidered: considered,
     thresholds: {
       surfaceAfterDays: ACCEPTANCE_STALE_SURFACE_AFTER_DAYS,
       graceDays: ACCEPTANCE_STALE_GRACE_DAYS,
