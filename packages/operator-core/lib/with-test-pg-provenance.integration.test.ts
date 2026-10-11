@@ -7,6 +7,57 @@ import { describe, expect, it } from 'vitest';
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
 
+describe('ordinary PostgreSQL endpoint isolation', () => {
+  it('removes inherited live product pins and the real resolver queries only the owned server', async () => {
+    const pins = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'];
+    const child = `
+      (async () => {
+        const assert = require('node:assert/strict');
+        const pins = ${JSON.stringify(pins)};
+        // Refuse before importing or connecting if an ambient product endpoint survived.
+        // Ordinary mode must also leave env-resolution tests free to set their own pins.
+        for (const key of pins) assert.equal(process.env[key], undefined, key + ' must be removed');
+        const port = Number(process.env.PAPERCUSP_PG_PORT);
+        assert.ok(port > 0 && port !== 5432);
+        assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
+        const db = await import('./libs/papercusp/libs/db/src/connection.ts');
+        const { getOrgPg, _resolveUrlsForTests } = { ...db.default, ...db };
+        const urls = _resolveUrlsForTests();
+        assert.equal(new URL(urls.admin).port, String(port));
+        assert.equal(new URL(urls.app).port, String(port));
+        const { sql } = getOrgPg();
+        try {
+          const [row] = await sql.unsafe("SELECT inet_server_port() AS port, current_database() AS database, current_setting('fsync') AS fsync, current_setting('synchronous_commit') AS synchronous_commit, current_setting('full_page_writes') AS full_page_writes");
+          assert.equal(row.port, port);
+          assert.equal(row.database, 'papercusp');
+          // A disposable cluster must not inherit production crash-durability:
+          // its final checkpoint otherwise flushes thousands of discarded files.
+          for (const key of ['fsync', 'synchronous_commit', 'full_page_writes']) {
+            assert.equal(row[key], 'off', key + ' must use the maintained disposable-PG policy');
+          }
+          console.log('ORDINARY_PRIVATE_PG_RESULT=' + JSON.stringify(row));
+        } finally { await sql.end(); }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--', process.execPath, '--import', 'tsx', '-e', child], {
+      cwd: root,
+      env: { ...process.env, ...Object.fromEntries(pins.map(key => [key, 'postgresql://unused@localhost:5432/ambient'])) },
+      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    const line = stdout.split('\n').find(line => line.startsWith('ORDINARY_PRIVATE_PG_RESULT='));
+    expect(line).toBeDefined();
+    const result = JSON.parse(line!.slice('ORDINARY_PRIVATE_PG_RESULT='.length));
+    expect(result.database).toBe('papercusp');
+    expect(result).toMatchObject({ fsync: 'off', synchronous_commit: 'off', full_page_writes: 'off' });
+    expect(result.port).toBeGreaterThan(0);
+    expect(result.port).not.toBe(5432);
+    const dataDir = stdout.match(/booting throwaway PG[^\n]*\(datadir ([^\)]+)\)/)?.[1];
+    expect(dataDir).toBeDefined();
+    expect(existsSync(dataDir!)).toBe(false);
+  }, 200_000);
+});
+
 describe('private PostgreSQL pool admission', () => {
   it('bounds non-Vitest org pools to the owned server and serves a concurrent request burst without admission refusals', async () => {
     const child = `
@@ -91,7 +142,10 @@ describe('isolated PostgreSQL signal cleanup', () => {
     const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '-e',
       "console.log('SIGNAL_CLEANUP_WORKER_READY');setInterval(() => {}, 1000)"], {
-      cwd: root, env: process.env, detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe'],
+      // Keep owned PG process/I/O observations in assertion failures; elapsed
+      // stage receipts alone cannot distinguish a checkpoint from a deadlock.
+      cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
+      detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     let errors = '';

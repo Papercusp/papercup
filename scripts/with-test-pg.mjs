@@ -18,10 +18,11 @@
  * it by env.
  *
  * It is deliberately NOT the product's embedded PG. That one holds the user's real
- * pot; a test suite must never open a pool against it. We pass explicit
- * HARNESS_*_DATABASE_URL (step 1 of the resolution chain, so it beats both the
- * discovery file and the native fallback) and the unit layer additionally pins
- * PAPERCUSP_SKIP_PG_DISCOVERY=1 (libs/test-config/src/setup-hermetic-env.ts).
+ * pot; a test suite must never open a pool against it. Ordinary mode removes
+ * inherited product DSN pins and selects the owned server through
+ * PAPERCUSP_PG_PORT + PAPERCUSP_SKIP_PG_DISCOVERY. This leaves env-resolution
+ * tests free to set their own pins. Isolated runtime mode also supplies explicit
+ * HARNESS_*_DATABASE_URL for its private product processes.
  *
  * Teardown is best-effort but unconditional: the postmaster is stopped and the temp
  * datadir removed on normal exit, on a failing child, and on SIGINT/SIGTERM.
@@ -36,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
+import { SHARED_TEST_PG_DURABILITY_OFF } from '../libs/test-config/src/pg-container.ts';
 import { browserCachePath } from './ensure-playwright-browsers.mjs';
 import { defaultEvidenceRoot } from '../libs/generic/verification-harness/src/evidence-root.ts';
 import { processGroupLifetime } from '../packages/operator-core/lib/fleet/process-group-lifetime.ts';
@@ -289,7 +291,16 @@ console.log(`[with-test-pg] migrations: ${sqlDir}`);
 pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
   // Every fixture client uses its explicit TCP URL. Avoid an unused socket
   // lock on /tmp, which may be full even when the private data volume is ready.
-  extraPostgresSettings: { unix_socket_directories: '' },
+  // This cluster is always discarded after the child exits. Reuse the
+  // maintained disposable test-PG policy instead of fsyncing thousands of
+  // migrated files during its final checkpoint. Product PG retains its own
+  // durability defaults; this override belongs only to our mkdtemp cluster.
+  extraPostgresSettings: {
+    ...Object.fromEntries(SHARED_TEST_PG_DURABILITY_OFF
+      .filter((_, index) => index % 2 === 1)
+      .map(setting => setting.split('='))),
+    unix_socket_directories: '',
+  },
   onLog: message => {
     // Preserve boot/migration progress as well as shutdown. A deadline before
     // start() returns otherwise erases the stage that actually consumed it.
@@ -404,6 +415,15 @@ if (runtimeRoot && runtimeId) {
 }
 
 const childEnv = { ...process.env };
+// A product DSN pin outranks PAPERCUSP_PG_PORT in both connection resolvers.
+// Keeping an ambient DATABASE_URL made ordinary affected integration workers
+// select the live server even though their private port was propagated correctly
+// (EI-25710110190006866). Clear pins rather than injecting HARNESS_* overrides:
+// tests exercising the resolution chain must be able to set their own values.
+// The reporter's explicit PAPERCUSP_TEST_RUNS_DB_URL is a separate evidence sink.
+for (const key of ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL']) {
+  delete childEnv[key];
+}
 if (isolatedRuntime) {
   // Start from no ambient operator identity, endpoints, IPC or credentials.
   // HOME alone is insufficient: an inherited PAPERCUSP_SUBSTRATE_IPC_SOCKET,
