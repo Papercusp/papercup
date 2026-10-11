@@ -141,7 +141,7 @@ describe('provider credentials: plain plugin-config reads cannot name the store'
 });
 
 describe('provider credentials: host.fetch', () => {
-  async function setup(pasted: Record<string, string | null>) {
+  async function setup(pasted: Record<string, string | null>, own: { ownCredential?: boolean; token?: string | null } = {}) {
     const registry = createProviderRegistry();
     const adapter: ProviderAdapter = {
       describe: () => descriptor,
@@ -152,10 +152,13 @@ describe('provider credentials: host.fetch', () => {
     const fetchImpl = vi.fn(async (_url: URL | RequestInfo, _init?: RequestInit) =>
       new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
     );
-    const accessToken = vi.fn(async () => null);
+    const accessToken = vi.fn(async (): Promise<string | null> => own.token ?? null);
     const hostFetch = createHostFetch('example-chat', {
       registry,
-      resolveSource: async (id) => (id === 'src-1' ? { sourceId: 'src-1', providerId: 'example-chat' } : null),
+      resolveSource: async (id) =>
+        id === 'src-1'
+          ? { sourceId: 'src-1', providerId: 'example-chat', ...(own.ownCredential ? { ownCredential: true } : {}) }
+          : null,
       accessToken,
       pastedCredential: async (key) => pasted[key] ?? null,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -180,5 +183,27 @@ describe('provider credentials: host.fetch', () => {
     expect(error).toBeInstanceOf(HostFetchError);
     expect(error).toMatchObject({ code: 'credential-unavailable' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010008555: declaring a pasted credential as an alternative to OAuth cut every
+  // OAuth-connected source of that provider off from its own account.
+  it('sends a source that holds its own account credential its own token, not the pasted value', async () => {
+    const { hostFetch, fetchImpl, accessToken } = await setup({ bot_token: BOT }, { ownCredential: true, token: 'oauth-own-token' });
+    await hostFetch({ source: 'src-1', request: { url: 'https://chat.example.com/api/auth.test' } });
+    expect(new Headers(fetchImpl.mock.calls[0]![1]!.headers).get('authorization')).toBe('Bearer oauth-own-token');
+    expect(accessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('works for an OAuth source when nothing was pasted', async () => {
+    const { hostFetch, fetchImpl } = await setup({}, { ownCredential: true, token: 'oauth-own-token' });
+    await hostFetch({ source: 'src-1', request: { url: 'https://chat.example.com/api/auth.test' } });
+    expect(new Headers(fetchImpl.mock.calls[0]![1]!.headers).get('authorization')).toBe('Bearer oauth-own-token');
+  });
+
+  it('falls back to the pasted value when a source with its own credential ref resolves no token', async () => {
+    const { hostFetch, fetchImpl, accessToken } = await setup({ bot_token: BOT }, { ownCredential: true, token: null });
+    await hostFetch({ source: 'src-1', request: { url: 'https://chat.example.com/api/auth.test' } });
+    expect(accessToken).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchImpl.mock.calls[0]![1]!.headers).get('authorization')).toBe(`Bearer ${BOT}`);
   });
 });

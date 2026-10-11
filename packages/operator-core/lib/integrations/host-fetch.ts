@@ -42,6 +42,12 @@ export class HostFetchError extends Error {
 export interface HostFetchSource {
   sourceId: string;
   providerId: string;
+  /**
+   * True when the source carries its OWN account credential (an OAuth connection), not the
+   * install's pasted one. On a host a pasted credential claims, such a source is sent its own
+   * token and falls back to the pasted value only when it has none (WI-6554700010008555).
+   */
+  ownCredential?: boolean;
 }
 
 export interface HostFetchDeps {
@@ -127,7 +133,13 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     // A host a pasted credential claims gets that value (P-001); the descriptor validator keeps
     // pasted and service credentials from claiming the same host.
     const pasted = service ? null : providerCredentialForHost(registered.descriptor, url.hostname);
-    if (pasted) {
+    // A provider may offer a pasted credential as an ALTERNATIVE to OAuth (Asana's personal access
+    // token). Declaring one must not cut an existing OAuth source off from its own account: that
+    // source is sent its own token, and the pasted value is only its fallback.
+    const ownToken = pasted && resolved.ownCredential ? await deps.accessToken(resolved) : null;
+    if (ownToken) {
+      headers.set('authorization', `Bearer ${ownToken}`);
+    } else if (pasted) {
       const value = deps.pastedCredential ? await deps.pastedCredential(pasted.key) : null;
       if (!value) {
         throw new HostFetchError(

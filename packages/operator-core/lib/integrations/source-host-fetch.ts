@@ -15,7 +15,7 @@ import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
 import { connectionAccessToken } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
-import { readProviderCredentialValue } from './provider-credentials';
+import { providerSetupStoreKey, readProviderCredentialValue } from './provider-credentials';
 import { providerRegistry, type ProviderRegistry } from './provider-registry';
 
 export interface SourceHostFetchOptions {
@@ -56,7 +56,11 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
     async resolveSource(sourceId) {
       if (allowed && !allowed.has(sourceId)) return null;
       const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);
-      return row ? { sourceId: row.id, providerId: row.kind } : null;
+      if (!row) return null;
+      // A source whose credential ref is not the install's pasted-credential store holds its own
+      // account credential (an OAuth connection), which host.fetch prefers (WI-6554700010008555).
+      const ownCredential = row.credentialRef != null && row.credentialRef !== providerSetupStoreKey(row.kind);
+      return { sourceId: row.id, providerId: row.kind, ownCredential };
     },
     async accessToken(resolved) {
       const row = await getExternalTriggerSource(sql, opts.workspaceId, resolved.sourceId);

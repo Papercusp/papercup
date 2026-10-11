@@ -27,6 +27,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
 import { __resetRegistryForTest, getProvider } from '../oauth/providers';
 import { connectionAdapterForPlugin } from './connection-lifecycle';
+import { providerSetupStoreKey } from './provider-credentials';
 import { providerRegistry } from './provider-registry';
 import { createSourceHostFetch } from './source-host-fetch';
 
@@ -207,5 +208,87 @@ describe('production host.fetch in a process that never served an OAuth route', 
     expect(new URLSearchParams(tokenRequests[0]).get('grant_type')).toBe('refresh_token');
     expect(new URLSearchParams(tokenRequests[0]).get('refresh_token')).toBe(REFRESH_TOKEN);
     expect(seen).toEqual([`Bearer ${REFRESHED_TOKEN}`]);
+  });
+});
+
+// WI-6554700010008555: Asana declares a pasted personal access token as an ALTERNATIVE to OAuth,
+// on the same host. Declaring it cut the owner's OAuth-connected Asana source off from its own
+// account ("Personal access token ... is not set up"). Each source must get its own credential.
+describe('production host.fetch for a provider offering OAuth and a pasted credential on one host', () => {
+  const PAT_PROVIDER_ID = 'gcal-pat-alternative';
+  const PAT_PLUGIN_NAME = 'source-host-fetch-pat-alternative-plugin';
+  const OWN_FIELD = 'pat-alternative-oauth-account';
+  const OWN_TOKEN = 'own-oauth-access-token';
+  const PASTED = 'pasted-personal-access-token';
+  const patDescriptor: ProviderDescriptor = {
+    ...descriptor,
+    id: PAT_PROVIDER_ID,
+    setup: {
+      credentials: [{ key: 'personal_access_token', label: 'Personal access token', hosts: ['www.googleapis.com'] }],
+    },
+  };
+  let oauthSourceId: string;
+  let pastedSourceId: string;
+
+  beforeAll(async () => {
+    const configDir = join(home, 'harnesses', HARNESS, 'plugin-configs');
+    const tokenFile = join(configDir, `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}.json`);
+    const tokens = JSON.parse(await fs.readFile(tokenFile, 'utf8')) as Record<string, unknown>;
+    await fs.writeFile(
+      tokenFile,
+      JSON.stringify({ ...tokens, [OWN_FIELD]: OWN_TOKEN, [`${OWN_FIELD}_expires_at`]: Date.now() + 3_600_000 }),
+    );
+    await fs.writeFile(
+      join(configDir, `${providerSetupStoreKey(PAT_PROVIDER_ID)}.json`),
+      JSON.stringify({ personal_access_token: PASTED }),
+    );
+    const ownerUserId = randomUUID();
+    await sql`
+      INSERT INTO harness_shared.users (id, username, display_name)
+      VALUES (${ownerUserId}, ${`source-host-fetch-pat-${ownerUserId}`}, 'PAT alternative owner')`;
+    oauthSourceId = randomUUID();
+    pastedSourceId = randomUUID();
+    await sql`
+      INSERT INTO harness_shared.data_sources
+        (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id)
+      VALUES
+        (${WS}, ${oauthSourceId}, ${PAT_PROVIDER_ID}, 'poll', 'personal', 'connected',
+         ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${OWN_FIELD}`}, ${ownerUserId}, 'oauth@example.com'),
+        (${WS}, ${pastedSourceId}, ${PAT_PROVIDER_ID}, 'poll', 'personal', 'connected',
+         ${providerSetupStoreKey(PAT_PROVIDER_ID)}, ${ownerUserId}, 'pasted@example.com')`;
+    const registry = providerRegistry();
+    registry.unregisterPlugin(PAT_PLUGIN_NAME);
+    await registry.register({ descriptor: patDescriptor, adapter: { ...adapter, describe: () => patDescriptor }, pluginName: PAT_PLUGIN_NAME });
+  });
+
+  afterAll(() => {
+    providerRegistry().unregisterPlugin(PAT_PLUGIN_NAME);
+  });
+
+  async function authorizationFor(source: string): Promise<Array<string | null>> {
+    const seen: Array<string | null> = [];
+    const hostFetch = createSourceHostFetch(sql, {
+      providerId: PAT_PROVIDER_ID,
+      workspaceId: WS,
+      harness: HARNESS,
+      fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+        seen.push(new Headers(init?.headers).get('authorization'));
+        return Response.json({ items: [] });
+      }) as typeof fetch,
+    });
+    const response = await hostFetch({
+      source,
+      request: { url: 'https://www.googleapis.com/calendar/v3/calendars/primary/events', method: 'GET' },
+    });
+    expect(response.status).toBe(200);
+    return seen;
+  }
+
+  it('sends an OAuth-connected source its own token, not the pasted credential', async () => {
+    expect(await authorizationFor(oauthSourceId)).toEqual([`Bearer ${OWN_TOKEN}`]);
+  });
+
+  it('sends the pasted-credential source the pasted value', async () => {
+    expect(await authorizationFor(pastedSourceId)).toEqual([`Bearer ${PASTED}`]);
   });
 });
