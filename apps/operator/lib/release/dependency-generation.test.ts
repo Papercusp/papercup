@@ -4155,7 +4155,9 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
         {
           schema: '1',
           tree: 'node_modules',
-          kept: '21',
+          // 20 pkg/f*.js siblings + pkg/index.js + pkg/package.json (the locked
+          // manifest makeIntegration installs so the lock-vs-tree audit passes).
+          kept: '22',
           copied: '2',
           removed: '3',
           copied_bytes: String('v2-0\n'.length + 'new\n'.length),
@@ -4210,10 +4212,11 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
       writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
       const second = publish(integration, incrementalEnv('3600'));
       expect(second.status, second.stderr).toBe(0);
-      // Inside the window no record is trusted. stable.js is kept because its
-      // bytes equal the predecessor's copy; racy.js is copied because they differ.
+      // Inside the window no record is trusted. stable.js and pkg/package.json are
+      // kept because their bytes equal the predecessor's copy; racy.js is copied
+      // because they differ.
       expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toMatchObject([
-        { tree: 'node_modules', kept: '1', copied: '2', verified: '1' },
+        { tree: 'node_modules', kept: '2', copied: '2', verified: '2' },
       ]);
       const secondTree = join(publishedPath(second.stdout), 'tree/node_modules');
       expect(treeContents(secondTree)).toEqual(treeContents(join(integration, 'node_modules')));
