@@ -130,6 +130,7 @@ const {
   applyDerivedGitSyncHeadline,
 } = listModule;
 const setTool = (await import('./set')).default;
+const { TURN_HOLD_INTENT, RESTRICTED_HOLD_INTENT } = await import('../../personal-vault/git-sync-hold');
 
 type Out = { content?: { text: string }[]; data?: unknown };
 // routines:list returns a {data} envelope (context-trimming-tiers P-023);
@@ -873,6 +874,52 @@ describe('routines:list', () => {
     });
     expect(out.skip_reason).toBe('migration-dependency-fence');
     expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-003: a turn hold is not a lock. It is
+  // reported with its holder and age, and its holder is never told to locks:release.
+  it('reports turn-held paths with holder and age, and never tells their holder to release a lock', () => {
+    const now = Date.parse('2026-10-11T05:00:00.000Z');
+    const out = deriveGitSyncExclusions(
+      {
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_paths: [
+          { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: TURN_HOLD_INTENT, heldSince: '2026-10-11T04:50:00.000Z' },
+          { scope: 'superproject', path: 'b.ts', owner: 'su-a', intent: TURN_HOLD_INTENT },
+          { scope: 'superproject', path: 'c.ts', owner: 'su-r', intent: RESTRICTED_HOLD_INTENT },
+        ],
+      },
+      null,
+      now,
+    );
+    expect(out.skip_reason).toBe('turn-hold, restricted-hold');
+    expect(out.turn_holds).toEqual({
+      count: 2,
+      holders: ['su-a'],
+      sample: [
+        { path: 'superproject:a.ts', holder: 'su-a', held_since: '2026-10-11T04:50:00.000Z', age_sec: 600 },
+        { path: 'superproject:b.ts', holder: 'su-a', held_since: null, age_sec: null },
+      ],
+      sample_truncated: false,
+      max_age_sec: 3600,
+    });
+    expect(out.warning).toContain("commit on the first sweep after their editor's turn ends");
+    expect(out.warning).toContain('personal disclosure');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
+  it('still tells a real lock holder to release, beside a turn hold', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skipped_paths: [
+        { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
+        { scope: 'superproject', path: 'b.ts', owner: 'su-b', intent: TURN_HOLD_INTENT },
+      ],
+    });
+    expect(out.skip_reason).toBe('locked-path, turn-hold');
+    expect(out.warning).toContain('release the corresponding file lock(s)');
+    expect((out.turn_holds as { count: number }).count).toBe(1);
   });
 
   // The negative control for the test above: the block must still be EMITTED when nothing

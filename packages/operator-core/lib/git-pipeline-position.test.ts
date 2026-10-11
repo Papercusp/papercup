@@ -41,6 +41,8 @@ import {
   evaluateReleaseContentDrift,
   evaluateAcceptedSourceContainment,
   evaluateSweepExposure,
+  gitSyncDeferralFor,
+  turnHoldFor,
   parsePorcelainPaths,
   deriveBlocker,
   staleVerdictSafeLever,
@@ -7025,6 +7027,59 @@ describe('sweep exposure (P-006)', () => {
     changeInCandidate: NO_CANDIDATE,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     sweepExposure: sweep,
+  });
+
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-003: a path the last sweep turn-held is
+  // reported as held (holder + age), never as "the next tick will commit it mid-edit".
+  describe('turn-scoped hold (P-003)', () => {
+    const TURN_INTENT = 'turn-scoped hold (git-sync-turn-scoped-commit-hold P-002): held';
+    const skipped = [
+      { scope: 'superproject', path: 'packages/a.ts', owner: 'su-a', intent: TURN_INTENT, heldSince: new Date(NOW - 10 * 60_000).toISOString() },
+      { scope: 'libs/papercusp', path: 'libs/x.ts', owner: 'su-b', intent: TURN_INTENT },
+      { scope: 'superproject', path: 'packages/locked.ts', owner: 'su-c', intent: 'editing locked.ts' },
+    ];
+
+    it('turnHoldFor matches only turn-hold entries, joining the submodule scope', () => {
+      expect(turnHoldFor('packages/a.ts', skipped)).toEqual({ holder: 'su-a', heldSince: skipped[0].heldSince });
+      expect(turnHoldFor('./libs/papercusp/libs/x.ts', skipped)).toEqual({ holder: 'su-b', heldSince: null });
+      expect(turnHoldFor('packages/locked.ts', skipped)).toBeNull();
+      expect(turnHoldFor(null, skipped)).toBeNull();
+    });
+
+    it('a turn-held dirty path is NOT exposed and names its holder and age', () => {
+      const s = evaluateSweepExposure({
+        dirtyUncommitted: true,
+        dirtyPaths: ['packages/a.ts', 'packages/b.ts'],
+        nextSweepAtMs: NOW + 60_000,
+        nowMs: NOW,
+        turnHold: turnHoldFor('packages/a.ts', skipped),
+      });
+      expect(s.exposed).toBe(false);
+      expect(s.turnHeld).toEqual({ holder: 'su-a', heldSince: skipped[0].heldSince });
+      expect(s.detail).toContain('TURN-HELD');
+      expect(s.detail).toContain('su-a');
+      expect(s.detail).toContain('~10 min');
+      expect(s.detail).not.toContain('SWEEP-EXPOSED');
+    });
+
+    it('an ordinary dirty path carries no turnHeld field', () => {
+      const s = evaluateSweepExposure({
+        dirtyUncommitted: true,
+        dirtyPaths: ['packages/b.ts'],
+        nextSweepAtMs: NOW + 60_000,
+        nowMs: NOW,
+        turnHold: turnHoldFor('packages/b.ts', skipped),
+      });
+      expect(s.exposed).toBe(true);
+      expect(s).not.toHaveProperty('turnHeld');
+    });
+
+    it('the deferral for a turn-held path never tells the caller to release a lock', () => {
+      const d = gitSyncDeferralFor('packages/a.ts', { skippedPaths: skipped, syncAgeMs: 60_000 });
+      expect(d?.reason).toBe('turn-hold');
+      expect(d?.lever).toContain('locks:release does not lift it');
+      expect(gitSyncDeferralFor('packages/locked.ts', { skippedPaths: skipped, syncAgeMs: 60_000 })?.reason).toBe('edit-lock');
+    });
   });
 
   it('a clean path is not exposed at all — and says nothing', () => {

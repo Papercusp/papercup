@@ -1299,11 +1299,16 @@ export interface GitSyncLockHolding {
   intent: string;
   /** The active work-item/goal associated with this lock, when stamped by locks:acquire. */
   goalRef?: string;
+  /**
+   * ISO time the hold began. Set by census holds that are not real locks (the
+   * turn-scoped hold stamps the edit time) so a reader can report the hold's age.
+   */
+  heldSince?: string;
 }
 
 /** A dirty path deferred by this pass, with lock provenance or a guard reason. */
 export type GitSyncSkippedPath =
-  | { scope: string; path: string; owner: string; intent: string }
+  | { scope: string; path: string; owner: string; intent: string; heldSince?: string }
   | { scope: string; path: string; reason: 'migration-reservation'; detail: string }
   | {
       scope: string;
@@ -5433,6 +5438,7 @@ async function commitOneRepoWithScratch(
       path: holding.path,
       owner: holding.owner,
       intent: holding.intent,
+      ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
     }));
     skippedPaths.push(...directSkippedPaths);
     if (directSkippedPaths.length > 0) {
@@ -5570,7 +5576,13 @@ async function commitOneRepoWithScratch(
       if (guard.ok) {
         for (const holding of guard.lateLockedHoldings) {
           if (skippedPaths.some((p) => p.path === holding.path)) continue;
-          skippedPaths.push({ scope: o.scope, path: holding.path, owner: holding.owner, intent: holding.intent });
+          skippedPaths.push({
+            scope: o.scope,
+            path: holding.path,
+            owner: holding.owner,
+            intent: holding.intent,
+            ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
+          });
         }
       }
       return guard;
@@ -6615,6 +6627,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       owner: holding.owner,
       intent: holding.intent,
       ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
+      ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
     }))
     .filter((holding) => holding.path.length > 0);
   const refreshLiveLockHoldingsForRepo = opts.refreshLiveLockHoldings

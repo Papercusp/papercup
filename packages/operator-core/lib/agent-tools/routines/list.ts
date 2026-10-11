@@ -26,6 +26,7 @@ import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
 import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
 import { getTxPool, readResourceQueue } from '../locks/su-lock-store';
+import { isRestrictedHoldIntent, isTurnHoldIntent, TURN_HOLD_MAX_AGE_MS } from '../../personal-vault/git-sync-hold';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
 const ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS = 5_000;
@@ -693,10 +694,21 @@ function stringList(raw: unknown): string[] {
  * WI-10006505: parse `last_skipped_paths`, which git-sync writes as GitSyncSkippedPath objects.
  * A bare string (an older/hand-written row) is kept as-is with no reason. A lock entry reads as
  * 'locked-path'; a guard entry carries its own `reason` (migration-reservation / -dependency-fence).
+ * A census hold that is not a releasable lock reads by its own kind: 'turn-hold' (the editor's
+ * turn has not ended — plan git-sync-turn-scoped-commit-hold-2026-10-11 P-003) or
+ * 'restricted-hold' (an unreleased personal disclosure), so the reader never tells its holder
+ * to release a lock it does not hold.
  */
-function gitSyncSkippedEntries(raw: unknown): Array<{ key: string; reason: string | null }> {
+interface GitSyncSkippedEntry {
+  key: string;
+  reason: string | null;
+  owner?: string;
+  heldSince?: string;
+}
+
+function gitSyncSkippedEntries(raw: unknown): GitSyncSkippedEntry[] {
   if (!Array.isArray(raw)) return [];
-  const out: Array<{ key: string; reason: string | null }> = [];
+  const out: GitSyncSkippedEntry[] = [];
   for (const v of raw) {
     if (typeof v === 'string') {
       out.push({ key: v, reason: null });
@@ -706,10 +718,52 @@ function gitSyncSkippedEntries(raw: unknown): Array<{ key: string; reason: strin
     const r = v as Record<string, unknown>;
     if (typeof r.path !== 'string') continue;
     const key = typeof r.scope === 'string' && r.scope ? `${r.scope}:${r.path}` : r.path;
-    const reason = typeof r.reason === 'string' ? r.reason : typeof r.owner === 'string' ? 'locked-path' : null;
-    out.push({ key, reason });
+    const owner = typeof r.owner === 'string' ? r.owner : undefined;
+    const intent = typeof r.intent === 'string' ? r.intent : null;
+    const reason =
+      typeof r.reason === 'string'
+        ? r.reason
+        : owner === undefined
+          ? null
+          : isTurnHoldIntent(intent)
+            ? 'turn-hold'
+            : isRestrictedHoldIntent(intent)
+              ? 'restricted-hold'
+              : 'locked-path';
+    out.push({
+      key,
+      reason,
+      ...(owner !== undefined ? { owner } : {}),
+      ...(typeof r.heldSince === 'string' ? { heldSince: r.heldSince } : {}),
+    });
   }
   return out;
+}
+
+/**
+ * P-003: the turn-held paths of the last completed sweep, with the holding session and how
+ * long each has been held. Age is measured from the edit (`heldSince`) to `nowMs`; a hold
+ * never outlives TURN_HOLD_MAX_AGE_MS, so an age near that bound means the editor recorded
+ * no turn end (a client whose Stop hook is missing, or a crash).
+ */
+function gitSyncTurnHolds(entries: readonly GitSyncSkippedEntry[], nowMs: number): Record<string, unknown> {
+  const held = entries.filter((entry) => entry.reason === 'turn-hold');
+  const sample = held.slice(0, GIT_SYNC_EXCLUSION_SAMPLE).map((entry) => {
+    const sinceMs = entry.heldSince ? Date.parse(entry.heldSince) : Number.NaN;
+    return {
+      path: entry.key,
+      holder: entry.owner ?? null,
+      held_since: Number.isFinite(sinceMs) ? new Date(sinceMs).toISOString() : null,
+      age_sec: Number.isFinite(sinceMs) ? Math.max(0, Math.round((nowMs - sinceMs) / 1000)) : null,
+    };
+  });
+  return {
+    count: held.length,
+    holders: [...new Set(held.map((entry) => entry.owner).filter((o): o is string => typeof o === 'string'))],
+    sample,
+    sample_truncated: held.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    max_age_sec: Math.round(TURN_HOLD_MAX_AGE_MS / 1000),
+  };
 }
 
 /**
@@ -775,6 +829,14 @@ export function deriveGitSyncExclusions(
     if (skipReasons.length === 0 || skipReasons.includes('locked-path')) {
       remedies.push('release the corresponding file lock(s)');
     }
+    if (skipReasons.includes('turn-hold')) {
+      remedies.push(
+        `turn-held path(s) commit on the first sweep after their editor's turn ends, its session ends, or ${Math.round(TURN_HOLD_MAX_AGE_MS / 60_000)} min after the edit — locks:release does not lift them; use locks:acquire to hold a change across turns`,
+      );
+    }
+    if (skipReasons.includes('restricted-hold')) {
+      remedies.push('restricted-held path(s) commit once their editor releases its personal disclosure');
+    }
     if (migrationGuarded) {
       remedies.push(
         'give the refused migration a valid reservation (node scripts/next-migration.mjs, then rename it); paths fenced with it commit on the next sweep after that — dev:pipeline_position { path } names the blocking migration and its author',
@@ -814,6 +876,9 @@ export function deriveGitSyncExclusions(
     skipped_count: skipped.length,
     skipped_sample: skipped.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     skipped_sample_truncated: skipped.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    // Ages are measured to `nowMs`, but the paths are those of the LAST COMPLETED sweep
+    // (`skipped_at`); a hold may have lifted since.
+    turn_holds: gitSyncTurnHolds(skippedEntries, nowMs),
     oversized_count: oversized.length,
     oversized_sample: oversized.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     oversized_sample_truncated: oversized.length > GIT_SYNC_EXCLUSION_SAMPLE,

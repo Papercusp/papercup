@@ -31,6 +31,7 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
+import { isTurnHoldIntent } from './personal-vault/git-sync-hold';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
@@ -3413,6 +3414,12 @@ export interface SweepExposure {
   /** ms until git-sync's next scheduled tick; null when the routine's next fire is unknown. */
   nextSweepInMs: number | null;
   detail: string | null;
+  /**
+   * Present only when the LAST COMPLETED sweep held this path under the turn-scoped hold
+   * (plan git-sync-turn-scoped-commit-hold-2026-10-11 P-003): its editor's turn had not
+   * ended, so the path is not swept until it does. Last-sweep evidence — it may have lifted.
+   */
+  turnHeld?: { holder: string; heldSince: string | null };
 }
 
 /** Nothing to be exposed to — a clean path, or a sha-only probe. */
@@ -3439,11 +3446,31 @@ export function evaluateSweepExposure(args: {
   /** git-sync's next scheduled fire (epoch ms), from the routine row. */
   nextSweepAtMs: number | null;
   nowMs?: number;
+  /** The probed path's turn hold in the last completed sweep, from `turnHoldFor`. */
+  turnHold?: { holder: string; heldSince: string | null } | null;
 }): SweepExposure {
   const { dirtyUncommitted, dirtyPaths, nextSweepAtMs } = args;
   if (!dirtyUncommitted) return NO_SWEEP_EXPOSURE;
 
   const now = args.nowMs ?? Date.now();
+  if (args.turnHold) {
+    // The hold is the answer: the next tick leaves this path out, so warning that it will
+    // be swept mid-edit would be false. The rest of the tree is still swept as usual.
+    const { holder, heldSince } = args.turnHold;
+    const sinceMs = heldSince ? Date.parse(heldSince) : Number.NaN;
+    const age = Number.isFinite(sinceMs) ? ` for ~${Math.max(0, Math.round((now - sinceMs) / 60_000))} min` : '';
+    return {
+      exposed: false,
+      dirtyPathCount: dirtyPaths ? dirtyPaths.length : null,
+      dirtyPathSample: (dirtyPaths ?? []).slice(0, SWEEP_SAMPLE_LIMIT),
+      nextSweepInMs: Number.isFinite(nextSweepAtMs) ? Math.max(0, (nextSweepAtMs as number) - now) : null,
+      detail:
+        `TURN-HELD: the last git-sync sweep left this file out because ${holder} edited it during a turn that had not ended` +
+        `${age}. It is committed, together with that turn's other edits, on the first sweep after the turn ends, the ` +
+        `session ends, or 60 min after the edit. locks:release does not lift it; use locks:acquire to hold a change across turns.`,
+      turnHeld: { holder, heldSince },
+    };
+  }
   // Never `=== null` a timestamp that came from free-form routine state: `undefined`
   // slips straight through and renders as "NaN min" (the carry note from P-003).
   // A next-fire already in the past means the tick is DUE, not negative — clamp to 0.
@@ -3495,6 +3522,25 @@ export function evaluateSweepExposure(args: {
       `You cannot make this atomic — git-sync owns commit — so either finish the set before the tick, or read a red ` +
       `landing in this window against the candidate sha before believing it (dev:pipeline_position reports containment).`,
   };
+}
+
+/**
+ * P-003: the probed path's turn hold in the last completed sweep, or null. `skippedPaths`
+ * entries are repo-relative within their `scope`, joined to the superproject-relative
+ * probed path exactly as `gitSyncDeferralFor` does. Pure.
+ */
+export function turnHoldFor(
+  path: string | null | undefined,
+  skippedPaths: readonly GitSyncSkippedPath[] | null | undefined,
+): { holder: string; heldSince: string | null } | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  for (const s of skippedPaths ?? []) {
+    if (!('owner' in s) || !isTurnHoldIntent(s.intent)) continue;
+    const full = !s.scope || s.scope === 'superproject' ? s.path : `${s.scope}/${s.path}`;
+    if (full === want) return { holder: s.owner, heldSince: s.heldSince ?? null };
+  }
+  return null;
 }
 
 /** A diagnostic stage. Delivery stages are ordered source->live; publish is a side leg. */
@@ -3701,7 +3747,11 @@ export function mainBufferIsStale(
 export function gitSyncDeferralFor(
   path: string | null,
   gitSync: Pick<GitSyncLegs, 'skippedPaths' | 'syncAgeMs'>,
-): { reason: 'edit-lock' | 'migration-reservation' | 'migration-dependency-fence'; detail: string; lever: string } | null {
+): {
+  reason: 'edit-lock' | 'turn-hold' | 'migration-reservation' | 'migration-dependency-fence';
+  detail: string;
+  lever: string;
+} | null {
   if (!path) return null;
   const want = path.replace(/^\.\//, '');
   const entry = (gitSync.skippedPaths ?? []).find((s) => {
@@ -3716,6 +3766,15 @@ export function gitSyncDeferralFor(
   const listOr = (xs: readonly string[] | undefined, none: string): string =>
     xs && xs.length > 0 ? xs.join(', ') : none;
 
+  if ('owner' in entry && isTurnHoldIntent(entry.intent)) {
+    return {
+      reason: 'turn-hold',
+      detail:
+        `${when} held this path under the turn-scoped hold: ${entry.owner} edited it during a turn that had not ended. ` +
+        'Forcing git-sync:run holds it again until that turn ends, the session ends, or 60 min pass since the edit.',
+      lever: `none needed — it commits with ${entry.owner}'s other edits on the first sweep after that turn ends; locks:release does not lift it`,
+    };
+  }
   if ('owner' in entry) {
     return {
       reason: 'edit-lock',
@@ -7124,9 +7183,12 @@ export async function gitPipelinePosition(
     dirtyUncommitted,
     dirtyPaths,
     nextSweepAtMs: snap.routines?.gitSync?.nextFireAtMs ?? null,
+    turnHold: turnHoldFor(inp.path, snap.gitSync?.skippedPaths),
   });
   if (sweepExposure.exposed && (sweepExposure.dirtyPathCount ?? 0) > 1) {
     notes.push(`SWEEP-EXPOSED: ${sweepExposure.detail}`);
+  } else if (sweepExposure.turnHeld) {
+    notes.push(sweepExposure.detail ?? 'TURN-HELD');
   }
 
   const verdictUnknownLegs = verdictUnknown.map((v) => v.leg);

@@ -74,6 +74,8 @@ export interface RestrictedEditHolding {
   intent: string;
   goalRef?: string;
   coordinationDomain?: string;
+  /** ISO time of the edit that began the hold (turn holds only); git-sync reports the hold's age from it. */
+  heldSince?: string;
 }
 
 /** A ledger row as `readRestrictedEditHoldings` selects it. */
@@ -90,7 +92,10 @@ export function restrictedHoldingsFromRows(rows: readonly RestrictedEditRow[]): 
 }
 
 /** Shared row → holding mapping for every ledger-backed hold. Pure. */
-function holdingsFromLedgerRows(rows: readonly RestrictedEditRow[], intent: string): RestrictedEditHolding[] {
+function holdingsFromLedgerRows(
+  rows: readonly (RestrictedEditRow & { ts?: string | null })[],
+  intent: string,
+): RestrictedEditHolding[] {
   const out: RestrictedEditHolding[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
@@ -102,6 +107,7 @@ function holdingsFromLedgerRows(rows: readonly RestrictedEditRow[], intent: stri
     if (seen.has(key)) continue;
     seen.add(key);
     const goalRef = row.work_item_id?.trim() ?? '';
+    const heldSinceMs = row.ts ? Date.parse(row.ts) : Number.NaN;
     out.push({
       path,
       owner,
@@ -110,6 +116,7 @@ function holdingsFromLedgerRows(rows: readonly RestrictedEditRow[], intent: stri
       // source+test siblings stay together instead of one reaching HEAD alone.
       ...(goalRef ? { goalRef } : {}),
       ...(domain ? { coordinationDomain: domain } : {}),
+      ...(Number.isFinite(heldSinceMs) ? { heldSince: new Date(heldSinceMs).toISOString() } : {}),
     });
   }
   return out;
@@ -476,6 +483,9 @@ export async function readRestrictedSourceHoldState(
 export const GIT_SYNC_CENSUS_LEGS = ['live-locks', 'restricted-holds', 'working-tree-window', 'turn-holds'] as const;
 export type GitSyncCensusLeg = (typeof GIT_SYNC_CENSUS_LEGS)[number];
 
+/** One census entry: a live lock, or a hold that also carries when it began (turn holds). */
+export type GitSyncCensusHolding = LiveLockHolding & Pick<RestrictedEditHolding, 'heldSince'>;
+
 /**
  * git-sync's commit-gate census: every live edit lock, every restricted hold,
  * (given the tree to read) every unattributed write inside an active disclosure
@@ -499,7 +509,7 @@ export async function readGitSyncCensusStrict(
     /** Progress for the independent reads. Diagnostic callbacks never affect the fail-closed census. */
     onLeg?: (leg: GitSyncCensusLeg, status: 'started' | 'completed' | 'failed') => void;
   } = {},
-): Promise<LiveLockHolding[]> {
+): Promise<GitSyncCensusHolding[]> {
   const tree = deps.window;
   const readWindow: () => Promise<RestrictedEditHolding[]> =
     typeof tree === 'function'

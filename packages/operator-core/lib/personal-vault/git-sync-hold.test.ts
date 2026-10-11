@@ -14,18 +14,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
+  GIT_SYNC_CENSUS_LEGS,
   RESTRICTED_HOLD_INTENT,
   RESTRICTED_WINDOW_INTENT,
   RESTRICTED_WINDOW_OWNER,
+  TURN_HOLD_INTENT,
+  TURN_HOLD_MAX_AGE_MS,
+  isCensusHoldIntent,
   isRestrictedHoldIntent,
+  isTurnHoldIntent,
   listDirtyFilesRecursive,
   ownerHasActiveDisclosure,
   readGitSyncCensusStrict,
   readRestrictedEditHoldings,
   readRestrictedSourceHoldState,
   readRestrictedWindowHoldings,
+  readTurnHoldings,
   recordRestrictedEditBeforeRelease,
   restrictedHoldingsFromRows,
+  turnHoldingsFromRows,
   type HoldRunGit,
   type RestrictedEditRow,
 } from './git-sync-hold';
@@ -115,6 +122,87 @@ describe('readRestrictedEditHoldings', () => {
   });
 });
 
+// git-sync-turn-scoped-commit-hold-2026-10-11 P-002/P-005. The SQL's boundaries run
+// against real Postgres in git-sync-turn-hold.integration.test.ts.
+describe('turn-scoped hold', () => {
+  it('maps a ledger row to a turn holding in the lock domain it was edited under', () => {
+    expect(turnHoldingsFromRows([{ ...ROW, ts: '2026-10-11T03:00:00Z' }])).toEqual([
+      {
+        path: 'notes/secret.md',
+        owner: 'su-restricted',
+        intent: TURN_HOLD_INTENT,
+        goalRef: 'WI-1',
+        coordinationDomain: '/srv/papercup-release',
+        heldSince: '2026-10-11T03:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('omits heldSince when the edit time is absent or unparseable', () => {
+    const [noTs] = turnHoldingsFromRows([{ ...ROW, ts: null }]);
+    const [badTs] = turnHoldingsFromRows([{ ...ROW, ts: 'not a time' }]);
+    expect(noTs).not.toHaveProperty('heldSince');
+    expect(badTs).not.toHaveProperty('heldSince');
+  });
+
+  it('is a census hold but not a restricted hold, so git-sync does not tell its holder to locks:release', () => {
+    expect(isTurnHoldIntent(TURN_HOLD_INTENT)).toBe(true);
+    expect(isRestrictedHoldIntent(TURN_HOLD_INTENT)).toBe(false);
+    expect(isCensusHoldIntent(TURN_HOLD_INTENT)).toBe(true);
+    expect(isCensusHoldIntent(RESTRICTED_HOLD_INTENT)).toBe(true);
+    expect(isCensusHoldIntent(RESTRICTED_WINDOW_INTENT)).toBe(true);
+    expect(isCensusHoldIntent('PreToolUse:Edit')).toBe(false);
+    expect(isTurnHoldIntent('turn ended')).toBe(false);
+    expect(isCensusHoldIntent(null)).toBe(false);
+  });
+
+  it('caps the hold at 60 minutes from the edit (D-001)', () => {
+    expect(TURN_HOLD_MAX_AGE_MS).toBe(60 * 60 * 1000);
+  });
+
+  function capturingSql(answer: () => unknown[]) {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?').replace(/\s+/g, ' '), values });
+      return Promise.resolve().then(answer);
+    };
+    return { sql: fn as unknown as FakeSql, calls };
+  }
+
+  it('reads edits newer than the editor\'s last turn end, within the max age, excluding ended sessions', async () => {
+    const { sql, calls } = capturingSql(() => [{ ...ROW, ts: '2026-10-11T03:00:00Z' }]);
+    await expect(readTurnHoldings(sql)).resolves.toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    const { text, values } = calls[0];
+    expect(text).toContain('FROM harness_shared.edit_attribution_ledger l');
+    expect(text).toContain('FROM harness_shared.session_turn_journal j');
+    // turn_ts (the final assistant message) wins over the asynchronous insert time.
+    expect(text).toContain('max(COALESCE(j.turn_ts, j.created_at))');
+    expect(text).toContain('r.ts > e.turn_ended_at');
+    expect(text).toContain('s.ended_at IS NULL');
+    expect(text).toContain('NOT e.session_ended');
+    // The default window is D-001's 60 minutes, and the journal window covers it.
+    expect(values[0]).toBe(3600);
+    expect(values[1]).toBeGreaterThanOrEqual(3600);
+  });
+
+  it('honours an explicit max age', async () => {
+    const { sql, calls } = capturingSql(() => []);
+    await readTurnHoldings(sql, { maxAgeMs: 90_000 });
+    expect(calls[0].values[0]).toBe(90);
+  });
+
+  it('fails closed: an unreadable ledger or journal is a refusal, never an empty census', async () => {
+    const { sql } = capturingSql(() => {
+      throw new Error('relation "harness_shared.session_turn_journal" does not exist');
+    });
+    const err = await readTurnHoldings(sql).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DisclosureRefused);
+    expect((err as DisclosureRefused).code).toBe('disclosure_ledger_unavailable');
+    expect((err as Error).message).toContain('turn-scoped hold');
+  });
+});
+
 describe('readGitSyncCensusStrict', () => {
   const lock = { path: 'src/a.ts', owner: 'su-peer', intent: 'PreToolUse:Edit' };
   const hold = restrictedHoldingsFromRows([ROW])[0];
@@ -133,11 +221,42 @@ describe('readGitSyncCensusStrict', () => {
       onLeg: (leg, status) => events.push([leg, status]),
     });
 
-    for (const leg of ['live-locks', 'restricted-holds', 'working-tree-window']) {
+    // The turn-holds leg reports even when no turn reader is configured (it settles
+    // empty), so a census-timeout diagnostic always names all four legs.
+    expect([...GIT_SYNC_CENSUS_LEGS]).toEqual(['live-locks', 'restricted-holds', 'working-tree-window', 'turn-holds']);
+    for (const leg of GIT_SYNC_CENSUS_LEGS) {
       expect(events).toContainEqual([leg, 'started']);
       expect(events).toContainEqual([leg, 'completed']);
     }
-    expect(events).toHaveLength(6);
+    expect(events).toHaveLength(8);
+  });
+
+  it('adds turn-scoped holds as the fourth leg, after locks, restricted and window holds', async () => {
+    const turnHold = turnHoldingsFromRows([{ ...ROW, file: 'src/mid-turn.ts', ts: null }])[0];
+    const census = await readGitSyncCensusStrict({
+      locks: async () => [lock],
+      restricted: async () => [hold],
+      turn: async () => [turnHold],
+    });
+    expect(census).toEqual([lock, hold, turnHold]);
+    expect(turnHold.intent).toBe(TURN_HOLD_INTENT);
+  });
+
+  it('has no turn holds when no turn reader is passed (the kill-switch OFF path)', async () => {
+    const census = await readGitSyncCensusStrict({ locks: async () => [lock], restricted: async () => [] });
+    expect(census).toEqual([lock]);
+  });
+
+  it('fails closed when the turn-hold read fails', async () => {
+    const events: Array<[string, string]> = [];
+    const refused = new DisclosureRefused('disclosure_ledger_unavailable', 'turn ledger down');
+    await expect(readGitSyncCensusStrict({
+      locks: async () => [lock],
+      restricted: async () => [],
+      turn: async () => Promise.reject(refused),
+      onLeg: (leg, status) => events.push([leg, status]),
+    })).rejects.toBe(refused);
+    expect(events).toContainEqual(['turn-holds', 'failed']);
   });
 
   it('reports a failed census leg without swallowing its fail-closed error', async () => {
