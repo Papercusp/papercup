@@ -17,6 +17,7 @@ import type { PrRowData } from '../lib/pr-host/pr-row-data';
 import type { PrViewerDetails } from '../lib/pr-host/pr-viewer';
 import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-insights/card-types';
 import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './portal-project-history-fixture';
+import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calendar-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -123,6 +124,8 @@ type PortalRosterBrowserInput = {
   overview?: boolean;
   projectHistory?: boolean;
   projectHistorySeed?: PrivateProjectHistorySeed;
+  calendar?: boolean;
+  calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
   health?: boolean;
@@ -150,7 +153,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -162,7 +165,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.projectHistory ? `
+  const entry = input.calendar ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import ScheduledCalendarTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/ScheduledCalendarTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(ScheduledCalendarTab))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.projectHistory ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -372,7 +387,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -383,7 +398,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': input.brainstorm ? 'css' : 'empty', '.module.css': 'local-css',
+    loader: { '.css': input.brainstorm || input.calendar ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
@@ -396,7 +411,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       builder.onLoad({ filter: /\.css$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
-        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm ? 'css' : 'empty' };
+        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm || input.calendar ? 'css' : 'empty' };
       });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
@@ -421,7 +436,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.projectHistory
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.calendar
+    ? '/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx' : input.projectHistory
     ? '/apps/operator-vite/src/components/adv/AdvHistoryTab.tsx' : input.health
     ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
@@ -649,7 +665,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
-    try { await (input.projectHistory ? page.locator('.pc-project-history')
+    try { await (input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
@@ -822,7 +838,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) assert.match(await page.locator('body').innerText(), /Select a /);
+    if (input.calendar) {
+      assert.equal(await page.getByRole('heading', { name: 'Calendar', exact: true }).count(), 1);
+      assert.equal(await page.locator('.pc-sched-cal .fc').count(), 1);
+      assert.equal(await page.locator('.pc-routines').count(), 1);
+    } else if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
+      assert.match(await page.locator('body').innerText(), /Select a /);
+    }
     if (input.brainstorm) {
       // Both preflights compile the real lazy editor graph. The selected-row
       // variant supplies an HTTP response, not private API persistence proof.
@@ -1134,7 +1156,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.projectHistory ? '/?app=history&q=retained-shell-search'
+    const url = new URL(input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
       : input.overview ? '/?app=overview&q=retained-shell-search'
       : input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.testing ? '/?app=testing&q=retained-shell-search'
@@ -1156,6 +1178,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       const receipt = await runPrivateTestingPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'actual Testing registry and domain controls must stay browser-safe');
       return receipt;
+    }
+    if (input.calendarSeed) {
+      const receipt = await runPrivateCalendarPage(page, context, input.calendarSeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual Calendar controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
     }
     if (input.projectHistorySeed) {
       url.searchParams.set('slug', input.projectHistorySeed.selected);
