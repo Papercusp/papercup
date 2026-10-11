@@ -57,17 +57,17 @@ describe('authenticated restricted credential provisioning', () => {
     const opts = options();
     expect(await provisionElevenLabsRestrictedCredential({ ...opts, allowedPermissions: ['all'] })).toBeNull();
     expect(opts.fetch).not.toHaveBeenCalled();
-    opts.fetch.mockImplementationOnce(async () => {
+    opts.fetch.mockReset().mockImplementationOnce(async () => {
       opts.allowedPermissions.push('convai_write'); opts.maximumCredits = 5000;
       return Response.json({ 'xi-api-key': KEY, key_id: 'created-key' });
-    });
+    }).mockResolvedValueOnce(Response.json({ 'api-keys': [metadata] }));
     expect(await provisionElevenLabsRestrictedCredential(opts)).toEqual({ keyId: 'created-key' });
     expect(opts.persist).toHaveBeenCalledTimes(1);
   });
   it('refuses cancellation before persistence and hides persistence errors without retrying creation', async () => {
     const opts = options(); const controller = new AbortController();
     opts.signal = controller.signal;
-    opts.fetch.mockImplementationOnce(async () => { controller.abort();
+    opts.fetch.mockReset().mockImplementationOnce(async () => { controller.abort();
       return Response.json({ 'xi-api-key': KEY, key_id: 'created-key' }); });
     expect(await provisionElevenLabsRestrictedCredential(opts)).toBeNull();
     expect(opts.persist).not.toHaveBeenCalled();

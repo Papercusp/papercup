@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 963,
+  "count": 964,
   "tools": [
     {
       "name": "ablation:report",
@@ -4568,7 +4568,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner asks you to answer a specific chat message or thread. Locate it with personal:search and pass the externalId it returns.",
+        "when": "The owner asks you to answer a specific chat message or thread (personal:search → externalId as messageId), or a chat-triggered plan run says to respond (pass its planRunId; posts once).",
         "notWhen": "Posting into a channel you name yourself — that is chat:post, which checks the destination. Not for email (mail:reply).",
         "chaining": "personal:search → externalId → chat:reply. Report the echoed channelId/threadId as evidence."
       }
@@ -22462,6 +22462,80 @@
         "when": "Once, after the revision spine ships, to give existing plans a history before their first live write — or to seed a single plan whose spine was never populated.",
         "notWhen": "Routine use. The spine is maintained automatically by every plans:* write verb; this is a migration, not an everyday tool.",
         "chaining": "plans:backfill-revisions → plans:revisions to confirm the chain."
+      }
+    },
+    {
+      "name": "plans:bind-independent-verification",
+      "http": {
+        "path": "/api/agent-tools/plans/bind-independent-verification",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record an independent re-observation of a live/deployed outcome bar: an evidenceKind 'independent-verification' binding citing the implementer's binding (verifiesBindingId) on the same spec revision. The narrow door a recruited acceptance judge uses to clear the ship gate's independent_verification_missing; it accepts no other evidence kind. Same storage and checks as plans:bind-spec-evidence: the store re-measures source and environment and refuses a mismatch with the cited binding.",
+      "capabilities": [
+        "plans:independent-verification:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A grader brief asks you to independently verify a live bar: after re-observing the cited receipt yourself and finding it matches.",
+        "notWhen": "Your observation contradicts the receipt (do not bind; rate the criterion on what you saw). Implementer evidence of any kind — plans:bind-spec-evidence.",
+        "chaining": "plans:get-spec-evidence (read the cited binding) → re-observe → plans:bind-independent-verification → scorecards:emit."
       }
     },
     {
