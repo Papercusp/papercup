@@ -203,7 +203,7 @@ function withScratchWorkspaceMutex<T>(
   })();
 }
 
-type ScratchWriteObservedAwaitPhase = 'quota-state-read' | 'quota-state-publish' | 'marker-probe';
+type ScratchWriteObservedAwaitPhase = 'quota-state-read' | 'quota-state-publish' | 'marker-probe' | 'file-write';
 type ScratchWriteAwaitObserver = <T>(
   phase: ScratchWriteObservedAwaitPhase,
   subphase: string,
@@ -1400,6 +1400,8 @@ export interface ScratchWriteTimings {
   quotaStatePublishMs?: number;
   /** Awaited workspace marker lstat probes used by the write path. */
   markerProbeMs?: number;
+  /** Per-await details; these overlap their enclosing phase totals. Keys use bounded phase.subphase names. */
+  awaitSubphaseTimingsMs?: Record<string, number>;
   writeMs: number;
   totalMs: number;
   /** Present when this write initiated an actual request-time quota-recovery scan. */
@@ -1613,8 +1615,9 @@ const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
 export async function writeWithScratchQuota(
   opts: { workspaceId: string; filePath: string; bytes: number;
     requestTraceId?: string;
+    captureSubphaseTimings?: boolean;
     onTiming?: (timings: ScratchWriteTimings) => void },
-  write: () => Promise<void>,
+  write: (observeAwait: ScratchWriteAwaitObserver) => Promise<void>,
 ): Promise<void> {
   if (!Number.isSafeInteger(opts.bytes) || opts.bytes < 0 || opts.bytes > WORKSPACE_QUOTA_BYTES) {
     throw new ScratchQuotaError('scratch reservation: invalid single write of ' + opts.bytes + ' bytes');
@@ -1633,6 +1636,7 @@ export async function writeWithScratchQuota(
     markerProbeMs: 0,
     writeMs: 0,
     totalMs: 0,
+    ...(opts.captureSubphaseTimings ? { awaitSubphaseTimingsMs: {} } : {}),
   };
   let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
   let sharedMeasuredAt = Date.now();
@@ -1723,11 +1727,13 @@ export async function writeWithScratchQuota(
   } : undefined;
   const observeAwait: ScratchWriteAwaitObserver = async (phase, subphase, operation) => {
     const start = performance.now();
-    const timingField = phase === 'quota-state-read'
+    const timingField: 'quotaStateReadMs' | 'quotaStatePublishMs' | 'markerProbeMs' | undefined = phase === 'quota-state-read'
       ? 'quotaStateReadMs'
       : phase === 'quota-state-publish'
         ? 'quotaStatePublishMs'
-        : 'markerProbeMs';
+        : phase === 'marker-probe'
+          ? 'markerProbeMs'
+          : undefined;
     const emitProgress = () => {
       try {
         opts.onTiming?.({
@@ -1756,7 +1762,13 @@ export async function writeWithScratchQuota(
       return await operation();
     } finally {
       if (progressTimeout) clearTimeout(progressTimeout);
-      timings[timingField] = (timings[timingField] ?? 0) + Math.max(0, performance.now() - start);
+      const elapsedMs = Math.max(0, performance.now() - start);
+      if (timingField) timings[timingField] = (timings[timingField] ?? 0) + elapsedMs;
+      if (opts.captureSubphaseTimings) {
+        const subphases = timings.awaitSubphaseTimingsMs ??= {};
+        const key = `${phase}.${subphase}`;
+        subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+      }
     }
   };
   try {
@@ -1844,7 +1856,7 @@ export async function writeWithScratchQuota(
         // conservative over-count, but never an under-count that admits another process past quota.
         await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait);
         reservedStatePersisted = true;
-        await timed('writeMs', write);
+        await timed('writeMs', () => write(observeAwait));
         succeeded = true;
 
         if (markerBytes > 0) {
