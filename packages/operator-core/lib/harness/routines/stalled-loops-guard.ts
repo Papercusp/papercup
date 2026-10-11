@@ -166,6 +166,7 @@ import {
   rearmFireStarvedLoop,
   reviveDisarmedLoop,
   routeStalledLoopToHostRecovery,
+  retainStalledLoopRecoveryWall,
   HOST_RECOVERY_ROUTE_MAX,
   HOST_RECOVERY_ROUTE_WINDOW_MS,
   computeLifecycleBackoff,
@@ -553,6 +554,47 @@ export interface StalledLoopsSweepDeps {
   readStalledHost?: (ownerId: string) => Promise<StalledLoopHostReading>;
   /** parked-agent-census P-007 — injectable for tests; defaults to the budgeted route write. */
   routeToHostRecovery?: typeof routeStalledLoopToHostRecovery;
+  retainHostRecoveryWall?: typeof retainStalledLoopRecoveryWall;
+  queueHostRelaunch?: typeof queueStalledHostRelaunch;
+}
+
+/** Use the existing host's carry cut, which preserves its model/account/terminal
+ * and coordination identity. A queued acknowledgement is deliberately not proof
+ * that the successor took a turn; the next guard pass still judges the host. */
+export async function queueStalledHostRelaunch(
+  ownerId: string,
+  workspaceId: string,
+): Promise<{ queued: boolean; reason?: string }> {
+  const { hostIsAgentLaunched, hostSupports, injectIntoHostWithConfirmation } = await import('../../events/await/psu-pty-discovery');
+  const host = await findLiveHostAsync(ownerId);
+  if (!host || host.ownerId !== ownerId || host.bridgeTty !== false || !hostIsAgentLaunched(host)
+    || !hostSupports(host, 'carry-respawn')) return { queued: false, reason: 'identity-preserving-host-route-unavailable' };
+  if (host.execution?.ownerStopRequested || host.execution?.ownerInputPending) {
+    return { queued: false, reason: 'owner-attended-host' };
+  }
+  const { buildOwnerRespawnLaunchSpec } = await import('../../carry-respawn');
+  const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
+    effectiveWindowTokens: 200_000,
+    buildOpts: { workspaceId, boundaryDeliberate: false, boundarySelfRequested: false },
+  });
+  if (!spec) return { queued: false, reason: 'carry-build-failed' };
+  const { addressContinuationToOwner } = await import('../../carry-respawn-addressing');
+  const { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } = await import('../../agent-tools/coordination/compaction-recovery');
+  const { tagTurnForInjection } = await import('../../turn-provenance/turn-provenance');
+  const data = (await tagTurnForInjection({ sid: ownerId, origin: 'watchdog',
+    text: addressContinuationToOwner(
+      spec.firstPrompt ?? `Recover the stalled host. ${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION} Resume the carried obligations.`, ownerId),
+  })).taggedText;
+  const result = await injectIntoHostWithConfirmation(host.sock, {
+    mode: 'carry-respawn', data, systemPromptAddendum: spec.systemPromptAddendum,
+    ownerId, expectedHostStartedAt: host.startedAt,
+  }, 10_000);
+  if (!result.ok || result.confirmation !== 'acked') {
+    return { queued: false, reason: result.reason ?? `carry-${result.confirmation}` };
+  }
+  const { markRespawnExpected } = await import('../../carry-respawn-marker');
+  await markRespawnExpected(ownerId).catch(() => {});
+  return { queued: true };
 }
 
 /**
@@ -752,6 +794,7 @@ export interface StalledLoopsSweepResult {
    * what a human or P-012 has to do instead of "re-arm with loop:arm".
    */
   disarmedHostUnhealthy: Array<{ ownerId: string; condition: string; remedy: string }>;
+  retainedHostRecoveryWalls: Array<{ ownerId: string; condition: string; reason: string; remedy: string }>;
   dryRun: boolean;
 }
 
@@ -778,6 +821,8 @@ export async function sweepStalledLoops(
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
   const readStalledHost = deps.readStalledHost ?? readStalledLoopHost;
   const routeToHostRecovery = deps.routeToHostRecovery ?? routeStalledLoopToHostRecovery;
+  const retainHostRecoveryWall = deps.retainHostRecoveryWall ?? retainStalledLoopRecoveryWall;
+  const queueHostRelaunch = deps.queueHostRelaunch ?? queueStalledHostRelaunch;
   const revive = deps.revive ?? reviveDisarmedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
   // WI-37546 — one indexed read for the whole sweep. `unnest` pairs each owner with its OWN
@@ -1135,6 +1180,7 @@ export async function sweepStalledLoops(
   const routedToHostRecovery: Array<{ ownerId: string; condition: string }> = [];
   /** parked-agent-census P-007: disarmed with a host condition a wake cannot clear. */
   const disarmedHostUnhealthy: Array<{ ownerId: string; condition: string; remedy: string }> = [];
+  const retainedHostRecoveryWalls: StalledLoopsSweepResult['retainedHostRecoveryWalls'] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -1656,7 +1702,38 @@ export async function sweepStalledLoops(
       };
     }
     if (hostClass.kind === 'needs-relaunch') {
-      disarmedHostUnhealthy.push({ ownerId, condition: hostClass.condition, remedy: hostClass.remedy });
+      // Only binding/pending-pipeline faults warrant a carry cut. A shared auth
+      // or quota wall needs its stated prerequisite; recycling it again would
+      // bypass the executor's bound or change the original account route.
+      let reason = hostClass.why;
+      if (hostClass.condition === 'unbound-successor' || hostClass.condition === 'pending-turn-stuck') {
+        const reserved = dryRun ? { routed: true } : await routeToHostRecovery(sql, routineId,
+          'stalled-loops-guard (P-007): reserve identity-preserving carry recovery', hostClass.condition, { deferFire: true });
+        if (reserved.routed) {
+          const recovery = dryRun ? { queued: true } : await queueHostRelaunch(ownerId, ws)
+            .catch((e: unknown) => ({ queued: false, reason: `carry-failed:${String(e)}` }));
+          if (recovery.queued) {
+            routedToHostRecovery.push({ ownerId, condition: hostClass.condition });
+            console.warn(`[stalled-loops-guard] HOST-RECOVERY ${ownerId}: identity-preserving carry queued; pickup remains unverified.`);
+            continue;
+          }
+          reason += `; recovery refused: ${recovery.reason ?? 'unknown'}`;
+        } else reason += '; host-recovery route budget is spent or loop was stopped';
+      }
+      const wall = { ownerId, condition: hostClass.condition, reason, remedy: hostClass.remedy };
+      retainedHostRecoveryWalls.push(wall);
+      const retained = dryRun ? { retained: true, changed: false } : await retainHostRecoveryWall(sql, routineId, wall);
+      if (retained.retained && retained.changed && !dryRun) {
+        try {
+          await notify({ kind: 'intervention', title: 'Stalled host recovery needs a prerequisite',
+            body: `${ownerId} (${wall.condition}): ${wall.reason}. ${wall.remedy}. The loop remains active; stalled-loops-guard owns the bounded retry.`,
+            importance: 'urgent', workspaceId: ws,
+            data: { hostUnhealthy: ownerId, hostUnhealthyCount: 1, recoveryRetained: true } });
+        } catch (e) {
+          console.warn(`[stalled-loops-guard] recovery wall page failed for ${ownerId}: ${String(e)}`);
+        }
+      }
+      continue;
     }
 
     stalledOwners.push(ownerId);
@@ -1699,10 +1776,6 @@ export async function sweepStalledLoops(
           `returns harness_forbidden. It was being woken to do work it cannot reach, which is why ` +
           `no turn followed. Re-arming alone will NOT fix this — the session must be relaunched ` +
           `with the correct workspace scope (EI-19966210024116714).`
-        : '') +
-      (hostClass.kind === 'needs-relaunch'
-        ? ` — HOST UNHEALTHY (${hostClass.condition}): ${hostClass.why}. Re-arming alone will NOT ` +
-          `fix this; ${hostClass.remedy} (parked-agent-census P-007).`
         : '');
     await autoPause(sql, routineId, reason);
 
@@ -2107,6 +2180,7 @@ export async function sweepStalledLoops(
     population,
     routedToHostRecovery,
     disarmedHostUnhealthy,
+    retainedHostRecoveryWalls,
     dryRun,
   };
 }
