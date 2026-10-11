@@ -77,12 +77,23 @@ function deps(
     setCheckpoint?: CaptureDeps['setCheckpoint'];
     resolvePotScope?: CaptureDeps['resolvePotScope'];
   } = {},
-): CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } {
+): CaptureDeps & {
+  created: CreateIssueInput[];
+  occurrences: RecordIssueOccurrenceInput[];
+  emitted: Parameters<NonNullable<CaptureDeps['emitAwaitedEvent']>>[0][];
+} {
   const created: CreateIssueInput[] = [];
   const occurrences: RecordIssueOccurrenceInput[] = [];
+  const emitted: Parameters<NonNullable<CaptureDeps['emitAwaitedEvent']>>[0][] = [];
   return {
     created,
     occurrences,
+    emitted,
+    // WI-6554700010008444: never reach the real awaited-event engine from a unit test.
+    emitAwaitedEvent: async (opts) => {
+      emitted.push(opts);
+      return {};
+    },
     searchIssues: async () => opts.found ?? [],
     setCheckpoint: opts.setCheckpoint,
     resolvePotScope: opts.resolvePotScope ?? (async ({ rawSlug }) => rawSlug),
@@ -794,6 +805,9 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(prior.payload).toMatchObject({ toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
       implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' } });
     expect(d.created).toHaveLength(0);
+    // WI-6554700010008444: the promoting reporter is new evidence for the row.
+    expect(d.emitted).toEqual([expect.objectContaining({ key: 'work-item:tool-failure-reporter:EI-R7' })]);
+    expect(typeof (prior.payload as Record<string, unknown>).evidenceAdvancedAt).toBe('string');
   });
 
   it.each(['missing', 'unreadable'] as const)('preserves a committed promotion when its optional review refresh is %s', async refresh => {
@@ -4793,8 +4807,11 @@ describe('captureToolInvocationFriction — one row per signature (review-system
   function signatureStore() {
     const rows: EngineerIssue[] = [];
     const occurrences: RecordIssueOccurrenceInput[] = [];
+    const emitted: Parameters<NonNullable<CaptureDeps['emitAwaitedEvent']>>[0][] = [];
     const payloadOf = (row: EngineerIssue) => (row.payload as Record<string, any>) ?? {};
     const d: CaptureDeps = {
+      // WI-6554700010008444: a new reporter fires an awaited event; never reach the real engine.
+      emitAwaitedEvent: async (opts) => { emitted.push(opts); return {}; },
       searchIssues: async () => [],
       recordIssueOccurrence: async (input) => { occurrences.push(input); return null; },
       resolvePotScope: async ({ rawSlug }) => rawSlug,
@@ -4828,9 +4845,31 @@ describe('captureToolInvocationFriction — one row per signature (review-system
         workspaceId: 'ws', harnessSlug: 'papercusp', ownerId, invokedAt: '2026-09-23T12:00:00Z',
         failure: { ...metadataToolFailure, runtimeVersion, ...failure },
       }, d);
-    return { rows, occurrences, capture, payloadOf };
+    return { rows, occurrences, emitted, capture, payloadOf };
   }
   const SIGNATURE = 'tool-failure-signature:coord:send:caller:invalid_args:body';
+
+  it('WI-6554700010008444: a reporter new to the row stamps evidenceAdvancedAt and fires the reporter key once', async () => {
+    const store = signatureStore();
+    await store.capture('su-a', 'build-1');
+    expect(store.emitted).toHaveLength(0);
+    expect(store.payloadOf(store.rows[0]).evidenceAdvancedAt).toBeUndefined();
+    // su-b reports the signature from another build: a counted occurrence, not a promotion.
+    const counted = await store.capture('su-b', 'build-2');
+    expect(counted).toMatchObject({ created: false, reason: 'coalesced', issue: { id: 'EI-S1' } });
+    expect(store.emitted).toEqual([expect.objectContaining({
+      key: 'work-item:tool-failure-reporter:EI-S1', workspaceId: 'ws',
+      payload: expect.objectContaining({ id: 'EI-S1', reporter: 'su-b' }),
+    })]);
+    const epoch = store.payloadOf(store.rows[0]).evidenceAdvancedAt;
+    expect(typeof epoch).toBe('string');
+    // Neither su-b repeating nor the original reporter su-a is new evidence.
+    await store.capture('su-b', 'build-2');
+    await store.capture('su-a', 'build-1');
+    expect(store.rows).toHaveLength(1);
+    expect(store.emitted).toHaveLength(1);
+    expect(store.payloadOf(store.rows[0]).evidenceAdvancedAt).toBe(epoch);
+  });
 
   it('P-023: 100 identical refusals across two builds produce ONE row whose count is 100', async () => {
     const store = signatureStore();
