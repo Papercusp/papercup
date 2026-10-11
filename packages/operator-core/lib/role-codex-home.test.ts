@@ -582,6 +582,8 @@ describe('writeSuCodexHome', () => {
     expect(lstatSync(join(out.codexHome, 'skills')).isDirectory()).toBe(true);
     expect(existsSync(join(out.codexHome, 'skills', 'ambient.md'))).toBe(false);
     const config = readFileSync(out.configPath, 'utf8');
+    const suMcpRoute = '[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=su-frozen-home"\ntool_timeout_sec = 610';
+    expect(config).toContain(suMcpRoute);
     expect(config).toContain('[projects."/frozen-assignment"]');
     expect(config).not.toContain('/ambient-project');
     expect(config).not.toContain('example.invalid');
@@ -591,6 +593,7 @@ describe('writeSuCodexHome', () => {
     ensureSuCodexHomeConfig({ sessionKey: input.sessionKey, sid: input.sid,
       mcpUrl: input.mcpUrl, projectDir: input.trustDir });
     expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(readFileSync(out.configPath, 'utf8')).toContain(suMcpRoute);
     expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
   });
 
