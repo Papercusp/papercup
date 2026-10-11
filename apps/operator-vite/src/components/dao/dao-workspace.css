@@ -5,15 +5,16 @@
 .dao-brand strong { display:block; font-size:15px; }
 .dao-brand small { display:block; margin-top:5px; color:var(--fg-mute); font-size:10px; }
 .dao-picker { display:grid; gap:8px; font-size:11px; color:var(--fg-mute); }
-.dao-picker select,.dao-search input { min-width:0; width:100%; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--bg); color:var(--fg); }
+.dao-picker .dao-select,.dao-search input { min-width:0; width:100%; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--bg); color:var(--fg); }
+.dao-select { display:flex; align-items:center; justify-content:space-between; font:inherit; }
 .dao-nav-group { margin-top:19px; }
-.dao-nav-group h2,.dao-eyebrow { margin:0 0 8px; font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--fg-mute); }
+.dao-nav-group h2,.dao-eyebrow { margin:0 0 8px; font-size:10px; text-transform:uppercase; letter-spacing:0; color:var(--fg-mute); }
 .dao-nav-group button { display:block; width:100%; padding:8px 10px; text-align:left; border:0; border-radius:5px; background:transparent; color:var(--fg-dim,var(--fg)); font-size:12px; cursor:pointer; }
 .dao-nav-group button[aria-current=page] { background:color-mix(in srgb,var(--accent) 15%,transparent); color:var(--accent); font-weight:650; }
 .dao-workspace button:focus-visible,.dao-workspace a:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .dao-main { min-width:0; padding:32px; }
 .dao-page-header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:25px; }
-.dao-page-header h1 { font-size:26px; letter-spacing:-.035em; margin:0 0 8px; }
+.dao-page-header h1 { font-size:26px; letter-spacing:0; margin:0 0 8px; }
 .dao-page-header p:not(.dao-eyebrow),.dao-card p,.dao-empty p,.dao-evidence p { color:var(--fg-mute); font-size:13px; line-height:1.6; }
 .dao-action { display:inline-block; border:1px solid var(--border); border-radius:6px; background:var(--bg-2); color:var(--fg); padding:9px 13px; font-size:12px; cursor:pointer; text-decoration:none; }
 .dao-action:disabled { opacity:.45; cursor:not-allowed; }
@@ -34,7 +35,7 @@
 .dao-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .dao-form { display:grid; gap:14px; }
 .dao-form label { display:grid; gap:7px; font-size:12px; color:var(--fg-mute); }
-.dao-form input,.dao-form textarea,.dao-form select { min-width:0; width:100%; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--bg); color:var(--fg); font:inherit; }
+.dao-form input,.dao-form textarea,.dao-form .dao-select { min-width:0; width:100%; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--bg); color:var(--fg); font:inherit; }
 .dao-form textarea { min-height:90px; resize:vertical; }
 .dao-governance { grid-column:1/-1; }
 .dao-table-wrap { overflow-x:auto; }
