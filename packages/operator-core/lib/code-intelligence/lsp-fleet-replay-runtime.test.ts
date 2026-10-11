@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process';
 import childProcess from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import ts from 'typescript';
 import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
-  replayPopulationFingerprint, replayProcessIdentity, replayRepositorySources, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
+  replayPackageRuntimeSources, replayPopulationFingerprint, replayProcessIdentity, replayRepositorySources, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { scopeUnitForTask } from '../task-manager/types';
@@ -988,6 +989,25 @@ describe('independent replay source materialization', () => {
     } })).toThrow('escaping-replay-snapshot-link');
     expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
     expect(JSON.parse(readFileSync(join(f.target, '.replay-source-capture.json'), 'utf8')).sourceFiles['source.ts']).toBeTruthy();
+  });
+  it('admits an ignored workspace launcher through the real donor preflight before allocating a source copy', () => {
+    const f = fixture();
+    const root = f.input.rootPath;
+    mkdirSync(join(root, 'dist'));
+    writeFileSync(join(root, 'dist', 'cli.js'), 'export const cli = 1;');
+    writeFileSync(join(root, 'dist', 'support.js'), 'export const support = 1;');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ bin: { fixture: './dist/cli.js' } }));
+    mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
+    symlinkSync('../../dist/cli.js', join(root, 'node_modules', '.bin', 'fixture'));
+    const sources = [...f.options.enumerateSources(), 'package.json'];
+    const helper = fileURLToPath(new URL('../../../../papercusp-desktop/bin/lib/pinned-deps.sh', import.meta.url));
+    const preflight = (population: string[]) => execFileSync('bash', [helper, 'preflight', root, '-'],
+      { input: JSON.stringify(population), stdio: ['pipe', 'pipe', 'pipe'] });
+    expect(() => preflight(sources)).toThrow();
+    const population = replayPackageRuntimeSources(root, sources);
+    expect(population).toEqual(expect.arrayContaining(['dist/cli.js', 'dist/support.js']));
+    expect(() => preflight(population)).not.toThrow();
+    expect(existsSync(f.target)).toBe(false);
   });
   it('captures ignored workspace launcher and conditional-export output named by package metadata', () => {
     const f = fixture();

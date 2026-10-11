@@ -452,8 +452,9 @@ export function replayRepositorySources(root: string, options: {
 
 /** Workspace launchers/exports can name ignored build output. The verifier's
  * broad source mirror preserves those inputs; a Git-only census must add them
- * from the existing package declarations rather than silently drop them. */
-function replayPackageRuntimeSources(root: string, sources: string[], requiredTargets?: Set<string>): string[] {
+ * from the existing package declarations rather than silently drop them.
+ * Preallocation donor checks use this same selector as source materialization. */
+export function replayPackageRuntimeSources(root: string, sources: string[], requiredTargets?: Set<string>): string[] {
   const files = new Set(sources);
   const recordedSources = new Set(sources);
   const visit = (path: string, matches?: (path: string) => boolean, required = false) => {
