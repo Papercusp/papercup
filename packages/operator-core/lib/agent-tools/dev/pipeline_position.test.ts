@@ -124,6 +124,37 @@ describe('dev:pipeline_position current-build test route selection', () => {
     servingRuntimes: { entries: [] },
   } as unknown as PipelinePosition;
 
+  it('keeps the original native selectors and route through schema, named-view and oversized handler output (EI-25679146311569247)', async () => {
+    const request = {
+      path: 'packages/operator-core/lib/goal-holder-behavior-metrics.ts',
+      testClass: 'operator-api',
+      marker: 'ideationAttribution',
+    };
+    const parsed = tool.args.parse(request);
+    const selected = takeNamedViewFromArgs(parsed, 'dev:pipeline_position');
+    expect(selected).toEqual({ kind: 'none', args: request });
+    if (selected.kind !== 'none') throw new Error('unexpected named-view selection');
+
+    // A missing repository measurement and a large digest must not erase the
+    // route selected by the handler. This uses the reporter's original marker;
+    // a control with a different marker cannot attest these inputs.
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...running,
+      input: { path: request.path, sha: null },
+      repoRoot: null,
+      notes: Array.from({ length: 40 }, () => 'oversized diagnostic '.repeat(100)),
+    } as unknown as PipelinePosition);
+    const out = await tool.handler(selected.args, {} as never) as {
+      data: { currentBuildTestRoute?: { id: string; runtime: string }; projection?: { fullRead: { args: unknown } } };
+    };
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({
+      path: request.path, marker: request.marker,
+    }));
+    expect(out.data.currentBuildTestRoute).toMatchObject({ id: 'operator-api', runtime: 'staging-operator' });
+    expect(out.data.projection?.fullRead.args).toEqual(request);
+    expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
+  });
+
   it('returns an exact route with isolation and prerequisites before main is green', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue(running);
     const out = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
