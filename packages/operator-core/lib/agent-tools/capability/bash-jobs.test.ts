@@ -718,12 +718,25 @@ describe('background jobs', () => {
         },
         10_000,
       );
+      // WI-6554700010008342: wait for the CLOSE handler (endedAt), not just for a non-running
+      // status. Green-checkpoint runs at 13d1d785 and e526f5d4 read '' and
+      // 'payload-controls=absent/' here after 76ms. The close handler sets the status and flushes
+      // the redactor suffix synchronously, so a non-running status with output still missing means
+      // the status was flipped by another path before close. Waiting for close keeps this test on
+      // its own subject (stripped controls and the operator-owned spill); the status goes into the
+      // message so an early flip stays diagnosable instead of reading as missing output.
       await waitForStatus(job.id);
+      await vi.waitFor(() => expect(job.endedAt, `status=${job.status}`).toBeTruthy(), {
+        timeout: 30_000,
+        interval: 25,
+      });
 
       expect(job.runnerOwnsLog).toBe(false);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_OUTPUT_PATH_ENV);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_REDACTIONS_ENV);
-      expect(readJobOutput(job)).toContain('payload-controls=absent/absent');
+      expect(readJobOutput(job), `status=${job.status} exit=${job.exitCode}`).toContain(
+        'payload-controls=absent/absent',
+      );
       expect(readFileSync(job.logPath, 'utf8')).toContain('payload-controls=absent/absent');
     } finally {
       begin.mockRestore();
