@@ -3179,9 +3179,11 @@ export async function listRecentDeliveries(
   awaitId?: number,
 ): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();
+  const ws = eventsWs();
   const rows = await sql`
     SELECT * FROM harness_shared.event_wake_deliveries
-     WHERE subscriber_id = ${subscriberId}
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
        AND (${awaitId ?? null}::bigint IS NULL OR await_id = ${awaitId ?? null})
      ORDER BY created_at DESC
      LIMIT ${limit}
