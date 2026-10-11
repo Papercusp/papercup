@@ -74,6 +74,14 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       .rejects.toMatchObject({ code: '42501' });
   });
 
+  it('does not let service admission bypass the persisted lesson tenant boundary', async () => {
+    await expect(run(async tx => {
+      await tx`SELECT set_config('app.organization_id', ${randomUUID()}, true),
+        set_config('app.user_id', ${randomUUID()}, true)`;
+      return tx`SELECT profile FROM papercusp_auth.hosted_user_preferences FOR UPDATE`;
+    })).rejects.toMatchObject({ code: '42501' });
+  });
+
   it('reads global policy through the service-only bridge and retains its lock until admission commits', async () => {
     await expect(readTutorialVoiceGlobalFlagsForUpdate(db.appSql))
       .rejects.toThrow('flag_override_lock_requires_transaction');
