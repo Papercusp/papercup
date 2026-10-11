@@ -143,6 +143,8 @@
     "gen:doc-corpus": "node scripts/project-doc-parts.mjs --write-corpus",
     "gen:fleet-lessons": "tsx scripts/gen-fleet-lessons.ts",
     "gen:fleet-lessons:check": "tsx scripts/gen-fleet-lessons.ts --check",
+    "gen:prompt-projections": "node scripts/check-prompt-projections.mjs --write",
+    "gen:prompt-projections:check": "node scripts/check-prompt-projections.mjs",
     "gen:tool-catalog": "tsx scripts/gen-tool-catalog.ts",
     "gen:tool-catalog:check": "tsx scripts/gen-tool-catalog.ts --check",
     "gen:tool-routing": "tsx scripts/gen-tool-routing.ts",
