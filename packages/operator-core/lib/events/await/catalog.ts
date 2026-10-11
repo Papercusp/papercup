@@ -976,6 +976,19 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
   },
   {
+    // WI-6554700010008444: the concrete "new evidence" trigger for a tool-failure report.
+    // Before it, an item parked to await an independent reporter could only use the broad
+    // work-item:status:<id>, which a durable park refuses as non-specific.
+    family: 'work-item-tool-failure-reporter',
+    keyTemplate: 'work-item:tool-failure-reporter:<id>',
+    params: [{ name: 'id', required: true, describe: 'the tool-failure signature row id' }],
+    describe:
+      'A tool-failure signature row gained a reporter it had never had (a different agent hit the same failure). Park a release-churned or probation report here instead of re-claiming it; the same reporter repeating never fires.',
+    emitter:
+      'capture-core (packages/operator-core/lib/harness/improvements/capture-core.ts) — captureToolInvocationFriction via noteNewToolFailureReporter',
+    exists: true,
+  },
+  {
     family: 'autoloop-release-pass',
     keyTemplate: 'release-pass:autoloop',
     params: [],
