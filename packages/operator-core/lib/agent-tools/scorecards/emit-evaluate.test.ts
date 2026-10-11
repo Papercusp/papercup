@@ -1743,6 +1743,52 @@ describe('evaluateScorecard', () => {
     expect(readRubricPlanRevisionM).toHaveBeenCalledWith('active-acceptance-rubric');
   });
 
+  it.each(['evaluate', 'emit'] as const)(
+    'current BAR fingerprints reach %s while stale proof and implementer grading stay blocked',
+    async (door) => {
+      getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+      planImplementersM.mockResolvedValue(['su-plan-implementer']);
+      const current = [{
+        planSlug: 'bar-plan',
+        specId: 'AUTO-BAR-R-1-P-002',
+        specRevision: 8,
+        specFingerprint: 'spec:current',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'reports.test.ts',
+        sourceFingerprint: 'source:current',
+        testFingerprint: 'test:current',
+      }];
+      // Model the lifecycle's measured comparison, not a blanket successful
+      // preflight: omitted and changed source fingerprints must still refuse.
+      readAndEvaluateAcceptanceBarLifecycleM.mockImplementation(
+        async (_plan, _phase, options: { current?: typeof current; harnessSlug?: string }) => ({
+          phase: 'pre-grading',
+          satisfied: options.harnessSlug === 'papercusp' &&
+            options.current?.[0]?.sourceFingerprint === 'source:current',
+          message: 'R-1 source proof is missing or stale',
+        }),
+      );
+      const run = (fingerprints?: typeof current) => door === 'evaluate'
+        ? evaluateScorecard(
+            scorecardEvaluateArgs.parse({ rubricRef: 'acceptance-rubric', current: fingerprints }),
+            { id: 'su-plan-implementer', workspaceId: 'ws' },
+          )
+        : emitScorecard(
+            scorecardEmitArgs.parse({ rubricRef: 'acceptance-rubric', ratings: RATINGS, current: fingerprints }),
+            { createdBy: 'su-plan-implementer', workspaceId: 'ws' },
+          );
+
+      await expect(run()).resolves.toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready' });
+      await expect(run([{ ...current[0], sourceFingerprint: 'source:changed' }])).resolves.toMatchObject({
+        ok: false, code: 'acceptance_bar_contract_not_ready',
+      });
+      await expect(run(current)).resolves.toMatchObject(door === 'evaluate'
+        ? { ok: true, graderEligibility: { role: 'disqualified', refusal: { code: 'grader_in_implementer_lineage' } } }
+        : { ok: false, code: 'grader_in_implementer_lineage' });
+      expect(captureM).not.toHaveBeenCalled();
+    },
+  );
+
   it('with ratings + no latest scorecard: changed:true and every criterion listed as changed', async () => {
     const r = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
     expect(r).toMatchObject({ ok: true, changed: true });

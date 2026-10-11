@@ -1808,6 +1808,7 @@ export async function emitScorecard(
         const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
           expectedApplicable: true,
           harnessSlug: rubric.subjectHarnessSlug,
+          ...(args.current ? { current: args.current } : {}),
         });
         if (!lifecycle.satisfied) {
           return {
