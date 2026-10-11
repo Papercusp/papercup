@@ -22,9 +22,13 @@
   "candidateAccepted": false,
   "originalCanonicalQualification": {
     "evidenceFile": "docs/evidence/p058-changed-release-arm-qualification-2026-10-11.json",
-    "sha256": "fb12d4304cb4892c10d3212609d26a9ba9043f4e9a20822a848941ffa6b05e87",
+    "sha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5",
     "outcome": "fail",
-    "deadlineMs": 60000
+    "deadlineMs": 60000,
+    "rawEvidence": {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-evidence-original-fb12.json",
+      "sha256": "fb12d4304cb4892c10d3212609d26a9ba9043f4e9a20822a848941ffa6b05e87"
+    }
   },
   "observation": {
     "capture": {
