@@ -285,11 +285,11 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       expiresAt: new Date(Date.now() + 60_000) });
     const input = admission({ userId: user.id, organizationId: organization.id, sessionId: session.id, sessionVersion: member!.permissionVersion });
     let externalUserId = subject; let verified = true; let externalSessionId = session.upstreamSessionId;
-    let validationCount = 0; let expireOnRevalidation = false;
+    let validationCount = 0; let expireOnRevalidation = false; let upstreamExpired = false;
     const provider = { providerId: 'workos', validateSession: async () => ({ ok: true as const, value: {
       externalSessionId, identity: { externalUserId, primaryEmail: 'not-authority@example.test', emailVerified: verified as true },
       issuedAtMs: Date.now(), authenticatedAtMs: Date.now(),
-      expiresAtMs: expireOnRevalidation && ++validationCount > 1 ? Date.now() - 1 : Date.now() + 60_000,
+      expiresAtMs: upstreamExpired || (expireOnRevalidation && ++validationCount > 1) ? Date.now() - 1 : Date.now() + 60_000,
       authenticationMethods: [], mfaVerified: false,
     } }) };
     await expect(validateTutorialVoiceIdentityForUpdate(db.adminSql, input, provider)).rejects.toThrow('hosted_session_lock_requires_transaction');
@@ -316,6 +316,36 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
     expect(validationCount).toBe(2);
     expireOnRevalidation = false;
+    // Hold the actual lesson row, observe the admission backend blocked on
+    // that lock, then expire upstream authority before allowing the read.
+    let admissionPid = 0;
+    let pendingAdmission: Promise<boolean> | undefined;
+    await db.adminSql.begin(async writer => {
+      await writer`SELECT user_id FROM papercusp_auth.hosted_user_preferences
+        WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid FOR UPDATE`;
+      pendingAdmission = run(async tx => {
+        await tx.unsafe("SET LOCAL statement_timeout = '10s'");
+        const [backend] = await tx`SELECT pg_backend_pid() AS pid`;
+        admissionPid = backend.pid;
+        return validateTutorialVoiceLessonForUpdate(tx, input, provider);
+      });
+      // Attach a rejection handler immediately; the assertion below still
+      // propagates any failure after the writer transaction releases its lock.
+      void pendingAdmission.catch(() => {});
+      let blocked = false;
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (admissionPid) {
+          const [state] = await writer`SELECT cardinality(pg_blocking_pids(${admissionPid})) > 0 AS blocked`;
+          if (state.blocked) { blocked = true; break; }
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      upstreamExpired = true;
+    });
+    expect(await pendingAdmission).toBe(false);
+    upstreamExpired = false;
     await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
       SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"paused"'::jsonb)
       WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
