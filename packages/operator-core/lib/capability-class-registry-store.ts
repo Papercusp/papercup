@@ -17,6 +17,7 @@ import {
 } from '@papercusp/memory';
 import { createEmbeddingSpace, type EmbeddingSpace } from '@papercusp/search';
 import { canonicalJson } from './authority/authority-rpc-envelope';
+import { lexicalLeg, rrfTerm } from './search/lexical/rank';
 import type { IdentityRecipeClassConformanceReport } from './agent-identities/recipe-provider-conformance';
 
 export type JsonObject = Record<string, unknown>;
@@ -341,29 +342,43 @@ export async function listCapabilityClasses(
     ? sql`embedding IS NOT NULL AND embedding_profile = ${embeddingProfileId}`
     : sql`FALSE`;
 
+  // The lexical leg goes through the lexical seam (BM25 when available, else ts_rank over
+  // title_tsv); BM25 is OR-semantic by construction, so it gets the bare tokens.
+  const leg = textQuery
+    ? await lexicalLeg(sql, {
+        table: 'capability_class_registry',
+        query: tokens.join(' '),
+        legacy: {
+          score: sql`ts_rank(title_tsv, to_tsquery('english', ${textQuery}))`,
+          match: sql`title_tsv @@ to_tsquery('english', ${textQuery})`,
+        },
+      })
+    : null;
+
   let rows: ClassDbRow[];
-  if (textQuery && embeddingLiteral) {
+  if (leg && embeddingLiteral) {
+    // Lexical and cosine legs fuse by reciprocal rank (plan
+    // bm25-lexical-search-evoke-adoption-2026-10-10 D-004); a row counts in the cosine leg
+    // only when its cosine is positive.
     rows = await sql<ClassDbRow[]>`
       SELECT ${CLASS_SELECT(sql)},
-             GREATEST(
-               ts_rank(title_tsv, to_tsquery('english', ${textQuery})),
-               0.4 * ts_rank(title_tsv, to_tsquery('english', ${textQuery}))
-                 + 0.6 * CASE WHEN ${exactEmbedding}
-                              THEN 1 - (embedding <=> ${embeddingLiteral}::vector)
-                              ELSE 0 END
-             ) AS score
+             (${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+               sql,
+               sql`(${exactEmbedding} AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+               sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+             )})::float8 AS score
         FROM harness_shared.capability_class_registry
        WHERE workspace_id = ${workspaceId} ${statusClause} ${tagClause}
-         AND (title_tsv @@ to_tsquery('english', ${textQuery}) OR ${exactEmbedding})
+         AND (${leg.match} OR ${exactEmbedding})
        ORDER BY score DESC, updated_at DESC, id, version DESC
        LIMIT ${limit * (opts.includeVersions ? 1 : 4)}`;
-  } else if (textQuery) {
+  } else if (leg) {
     rows = await sql<ClassDbRow[]>`
-      SELECT ${CLASS_SELECT(sql)}, ts_rank(title_tsv, to_tsquery('english', ${textQuery})) AS score
+      SELECT ${CLASS_SELECT(sql)}, (${leg.score})::float8 AS score
         FROM harness_shared.capability_class_registry
        WHERE workspace_id = ${workspaceId} ${statusClause} ${tagClause}
-         AND title_tsv @@ to_tsquery('english', ${textQuery})
-       ORDER BY score DESC, updated_at DESC, id, version DESC
+         AND ${leg.match}
+       ORDER BY ${leg.order}, updated_at DESC, id, version DESC
        LIMIT ${limit * (opts.includeVersions ? 1 : 4)}`;
   } else {
     rows = await sql<ClassDbRow[]>`

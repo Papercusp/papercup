@@ -4,6 +4,7 @@ import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { reportsLibraryDisabled } from '../reports/_shared';
 import { boundedSource, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
 import { lastMarkdownHeading } from '../plans/semantic-leg';
+import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
 
 type HitRow = { report_id: string; title: string; summary: string; origin_harness_slug: string | null;
   published_at: string; rank: number; highlight: string; body_md?: string;
@@ -46,12 +47,21 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
     name: 'report',
     async lexical(p) {
       if (await reportsLibraryDisabled()) return [];
+      // BM25 (when available) matches any query term, so its highlight uses an OR tsquery.
+      const leg = await lexicalLeg(p.sql, {
+        table: 'report_library', query: p.query,
+        legacy: {
+          score: p.sql`ts_rank_cd(search_tsv, plainto_tsquery('english', ${p.query}))`,
+          match: p.sql`search_tsv @@ plainto_tsquery('english', ${p.query})`,
+        },
+      });
+      const headlineQuery = headlineTsQuery(p.sql, leg.engine, p.query);
       const rows = await p.sql`SELECT report_id, title, summary, body_md, lineage_id, origin_harness_slug, published_at,
-        ts_rank_cd(search_tsv, plainto_tsquery('english', ${p.query})) AS rank,
-        ts_headline('english', body_md, plainto_tsquery('english', ${p.query}),
+        (${leg.score})::float8 AS rank,
+        ts_headline('english', body_md, ${headlineQuery},
           'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight
         FROM harness_shared.report_library WHERE report_id IN (${latest(p)})
-          AND search_tsv @@ plainto_tsquery('english', ${p.query}) ORDER BY rank DESC, report_id LIMIT ${p.limit}`;
+          AND ${leg.match} ORDER BY ${leg.order}, report_id LIMIT ${p.limit}`;
       return hits(rows as unknown as HitRow[], 'lexical');
     },
     async embedding(p) {

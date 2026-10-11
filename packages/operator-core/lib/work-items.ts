@@ -240,6 +240,7 @@ import {
   type AppliedDefaults,
 } from '@papercusp/search';
 import { WORK_ITEMS_CHUNK_SURFACE } from './search/chunks/registry';
+import { lexicalLeg } from './search/lexical/rank';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -2139,16 +2140,24 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
     name: SOURCE_ISSUES,
     async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
-      // `ts_rank` (not `ts_rank_cd`) preserves the pre-migration ordering
-      // exactly; no lexical floor is registered, so nothing downstream depends
-      // on which of the two this is (see search/prose-min-score.ts).
+      // BM25 through the lexical seam (plan bm25-lexical-search-evoke-adoption-2026-10-10
+      // P-005); the legacy `ts_rank` (not `ts_rank_cd`) preserves the pre-migration
+      // ordering exactly. No lexical floor is registered, so nothing downstream depends on
+      // the score's scale (see search/prose-min-score.ts); the hybrid engine fuses by RRF.
+      const leg = await lexicalLeg(pg, {
+        table: 'work_items',
+        query,
+        legacy: {
+          score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
+          match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
+        },
+      });
       const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body,
-               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
           FROM harness_shared.work_items
          WHERE ${scoped(sql)}
-           AND _search @@ websearch_to_tsquery('english', ${query})
-      ORDER BY score DESC
+           AND ${leg.match}
+      ORDER BY ${leg.order}
          LIMIT ${limit}`;
       return toListing(rows, 'lexical');
     },
@@ -2202,13 +2211,22 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
     name: SOURCE_FEATURES,
     async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
+      // The view is a straight projection of work_items, so the work_items BM25 index
+      // ranks it (the expression's columns keep their names through the view).
+      const leg = await lexicalLeg(pg, {
+        table: 'work_items',
+        query,
+        legacy: {
+          score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
+          match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
+        },
+      });
       const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body,
-               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
           FROM harness_shared.harness_features_consolidated
          WHERE ${scoped(sql)}
-           AND _search @@ websearch_to_tsquery('english', ${query})
-      ORDER BY score DESC
+           AND ${leg.match}
+      ORDER BY ${leg.order}
          LIMIT ${limit}`;
       return toListing(rows, 'lexical');
     },

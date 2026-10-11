@@ -65,10 +65,6 @@ vi.mock('@papercusp/flags/server', () => ({
   getFlag: (...a: unknown[]) => getFlag(...a),
   onFlagChange: () => {},
 }));
-const itemTestGate = vi.fn();
-vi.mock('../../harness-test-gate', () => ({
-  itemTestGate: (...a: unknown[]) => itemTestGate(...a),
-}));
 const specTestAdequacyCompletionGate = vi.fn();
 vi.mock('./spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
@@ -683,8 +679,6 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     fireReactionInProcess.mockResolvedValue({ ok: true });
     attachCompletionEvidenceToSettledItem.mockReset();
     attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
-    itemTestGate.mockReset();
-    itemTestGate.mockResolvedValue({ ok: true });
     specTestAdequacyCompletionGate.mockReset();
     specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
 

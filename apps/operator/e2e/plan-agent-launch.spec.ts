@@ -66,7 +66,7 @@ async function adminPost(
 ): Promise<{ status: number; json: unknown }> {
   const res = await request.post(`${baseURL}/api/admin/plans/${verb}`, {
     headers: { 'Content-Type': 'application/json' },
-    data: body,
+    data: { ...body, harness: harnessSlug },
     timeout: 20_000,
   });
   const text = await res.text();
@@ -81,6 +81,7 @@ async function adminGet(
   params: Record<string, string | number | boolean> = {},
 ): Promise<{ status: number; json: unknown }> {
   const url = new URL(`${baseURL}/api/admin/plans/${verb}`);
+  url.searchParams.set('harness', harnessSlug);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, String(v));
   }
@@ -127,9 +128,9 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       slug,
       title: 'P-028 launch e2e',
       status: 'draft',
-      owner: 'e2e@example.com',
+      ownerEmail: 'e2e@example.com',
     });
-    expect(created.status, 'plans:new should succeed').toBe(200);
+    expect(created.status, `plans:new should succeed: ${JSON.stringify(created.json)}`).toBe(200);
     expect((created.json as { ok?: boolean }).ok ?? false).toBe(true);
 
     // Fetch to get the current contentHash for the CAS write.

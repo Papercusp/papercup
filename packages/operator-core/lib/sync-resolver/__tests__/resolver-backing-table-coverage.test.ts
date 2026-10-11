@@ -470,7 +470,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'snapshotsConsolidated.bySlug',
   'storage.usage',
   'taskManager.inventory',
-  'testing.assertionsByHarness',
   'toastLog.recent',
   'trust.list',
   'usage.spend',

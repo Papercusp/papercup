@@ -153,6 +153,7 @@ export async function runFrontierSweResilient(
           score: r.score ?? null,
           resolved: r.resolved,
           graderStatus: r.graderStatus,
+          ...(r.graderDetail !== undefined ? { graderDetail: r.graderDetail } : {}),
         });
         rows.push(r);
         await deps.onResult?.(r);

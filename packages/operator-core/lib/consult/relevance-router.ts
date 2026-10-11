@@ -67,6 +67,7 @@ import {
 } from '../search/prose-vector-dims';
 import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
 import { withIterativeScan } from '@papercusp/search';
+import { lexicalLeg } from '../search/lexical/rank';
 import { withDeadlineFallback } from '../sync-resolver/attention-counts';
 import { categoryOf, searchTools } from '../cupboard/tools-search';
 import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
@@ -131,8 +132,10 @@ export interface TurnEvidence {
   turn_idx: number;
   ts: string | null;
   sim: number;
-  /** Present only on embed-free lexical fallback evidence. This is a
-   * ts_rank_cd score, never a cosine similarity. */
+  /** Present only on embed-free lexical fallback evidence. This is the turn's
+   * lexical score (BM25, or ts_rank_cd when BM25 is unavailable) divided by the
+   * best turn's score for the same question, so it lies in (0, 1] whatever the
+   * engine; never a cosine similarity. */
   lexicalRank?: number;
 }
 
@@ -546,6 +549,23 @@ function exactSubjectMentionPattern(subjectRef: string): string {
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
+/**
+ * Each lexical-fallback row's score divided by the best row's score for the same question,
+ * so `lexicalRank` lies in (0, 1] under either engine. A BM25 score is unbounded: clamped
+ * as-is it would read 1 for nearly every owner and leave the owner order to the id
+ * tie-break. Dividing by the best score keeps the order and is engine-independent.
+ */
+export function relativeLexicalRanks<T extends { lexicalRank: number | string }>(
+  rows: readonly T[],
+): Array<T & { lexicalRank: number }> {
+  const scores = rows.map((r) => Number(r.lexicalRank));
+  const top = Math.max(0, ...scores.filter(Number.isFinite));
+  return rows.map((r, i) => {
+    const score = scores[i]!;
+    return { ...r, lexicalRank: top > 0 && Number.isFinite(score) ? clamp01(score / top) : 0 };
+  });
+}
+
 const MS_PER_DAY = 86_400_000;
 
 /**
@@ -863,12 +883,14 @@ async function routeConsultCore(
     ? await measure('embedding', () => deps.embed!(params.question)).catch(() => null)
     : null;
   if (!vec || vec.length === 0) {
-    // The semantic instrument is unavailable, but the session-turn index still
-    // has the same bounded lexical contract as search: `text_tsv` generated
-    // from the first 20k chars, `plainto_tsquery('english', ...)`, and
-    // `ts_rank_cd` ordered best-first. This is retrieval provenance, not a
-    // semantic qualification path: qualified stays empty and every candidate
-    // is labeled as lexical fallback for the minimum-fill/manual-review layer.
+    // The semantic instrument is unavailable, but the session-turn corpus still
+    // has the same bounded lexical contract as search: the first 20k chars,
+    // ranked best-first by the shared lexical seam (BM25 over
+    // `session_turns_bm25`, else `ts_rank_cd` over `text_tsv`; plan
+    // bm25-lexical-search-evoke-adoption-2026-10-10 P-005). This is retrieval
+    // provenance, not a semantic qualification path: qualified stays empty and
+    // every candidate is labeled as lexical fallback for the
+    // minimum-fill/manual-review layer.
     let lexicalRows: Array<{
       owner: string;
       session_id: string;
@@ -877,28 +899,37 @@ async function routeConsultCore(
       lexicalRank: number;
     }> = [];
     try {
-      lexicalRows = (await measure('transcripts', () => sql`
+      const pg = sql as unknown as Sql;
+      const tq = pg`plainto_tsquery('english', ${params.question})`;
+      lexicalRows = (await measure('transcripts', async () => {
+        const leg = await lexicalLeg(pg, {
+          table: 'session_turns',
+          query: params.question,
+          legacy: { score: pg`ts_rank_cd(text_tsv, ${tq})`, match: pg`text_tsv @@ ${tq}` },
+        });
+        return sql`
         SELECT owner, session_id, turn_idx,
                COALESCE(ts, ingested_at) AS ts,
-               ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS "lexicalRank"
+               ${leg.score} AS "lexicalRank"
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
            AND owner IS NOT NULL
            AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
-           AND text_tsv @@ plainto_tsquery('english', ${params.question})
+           AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
            AND ${notRestricted}
-      ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
+      ORDER BY ${leg.order}, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
-      `)) as unknown as Array<{
+      `;
+      })) as unknown as Array<{
         owner: string;
         session_id: string;
         turn_idx: number;
         ts: string | Date | null;
         lexicalRank: number;
       }>;
-      lexicalRows = lexicalRows.map((r) => ({ ...r, lexicalRank: Number(r.lexicalRank) }));
+      lexicalRows = relativeLexicalRanks(lexicalRows);
     } catch {
       // A partially migrated host may not have text_tsv yet. The semantic
       // instrument is already degraded, so preserve an honest empty result and

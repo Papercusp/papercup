@@ -54,6 +54,7 @@ function orgResult(overrides: Partial<OrganizationSearchResult> = {}): Organizat
     metadata: {},
     permissionListId: 'list-1',
     score: 0.5,
+    tsRank: 0.5,
     privacy: null,
     ...overrides,
   };
@@ -72,6 +73,7 @@ function potResult(overrides: Partial<PotSearchResult> = {}): PotSearchResult {
     metadata: {},
     potSlug: 'papercusp',
     score: 0.5,
+    tsRank: 0.5,
     privacy: null,
     ...overrides,
   };
@@ -194,8 +196,10 @@ describe('collectOrganizationEntries', () => {
         withheld: 0,
         disclosed: 0,
         results: [
-          orgResult({ id: 'keep', title: 'keep', score: GRANTED_SOURCES_RELEVANCE_FLOOR }),
-          orgResult({ id: 'low', title: 'low', score: GRANTED_SOURCES_RELEVANCE_FLOOR / 2 }),
+          orgResult({ id: 'keep', title: 'keep', score: 0.01, tsRank: GRANTED_SOURCES_RELEVANCE_FLOOR }),
+          orgResult({ id: 'low', title: 'low', tsRank: GRANTED_SOURCES_RELEVANCE_FLOOR / 2 }),
+          // A high BM25 score does not lift a row the whole prompt does not match (D-007).
+          orgResult({ id: 'partial', title: 'partial', score: 14, tsRank: 0 }),
           orgResult({ id: 'other', title: 'other', source: 'asana' }),
         ],
       })),
@@ -229,7 +233,10 @@ describe('collectPotEntries', () => {
         results: [
           potResult({ title: 'mine' }),
           potResult({ title: 'foreign', potSlug: 'other-pot' }),
-          potResult({ title: 'weak', score: 0 }),
+          potResult({ title: 'weak', score: 0, tsRank: 0 }),
+          // BM25 ranked it highly on SOME prompt words, but it does not match the whole
+          // prompt (tsRank 0): the floor reads tsRank, never the unbounded BM25 score (D-007).
+          potResult({ title: 'partial', score: 12, tsRank: 0 }),
         ],
       }) as never),
     });

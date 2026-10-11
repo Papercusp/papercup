@@ -31,9 +31,28 @@ import {
   meetsRoutingFloors,
   SUBJECT_EVIDENCE_MIN_SCORE,
   FRESHNESS_BASE,
+  relativeLexicalRanks,
   type RoutingCandidate,
   type SelectedResponder,
 } from './relevance-router';
+
+describe('relativeLexicalRanks — lexical fallback scores are engine-independent (BM25 plan P-005)', () => {
+  it('divides by the best score, so unbounded BM25 scores keep their order instead of all clamping to 1', () => {
+    const rows = [{ owner: 'a', lexicalRank: 8 }, { owner: 'b', lexicalRank: '4' }, { owner: 'c', lexicalRank: 2 }];
+    expect(relativeLexicalRanks(rows).map((r) => r.lexicalRank)).toEqual([1, 0.5, 0.25]);
+  });
+
+  it('gives the same values for ts_rank_cd-sized scores in the same ratios', () => {
+    const rows = [{ lexicalRank: 0.08 }, { lexicalRank: 0.04 }, { lexicalRank: 0.02 }];
+    expect(relativeLexicalRanks(rows).map((r) => r.lexicalRank)).toEqual([1, 0.5, 0.25]);
+  });
+
+  it('keeps zero and non-finite scores at zero instead of dividing by them', () => {
+    expect(relativeLexicalRanks([{ lexicalRank: 0 }, { lexicalRank: 0 }]).map((r) => r.lexicalRank)).toEqual([0, 0]);
+    expect(relativeLexicalRanks([{ lexicalRank: 'NaN' }, { lexicalRank: 2 }]).map((r) => r.lexicalRank)).toEqual([0, 1]);
+    expect(relativeLexicalRanks([])).toEqual([]);
+  });
+});
 
 const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCandidate => ({
   ownerId,

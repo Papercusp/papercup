@@ -7746,36 +7746,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  'testing.assertionsByHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      workspaceId: z.string().optional(),
-      planSlug: z.string().optional(),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, workspaceId, planSlug } = args as {
-        harnessSlug: string;
-        workspaceId?: string;
-        planSlug?: string;
-      };
-      const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
-        import('@papercusp/db-org'),
-        import('../workspace-registry'),
-      ]);
-      const { sql } = getOrgPg();
-      const ws = workspaceId ?? activeWorkspaceId();
-      const rows = await (planSlug
-        ? sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
-             ORDER BY val_id`
-        : sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
-             ORDER BY val_id`);
-      return [...rows] as unknown[];
-    },
-  },
+  // The VAL-* assertion query that sat here was retired with inline VAL-* assertions
+  // (verification-system-improvements-2026-10-10 P-003). The requirement contract
+  // (plan spec clauses + bound evidence) is the successor.
 
   'operatorConfig.byWorkspace': {
     resolve: async () => {

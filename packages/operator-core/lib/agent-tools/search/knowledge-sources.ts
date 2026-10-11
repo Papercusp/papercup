@@ -4,6 +4,7 @@ import type { Listing, SearchSource, SearchSourceParams } from '@papercusp/searc
 import { chunkAwareVectorLegSql, sectionAnchorBase, withIterativeScan } from '@papercusp/search';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
+import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { lastMarkdownHeading, planWindowMidpoint } from '../plans/semantic-leg';
 
@@ -84,13 +85,20 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
   return boundedSource({
     name: 'plan',
     async lexical(p) {
+      const leg = await lexicalLeg(p.sql, {
+        table: 'harness_plans', alias: 'p', query: p.query,
+        legacy: {
+          score: p.sql`ts_rank_cd(p._search, plainto_tsquery('english', ${p.query}))`,
+          match: p.sql`p._search @@ plainto_tsquery('english', ${p.query})`,
+        },
+      });
       const rows = await p.sql`SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at, p.content,
-        ts_rank_cd(p._search, plainto_tsquery('english', ${p.query})) AS rank,
-        ts_headline('english', p.content, plainto_tsquery('english', ${p.query}),
+        (${leg.score})::float8 AS rank,
+        ts_headline('english', p.content, ${headlineTsQuery(p.sql, leg.engine, p.query)},
           'StartSel=<mark>,StopSel=</mark>,MaxWords=90,MinWords=30,MaxFragments=1') AS highlight
         FROM harness_shared.harness_plans p WHERE ${filter(p)}
-          AND p._search @@ plainto_tsquery('english', ${p.query})
-        ORDER BY rank DESC, p.plan_slug LIMIT ${p.limit}`;
+          AND ${leg.match}
+        ORDER BY ${leg.order}, p.plan_slug LIMIT ${p.limit}`;
       return map(rows as Array<Record<string, unknown>>, 'lexical');
     },
     async embedding(p) {

@@ -42,6 +42,7 @@ import {
   projectMember,
   projectLeaderBriefOwnerDirectives,
   projectFleetAdmissionBlockRead,
+  projectLeaderBriefFleetPause,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
@@ -80,6 +81,10 @@ import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 import type { AgentObligationAgenda } from '../../agent-obligations';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import type { FleetLaneHealth } from '../../fleet/lane-health';
+import { buildClaimableNowAggregate } from './leader-brief-aggregate';
+import { shapeLeaderBrief } from './leader-brief-shape';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -919,6 +924,79 @@ describe('leader-brief degraded fleet-record control recovery (EI-22668285442179
       }),
     ).resolves.toBeNull();
     expect(listLedFleets).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-25630740795866119: bounded fleet pause evidence', () => {
+  const laneHealth: FleetLaneHealth = {
+    claimable: 2, matchedByFilter: 2, excluded: {},
+    issueFamily: { claimable: 2, matchedByFilter: 2, excluded: {} },
+    featureFamily: { claimable: 0, matchedByFilter: 0, excluded: {} },
+    effective: { claimable: 2, matchedByFilter: 2, excluded: {}, basis: 'issue+feature-family' },
+    familyReachability: { issue: true, feature: true },
+    spec: { ref: 'alpha@4', specId: 'alpha', revision: 4, matchedBy: 'fleet',
+      harness: 'papercusp', assigneeScoped: null, planScoped: false },
+  };
+
+  it.each(['rejected', 'timed out', 'missing'] as const)(
+    'keeps a %s record unknown through claimability and transport', async (failure) => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const read = vi.fn(() => {
+          if (failure === 'rejected') return Promise.reject(new Error('registry unavailable'));
+          if (failure === 'timed out') return new Promise<null>(() => {});
+          return Promise.resolve(null);
+        });
+        const pending = withBoundedTimeout(read, {
+          fallback: undefined, timeoutMs: 20, label: 'leader-brief:fleetRecord',
+        });
+        await vi.advanceTimersByTimeAsync(20);
+        const result = await pending;
+        expect(result.degraded).toBe(failure !== 'missing');
+        expect(result.reason).toBe(failure === 'rejected' ? 'error' : failure === 'timed out' ? 'timeout' : undefined);
+        expect(read).toHaveBeenCalledTimes(1);
+        if (failure === 'missing') expect(warn).not.toHaveBeenCalled();
+        else expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader-brief:fleetRecord'));
+        const pause = projectLeaderBriefFleetPause(result.value);
+        expect(pause).toEqual({ paused: null, reason: null });
+        const aggregate = buildClaimableNowAggregate({ fleet: 'alpha', laneHealth, fleetPaused: pause.paused });
+        expect(aggregate).toMatchObject({ value: 2, interpretation: {
+          state: 'unknown', exactness: { status: 'unknown', reason: expect.stringContaining('pause state') },
+          evidence: { fleetPaused: null },
+        } });
+        for (const tier of ['standard', 'trimmed'] as const) {
+          expect(shapeLeaderBrief({ ok: true, summary: {
+            fleet: 'alpha', members: 0, fleet_paused: pause.paused, claimable_now: aggregate,
+          } }, tier)).toMatchObject({ summary: {
+            fleet_paused: null, claimable_now: { value: 2, interpretation: { state: 'unknown', evidence: { fleetPaused: null } } },
+          } });
+        }
+      } finally {
+        warn.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    { controlState: 'active' as const, paused: false, interpretation: 'claimable', reason: null },
+    { controlState: 'winding-down' as const, paused: true, interpretation: 'paused', reason: 'owner pause' },
+  ])('preserves measured $controlState control and its reason', ({ controlState, paused, interpretation, reason }) => {
+    const pause = projectLeaderBriefFleetPause({ controlState, controlReason: 'owner pause' });
+    expect(pause).toEqual({ paused, reason });
+    expect(buildClaimableNowAggregate({ fleet: 'alpha', laneHealth, fleetPaused: pause.paused }))
+      .toMatchObject({ value: 2, interpretation: { state: interpretation, exactness: { status: 'exact' }, evidence: { fleetPaused: paused } } });
+  });
+
+  it('uses positive recovered paused authority without manufacturing an active fallback', async () => {
+    const recovered = await recoverFleetRecordForLeaderControl({
+      workspaceId: 'ws-1', fleetSlug: 'alpha', ownerId: 'leader-1', allowLeadershipWrites: true,
+      fleetRecordResult: { value: undefined, degraded: true },
+      listLedFleets: vi.fn(async () => [{ fleetSlug: 'alpha', leaderOwnerId: 'leader-1',
+        controlState: 'winding-down', controlReason: 'owner pause' }]) as never,
+    });
+    expect(projectLeaderBriefFleetPause(recovered)).toEqual({ paused: true, reason: 'owner pause' });
   });
 });
 
@@ -3031,10 +3109,28 @@ describe('a PAUSED (winding-down) fleet never gets a wake/bench suggestion (EI-1
     expect(s?.kind).toBe('stalled-no-mcp');
   });
 
-  it('an unread control state (absent/false) is NOT a pause — a real starvation signal survives', () => {
-    for (const notPaused of [undefined, null, false]) {
+  it('preserves legacy omitted and measured active control states', () => {
+    for (const notPaused of [undefined, false]) {
       expect(computeBenchSuggestion(idle, 2, null, notPaused)?.kind).toBe('idle-with-claimable');
     }
+  });
+
+  it('EI-25630740795866119: unknown pause never advises waking or benching idle members', () => {
+    expect(computeBenchSuggestion(idle, 2, null, null)).toBeUndefined();
+    expect(computeBenchSuggestion(idle, 0, { matchedByFilter: 0 }, null)).toBeUndefined();
+    expect(computeDormantAlert({ ...idle, verdict: 'speaking', loopMode: null }, null)).toBe(false);
+    expect(computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: null })).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 108, idleMemberCount: 5, fleetPaused: null })).toBeUndefined();
+    expect(computeFleetBlockVerdict({
+      fleetPaused: null, claimable: 2, matchedByFilter: 2, idleMemberCount: 19, lanelessIdleCount: 0,
+    })).toBeUndefined();
+  });
+
+  it('EI-25630740795866119: unknown pause retains diagnostics for held stalled work', () => {
+    expect(computeBenchSuggestion({
+      stalled: true, verdict: 'speaking', parkedOn: [],
+      doing: { id: 'WI-1', itemKind: 'bug', title: 'held', status: 'open', rank: 0, rankWriter: null, activity: 'alive' },
+    }, 2, null, null)?.kind).toBe('stalled-no-mcp');
   });
 
   it('projectMember threads the pause through end-to-end', () => {

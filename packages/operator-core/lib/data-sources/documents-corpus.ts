@@ -29,6 +29,29 @@ import { discloseDocuments } from '../personal-vault/disclosure-ledger';
 import type { DocumentLabel } from '../personal-vault/disclosure-labels';
 import { normalizePersonalSource } from '../personal-vault/store';
 import type { PersonalToolContext } from '../personal-vault/types';
+import { lexicalLeg, type LexicalLeg } from '../search/lexical/rank';
+
+/**
+ * The `documents` lexical leg, alias `d`: BM25 over `documents_bm25` when it is live, else
+ * ts_rank_cd over `text_tsv` (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
+ * The query keeps its websearch syntax (quoted phrases, OR, -negation) under BM25 (D-007).
+ * `leg.score` is higher-is-better and only comparable within one search. `tsRank` is the
+ * row's ts_rank_cd against the websearch query under EITHER engine (0 when the row does not
+ * match it), the scale a fixed relevance floor such as GRANTED_SOURCES_RELEVANCE_FLOOR is
+ * calibrated on: a BM25 score is unbounded and corpus-relative, so it cannot carry one.
+ */
+async function documentsLexicalLeg(sql: Sql, query: string): Promise<{ leg: LexicalLeg; tsRank: LexicalLeg['score'] }> {
+  const tsq = sql`websearch_to_tsquery('english', ${query})`;
+  const tsRank = sql`ts_rank_cd(d.text_tsv, ${tsq})`;
+  const leg = await lexicalLeg(sql, {
+    table: 'documents',
+    query,
+    alias: 'd',
+    querySyntax: 'websearch',
+    legacy: { score: tsRank, match: sql`d.text_tsv @@ ${tsq}` },
+  });
+  return { leg, tsRank };
+}
 
 /**
  * Vault grant scope that authorizes organization-corpus reads. personalScope()
@@ -222,7 +245,10 @@ export interface OrganizationSearchResult {
   snippet: string;
   metadata: Record<string, unknown>;
   permissionListId: string;
+  /** Relevance, higher is better: BM25 when documents_bm25 is live, else ts_rank_cd. One search only. */
   score: number;
+  /** ts_rank_cd against the websearch query under either engine; what fixed floors compare. */
+  tsRank: number;
   privacy: DocumentLabel | null;
 }
 
@@ -258,18 +284,19 @@ export async function searchOrganizationDocuments(
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
   const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
   const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  const { leg, tsRank } = await documentsLexicalLeg(sql, params.query);
   const rows = await sql<Array<{
     id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
     participants: string[]; title: string; snippet: string; metadata: Record<string, unknown>;
-    permission_list_id: string; score: number | string;
+    permission_list_id: string; score: number | string; ts_rank: number | string;
   }>>`
     SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata, d.permission_list_id,
-           ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
+           ${leg.score} AS score, ${tsRank} AS ts_rank
       FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.scope = 'organization' AND d.user_id IS NULL
-       AND d.text_tsv @@ websearch_to_tsquery('english', ${params.query})
+       AND ${leg.match}
        ${sourceFilter}
        AND EXISTS (
          SELECT 1
@@ -282,7 +309,7 @@ export async function searchOrganizationDocuments(
           WHERE m.workspace_id = d.workspace_id
             AND m.list_id = d.permission_list_id
             AND p.user_id = ${params.principalUserId}::uuid)
-     ORDER BY score DESC, d.occurred_at DESC NULLS LAST
+     ORDER BY ${leg.order}, d.occurred_at DESC NULLS LAST
      LIMIT ${limit}`;
 
   const documents = rows.map((r) => ({
@@ -297,6 +324,7 @@ export async function searchOrganizationDocuments(
     metadata: r.metadata,
     permissionListId: r.permission_list_id,
     score: Number(r.score),
+    tsRank: Number(r.ts_rank),
   }));
   const disclosed = await discloseDocuments(sql, {
     workspaceId: params.workspaceId,
@@ -326,7 +354,10 @@ export interface PotSearchResult {
   snippet: string;
   metadata: Record<string, unknown>;
   potSlug: string;
+  /** Relevance, higher is better: BM25 when documents_bm25 is live, else ts_rank_cd. One search only. */
   score: number;
+  /** ts_rank_cd against the websearch query under either engine; what fixed floors compare. */
+  tsRank: number;
   privacy: DocumentLabel | null;
 }
 
@@ -365,20 +396,21 @@ export async function searchPotDocuments(
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
   const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
   const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  const { leg, tsRank } = await documentsLexicalLeg(sql, params.query);
   const rows = await sql<Array<{
     id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
     participants: string[]; title: string; snippet: string; metadata: Record<string, unknown>;
-    pot_slug: string; score: number | string;
+    pot_slug: string; score: number | string; ts_rank: number | string;
   }>>`
     SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata, d.pot_slug,
-           ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
+           ${leg.score} AS score, ${tsRank} AS ts_rank
       FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.scope = 'pot' AND d.user_id IS NULL AND d.pot_slug = ${potSlug}
-       AND d.text_tsv @@ websearch_to_tsquery('english', ${params.query})
+       AND ${leg.match}
        ${sourceFilter}
-     ORDER BY score DESC, d.occurred_at DESC NULLS LAST
+     ORDER BY ${leg.order}, d.occurred_at DESC NULLS LAST
      LIMIT ${limit}`;
   const documents = rows.map((r) => ({
     id: r.id,
@@ -392,6 +424,7 @@ export async function searchPotDocuments(
     metadata: r.metadata,
     potSlug: r.pot_slug,
     score: Number(r.score),
+    tsRank: Number(r.ts_rank),
   }));
   const disclosed = await discloseDocuments(sql, {
     workspaceId: params.workspaceId,

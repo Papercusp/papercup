@@ -511,11 +511,12 @@ export function codexContextWindowConfig(model, { home, codexHome, compactionLim
     model: id,
     window,
     // D-008 fixes the declared context window at its exact upstream value.
-    // A managed session's own soft budget may lower Codex's native compaction
-    // trigger, but it never raises the model-derived default or changes window.
+    // Start native compaction at 80% of the managed soft budget, before the
+    // scheduler's 90% critical band can refuse work. Keep headroom for a tool
+    // result between turns; never raise the native default or alter window.
     autoCompactLimit: activeCompactionLimit == null
       ? nativeAutoCompactLimit
-      : Math.min(nativeAutoCompactLimit, activeCompactionLimit),
+      : Math.min(nativeAutoCompactLimit, Math.floor(activeCompactionLimit * 0.8)),
     source,
   };
 }

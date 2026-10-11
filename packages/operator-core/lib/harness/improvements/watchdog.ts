@@ -4559,15 +4559,9 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-zero-promotion',
       collect: () => import('./zero-promotion-detect').then((m) => m.collectZeroPromotionSignals(workspaceId)),
     },
-    // enforce-system-on-generic-work P-009: the "done without test" recurrence guard —
-    // a feature work-item marked done (terminal/passed) that still carries requires_test
-    // VAL(s) with no passing covering test. SQL-only (three workspace-scoped reads), no
-    // flag gate (naturally inert where the inline-VAL flow is dark). One finding per
-    // harness, count = number of flagged items.
-    {
-      name: 'papercusp-done-without-test',
-      collect: () => import('./done-without-test-detect').then((m) => m.collectDoneWithoutTestSignals(workspaceId)),
-    },
+    // (enforce-system-on-generic-work P-009's 'papercusp-done-without-test' collector is
+    // RETIRED with inline VAL-* assertions — verification-system-improvements-2026-10-10
+    // P-003; its successor signal is the P-002 verification.health cell.)
     // enforce-system-on-generic-work P-013: the dark-flag-age guard — surfaces the
     // DARK_FLAGS allowlist for owner review BEFORE its review-by lands / its size
     // watermark is hit (the same two invariants production-defaults.test.ts enforces at

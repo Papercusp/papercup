@@ -55,6 +55,8 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
+import type { Sql } from 'postgres';
+import { bm25LegIfAvailable } from './search/lexical/rank';
 import { getBuildInfo } from './build-info';
 import { createBugFreshnessEnvelope, isFreshnessTrackedKind } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
@@ -4575,13 +4577,41 @@ export async function findTaskBySessionId(agentSessionId: string): Promise<Engin
  */
 export async function searchIssues(query: string, limit = 50): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<IssueRowDb[]>`
+  const ws = issuesScopeWorkspace();
+  const n = Math.min(limit, 200);
+  const rows = (await bm25IssueSearch(sql as unknown as Sql, query, [ws], n)) ?? await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()}
+     WHERE workspace_id = ${ws}
        AND _search @@ websearch_to_tsquery('english', ${query})
      ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
-     LIMIT ${Math.min(limit, 200)}`;
+     LIMIT ${n}`;
   return rows.map(toIssue);
+}
+
+/**
+ * The issue family ranked by BM25 (plan bm25-lexical-search-evoke-adoption-2026-10-10
+ * P-005), or `null` when BM25 does not rank work_items in this database (the caller then
+ * runs its ts_rank query). It ranks on the work_items BASE TABLE and joins the view for
+ * hydration, because the engineer_issues view renames `summary` to `body` and drops
+ * `notes`, so the work_items index expression cannot be written against it. BM25 scores
+ * every query term (OR semantics), which is also what the dedup pool wants.
+ */
+async function bm25IssueSearch(sql: Sql, text: string, workspaces: string[], limit: number): Promise<IssueRowDb[] | null> {
+  const leg = await bm25LegIfAvailable(sql, 'work_items', text, 'w');
+  if (!leg) return null;
+  return sql<IssueRowDb[]>`
+    WITH ranked AS (
+      SELECT w.workspace_id AS ranked_ws, w.feature_id AS ranked_id, ${leg.score} AS ranked_score
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ANY(${workspaces}::text[])
+         AND w.item_kind IN ('bug', 'change', 'task')
+         AND ${leg.match}
+       ORDER BY ${leg.order}
+       LIMIT ${limit})
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+      JOIN ranked ON ranked.ranked_id = engineer_issues.issue_id
+                 AND ranked.ranked_ws = engineer_issues.workspace_id
+     ORDER BY ranked.ranked_score DESC, engineer_issues.issue_id`;
 }
 
 /**
@@ -4600,13 +4630,15 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
  * "found by this search" and "scored similar by titleSimilarity" agree on what
  * counts as a token.
  */
-function dedupSearchQuery(title: string): string {
+function dedupSearchQuery(title: string, joiner: ' or ' | ' ' = ' or '): string {
   const tokens = dedupSignature(title).split(' ').filter(Boolean);
   // Cap token count: an unbounded OR clause from a pathologically long title
   // (e.g. a body accidentally passed as title) would be a needlessly expensive
   // tsquery. Falls back to the raw title when tokenization yields nothing (all
   // tokens ≤2 chars, or an empty title) rather than passing an empty query.
-  return tokens.slice(0, 32).join(' or ') || title;
+  // BM25 already scores any-term matches, so its form is the same tokens joined by
+  // spaces (joiner ' ').
+  return tokens.slice(0, 32).join(joiner) || title;
 }
 
 /**
@@ -4624,13 +4656,15 @@ function dedupSearchQuery(title: string): string {
  */
 export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
   const tsQuerySource = dedupSearchQuery(query);
+  const workspaces = dedupScopeWorkspaces();
+  const n = Math.min(limit, 200);
   const rows = await boundedPgReadTxn<IssueRowDb[]>(
-    (tx) => tx<IssueRowDb[]>`
+    async (tx) => (await bm25IssueSearch(tx as unknown as Sql, dedupSearchQuery(query, ' '), workspaces, n)) ?? await tx<IssueRowDb[]>`
       SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-       WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
+       WHERE workspace_id = ANY(${workspaces}::text[])
          AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
        ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
-       LIMIT ${Math.min(limit, 200)}`,
+       LIMIT ${n}`,
   );
   return rows.map(toIssue);
 }

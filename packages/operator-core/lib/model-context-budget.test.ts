@@ -304,22 +304,29 @@ describe('codex extended-window launch config', () => {
     expect(codexContextWindowConfig('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual({
       model: 'gpt-5.6-sol',
       window: 1_000_000,
-      autoCompactLimit: 250_000,
+      autoCompactLimit: 200_000,
       source: 'codex-official-1m-policy',
     });
     expect(codexContextConfigArgs('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual([
       '-c',
       'model_context_window=1000000',
       '-c',
-      'model_auto_compact_token_limit=250000',
+      'model_auto_compact_token_limit=200000',
     ]);
     expect(codexContextConfigToml('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toBe(
-      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n',
+      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n',
     );
   });
 
+  it('starts native compaction before the scheduler reaches 90% of a managed budget', () => {
+    const home = codexHome([SOL], 'managed-headroom');
+    const config = codexContextWindowConfig('gpt-5.6-sol', { home, compactionLimit: 200_000 });
+    expect(config).toMatchObject({ window: 1_000_000, autoCompactLimit: 160_000 });
+    expect(config!.autoCompactLimit).toBeLessThan(200_000 * 0.9);
+  });
+
   it('does not let a session limit raise the model-derived native threshold', () => {
-    expect(codexContextWindowConfig('gpt-5.6-sol', { compactionLimit: 950_000 })).toMatchObject({
+    expect(codexContextWindowConfig('gpt-5.6-sol', { compactionLimit: 1_200_000 })).toMatchObject({
       window: 1_000_000,
       autoCompactLimit: 900_000,
     });

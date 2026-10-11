@@ -49,7 +49,7 @@ import {
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
+import { resolveResumedSessionOperatorBaseUrl } from '../../mcp-base-url';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { redactSensitiveText } from '../../sensitive-text';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
@@ -696,7 +696,7 @@ export async function defaultEnsureCodexHomeForWake(
     }));
 
     const operatorBaseUrl =
-      resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
+      resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
       `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`;
     const spec = await buildLaunchSpec({
       kind: 'su',
@@ -4837,8 +4837,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // append `/api/mcp` themselves, so an inherited suffixed value doubles
     // into a 404ing `.../api/mcp/api/mcp` and the resumed session comes up
     // with zero papercusp-su tools. Normalize it down to a bare (proxy-routed)
-    // origin before the child spawns.
-    const normalizedOperatorUrl = resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
+    // origin before the child spawns. A direct live :3070 base inherited from a host
+    // without the proxy env is routed like a fresh long-lived launch (WI-6554700010008371).
+    const normalizedOperatorUrl = resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
     if (normalizedOperatorUrl) env.PAPERCUSP_OPERATOR_URL = normalizedOperatorUrl;
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at

@@ -4916,7 +4916,7 @@
           "POST"
         ]
       },
-      "description": "Package code as review evidence with pinned Repomix 1.18.0/code2prompt 4.2.0 (never `npx latest`). `op:\"pack\"` selects a non-empty `include`; `op:\"diff\"` packs the git diff. Only pack secret-scans; diff uses the deny-set. Read-only; the full body goes to a scratch file, not context.",
+      "description": "Package code with pinned Repomix/code2prompt. pack selects include; diff packs changes or, with explain, returns a bounded native report of compiler consumers, tests, ownership and source/runtime freshness. Read-only; packs go to scratch. Only pack secret-scans; diff uses the deny-set.",
       "capabilities": [
         "intel:read"
       ],
@@ -28962,7 +28962,7 @@
           "POST"
         ]
       },
-      "description": "Full-text search the Reports library and get matches ranked by relevance — title matches outrank summary matches, which outrank body matches. Supports quoted \"exact phrases\", OR, and -negation. Returns the newest version per lineage, so a hit is never a superseded body. Bodies are omitted; use reports:get for one. Read-only, and gated by the same visibility rule as the rest of the library.",
+      "description": "Full-text search the Reports library and get matches ranked by relevance (BM25 over title, summary and body). Supports quoted \"exact phrases\", OR, and -negation. Returns the newest version per lineage, so a hit is never a superseded body. Bodies are omitted; use reports:get for one. Read-only, and gated by the same visibility rule as the rest of the library.",
       "capabilities": [
         "reports:read"
       ],

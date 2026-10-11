@@ -6,9 +6,9 @@
  * BASELINE is the measured set as of the 2026-10-06 index manifest (61 entries,
  * seeded from the detector's own output, never hand-grown). It is SHRINK-ONLY: an
  * entry that no longer reproduces fails, so fixing a table forces its removal here.
- * work_items.work_items_pkey and work_items.work_items_scoped_identity retire when
- * migration 1444 (UNIQUE (workspace_id, feature_id), P-012) arms and the manifest
- * is regenerated.
+ * work_items.work_items_pkey and work_items.work_items_scoped_identity retired on
+ * 2026-10-11: migration 1444 (UNIQUE (workspace_id, feature_id), P-012) armed and the
+ * manifest was regenerated, so work_items_workspace_feature_id_uq now covers both.
  */
 import { describe, expect, it } from 'vitest';
 import type { IndexCensusEntry } from '../schema-object-drift';
@@ -75,8 +75,6 @@ const BASELINE: readonly string[] = [
   'work_item_replicas.work_item_replicas_pkey',
   'work_item_spec_revision_edges.work_item_spec_revision_edges_pkey',
   'work_item_spec_revision_edges.work_item_spec_revision_edges_workspace_id_harness_slug_wor_key',
-  'work_items.work_items_pkey',
-  'work_items.work_items_scoped_identity',
 ];
 
 /**

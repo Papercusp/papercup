@@ -47,6 +47,7 @@ import {
   clearStaleIndexLock,
   clearStaleConfigLock,
   scavengeStaleTempPacks,
+  STALE_INDEX_LOCK_MS,
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
@@ -897,6 +898,36 @@ describe('runGitSync (real git, no submodule)', () => {
     // origin received the auto-commit
     expect(originLog()).toMatch(/auto-commit test/);
     // working tree is clean after sync
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-25358130293460599: reclaims a stale index.lock during the full catch-all publish path', async () => {
+    writeFileSync(join(repo, 'stale-lock-recovery.txt'), 'recovered\n');
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, 'orphaned test lock');
+    const staleAt = new Date(Date.now() - STALE_INDEX_LOCK_MS - 1_000);
+    utimesSync(lockPath, staleAt, staleAt);
+
+    const logs: string[] = [];
+    let catchAllRefreshAttempts = 0;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'reset' && args.some((arg) => arg.startsWith('--pathspec-from-file='))) {
+        catchAllRefreshAttempts++;
+      }
+      return directRunGit(args, cwd, options);
+    };
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      config: cfg,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(catchAllRefreshAttempts).toBe(2); // blocked once, then retried after stale-lock cleanup
+    expect(existsSync(lockPath)).toBe(false);
+    expect(logs.join('\n')).toContain('cleared STALE index.lock');
+    expect(originLog()).toMatch(/auto-commit test/);
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 

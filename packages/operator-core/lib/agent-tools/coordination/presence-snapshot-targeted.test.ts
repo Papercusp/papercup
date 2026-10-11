@@ -37,6 +37,7 @@ const {
   selfWakeMock,
   fleetMock,
   findLiveHostMock,
+  findLiveHostAsyncMock,
   desktopSessionsMock,
   endedSessionsMock,
   endedOwnerIdsMock,
@@ -51,6 +52,7 @@ const {
   selfWakeMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
+  findLiveHostAsyncMock: vi.fn<(id: string) => Promise<{ ownerId: string } | null>>(async () => null),
   desktopSessionsMock: vi.fn<typeof gatherOnDesktopSessions>(async () => ({
     owners: new Set<string>(), sessionIds: new Set<string>(), advSessionIds: new Set<number>(), windowSignalUnknown: false,
   })),
@@ -111,7 +113,7 @@ vi.mock('./presence-fleet', async (importOriginal) => ({
 vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   findLiveHost: findLiveHostMock,
-  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
+  findLiveHostAsync: findLiveHostAsyncMock,
 }));
 vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: desktopSessionsMock,
@@ -144,6 +146,7 @@ const row = (ownerId: string, stale: boolean) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  findLiveHostAsyncMock.mockImplementation(async (ownerId: string) => findLiveHostMock(ownerId));
   // clearAllMocks keeps mockResolvedValue IMPLEMENTATIONS — restore the leg
   // defaults explicitly so the EI-21488009366204518 tests cannot leak their
   // fixtures into each other (order-dependent false positives).
@@ -224,6 +227,18 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-aaa', 'su-bbb', 'su-ccc']); // all locals
     expect(snap.summary.active).toBe(2);
     expect(snap.summary.stale).toBe(1);
+  });
+
+  it('uses async host discovery for targeted snapshots, never the synchronous filesystem lookup', async () => {
+    const owner = 'su-targeted-host';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: false, liveTurn: false }]]));
+    findLiveHostAsyncMock.mockResolvedValue({ ownerId: owner });
+
+    await assemblePresenceSnapshot(RESOLVED, { owner });
+
+    expect(findLiveHostAsyncMock).toHaveBeenCalledWith(owner);
+    expect(findLiveHostMock).not.toHaveBeenCalled();
   });
 
   it('skips desktop-only enrichment when building the compact rebootstrap snapshot', async () => {

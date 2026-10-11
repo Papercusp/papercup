@@ -36,6 +36,8 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/statement-attestation-push.ts';
 import {
   parseLiveTransparencyPush,
+  hasLiveDisclosure,
+  liveDisclosureUpdateProblem,
   parseSignedStatement,
   verifySignedStatement,
 } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
@@ -100,7 +102,12 @@ export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ 
     if (push.generatedAtMs > nowMs + RECONCILIATION_SIGNATURE_TOLERANCE_MS) {
       return c.json({ error: 'invalid_request', detail: 'generatedAtMs is in the future' }, 400);
     }
-    const stored = await recordLiveReport(c.env.DB, push, nowMs);
+    const previous = await readLiveReport(c.env.DB, push.workspaceId);
+    // A delayed push remains a no-op; it must not be compared as a new disclosure.
+    if (previous && push.generatedAtMs < previous.generatedAtMs) return c.json({ ok: true, stored: 'stale' });
+    const problem = liveDisclosureUpdateProblem(previous?.report ?? null, push.report);
+    if (problem) return c.json({ error: 'sparse_payment_window', detail: problem }, 409);
+    const stored = await recordLiveReport(c.env.DB, push, nowMs, previous);
     return c.json({ ok: true, stored });
   });
 
@@ -153,7 +160,8 @@ export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ 
     if (!live && listed.length === 0) return c.json({ error: 'not_found', detail: `no transparency report for '${workspaceId}'` }, 404);
     // Beside each published month: whether an outside accountant attested it, who, against what, and the proof.
     const statements = listed.map((s) => ({ ...s, attestation: attestationStatus(attestations.get(s.month), s.digest) }));
-    return c.json({ workspaceId, live, statements });
+    // Legacy stored figures predate the guard. They are not safe to publish while awaiting a rebuilt push.
+    return c.json({ workspaceId, live: live && hasLiveDisclosure(live.report) ? live : null, statements });
   });
 
   route.get('/transparency/:workspaceId/attestations/:month/:documentSha256/proof', async (c) => {

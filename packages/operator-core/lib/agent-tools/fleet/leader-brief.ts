@@ -1501,8 +1501,9 @@ export function computeBenchSuggestion(
    * still HOLDS a claim and looks wedged during a pause is a genuine fault — indeed it
    * is precisely what blocks the stand-down from completing.
    *
-   * `undefined`/absent reads as "not paused" (today's behavior), never a false
-   * suppression — an unread control state must not silence a real starvation signal.
+   * `null` is an explicit unread control state: do not recommend wake/bench actions
+   * without measuring whether the fleet permits work. An omitted argument retains
+   * the legacy pure-caller behavior. Held stalled-work diagnostics above still apply.
    */
   fleetPaused?: boolean | null,
   /**
@@ -1614,7 +1615,7 @@ export function computeBenchSuggestion(
   // EI-18703234178947959: a PAUSED fleet's idle member is compliant, not starving —
   // see the `fleetPaused` parameter doc. Every branch below would misdiagnose it and
   // prescribe a remedy the claim path itself refuses to honor.
-  if (fleetPaused) return undefined;
+  if (fleetPaused || fleetPaused === null) return undefined;
   if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
     // EI-19313376980892266: `a.load === 0` is a PRESENCE-layer reading and does NOT mean
     // the scheduler considers this member free — a parked/held item keeps `taken_by`, so
@@ -1827,7 +1828,7 @@ export function computeDormantAlert(
   },
   fleetPaused?: boolean | null,
 ): boolean {
-  if (fleetPaused) return false;
+  if (fleetPaused || fleetPaused === null) return false;
   // EI-21548894457555139: a member INSIDE a long-running call is executing, and
   // `dormant` means the opposite — "no self-wake mechanism at all; nothing will bring
   // it back". Checked FIRST because every condition below is derived from settled
@@ -2661,7 +2662,7 @@ export function computeIdleWithClaimableAlert(input: {
   // is already 0 for a paused fleet because computeBenchSuggestion suppresses the idle
   // branches at source, so this is the second, independent guard that keeps the alert
   // false-positive-proof if a future caller ever feeds it a differently-derived count.
-  if (input.fleetPaused) return undefined;
+  if (input.fleetPaused || input.fleetPaused === null) return undefined;
   if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
   const accused = input.idleMemberIds?.[0];
@@ -2768,7 +2769,7 @@ export function computeFloorStarvedFleetAlert(input: {
   harness?: string | null;
   fleet?: string | null;
 }): { reason: string; falsifier: AlertFalsifier } | undefined {
-  if (input.fleetPaused) return undefined;
+  if (input.fleetPaused || input.fleetPaused === null) return undefined;
   if (input.claimable == null || input.claimable !== 0) return undefined;
   if (input.matchedByFilter == null || input.matchedByFilter <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
@@ -2887,6 +2888,8 @@ export function computeFleetBlockVerdict(input: {
   harness?: string | null;
   fleet?: string | null;
 }): FleetBlockVerdict | undefined {
+  // An unread pause cannot support a verdict that prescribes activating members.
+  if (input.fleetPaused === null) return undefined;
   const idleTotal = input.idleMemberCount + input.lanelessIdleCount;
   if (!input.fleetPaused && idleTotal <= 0) return undefined;
 
@@ -3497,8 +3500,8 @@ export function projectMember(
   /** EI-18689489507862177: pre-floor match + per-floor exclusions, so the bench
    *  suggestion can tell a GATED lane from a drained one. Absent = not read. */
   laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
-  /** EI-18703234178947959: the fleet's own control_state is winding-down (owner-paused),
-   *  so an idle member is compliant and carries no bench suggestion. Absent = not paused. */
+  /** A paused or explicitly unread fleet carries no idle-member wake/bench advice.
+   *  An omitted argument retains legacy pure-caller behavior. */
   fleetPaused?: boolean | null,
   /** EI-19313376980892266: this member's authoritative concurrency verdict from the shared
    *  oracle (work_items.taken_by), NOT the presence layer's `load`. Absent = not read on
@@ -4010,6 +4013,16 @@ export async function recoverFleetRecordForLeaderControl(input: {
   );
 }
 
+/** Use the same measured record for pause, headcount and leadership control.
+ * A missing/failed record is unknown, never evidence that the fleet resumed. */
+export function projectLeaderBriefFleetPause(
+  record: Pick<AgentFleetRecord, 'controlState' | 'controlReason'> | null | undefined,
+): { paused: boolean | null; reason: string | null } {
+  if (record == null) return { paused: null, reason: null };
+  const paused = record.controlState === 'winding-down';
+  return { paused, reason: paused ? record.controlReason ?? null : null };
+}
+
 /**
  * The READ half of `fleet:leader-brief` — every leg from roster through
  * decorations, alerts and the fleet-block verdict. Pure with respect to the
@@ -4123,6 +4136,20 @@ export async function buildLeaderBrief(
         label: 'leader-brief:fleetRecord',
       }),
   ] as const);
+  // A degraded `getFleet` result is not evidence of a vacant leader seat.
+  // Corroborate only positive self-leadership before repairing control; the
+  // recovery helper intentionally cannot authorize `takeFleetLeadership`.
+  const controlFleetRecord = await recoverFleetRecordForLeaderControl({
+    workspaceId,
+    fleetSlug: fleet,
+    ownerId,
+    allowLeadershipWrites,
+    fleetRecordResult,
+  });
+  const fleetRecord =
+    fleetRecordResult.value !== undefined ? fleetRecordResult.value : controlFleetRecord;
+  const fleetRecordReadAvailable = fleetRecordResult.value !== undefined || controlFleetRecord !== null;
+  const fleetPause = projectLeaderBriefFleetPause(fleetRecord);
   // WI-2034624: `current` is attested from recent agent-origin execution over
   // the canonical live roster — never from the current launch transaction's
   // worker-ready set, which excludes every member a prior transaction or a
@@ -4138,8 +4165,7 @@ export async function buildLeaderBrief(
     headcountCurrentResult.value == null
       ? Promise.resolve(null)
       : readFleetMemberSilence(headcountCurrentResult.value, {
-          fleetPaused:
-            fleetRecordResult.value == null ? null : fleetRecordResult.value.controlState === 'winding-down',
+          fleetPaused: fleetPause.paused,
         }),
     {
       fallback: null,
@@ -4148,19 +4174,6 @@ export async function buildLeaderBrief(
     },
   );
   const headcountExecutingRead = { value: countedMemberSet(headcountSilenceRead.value) };
-  // A degraded `getFleet` result is not evidence of a vacant leader seat.
-  // Corroborate only positive self-leadership before repairing control; the
-  // recovery helper intentionally cannot authorize `takeFleetLeadership`.
-  const controlFleetRecord = await recoverFleetRecordForLeaderControl({
-    workspaceId,
-    fleetSlug: fleet,
-    ownerId,
-    allowLeadershipWrites,
-    fleetRecordResult,
-  });
-  const fleetRecord =
-    fleetRecordResult.value !== undefined ? fleetRecordResult.value : controlFleetRecord;
-  const fleetRecordReadAvailable = fleetRecordResult.value !== undefined || controlFleetRecord !== null;
   // P-005 / D-030: the governor's own eligibility facts, so `headcount.held` says
   // whether anything will actually restore this fleet. A failed flag read stays
   // null (unknown), never a fabricated OFF; an unread fleet record supplies no
@@ -4407,7 +4420,6 @@ export async function buildLeaderBrief(
     unownedCriticalsAll,
     admissionBlockRead,
     orphanedInFlight,
-    fleetPause,
     concurrencyByOwner,
     poolCapacity,
   ] = await runBoundedLeaderBriefReads(
@@ -4439,20 +4451,6 @@ export async function buildLeaderBrief(
           workspaceId,
           minAgeMinutes: args.orphan_min_age_minutes,
         }),
-      // EI-18703234178947959: the fleet's own durable pause state. Fail-soft
-      // to not-paused so a registry hiccup never silences a genuine alert.
-      () =>
-        (async (): Promise<{ paused: boolean; reason: string | null }> => {
-          try {
-            const { getFleet } = await import('../../agent-fleets-store');
-            const rec = await getFleet(workspaceId, fleet);
-            return rec?.controlState === 'winding-down'
-              ? { paused: true, reason: rec.controlReason ?? null }
-              : { paused: false, reason: null };
-          } catch {
-            return { paused: false, reason: null };
-          }
-        })(),
       // EI-19313376980892266: authoritative per-member concurrency, resolved
       // against this fleet's own spec limit and fail-soft to an empty map.
       () =>
@@ -4502,7 +4500,6 @@ export async function buildLeaderBrief(
         reason: 'leader-brief optional admission-block read timed out or failed',
       } as FleetAdmissionBlockRead,
       [] as OrphanedInFlightCandidate[],
-      { paused: false, reason: null },
       new Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>(),
       null,
     ] as const,

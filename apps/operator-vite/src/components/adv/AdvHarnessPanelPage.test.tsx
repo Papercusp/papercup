@@ -191,4 +191,50 @@ describe('Insights read recovery', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['cold', 'cached'])('reports a missing payload on a %s read and recovers through retry', async (visit) => {
+    nuqsState.slug = `insights-missing-${visit}`;
+    const fetchMock = vi.fn();
+    if (visit === 'cached') fetchMock.mockResolvedValueOnce(success());
+    fetchMock
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(success());
+    vi.stubGlobal('fetch', fetchMock);
+    if (visit === 'cached') {
+      const first = render(<AdvHarnessPanelPage panel="insights" />);
+      await screen.findByTestId('insights');
+      first.unmount();
+    }
+    render(<AdvHarnessPanelPage panel="insights" />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('insights payload missing');
+    expect(Boolean(screen.queryByTestId('insights'))).toBe(visit === 'cached');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    expect(screen.getByTestId('insights')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a late response for a previous pot and leaves its cache untouched', async () => {
+    nuqsState.slug = 'insights-previous-pot';
+    let finishPrevious!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishPrevious = resolve; }))
+      .mockResolvedValueOnce(success())
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const view = render(<AdvHarnessPanelPage panel="insights" />);
+    nuqsState.slug = 'insights-current-pot';
+    view.rerender(<AdvHarnessPanelPage panel="insights" />);
+    expect((await screen.findByTestId('insights')).textContent).toBe('insights-current-pot');
+
+    await act(async () => finishPrevious(success()));
+    expect(screen.getByTestId('insights').textContent).toBe('insights-current-pot');
+    expect(screen.queryByRole('alert')).toBeNull();
+    nuqsState.slug = 'insights-previous-pot';
+    view.rerender(<AdvHarnessPanelPage panel="insights" />);
+    expect(screen.queryByTestId('insights')).toBeNull();
+    expect((await screen.findByRole('alert')).textContent).toContain('HTTP 403');
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/harness/insights-previous-pot/insights', { cache: 'no-store' });
+  });
 });

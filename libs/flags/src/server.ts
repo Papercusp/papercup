@@ -7,11 +7,11 @@
 
 import { pinModuleState } from "@papercusp/module-singleton";
 import { PostHog } from "posthog-node";
+import { envFlagOverride, platformModeOverride } from "./env-resolution";
 import { resolveTestOverrides } from "./test";
 import {
   ALL_FLAG_KEYS,
   FLAG_DEFAULTS,
-  FLAGS,
   type FlagKey,
   type FlagPayload,
   type FlagValues,
@@ -464,10 +464,9 @@ export function getBackendConfig(): PostHogConfig | null {
  * The key is uppercased and `-` is converted to `_`.
  */
 function resolveEnvOverride(key: FlagKey): boolean | undefined {
-  const envKey = `PAPERCUSP_FLAG_${key.toUpperCase().replace(/-/g, "_")}`;
-  const raw = process.env[envKey];
-  if (raw === undefined) return undefined;
-  return raw === "1" || raw.toLowerCase() === "true";
+  // Single source of the env precedence (env-resolution.ts), shared with the
+  // after-the-fact resolution of a recorded test-run configuration snapshot (P-011).
+  return envFlagOverride(key, process.env);
 }
 
 /**
@@ -485,13 +484,7 @@ function resolveEnvOverride(key: FlagKey): boolean | undefined {
  * constant lands, gate the default on it instead of this env var.
  */
 function resolvePlatformModeOverride(key: FlagKey): boolean | undefined {
-  if (key !== FLAGS.PLATFORM_IMPROVEMENT_LOOPS) return undefined;
-  const raw = process.env.PAPERCUSP_PLATFORM_MODE;
-  if (raw === undefined) return undefined;
-  const v = raw.trim().toLowerCase();
-  if (v === "off" || v === "0" || v === "false") return false;
-  if (v === "on" || v === "1" || v === "true") return true;
-  return undefined;
+  return platformModeOverride(key, process.env);
 }
 
 /**

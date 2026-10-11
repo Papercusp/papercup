@@ -9,6 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lookupByMcpName } from '@papercusp/tooldef';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+// Load the host's registration entrypoint during collection so executed-source
+// evidence includes the catalog whose public contract these cases exercise.
+import '../agent-tools/index';
 import tool from '../agent-tools/consult/get-feedback';
 import { acceptFeedbackRequestCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
 import { appendDispatchRecord, dispatchConsultResponder, readSourceDispatchRecords,
@@ -49,9 +52,6 @@ function request(requestKey: string, question = 'Recover this accepted consult')
 
 describe('registered consult contract and persisted recovery', () => {
   it('loads the production catalog without the retired reporting callable and retains ordinary consult and plan tools', async () => {
-    // Load the same registration entrypoint as the host. Merely importing the
-    // get-feedback tool cannot expose an obsolete sibling registration.
-    await import('../agent-tools/index');
     for (const name of ['consult:get_feedback', 'consult:reply', 'consult:decline', 'consult:close', 'plans:start']) {
       expect(lookupByMcpName(name), `positive catalog control ${name}`).toBeDefined();
     }

@@ -44,6 +44,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
+import { lexicalLeg } from './search/lexical/rank';
 import {
   parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot,
   type GoalOwnerReportSnapshotV1,
@@ -522,18 +523,21 @@ export interface SearchReportsOptions {
 
 export interface ReportSearchHit {
   report: ReportRecord;
-  /** `ts_rank` against the weighted `search_tsv`; higher is a better match. */
+  /**
+   * Relevance, higher is a better match: BM25 when the report_library BM25 index is live,
+   * else `ts_rank` against the weighted `search_tsv`. Comparable within one search only.
+   */
   rank: number;
 }
 
 /**
  * Full-text search over the library, gated by {@link visibleTo}.
  *
- * Ranking rides the STORED generated `search_tsv` column (migration 1166), which
- * weights title > summary/subject_label > body. Searching the generated column
- * rather than re-deriving a tsvector here keeps one definition of "what a report's
- * searchable text is": a second `to_tsvector(...)` expression in this file would
- * silently diverge from the index and quietly stop using it.
+ * Ranking goes through the lexical seam: BM25 over the report_library expression
+ * registered in search/lexical/corpora.ts (pinned to migration 1447's index by
+ * corpora.test.ts) when that index is live, else the STORED generated `search_tsv`
+ * column (migration 1166), which weights title > summary/subject_label > body. Neither
+ * path re-derives a text expression here, so neither can drift from its index.
  *
  * With `collapseLineage` (the default) the newest row per lineage is selected FIRST
  * and ranked second, so the library never offers a superseded body as a hit — the
@@ -545,6 +549,16 @@ export async function searchReports(
 ): Promise<ReportSearchHit[]> {
   const gate = opts.viewer ? visibleTo(sql, opts.viewer) : sql`TRUE`;
   const tsq = sql`websearch_to_tsquery('english', ${opts.query})`;
+  // BM25 over the registered report_library expression when its index is live, else
+  // ts_rank over search_tsv (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
+  // A query using phrase/OR/-negation syntax keeps the websearch predicate as its filter
+  // under BM25 too (D-007), so the syntax reports:search documents still holds.
+  const leg = await lexicalLeg(sql, {
+    table: 'report_library',
+    query: opts.query,
+    querySyntax: 'websearch',
+    legacy: { score: sql`ts_rank(search_tsv, ${tsq})`, match: sql`search_tsv @@ ${tsq}` },
+  });
   const filters = sql`
     ${opts.includeRetired ? sql`` : sql`AND retired_at IS NULL`}
     ${opts.kind ? sql`AND kind = ${opts.kind}` : sql``}`;
@@ -553,19 +567,19 @@ export async function searchReports(
   const rows =
     opts.collapseLineage === false
       ? await sql<RankedRow[]>`
-          SELECT ${sql.unsafe(SELECT_COLS)}, ts_rank(search_tsv, ${tsq}) AS rank
+          SELECT ${sql.unsafe(SELECT_COLS)}, ${leg.score} AS rank
             FROM harness_shared.report_library
            WHERE workspace_id = ${opts.workspaceId} AND ${gate}
-             AND search_tsv @@ ${tsq} ${filters}
-           ORDER BY rank DESC, published_at DESC, report_id DESC
+             AND ${leg.match} ${filters}
+           ORDER BY ${leg.order}, published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`
       : await sql<RankedRow[]>`
           SELECT * FROM (
             SELECT DISTINCT ON (lineage_id) ${sql.unsafe(SELECT_COLS)},
-                   ts_rank(search_tsv, ${tsq}) AS rank
+                   ${leg.score} AS rank
               FROM harness_shared.report_library
              WHERE workspace_id = ${opts.workspaceId} AND ${gate}
-               AND search_tsv @@ ${tsq} ${filters}
+               AND ${leg.match} ${filters}
              ORDER BY lineage_id, published_at DESC, report_id DESC
           ) latest
            ORDER BY rank DESC, published_at DESC, report_id DESC

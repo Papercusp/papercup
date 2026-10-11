@@ -16,7 +16,7 @@ export interface LiveReportRow {
   readonly generatedAtMs: number;
 }
 
-export async function recordLiveReport(db: D1Database, push: LiveTransparencyPush, receivedAtMs: number): Promise<'stored' | 'stale'> {
+export async function recordLiveReport(db: D1Database, push: LiveTransparencyPush, receivedAtMs: number, previous: LiveReportRow | null): Promise<'stored' | 'stale'> {
   const r = await db
     .prepare(
       `INSERT INTO transparency_live (workspace_id, month, report_json, statement_status_json, generated_at_ms, received_at_ms)
@@ -25,9 +25,11 @@ export async function recordLiveReport(db: D1Database, push: LiveTransparencyPus
          month = excluded.month, report_json = excluded.report_json,
          statement_status_json = excluded.statement_status_json,
          generated_at_ms = excluded.generated_at_ms, received_at_ms = excluded.received_at_ms
-       WHERE excluded.generated_at_ms >= transparency_live.generated_at_ms`,
+       WHERE excluded.generated_at_ms >= transparency_live.generated_at_ms
+         AND transparency_live.generated_at_ms IS ?7 AND transparency_live.report_json IS ?8`,
     )
-    .bind(push.workspaceId, push.month, JSON.stringify(push.report), JSON.stringify(push.statementStatus), push.generatedAtMs, receivedAtMs)
+    // Compare-and-swap the exact snapshot checked by the disclosure guard.
+    .bind(push.workspaceId, push.month, JSON.stringify(push.report), JSON.stringify(push.statementStatus), push.generatedAtMs, receivedAtMs, previous?.generatedAtMs ?? null, previous ? JSON.stringify(previous.report) : null)
     .run();
   return (r.meta?.changes ?? 0) > 0 ? 'stored' : 'stale';
 }

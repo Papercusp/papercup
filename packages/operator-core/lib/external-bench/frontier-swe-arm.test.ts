@@ -149,6 +149,10 @@ describe('runFrontierSweResilient — self-healing resume (P-010)', () => {
     const persisted = readRunResults(resultsPath);
     expect(persisted).toHaveLength(4);
     expect(perSeed.length).toBe(2); // seed 0 (git only) + seed 1 (both)
+    // P-022 / D-009: every appended trial keeps the seam's scorer output (its integrity verdict) for campaign bundles.
+    for (const rec of persisted.slice(1)) {
+      expect(rec.graderDetail).toMatchObject({ integrity: { verdict: 'clean' } });
+    }
   });
 
   it('a fully-complete results file is a no-op resume (alreadyComplete)', async () => {

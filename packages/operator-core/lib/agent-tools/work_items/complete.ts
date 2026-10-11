@@ -281,11 +281,9 @@ import {
 } from '../../work-item-self-review.js';
 import { activeWorkspaceId, resolveConcreteWorkspaceId, workspacesRoot } from '../../workspace-registry';
 import { resolveAdoptedName } from '../../plan-items/agent-names';
-import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
 import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/run';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
-import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { getWorkItemCheckpoint, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { splitCarryNoteChecks, splitCarryNoteWalls } from '../../carry-note';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -3487,21 +3485,11 @@ async function completeOne(
       `to record a completion on someone else's item.`
     : undefined;
 
-  // TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006). A feature
-  // work-item being moved to a TERMINAL state must have every plan-derived test-requiring
-  // VAL passing. Flag-gated (FLAGS.TEST_COMPLETION_GATE, default OFF → inert) and FAIL-OPEN
-  // (itemTestGate returns ok:true on any error, never blocking a completion on a gate bug).
-  // On refusal we return the SAME shape as the not-found case (ok:false + error, NO completion
-  // record) so the completion emit rule — which keys on result.completion — fires no false
-  // completion notification.
-  if (it.state && existing.family === 'feature' && existing.harness) {
-    const norm = normalizeFeatureStateInput(it.state);
-    const isTerminal = norm.ok && FEATURE_TERMINAL_STATES.includes(norm.state);
-    if (isTerminal && (await getFlag(FLAGS.TEST_COMPLETION_GATE, activeWorkspaceId()).catch(() => false))) {
-      const gate = await itemTestGate(existing.harness, it.id);
-      if (!gate.ok) return { ok: false, id: it.id, error: `refusing to complete ${it.id}: ${gate.reason}` };
-    }
-  }
+  // The legacy VAL test-completion gate (itemTestGate over harness_tests/VAL-* rows) was
+  // retired by verification-system-improvements-2026-10-10 P-003: VAL-* assertions are no
+  // longer written and harness_tests has had no writer since 2026-08-22, so the gate could
+  // never prove anything. Test proof for spec-governed work is judged by the spec-era
+  // test-adequacy completion gate.
 
   // EI-12027: `completion.status` (defaults to 'done') is NOT the same field as the
   // top-level `state` transition — an agent that sets `completion: { status: 'resolved' }`

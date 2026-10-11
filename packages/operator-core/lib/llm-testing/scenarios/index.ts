@@ -158,6 +158,7 @@ import { SU_S36_DRAIN_CLAIMS_ONLY_AGENT_WORK } from './su/S36-drain-claims-only-
 import { SU_S37_CODE_SEARCH } from './su/S37-code-search-discipline';
 import { SU_S38_REPORTS_CAPTURE } from './su/S38-reports-capture';
 import { SU_S39_VERIFICATION_MAP_DOORS } from './su/S39-verification-map-doors';
+import { SU_S40_GRADE_CHECKER_RULES } from './su/S40-grade-checker-rules';
 import { WORKER_W01_CODE_SEARCH } from './worker/W01-code-search-discipline';
 // SU-S31a/b/c: agent-protocol-authority-semantics-2026-07-26 P-011 — the information-asymmetry
 // experiment. THREE matched arms over one identical task, differing only in how a peer's handoff
@@ -332,6 +333,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S38_REPORTS_CAPTURE,
   // S39: verification-system-improvements-2026-10-10 P-001 — fresh agent names the contract doors from the map
   SU_S39_VERIFICATION_MAP_DOORS,
+  // S40: verification-system-improvements-2026-10-10 P-009 — GRADE-mode checker rules catch a test-only stub
+  SU_S40_GRADE_CHECKER_RULES,
   ...WORKER_W01_CODE_SEARCH,
   SU_S31A_ASYMMETRY_CONTROL,
   SU_S31B_ASYMMETRY_PROSE,

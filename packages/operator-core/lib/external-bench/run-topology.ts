@@ -190,7 +190,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   const buildRow = (args: {
     task: BenchTask;
     usage: AgentRunUsage;
-    grade: { resolved: boolean | null; score?: number | null; graderStatus: string };
+    grade: { resolved: boolean | null; score?: number | null; graderStatus: string; detail?: unknown };
     status: GenerationStatus;
     capped: boolean;
     generationError?: string | null;
@@ -208,6 +208,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     graderFamily: rowMeta.graderFamily,
     graderVersion: rowMeta.graderVersion,
     score: args.grade.score ?? null,
+    // P-022 / D-009: keep the seam's scorer output (e.g. the D-008 integrity verdict) for campaign bundles.
+    ...(args.grade.detail !== undefined ? { graderDetail: args.grade.detail } : {}),
     tokensIn: args.usage.tokensIn,
     tokensOut: args.usage.tokensOut,
     tokensTotal: args.usage.tokensIn + args.usage.tokensOut,

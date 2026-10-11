@@ -63,6 +63,23 @@ export interface LexicalLegRequest {
   /** Table alias in the caller's FROM clause, when it has one. */
   alias?: string;
   legacy: LegacyLexicalRank;
+  /**
+   * `'websearch'` when the caller's legacy match parses the query with
+   * `websearch_to_tsquery` and documents its syntax (quoted phrases, OR, -negation).
+   * BM25 tokenizes the query and ignores that syntax, so it would turn `-draft` into a
+   * positive match. When the query uses any of those operators, the BM25 leg therefore
+   * keeps the legacy predicate as its match filter and BM25 only orders the rows.
+   * A plain query gets BM25's own any-term match. Plan D-007.
+   */
+  querySyntax?: 'websearch';
+}
+
+/**
+ * Whether `query` uses `websearch_to_tsquery` operator syntax: a double quote (phrase), the
+ * word `or` between terms, or a `-` that starts a term (negation).
+ */
+export function usesWebsearchOperators(query: string): boolean {
+  return /"/.test(query) || /(^|\s)-\S/.test(query) || /\S\s+or\s+\S/i.test(query);
 }
 
 const SCHEMA = 'harness_shared';
@@ -153,10 +170,27 @@ export async function bm25LegIfAvailable(
   return (await lexicalEngine(sql, table)) === 'bm25' ? bm25Leg(sql, bm25Corpus(table), query, alias) : null;
 }
 
+/**
+ * The tsquery for `ts_headline` over a leg's rows. BM25 returns rows that match only SOME
+ * query terms, and ts_headline's fragment mode highlights nothing in a row that does not
+ * satisfy its tsquery, so under BM25 the headline uses an OR of the query's terms. The
+ * legacy engine keeps the AND query its rows were matched with.
+ */
+export function headlineTsQuery(sql: Sql, engine: LexicalEngine, query: string): SqlFragment {
+  const orTerms = query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 2).join(' | ');
+  return engine === 'bm25' && orTerms
+    ? sql`to_tsquery('english', ${orTerms})`
+    : sql`plainto_tsquery('english', ${query})`;
+}
+
 /** The lexical leg for one query over one corpus. */
 export async function lexicalLeg(sql: Sql, req: LexicalLegRequest): Promise<LexicalLeg> {
   if ((await lexicalEngine(sql, req.table)) === 'bm25') {
-    return bm25Leg(sql, bm25Corpus(req.table), req.query, req.alias);
+    const leg = bm25Leg(sql, bm25Corpus(req.table), req.query, req.alias);
+    if (req.querySyntax === 'websearch' && usesWebsearchOperators(req.query)) {
+      return { ...leg, match: sql`(${leg.match}) AND (${req.legacy.match})` };
+    }
+    return leg;
   }
   return {
     engine: 'legacy',

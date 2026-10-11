@@ -35,6 +35,7 @@ import { attestationProofPath } from '@papercusp/operator-core/lib/cupboard/stat
 import { buildApi } from '../routes/index.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
+import { readLiveReport, recordLiveReport } from '../transparency-store.ts';
 
 // A low-entropy test key, not a credential.
 const KEY = 't'.repeat(32);
@@ -73,8 +74,16 @@ const treasury = treasuryFigure(null, 'not measured in this test');
 const PENDING: StatementStatus = { status: 'pending', month: '2026-08', digest: null, withheldBy: [], detail: 'awaiting the month-close run' };
 
 function liveReport(generatedAtMs: number, extraCents = 0): LiveTransparencyPush {
-  const report = buildTransparencyReport({ workspaceId: WS, kind: 'live', entries: journal(extraCents), period: monthPeriod('2026-09'), provisional: true, treasury, latestAnchor: null });
+  const first = journal(extraCents)[0]!;
+  const entries = [first, { ...first, entryId: 'pay-2', externalRef: { kind: 'stripe-balance-transaction' as const, id: 'txn_2' } }];
+  const report = buildTransparencyReport({ workspaceId: WS, kind: 'live', entries, period: monthPeriod('2026-09'), provisional: true, treasury, latestAnchor: null });
   return { workspaceId: WS, month: '2026-09', generatedAtMs, report, statementStatus: PENDING };
+}
+
+function populationPush(generatedAtMs: number, count: number, suffix = ''): LiveTransparencyPush {
+  const first = journal()[0]!;
+  const entries = Array.from({ length: count }, (_,i) => ({ ...first, entryId: `pay-${i}${i < 2 ? '' : suffix}`, externalRef: { kind: 'stripe-balance-transaction' as const, id: `txn_${i}${i < 2 ? '' : suffix}` } }));
+  return { workspaceId: WS, month: '2026-09', generatedAtMs, report: buildTransparencyReport({ workspaceId: WS, kind: 'live', entries, period: monthPeriod('2026-09'), provisional: true, treasury, latestAnchor: null }), statementStatus: PENDING };
 }
 
 async function statement(key: `0x${string}`, extraCents = 0): Promise<SignedStatement> {
@@ -90,6 +99,55 @@ async function statement(key: `0x${string}`, extraCents = 0): Promise<SignedStat
 }
 
 describe('transparency routes (P-044)', () => {
+  it('serves a folded one-payment window without any private payment figures', async () => {
+    const h = harness();
+    const sparse = populationPush(Date.now() - 1_000, 1);
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, sparse)).status).toBe(200);
+    const body = await (await get(h, `/transparency/${WS}`)).json() as { live: { report: LiveTransparencyPush['report'] } };
+    expect(body.live.report).toMatchObject({ entryCount: 0, revenueCents: 0, daoShareCents: 0, revenueByStream: {}, disclosure: { status: 'folded', streams: {} } });
+    expect(body.live.report.accounts.every((a) => a.debitCents === 0 && a.creditCents === 0 && a.netCents === 0)).toBe(true);
+  });
+
+  it('refuses one new payment and same-count corrections by differencing; a new pair is published', async () => {
+    const h = harness();
+    const t = Date.now() - 10_000;
+    const pair = populationPush(t, 2);
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, pair)).status).toBe(200);
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, populationPush(t + 1, 3))).status).toBe(409);
+    const unchanged = populationPush(t + 2, 2);
+    const corrected = { ...unchanged, report: { ...unchanged.report, disclosure: { ...unchanged.report.disclosure!, streams: { ...unchanged.report.disclosure!.streams, 'customer-payment': { ...unchanged.report.disclosure!.streams['customer-payment']!, root: 'ab'.repeat(32) } } } } };
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, corrected)).status).toBe(409);
+    expect((await readLiveReport(h.env.DB, WS))!.report.revenueCents).toBe(pair.report.revenueCents);
+    const four = populationPush(t + 3, 4);
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, four)).status).toBe(200);
+    expect((await readLiveReport(h.env.DB, WS))!.report.revenueCents).toBe(four.report.revenueCents);
+  });
+
+  it('refuses legacy pushes and does not expose legacy stored live totals', async () => {
+    const h = harness();
+    const push = liveReport(Date.now() - 1_000);
+    const { disclosure: _policy, ...legacy } = push.report;
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...push, report: legacy })).status).toBe(400);
+    await h.env.DB.prepare('INSERT INTO transparency_live (workspace_id, month, report_json, statement_status_json, generated_at_ms, received_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)').bind(WS, push.month, JSON.stringify(legacy), JSON.stringify(PENDING), push.generatedAtMs, push.generatedAtMs).run();
+    expect((await (await get(h, `/transparency/${WS}`)).json() as { live: unknown }).live).toBeNull();
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...push, generatedAtMs: push.generatedAtMs + 1 })).status).toBe(200);
+    expect((await (await get(h, `/transparency/${WS}`)).json() as { live: unknown }).live).not.toBeNull();
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...push, month: '2026-99', report: { ...push.report, month: '2026-99' } })).status).toBe(400);
+  });
+
+  it('atomically checks the snapshot used by disclosure admission even for same-time racing publishers', async () => {
+    const h = harness();
+    const t = Date.now() - 1_000;
+    const old = populationPush(t - 1, 2);
+    expect(await recordLiveReport(h.env.DB, old, t, null)).toBe('stored');
+    const previous = await readLiveReport(h.env.DB, WS);
+    const a = populationPush(t, 4, 'a');
+    const b = populationPush(t, 4, 'b');
+    expect(await recordLiveReport(h.env.DB, a, t, previous)).toBe('stored');
+    expect(await recordLiveReport(h.env.DB, b, t, previous)).toBe('stale');
+    expect((await readLiveReport(h.env.DB, WS))!.report.entriesRoot).toBe(a.report.entriesRoot);
+  });
+
   it('stores the live report and serves it publicly; a delayed older push never rolls it back', async () => {
     const h = harness();
     const t = Date.now() - 60_000;

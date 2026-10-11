@@ -43,7 +43,12 @@ import {
 import { searchLiveSources, type LiveSearchOutcome } from './live-search-adapter';
 
 export const GRANTED_SOURCES_BUDGET_TOKENS = 600;
-/** ts_rank_cd floor for organization and pot documents; below it a lexical match is noise. */
+/**
+ * ts_rank_cd floor for organization and pot documents; below it a lexical match is noise.
+ * Compared with each result's `tsRank`, measured under either engine: when BM25 orders the
+ * results its score is unbounded and corpus-relative, so it cannot carry a fixed floor, and a
+ * row matching only some of the prompt's words has tsRank 0 (plan bm25 P-005, D-007).
+ */
 export const GRANTED_SOURCES_RELEVANCE_FLOOR = 0.05;
 export const GRANTED_SOURCES_ORGANIZATION_LIMIT = 6;
 export const GRANTED_SOURCES_POT_LIMIT = 6;
@@ -336,7 +341,7 @@ export async function collectOrganizationEntries(
   const floor = input.relevanceFloor ?? GRANTED_SOURCES_RELEVANCE_FLOOR;
   const subscribed = new Set(sources);
   return outcome.results
-    .filter((r) => r.score >= floor && subscribed.has(r.source))
+    .filter((r) => r.tsRank >= floor && subscribed.has(r.source))
     .map((r) => ({
       scope: 'organization' as const,
       source: r.source,
@@ -413,7 +418,7 @@ export async function collectPotEntries(
   });
   const floor = input.relevanceFloor ?? GRANTED_SOURCES_RELEVANCE_FLOOR;
   return outcome.results
-    .filter((r) => r.score >= floor && r.potSlug === potSlug)
+    .filter((r) => r.tsRank >= floor && r.potSlug === potSlug)
     .map((r) => ({
       scope: 'pot' as const,
       source: r.source,

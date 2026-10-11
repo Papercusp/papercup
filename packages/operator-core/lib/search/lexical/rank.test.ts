@@ -4,7 +4,19 @@
  */
 import { describe, expect, it } from 'vitest';
 import { RRF_K_DEFAULT } from '@papercusp/rrf';
-import { fuseByPosition } from './rank';
+import { fuseByPosition, usesWebsearchOperators } from './rank';
+
+describe('usesWebsearchOperators (plan D-007)', () => {
+  it.each(['"exact phrase"', 'report -draft', '-draft report', 'gate or deploy', 'gate OR deploy', 'a "b c" d'])(
+    'detects websearch syntax in %j',
+    (q) => expect(usesWebsearchOperators(q)).toBe(true),
+  );
+
+  it.each(['plain words only', 'pre-release gate', 'oracle orbit', 'or', 'error-or-warning', 'x - y', ''])(
+    'treats %j as a plain query',
+    (q) => expect(usesWebsearchOperators(q)).toBe(false),
+  );
+});
 
 type Row = { id: string; score: number };
 const key = (r: Row) => r.id;

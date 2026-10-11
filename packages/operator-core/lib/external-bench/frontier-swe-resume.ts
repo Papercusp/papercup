@@ -28,6 +28,10 @@ export interface FrontierSweResultRecord {
   graderStatus: string;
   /** Optional epoch-ms stamp (the driver supplies it; omitted here since Date.now() is non-deterministic). */
   ts?: number;
+  /** The seam's structured scorer output (integrity verdict, reward source) — P-022 / D-009 item 2. */
+  graderDetail?: unknown;
+  /** Pointer to the attempt's trace, when the driver captured one. Absent → a campaign bundle reports the gap. */
+  traceRef?: string | null;
 }
 
 /** A scored (non-infra, integrity-clean) trial we never need to re-run. */

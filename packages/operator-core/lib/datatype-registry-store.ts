@@ -27,6 +27,7 @@ import {
   type ProseProfileSelection,
 } from './search/prose-vector-dims';
 import { parseDatatypeDisplay, type DatatypeDisplaySpec } from './datatype-display';
+import { lexicalLeg, rrfTerm, type LexicalLeg } from './search/lexical/rank';
 
 /** The two-tier datatype model (D-002) + the projection flavor (D-008). */
 export const DATATYPE_TIERS = ['generic-kind', 'first-class', 'projection'] as const;
@@ -504,10 +505,12 @@ export interface SimilarDatatype {
   tier: DatatypeTier;
   /**
    * A RANKING weight — NOT a calibrated similarity, and NEVER safe to threshold (EI-10562).
-   * It is `GREATEST(ts_rank, 0.4*ts_rank + 0.6*cosine)`: a weighted sum of two quantities on
-   * different scales, so a constant compared against it has no stable meaning. (This field's
-   * doc used to claim "0..1", and a consumer duly wrote `score >= 0.05` to REFUSE — which is
-   * cosine >= 0.083, the noise floor, and refused 100% of legitimate declarations.)
+   * With a query embedding it is a reciprocal-rank-fusion sum (`rrfTerm`, plan
+   * bm25-lexical-search-evoke-adoption-2026-10-10 D-004) of the lexical and cosine legs, so its
+   * magnitude encodes positions, not similarity; without one it is the lexical engine's own
+   * score (BM25 or ts_rank), whose scale differs by engine. (This field's doc once claimed
+   * "0..1", and a consumer duly wrote `score >= 0.05` to REFUSE — which refused 100% of
+   * legitimate declarations.)
    *
    * Use it to ORDER candidates. To DECIDE duplicate-or-not, use {@link canonicalDatatypeKey}.
    */
@@ -552,31 +555,30 @@ export async function findSimilarDatatypes(
     throw new Error('findSimilarDatatypes: a query embedding requires exact profile provenance');
   }
   const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
-  // ts_rank for the lexical leg; when an embedding is present, fuse (1 - cosine distance)
-  // in 60/40 favour of the vector — the same two-leg shape code_recipes dedup uses.
+  const leg = await datatypeLexicalLeg(sql, orQuery, tokens);
+  // With an embedding, the lexical leg and the cosine leg fuse by reciprocal rank (D-004);
+  // a row counts in the cosine leg only when its cosine is positive.
+  const profileOk = embeddingLiteral
+    ? proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')
+    : null;
   const rows = await sql<{ id: string; title: string; description: string; tier: string; score: number }[]>`
     SELECT id, title, description, tier,
       ${
-        embeddingLiteral
-          ? sql`GREATEST(
-                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
-                  CASE WHEN embedding IS NULL
-                          OR NOT (${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})
-                       THEN 0
-                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
-                            + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
-                )`
-          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
+        embeddingLiteral && profileOk
+          ? sql`(${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+              sql,
+              sql`(embedding IS NOT NULL AND ${profileOk} AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+              sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+            )})::float8`
+          : sql`(${leg.score})::float8`
       } AS score
       FROM harness_shared.datatype_registry
      WHERE workspace_id = ${workspaceId} AND status = 'active' ${exclude}
        AND (
-         title_tsv @@ to_tsquery('english', ${orQuery})
-         ${embeddingLiteral
-           ? sql`OR (embedding IS NOT NULL AND ${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})`
-           : sql``}
+         ${leg.match}
+         ${profileOk ? sql`OR (embedding IS NOT NULL AND ${profileOk})` : sql``}
        )
-     ORDER BY score DESC
+     ORDER BY ${embeddingLiteral ? sql`score DESC` : leg.order}, id
      LIMIT ${lim}`;
   return rows
     .map((r) => ({
@@ -704,6 +706,22 @@ export async function moderatePublishedDatatype(
 }
 
 /**
+ * The lexical leg both similar-datatype surfaces rank by, through the lexical seam: BM25 over
+ * title+description when it is available, else the legacy `ts_rank` over `title_tsv` with
+ * the OR tsquery. BM25 is OR-semantic by construction, so it gets the bare tokens.
+ */
+function datatypeLexicalLeg(sql: postgres.Sql, orQuery: string, tokens: string[]): Promise<LexicalLeg> {
+  return lexicalLeg(sql, {
+    table: 'datatype_registry',
+    query: tokens.join(' '),
+    legacy: {
+      score: sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`,
+      match: sql`title_tsv @@ to_tsquery('english', ${orQuery})`,
+    },
+  });
+}
+
+/**
  * D-010 GLOBAL semantic dedup: existing PUBLISHED datatypes (pending or approved) across ALL
  * workspaces that look like the one being published — so the published namespace stays
  * globally coherent. The same lexical+cosine surface as {@link findSimilarDatatypes}, but
@@ -723,25 +741,25 @@ export async function findSimilarPublishedDatatypes(
   const lim = Math.max(1, Math.min(20, q.limit ?? 5));
   const embeddingLiteral = q.embedding && q.embedding.length > 0 ? `[${q.embedding.join(',')}]` : null;
   const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
+  const leg = await datatypeLexicalLeg(sql, orQuery, tokens);
   const rows = await sql<{ id: string; title: string; description: string; tier: string; score: number }[]>`
     SELECT id, title, description, tier,
       ${
         embeddingLiteral
-          ? sql`GREATEST(
-                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
-                  CASE WHEN embedding IS NULL THEN 0
-                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
-                            + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
-                )`
-          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
+          ? sql`(${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+              sql,
+              sql`(embedding IS NOT NULL AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+              sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+            )})::float8`
+          : sql`(${leg.score})::float8`
       } AS score
       FROM harness_shared.datatype_registry
      WHERE review_status IN ('pending', 'approved') ${exclude}
        AND (
-         title_tsv @@ to_tsquery('english', ${orQuery})
+         ${leg.match}
          ${embeddingLiteral ? sql`OR embedding IS NOT NULL` : sql``}
        )
-     ORDER BY score DESC
+     ORDER BY ${embeddingLiteral ? sql`score DESC` : leg.order}, id
      LIMIT ${lim}`;
   return rows
     .map((r) => ({

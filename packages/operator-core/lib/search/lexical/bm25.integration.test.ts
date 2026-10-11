@@ -13,7 +13,7 @@ import path from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { bm25Health, bm25Leg, lexicalEngine, lexicalLeg, resetBm25Availability } from './rank';
+import { bm25Health, bm25Leg, lexicalEngine, lexicalLeg, resetBm25Availability, rrfTerm } from './rank';
 import { bm25Corpus } from './corpora';
 
 const SQL_DIR = path.resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -141,6 +141,69 @@ describe('lexical seam on BM25', () => {
 
   it('accepts operator characters in user input', async () => {
     expect((await rankIds('quokka & (routine'))[0]).toBe(1);
+  });
+});
+
+describe('websearch operator syntax under BM25 (plan D-007)', () => {
+  async function websearchIds(query: string, querySyntax?: 'websearch'): Promise<number[]> {
+    const tsv = sql`to_tsvector('english', coalesce(w.title, '') || ' ' || coalesce(w.summary, ''))`;
+    const leg = await lexicalLeg(sql, {
+      table: 'work_items', query, alias: 'w', ...(querySyntax ? { querySyntax } : {}),
+      legacy: { score: sql`0::float8`, match: sql`${tsv} @@ websearch_to_tsquery('english', ${query})` },
+    });
+    const rows = await sql<{ id: number }[]>`
+      SELECT w.id FROM harness_shared.work_items w WHERE ${leg.match} ORDER BY ${leg.order}, w.id LIMIT 10`;
+    return rows.map(r => r.id);
+  }
+
+  it('without the websearch request, BM25 reads -quokka as a positive term', async () => {
+    expect((await websearchIds('routine -quokka'))[0]).toBe(1);
+  });
+
+  it('with it, a negated term excludes its rows and BM25 still orders the rest', async () => {
+    const ids = await websearchIds('routine -quokka', 'websearch');
+    expect(ids).toHaveLength(10);
+    expect(ids).not.toContain(1);
+  });
+
+  it('honours a quoted phrase: the reversed phrase matches nothing', async () => {
+    expect(await websearchIds('"summary routine"')).toHaveLength(10);
+    expect(await websearchIds('"summary routine"', 'websearch')).toEqual([]);
+    expect(await websearchIds('"routine summary" pangolin', 'websearch')).toEqual([4]);
+  });
+
+  it('keeps BM25 any-term matching for a plain query', async () => {
+    expect((await websearchIds('quokka marmoset', 'websearch')).sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+});
+
+describe('rank fusion with a BM25 leg (plan D-004)', () => {
+  // BM25 matches items 1 (quokka) and 2 (marmoset) only; the stand-in second leg matches
+  // items 2 and 3, best = 3. The OR in WHERE keeps the planner off the BM25 index scan, so
+  // the distance is computed per row inside the window.
+  async function fused(scale: number): Promise<{ id: number; score: number }[]> {
+    const leg = bm25Leg(sql, bm25Corpus('work_items'), 'quokka marmoset', 'w');
+    const otherMatch = sql`w.id IN (2, 3)`;
+    return sql<{ id: number; score: number }[]>`
+      SELECT w.id,
+             (${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(sql, otherMatch, sql`w.id * ${scale}::float8`)})::float8 AS score
+        FROM harness_shared.work_items w
+       WHERE ${leg.match} OR ${otherMatch}
+       ORDER BY score DESC, w.id`;
+  }
+
+  it('ranks the row both legs match first and admits only rows some leg matches', async () => {
+    const rows = await fused(1);
+    expect(rows.map(r => r.id).sort()).toEqual([1, 2, 3]);
+    expect(rows[0]?.id).toBe(2);
+    // Item 2 is second in the other leg and first or second (a tie with item 1) in BM25.
+    expect(rows[0]!.score).toBeGreaterThanOrEqual(1 / 62 + 1 / 62 - 1e-12);
+    expect(rows[0]!.score).toBeLessThanOrEqual(1 / 61 + 1 / 62 + 1e-12);
+    for (const r of rows.slice(1)) expect(r.score).toBeGreaterThan(0);
+  });
+
+  it('depends on positions only, so rescaling a leg changes nothing', async () => {
+    expect(await fused(1_000_000)).toEqual(await fused(1));
   });
 });
 
