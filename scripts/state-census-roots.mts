@@ -5,7 +5,6 @@ import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDec
 import { readdir, lstat, readFile } from 'node:fs/promises';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
-const { releaseConfig } = createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts');
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
 import postgres from 'postgres';
@@ -23,11 +22,14 @@ import { fileURLToPath } from 'node:url';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 
+/** Importing this entry performs no census or host-catalog reads. */
+export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string } = {}) {
+const args = options.args ?? [];
 const installed = installedRootCensusProducers();
 // The existing reader is bounded to 2000 rows per workspace. Missing/GCed
 // identities remain residue; this read never establishes whole-install coverage.
 const retainedTaskIds: string[] = [];
-if (process.argv.includes('--host-catalogs')) {
+if (args.includes('--host-catalogs')) {
   for (const workspace of readRegistry().workspaces) {
     retainedTaskIds.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, limit: 2000 })).map(task => task.taskId));
   }
@@ -41,9 +43,9 @@ const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPa
 const templateStore = await templateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
 const workspaceTemplateStores = await workspaceTemplateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
 const planTemplateStore = await planTemplateStoreCensusProducer();
-const hostCatalogs = process.argv.includes('--host-catalogs');
+const hostCatalogs = args.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs ? (await loadAccountPool()).accounts : []);
-const checkpointLogDir = releaseConfig().checkpointLogDir;
+const checkpointLogDir = options.checkpointLogDir ?? createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts').releaseConfig().checkpointLogDir;
 const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
   { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
@@ -63,7 +65,7 @@ if (hostCatalogs) {
     migrationSources.push(...await registeredProjectMigrationSources(registry.projects));
   }
 }
-if (process.argv.includes('--restore-events') || hostCatalogs) {
+if (args.includes('--restore-events') || hostCatalogs) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     for (const workspace of readRegistry().workspaces) {
@@ -265,8 +267,14 @@ const census = await collectStateCensus({
   // This diagnostic intentionally does not certify catalogs.
   readCatalogs: async () => catalogEntries,
 });
-console.log(JSON.stringify({
+return {
   scope: hostCatalogs ? 'implemented-writer-filesystem-roots-and-host-catalogs' : 'implemented-writer-filesystem-roots-only', wholeInstallVerified: false,
   roots: producers.roots, ...census,
-}, null, 2));
-if (!census.ok) process.exitCode = 1;
+};
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const census = await runRootCensus({ args: process.argv.slice(2) });
+  console.log(JSON.stringify(census, null, 2));
+  if (!census.ok) process.exitCode = 1;
+}
