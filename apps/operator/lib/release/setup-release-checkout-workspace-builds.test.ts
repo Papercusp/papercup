@@ -374,8 +374,8 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     writeFileSync(leaseTrace, '');
     const failed = spawnSync('bash', [runner], {
       env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace,
-        TEST_RUNTIME_REPO_ROOT: root, RUNTIME_READER_MARKER: readerMarker,
-        RUNTIME_LEASE_TRACE: leaseTrace, FAIL_RUNTIME_BUILD: '1' },
+        TEST_RUNTIME_REPO_ROOT: root, TEST_REAL_WEB_DIR: resolve(REPO_ROOT, 'apps/operator'),
+        RUNTIME_READER_MARKER: readerMarker, RUNTIME_LEASE_TRACE: leaseTrace, FAIL_RUNTIME_BUILD: '1' },
       encoding: 'utf8',
     });
     expect(failed.status).not.toBe(0);
