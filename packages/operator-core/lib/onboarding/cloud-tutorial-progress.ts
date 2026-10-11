@@ -50,12 +50,16 @@ function decode(scope: TutorialScope, value: unknown, version: TutorialVersion):
   if (!parsed.success) throw new Error('tutorial_progress_invalid');
   return parsed.data;
 }
-export async function readTutorialProgress(tx: Sql, scope: TutorialScope, version: TutorialVersion = CLOUD_TUTORIAL_VERSION): Promise<TutorialProgressRecord> {
+export async function readTutorialProgress(tx: Sql, scope: TutorialScope, version: TutorialVersion = CLOUD_TUTORIAL_VERSION, options: { lock?: boolean; requirePersisted?: boolean } = {}): Promise<TutorialProgressRecord> {
   await assertTransactionScope(tx, scope);
   const [row] = await tx<{ record: unknown }[]>`
     SELECT profile #> ARRAY['cloudTutorial', ${progressKey(scope, version)}]::text[] AS record
     FROM papercusp_auth.hosted_user_preferences
-    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;
+    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid
+    ${options.lock ? tx`FOR UPDATE` : tx``}`;
+  // Legacy UI reads may offer an implicit guide. Paid admission must prove
+  // enrollment in this exact workspace and version from a persisted record.
+  if (options.requirePersisted && row?.record == null) throw new Error('tutorial_not_enrolled');
   return decode(scope, row?.record, version);
 }
 /** Caller must hold the surrounding tenant transaction: the row lock makes
@@ -152,12 +156,15 @@ export async function enrollAccountTutorial(tx: Sql, scope: AccountTutorialScope
         COALESCE(papercusp_auth.hosted_user_preferences.profile->'productTutorial', '{}'::jsonb) || ${blob}::jsonb), updated_at = now()
       WHERE papercusp_auth.hosted_user_preferences.profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] IS NULL`;
 }
-export async function readAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope): Promise<AccountTutorialProgressRecord | null> {
+/** Admission may lock an existing preference row through commit. Missing rows
+ * remain unenrolled; this read never creates paid-voice authority. */
+export async function readAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope, options: { lock?: boolean } = {}): Promise<AccountTutorialProgressRecord | null> {
   await assertAccountTransactionScope(tx, scope);
   const [row] = await tx<{ record: unknown }[]>`
     SELECT profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] AS record
     FROM papercusp_auth.hosted_user_preferences
-    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;
+    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid
+    ${options.lock ? tx`FOR UPDATE` : tx``}`;
   return decodeAccountProgress(scope, row?.record);
 }
 export async function updateAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope, input: AccountTutorialProgressUpdate): Promise<AccountTutorialProgressRecord> {
