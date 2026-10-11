@@ -33,7 +33,7 @@
  * differs byte-for-byte (a host package upgrade), so the tree never keeps a stale
  * build the host has moved past.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
@@ -180,15 +180,63 @@ export const EMBEDDED_EXTENSIONS = Object.freeze([
   }),
 ]);
 
+/**
+ * Every `node_modules/@embedded-postgres` directory npm placed under `root`, as
+ * root-relative POSIX paths: the hoisted one, plus each one npm NESTED under a
+ * workspace or package. npm nests a second copy whenever workspaces disagree on the
+ * embedded-postgres version, and the nested copy is the one the disagreeing workspace
+ * loads. Measured 2026-10-11: apps/slack-asana-bug-drill pins 18.3.0-beta.17 exactly,
+ * so 18.3 stays hoisted while embedded-postgres-server (^18.4, plan
+ * bm25-lexical-search-evoke-adoption-2026-10-10 D-014) gets 18.4 under
+ * libs/papercusp/packages/embedded-postgres-server/node_modules. Scanning only the
+ * hoisted directory left that tree, the one every embedded-postgres-server boot
+ * uses, without extensions.
+ *
+ * Placements are read from package-lock.json (npm's own record of where it put each
+ * package), so no filesystem walk is needed. The hoisted directory is always
+ * included, so a checkout without a lock still provisions it.
+ */
+export function embeddedPgPackageDirs(root) {
+  const dirs = new Set(['node_modules/@embedded-postgres']);
+  let lock = null;
+  try {
+    lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  } catch {
+    /* no or unreadable lock: the hoisted directory alone */
+  }
+  for (const key of Object.keys(lock?.packages ?? {})) {
+    const match = /^((?:.+\/)?node_modules\/@embedded-postgres)\/[^/]+$/.exec(key);
+    if (match) dirs.add(match[1]);
+  }
+  return [...dirs].sort();
+}
+
 function nativeTrees(root) {
-  const base = join(root, 'node_modules', '@embedded-postgres');
-  if (!existsSync(base)) return [];
-  return readdirSync(base)
-    // `.linux-x64-AbC123` is npm's reify staging copy (possibly a peer's install in
-    // progress), never a package anyone loads — leave it alone.
-    .filter((name) => !name.startsWith('.'))
-    .map((name) => ({ name, pkgDir: join(base, name), nativeDir: join(base, name, 'native') }))
-    .filter((tree) => existsSync(tree.nativeDir));
+  const trees = [];
+  const seen = new Set();
+  for (const rel of embeddedPgPackageDirs(root)) {
+    const base = join(root, rel);
+    if (!existsSync(base)) continue;
+    for (const name of readdirSync(base)) {
+      // `.linux-x64-AbC123` is npm's reify staging copy (possibly a peer's install in
+      // progress), never a package anyone loads — leave it alone.
+      if (name.startsWith('.')) continue;
+      const pkgDir = join(base, name);
+      const nativeDir = join(pkgDir, 'native');
+      if (!existsSync(nativeDir)) continue;
+      // A symlinked directory can reach one tree by two paths; provision it once.
+      let real = pkgDir;
+      try {
+        real = realpathSync(pkgDir);
+      } catch {
+        /* keep the literal path */
+      }
+      if (seen.has(real)) continue;
+      seen.add(real);
+      trees.push({ name, location: `${rel}/${name}`, pkgDir, nativeDir });
+    }
+  }
+  return trees;
 }
 
 function sameBytes(a, b) {
@@ -256,7 +304,7 @@ export function installEmbeddedExtensions({
     const major = embeddedPgMajor(version);
     const { libDir, extDir } = runtimeDirs(tree.nativeDir);
     for (const extension of extensions) {
-      const row = { tree: tree.name, extension: extension.name };
+      const row = { tree: tree.name, location: tree.location, extension: extension.name };
       const treeLib = join(libDir, `${extension.stem}.${libExt}`);
       const present = existsSync(join(extDir, `${extension.stem}.control`)) && existsSync(treeLib);
       if (major === null) {
@@ -274,6 +322,7 @@ export function installEmbeddedExtensions({
         report.trees.push({ ...row, status: 'missing-source', major });
         report.missingSource.push({
           tree: tree.name,
+          location: tree.location,
           extension: extension.name,
           required: extension.required,
           major,
@@ -288,11 +337,13 @@ export function installEmbeddedExtensions({
           report.trees.push({ ...row, status: 'incompatible', major, treeMinor, builtFor });
           report.missingSource.push({
             tree: tree.name,
+            location: tree.location,
             extension: extension.name,
             required: extension.required,
             major,
+            incompatible: true,
             hint:
-              `refusing ${extension.name}: the host build targets PostgreSQL ${major}.${builtFor ?? '?'} but @embedded-postgres/${tree.name} ` +
+              `refusing ${extension.name}: the host build targets PostgreSQL ${major}.${builtFor ?? '?'} but ${tree.location} ` +
               `is ${major}.${treeMinor ?? '?'}; a preloaded library the server cannot load stops it from starting. ` +
               `Bump embedded-postgres to >= ${major}.${builtFor ?? '?'}.`,
           });
@@ -302,21 +353,27 @@ export function installEmbeddedExtensions({
       const { sqlFiles, licence } = copyExtension({ extension, source, libDir, extDir, libExt });
       const status = present ? 'updated' : 'installed';
       report.trees.push({ ...row, status, major, from: source.lib, sqlFiles, licence });
-      log(`embedded-extensions: ${status} ${extension.name} for PG ${major} into @embedded-postgres/${tree.name} from ${source.lib}`);
+      log(`embedded-extensions: ${status} ${extension.name} for PG ${major} into ${tree.location} from ${source.lib}`);
     }
   }
   return report;
 }
 
-function missingWarning(miss) {
+export function missingWarning(miss) {
+  const where = miss.location ?? `@embedded-postgres/${miss.tree}`;
+  if (miss.incompatible) {
+    // The host HAS the extension; it was built for a newer server than this tree.
+    // "not found on this machine" would send the reader to install what they have.
+    return `embedded-extensions: note — ${where} boots without ${miss.extension}.\n  ${miss.hint}`;
+  }
   if (miss.required) {
     return (
-      `embedded-extensions: WARNING — ${miss.extension} for PostgreSQL ${miss.major} not found on this machine, so @embedded-postgres/${miss.tree} cannot create it and a fresh database will fail its migrations.\n` +
+      `embedded-extensions: WARNING — ${miss.extension} for PostgreSQL ${miss.major} not found on this machine, so ${where} cannot create it and a fresh database will fail its migrations.\n` +
       `  Install it, then re-run: node scripts/install-embedded-pgvector.mjs\n  ${miss.hint}`
     );
   }
   return (
-    `embedded-extensions: note — ${miss.extension} for PostgreSQL ${miss.major} not found on this machine; @embedded-postgres/${miss.tree} boots without it.\n` +
+    `embedded-extensions: note — ${miss.extension} for PostgreSQL ${miss.major} not found on this machine; ${where} boots without it.\n` +
     `  To enable it, install it and re-run: node scripts/install-embedded-pgvector.mjs\n  ${miss.hint}`
   );
 }
