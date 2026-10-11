@@ -508,6 +508,19 @@ describe('migration 1444: UNIQUE (workspace_id, feature_id)', () => {
     await db.sql.unsafe(MIGRATION_1444).simple();
   });
 
+  it('refuses a second row for an existing F- id in the same workspace (scope-unique-identifiers R-7, D-007)', async () => {
+    // F-FIX-001 is one of the three same-workspace F- twin sets D-007 measured live.
+    // The index is prefix-agnostic, so an F- id is refused exactly like a WI- id.
+    await applyMigration();
+    await db.sql.unsafe(MIGRATION_1444).simple();
+    await insert({ harness: 'hiveloop-hive', id: 'F-FIX-001', title: 'fix' });
+
+    const twin = await insertError({ harness: 'papercusp', id: 'F-FIX-001', title: 'fix' });
+    expect(twin?.code).toBe('23505');
+    expect(twin?.constraint_name).toBe('work_items_workspace_feature_id_uq');
+    expect((await rows('F-FIX-001')).map((r) => r.harness_slug)).toEqual(['hiveloop-hive']);
+  });
+
   it('refuses to run while a twin remains, and names one', async () => {
     await insert({ harness: 'papercup', id: 'WI-951', title: 'dup' });
     await insert({ harness: 'papercusp', id: 'WI-951', title: 'dup' });

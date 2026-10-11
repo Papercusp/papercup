@@ -121,6 +121,28 @@ describe('makePlanItemResolver — cross-plan plan-item refs resolve through the
     expect((await resolve())?.label).toBe('plan:plan-a#P-004 [wip]');
   });
 
+  // D-013: P-NNN is unique only inside its plan, so <slug>#P-NNN resolves within ITS plan.
+  it('D-013: resolves within its own plan when another plan has a same-numbered item', async () => {
+    M.getPlanRow.mockResolvedValue(planRow);
+    M.getAllPlanItemCoverage.mockResolvedValue(
+      new Map([
+        ...coverageOf('plan-b#P-004', [link('WI-99', PLAN_ITEM_IMPLEMENTS_REL)]),
+        ...coverageOf('plan-a#P-004', [link('WI-1', PLAN_ITEM_IMPLEMENTS_REL)]),
+      ]),
+    );
+    expect((await resolve())?.label).toBe('plan:plan-a#P-004 [wip] → WI-1');
+    expect(M.getAllPlanItemCoverage).toHaveBeenCalledWith({ planItemRefs: ['plan-a#P-004'] });
+    expect(M.getPlanRow).toHaveBeenCalledWith('plan-a', { harnessSlug: 'papercusp' });
+  });
+
+  it('D-013 control: a same-numbered item in another plan never lends its work-item', async () => {
+    M.getPlanRow.mockResolvedValue(planRow);
+    M.getAllPlanItemCoverage.mockResolvedValue(
+      coverageOf('plan-b#P-004', [link('WI-99', PLAN_ITEM_IMPLEMENTS_REL)]),
+    );
+    expect((await resolve())?.label).toBe('plan:plan-a#P-004 [wip]');
+  });
+
   it('fails soft: a coverage read error never drops the hydration', async () => {
     M.getPlanRow.mockResolvedValue(planRow);
     M.getAllPlanItemCoverage.mockRejectedValue(new Error('coverage down'));
