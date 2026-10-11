@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getBuildInfo } from '../../build-info';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import {
   ADEQUACY_CRITERIA,
+  EPHEMERAL_EVIDENCE_ROOTS,
   SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   activeSpecEvidence,
   classifySpecEvidenceLineage,
@@ -1178,6 +1181,48 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     ],
   ] as const)('classifies %s evidence lineage as %s', (_label, over, expected) => {
     expect(classifySpecEvidenceLineage(over).lineage).toBe(expected);
+  });
+
+  // WI-6554700010008517: repo-relative durability is DERIVED (any relative path not under an ephemeral root), not a
+  // hand-listed set of leading directories. Binding 36973 (relative reports/ path) graded unknown while 36974 (the
+  // same file, absolute) graded durable.
+  const ref = (evidenceRef: string) => ({ evidenceRef, coverageEvidenceRef: null, testRunId: null });
+  it.each([
+    ['a committed reports/ evidence file', 'reports/bug-audits/2026-10-11-p005-r5-current-build.json', 'durable'],
+    ['a submodule-root file with a test anchor', 'papercusp-desktop/src-tauri/src/custom_protocol.rs#custom_protocol::tests::', 'durable'],
+    ['a tracked .papercusp/reports file', '.papercusp/reports/portal-global-shortcuts-2026-09-06/summary.json', 'durable'],
+    ['a gitignored scratchpad/ file', 'scratchpad/feature-change-audit-p004-final-ledger.md#fresh-census', 'unknown'],
+    ['a gitignored .papercusp/scratch file', '.papercusp/scratch/6baa8-p005-census/census-0957-summary.json', 'unknown'],
+    ['a gitignored glob root (coverage-*)', 'coverage-unit/coverage-final.json', 'unknown'],
+    ['a gitignored glob root (scratch-*)', 'scratch-probe/out.json', 'unknown'],
+    ['a host:port URL path', 'measured on 127.0.0.1:3170/api/health.json', 'unknown'],
+    ['an absolute .papercusp/scratch file', '/home/u/repo/.papercusp/scratch/6baa8/census.json', 'unknown'],
+    ['a relative tmp/ file', 'tmp/run-output.json', 'ephemeral'],
+  ] as const)('classifies %s as %s', (_label, evidenceRef, expected) => {
+    expect(classifySpecEvidenceLineage(ref(evidenceRef)).lineage).toBe(expected);
+  });
+
+  it('grades the relative and absolute spellings of one file identically (WI-6554700010008517)', () => {
+    for (const rel of ['reports/bug-audits/a.json', 'scratchpad/a.json', '.papercusp/scratch/a.json', 'coverage/a.json']) {
+      const abs = `/home/u/papercusp/${rel}`;
+      expect(classifySpecEvidenceLineage(ref(abs)).lineage === 'durable', rel)
+        .toBe(classifySpecEvidenceLineage(ref(rel)).lineage === 'durable');
+    }
+  });
+
+  it('pins EPHEMERAL_EVIDENCE_ROOTS to every plain directory the repo .gitignore ignores', () => {
+    const gitignore = readFileSync(fileURLToPath(new URL('../../../../../.gitignore', import.meta.url)), 'utf8');
+    const ignoredDirs = [...new Set(gitignore.split('\n').map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'))
+      .filter((l) => /^\/?[A-Za-z0-9_.@-]+\/?$/.test(l) && (l.endsWith('/') || l.startsWith('/')))
+      .map((l) => l.replace(/^\/|\/$/g, '')))];
+    // Positive control: the parser must see the roots this fix was written against, or the pin is vacuous.
+    expect(ignoredDirs).toEqual(expect.arrayContaining(['scratchpad', 'node_modules', 'coverage']));
+    expect(ignoredDirs.filter((d) => !EPHEMERAL_EVIDENCE_ROOTS.includes(d))).toEqual([]);
+    for (const root of EPHEMERAL_EVIDENCE_ROOTS) {
+      expect(classifySpecEvidenceLineage(ref(`${root}/evidence.json`)).lineage, root).not.toBe('durable');
+      expect(classifySpecEvidenceLineage(ref(`/home/u/repo/${root}/evidence.json`)).lineage, root).not.toBe('durable');
+    }
   });
 
   it('fails traceability and the overall verdict for ephemeral-only proof', () => {
