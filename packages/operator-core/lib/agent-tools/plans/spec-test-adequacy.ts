@@ -28,6 +28,7 @@ import {
   isRecordedCaseTitle,
   isRecordedTestLayer,
   MAX_RECORDED_PASSED_CASES,
+  passedCaseTitlesIncomplete,
 } from '@papercusp/test-config/execution-details';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
@@ -154,6 +155,8 @@ export interface SpecEvidenceForAdequacy {
     collectionFailed: boolean;
     testLayer?: string;
     passedCaseTitles?: string[];
+    /** Derived from the explicit marker or the legacy 64-title/count signal. */
+    passedCaseTitlesIncomplete?: boolean;
     /** Retained from the canonical LLM recorder, not converted into Vitest titles. */
     scenarioId?: string;
     filePath?: string;
@@ -629,7 +632,10 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   // proof. Keep the noun "coverage" restrictive when it describes the proof,
   // while leaving separate omitted-behavior statements and explicit gap fields
   // enforceable even when they accompany technical field descriptions.
-  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
+  // Qualified test nouns (test/fixture, test\\fixture, test.ts) in an input
+  // inventory are not testing verbs. Real coverage statements beside them
+  // still match, and explicit disclosedGap fields bypass this heuristic.
+  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z])|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
   /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
   /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
   /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
@@ -867,21 +873,29 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
     : hasMatchingDeclaredCaseTitle(caseTitle, passedCaseTitles);
   const passedDeclaredCases = declaredCases.filter(corroborates);
   const missingDeclaredCases = declaredCases.filter((caseTitle) => !corroborates(caseTitle));
+  const caseIdentityIncomplete = execution.testLayer !== 'llm' && execution.passedCaseTitlesIncomplete === true;
+  const unknownDeclaredCases = caseIdentityIncomplete ? missingDeclaredCases : [];
+  const confirmedMissingDeclaredCases = caseIdentityIncomplete ? [] : missingDeclaredCases;
   const adequacyTestCases = declaredCases.length === 0
     ? undefined
     : declaredCases.length <= MAX_RENDERED_ADEQUACY_CASES
       ? {
           declared: declaredCases,
           passed: passedDeclaredCases,
-          missing: missingDeclaredCases,
+          missing: confirmedMissingDeclaredCases,
+          ...(unknownDeclaredCases.length > 0 ? { unknown: unknownDeclaredCases } : {}),
         }
       : {
           declaredCount: declaredCases.length,
           passedCount: passedDeclaredCases.length,
-          missingCount: missingDeclaredCases.length,
+          missingCount: confirmedMissingDeclaredCases.length,
+          ...(unknownDeclaredCases.length > 0 ? { unknownCount: unknownDeclaredCases.length } : {}),
           declaredExamples: declaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
           passedExamples: passedDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
-          missingExamples: missingDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          missingExamples: confirmedMissingDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          ...(unknownDeclaredCases.length > 0
+            ? { unknownExamples: unknownDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES) }
+            : {}),
           examplesTruncated: true,
         };
 
@@ -893,6 +907,7 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
     collectionFailed: execution.collectionFailed,
     testLayer: execution.testLayer ?? null,
     passedCaseTitleCount: passedCaseTitles.length,
+    ...(caseIdentityIncomplete ? { passedCaseTitlesIncomplete: true } : {}),
     ...(execution.scenarioId !== undefined ? { scenarioId: execution.scenarioId } : {}),
     ...(adequacyTestCases ? { adequacyTestCases } : {}),
   };
@@ -1096,12 +1111,15 @@ function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean 
 }
 
 /** Every declared case must have a measured outcome; mutant scopes must include a failed case. */
-function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean {
+function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean | undefined {
   const declared = detailsOf(row).testCases ?? [];
   if (declared.length === 0) return false;
   const executed = [...(row.testRunExecution?.passedCaseTitles ?? []), ...(failedCases ?? [])];
-  return declared.every((title) => hasMatchingDeclaredCaseTitle(title, executed)) &&
-    (failedCases === undefined || declared.some((title) => hasMatchingDeclaredCaseTitle(title, failedCases)));
+  const unmatched = declared.filter((title) => !hasMatchingDeclaredCaseTitle(title, executed));
+  if (unmatched.length > 0) {
+    return row.testRunExecution?.passedCaseTitlesIncomplete === true ? undefined : false;
+  }
+  return failedCases === undefined || declared.some((title) => hasMatchingDeclaredCaseTitle(title, failedCases));
 }
 
 /** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
@@ -1821,8 +1839,9 @@ function appendRatingRerunProbes(
  *  19 — pending clause/composite proof and unresolved disclosure scope notes block a machine PASS.
  *  20 — disclosure-bearing metadata is scanned recursively, preserving gaps moved outside scopeNote.
  *  21 — passing selected scopes tolerate unrelated skips only when every declared case canonically passed.
+ *  22 — qualified test nouns in input inventories do not imply a coverage limitation.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 21;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 22;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
