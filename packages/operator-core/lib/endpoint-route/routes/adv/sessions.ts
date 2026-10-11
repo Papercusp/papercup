@@ -12,6 +12,7 @@
  */
 
 import os from 'node:os';
+import type { PresenceRecord } from '../../../agent-tools/coordination/presence';
 import { createHash } from 'node:crypto';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { readCookie } from '../../cookies';
@@ -1353,6 +1354,39 @@ const searchTranscripts = defineTool({
  * `psu --resume` picker, which `cd`s to each row's cwd and resumes the
  * agent there.
  */
+/** Current owner budget is authoritative on resume; launch argv is only the
+ * fallback when no runtime budget exists. Reuse the seeded model/role policy
+ * for legacy launches without an explicit flag instead of the native window. */
+async function compactionLimitForResumeRow(
+  session: { coordOwnerId?: string | null; launchArgv?: unknown },
+  model?: string | null,
+  presenceOverride?: (Pick<PresenceRecord, 'compactionLimit'> & { fleetRole: string | null }) | null,
+): Promise<number> {
+  const [{ getPresence }, { defaultCompactionLimitForSpec, clampCompactionLimit, modelSpecFromArgv }, { parseLaunchCompactionLimitArgv }] = await Promise.all([
+    import('../../../agent-tools/coordination/presence'),
+    import('../../../agent-config-constants'),
+    import('../../../model-context-budget.mjs'),
+  ]);
+  const presence = presenceOverride !== undefined
+    ? presenceOverride
+    : session.coordOwnerId ? await getPresence(session.coordOwnerId) : null;
+  const current = presence?.compactionLimit;
+  if (typeof current === 'number' && Number.isFinite(current) && current > 0) return Math.floor(current);
+  // Fleet labels are an independent authoritative projection; the base
+  // presence record does not contain them. Never revive stale launch labels.
+  const fleetRole = presenceOverride !== undefined
+    ? presenceOverride?.fleetRole
+    : session.coordOwnerId
+      ? (await (await import('../../../agent-tools/coordination/presence-fleet')).fetchPresenceFleet([session.coordOwnerId])).get(session.coordOwnerId)?.fleetRole
+      : null;
+  const fleetMember = fleetRole === 'member';
+  const spec = model ?? modelSpecFromArgv(session.launchArgv);
+  const recorded = parseLaunchCompactionLimitArgv(session.launchArgv);
+  return recorded != null
+    ? clampCompactionLimit(recorded, spec, { fleetMember })
+    : defaultCompactionLimitForSpec(spec, { fleetMember });
+}
+
 const resumable = defineTool({
   method: 'GET',
   path: '/adv/sessions/resumable',
@@ -1425,10 +1459,27 @@ const resumable = defineTool({
     } catch {
       /* archive module unavailable ⇒ no enrichment (every hasArchive stays false) */
     }
-    const enriched = sessions.map((s) => ({
+    // One bounded read per existing projection, rather than queries per row.
+    const codexOwnerIds = [...new Set(sessions.filter((s) => s.agent === 'codex' && s.coordOwnerId).map((s) => s.coordOwnerId!))];
+    const [{ listPresence }, { fetchPresenceFleet }] = await Promise.all([
+      import('../../../agent-tools/coordination/presence'),
+      import('../../../agent-tools/coordination/presence-fleet'),
+    ]);
+    const [presenceRows, fleetMemberships] = await Promise.all([
+      codexOwnerIds.length ? listPresence({ ownerIds: codexOwnerIds }) : Promise.resolve([]),
+      fetchPresenceFleet(codexOwnerIds),
+    ]);
+    const presenceByOwner = new Map(presenceRows.map((p) => [p.ownerId, p]));
+    const enriched = await Promise.all(sessions.map(async (s) => ({
       ...s,
       hasArchive: s.sessionId ? archivedIds.has(s.sessionId) : false,
-    }));
+      ...(s.agent === 'codex' ? {
+        compactionLimit: await compactionLimitForResumeRow(s, null, {
+          compactionLimit: presenceByOwner.get(s.coordOwnerId ?? '')?.compactionLimit ?? null,
+          fleetRole: fleetMemberships.get(s.coordOwnerId ?? '')?.fleetRole ?? null,
+        }),
+      } : {}),
+    })));
     return new Response(
       JSON.stringify({
         sessions: enriched,
@@ -1561,7 +1612,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfigAsync }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfigAsync }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1652,8 +1703,8 @@ const ensureCodexHome = defineTool({
           { status: 402, headers: JSON_HEADERS });
       }
       const route = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow.launchArgv, owner));
-      const { writeRoleCodexHome } = await import('../../../role-codex-home');
-      const home = writeRoleCodexHome({
+      const { writeRoleCodexHomeAsync } = await import('../../../role-codex-home');
+      const home = await writeRoleCodexHomeAsync({
         sessionKey: advSessionId, preserveExisting: true, sid: owner,
         recordedSqliteHome: typeof saved.codexSqliteHome === 'string' ? saved.codexSqliteHome : null,
         mcpUrl: spec.mcpUrl, promptText: spec.promptText,
@@ -1728,6 +1779,7 @@ const ensureCodexHome = defineTool({
     const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
     const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
     const denyAmbientContext = !(await sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }));
+    const repairCompactionLimit = await compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel);
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
       mcpUrl,
@@ -1738,7 +1790,7 @@ const ensureCodexHome = defineTool({
       codexGatewayAuto: repairGatewayAuto,
       codexGatewayPriority: repairGatewayAuto || gatewayInputs.codexGatewayAccountId ? 'su' : null,
       headless: repairHeadless,
-      compactionLimit: codexCompactionLimitFromLaunchArgv(sessionRow?.launchArgv),
+      compactionLimit: repairCompactionLimit,
       trustDir: null, // the home's inherited trust tables already cover the cwd
       projectDir: sessionRow?.cwd,
       promptText,
