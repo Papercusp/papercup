@@ -54,6 +54,14 @@ import {
   FILL_WORKSPACE_ID_DDL,
   HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
 } from '../../../../test/_work-items-schema';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// The merge pass reads the hive policy + roster through the LIVE org pool, and a failed
+// read now leaves the pass unapplied (WI-10007530), so every pass here failed on the
+// integration live-DSN guard (WI-6554700010008455). This suite federates a non-Hive
+// harness: model the successful absent-policy read. Registered BEFORE the file's own
+// afterEach so the stub outlives substrate teardown passes.
+stubHivePolicyReadsForSuite();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -363,6 +371,9 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     pendingRetryMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: idA.override,
+    // Not a re-key test: without this the boot resolves Hive scope through the LIVE org
+    // pool, which the integration live-DSN guard refuses (WI-6554700010008455).
+    rekeyDepsOverride: null,
   });
   cleanups.push(async () => {
     await handleA?.close();
@@ -385,6 +396,7 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     pendingRetryMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: idB.override,
+    rekeyDepsOverride: null, // see boot A (WI-6554700010008455)
   });
   cleanups.push(async () => {
     await handleB?.close();

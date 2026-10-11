@@ -45,6 +45,7 @@
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { stubHivePolicyReadsForTest } from './_hive-policy-read-stubs';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -358,6 +359,10 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   it(
     'a feature written on A lands in B (and vice versa), issues federate, and the echo-loop terminates',
     async () => {
+      // Non-Hive harness with NO org-pool routing: model the successful absent-policy read,
+      // or every merge pass fails on the live-DSN guard (WI-6554700010008455). Pushed first
+      // so the newest-first teardown restores it after the substrates close.
+      cleanups.push(stubHivePolicyReadsForTest());
       // ── Two SEPARATE databases — peer A's DB and peer B's DB. ──
       const dbA: FreshPgDb = await createFreshPgDb('fedA');
       cleanups.push(() => dbA.cleanup());
@@ -414,6 +419,9 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idA.override,
+        // Not a re-key test: without this the boot resolves Hive scope through the LIVE org
+        // pool, which the integration live-DSN guard refuses (WI-6554700010008455).
+        rekeyDepsOverride: null,
       });
       cleanups.push(async () => {
         await handleA?.close();
@@ -436,6 +444,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idB.override,
+        rekeyDepsOverride: null, // see boot A (WI-6554700010008455)
       });
       cleanups.push(async () => {
         await handleB?.close();
@@ -628,6 +637,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   it(
     'handle.rekey changes the swarm topic IN PLACE — same store + own log, content preserved',
     async () => {
+      cleanups.push(stubHivePolicyReadsForTest()); // see the first test (WI-6554700010008455)
       const dbA: FreshPgDb = await createFreshPgDb('rekey');
       cleanups.push(() => dbA.cleanup());
       await setupPeerSchema(dbA.sql);
@@ -661,6 +671,9 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idA.override,
+        // Not a re-key test: without this the boot resolves Hive scope through the LIVE org
+        // pool, which the integration live-DSN guard refuses (WI-6554700010008455).
+        rekeyDepsOverride: null,
       });
       cleanups.push(async () => {
         await handleA?.close();
