@@ -313,6 +313,7 @@ describe('canonical Retain memory reads', () => {
       {
         id: 'm-z',
         text: 'Canonical fact',
+        scope: 'hive:pot-a',
         kind: 'feedback',
         metadata: {
           kind: 'feedback',

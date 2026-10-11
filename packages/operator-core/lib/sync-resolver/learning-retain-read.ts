@@ -202,6 +202,7 @@ function toIsoMs(v: unknown): string | null {
 export interface RetainMemorySource {
   id: string;
   text: string;
+  scope?: string;
   kind?: string;
   metadata?: Record<string, unknown>;
 }
@@ -499,6 +500,8 @@ export async function listCanonicalRetainMemoriesPage(
     window: RetainLegWindow | null;
     limit: number;
     predicate?: RetainFeedCompiledPredicate;
+    /** Keyed detail over the same visible corpus; never a recency-page search. */
+    id?: string;
   },
 ): Promise<RetainMemorySource[]> {
   if (scopes.length === 0) return [];
@@ -514,6 +517,7 @@ export async function listCanonicalRetainMemoriesPage(
                  COALESCE(m.updated_at, m.created_at, to_timestamp(0))) AS ts
           FROM harness_shared.memory_canonical m
          WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
+           AND ${opts.id !== undefined ? sql`m.id::text = ${opts.id}` : sql`TRUE`}
       ) x
      WHERE ${opts.predicate ? retainFeedPredicateSql(sql, opts.predicate.args) : sql`TRUE`}
        AND ${legWindowSql(sql, opts.window)}
@@ -544,6 +548,7 @@ export async function listCanonicalRetainMemoriesPage(
     return {
       id: row.id,
       text: typeof payload.data === 'string' ? payload.data : String(payload.data ?? ''),
+      scope: typeof payload.user_id === 'string' ? payload.user_id : '',
       ...(kind !== undefined ? { kind } : {}),
       // Canonical table activity is the keyset order. Stamp it into the
       // neutral metadata spelling retainMemoryTsOf already consumes.
