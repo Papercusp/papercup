@@ -100,18 +100,9 @@ function RubricStewardship({ data, onOpenWorkItem }: { data: GoalDetailInput; on
       !quality ? <p className="woe__muted">Quality evidence has not loaded. Refresh to check this goal’s grading activity.</p> :
       <><p className="woe__muted">Recent grading evidence · since {new Date(quality.windowStart).toLocaleDateString()}
         {!quality.complete ? ' · limited recent page; older evidence may be missing' : ''}</p>
-        {quality.cycles.length ? <div className="woe__table-wrap"><table className="woe__table" aria-label="Grading cycles">
-          <thead><tr><th>Target / rubric</th><th>Progress</th><th>Evidence</th></tr></thead>
-          <tbody>{quality.cycles.map(c => <tr key={c.scorecardRef}><td><strong>{c.target}</strong>
-            <small>{c.rubricRef}{c.rubricRevision ? ` · revision ${c.rubricRevision}` : ''}</small></td>
-            <td><span className="woe__state" data-state={c.status}>{({ baseline: 'Baseline recorded', 'needs-repair': 'Repairs needed',
-              'needs-regrade': 'Re-grade needed', unverified: 'Needs verification', incomparable: 'Fresh baseline needed', verified: 'Improvement verified' })[c.status]}</span>
-              <p className="woe__muted">{c.reason}</p></td><td>
-              {[...(c.baselineRef ? [{ ref: c.baselineRef, label: 'Baseline' }] : []),
-                { ref: c.scorecardRef, label: 'Scorecard' }, ...c.repairRefs.map(ref => ({ ref, label: ref }))]
-                .map(item => onOpenWorkItem ? <button key={item.ref} type="button" className="woe__link"
-                  onClick={() => onOpenWorkItem(item.ref)}>{item.label}</button> : <span key={item.ref}>{item.ref} </span>)}
-            </td></tr>)}</tbody></table></div> : <p className="woe__muted">No goal-attributed grading cycles are recorded in this window.</p>}</>}
+        {quality.cycles.length ? <div className="woe__table-wrap"><Table className="woe__table" ariaLabel="Grading cycles"
+          columns={cycleColumns} rows={quality.cycles} getRowKey={cycle => cycle.scorecardRef} /></div>
+          : <p className="woe__muted">No goal-attributed grading cycles are recorded in this window.</p>}</>}
   </section>;
 }
 
@@ -340,34 +331,46 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
     { key: 'signoff', label: STATE_LABEL.signoff, value: String(byState('signoff').length), unit: 'plans', sub: 'all items done' },
   ];
 
-  const renderRow = (row: ProgressRow) => {
-    const change = changes.find((c) => c.id === row.id);
-    return <tr key={row.id} data-testid="ongoing-worklist-row" data-worklist-id={row.id}
-      className={(row.selected ? '' : 'woe__row--out') + (change ? ' woe__row--changed' : '')}>
-      <td className="woe__scope-cell">{row.selected
-        ? <Tooltip label={`In the worklist (priority ${row.rank + 1}). Click to remove.`}>
+  const rowChange = (row: ProgressRow) => changes.find((change) => change.id === row.id);
+  const worklistColumns: TableColumn<ProgressRow>[] = [
+    {
+      key: 'worklist', header: 'Worklist', headerStyle: WOE_TABLE_HEADER_STYLE, cellStyle: WOE_TABLE_CELL_STYLE,
+      render: row => <span className="woe__scope-cell">{row.selected
+        ? <Tooltip label={'In the worklist (priority ' + (row.rank + 1) + '). Click to remove.'}>
           <button type="button" className="woe__scope woe__scope--in" disabled={locked} aria-label={'Remove ' + row.label}
-            onClick={() => stage(toggleDraft(collection!, draft, row.id))}>#{row.rank + 1}</button></Tooltip>
+            onClick={() => stage(toggleDraft(collection!, draft, row.id))}><span className="woe__scope-content">#{row.rank + 1}</span></button></Tooltip>
         : <Tooltip label="Not in the worklist. Click to add.">
           <button type="button" className="woe__scope" disabled={locked} aria-label={'Add ' + row.label}
-            onClick={() => stage(toggleDraft(collection!, draft, row.id))}><Plus size={12} aria-hidden />Add</button></Tooltip>}
+            onClick={() => stage(toggleDraft(collection!, draft, row.id))}><span className="woe__scope-content"><Plus size={12} aria-hidden />Add</span></button></Tooltip>}
         {row.selected && sort === 'rank' ? <span className="woe__reorder">
           <button type="button" disabled={locked || row.rank === 0} aria-label={'Move ' + row.label + ' up'}
-            onClick={() => stage(moveDraft(collection!, draft, row.id, -1))}><ArrowUp size={12} aria-hidden /></button>
+            onClick={() => stage(moveDraft(collection!, draft, row.id, -1))}><span className="woe__reorder-icon"><ArrowUp size={12} aria-hidden /></span></button>
           <button type="button" disabled={locked || row.rank === included.length - 1} aria-label={'Move ' + row.label + ' down'}
-            onClick={() => stage(moveDraft(collection!, draft, row.id, 1))}><ArrowDown size={12} aria-hidden /></button>
+            onClick={() => stage(moveDraft(collection!, draft, row.id, 1))}><span className="woe__reorder-icon"><ArrowDown size={12} aria-hidden /></span></button>
         </span> : null}
-        {change ? <span className="woe__change">{change.label}</span> : null}</td>
-      <td className="woe__plan">{row.harness && row.planSlug && onOpenPlan
+        {rowChange(row) ? <span className="woe__change">{rowChange(row)!.label}</span> : null}</span>,
+    },
+    {
+      key: 'plan', header: 'Plan', headerStyle: WOE_TABLE_HEADER_STYLE, cellStyle: WOE_TABLE_CELL_STYLE,
+      render: row => <div className="woe__plan">{row.harness && row.planSlug && onOpenPlan
         ? <button type="button" className="woe__plan-link" onClick={() => onOpenPlan(row.harness!, row.planSlug!)}>{row.label}</button>
         : <strong>{row.label}</strong>}
-        <small>{[row.harness, row.planSlug].filter(Boolean).join(' · ') || row.id}</small></td>
-      <td><span className="woe__progress-cell"><ProgressBar counts={row.counts} />
-        {row.counts ? <span className="woe__num">{row.counts.done}/{total(row.counts)}</span> : null}</span></td>
-      <td><span className="woe__state" data-state={row.st.key}><span aria-hidden />{row.st.label}</span></td>
-      <td className="woe__why">{row.selected ? row.nextStep ?? row.st.why : row.st.why}</td>
-    </tr>;
-  };
+        <small>{[row.harness, row.planSlug].filter(Boolean).join(' · ') || row.id}</small></div>,
+    },
+    {
+      key: 'progress', header: 'Progress', headerStyle: WOE_TABLE_HEADER_STYLE, cellStyle: WOE_TABLE_CELL_STYLE,
+      render: row => <span className="woe__progress-cell"><ProgressBar counts={row.counts} />
+        {row.counts ? <span className="woe__num">{row.counts.done}/{total(row.counts)}</span> : null}</span>,
+    },
+    {
+      key: 'state', header: 'State', headerStyle: WOE_TABLE_HEADER_STYLE, cellStyle: WOE_TABLE_CELL_STYLE,
+      render: row => <span className="woe__state" data-state={row.st.key}><span aria-hidden />{row.st.label}</span>,
+    },
+    {
+      key: 'why', header: 'Why / next step', headerStyle: WOE_TABLE_HEADER_STYLE, cellStyle: WOE_TABLE_CELL_STYLE,
+      render: row => <span className="woe__why">{row.selected ? row.nextStep ?? row.st.why : row.st.why}</span>,
+    },
+  ];
 
   return <Modal open onOpenChange={(open) => { if (!open) onClose(); }} title={goal.title}
     description="Progress across every plan" srOnlyTitle contentStyle={{ width: 'min(1540px, 96vw)',
@@ -393,10 +396,12 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
         <div className="woe__kpis" role="group" aria-label="Totals">{tiles.map((t) =>
           <button type="button" key={t.label} className="woe__kpi" aria-pressed={t.key !== null && stateFilter === t.key}
             onClick={() => void setStateFilter(t.key === null || stateFilter === t.key ? null : t.key)}>
-            <span className="woe__kpi-label">{t.key ? <i className={'woe__dot woe__dot--' + t.key} aria-hidden /> : null}{t.label}</span>
-            <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
-            {t.key === null && measuredScope.length ? <ProgressBar counts={totals} large /> : null}
-            <span className="woe__kpi-sub">{t.sub}</span></button>)}</div>
+            <span className="woe__kpi-content">
+              <span className="woe__kpi-label">{t.key ? <i className={'woe__dot woe__dot--' + t.key} aria-hidden /> : null}{t.label}</span>
+              <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
+              {t.key === null && measuredScope.length ? <ProgressBar counts={totals} large /> : null}
+              <span className="woe__kpi-sub">{t.sub}</span>
+            </span></button>)}</div>
         {measuredScope.length < scoped.length ? <p className="woe__filter-note">{scoped.length - measuredScope.length} plans have unmeasured progress; totals count measured plans only.</p> : null}
         <RubricStewardship data={data} onOpenWorkItem={onOpenWorkItem} />
         <div className="woe__chart"><h3>Work finished per day for this goal{series ? ` (last ${series.length} days)` : ''}</h3>
@@ -416,19 +421,22 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
             return <button type="button" key={s} aria-pressed={scope === s} onClick={() => void setScope(s)}>
               {s === 'all' ? `All plans · ${n}` : s === 'in' ? `In worklist · ${n}` : `Not in worklist · ${n}`}</button>;
           })}</div>
-          <label className="woe__toggle"><input type="checkbox" checked={showEmpty}
-            onChange={(e) => void setShowEmpty(e.target.checked)} /> Show plans with no items</label>
-          <select aria-label="Sort plans" value={sort} onChange={(e) => void setSort(e.target.value as typeof sort)}>
-            {SORTS.map((s) => <option key={s} value={s}>{SORT_LABEL[s]}</option>)}</select>
+          <label className="woe__toggle"><Checkbox ariaLabel="Show plans with no items" checked={showEmpty}
+            onChange={checked => void setShowEmpty(checked)} /> Show plans with no items</label>
+          <Select ariaLabel="Sort plans" value={sort} onChange={value => void setSort(value as typeof sort)}
+            triggerClassName="h-select-trigger woe__sort"
+            options={SORTS.map(s => ({ value: s, label: SORT_LABEL[s] }))} />
           <label className="woe__search"><TextInput leading={<Search size={15} />} style={{ width: '100%' }}
             aria-label="Search plans" placeholder="Search plans…" value={query}
             onChange={(e) => void setQuery(e.target.value)} /></label>
         </div>
         {stateFilter ? <p className="woe__filter-note">Showing only “{STATE_LABEL[stateFilter]}”.
           <button type="button" className="woe__link" onClick={() => void setStateFilter(null)}>Clear filter</button></p> : null}
-        <div className="woe__table-wrap"><table className="woe__table" aria-label="Plans">
-          <thead><tr><th>Worklist</th><th>Plan</th><th>Progress</th><th>State</th><th>Why / next step</th></tr></thead>
-          <tbody>{visible.map(renderRow)}</tbody></table>
+        <div className="woe__table-wrap"><Table className="woe__table" ariaLabel="Plans" columns={worklistColumns}
+          rows={visible} getRowKey={row => row.id}
+          rowClassName={row => (row.selected ? '' : 'woe__row--out') + (rowChange(row) ? ' woe__row--changed' : '')}
+          rowTestId={() => 'ongoing-worklist-row'}
+          rowDataAttributes={row => ({ 'data-worklist-id': row.id })} />
           {!visible.length ? <p className="woe__empty">{rows.length ? 'No plans match these filters.' : 'No active plans are available.'}</p> : null}</div>
         <div className="woe__table-foot"><span className="woe__legend">{(['done', 'moving', 'you', 'stuck', 'todo'] as const).map((k) =>
           <span key={k}><i className={'woe__dot woe__dot--' + k} aria-hidden />{{ done: 'Done', moving: 'In progress', you: 'Needs you', stuck: 'Blocked', todo: 'To do' }[k]}</span>)}</span>
