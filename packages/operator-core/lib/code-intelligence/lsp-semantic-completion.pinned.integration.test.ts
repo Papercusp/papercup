@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -35,9 +35,9 @@ import { managedSpawn } from '../task-manager/managed-spawn';
 import { killTask } from '../task-manager/control';
 import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
-import { resolveServerBin, resolveTsserverPath, shutdownAllLspClients, shutdownLspClient, typescriptInitializationOptions } from './lsp-adapter';
+import { LSP_VENDOR_DIR, resolveServerBin, resolveTsserverPath, shutdownAllLspClients, shutdownLspClient, typescriptInitializationOptions, typescriptWorkspaceMemoryMb } from './lsp-adapter';
 import { dispatchLspDaemonRequest } from './lsp-daemon-server';
-import { freezeCompilerReplayConfig, replayHash, replaySemanticCompletionContext } from './lsp-fleet-replay-runtime';
+import { freezeCompilerReplayConfig, materializeReplaySource, replayHash, replaySemanticCompletionContext, validateDaemonReplayConfig } from './lsp-fleet-replay-runtime';
 import { requestSemanticCompletion, SEMANTIC_COMPLETION_COMMAND, SEMANTIC_COMPLETION_TYPESCRIPT_VERSION,
   type SemanticCompletionRequest } from './lsp-semantic-completion';
 
@@ -323,6 +323,86 @@ describe('candidate completion through the pinned native plugin package', () => 
 });
 
 describe('independent semantic graph through the production daemon adapter', () => {
+  it('preserves the real pinned vendor and independently declared graph in a standalone copy', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lsp-production-vendor-copy-'));
+    const root = join(parent, 'donor'); mkdirSync(root);
+    try {
+      writeFileSync(join(root, 'target.ts'), 'export function semanticTarget() { return 1; }\nsemanticTarget();\n');
+      writeFileSync(join(root, 'consumer.ts'), 'import { semanticTarget } from "./target";\nsemanticTarget();\n');
+      writeFileSync(join(root, 'base.json'), JSON.stringify({ compilerOptions: { lib: ['es5'], types: [] } }));
+      writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ extends: './base.json', files: ['target.ts', 'consumer.ts'] }));
+      const vendor = realpathSync(LSP_VENDOR_DIR);
+      const tsserver = realpathSync(resolveTsserverPath(vendor));
+      const compilerEntry = createRequire(tsserver).resolve('./typescript.js');
+      const copied = materializeReplaySource({ runId: 'production-vendor-copy', rootPath: root,
+        workspaceId, socketPath: join(parent, 'unused.sock'), levels: [1], requestTimeoutMs: 30_000,
+        compilerEntry, compilerPackageRoot: vendor, tsconfigPath: 'tsconfig.json',
+        definition: { file: 'target.ts', line1: 2, character: 1 },
+        references: { file: 'target.ts', line1: 2, character: 1 }, runtimeFiles: [],
+        evidenceRef: 'authored-production-vendor-copy-fixture' }, join(parent, 'copied'), {
+        enumerateSources: () => ['base.json', 'consumer.ts', 'target.ts', 'tsconfig.json'],
+        // This authored project has no workspace package imports. Its complete
+        // external server/compiler package tree is declared above and copied by
+        // the maintained runtime copier, independently of native observations.
+        snapshotDependencies: (donor, destination) => {
+          expect(donor).toBe(root);
+          // Reuse the source-materialization suite's empty workspace receipt.
+          // The external vendor population is copied separately in full.
+          writeFileSync(join(destination, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n', { flag: 'wx' });
+        },
+        // This authored donor is not a Papercusp checkout and has no release
+        // admission script. Exercise the existing admission seam against the
+        // fixture's actual filesystem before copying any declared vendor bytes.
+        checkSourceHeadroom: (donor, destination, bytes) => {
+          expect(donor).toBe(root);
+          expect(destination).toBe(join(parent, 'copied'));
+          const capacity = statfsSync(parent, { bigint: true });
+          expect(capacity.bavail * capacity.bsize).toBeGreaterThan(BigInt(bytes));
+        },
+      });
+      const copiedVendor = copied.compilerPackageRoot!;
+      const dependencyStamp = join(copied.rootPath, '.papercusp-pinned-deps');
+      expect(readFileSync(dependencyStamp, 'utf8')).toBe('mode=copy\ntrees=0\n');
+      const snapshot = JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8'));
+      expect(snapshot.sourceFiles['.papercusp-pinned-deps']).toBe(replayHash(readFileSync(dependencyStamp)));
+      expect(snapshot.loadedRuntime).toBe('unmeasured');
+      expect(copied.runtimeFiles).toEqual(expect.arrayContaining([dependencyStamp, copied.sourceSnapshot!.manifestPath]));
+      const copiedServer = realpathSync(resolveTsserverPath(copiedVendor));
+      expect(createRequire(copiedServer).resolve('./typescript.js')).toBe(copied.compilerEntry);
+      for (const relative of ['package.json', 'package-lock.json',
+        'node_modules/typescript-language-server/lib/cli.mjs',
+        'node_modules/@typescript/old/lib/tsserver.js', 'node_modules/@typescript/old/lib/typescript.js']) {
+        const original = join(vendor, relative); const independent = join(copiedVendor, relative);
+        expect(readFileSync(independent)).toEqual(readFileSync(original));
+        expect([statSync(independent).dev, statSync(independent).ino])
+          .not.toEqual([statSync(original).dev, statSync(original).ino]);
+      }
+      expect(JSON.parse(readFileSync(join(copiedVendor, 'node_modules/typescript-language-server/package.json'), 'utf8')).version)
+        .toBe('6.0.0');
+      expect(createRequire(copiedServer)(copied.compilerEntry!).version).toBe(SEMANTIC_COMPLETION_TYPESCRIPT_VERSION);
+      // Removing the authored donor before compiler/config loading proves the
+      // declared graph does not depend on that source tree still being present.
+      rmSync(root, { recursive: true });
+      const frozen = freezeCompilerReplayConfig(copied);
+      expect(Object.keys(frozen.semanticGraph!.compilerEntries)).toEqual([copied.compilerEntry]);
+      expect(frozen.semanticGraph!.projects).toHaveLength(1);
+      expect(frozen.semanticGraph!.projects[0].projectName).toBe(join(copied.rootPath, 'tsconfig.json'));
+      expect(frozen.semanticGraph!.projects[0].files).toEqual(expect.arrayContaining([
+        join(copied.rootPath, 'base.json'), join(copied.rootPath, 'tsconfig.json'),
+        join(copied.rootPath, 'target.ts'), join(copied.rootPath, 'consumer.ts'),
+        join(copiedVendor, 'node_modules/@typescript/old/lib/lib.es5.d.ts'),
+      ]));
+      expect(frozen.corpus['hot-references'].oracle.sites).toEqual([
+        { path: 'consumer.ts', line1: 1 }, { path: 'consumer.ts', line1: 2 },
+        { path: 'target.ts', line1: 1 }, { path: 'target.ts', line1: 2 },
+      ]);
+      expect(typescriptWorkspaceMemoryMb(copied.rootPath, copiedServer)).toBe(6400);
+      expect(() => validateDaemonReplayConfig(frozen)).not.toThrow();
+      console.info('WI41095_COPIED_VENDOR_ADMISSION', JSON.stringify({ compilerVersion: frozen.oracleProvenance.compilerVersion,
+        projects: frozen.semanticGraph!.projects.length, memoryMb: 6400, certification: 'prelaunch-authored-fixture-only' }));
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  }, 60_000);
+
   it.each(['complete', 'missing-consumer'] as const)('checks configured library and inherited-config closure: %s', async control => {
     const root = mkdtempSync(join(tmpdir(), 'lsp-daemon-semantic-'));
     const taskStart = storage.tasks.length;
@@ -342,6 +422,7 @@ describe('independent semantic graph through the production daemon adapter', () 
       // Independently freeze compiler population and plugin bytes BEFORE native startup.
       const frozen = freezeCompilerReplayConfig({ runId: `daemon-semantic-${control}`, rootPath: root,
         workspaceId, socketPath: join(root, 'unused.sock'), levels: [1], requestTimeoutMs: 30_000,
+        compilerEntry: createRequire(resolveTsserverPath()).resolve('./typescript.js'),
         tsconfigPath: 'tsconfig.json', definition: { file: 'target.ts', line1: 2, character: 1 },
         references: { file: 'target.ts', line1: 2, character: 1 }, runtimeFiles: [manifest, entry],
         semanticCompletionPlugin: { name: pluginName, location, files }, evidenceRef: 'authored-daemon-semantic-fixture' });
