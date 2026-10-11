@@ -9,6 +9,8 @@ import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-aut
 import type { HostedIdentityProvider } from '../auth/hosted/provider';
 import { readAccountTutorialProgress, readTutorialProgress } from './cloud-tutorial-progress';
 import { authorizeTutorialVoice } from './cloud-tutorial-help';
+import type { FlagKey } from '@papercusp/flags';
+import { readTutorialVoiceGlobalFlagsForUpdate } from '../flag-override-store';
 
 /** Read a verified tenant's lesson inside the reservation transaction. Unlike
  * withTenantContext, this must not open a second transaction: successful row
@@ -121,6 +123,26 @@ export interface TutorialVoiceQuotaAuthority {
  * issuance follows commit. No browser authority is accepted. */
 export type TutorialVoiceAuthorityReader = (sql: Sql, admission: TutorialVoiceAdmission) =>
   Promise<TutorialVoiceQuotaAuthority | null>;
+/** Compose admission from server-owned dependencies. A cached/default flag
+ * cannot authorize spending: the registered policy needs explicit persisted
+ * approval. Provider verification must attest restricted credential and agent
+ * limits; returning configuration alone does not satisfy that contract. */
+export function createTutorialVoiceAuthorityReader(options: {
+  identityProvider: Pick<HostedIdentityProvider, 'providerId' | 'validateSession'>;
+  policyFlag: FlagKey;
+  verifyProviderLimits: TutorialVoiceAuthorityReader;
+}): TutorialVoiceAuthorityReader {
+  return async (sql, admission) => {
+    if (!await validateTutorialVoiceLessonForUpdate(sql, admission, options.identityProvider)) return null;
+    const flags = await readTutorialVoiceGlobalFlagsForUpdate(sql);
+    if (flags?.[options.policyFlag] !== true) return null;
+    const limits = await options.verifyProviderLimits(sql, admission);
+    // Both the policy lock and provider verification can wait. Do not mint
+    // from identity authority that expired during either operation.
+    if (!limits || !await validateTutorialVoiceIdentityForUpdate(sql, admission, options.identityProvider)) return null;
+    return limits;
+  };
+}
 export type TutorialVoiceReservationResult =
   | { ok: true; reservationId: string; maximumSeconds: number; providerLimitRef: string }
   | { ok: false; reason: 'quota_exhausted' | 'session_active' | 'unavailable' };

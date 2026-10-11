@@ -5,7 +5,8 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
-import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, validateTutorialVoiceLessonForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { PostgresTutorialVoiceReservationStore, createTutorialVoiceAuthorityReader, validateTutorialVoiceIdentityForUpdate, validateTutorialVoiceLessonForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { FLAGS } from '@papercusp/flags';
 import { enrollAccountTutorial, updateTutorialProgress } from './cloud-tutorial-progress';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
@@ -300,6 +301,31 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
     await db.adminSql.begin(tx => enrollAccountTutorial(tx as unknown as Sql,
       { tenantId: organization.id, userId: user.id }));
+    // Exercise composition with a registered flag as a fixture policy; this
+    // does not designate that flag as the production tutorial policy.
+    let providerChecks = 0; let providerEvidence = true; let expireDuringProvider = false;
+    const readAuthority = createTutorialVoiceAuthorityReader({ identityProvider: provider,
+      policyFlag: FLAGS.ENDPOINT_AUTH_TIERS, verifyProviderLimits: async () => {
+        providerChecks++;
+        if (expireDuringProvider) upstreamExpired = true;
+        return providerEvidence ? authority() : null;
+      } });
+    for (const payload of [{}, { [FLAGS.ENDPOINT_AUTH_TIERS]: false }]) {
+      await db.adminSql`INSERT INTO harness_shared.operator_flag_overrides (workspace_id, payload)
+        VALUES ('@global', ${db.adminSql.json(payload)}) ON CONFLICT (workspace_id)
+        DO UPDATE SET payload = EXCLUDED.payload`;
+      expect(await run(tx => readAuthority(tx, input))).toBeNull();
+    }
+    expect(providerChecks).toBe(0);
+    await db.adminSql`UPDATE harness_shared.operator_flag_overrides
+      SET payload = ${db.adminSql.json({ [FLAGS.ENDPOINT_AUTH_TIERS]: true })} WHERE workspace_id = '@global'`;
+    providerEvidence = false;
+    expect(await run(tx => readAuthority(tx, input))).toBeNull();
+    providerEvidence = true;
+    expect(await run(tx => readAuthority(tx, input))).toEqual(authority());
+    expireDuringProvider = true;
+    expect(await run(tx => readAuthority(tx, input))).toBeNull();
+    upstreamExpired = false; expireDuringProvider = false;
     await run(async tx => {
       expect(await validateTutorialVoiceLessonForUpdate(tx, input, provider)).toBe(true);
       expect(await validateTutorialVoiceLessonForUpdate(tx, { ...input,
