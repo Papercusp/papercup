@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DaoExecution from './DaoExecution';
-import { WORKBENCH_FIELD_SELECTOR } from '../../../../../scripts/lib/dao-workbench-controls';
+import { WORKBENCH_FIELD_SELECTOR } from '../../../../../scripts/lib/dao-workbench-controls.mts';
 vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {} }));
 vi.mock('@/app/adv/harnesses/HumanWorkSection', () => ({ HumanWorkSection: () => <div>Maintained human work</div> }));
 vi.mock('@/app/_components/RouteLink', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));

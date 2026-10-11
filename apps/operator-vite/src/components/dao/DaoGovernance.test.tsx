@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import DaoGovernance from './DaoGovernance';
-import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from '../../../../../scripts/lib/dao-workbench-controls';
+import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from '../../../../../scripts/lib/dao-workbench-controls.mts';
 
 const view: DaoWorkspaceView = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected',
   projects: { status: 'ready', value: [{ slug: 'project', title: 'Project', plans: [{ slug: 'proposal', title: 'Build the tool', status: 'draft', owner: null, itemCount: 1 }] }] } };
