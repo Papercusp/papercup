@@ -6380,7 +6380,210 @@
      "summary": "plan lane iphone-public-release-2026-08-11#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "iphoneP012EvidenceQualification": {
+    "status": "retained-current-signed-testflight-delivery-requirement",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004739",
+    "auditProofs": [
+     "WI-10005820#comment:1174237"
+    ],
+    "sourceAuthority": {
+     "plan": "iphone-public-release-2026-08-11",
+     "item": "P-012",
+     "version": 86,
+     "contentHash": "6192e3634380dddea809f42953af4bd80f7ca4deec86fcbafae52bf09ce6069c",
+     "planState": "active",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "unresolvedBlockers": [
+      "P-009"
+     ],
+     "decisions": [
+      "D-017",
+      "D-019",
+      "D-021",
+      "D-023",
+      "D-024",
+      "D-025"
+     ],
+     "dependencyQualification": "Original version52/P-009 and P-011 fields are dated provenance. D-025 removes P-011 only as a start blocker; the saved revision86 P-012 read remains blocked by P-009. Actual signing and TestFlight acceptance remain required.",
+     "rightsQualification": "D-017 records Apple-input, copyright, distribution and device authority. That authority does not establish executed signing, Apple validation, processing or tester installation; no purchase, legal agreement or private-data publication authority is inferred.",
+     "candidateQualification": "D-021 prohibits future Actions. D-023 reuses the existing exact-source signed-IPA candidate manifest; D-024 and D-025 separate registered-device export preparation from final store milestones."
+    },
+    "specs": [
+     {
+      "id": "AUTO-BAR-R-6-P-012",
+      "revision": 2,
+      "contentHash": "910bc32e557d8cfa38e48850b4730fb66f5a7e916f54b114057dd51929e6dcb4",
+      "lifecycle": "draft",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [
+       "delivery-integration"
+      ]
+     },
+     {
+      "id": "AUTO-REQ-M-001-P-012",
+      "revision": 2,
+      "contentHash": "46e1fc92e7407dfa3b62480632e0a12677a2d125727b03c42b26c1eed137908d",
+      "lifecycle": "active",
+      "requiredEvidence": [
+       "current source and executed result receipts",
+       "source-bound outcome comparison"
+      ],
+      "requiredTestLayers": [
+       "live"
+      ]
+     }
+    ],
+    "bindingQualification": {
+     "scope": "Saved work-item-filter and independent exact-two-clause binding reads on auditProof1174237.",
+     "evidenceCount": 0,
+     "truncatedByLimit": false,
+     "qualification": "Only the returned registered binding plane was observed. Empty bindings do not establish universal absence of native, candidate, Apple or tester artifacts.",
+     "rubric": {
+      "revision": 3,
+      "barKey": "signed-testflight-delivery",
+      "barHash": "6b96b1fc81297d8288a98891ae02f5576b84a8dba7ee35eeb9c29492523b3d44",
+      "vetting": "unvetted",
+      "attestation": "rejected-attestation",
+      "pendingAudit": "EI-24782775335411324"
+     },
+     "requiredOutcome": "Exact signed IPA bytes/hash and identity/profile, real App Store Connect validation and processing receipts, and intended-tester installation. Mandatory live/manual evidence remains required; no passing acceptance is asserted."
+    },
+    "subjectQualification": {
+     "state": "blocked",
+     "assignee": null,
+     "completionAuthority": null,
+     "checkpointContentHash": null,
+     "currentSubjectSha256": "54c292d3a837e8e54c955940270e9eed01529ba058c7cea31c60891c0d39a11a",
+     "qualification": "Dated complete subject/body/payload/lifecycle/thread read and repeated fingerprint on1174237. No checkpoint or thread posts were returned; the child was not claimed or changed."
+    },
+    "implementationQualification": {
+     "sourceHarness": "papercup-rust-mobile",
+     "sourceRegistryReference": "WI-10005820#comment:1174237",
+     "sourceProof": "WI-10005820#comment:1174237",
+     "scope": "Complete native runner, release/signing/archive/private-input helpers and conventional runner test source; selected Makefile and BUILD native/TestFlight/manual-delivery sections.",
+     "observations": [
+      "Private signing input must be a regular owner-only file outside the repository. The loader checks matching issued distribution certificate/key/profile and atomically writes private JSON.",
+      "Registered-device export requires four inputs. App Store Connect upload requires seven inputs and explicit confirmation. Ad Hoc export requires registered devices; downloading the IPA does not enable arbitrary-phone installation.",
+      "Native toolchain and simulator admission, clean exact source, a positive reserved build number, one retained IPA/profile/certificate, source-drift refusal, retained hashes and cleanup precede the existing release-admissible candidate manifest.",
+      "The archive validator records signature/profile presence, device SDK and privacy facts. Source guards do not substitute for real Apple validation, processing or tester installation.",
+      "Production-push profile entitlement does not establish actual operator APNs delivery. The selected runner executes upload but has no processing or tester-install observation phase.",
+      "Conventional regression source covers refusals, manifests, profile identity, private inputs, cleanup, drift, retained evidence and reuse. Inspection is not a new executed regression or native acceptance."
+     ],
+     "reuseBoundary": "Existing native tools/ios-ci.py executor, Android source_identity/write_json/run_phase/digest helpers, private signing loader, archive validator and candidate-manifest.json; no parallel native or delivery system.",
+     "limits": "Source and test-source inspection only. No new Mac, credential, native, runner fixture, Actions, upload or provider execution."
+    },
+    "currentFilePins": [
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/ios-ci.py",
+      "bytes": 26499,
+      "sha256": "29c087c18b42cc8ed57cf4a1008358a331b9ddbecc46ac77fddafba8b603b4ee"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/build-scripts/release-ios.sh",
+      "bytes": 8227,
+      "sha256": "69a6091e3f5f7e58a6a5f3358a53d6c1225a091a25976e4b3388f702dd53fbb2"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/build-scripts/ios-ci-signing.sh",
+      "bytes": 11119,
+      "sha256": "45a41cfb6c7dff332662353aea06fad404e9e40b7fd75c6b6473274629f4ff4b"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/build-scripts/validate-ios-archive.py",
+      "bytes": 9050,
+      "sha256": "cf78b231b6a638f8efad1fe1d479265616f29a32b17b1b46fe79d28620e76dbe"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/build-scripts/ios-signing-secrets.sh",
+      "bytes": 11393,
+      "sha256": "114074e6e0acb30035aa4af3aa55d2f170ab4598dba56b30670e0cd13c148854"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "tools/tests/ios-ci-runner-test.py",
+      "bytes": 19473,
+      "sha256": "0ca30ff7a31914c944e1e885660e1b8c8d9e6f0e6d9b011fdfffad2ced6bb049"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "Makefile",
+      "bytes": 11901,
+      "sha256": "af4618c71413feec94faa737205c95d5635a7c729a0dafa09116818799e5566b"
+     },
+     {
+      "harness": "papercup-rust-mobile",
+      "path": "docs/BUILD.md",
+      "bytes": 25157,
+      "sha256": "b48dbd987ce0559114824f0c839c4674b1dabc1fcedf4c26062b6a7d644ed770"
+     }
+    ],
+    "nativeProducerQualification": {
+     "workItems": [
+      {
+       "workItem": "WI-10007213",
+       "state": "needs-human",
+       "assignee": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+       "checkpointContentHash": "2238edf75f89"
+      },
+      {
+       "workItem": "WI-10007210",
+       "state": "needs-human",
+       "assignee": null,
+       "checkpointContentHash": "5cce0140f0be"
+      }
+     ],
+     "qualification": "Producer evidence was read once for1174237. The WI-10007213 checkpoint hash was unchanged on artifact-addition recovery. Latest retained entries preserve the external prerequisite and add no new native/input measurement; the peer's execution lane was not claimed.",
+     "historicalPreflight": {
+      "measuredAt": "2026-10-08",
+      "sourceCommit": "4c82a3843a55d7178fa8a06449593c7bfa8129d7",
+      "status": "failed",
+      "mode": "check",
+      "toolchain": null,
+      "phases": [],
+      "artifacts": [],
+      "failure": "SDK26+ required; found18.5",
+      "qualification": "Dated native refusal and runner-fixture receipts do not settle a current candidate or signing availability."
+     },
+     "retainedEvidence": [
+      {
+       "path": "/tmp/WI-10007213-20261008T011300Z-evidence/mac-preflight.json",
+       "bytes": 635,
+       "sha256": "1c82808785d2b63f3eb4edd1d79c9370dc2e8e7422ef805bfc99467a5db2f238",
+       "role": "dated native toolchain refusal"
+      },
+      {
+       "path": "/tmp/WI-10007213-20261008T011300Z-evidence/ios-ci-runner-tests.log",
+       "bytes": 2765,
+       "sha256": "0e988933aece75c2c5aac6eaddcfb1a91e8e14d8e40bd7adec657a100bc85c82",
+       "role": "dated runner fixture log; no new execution"
+      },
+      {
+       "path": "/tmp/WI-10007213-20261008T011300Z-evidence/source-identity.json",
+       "bytes": 162,
+       "sha256": "7210358dc09dadf23f9aaac5a00795fad2824c0d09454d66959e5cf08232bd0f",
+       "role": "dated clean source identity"
+      }
+     ]
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version52 fields, prior qualifications, population and exclusions are preserved.",
+     "actualAcceptance": "Current exact-candidate signing, Apple validation/processing, intended-tester installation and APNs delivery are not established by this finite audit. Retain the requirement; no duplicate, obsolete, superseded or accepted disposition.",
+     "historicalPhone9Reference": "Phone9/R68/WI-10005203#comment:1156678 remains separately unresolved; carry echoes are not evidence.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain open.",
+     "ownerWalls": "Existing residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "No child claims/state/holds, native/Actions/provider execution, LIVE_GATE_OPS, killed-goal revival, release acceptance or shipment."
+    }
+   }
   },
   {
    "id": "WI-10004740",
