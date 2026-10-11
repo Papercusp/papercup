@@ -35,19 +35,15 @@ function source(id: string, config: Record<string, unknown> = {}): ExternalTrigg
 /**
  * D-038 recurrence guard: every surfaced Google Personal Vault capability must
  * have an explicit sync disposition. Gmail and Calendar use connector-sync
- * providers, Contacts uses the custom Vault poller, and YouTube remains an
- * explicit missing-ingest gap until it is wired or removed from the capability
- * definition.
+ * providers and Contacts uses the custom Vault poller. YouTube was removed from
+ * the capability definition (2ead0dbf1b) rather than wired, so it has no row. A
+ * capability surfaced later without an ingest path must be added here with
+ * route 'missing' and a reason, or the coverage check below fails.
  */
 const GOOGLE_VAULT_INGEST_COVERAGE = {
   gmail: { sourceKind: 'gmail', route: 'connector-sync-provider' },
   calendar: { sourceKind: 'gcal', route: 'connector-sync-provider' },
   contacts: { sourceKind: 'contacts', route: 'connector-sync-contacts-poller' },
-  youtube: {
-    sourceKind: 'youtube',
-    route: 'missing',
-    reason: 'No YouTube-specific Personal Vault poller is wired into connector-sync.',
-  },
 } as const satisfies Readonly<
   Record<
     GoogleCapabilityId,
@@ -60,7 +56,7 @@ const GOOGLE_VAULT_INGEST_COVERAGE = {
 >;
 
 describe('connector-sync Google Contacts Personal Vault path', () => {
-  it('accounts for every surfaced Google capability, including the missing YouTube Vault ingest', () => {
+  it('accounts for every surfaced Google capability with an explicit Vault ingest disposition', () => {
     const surfacedIds = GOOGLE_CAPABILITY_DEFS.map(({ id }) => id).sort();
     expect(Object.keys(GOOGLE_VAULT_INGEST_COVERAGE).sort()).toEqual(surfacedIds);
 
@@ -73,10 +69,6 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
       .map((entry) => entry.sourceKind)
       .sort();
     expect(connectorProviderKinds).toEqual(GOOGLE_WORKSPACE_SOURCE_KINDS.filter((kind) => kind !== 'contacts').sort());
-    expect(GOOGLE_VAULT_INGEST_COVERAGE.youtube).toMatchObject({
-      route: 'missing',
-      reason: expect.stringContaining('No YouTube-specific Personal Vault poller'),
-    });
   });
 
   it('polls connected sources with their token-store install and retries a People API 401', async () => {
@@ -94,10 +86,13 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
         return first.result;
       };
     const updateSource = vi.fn(async () => current);
+    // vi.fn's call signature drops the <T> generic, so the spy is kept for assertions and
+    // cast only where it enters the deps seam.
+    const withAccessTokenRetrySpy = vi.fn(withAccessTokenRetry);
     const deps: GoogleContactsPersonalVaultPollDeps = {
       listSources,
       syncContacts,
-      withAccessTokenRetry: vi.fn(withAccessTokenRetry),
+      withAccessTokenRetry: withAccessTokenRetrySpy as unknown as typeof withAccessTokenRetry,
       updateSource,
     };
 
@@ -105,7 +100,7 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
 
     expect(result).toEqual({ sources: 1, succeeded: 1, failed: 0, contacts: 2, pages: 2, failures: [] });
     expect(listSources).toHaveBeenCalledWith(sql, ctx.workspaceId, 'contacts');
-    expect(deps.withAccessTokenRetry).toHaveBeenCalledWith(current, 'google-install', expect.any(Function));
+    expect(withAccessTokenRetrySpy).toHaveBeenCalledWith(current, 'google-install', expect.any(Function));
     expect(syncContacts).toHaveBeenNthCalledWith(1, sql, {
       workspaceId: ctx.workspaceId,
       userId: current.ownerUserId,
