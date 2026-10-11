@@ -4612,22 +4612,62 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
  * `notes`, so the work_items index expression cannot be written against it. BM25 scores
  * every query term (OR semantics), which is also what the dedup pool wants.
  */
-async function bm25IssueSearch(sql: Sql, text: string, workspaces: string[], limit: number): Promise<IssueRowDb[] | null> {
-  const leg = await bm25LegIfAvailable(sql, 'work_items', text, 'w');
+type DedupSearchTimingObserver = (sample: {
+  dependency: string;
+  elapsedMs: number;
+  outcome: 'fulfilled' | 'rejected';
+}) => void;
+
+async function measureDedupSearchStage<T>(
+  observer: DedupSearchTimingObserver | undefined,
+  phase: string,
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  if (!observer) return await operation();
+  const startedAt = performance.now();
+  let outcome: 'fulfilled' | 'rejected' = 'fulfilled';
+  try {
+    return await operation();
+  } catch (error) {
+    outcome = 'rejected';
+    throw error;
+  } finally {
+    try {
+      observer({
+        dependency: `searchIssuesForDedup.${phase}`,
+        elapsedMs: Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10),
+        outcome,
+      });
+    } catch {
+      // A diagnostic observer must never change the dedup result.
+    }
+  }
+}
+
+async function bm25IssueSearch(
+  sql: Sql,
+  text: string,
+  workspaces: string[],
+  limit: number,
+  observer?: DedupSearchTimingObserver,
+): Promise<IssueRowDb[] | null> {
+  const leg = await measureDedupSearchStage(observer, 'bm25-leg-resolution', () =>
+    bm25LegIfAvailable(sql, 'work_items', text, 'w'),
+  );
   if (!leg) return null;
-  return sql<IssueRowDb[]>`
-    WITH ranked AS (
-      SELECT w.workspace_id AS ranked_ws, w.feature_id AS ranked_id, ${leg.score} AS ranked_score
-        FROM harness_shared.work_items w
-       WHERE w.workspace_id = ANY(${workspaces}::text[])
-         AND w.item_kind IN ('bug', 'change', 'task')
-         AND ${leg.match}
-       ORDER BY ${leg.order}
-       LIMIT ${limit})
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-      JOIN ranked ON ranked.ranked_id = engineer_issues.issue_id
-                 AND ranked.ranked_ws = engineer_issues.workspace_id
-     ORDER BY ranked.ranked_score DESC, engineer_issues.issue_id`;
+  return measureDedupSearchStage(observer, 'bm25-candidate-query', () => sql<IssueRowDb[]>`
+      WITH ranked AS (
+        SELECT w.workspace_id AS ranked_ws, w.feature_id AS ranked_id, ${leg.score} AS ranked_score
+          FROM harness_shared.work_items w
+         WHERE w.workspace_id = ANY(${workspaces}::text[])
+           AND w.item_kind IN ('bug', 'change', 'task')
+           AND ${leg.match}
+         ORDER BY ${leg.order}
+         LIMIT ${limit})
+      SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+        JOIN ranked ON ranked.ranked_id = engineer_issues.issue_id
+                   AND ranked.ranked_ws = engineer_issues.workspace_id
+       ORDER BY ranked.ranked_score DESC, engineer_issues.issue_id`);
 }
 
 /**
@@ -4670,17 +4710,31 @@ function dedupSearchQuery(title: string, joiner: ' or ' | ' ' = ' or '): string 
  * ordinary listing/search — only the dedup path's OR-token widening (above)
  * belongs here.
  */
-export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
+export async function searchIssuesForDedup(
+  query: string,
+  limit = 50,
+  observer?: DedupSearchTimingObserver,
+): Promise<EngineerIssue[]> {
   const tsQuerySource = dedupSearchQuery(query);
   const workspaces = dedupScopeWorkspaces();
   const n = Math.min(limit, 200);
-  const rows = await boundedPgReadTxn<IssueRowDb[]>(
-    async (tx) => (await bm25IssueSearch(tx as unknown as Sql, dedupSearchQuery(query, ' '), workspaces, n)) ?? await tx<IssueRowDb[]>`
-      SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-       WHERE workspace_id = ANY(${workspaces}::text[])
-         AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
-       ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
-       LIMIT ${n}`,
+  const rows = await measureDedupSearchStage(observer, 'pg-transaction', () =>
+    boundedPgReadTxn<IssueRowDb[]>(async (tx) => {
+      const bm25Rows = await bm25IssueSearch(
+        tx as unknown as Sql,
+        dedupSearchQuery(query, ' '),
+        workspaces,
+        n,
+        observer,
+      );
+      if (bm25Rows) return bm25Rows;
+      return measureDedupSearchStage(observer, 'legacy-candidate-query', () => tx<IssueRowDb[]>`
+        SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+         WHERE workspace_id = ANY(${workspaces}::text[])
+           AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
+         ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
+         LIMIT ${n}`);
+    }),
   );
   return rows.map(toIssue);
 }

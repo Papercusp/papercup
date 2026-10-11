@@ -91,6 +91,7 @@ function createCaptureTimingRecorder(ctx: {
   const stages = new Map<string, CaptureTimingStage>();
   let omittedStageCount = 0;
   let slowestStageMs = 0;
+  let hasFlushed = false;
 
   const record = (
     name: string,
@@ -130,32 +131,40 @@ function createCaptureTimingRecorder(ctx: {
     }
   };
 
+  const flush = () => {
+    if (!enabled) return;
+    hasFlushed = true;
+    const totalElapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
+    if (totalElapsedMs < CAPTURE_TIMING_LOG_THRESHOLD_MS && slowestStageMs < CAPTURE_TIMING_LOG_THRESHOLD_MS) {
+      return;
+    }
+    const loggedStages = [...stages.values()]
+      .sort((a, b) => b.totalMs - a.totalMs || b.maxMs - a.maxMs)
+      .slice(0, CAPTURE_TIMING_MAX_LOGGED_STAGES);
+    try {
+      ctx.log?.('[improvements:capture] timing ' + JSON.stringify({
+        traceId,
+        totalElapsedMs,
+        stageCount: stages.size,
+        omittedStageCount: omittedStageCount + Math.max(0, stages.size - loggedStages.length),
+        stages: loggedStages,
+      }));
+    } catch {
+      // A diagnostic log failure must never change the capture result.
+    }
+  };
+
   return {
     enabled,
     measure,
-    recordDependency: (sample: CaptureDependencyTiming) =>
-      record('core.' + sample.dependency, sample.elapsedMs, sample.outcome),
-    flush: () => {
-      if (!enabled) return;
-      const totalElapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
-      if (totalElapsedMs < CAPTURE_TIMING_LOG_THRESHOLD_MS && slowestStageMs < CAPTURE_TIMING_LOG_THRESHOLD_MS) {
-        return;
-      }
-      const loggedStages = [...stages.values()]
-        .sort((a, b) => b.totalMs - a.totalMs || b.maxMs - a.maxMs)
-        .slice(0, CAPTURE_TIMING_MAX_LOGGED_STAGES);
-      try {
-        ctx.log?.('[improvements:capture] timing ' + JSON.stringify({
-          traceId,
-          totalElapsedMs,
-          stageCount: stages.size,
-          omittedStageCount: omittedStageCount + Math.max(0, stages.size - loggedStages.length),
-          stages: loggedStages,
-        }));
-      } catch {
-        // A diagnostic log failure must never change the capture result.
-      }
+    recordDependency: (sample: CaptureDependencyTiming) => {
+      record('core.' + sample.dependency, sample.elapsedMs, sample.outcome);
+      // The lexical leg can outlive capture-core's 1500 ms budget. Its late
+      // completion still belongs to this request and must be logged with the
+      // same trace id after the handler's first flush.
+      if (hasFlushed) flush();
     },
+    flush,
   };
 }
 

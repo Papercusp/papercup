@@ -616,7 +616,11 @@ export interface CaptureImprovementResult {
 
 /** Injectable dependency seam (unit tests run without PG). */
 export interface CaptureDeps {
-  searchIssues: (query: string, limit?: number) => Promise<EngineerIssue[]>;
+  searchIssues: (
+    query: string,
+    limit?: number,
+    onDependencyTiming?: CaptureDependencyTimingObserver,
+  ) => Promise<EngineerIssue[]>;
   createIssue: (input: CreateIssueInput) => Promise<EngineerIssue>;
   /**
    * Seed the successor-visible checkpoint for an atomically self-claimed item.
@@ -2903,11 +2907,14 @@ export async function captureImprovement(
   let lexicalLeg: DedupCoverage['lexical'] = isObservation ? 'skipped' : 'unavailable';
   let searched: EngineerIssue[] = [];
   if (!isObservation) {
-    const lexical = await withBoundedTimeout(() => Promise.resolve().then(() => deps.searchIssues(input.title, 20)), {
+    const lexical = await withBoundedTimeout(
+      () => Promise.resolve().then(() => deps.searchIssues(input.title, 20, input.onDependencyTiming)),
+      {
       fallback: [] as EngineerIssue[],
       timeoutMs: CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
       label: 'captureImprovement:lexical-dedup',
-    });
+      },
+    );
     searched = lexical.value;
     if (!lexical.degraded) lexicalLeg = 'ok';
     // Preserve an empty candidate set, but never mislabel a timed-out or failed

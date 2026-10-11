@@ -459,7 +459,7 @@ describe('improvements:capture degraded dedup alert', () => {
 });
 
 describe('improvements:capture timing diagnostics', () => {
-  it('logs post-persist stage timings with the MCP trace id and no capture text', async () => {
+  it('logs request-correlated stage timings, including late search completion, without capture text', async () => {
     vi.clearAllMocks();
     drainAdmission.blocked = false;
     drainAdmission.unavailable = false;
@@ -506,8 +506,18 @@ describe('improvements:capture timing diagnostics', () => {
       clock.mockRestore();
     }
 
+    const captureInput = mockCapture.mock.calls[mockCapture.mock.calls.length - 1]?.[0] as
+      | { onDependencyTiming?: (sample: { dependency: string; elapsedMs: number; outcome: 'fulfilled' | 'rejected' }) => void }
+      | undefined;
+    captureInput?.onDependencyTiming?.({
+      dependency: 'searchIssuesForDedup.pg-transaction',
+      elapsedMs: 1_600,
+      outcome: 'fulfilled',
+    });
+
     const prefix = '[improvements:capture] timing ';
-    const line = log.mock.calls.map(([message]) => String(message)).find((message) => message.startsWith(prefix));
+    const timingLines = log.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith(prefix));
+    const line = timingLines[0];
     expect(line).toBeDefined();
     const timing = JSON.parse(line!.slice(prefix.length)) as {
       traceId: string;
@@ -524,8 +534,12 @@ describe('improvements:capture timing diagnostics', () => {
         'wrapper.unresolvedRefs',
       ]),
     );
-    expect(line).not.toContain(privateText);
-    expect(line).not.toContain('private timing title');
+    const lateTiming = timingLines
+      .map((entry) => JSON.parse(entry.slice(prefix.length)) as typeof timing)
+      .find((entry) => entry.stages.some((stage) => stage.name === 'core.searchIssuesForDedup.pg-transaction'));
+    expect(lateTiming?.traceId).toBe('mcp-trace-for-capture-test');
+    expect(timingLines.join('\n')).not.toContain(privateText);
+    expect(timingLines.join('\n')).not.toContain('private timing title');
   });
 });
 

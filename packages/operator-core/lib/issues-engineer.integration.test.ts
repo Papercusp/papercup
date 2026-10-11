@@ -979,12 +979,23 @@ describe('engineer issues surface (real PG)', () => {
         'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
       createdBy: 'agA',
     });
+    const timingSamples: Array<{ dependency: string; elapsedMs: number; outcome: 'fulfilled' | 'rejected' }> = [];
     const hits = await issues.searchIssuesForDedup(
       'Revocation cut-off FAILS: a banned member still receives content after the ban — live-federation-gate revocation_kcut LEAK',
+      50,
+      (sample) => timingSamples.push(sample),
     );
     expect(hits.map((i) => i.title)).toEqual([
       'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
     ]);
+    expect(timingSamples.map((sample) => sample.dependency)).toContain('searchIssuesForDedup.pg-transaction');
+    expect(
+      timingSamples.some((sample) =>
+        ['searchIssuesForDedup.bm25-candidate-query', 'searchIssuesForDedup.legacy-candidate-query'].includes(
+          sample.dependency,
+        ),
+      ),
+    ).toBe(true);
     // The general search tool is untouched — an unrelated short query still
     // behaves like a normal AND'd search-engine query, not an OR-token blast.
     await issues.createIssue({ title: 'alpha bug', createdBy: 'agA' });
