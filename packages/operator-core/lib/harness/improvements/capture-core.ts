@@ -597,10 +597,10 @@ export interface CaptureImprovementResult {
    * distinct) — it's recall, not a gate.
    */
   alreadyDecided?: AlreadyDecidedRecall[];
-  /** True only for a fresh agent-facing change/feature row that needs review enrollment. */
+  /** True for a fresh row that needs verification enrollment. */
   reviewRequired?: boolean;
-  /** The pre-enrollment lifecycle state that was durably applied. */
-  reviewState?: 'blocked';
+  /** The verification-enrollment lifecycle state that was durably applied. */
+  reviewState?: 'blocked' | 'open';
   /** A committed capture whose review lifecycle could not complete. */
   agentReviewFailure?: AgentReviewFailure;
   /**
@@ -1486,6 +1486,16 @@ export async function enrolPromotedToolFailureReview(
   deps: CaptureDeps,
 ): Promise<{ enrolled: boolean; failure?: AgentReviewFailure }> {
   if (!deps.enterAgentReview || !isStrandedToolFailureReview(issue.payload)) return { enrolled: false };
+  return enrolCapturedReview(issue, opts, deps);
+}
+
+/** Shared enrollment for promoted tool failures and newly captured person bugs. */
+async function enrolCapturedReview(
+  issue: EngineerIssue,
+  opts: { submittedBy: string; workspaceId?: string; fallbackScope?: string },
+  deps: CaptureDeps,
+): Promise<{ enrolled: boolean; failure?: AgentReviewFailure }> {
+  if (!deps.enterAgentReview) return { enrolled: false };
   const harnessSlug = harnessFromScope(issue.scope) ?? harnessFromScope(opts.fallbackScope) ?? undefined;
   try {
     const result = await deps.enterAgentReview({
@@ -2505,13 +2515,16 @@ export async function captureImprovement(
   // scorecards (the public emit schema has no watchdogKey), but keep this explicit so
   // the immutable-event rule remains true if another observation dedup path is added.
   const immutableScorecard = isObservation && input.initialState === 'done';
-  const reviewRequired = Boolean(
+  // P-010 (D-001): who filed this — derived from the RAW input, see reporterOf.
+  const reporter = reporterOf(input);
+  // An external report supplies evidence to reproduce, never implementation authority.
+  // Direct admission calls this core without the tool wrapper, so enrollment belongs here.
+  const personBugRequiresReview = !isObservation && input.kind === 'bug' && isPersonReporterKind(reporter.kind);
+  const reviewRequired = personBugRequiresReview || Boolean(
     input.reviewRequired && !isObservation && (input.kind === 'change' || input.kind === 'feature'),
   );
   const reviewHarness = input.reviewHarness ?? harnessFromScope(input.scope);
   const sourceRole = input.sourceRole ?? 'human';
-  // P-010 (D-001): who filed this — derived from the RAW input, see reporterOf.
-  const reporter = reporterOf(input);
   const identity = admissionIdentity(input.title, input.watchdogKey);
   const skippedDedupCoverage: DedupCoverage = {
     lexical: 'skipped',
@@ -3732,7 +3745,7 @@ export async function captureImprovement(
   // P-004: every newly claimable capture enrolls in the shared readiness
   // contract. Observations stay outside the work queue and therefore carry no
   // implementation verdict. Existing immediate paths remain ready by policy;
-  // change/feature captures awaiting peer review are explicitly unknown.
+  // person bugs and change/feature captures awaiting verification are explicitly unknown.
   if (!isObservation) payload.implementationReadiness = initialImplementationReadiness(reviewRequired);
 
   // EI-19450720466036446: generated Scout proposals must resolve their cited
@@ -3906,7 +3919,7 @@ export async function captureImprovement(
     throw error;
   }
   await input.onIssuePersisted?.(issue);
-  let reviewState: 'blocked' | undefined;
+  let reviewState: 'blocked' | 'open' | undefined;
   let agentReviewFailure: AgentReviewFailure | undefined;
   if (reviewRequired) {
     const at = new Date().toISOString();
@@ -3933,6 +3946,34 @@ export async function captureImprovement(
         { submittedBy: input.createdBy, harness: reviewHarness ?? undefined },
         deps,
       );
+    }
+    if (personBugRequiresReview && !agentReviewFailure && deps.enterAgentReview) {
+      const enrollment = await enrolCapturedReview(issue, {
+        submittedBy: input.createdBy ?? reporter.id ?? 'system:external-bug-intake',
+        workspaceId: input.workspaceId,
+        fallbackScope: input.scope,
+      }, deps);
+      agentReviewFailure = enrollment.failure;
+      if (enrollment.enrolled) {
+        try {
+          const reopened = await (deps.setWorkItemStateWithAliasInfo ?? defaultSetWorkItemStateWithAliasInfo)(
+            issue.id, 'open', {
+              ...(reviewHarness ? { harness: reviewHarness } : {}),
+              ...(input.createdBy ? { by: input.createdBy } : {}),
+              reason: 'agent-review enrollment succeeded',
+            },
+          );
+          if ((reopened.appliedState ?? reopened.workItem?.state) !== 'open') {
+            throw new Error('review reopen did not apply open state');
+          }
+          reviewState = 'open';
+        } catch (error) {
+          agentReviewFailure = { phase: 'reopen', message: reviewFailureMessage(error), at };
+          await recordCaptureReviewFailure(issue.id, agentReviewFailure, {
+            submittedBy: input.createdBy, harness: reviewHarness ?? undefined,
+          }, deps);
+        }
+      }
     }
   }
   await appendCaptureOccurrence(
