@@ -1,4 +1,4 @@
-/** Browser expressions shared by the native verifier and rendered-control regressions. */
+/** ESM browser expressions shared by the native verifier and rendered-control regressions. */
 export const WORKBENCH_FIELD_SELECTOR = '[role="combobox"],input:not([type="hidden"]):not([aria-hidden="true"]),textarea,select:not([aria-hidden="true"])';
 
 export function workbenchTextField(label: string, value: string): string {

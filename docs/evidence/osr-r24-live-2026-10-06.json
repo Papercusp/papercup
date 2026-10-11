@@ -243,49 +243,49 @@
         "host_id": "host-90866b9b8016c4d1dca7c91a"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 1",
         "kind": "linked",
         "state": "active",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-adbc37e33a27bc8efb01992b"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 2",
         "kind": "linked",
         "state": "deleted",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-aa87b4a9bf31ea74cb7039c5"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 3",
         "kind": "linked",
         "state": "active",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-624d62853b77a8cc86db1f10"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 4",
         "kind": "linked",
         "state": "deleted",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-b04b6599a05891f5977762b0"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 5",
         "kind": "linked",
         "state": "deleted",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-afab0cc64cc954e7082a7ef3"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 6",
         "kind": "linked",
         "state": "active",
         "created_by_principal_kind": "user",
         "host_id": "linked-lw-c019813316141c7995c35805"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 7",
         "kind": "linked",
         "state": "deleted",
         "created_by_principal_kind": "user",
@@ -299,7 +299,7 @@
         "host_id": "host-2802cefffb052f989eae2969"
       },
       {
-        "display_name": "main-server-Precision-7865-Tower",
+        "display_name": "Linked host 8",
         "kind": "linked",
         "state": "active",
         "created_by_principal_kind": "user",
