@@ -76,6 +76,8 @@ const MAXIMAL_ROW: RosterRow = {
   sessionState: 'live',
   wakeable: true,
   confirmLiveness: false,
+  // P-011(a) / D-011: null on a live row (set only alongside sessionState 'suspect').
+  wedged: null,
   loopArmed: false,
   selfWake: 'loop',
   // EI-22805550006169069: the forward-looking schedule pair — a turn is in flight
@@ -138,7 +140,7 @@ describe('partitionPresenceRow', () => {
       claimCount: 2,
       wakeMode: 'auto',
     });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, loopArmed: false, selfWake: 'loop', dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, wedged: null, loopArmed: false, selfWake: 'loop', dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');

@@ -38,6 +38,7 @@ const {
   fleetMock,
   findLiveHostMock,
   findLiveHostAsyncMock,
+  readHostEventTailAsyncMock,
   desktopSessionsMock,
   endedSessionsMock,
   endedOwnerIdsMock,
@@ -53,6 +54,9 @@ const {
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
   findLiveHostAsyncMock: vi.fn<(id: string) => Promise<{ ownerId: string } | null>>(async () => null),
+  // P-011(a): the host-condition leg reads the host's lifecycle tail. Mocked so the
+  // suite never touches a real ~/.papercusp/psu-pty events file.
+  readHostEventTailAsyncMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   desktopSessionsMock: vi.fn<typeof gatherOnDesktopSessions>(async () => ({
     owners: new Set<string>(), sessionIds: new Set<string>(), advSessionIds: new Set<number>(), windowSignalUnknown: false,
   })),
@@ -114,6 +118,7 @@ vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   findLiveHost: findLiveHostMock,
   findLiveHostAsync: findLiveHostAsyncMock,
+  readHostEventTailAsync: readHostEventTailAsyncMock,
 }));
 vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: desktopSessionsMock,
@@ -153,6 +158,7 @@ beforeEach(() => {
   endedSessionsMock.mockResolvedValue([]);
   endedOwnerIdsMock.mockResolvedValue(new Set<string>());
   findLiveHostMock.mockImplementation(() => null);
+  readHostEventTailAsyncMock.mockResolvedValue([]);
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
   federatedMock.mockResolvedValue([]);
   recordedLiveSessionsMock.mockResolvedValue([]);
@@ -258,6 +264,65 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
+  });
+
+  // P-011(a) / D-011: coord:presence trusts a live psu host as proof of life, so it
+  // must also ask whether that host can take a turn. Positive control first: a
+  // healthy host keeps a wakeable row `parked` with no wedged condition.
+  it('P-011: a healthy live psu host keeps a wakeable su row parked, wedged null', async () => {
+    const owner = 'su-pty-healthy';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    findLiveHostMock.mockImplementation((id: string) =>
+      id === owner ? { ownerId: id, authBlocked: false } : null,
+    );
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    const r = snap.active.find((x) => x.ownerId === owner);
+    expect(r?.sessionState).toBe('parked');
+    expect((r as { wedged?: unknown } | undefined)?.wedged ?? null).toBeNull();
+    expect(readHostEventTailAsyncMock).toHaveBeenCalledWith(owner);
+  });
+
+  it('P-011: a live psu host with dead provider auth reads suspect + wedged auth-blocked, not parked', async () => {
+    const owner = 'su-pty-dead-auth';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    findLiveHostMock.mockImplementation((id: string) =>
+      id === owner ? { ownerId: id, authBlocked: true } : null,
+    );
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    const r = snap.active.find((x) => x.ownerId === owner);
+    expect(r?.sessionState).toBe('suspect');
+    expect((r as { wedged?: unknown } | undefined)?.wedged).toBe('auth-blocked');
+  });
+
+  it('P-011: the targeted { owner } read applies the same host-condition leg', async () => {
+    const owner = 'su-pty-dead-auth-targeted';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    findLiveHostAsyncMock.mockResolvedValue({ ownerId: owner, authBlocked: true } as { ownerId: string });
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, { owner });
+    const r = snap.active.find((x) => x.ownerId === owner);
+    expect(r?.sessionState).toBe('suspect');
+    expect((r as { wedged?: unknown } | undefined)?.wedged).toBe('auth-blocked');
+  });
+
+  it('P-011: a host-condition leg failure is fail-soft — the row keeps its plain derivation', async () => {
+    const owner = 'su-pty-tail-throws';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
+    findLiveHostMock.mockImplementation((id: string) =>
+      id === owner ? { ownerId: id, authBlocked: false } : null,
+    );
+    readHostEventTailAsyncMock.mockRejectedValue(new Error('EACCES'));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    const r = snap.active.find((x) => x.ownerId === owner);
+    expect(r?.sessionState).toBe('parked');
+    expect((r as { wedged?: unknown } | undefined)?.wedged ?? null).toBeNull();
   });
 
   it('reports snapshot legs and synchronous host lookup cost through the diagnostic seam', async () => {
