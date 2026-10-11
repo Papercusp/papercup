@@ -13,6 +13,10 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 
@@ -27,6 +31,7 @@ import {
   CODE2PROMPT_PINNED_VERSION,
   MAX_PACK_BYTES,
   PACK_TEMPLATES,
+  nativeChangeReport,
   packerFacade,
   parseSelectedFiles,
   readGitProvenance,
@@ -39,7 +44,52 @@ import {
   type PackerEffects,
   type PackFormat,
 } from './packer-facade.ts';
-import { isTrustworthyEmpty } from './contracts.ts';
+import { isTrustworthyEmpty, unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts.ts';
+
+describe('native P010 change report contract', () => {
+  it('cites the reference consumer and rechecks actual source bytes across report reads', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-report-unit-'));
+    const source = 'export function target() { return 1; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: [{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }],
+      truncation: { truncated: false, totalAvailable: 1, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const graph = async (): Promise<CodeIntelAnswer> => ({ ...answer, evidence: { ...evidence, sourceScope: {
+      ...evidence.sourceScope, sourceFingerprint: 'fixture-inputs', supportingFiles: [{ path: 'target.ts',
+        contentHash: createHash('sha256').update(source).digest('hex'), language: 'typescript', representation: 'full-source' }],
+    } } });
+    const exec: ExecFn = async (_bin, argv) => ({ stdout: argv[0] === 'diff'
+      ? 'diff --git a/target.ts b/target.ts\n--- a/target.ts\n+++ b/target.ts\n@@ -1 +1 @@\n-old\n+new\n'
+      : argv[0] === 'status' ? '' : 'a'.repeat(40) });
+    const args = { rootPath: root, include: ['target.ts'] };
+    try {
+      const first = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts' }, { exec, graph });
+      expect(first.report.consumers).toEqual([{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }]);
+      expect(first.report.changed[0]).toMatchObject({ path: 'target.ts', line1: 1 });
+      expect(first.report.freshness).toBe('first-read');
+      const repeat = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts', previousFingerprint: first.report.sourceFingerprint }, { exec, graph });
+      expect(repeat.report.freshness).toBe('unchanged');
+      writeFileSync(join(root, 'target.ts'), source + '// source moved during analysis\n');
+      const stale = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts' }, { exec, graph });
+      expect(stale.report.freshness).toBe('unmeasured');
+      expect(stale.report.limitations).toContain('Source changed during analysis: target.ts.');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses an option-shaped revision and an escaping source before running a graph', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-report-path-'));
+    const graph = vi.fn();
+    try {
+      await expect(nativeChangeReport({ rootPath: root, include: ['*.ts'], baseRef: '--output=elsewhere' },
+        { symbol: 'target', file: 'target.ts' }, { graph })).rejects.toThrow(/revision/);
+      await expect(nativeChangeReport({ rootPath: root, include: ['*.ts'] },
+        { symbol: 'target', file: '../other/target.ts' }, { graph })).rejects.toThrow(/repository-relative/);
+      expect(graph).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 const BASE: PackerArgs = { include: ['packages/**/*.ts'], rootPath: '/repo' };
 

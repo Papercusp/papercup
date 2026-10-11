@@ -48,14 +48,17 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { firstPartyCallersOffthread } from './first-party-callers-offthread.ts';
+import { LSP_VENDOR_DIR } from './lsp-adapter.ts';
+import { getBuildInfo } from '../build-info.ts';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -516,6 +519,116 @@ export interface PackArtifact {
 export interface PackerResult {
   readonly answer: CodeIntelAnswer;
   readonly artifact: PackArtifact | null;
+}
+
+/** P-010 extends the existing diff/graph plane; no separate index or service. */
+export interface ChangeReportRequest {
+  readonly symbol: string;
+  readonly file: string;
+  readonly line1?: number;
+  readonly paths?: readonly string[];
+  readonly limit?: number;
+  readonly phase?: 'pre-edit' | 'pre-review';
+  readonly previousFingerprint?: string;
+}
+
+export interface NativeChangeReport {
+  readonly subject: ChangeReportRequest;
+  readonly changed: readonly { path: string; line1: number | null; patch: string }[];
+  readonly consumers: readonly SymbolSite[];
+  readonly relevantTests: readonly SymbolSite[];
+  readonly recheck: readonly { path: string; reason: string }[];
+  readonly sourceFingerprint: string;
+  readonly freshness: 'first-read' | 'unchanged' | 'changed' | 'unmeasured';
+  readonly provenance: { commit: string | null; dirty: boolean | null; baseCommit: string | null;
+    runtime: ReturnType<typeof getBuildInfo>; graph: CodeIntelAnswer['evidence'] };
+  readonly limitations: readonly string[];
+}
+
+export interface ChangeReportEffects {
+  readonly exec?: ExecFn;
+  readonly graph?: (request: ChangeReportRequest, root: string) => Promise<CodeIntelAnswer>;
+}
+
+/** Bounded, current-source consequence evidence for a named edit or review. */
+export async function nativeChangeReport(args: PackerArgs, subject: ChangeReportRequest,
+  effects: ChangeReportEffects = {}): Promise<{ answer: CodeIntelAnswer; report: NativeChangeReport }> {
+  const root = realpathSync(args.rootPath);
+  if (!args.include.length || args.include.length > 32 || args.include.some(pattern => pattern.startsWith('-')))
+    throw new Error('Change report requires 1..32 explicit include patterns without option-shaped values.');
+  if (args.baseRef?.startsWith('-') || (args.baseRef && /[\r\n\0]/.test(args.baseRef)))
+    throw new Error('Change-report baseRef must be a revision, not an option.');
+  const safePath = (path: string) => {
+    if (!path.trim() || isAbsolute(path) || path.includes('\\') || path.split('/').includes('..'))
+      throw new Error('Change-report paths must be repository-relative paths without parent traversal.');
+    const abs = resolve(root, path);
+    if (existsSync(abs)) {
+      const rel = relative(root, realpathSync(abs));
+      if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) throw new Error('Change-report source escapes the repository.');
+    }
+    return path;
+  };
+  safePath(subject.file);
+  const paths = [...(subject.paths?.length ? subject.paths : ['.'])].map(safePath);
+  if (paths.length > 50 || !/^[A-Za-z_$][\w$]*$/.test(subject.symbol))
+    throw new Error('Change report requires one identifier and at most 50 source roots.');
+  const limit = subject.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('Change-report limit must be 1..500.');
+  const exec = effects.exec ?? defaultExec;
+  const limitations: string[] = [];
+  const git = await readGitProvenance(root, args.baseRef, exec);
+  let patch = '';
+  try {
+    patch = (await exec('git', ['diff', '--no-ext-diff', '--unified=3', ...(args.baseRef ? [args.baseRef] : []),
+      '--', ...args.include, ...SECRET_DENY_GLOBS.map(glob => `:(exclude,glob)${glob}`)],
+    { cwd: root, timeoutMs: 15_000, maxBuffer: 256 * 1024 })).stdout;
+  } catch (error) { limitations.push(`Diff could not be measured: ${error instanceof Error ? error.message : String(error)}`); }
+  const changed: { path: string; line1: number | null; patch: string }[] = [];
+  for (const section of patch.split(/(?=^diff --git )/m).filter(Boolean)) {
+    const file = /^\+\+\+ b\/(.+)$/m.exec(section)?.[1] ?? /^--- a\/(.+)$/m.exec(section)?.[1];
+    if (!file) continue;
+    const line = /^@@ .* \+(\d+)/m.exec(section)?.[1];
+    changed.push({ path: file, line1: line ? Number(line) : null, patch: section.slice(0, 4_000) });
+    if (section.length > 4_000) limitations.push(`Diff excerpt truncated for ${file}.`);
+    if (changed.length >= 32) { limitations.push('Changed-file report capped at 32 files.'); break; }
+  }
+  if (!patch && subject.phase !== 'pre-edit') limitations.push('No diff was measured; a named subject alone does not establish an edited behavior.');
+  const graph = effects.graph ?? ((request: ChangeReportRequest, graphRoot: string) => firstPartyCallersOffthread({
+    vendorDir: LSP_VENDOR_DIR, root: graphRoot, op: 'impact', name: request.symbol,
+    filePath: request.file, line1: request.line1, paths, limit, direction: 'downstream', maxDepth: 5, maxPaths: 20,
+  }));
+  const answer = await graph(subject, root);
+  if (answer.error) limitations.push(answer.error);
+  limitations.push('Consequences are static compiler call paths in the requested source scope; runtime execution and non-code consumers remain unverified.');
+  limitations.push(...(answer.evidence?.graphScope.limitations ?? answer.coverage?.limitations ?? []));
+  if (answer.truncation.truncated) limitations.push('Consumer results were truncated; omitted consumers remain unverified.');
+  if (!answer.evidence?.sourceScope.sourceFingerprint) limitations.push('Compiler input identity was not measured.');
+  // Literal locations are the oracle. No comment or generated prose becomes a consumer.
+  const consumers = [...answer.sites];
+  const relevantTests = consumers.filter(site => /(?:\.(?:test|spec)\.[^.]+$|\/(?:__tests__|tests)\/)/.test(site.path));
+  const recheck = changed.filter(file => /(?:\.(?:md|mdx)$|(?:^|\/)evidence\/)/.test(file.path))
+    .map(file => ({ path: file.path, reason: 'Changed documentation or evidence must be checked against the current consumer/source identity.' }));
+  for (const site of consumers) if (/\.(?:md|mdx)$/.test(site.path))
+    recheck.push({ path: site.path, reason: 'Source-derived reference to the edited symbol.' });
+  const hash = createHash('sha256').update(patch).update(answer.evidence?.sourceScope.sourceFingerprint ?? 'unmeasured');
+  // Hash every actual compiler input again AFTER analysis. An edit during a
+  // worker run is a stale report, even when HEAD and file mtimes did not move.
+  let measured = Boolean(answer.evidence?.sourceScope.sourceFingerprint);
+  for (const file of answer.evidence?.sourceScope.supportingFiles ?? []) {
+    if (file.representation !== 'full-source') { measured = false; continue; }
+    try {
+      safePath(file.path);
+      const current = createHash('sha256').update(readFileSync(join(root, file.path))).digest('hex');
+      hash.update(file.path).update(current);
+      if (current !== file.contentHash) { measured = false; limitations.push(`Source changed during analysis: ${file.path}.`); }
+    } catch { measured = false; limitations.push(`Source is no longer readable: ${file.path}.`); }
+  }
+  const sourceFingerprint = hash.digest('hex');
+  return { answer, report: { subject, changed, consumers, relevantTests, recheck, sourceFingerprint,
+    freshness: !measured ? 'unmeasured' : !subject.previousFingerprint ? 'first-read'
+      : subject.previousFingerprint === sourceFingerprint ? 'unchanged' : 'changed',
+    provenance: { ...git, runtime: getBuildInfo(), graph: answer.evidence }, limitations: [...new Set(limitations)],
+  } };
 }
 
 // ───────────────────────── injected effects ─────────────────────────

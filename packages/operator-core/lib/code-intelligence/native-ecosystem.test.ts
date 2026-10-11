@@ -1,9 +1,58 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-admission';
 import { astGrepSyntaxIndex } from './ast-grep-facade';
 import { LspDaemonAnswerCache, type MeasuredLspInputs } from './lsp-daemon-cache';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
-import { unmeasuredSourceEvidence } from './contracts';
+import { unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts';
+import { nativeChangeReport } from './packer-facade';
+import { produceSnapshotFromSource } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
+import { suggestFromSnapshot, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+
+describe('native P010 report consumer coverage contract', () => {
+  it('retains the reference consumer and discloses any omitted bounded consumers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-report-coverage-'));
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: [{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }],
+      truncation: { truncated: false, totalAvailable: 1, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false },
+      latencyMs: 0, error: null };
+    const exec = async () => ({ stdout: '' });
+    try {
+      const full = await nativeChangeReport({ rootPath: root, include: ['*.ts'] },
+        { symbol: 'target', file: 'target.ts', phase: 'pre-edit' }, { exec, graph: async () => answer });
+      expect(full.report.consumers).toEqual([{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }]);
+      const bounded = await nativeChangeReport({ rootPath: root, include: ['*.ts'] },
+        { symbol: 'target', file: 'target.ts', phase: 'pre-edit' }, { exec, graph: async () => ({ ...answer,
+          truncation: { truncated: true, totalAvailable: 2, continuation: null } }) });
+      expect(bounded.report.consumers).toEqual(full.report.consumers);
+      expect(bounded.report.limitations).toContain('Consumer results were truncated; omitted consumers remain unverified.');
+      expect(bounded.report.freshness).toBe('unmeasured');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('native P009 source snapshot handover contract', () => {
+  it('keeps the reference consumer and baseline, then rejects changed importer evidence', () => {
+    const sources = new Map([
+      ['src/target.ts', 'export const target = 1;\n'],
+      ['consumer/use.ts', 'import { target } from "../src/target";\nexport const used = target;\n'],
+    ]);
+    const readSource = (path: string) => sources.get(path) ?? null;
+    const now = Date.now();
+    const { snapshot } = produceSnapshotFromSource({ files: [...sources.keys()], readSource,
+      headCommit: 'a'.repeat(40), now });
+    expect(snapshot.index.backend).toBe('first-party-imports');
+    const suggest = () => suggestFromSnapshot({ changed: ['src/target.ts'], snapshot, readSource, now });
+    expect(suggest().suggestedFiles).toEqual(['consumer/use.ts']);
+    expect(unionSuperset(new Set(['baseline']), suggest().suggestedFiles).names).toEqual(['baseline', 'consumer/use.ts']);
+    sources.set('consumer/use.ts', 'export const used = 0;\n');
+    expect(suggest()).toMatchObject({ suggestedFiles: [], rejected: [{ reason: 'stale-importer' }] });
+    expect(unionSuperset(new Set(['baseline']), suggest().suggestedFiles).names).toEqual(['baseline']);
+  });
+});
 
 describe('native managed cache current-source contract', () => {
   it('invalidates source generations and removes deleted relationships at an unchanged cursor', async () => {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import type { Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // Enable the interfaces in this isolated fixture; analysis/transport code is real.
@@ -19,6 +20,86 @@ import { admitArm } from './fair-comparison-admission';
 import { LspDaemonAnswerCache } from './lsp-daemon-cache';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { unmeasuredSourceEvidence } from './contracts';
+import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
+import { computeGraphSuggestions, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { refreshDependencySnapshot } from '../harness/routines/gitnexus-reindex-action';
+
+describe('native P010 registered diff handler compiler integration', () => {
+  it('cites the edited symbol reference consumer and rechecks it before review', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-report-handler-'));
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: project, encoding: 'utf8', timeout: 10_000 });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    const args = { op: 'diff', rootPath: project, include: ['*.ts'], baseRef: 'HEAD',
+      explain: { symbol: 'changedTarget', file: 'target.ts', paths: ['.'], phase: 'pre-review' } };
+    const call = async (previousFingerprint?: string) => {
+      const result = await codePack.handler(codePack.args.parse({ ...args,
+        explain: { ...args.explain, previousFingerprint } }), { projectDir: project } as never);
+      return (result as { data: { answer: CodeIntelAnswer; report: {
+        consumers: CodeIntelAnswer['sites']; changed: { path: string }[]; sourceFingerprint: string;
+        freshness: string; limitations: string[];
+      } } }).data;
+    };
+    try {
+      writeFileSync(join(project, 'target.ts'), 'export function changedTarget() { return 1; }\n');
+      writeFileSync(join(project, 'consumer.ts'), 'import { changedTarget } from "./target";\nexport function useTarget() { return changedTarget(); }\n');
+      git(['init', '-q']);
+      git(['config', 'user.name', 'native handler private fixture']);
+      git(['config', 'user.email', 'fixture@example.invalid']);
+      git(['add', '-A']);
+      git(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'reference fixture']);
+      writeFileSync(join(project, 'target.ts'), 'export function changedTarget() { return 2; }\n');
+      const first = await call();
+      expect(first.answer.error).toBeNull();
+      expect(first.answer.backend).toBe('typescript-service');
+      expect(first.report.consumers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'consumer.ts', line1: 2 }),
+      ]));
+      expect(first.report.changed).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'target.ts' })]));
+      expect((await call(first.report.sourceFingerprint)).report.freshness).toBe('unchanged');
+      writeFileSync(join(project, 'consumer.ts'), 'export function useTarget() { return 2; }\n');
+      const edited = await call(first.report.sourceFingerprint);
+      expect(edited.report.consumers).toEqual([]);
+      expect(edited.report.freshness).toBe('changed');
+      expect(edited.report.limitations.some(line => line.includes('runtime execution'))).toBe(true);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, 120_000);
+});
+
+describe('native P009 regular refresh integration', () => {
+  it('hands source-derived consumers to the selector and preserves baseline on source drift', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-snapshot-handover-'));
+    const out = join(project, 'snapshot.json');
+    const files = ['src/target.ts', 'consumer/use.ts'];
+    const now = Date.now();
+    const readSource = (path: string) => {
+      try { return readFileSync(join(project, path), 'utf8'); } catch { return null; }
+    };
+    try {
+      for (const path of files) mkdirSync(dirname(join(project, path)), { recursive: true });
+      writeFileSync(join(project, files[0]), 'export const target = 1;\n');
+      writeFileSync(join(project, files[1]), 'import { target } from "../src/target";\nexport const used = target;\n');
+      const result = await refreshDependencySnapshot({ root: project, repoName: 'papercusp', currentIndexCommit: null, prev: null }, {
+        out, now: () => now, produce: async (_root, _repo, output, deps) => {
+          expect(deps?.backend).toBe('first-party-imports');
+          const { snapshot } = produceSnapshotFromSource({ files, readSource, headCommit: 'a'.repeat(40), now });
+          writeSnapshotAtomic(output, snapshot);
+          return { exit: 0, line: 'GRAPH_SNAPSHOT status=written edges=1', at: now };
+        },
+      });
+      expect(result).toMatchObject({ ran: true, next: { status: 'fresh', edges: 1 } });
+      const select = () => computeGraphSuggestions({ changed: ['src/target.ts'], snapshotPath: out,
+        readFile: (path: string) => readFileSync(path, 'utf8'), readSource,
+        ownerOfPath: (path: string) => path === files[1] ? ['reference-consumer'] : [], now });
+      expect(select()).toMatchObject({ status: 'applied', workspaces: ['reference-consumer'], accepted: 1, rejected: 0 });
+      expect(unionSuperset(new Set(['baseline']), select().workspaces).names).toEqual(['baseline', 'reference-consumer']);
+      writeFileSync(join(project, files[1]), 'export const used = 0;\n');
+      expect(select()).toMatchObject({ workspaces: [], accepted: 0, rejected: 1 });
+      expect(unionSuperset(new Set(['baseline']), select().workspaces).names).toEqual(['baseline']);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  });
+});
 
 describe('native managed cache filesystem reconciliation', () => {
   it('reconciles missed dependency edits and deletes without changing the query cursor', async () => {
