@@ -1035,6 +1035,51 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   });
 
+  it.each(['positional', 'equals', 'equals-dash'])('rejects a %s JSON output path before collection can overwrite test source', async (form) => {
+    const root = mkdtempSync(join(tmpdir(), 'vitest-collection-source-'));
+    const source = join(root, form === 'equals-dash' ? '--protected.test.ts' : 'protected.test.ts');
+    const original = "import { it } from 'vitest'; it('protected case', () => {});\n";
+    writeFileSync(source, original);
+    const spawnImpl = vi.fn(() => {
+      writeFileSync(source, '[{"name":"collected case"}]');
+      throw new Error('unsafe collection child launched');
+    });
+    try {
+      const jsonArgs = form === 'positional' ? ['--json', source]
+        : [`--json=${form === 'equals-dash' ? '--protected.test.ts' : source}`];
+      await expect(Promise.resolve().then(() => runVitestList('npx', ['vitest', 'list', ...jsonArgs], {
+        cwd: root, spawnImpl, systemdRunPath: null, setsidPath: null,
+      }))).rejects.toThrow('use --json=true for stdout');
+      expect(spawnImpl).not.toHaveBeenCalled();
+      expect(readFileSync(source, 'utf8')).toBe(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['--json', '--json=true'])('collects named cases through stdout with %s', async (jsonArg) => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4239;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const cases = [{ name: 'suite > selected case', file: '/repo/protected.test.ts' }];
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify(cases));
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    const result = await runVitestList('npx', ['vitest', 'list', 'protected.test.ts', jsonArg], {
+      cwd: '/repo', env: { PATH: '/usr/bin' }, spawnImpl, systemdRunPath: null,
+      setsidPath: null, onProgress: vi.fn(), readProcessDiagnosticImpl: null,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(cases);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])('bounds a silent Vitest collection preflight and reaps its owned process group (reader throws: %s)', async (readerThrows) => {
     vi.useFakeTimers();
     try {

@@ -2793,6 +2793,20 @@ export function runCapturedTestProcess(command, args, options = {}) {
  * @returns {Promise<object>}
  */
 export function runVitestList(command, args, options = {}) {
+  // Vitest's --json accepts an optional filename. A following positional test
+  // filter is therefore an output path, and collection can overwrite that test.
+  // This preflight is read-only: callers must capture stdout themselves.
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    const explicitOutput = arg.startsWith('--json=');
+    const output = arg === '--json'
+      ? args[index + 1]
+      : explicitOutput ? arg.slice('--json='.length) : undefined;
+    if (output !== undefined && String(output) !== 'true'
+      && (explicitOutput || !String(output).startsWith('-'))) {
+      throw new Error('Vitest collection must not write JSON files; use --json=true for stdout so a test filter cannot become an output path.');
+    }
+  }
   const {
     cwd,
     env = process.env,
