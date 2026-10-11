@@ -387,11 +387,10 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
     name: string;
     arguments: any;
     _meta: {
-        structured: boolean;
-        format?: undefined;
-    } | {
-        format: string;
-        structured?: undefined;
+        structured?: boolean;
+        format?: string;
+        idempotencyKey?: string;
+        'papercusp/servingGeneration'?: string;
     };
 };
 /**
@@ -681,28 +680,48 @@ export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, m
  * Accept either an operator base URL or an already-qualified `/api/mcp`
  * endpoint; explicit endpoint URLs must not receive a second MCP path.
  * @param {string} operatorUrl
- * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, env?: EnvironmentMap}} [options]
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, nativeSessionOverride?: string|null, env?: EnvironmentMap}} [options]
  */
 export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, nativeSessionOverride, env, }?: {
     workspace?: string;
     harness?: string;
     client?: string;
     contextTier?: string;
+    nativeSessionOverride?: string | null;
     env?: EnvironmentMap;
 }): URL;
 /** A foreign native-session refusal is emitted before the tool dispatcher runs. */
 export function isForeignNativeSessionRejection(result: any): any;
-/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
+ * @param {any} result
+ * @param {{client?: string, explicitNativeSession?: boolean, env?: EnvironmentMap}} [options]
+ */
 export function shouldRetryWithoutNativeSession(result: any, { client, explicitNativeSession, env, }?: {
-    explicitNativeSession?: boolean | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
+    client?: string;
+    explicitNativeSession?: boolean;
+    env?: EnvironmentMap;
 }): any;
-/** Retry read-only catalog discovery when an inherited native-session claim is foreign. */
-export function listToolsWithNativeSessionFallback(initialClient: any, { discoverTools, reconnectWithoutNativeSession, client, explicitNativeSession, env, closeClient, }?: {
-    explicitNativeSession?: boolean | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    closeClient?: typeof closeClientQuietly | undefined;
-}): Promise<any>;
+/** Retry read-only catalog discovery when an inherited native-session claim is foreign.
+ * @param {any} initialClient
+ * @param {{discoverTools: (client: any) => Promise<{client: any, tools: any[]|null, error?: unknown}>, reconnectWithoutNativeSession?: () => Promise<any>, client?: string, explicitNativeSession?: boolean, env?: EnvironmentMap, closeClient?: (client: any) => Promise<void>}} options
+ */
+export function listToolsWithNativeSessionFallback(initialClient: any, { discoverTools, reconnectWithoutNativeSession, client, explicitNativeSession, env, closeClient, }: {
+    discoverTools: (client: any) => Promise<{
+        client: any;
+        tools: any[] | null;
+        error?: unknown;
+    }>;
+    reconnectWithoutNativeSession?: () => Promise<any>;
+    client?: string;
+    explicitNativeSession?: boolean;
+    env?: EnvironmentMap;
+    closeClient?: (client: any) => Promise<void>;
+}): Promise<{
+    nativeSessionRetried: boolean;
+    client: any;
+    tools: any[] | null;
+    error?: unknown;
+}>;
 /**
  * EI-21860372620642128 — install:safe reifies shared node_modules in place
  * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
@@ -935,6 +954,5 @@ export type ToolCatalogEntry = {
  */
 declare function readSpilledPayload(path: any): Promise<any>;
 import { existsSync } from 'node:fs';
-declare function closeClientQuietly(client: any): Promise<void>;
 import { statfs } from 'node:fs/promises';
 export {};

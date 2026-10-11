@@ -20,12 +20,123 @@
     "originalArtifactSha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
     "originalArtifactBytesUnchanged": true,
     "interpretation": "Current R6 permits requester-authored project decisions recovered from ordinary work. The original artifact's references to missing structured reconciliation describe its historical measurement procedure; they do not impose a reporting obligation.",
-    "originalCutDecisionStatus": "The original four-thread selection, shortfall four and two unknown requester decisions are retained. D-003 authorship at the original cut has not been independently established here; later requester records do not retroactively repair that cut.",
+    "originalCutDecisionStatus": "The original four-thread selection, shortfall four and two structured-reconciliation unknowns remain unchanged. Separate original-project-decision provenance recovers both ordinary requester decisions from pre-cut records, including D-003 authorship and the corrected method attestation. That separate recovery does not rewrite the original artifact or establish current-build acceptance.",
     "outcome": "unknown",
     "limits": [
       "Binding immutable historical manual evidence to the current clause does not make the original trials current-build trials.",
       "The later eight-of-eleven review retains its separate requester, cut and identity.",
       "No healthy R6 rating, independent acceptance or shipment is asserted."
+    ]
+  },
+  "sourceRuntimeQualification": {
+    "inspectedAt": "2026-10-11T11:09:10Z",
+    "status": "partial historical provenance; current-build R6 qualification remains open",
+    "method": "Read existing artifacts and exact staging binding, then compare named repository bytes with the recorded build's containing commit. No native trial or test was repeated.",
+    "binding": {
+      "id": 36782,
+      "readEndpoint": "http://127.0.0.1:3170",
+      "readTraceId": "95bf035c-3153-4820-94e8-3fb60b666343",
+      "readAt": "2026-10-11T11:06:20.354Z",
+      "observedAt": "2026-10-05T20:27:24.000Z",
+      "specId": "AUTO-BAR-R-6-P-006",
+      "specRevision": 6,
+      "specFingerprint": "82e5c82859ae26b35450741ac8b2ea65eb2e43c9b80e417ed960986c263d9b10",
+      "serverMeasuredDimensions": [
+        "source"
+      ],
+      "overall": "unknown",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "not-applicable",
+        "fixture": "not-applicable",
+        "rubric": "not-applicable",
+        "environment": "unknown",
+        "coverageEvidence": "not-applicable",
+        "testRun": "not-applicable"
+      },
+      "unknownReasons": [
+        "environment-evidence-fingerprint-not-recorded"
+      ],
+      "environmentFingerprint": null,
+      "interpretation": "The server measured only the immutable original evidence file. Neither its current source fingerprint nor its live/staging-operator label measures the historical runtime or a current native matrix.",
+      "classifierRef": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts#classifySpecEvidenceCurrentness"
+    },
+    "namedSourceComparison": {
+      "recordedBuildContainingCommit": "42ead3e6b01cc770446f00d07623954f3b1b8e72",
+      "comparisonHead": "252b0e7906b728afdaabc3271ea63b0c42a01fa6",
+      "headStayedSameDuringComparison": true,
+      "rows": [
+        {
+          "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "recordedCommitSha256": "3955ae0307aef1a806d844c06cc017d958c86c03021ceac5c4f81f069b85abd4",
+          "inspectedSourceSha256": "fcc1c5299635fe35c49305ef24d274c1dfccdbcfb338bb02bb5a53b2e357921b",
+          "equal": false,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+          "recordedCommitSha256": "83b0089c02e756f2112b0c7ee752eac385c8001823c2a36e6d49e36cd289d5a4",
+          "inspectedSourceSha256": "b486135c3a6c4e1c1892d439f4e71e07af2a617dd0b922d1e8ba91af93fd8b94",
+          "equal": false,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+          "recordedCommitSha256": "5f07e56c248282aee06eab30da2e09de22ee37921b2ba93c3efa5d3a617488ae",
+          "inspectedSourceSha256": "5f07e56c248282aee06eab30da2e09de22ee37921b2ba93c3efa5d3a617488ae",
+          "equal": true,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/consult/get-feedback.ts",
+          "recordedCommitSha256": "3825c79fc52403fc7d55fe8186bb0e12d81ee6bd2ba57c72adb9f4f54dd08d79",
+          "inspectedSourceSha256": "3825c79fc52403fc7d55fe8186bb0e12d81ee6bd2ba57c72adb9f4f54dd08d79",
+          "equal": true,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/role-codex-home.ts",
+          "recordedCommitSha256": "37299044d98e1b9fa3789da450e2c542050904e7ad3927b3e9a4196d12bc1cec",
+          "inspectedSourceSha256": "4ad8c87a6f9448bf279e4de7cc18e27ada653d661f2dcfe6545c69c684f2f953",
+          "equal": false,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+          "recordedCommitSha256": "10d66544a11bc4a4c6199239ba08ad69a1c9af17a735e54269d82d81586ca92a",
+          "inspectedSourceSha256": "31c3c1c0854879bdd4d42871fd43497b6bba84072e3edeefe3f9faccb2ebc6b2",
+          "equal": false,
+          "stableDuringRead": true
+        },
+        {
+          "path": "packages/operator-core/lib/consult/relevance-router.ts",
+          "recordedCommitSha256": "988ed2da33d6f40516fba8bfbe531f71ef8b09febcf7af43104a4d485a6b15b9",
+          "inspectedSourceSha256": "a5251fbc47950d781cf16a9c89952745bba4ce900cf2fb1528288f5cd772c480",
+          "equal": false,
+          "stableDuringRead": true
+        }
+      ],
+      "conclusion": "The named paths are not byte-equivalent as a set. Unchanged entrypoint or production-adapter bytes do not establish unchanged dispatch, core, native-home, transport or router behavior.",
+      "limits": [
+        "This compares committed and inspected repository files, not captured executed bytes or a complete dynamic import graph.",
+        "The original matrix's loaded dependency graph and current runtime equivalence remain unestablished.",
+        "The comparison is time-scoped to this inspection; subsequent source edits may change these hashes."
+      ]
+    },
+    "existingNormalRequestEvidence": {
+      "path": "docs/evidence/get-feedback-normal-request-native-2026-10-11.json",
+      "scope": "Existing second native seed and exact reply/result receipt; ended-source conversion. This is partial normal-consult evidence, not the missing full matrix, controlled decline or D-017 live-source observation."
+    },
+    "ordinaryDecisionProvenance": {
+      "path": "docs/evidence/get-feedback-original-project-decision-provenance-2026-10-11.json",
+      "sha256": "e429b8bd655f0512e34526364574fadddcb1803c86243313d661a0d439b38df5",
+      "scope": "Separate pre-cut ordinary requester decisions. Original artifact bytes, cohort four, shortfall four and two structured-reconciliation unknowns remain unchanged; the eight-of-eleven cohort remains separate."
+    },
+    "remaining": [
+      "Current-build available-path native matrix with substantive feedback and zero avoidable delivery failures.",
+      "D-017 genuinely live-source prefix, disjoint native identities and bounded actor evidence.",
+      "Independent acceptance of the current evidence and exact R7 release shipment."
     ]
   },
   "snapshot": {
