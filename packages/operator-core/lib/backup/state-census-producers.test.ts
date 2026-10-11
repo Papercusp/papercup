@@ -380,6 +380,17 @@ describe('secret census producer adapters', () => {
       expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).toContain(`${session}/apply_patch`);
       await rm(join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex'));
       expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
+      const optionalRoot = join(packageRoot, 'node_modules', '@openai', `codex-${process.platform}-${process.arch}`);
+      await mkdir(join(optionalRoot, 'vendor', `${cpu}-${os}`, 'bin'), { recursive: true });
+      await writeFile(join(optionalRoot, 'package.json'), JSON.stringify({ name: `@openai/codex-${process.platform}-${process.arch}` }));
+      const optionalNative = join(optionalRoot, 'vendor', `${cpu}-${os}`, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
+      await symlink(native, optionalNative);
+      expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).toContain(`${session}/apply_patch`);
+      // An installed optional package owns resolution; a stale bundled binary
+      // must not classify helpers if the selected optional binary is missing.
+      await symlink(native, join(vendor, process.platform === 'win32' ? 'codex.exe' : 'codex'));
+      await rm(optionalNative);
+      expect((await cliSetupHomeCensusProducer(root, launcher)).declarations.map(entry => entry.name)).not.toContain(`${session}/apply_patch`);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {

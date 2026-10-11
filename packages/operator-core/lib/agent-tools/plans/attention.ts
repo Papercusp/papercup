@@ -67,7 +67,9 @@ import { applyTriage, deriveAuthorization, groupByTier, type AttentionItem } fro
 import { readTriageByWorkspace } from '../../attention/triage-store';
 import { shapePlansAttention } from './attention-shape';
 import { cachedRead, type CachedReadCtx } from '../../cache';
-import { conversationsScopeWorkspace } from '../coordination/conversations';
+import { conversationsScopeWorkspace, listConversationsWithTopics } from '../coordination/conversations';
+import { readInbox, readAckedMsgIds } from '../coordination/messages';
+import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import {
   classifyReadActionability,
   resolveSessionStates,
@@ -445,8 +447,6 @@ export default defineTool({
           //    can't suppress it from the human's inbox (security review).
           (async () => {
             try {
-              const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
-              const { ADMIN_COORD_UI_OWNER } = await import('../coordination/identity');
               // EI-1541: same coordLog ambient-workspace pitfall as source #2 —
               // pin the ALS so a detached SWR refresh can't fall through to the
               // global registry workspace and leak another workspace's
@@ -642,7 +642,6 @@ export default defineTool({
           (async () => {
             if (!ownerSourceEnabled('open-owner-questions')) return;
             try {
-              const { listConversationsWithTopics } = await import('../coordination/conversations');
               // Pinned to the workspace resolved up front (and named in the cache
               // key) — NOT the ambient ALS, which is absent on agent MCP calls and
               // on SWR background refreshes and would fall to 'default' (WI-3348).
@@ -755,7 +754,6 @@ export default defineTool({
             if (!ownerSourceEnabled('owner-walls')) return;
             try {
               const { listOwnerWalls } = await import('../coordination/tools/walls');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const { walls } = await listOwnerWalls({
                 workspaceId: activeWorkspaceId(),
                 harness: harnessFilter ?? undefined,
@@ -823,7 +821,6 @@ export default defineTool({
             if (!ownerSourceEnabled('pending-owner-gates')) return;
             try {
               const { listPendingGates } = await import('../../attention/gate-store');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const gates = await listPendingGates({
                 workspaceId: activeWorkspaceId(),
                 order: 'oldest',
@@ -916,7 +913,6 @@ export default defineTool({
           (async () => {
             try {
               const { readDecisionsOwed } = await import('../../attention/decision-owed-source');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const owed = await readDecisionsOwed({ workspaceId: activeWorkspaceId() });
               for (const d of owed) {
                 if (harnessFilter && d.harnessSlug && d.harnessSlug !== harnessFilter) continue;
@@ -944,7 +940,6 @@ export default defineTool({
           (async () => {
             try {
               const { readUnhandledDirectives } = await import('../../attention/unhandled-directives-source');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               for (const d of await readUnhandledDirectives({ workspaceId: activeWorkspaceId() })) {
                 items.push({ ...unhandledDirectiveToAttention(d), occurredAt: toIsoOrNull(tsOf(d.createdAt)) });
               }
@@ -1033,7 +1028,6 @@ export default defineTool({
           try {
             const { FLAGS } = await import('@papercusp/flags');
             const { getFlag } = await import('@papercusp/flags/server');
-            const { activeWorkspaceId } = await import('../../workspace-registry');
             armed = await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`);
           } catch {
             /* fail-safe: treat as unarmed */

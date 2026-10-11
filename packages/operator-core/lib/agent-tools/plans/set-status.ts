@@ -35,6 +35,7 @@ import {
   type Importance,
   type TerminalPlanChildMutation,
 } from './parser';
+import { noteAttributesBlockTo } from '../../plan-items/block-attribution';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { emitPlanItemDoneEvent } from './plan-item-events';
 import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-events';
@@ -784,29 +785,8 @@ export async function releaseTodoClaim(opts: {
  *  single source of truth; this file must never redefine its own copy. */
 export const NOTE_MARKER_RE = NOTE_SUFFIX_RE;
 
-/**
- * Does the item's LIVE injected note attribute its current block to `workItemId`?
- *
- * The attribution half of the attributed clear (deterministic-plan-state-derivation-
- * 2026-08-31 D-001). This is sound only because a note REPLACES the previous one rather
- * than stacking (EI-384, see `flipStatusInBody` below): the single note present is the
- * most recent reflection, so it is the live attribution rather than one entry in a
- * history. If notes ever start accumulating, this predicate silently weakens — hence
- * the property test in the sibling spec pinning replace-not-append.
- *
- * Deliberately reuses `NOTE_MARKER_RE` (the parser's single source of truth) instead of
- * re-deriving the " — note: " literal, and searches WITHIN the matched suffix: the
- * marker text contains neither a work-item id nor a status word, so scanning the whole
- * matched span cannot false-positive on the marker itself.
- */
-export function noteAttributesBlockTo(itemText: string | undefined, workItemId: string): boolean {
-  if (!itemText || !workItemId) return false;
-  const matched = itemText.match(NOTE_MARKER_RE);
-  if (!matched) return false;
-  const note = matched[0].toLowerCase();
-  if (!note.includes(workItemId.toLowerCase())) return false;
-  return note.includes('blocked') || note.includes('needs-human');
-}
+/** Historical export; both lifecycle paths share the parser-backed leaf helper. */
+export { noteAttributesBlockTo };
 
 /**
  * Should an attributed clear be SKIPPED because the block is not this work-item's to lift?

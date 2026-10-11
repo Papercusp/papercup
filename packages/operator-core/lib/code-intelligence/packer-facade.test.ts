@@ -125,6 +125,55 @@ describe('native P010 change report contract', () => {
 
 const BASE: PackerArgs = { include: ['packages/**/*.ts'], rootPath: '/repo' };
 
+describe('native P021 symbol/source bundle evidence boundary', () => {
+  it('expands omitted compiler records and preserves inferred provenance without substituting changed source', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-graph-bundle-unit-'));
+    const source = 'export function target() { return "CAPTURED_LITERAL"; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const contentHash = createHash('sha256').update(source).digest('hex');
+    const site = { path: 'target.ts', line1: 1, kind: 'function' as const, name: 'target' };
+    const secret = 'export const credential = "SECRET_DENIED_LITERAL";\n';
+    writeFileSync(join(root, 'credentials.ts'), secret);
+    const secretHash = createHash('sha256').update(secret).digest('hex');
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: [...Array.from({ length: 40 }, () => site), { ...site, path: 'credentials.ts' }], error: null, latencyMs: 0,
+      truncation: { truncated: false, totalAvailable: 40, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false } };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const graph: CodeIntelAnswer = { ...answer, evidence: { ...evidence,
+      sourceScope: { ...evidence.sourceScope, sourceFingerprint: 'inputs', supportingFiles: [
+        { path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' },
+        { path: 'credentials.ts', contentHash: secretHash, language: 'typescript', representation: 'full-source' }] },
+      siteIdentities: answer.sites.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
+        contentHash: site.path === 'target.ts' ? contentHash : secretHash, versionedSymbolId: `identity-${siteIndex}` })),
+      relationships: answer.sites.map((_site, siteIndex) => ({ siteIndex, kind: 'callers', origin: 'syntax', knowledge: 'inferred', runtimeExecution: 'unknown' })) } };
+    let document = '';
+    const run = () => nativeChangeReport({ rootPath: root, include: ['target.ts'] }, { symbol: 'target', file: 'target.ts' },
+      { graph: async () => graph, exec: async () => ({ stdout: '' }), writeArtifact: async body => {
+        document = body; return join(root, 'captured.json'); } });
+    try {
+      const bundle = (await run()).report.bundle;
+      expect(bundle.kind).toBe('native-source-path');
+      expect(bundle.context.sources[0]).toMatchObject({ contentHash, text: source });
+      expect(bundle.omitted.symbols).toBeGreaterThan(0);
+      expect(bundle.omitted.edges).toBeGreaterThan(0);
+      expect(bundle.tokens.retained).toBe(getEncoding('o200k_base').encode(JSON.stringify(bundle.context), [], []).length);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      const expanded = JSON.parse(document);
+      expect(expanded.context.symbols).toHaveLength(41);
+      expect(document).not.toContain('SECRET_DENIED_LITERAL');
+      expect(expanded.context.edges[39]).toMatchObject({ knowledge: 'inferred', origin: 'syntax', runtimeExecution: 'unknown' });
+      expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return "NEWER_SOURCE"; }\n');
+      const stale = (await run()).report.bundle;
+      expect(stale.context.sources).toEqual([]);
+      expect(stale.coverage.unavailableFiles).toEqual(['target.ts', 'credentials.ts']);
+      expect(document).not.toContain('NEWER_SOURCE');
+      expect(JSON.stringify(expanded)).toContain('CAPTURED_LITERAL');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 /** A matrix wide enough that a builder cannot pass by special-casing one input. */
 const ARG_MATRIX: PackerArgs[] = [
   BASE,
@@ -528,7 +577,8 @@ describe('provenance states what the pack actually is', () => {
     expect(r.artifact!.provenance.chars).toBeGreaterThan(400_000);
     expect(r.artifact!.bundle).toMatchObject({ truncated: true, tokens: { source: null },
       expansion: { tool: 'capability:read', args: { file_path: '/scratch/pack.xml' } } });
-  });
+    expect(r.artifact!.bundle!.tokens.measuredChars).toBeLessThanOrEqual(256);
+  }, 10_000);
 
   it('P021 recovers omitted literal source through the hash-bound artifact and measures retained Unicode tokens', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-pack-bundle-'));
@@ -550,7 +600,8 @@ describe('provenance states what the pack actually is', () => {
       expect(expanded).toBe(body);
       expect(expanded).toContain('OMITTED_LITERAL_SOURCE');
       expect(createHash('sha256').update(expanded).digest('hex')).toBe(bundle.expansion.sha256);
-      expect(bundle.tokens.source).toBe(getEncoding('o200k_base').encode(body, [], []).length);
+      expect(bundle.tokens.source).toBeNull();
+      expect(bundle.tokens.measuredPrefix).toBe(getEncoding('o200k_base').encode(body.slice(0, bundle.tokens.measuredChars), [], []).length);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

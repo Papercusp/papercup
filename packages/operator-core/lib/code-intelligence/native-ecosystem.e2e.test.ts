@@ -10,6 +10,56 @@ import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
 
+describe.runIf(Boolean(baseUrl))('native P021 real CLI source/path expansion', () => {
+  it('expands budget-omitted captured records through capability:read after the source changes', () => {
+    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/packer-facade.ts',
+      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    expect(route.currentBuildTestRoute.readiness).toBe('ready');
+    expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
+      row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
+    const project = mkdtempSync(join(tmpdir(), 'native-bundle-cli-'));
+    let artifact: string | null = null;
+    try {
+      writeFileSync(join(project, 'target.ts'), 'export function cliBundleTarget() { return "CAPTURED_CLI_LITERAL"; }\n');
+      for (let index = 0; index < 4; index++) writeFileSync(join(project, `client${index}.ts`),
+        `import { cliBundleTarget } from "./target";\nexport function client${index}() { return cliBundleTarget(); }\n`);
+      const result = call('code:pack', { op: 'diff', rootPath: project, include: ['*.ts'],
+        explain: { symbol: 'cliBundleTarget', file: 'target.ts', paths: ['.'], phase: 'pre-edit' },
+        projection: { pick: ['answer.error', 'report.bundle'] } });
+      expect(result.answer.error).toBeNull();
+      const bundle = result.report.bundle;
+      expect(bundle.omitted.symbols + bundle.omitted.edges + bundle.omitted.paths).toBeGreaterThan(0);
+      expect(bundle.coverage.sourceCompleteness).toBe('unverified');
+      artifact = bundle.expansion.args.file_path;
+      writeFileSync(join(project, 'target.ts'), 'export function cliBundleTarget() { return "NEW_CLI_LITERAL"; }\n');
+      const pages: Buffer[] = [];
+      let cursor = bundle.expansion;
+      for (let pageIndex = 0; cursor && pageIndex < 16; pageIndex++) {
+        const page = call(cursor.tool, cursor.args);
+        expect(page.ok).toBe(true);
+        const bytes = Buffer.from(page.data, 'base64');
+        expect(bytes.toString('base64')).toBe(page.data);
+        expect(bytes.length).toBe(page.byte_length);
+        expect(page.byte_offset).toBe(pages.reduce((total, row) => total + row.length, 0));
+        pages.push(bytes);
+        expect(Boolean(page.next_cursor)).toBe(!page.eof);
+        cursor = page.next_cursor;
+      }
+      expect(cursor).toBeNull();
+      const document = Buffer.concat(pages).toString('utf8');
+      expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
+      const expanded = JSON.parse(document);
+      expect(expanded.context.paths).toHaveLength(4);
+      expect(expanded.context.edges).toHaveLength(4);
+      expect(document).toContain('CAPTURED_CLI_LITERAL');
+      expect(document).not.toContain('NEW_CLI_LITERAL');
+    } finally {
+      if (artifact) rmSync(artifact, { force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, nativeCliTestTimeout(['dev:pipeline_position', 'code:pack', ...Array<string>(16).fill('capability:read')]));
+});
+
 describe.runIf(Boolean(baseUrl))('native P014 required BAR real CLI interface change report', () => {
   it('exposes the changed response field and its incompatible registered fixture client, then clears the mismatch after the client adapts', () => {
     const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',

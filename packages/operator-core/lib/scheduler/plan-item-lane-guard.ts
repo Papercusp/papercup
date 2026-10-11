@@ -60,6 +60,7 @@
  */
 import type { WorkItem } from '../work-items';
 import { isTerminalItemStatus } from '../fleet-drained-events';
+import { noteAttributesBlockTo } from '../plan-items/block-attribution';
 
 export interface PlanItemLaneBlock {
   reason: string;
@@ -522,16 +523,10 @@ export async function planItemLaneBlockReason(
         !linked.some((i) => i.needsHuman || i.effectiveStatus === 'needs-human') &&
         !linked.some((i) => ownerGateMarkerFor(i) !== null);
       if (attributionEligible) {
-        try {
-          // Reuse plans:set-status's canonical parser for the live note marker
-          // and block word; a prose mention of the id is not attribution.
-          const { noteAttributesBlockTo } = await import('../agent-tools/plans/set-status');
-          if (noteAttributesBlockTo(blocked.text, workItem.id!)) {
-            blockAttributedToWorkItemId = workItem.id;
-          }
-        } catch {
-          // Attribution is an optional exception. On lookup failure the ordinary
-          // blocked result remains intact and the lifecycle writer keeps refusing.
+        // Reuse plans:set-status's canonical parser predicate through its leaf
+        // helper; this guard must not import the full write-side tool.
+        if (noteAttributesBlockTo(blocked.text, workItem.id!)) {
+          blockAttributedToWorkItemId = workItem.id;
         }
       }
       return {

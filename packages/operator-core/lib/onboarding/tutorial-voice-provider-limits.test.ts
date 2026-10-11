@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../integration-credentials', () => ({ readAdmittedElevenLabsIntegrationCredential: vi.fn() }));
 import { readAdmittedElevenLabsIntegrationCredential } from '../integration-credentials';
-import { createElevenLabsTutorialVoiceLimitVerifier, readReservedElevenLabsTutorialCredential } from './tutorial-voice-reservation-store';
+import { createElevenLabsTutorialVoiceLimitVerifier, readReservedElevenLabsTutorialCredential,
+  createElevenLabsTutorialVoiceTokenProvider } from './tutorial-voice-reservation-store';
 import { PAPERCUP_FRONT_AGENT } from '../voice-engines/elevenlabs-agent-sync';
 
 const read = vi.mocked(readAdmittedElevenLabsIntegrationCredential);
@@ -16,6 +17,68 @@ function options() {
 const verify = (reader: ReturnType<typeof createElevenLabsTutorialVoiceLimitVerifier>) =>
   reader(null as never, null as never);
 beforeEach(() => { read.mockReset(); read.mockResolvedValue(admitted); });
+describe('server tutorial signed URL issuer', () => {
+  const reservation = { ok: true as const, reservationId: '11111111-1111-4111-8111-111111111111',
+    maximumSeconds: 120, providerLimitRef: 'elevenlabs:restricted:tutorial' };
+  const signedUrl = 'wss://api.elevenlabs.io/v1/convai/conversation?agent_id=tutorial&conversation_id=conv-one&conversation_signature=synthetic';
+  function setup() {
+    const events: string[] = [];
+    const store = { reserve: vi.fn(async () => { events.push('reserve'); return reservation; }),
+      beginIssuance: vi.fn(async () => { events.push('attempt'); return 'attempt-one'; }),
+      recordProviderConversation: vi.fn(async () => { events.push('receipt'); return true; }) };
+    const transport = vi.fn(async () => { events.push('mint'); return Response.json({ signed_url: signedUrl }); });
+    const disabled = vi.fn(async () => false);
+    const credential = { ...options().credential, fetch: transport as unknown as typeof fetch };
+    const provider = createElevenLabsTutorialVoiceTokenProvider({ store, credential, disabled });
+    const controller = new AbortController();
+    const issue = () => provider.issue({} as never, controller.signal);
+    return { events, store, transport, disabled, controller, issue };
+  }
+  it('commits attempt before mint and immutable receipt before delivering a bounded secret-free response', async () => {
+    const s = setup(); const result = await s.issue();
+    expect(s.events).toEqual(['reserve', 'attempt', 'mint', 'receipt']);
+    expect(result).toMatchObject({ ok: true, connectionType: 'websocket', signedUrl,
+      sessionId: reservation.reservationId, maximumSeconds: 120 });
+    expect(JSON.stringify(result)).not.toContain(admitted.apiKey);
+    const [endpoint, init] = s.transport.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(endpoint.searchParams.get('include_conversation_id')).toBe('true');
+    expect(endpoint.searchParams.get('agent_id')).toBe('tutorial');
+    expect(init.redirect).toBe('error');
+    expect(s.store.recordProviderConversation).toHaveBeenCalledWith(reservation.reservationId, 'attempt-one', 'conv-one');
+  });
+  it('makes no provider request when admission or the attempt refuses', async () => {
+    const s = setup(); read.mockResolvedValueOnce(null);
+    expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    expect(s.store.beginIssuance).not.toHaveBeenCalled(); expect(s.transport).not.toHaveBeenCalled();
+    const t = setup(); t.store.beginIssuance.mockResolvedValueOnce(null as never);
+    expect(await t.issue()).toEqual({ ok: false, reason: 'unavailable' }); expect(t.transport).not.toHaveBeenCalled();
+  });
+  it('retains the trusted receipt when cancellation arrives with the provider response', async () => {
+    const s = setup(); s.transport.mockImplementationOnce(async () => {
+      s.controller.abort(); return Response.json({ signed_url: signedUrl });
+    });
+    expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    expect(s.store.recordProviderConversation).toHaveBeenCalledOnce();
+  });
+  it('refuses delivery on failed persistence and never retries a lost remote response', async () => {
+    const s = setup(); s.store.recordProviderConversation.mockResolvedValueOnce(false);
+    expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    const t = setup(); t.transport.mockRejectedValueOnce(new Error('synthetic transport failure'));
+    expect(await t.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    expect(t.transport).toHaveBeenCalledOnce(); expect(t.store.recordProviderConversation).not.toHaveBeenCalled();
+  });
+  it.each([
+    signedUrl.replace('api.elevenlabs.io', 'untrusted.test'),
+    signedUrl.replace('agent_id=tutorial', 'agent_id=other'),
+    signedUrl.replace('&conversation_id=conv-one', ''),
+    signedUrl + '&conversation_id=conv-two',
+    signedUrl + '&conversation_signature=other',
+  ])('refuses malformed or mismatched trusted receipt %s', async url => {
+    const s = setup(); s.transport.mockResolvedValueOnce(Response.json({ signed_url: url }));
+    expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    expect(s.store.recordProviderConversation).not.toHaveBeenCalled();
+  });
+});
 describe('host-owned tutorial provider limits', () => {
   it('rechecks the exact reserved credential and refuses rotation or duration growth', async () => {
     const reservation = { ok: true as const, reservationId: '11111111-1111-4111-8111-111111111111',

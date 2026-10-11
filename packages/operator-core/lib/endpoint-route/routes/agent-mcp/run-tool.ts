@@ -13,6 +13,10 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { invokeServerCapability } from '../../../capabilities/invoke';
+// Register through the same module graph as the host's other routes. A
+// request-time import makes tsx traverse the already loaded CommonJS catalog
+// through Node's synchronous ESM hooks, blocking unrelated HTTP probes.
+import '../../../agent-tools';
 
 interface Body {
   name?: unknown;
@@ -36,9 +40,6 @@ export default defineTool({
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ ok: false, error: 'forbidden', detail: 'loopback only' }, { status: 403 });
     }
-    // Ensure the tool catalog is registered (idempotent; ESM-cached).
-    await import('../../../agent-tools');
-
     let body: Body;
     try {
       body = (await req.json()) as Body;

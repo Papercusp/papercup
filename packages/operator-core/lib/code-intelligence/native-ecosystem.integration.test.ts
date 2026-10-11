@@ -33,6 +33,42 @@ import { defineTool, lookupByMcpName, projectedToolCallContract } from '@papercu
 import { z } from 'zod';
 
 describe('native P021 required BAR bounded source pack expansion', () => {
+  it('joins real compiler paths to exact source excerpts and expands omitted consumers after a source edit', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-path-source-bundle-'));
+    let artifactPath: string | null = null;
+    try {
+      writeFileSync(join(project, 'target.ts'), 'export function bundleTarget() { return "CAPTURED_NATIVE_PATH_SOURCE"; }\n');
+      for (let index = 0; index < 24; index++) writeFileSync(join(project, `client${index}.ts`),
+        `import { bundleTarget } from "./target";\nexport function client${index}() { return bundleTarget(); }\n`);
+      const result = (await codePack.handler(codePack.args.parse({ op: 'diff', rootPath: project,
+        include: ['*.ts'], explain: { symbol: 'bundleTarget', file: 'target.ts', paths: ['.'], phase: 'pre-edit' } }),
+      { projectDir: project } as never) as { data: { answer: CodeIntelAnswer; report: NativeChangeReport } }).data;
+      expect(result.answer.error).toBeNull();
+      const bundle = result.report.bundle;
+      artifactPath = bundle.expansion.args.file_path;
+      expect(bundle.context.sources).toContainEqual(expect.objectContaining({ path: 'target.ts',
+        text: expect.stringContaining('CAPTURED_NATIVE_PATH_SOURCE'), contentHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+      expect(bundle.omitted.symbols + bundle.omitted.edges + bundle.omitted.paths).toBeGreaterThan(0);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      expect(bundle.coverage).toMatchObject({ sourceCompleteness: 'unverified', unavailableFiles: [] });
+      writeFileSync(join(project, 'target.ts'), 'export function bundleTarget() { return "NEW_NATIVE_SOURCE"; }\n');
+      const document = readFileSync(artifactPath, 'utf8');
+      expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
+      const expanded = JSON.parse(document);
+      expect(expanded.context.symbols.length).toBeGreaterThan(bundle.context.symbols.length);
+      expect(expanded.context.paths).toHaveLength(20);
+      expect(bundle.coverage.backendTruncated).toBe(true);
+      expect(expanded.context.edges).toHaveLength(20);
+      expect(expanded.context.edges.every((edge: { origin: string; knowledge: string; runtimeExecution: string }) =>
+        edge.origin === 'compiler' && edge.knowledge === 'observed' && edge.runtimeExecution === 'unknown')).toBe(true);
+      expect(document).toContain('CAPTURED_NATIVE_PATH_SOURCE');
+      expect(document).not.toContain('NEW_NATIVE_SOURCE');
+    } finally {
+      if (artifactPath) rmSync(artifactPath, { force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('retains a bounded actual source preview and recovers omitted evidence from its captured artifact after the source changes', async () => {
     const project = mkdtempSync(join(tmpdir(), 'native-source-bundle-'));
     let artifactPath: string | null = null;

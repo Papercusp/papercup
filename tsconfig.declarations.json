@@ -124,6 +124,10 @@
     // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
     // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
     "scripts/lib/schema-symbol-drift.mjs",
+    // degradation-signals-on-condition-rail-2026-10-11 P-001 (BAR R-4) — the measuring inventory of
+    // failure signals that bypass the condition rail. Imported directly by
+    // condition-rail-inventory.test.ts; the P-006 lint builds on the same scanner.
+    "scripts/lib/condition-rail-inventory.mjs",
     // EI-24538088938561684 — pass reuse + proof recording for the gate's targeted task re-runs.
     // Imported by apps/operator/lib/release/green-checkpoint.ts (runGateAtRef) and directly by
     // targeted-task-reuse.test.ts.

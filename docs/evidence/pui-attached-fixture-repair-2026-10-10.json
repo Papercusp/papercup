@@ -138,5 +138,57 @@
       "The original Connection: Unavailable cause remains unconfirmed.",
       "Account auto is routing metadata, not serving-account proof. No full-candidate acceptance, BAR adequacy, independent grade, final Avi approval or public shipment is asserted."
     ]
+  },
+  "coldStartupProfile": {
+    "workItem": "EI-25697542669399195",
+    "plane": "private current-build operator with retained installed PUI; cold setup only; no native inference",
+    "binarySha256": "e0cfc371fb1289595da1c0246a124cdbf68880c3386405c3cedd928d480d1d0f",
+    "archiveSha256": "6d98c2ef536329b2feb3fb00fac6b881a8e9f3e8f1dffc5229c0bc0f33127964",
+    "failedRun": {
+      "taskId": "0mv43457r1b0r4hzcza",
+      "logPath": ".papercusp/scratch/bash-c21b7bb6-92b.log",
+      "logSha256": "41566cb1953f16738e4aee889dba0adb8ec6627ae1aca6315d9c6e68c256f4ac",
+      "terminalAt": "2026-10-11T17:21:54.799Z",
+      "exitCode": 1,
+      "result": "1 failed / 93 skipped; healthy footer timeout before any native launch",
+      "frameworkResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=e8439192d1 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-11T17:16:40.085Z skippedTests=93",
+      "profilePath": "/tmp/pui-acceptance-7534f/cold-identity-profile-20261011-1716/timing/operator-549229-af09aab3-5841-4bb1-a6cd-9db51a5a0c80.json",
+      "profileSha256": "cd0ddfd06a546396c4ba2aaf3b682060202f8bd07ddda1464cedf4f0f032f9af",
+      "requests": [
+        { "method": "GET", "path": "/api/harness/papercup/agent-chats", "status": 500, "wallMs": 7270, "eventLoopMaxMs": 7147.094015 },
+        { "method": "POST", "path": "/api/agent-mcp/run-tool", "toolName": "accounts:status", "status": 408, "wallMs": 30793, "eventLoopMaxMs": 30618.419199 }
+      ],
+      "cpuAttribution": [
+        { "source": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts", "handlerSampledMs": 27794, "synchronousEsmHookSampledMs": 23106 },
+        { "source": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts", "handlerSampledMs": 6590, "synchronousEsmHookSampledMs": 4618 }
+      ]
+    },
+    "rootCause": "Request-time dynamic imports traverse the already loaded CommonJS catalog/chat-data graph through tsx's synchronous Node ESM hooks, blocking the private HTTP event loop.",
+    "repair": "Reuse static module dependencies for chat CRUD, palette invocation and palette catalog listing. Preserve existing principal/dispatch checks and client timeouts.",
+    "recurrenceGuard": {
+      "testFile": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "testName": "operator OS cold startup verifies identity before native launch",
+      "checks": "Both observer conditions must finish the installed client's own accounts:status request with wall time and measured HTTP loop delay below 3000ms; no REST prewarming or native launch.",
+      "taskId": "0mv43udy21yvq76y63p",
+      "logPath": ".papercusp/scratch/bash-ed82bef9-c65.log",
+      "state": "terminal failed exit 1 at 2026-10-11T17:42:39.962Z; both cold controls selected, 2 failed / 92 skipped; initial identity and account-status complete but remaining startup loop stalls exceed the guard",
+      "observations": [
+        { "observer": false, "initialIdentityMs": 34, "accountStatusMs": 94, "accountStatusCode": 200, "eventLoopMaxMs": 7683.964927 },
+        { "observer": true, "initialIdentityMs": 39, "accountStatusMs": 151, "accountStatusCode": 200, "eventLoopMaxMs": 6144.655359 }
+      ],
+      "remainingCpuAttribution": "New profiles locate synchronous ESM waits in plans:attention's readInbox/readAckedMsgIds lazy import and telemetry defaultGoalRehydrator. Cycle-safe repair remains open.",
+      "detectorCorrection": "Wait only for request completion; assert its immutable wall/loop measurements once, without retrying a historical maximum for 40 seconds."
+    },
+    "repairSourceSha256": {
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts": "8f0a9b2e44a550dcc4fda414f22f25bcbb8511089084c4b404a3e420a83133b2",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/capabilities.ts": "cd8afe220b38ae8e93552dd253188c6436d7a4d330c145068658b9c0e8a1046e",
+      "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts": "cffc073a57c8f10cc7a95a1ce199d7749385b70b69104e995dc17c10e9d168d9",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "50c531880e70f983d9397b2238720e0660246f9b6c859d2858008cb6a4f614a1"
+    },
+    "limitations": [
+      "The profile ties this cold startup stall to synchronous module loading; it does not establish the earlier Connection: Unavailable cause or the observer's causal role.",
+      "The changed invocation path passes 10 route tests; chat context/catalog checks add 7 passes with unknown commit provenance. Cold controls reach healthy identity and complete accounts:status, but both fail the new global loop-delay guard. The startup class is not resolved; no native approval/restart or immutable full-candidate acceptance is established.",
+      "The original full47a6 verdict remains refused. BAR adequacy, independent grading and final Avi candidate approval remain required."
+    ]
   }
 }

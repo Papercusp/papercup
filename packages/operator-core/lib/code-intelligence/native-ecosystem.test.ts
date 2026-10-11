@@ -8,7 +8,7 @@ import { astGrepSyntaxIndex } from './ast-grep-facade';
 import { LspDaemonAnswerCache, type MeasuredLspInputs } from './lsp-daemon-cache';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer } from './contracts';
-import { nativeChangeReport } from './packer-facade';
+import { nativeChangeReport, packerFacade, REPOMIX_PINNED_VERSION, type PackerEffects } from './packer-facade';
 import { produceSnapshotFromSource } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 import { suggestFromSnapshot, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-tools/plans/code-dependency-evidence';
@@ -18,6 +18,30 @@ import { nativeCliPlan, nativeCliResult, nativeCliTestTimeout } from './native-c
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS, PTOOL_LIST_TOOLS_TIMEOUT_MS,
   ptoolConnectionRetryOptions, ptoolConnectAttemptTimeoutMs, timeoutForTool,
   resolvePtoolInvocationCandidates } from '../../../../apps/operator/scripts/ptool.mjs';
+
+describe('native P021 required BAR captured source bundle boundary', () => {
+  it('keeps complete small evidence distinct from a truncated preview and binds expansion to the saved bytes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-small-source-bundle-'));
+    const path = join(root, 'pack.xml');
+    const source = '<file path="target.ts">export const answer = 42;</file>';
+    const effects: PackerEffects = { exec: async (bin, argv) => ({ stdout: argv[0] === '--version'
+      ? REPOMIX_PINNED_VERSION : bin === 'git' ? '' : source }),
+    writeArtifact: async body => { writeFileSync(path, body); return path; }, now: () => new Date() };
+    try {
+      const result = await packerFacade('pack', { rootPath: root, include: ['target.ts'] }, effects);
+      const artifact = result.artifact!, bundle = artifact.bundle!;
+      expect(result.answer.error).toBeNull();
+      expect(bundle).toMatchObject({ kind: 'captured-source', sourcePaths: ['target.ts'], truncated: false,
+        totalChars: source.length, retainedChars: source.length });
+      expect(artifact.preview).toBe(source);
+      expect(bundle.tokens.source).toBe(bundle.tokens.retained);
+      expect(bundle.tokens.source).toBeGreaterThan(0);
+      expect(bundle.expansion.args.file_path).toBe(path);
+      expect(readFileSync(path, 'utf8')).toBe(source);
+      expect(bundle.expansion.sha256).toBe(createHash('sha256').update(source).digest('hex'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('native CLI fixture runtime and deadline guards', () => {
   it('uses the maintained staging proxy without a green fallback and honors producer deadlines', () => {

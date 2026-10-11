@@ -267,6 +267,60 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     ]);
   });
 
+  it('returns the committed claim while optional holder-interest arming is still pending', async () => {
+    const id = 'F-holder-interest-arm-pending';
+    await seedFeature(id);
+
+    let markArmStarted!: () => void;
+    const armStarted = new Promise<void>((resolve) => {
+      markArmStarted = resolve;
+    });
+    type InterestWatch = Awaited<ReturnType<typeof wi.armWorkItemHolderInterests>>;
+    let finishArm!: (watch: InterestWatch) => void;
+    let armFinished = false;
+    const pendingArm = new Promise<InterestWatch>((resolve) => {
+      finishArm = (watch) => {
+        armFinished = true;
+        resolve(watch);
+      };
+    });
+    const armSpy = vi.spyOn(wi, 'armWorkItemHolderInterests').mockImplementation(() => {
+      markArmStarted();
+      return pendingArm;
+    });
+
+    let result: Awaited<ReturnType<typeof getNextWorkItem>> | undefined;
+    let error: unknown;
+    const pull = getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, { harness: H }).then(
+      (value) => {
+        result = value;
+      },
+      (caught) => {
+        error = caught;
+      },
+    );
+
+    try {
+      const first = await Promise.race([
+        armStarted.then(() => 'arm-started' as const),
+        pull.then(() => 'pull-returned' as const),
+      ]);
+      expect(first).toBe('arm-started');
+      // Let the claim's return continuation run, but keep the optional arm unresolved.
+      await Promise.resolve();
+      expect(armFinished).toBe(false);
+      expect(error).toBeUndefined();
+      expect(result?.workItem).toMatchObject({ id, assignee: BEE.assignee });
+      const rows = await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${id}`;
+      expect(rows[0]?.taken_by).toBe(BEE.assignee);
+    } finally {
+      finishArm(undefined);
+      await pull;
+      armSpy.mockRestore();
+    }
+  });
+
   // COVERAGE NOTE — why this second, source-level test exists.
   //
   // The behavioural test above only exercises the JS ladder-deadline branch. The OTHER half of

@@ -679,8 +679,13 @@ export function resolveOperatorUrl(opts = {}) {
 // the resolved target is dead (stale-shell heal below) — every later api()
 // call / child-session URL derivation picks up the adopted target because the
 // defaults at those call sites read these bindings per call.
-let OPERATOR_TARGET = resolveOperatorTarget();
-let OPERATOR_URL = OPERATOR_TARGET.url;
+// Tool registration imports this CLI's helpers. Discovery belongs to an actual
+// launcher/API use, never module evaluation: it can spawn curl/systemctl before
+// a packaged operator or proxy exists.
+let OPERATOR_TARGET;
+function launcherOperatorTarget() {
+  return (OPERATOR_TARGET ??= resolveOperatorTarget());
+}
 
 /**
  * Apply the current launcher target to a child environment and preserve URL
@@ -688,7 +693,7 @@ let OPERATOR_URL = OPERATOR_TARGET.url;
  * must remain fixed; discovery/proxy/default targets are launcher-managed.
  * Exported for the environment-boundary regression tests.
  */
-export function applyLauncherOperatorUrlEnv(env, target = OPERATOR_TARGET) {
+export function applyLauncherOperatorUrlEnv(env, target = launcherOperatorTarget()) {
   // These describe the spawning operator host, not the agent session. ptool
   // prefers either hint over PAPERCUSP_OPERATOR_URL, so carrying a stale host
   // port through a loop respawn can route every named tool call to the wrong
@@ -756,7 +761,6 @@ export function resolveFallbackOperatorTargets({
  */
 export function adoptOperatorTarget(t) {
   OPERATOR_TARGET = t;
-  OPERATOR_URL = t.url;
   applyLauncherOperatorUrlEnv(process.env, t);
 }
 
@@ -5873,7 +5877,7 @@ export async function resolveOmpOperatorUrl(
   // A caller-supplied pin is authoritative; never silently route it elsewhere.
   if (operatorUrl) return operatorUrl;
   const { base: configuredBase, configuredPort } = runtimeOmpOperatorBase(
-    OPERATOR_URL,
+    launcherOperatorTarget().url,
     env,
   );
   if (!configuredPort || !isLoopbackOperatorUrl(configuredBase))
@@ -6043,7 +6047,7 @@ export function writeOmpSessionConfigDir(
     // no allowlist at all) but a ~2x wire overrun for a seeded one — so the seeded call
     // site passes it, and the omp-seed-wire-budget guard measures the pair.
     toolsCompact = null,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     // The superuser bearer the operator at operatorUrl validates. When set, it replaces the
     // template's baked bearer on every superuser papercusp server (applyOmpOperatorBearer):
     // re-pointing the origin without the credential strands the session on a stale token
@@ -8149,7 +8153,7 @@ export async function fetchWithResilience(
     bootstrapReplayMaxAttempts = BOOTSTRAP_REPLAY_MAX_ATTEMPTS,
     bootstrapReplayBudgetMs = BOOTSTRAP_REPLAY_BUDGET_MS,
     label = url,
-    target = OPERATOR_TARGET,
+    target = launcherOperatorTarget(),
     // Stale-shell heal (mac VM owner repro 2026-07-07): when the target keeps
     // refusing, look ONCE for a DIFFERENT live operator (proxy → fresh
     // operator.json → dev default), health-check it, and switch — instead of
@@ -8297,7 +8301,7 @@ export async function fetchWithResilience(
           targetStale
             ? `psu: the Papercusp app's server at ${target.url} isn't answering (${label}) and its boot record is ` +
                 `${fmtAgo(targetAgeMs)} old — checking for ${Math.ceil(effectiveConnectBudgetMs / 1000)}s…\n`
-            : `psu: operator at ${target?.url ?? OPERATOR_URL} unreachable (${label}) — it may be restarting; ` +
+            : `psu: operator at ${target?.url ?? launcherOperatorTarget().url} unreachable (${label}) — it may be restarting; ` +
                 `retrying for up to ${Math.ceil(effectiveConnectBudgetMs / 1000)}s…\n`,
         );
         announcedConnRetry = true;
@@ -8343,7 +8347,7 @@ export async function fetchWithResilience(
     }
   }
   const e = lastErr;
-  const shownUrl = target?.url ?? OPERATOR_URL;
+  const shownUrl = target?.url ?? launcherOperatorTarget().url;
   // WI-3271: guidance must match the install. A desktop (discovery) target has
   // no systemd — telling a Windows/desktop user to systemctl is a dead end; the
   // fix there is starting (or restarting) the Papercusp app itself.
@@ -8421,7 +8425,7 @@ async function api(path, opts = {}) {
   const { retryBootstrapFailures = false, ...fetchOpts } = opts;
   const token = readToken();
   const res = await fetchWithResilience(
-    OPERATOR_URL + path,
+    launcherOperatorTarget().url + path,
     {
       ...fetchOpts,
       headers: {
@@ -8996,7 +9000,7 @@ export function createLaunchOptionsReader({
   request = api,
   now = Date.now,
   maxAgeMs = 30_000,
-  scope = () => OPERATOR_URL,
+  scope = () => launcherOperatorTarget().url,
 } = {}) {
   const cache = new Map();
   return function readOptions({ workspace = null, agent = null,
@@ -10209,7 +10213,7 @@ export function startSupervisorBeat(
   {
     fetchImpl = fetch,
     intervalMs = SUPERVISOR_BEAT_MS,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     setIntervalImpl = setInterval,
     // EI-19948333346987654: the terminal device path THIS launch owns (from
@@ -10367,7 +10371,7 @@ function writePendingSessionEndWitness(witness, home = homedir()) {
 export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
   const {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 2_000,
     connectBudgetMs = 5_000,
@@ -10516,7 +10520,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
 export async function reportSessionResumed(advSessionId, opts = {}) {
   const {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     // Exact-session resume claims traverse the same MCP proxy as every other
     // psu bootstrap request. Keep their default budget on the shared derivation
@@ -10822,7 +10826,7 @@ async function reportSessionResumeTransition(
 ) {
   const {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
     connectBudgetMs = 10_000,
@@ -11135,7 +11139,7 @@ export async function reportSessionRespawned(
   {
     coordOwnerId = null,
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 2_000,
     appendEventImpl = appendHostEvent,
@@ -11352,7 +11356,7 @@ export async function refreshPersonaRender(
   coordOwnerId,
   {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 8_000,
   } = {},
@@ -11399,7 +11403,7 @@ export async function reportSessionPortDelivery(
   proof,
   {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
   } = {},
@@ -11487,7 +11491,7 @@ export async function reportSessionPortLaunchFailure(
   failure,
   {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
   } = {},
@@ -11854,7 +11858,7 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
         "4",
         "-X",
         "POST",
-        `${OPERATOR_URL}/api/desktop/install/papercusp-files`,
+        `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
       ],
       {
         encoding: "utf8",
@@ -11877,7 +11881,7 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
       `⚠⚠ ${label} NOT ENROLLED — ${degradedNote} ⚠⚠`,
       `   ${verdict.misses.join("; ")}`,
       "   Self-repair via the operator failed or it is unreachable. Fix: restart the operator (it re-installs",
-      `   hooks at boot), or: curl -X POST ${OPERATOR_URL}/api/desktop/install/papercusp-files`,
+      `   hooks at boot), or: curl -X POST ${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
       "   Launching anyway.",
       "",
     ].join("\n"),
@@ -14316,7 +14320,7 @@ export function freshSuBootstrapBody(
   {
     brain = false,
     bootstrapIdempotencyKey = null,
-    mcpBaseUrl = OPERATOR_TARGET.url,
+    mcpBaseUrl = launcherOperatorTarget().url,
   } = {},
 ) {
   bootstrapIdempotencyKey ||= args.bootstrapIdempotencyKey || null;
@@ -15275,7 +15279,7 @@ export async function tryRematerializeFromArchive(
   sourceKind = null,
   {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
     statusTimeoutMs = 1_000,
@@ -15509,7 +15513,7 @@ export async function ensureInteractiveConfigViaOperator(
   configDir,
   {
     fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
+    operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
   } = {},
@@ -17314,7 +17318,7 @@ export function setupReminderLines(stage) {
  */
 async function fetchSetupStageSoft({
   fetchImpl = fetch,
-  operatorUrl = OPERATOR_URL,
+  operatorUrl = launcherOperatorTarget().url,
   timeoutMs = 1500,
 } = {}) {
   const ac = new AbortController();

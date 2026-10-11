@@ -13,6 +13,7 @@ import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
 import { seedPrivateLearning, preflightPrivateLearning } from './portal-learning-fixture';
+import { seedPrivateWorkflows, preflightPrivateWorkflows } from './portal-workflows-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -327,6 +328,9 @@ async function coordCanary(health: unknown) {
     const learningSeed = process.env.ROSTER_LEARNING_BROWSER_PROOF === '1'
       ? await seedPrivateLearning(workspace, evidence) : undefined;
     if (learningSeed) await preflightPrivateLearning(learningSeed, base, cookie(ownSession.token), evidence);
+    const workflowsSeed = process.env.ROSTER_WORKFLOWS_BROWSER_PROOF === '1'
+      ? await seedPrivateWorkflows(workspace, evidence) : undefined;
+    if (workflowsSeed) await preflightPrivateWorkflows(workflowsSeed, base, cookie(ownSession.token), evidence);
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -414,6 +418,7 @@ async function coordCanary(health: unknown) {
       ...(projectHistorySeed ? { projectHistory: true, projectHistorySeed } : {}),
       ...(calendarSeed ? { calendar: true, calendarSeed } : {}),
       ...(learningSeed ? { learning: true, learningSeed } : {}),
+      ...(workflowsSeed ? { workflows: true, workflowsSeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

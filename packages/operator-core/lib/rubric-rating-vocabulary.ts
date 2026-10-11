@@ -76,11 +76,30 @@ const NON_RATING_TARGET_WORDS = new Set(['it', 'this', 'that', 'them', 'one', 'o
 // a standalone "Grade lineage" (or a quoted rating) remains a directive.
 const GRADE_METADATA_OBJECT_RE = /^(?:lineage|provenance|history|record|records|metadata)\b/i;
 const INSPECTION_CONJUNCTION_RE = /\b(?:read|inspect|review|trace|verify|check|audit)\b[^.!?;:\n]*\band\s+$/i;
+// Qualified artifact phrases such as "malformed grade map" or "canonical
+// grade receipts" use grade as a noun. Keep the target nouns narrow and require
+// a noun modifier before suppressing them so an explicit "Grade map if ..."
+// directive remains visible to the off-scale guard.
+const GRADE_ARTIFACT_OBJECT_RE = /^(?:map|maps|receipt|receipts)\b/i;
+const GRADE_ARTIFACT_NOUN_MODIFIERS = new Set([
+  'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  'acceptance', 'approved', 'canonical', 'complete', 'correct', 'current', 'expected',
+  'existing', 'final', 'frozen', 'generated', 'incomplete', 'invalid', 'malformed',
+  'normalized', 'published', 'recorded', 'required', 'review', 'rubric', 'scorecard',
+  'signed', 'source', 'stored', 'test', 'updated', 'valid', 'verification',
+]);
 
 function isInspectedGradeMetadata(text: string, directiveStart: number, input: string): boolean {
   if (!GRADE_METADATA_OBJECT_RE.test(input.trimStart())) return false;
   const clause = text.slice(Math.max(0, directiveStart - 180), directiveStart);
   return INSPECTION_CONJUNCTION_RE.test(clause);
+}
+
+function isGradeArtifactNounPhrase(text: string, directiveStart: number, input: string): boolean {
+  if (!GRADE_ARTIFACT_OBJECT_RE.test(input.trimStart())) return false;
+  const prefix = text.slice(Math.max(0, directiveStart - 120), directiveStart);
+  const precedingWord = /\b([A-Za-z][A-Za-z0-9'-]*)\s+$/.exec(prefix)?.[1]?.toLowerCase();
+  return precedingWord !== undefined && GRADE_ARTIFACT_NOUN_MODIFIERS.has(precedingWord);
 }
 
 function normalizeRating(value: string): string {
@@ -278,7 +297,13 @@ export function extractRubricRatingInstructions(
     const directiveEnd = directiveStart + match[0].length;
     if (isNumberedProcedureHeading(text, directiveStart, directiveEnd)) continue;
     const input = text.slice(directiveEnd);
-    if (directive.toLowerCase() === 'grade' && isInspectedGradeMetadata(text, directiveStart, input)) continue;
+    if (
+      directive.toLowerCase() === 'grade' &&
+      (isInspectedGradeMetadata(text, directiveStart, input) ||
+        isGradeArtifactNounPhrase(text, directiveStart, input))
+    ) {
+      continue;
+    }
     const target = parseDirectiveTarget(input, directive);
     if (!target) continue;
     const end = directiveStart + match[0].length + target.end;

@@ -132,6 +132,27 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     ).toEqual(['lineage']);
   });
 
+  it('treats qualified grade maps and grade receipts as artifact nouns', () => {
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({ key: 'r-10', method: 'Reject the malformed grade map.' }),
+        criterion({ key: 'r-18', method: 'Preserve canonical grade receipts.' }),
+      ],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result).toMatchObject({ ok: true, instructions: [], violations: [] });
+  });
+
+  it('still rejects an explicit off-scale directive using an artifact word as its label', () => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-artifact-label', method: 'Grade map if the mapping is complete.' })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.violations.map((violation) => violation.rating)).toEqual(['map']);
+  });
+
   it('ignores numbered GRADE headings and rate-of noun phrases without hiding a real directive', () => {
     const instructions = extractRubricRatingInstructions(
       'procedure-prose',

@@ -19,6 +19,7 @@ import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-i
 import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './portal-project-history-fixture';
 import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calendar-fixture';
 import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learning-fixture';
+import { runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -128,6 +129,8 @@ type PortalRosterBrowserInput = {
   calendar?: boolean;
   learning?: boolean;
   learningSeed?: PrivateLearningSeed;
+  workflows?: boolean;
+  workflowsSeed?: PrivateWorkflowsSeed;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
@@ -156,7 +159,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -168,7 +171,20 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.learning ? `
+  const entry = input.workflows ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { AdvScopeProvider } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvShell.tsx'))};
+    import AdvWorkflowsTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvWorkflowsTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvScopeProvider, null, React.createElement(AdvWorkflowsTab)))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.learning ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -403,7 +419,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -414,7 +430,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': input.brainstorm || input.calendar ? 'css' : 'empty', '.module.css': 'local-css',
+    loader: { '.css': input.brainstorm || input.calendar || input.workflows ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
@@ -427,7 +443,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       builder.onLoad({ filter: /\.css$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
-        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm || input.calendar ? 'css' : 'empty' };
+        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm || input.calendar || input.workflows ? 'css' : 'empty' };
       });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
@@ -452,7 +468,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.learning
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.workflows
+    ? '/apps/operator-vite/src/components/adv/AdvWorkflowsTab.tsx' : input.learning
     ? '/apps/operator-vite/src/components/adv/LearningTab.tsx' : input.calendar
     ? '/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx' : input.projectHistory
     ? '/apps/operator-vite/src/components/adv/AdvHistoryTab.tsx' : input.health
@@ -683,7 +700,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
-    try { await (input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
+    try { await (input.workflows ? page.getByTestId('workflows-control-deck')
+      : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
       : input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
@@ -857,7 +875,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (input.learning) {
+    if (input.workflows) {
+      assert.equal(await page.getByRole('textbox', { name: 'Search workflows', exact: true }).count(), 1);
+      assert.equal(await page.getByRole('button', { name: 'Refresh workflows', exact: true }).count(), 1);
+    } else if (input.learning) {
       assert.equal(await page.getByRole('textbox', { name: 'Filter retained items' }).count(), 1);
     } else if (input.calendar) {
       assert.equal(await page.getByRole('heading', { name: 'Calendar', exact: true }).count(), 1);
@@ -1177,7 +1198,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.learning ? '/?app=learning&q=retained-shell-search'
+    const url = new URL(input.workflows ? '/?app=workflows&q=retained-shell-search'
+      : input.learning ? '/?app=learning&q=retained-shell-search'
       : input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
       : input.overview ? '/?app=overview&q=retained-shell-search'
       : input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
@@ -1200,6 +1222,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       const receipt = await runPrivateTestingPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'actual Testing registry and domain controls must stay browser-safe');
       return receipt;
+    }
+    if (input.workflowsSeed) {
+      const receipt = await runPrivateWorkflowsPage(page, context, input.workflowsSeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual Workflows controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
     }
     if (input.calendarSeed) {
       const receipt = await runPrivateCalendarPage(page, context, input.calendarSeed, url, evidence);

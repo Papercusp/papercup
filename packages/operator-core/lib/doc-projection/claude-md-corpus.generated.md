@@ -2953,9 +2953,17 @@ so the corruption surfaces at the install, not in someone else's build.
 
 ## Proving a guard is falsifiable — never mutate the shared tree to do it
 
-A guard test that has never failed is a guard you have not tested. Proving it CAN
-fail is correct discipline — but the obvious way to prove it is unsafe here, and has
-already cost a committed mutant:
+A guard test that has never failed is untested — but never prove it can fail by
+mutating the shared tree: git-sync can commit the mutant mid-probe even when nothing
+goes wrong, and no `trap` prevents that. Use **`scripts/mutation-probe.sh`**: copy-out
+is the default (no dirty window); `--fake-destructive` for subjects that delete;
+`--against-commit` / `--against-last-without` (historical mode) when the pre-fix source
+is in Git; in-tree mutation only under a held `mutation probe` file lock. Exit `0`
+means the mutant was CAUGHT — the guard is falsifiable.
+
+The tier table, exit codes, invocation forms and the sweep-lock recipe:
+[proving a guard is falsifiable](/internal/docs/agent-insights/proving-a-guard-is-falsifiable).
+
 
 ```bash
 cp "$F" "$B"; <mutate>; <run the suite>; cp "$B" "$F"     # ⛔ never do this

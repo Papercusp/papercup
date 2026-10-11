@@ -134,11 +134,7 @@ export function resolveOperatorUrl(opts?: {}): any;
  * must remain fixed; discovery/proxy/default targets are launcher-managed.
  * Exported for the environment-boundary regression tests.
  */
-export function applyLauncherOperatorUrlEnv(env: any, target?: {
-    url: any;
-    source: string;
-    startedAt: number | null;
-}): any;
+export function applyLauncherOperatorUrlEnv(env: any, target?: any): any;
 /**
  * The candidate ladder for HEALING a dead operator target mid-session — the
  * same ladder as resolveOperatorTarget MINUS the inherited managed URL.
@@ -2318,11 +2314,7 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
     bootstrapReplayMaxAttempts?: number | undefined;
     bootstrapReplayBudgetMs?: number | undefined;
     label?: any;
-    target?: {
-        url: any;
-        source: string;
-        startedAt: number | null;
-    } | undefined;
+    target?: any;
     resolveFallback?: typeof resolveFallbackOperatorTargets | undefined;
     onFailover?: typeof adoptOperatorTarget | undefined;
     healthProbeTimeoutMs?: number | undefined;

@@ -72,7 +72,9 @@ async function main(): Promise<number> {
 
   // The loader applies taskIds ONLY to the '-custom' set, so narrow the CPU set here (an unknown id is an error,
   // never a silent run of the whole set — the first smoke attempt started all 19 tasks that way).
-  const cpu = loadFrontierSweTaskSet('frontier-swe-v2-cpu');
+  // controls:'ignore' — this runner PRODUCES the control ledger that gates every scored v2 set, so it must load the
+  // tasks before they have (or after they fail) controls.
+  const cpu = loadFrontierSweTaskSet('frontier-swe-v2-cpu', undefined, { controls: 'ignore' });
   const unknown = (ids ?? []).filter((id) => !cpu.some((t) => t.instanceId === id));
   if (unknown.length) {
     console.error(`not in frontier-swe-v2-cpu: ${unknown.join(',')}`);

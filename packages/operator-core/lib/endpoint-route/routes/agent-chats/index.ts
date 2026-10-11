@@ -33,7 +33,10 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { buildMemoryContextBlock } from '../../../memory/injection';
 import { projectDirForSlug } from '../../../operator-notes';
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
-import { readFeatureLockState, rowToChat, type ChatRow, type TranscriptTurn } from '../../../agent-chats-data';
+import {
+  archiveChat, continueChat, createChat, getChat, listChats, renameChat,
+  readFeatureLockState, rowToChat, type ChatRow, type TranscriptTurn,
+} from '../../../agent-chats-data';
 import '../../../agent-tools/index';
 import { acquireAgentChatLock, releaseAgentChatLock, type AgentChatLockHandle } from '../../../agent-chat-lock';
 import {
@@ -199,7 +202,6 @@ const listChatsRoute = defineTool({
   path: '/harness/:slug/agent-chats',
   auth: 'public',
   async handler(req, ctx) {
-    const { listChats } = await import('../../../agent-chats-data');
     const sp = new URL(req.url).searchParams;
     const parseNum = (v: string | null): number | undefined => {
       if (v === null) return undefined;
@@ -222,7 +224,6 @@ const createChatRoute = defineTool({
   path: '/harness/:slug/agent-chats',
   auth: 'loopback',
   async handler(req, ctx) {
-    const { createChat } = await import('../../../agent-chats-data');
     let body: { role?: string; feature_id?: string; title?: string };
     try {
       body = await req.json();
@@ -245,7 +246,6 @@ const getChatRoute = defineTool({
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'public',
   async handler(_req, ctx) {
-    const { getChat } = await import('../../../agent-chats-data');
     const result = await getChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
@@ -257,7 +257,6 @@ const archiveChatRoute = defineTool({
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'loopback',
   async handler(_req, ctx) {
-    const { archiveChat } = await import('../../../agent-chats-data');
     const result = await archiveChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
@@ -275,7 +274,6 @@ const renameChatRoute = defineTool({
     } catch {
       return Response.json({ error: 'invalid JSON body' }, { status: 400 });
     }
-    const { renameChat } = await import('../../../agent-chats-data');
     const result = await renameChat({
       slug: ctx.params.slug,
       chatId: ctx.params.chatId,
@@ -298,7 +296,6 @@ const continueChatRoute = defineTool({
     } catch {
       return Response.json({ error: 'invalid JSON body' }, { status: 400 });
     }
-    const { continueChat } = await import('../../../agent-chats-data');
     const result = await continueChat({
       slug: ctx.params.slug,
       sourceChatId: ctx.params.chatId,

@@ -48,7 +48,9 @@ describe('Reports owner-deliverable persona rule', () => {
     expect(rule).toContain('`reports:get { id: report_id }`');
     expect(rule).toContain('complete Markdown and intended\nvisibility');
     expect(rule).toContain('Claim\nsaved or delivered only after the readback succeeds');
+    expect(rule).toContain('Pass the complete Markdown as\n`body_md`.');
     expect(rule).toContain('stable `request_key`');
+    expect(rule).toContain('request key and content unchanged across retries');
     expect(rule).toContain('A correction uses `supersedes`');
     expect(rule).toContain('descriptive Markdown link to the report page in the GUI');
     expect(rule).toContain('valid same-origin route; use it directly as the Markdown');
