@@ -6,6 +6,7 @@
  *
  *   npx tsx packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts \
  *     [--out bm25-bakeoff.json] [--data-dir /tmp/bm25-bakeoff] [--corpus-csv wi.csv] \
+ *     [--corpus work-items|session-turns|documents] \
  *     [--methods tsv_and,pgts,...] [--keep] [--keep-data] [--skip-build]
  *
  * WHAT IT TOUCHES
@@ -45,8 +46,10 @@ import {
   parseEvalRows,
   rankAgreement,
   renderSummaryTable,
+  resolveBakeoffCorpus,
   restrictToCommonQueries,
   summarize,
+  type BakeoffCorpus,
   type BakeoffEngine,
   type D001Verdict,
   type EvalRow,
@@ -56,10 +59,6 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS = path.join(HERE, 'bm25-bakeoff');
 
-const CORPUS_SQL =
-  "COPY (SELECT harness_slug||':'||feature_id, title, summary FROM harness_shared.work_items " +
-  "WHERE workspace_id='papercusp-workspace' AND lane IS DISTINCT FROM 'observation' " +
-  "AND length(coalesce(title,''))>=20 AND length(coalesce(summary,''))>=200) TO STDOUT WITH (FORMAT csv)";
 
 const SERVER_SETTINGS = [
   'shared_preload_libraries=evoke,pg_textsearch,pg_search',
@@ -74,6 +73,7 @@ interface Args {
   out: string;
   dataDir: string;
   corpusCsv: string | null;
+  corpus: BakeoffCorpus;
   methods: string[] | null;
   image: string;
   container: string;
@@ -101,6 +101,7 @@ function parseArgs(argv: string[]): Args {
     out: path.resolve(get('--out') ?? 'bm25-bakeoff.json'),
     dataDir: path.resolve(get('--data-dir') ?? path.join(os.tmpdir(), `bm25-bakeoff-${process.pid}`)),
     corpusCsv: get('--corpus-csv') ? path.resolve(get('--corpus-csv')!) : null,
+    corpus: resolveBakeoffCorpus(get('--corpus')),
     methods: get('--methods')?.split(',').map(s => s.trim()).filter(Boolean) ?? null,
     image: get('--image') ?? 'papercusp-bm25-bakeoff:local',
     container: get('--container') ?? `bm25-bakeoff-${process.pid}`,
@@ -177,7 +178,7 @@ async function main(): Promise<number> {
     log('exporting the corpus (read-only COPY from the operator database)');
     const fd = fs.openSync(corpusPath, 'w');
     try {
-      run('sudo', ['-n', '-u', 'postgres', 'psql', '-d', 'papercusp', '-X', '-At', '-c', CORPUS_SQL], { stdio: ['ignore', fd, 'pipe'] });
+      run('sudo', ['-n', '-u', 'postgres', 'psql', '-d', 'papercusp', '-X', '-At', '-c', args.corpus.exportSql], { stdio: ['ignore', fd, 'pipe'] });
     } finally {
       fs.closeSync(fd);
     }
@@ -292,7 +293,7 @@ async function main(): Promise<number> {
     const result = {
       kind: 'bm25-bakeoff', workItem: 'WI-10008294', plan: 'bm25-lexical-search-evoke-adoption-2026-10-10',
       generatedAt: new Date().toISOString(), commit, serverVersion, versions,
-      corpus: { rows: corpusRows, source: args.corpusCsv ? 'csv' : 'operator-db-copy' },
+      corpus: { key: args.corpus.key, queryForm: args.corpus.queryForm, rows: corpusRows, source: args.corpusCsv ? 'csv' : 'operator-db-copy' },
       queries: nQueries, serverSettings: SERVER_SETTINGS,
       loadavg: { start: loadStart, end: os.loadavg(), cores: os.cpus().length },
       engines, arms, builds, sizes, evokeStatus, summaries, paired, sqlBm25Agreement: agreement, verdict,
@@ -300,7 +301,7 @@ async function main(): Promise<number> {
     fs.writeFileSync(args.out, JSON.stringify(result, null, 2));
     const md = [
       `# BM25 bake-off (${result.generatedAt})`, '',
-      `Corpus: ${corpusRows} work items · ${nQueries} known-item queries per form · ${serverVersion}`, '',
+      `Corpus: ${corpusRows} ${args.corpus.label} · query = ${args.corpus.queryForm} · ${nQueries} known-item queries per form · ${serverVersion}`, '',
       renderSummaryTable(summaries, engines), '',
       verdict ? `**D-001 verdict:** ${verdict.choice} (compared against ${verdict.evokeMethod}). ${verdict.reasons.join('; ')}` : '**D-001 verdict:** not evaluated',
     ].join('\n');

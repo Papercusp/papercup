@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   applyD001Rule,
+  BAKEOFF_CORPORA,
   bakeoffDatabases,
   BM25_BAKEOFF_ENGINES,
+  resolveBakeoffCorpus,
   comparePaired,
   createDatabaseSql,
   decideCap,
@@ -270,5 +272,28 @@ describe('roster', () => {
     const md = renderSummaryTable([summary('pgts', 'title', 0.4, 0.3)]);
     expect(md.split('\n')).toHaveLength(3);
     expect(md).toContain('pg_textsearch 1.5.1');
+  });
+});
+
+describe('bake-off corpora', () => {
+  it('defaults to work items and refuses an unknown corpus', () => {
+    expect(resolveBakeoffCorpus(undefined).key).toBe('work-items');
+    expect(() => resolveBakeoffCorpus('turns')).toThrow(/--corpus must be one of/);
+  });
+
+  it('exports every corpus with one read-only, workspace-scoped COPY to stdout', () => {
+    for (const corpus of Object.values(BAKEOFF_CORPORA)) {
+      expect(corpus.exportSql).toMatch(/^COPY \(/);
+      expect(corpus.exportSql).toMatch(/\) TO STDOUT WITH \(FORMAT csv\)$/);
+      expect(corpus.exportSql).toMatch(/workspace_id='(papercusp-workspace|default)'/);
+      expect(corpus.exportSql).not.toMatch(/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b/i);
+    }
+  });
+
+  it('keeps the session-turn query words out of the indexed body', () => {
+    const sql = BAKEOFF_CORPORA['session-turns'].exportSql;
+    expect(sql).toContain("array_to_string(w[1:12], ' ')");
+    expect(sql).toContain("array_to_string(w[13:], ' ')");
+    expect(sql).toMatch(/REPEATABLE \(42\)/);
   });
 });

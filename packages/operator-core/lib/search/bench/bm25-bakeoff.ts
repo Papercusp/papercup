@@ -78,6 +78,66 @@ export const BM25_BAKEOFF_ENGINES: readonly BakeoffEngine[] = [
 /** The baseline every arm is compared against: what papercusp ranks with today. */
 export const BASELINE_METHOD = 'tsv_and';
 
+/**
+ * A corpus the bench can export from the operator database. Each export is ONE read-only
+ * `COPY (...) TO STDOUT` producing `(id, title, body)` rows: the bench indexes `body` and
+ * uses `title` as the known-item query (full form, plus its 4 longest words), so a corpus
+ * must keep the query text OUT of the indexed body.
+ */
+export interface BakeoffCorpus {
+  key: BakeoffCorpusKey;
+  /** Plural noun for the report line, e.g. "work items". */
+  label: string;
+  /** How `title` was derived, for the report. */
+  queryForm: string;
+  exportSql: string;
+}
+
+export type BakeoffCorpusKey = 'work-items' | 'session-turns' | 'documents';
+
+/**
+ * Untitled text: the first 12 whitespace-separated words become the query and the rest
+ * is the indexed body. Machine-injected turns (an opening `<`, `⟦` or `[` envelope) are
+ * excluded because their openings are shared boilerplate, not a known item.
+ */
+const SESSION_TURNS_SQL =
+  "COPY (WITH s AS (SELECT source_kind||':'||session_id||':'||turn_idx AS id, " +
+  "regexp_split_to_array(btrim(regexp_replace(text, '\\s+', ' ', 'g')), ' ') AS w " +
+  'FROM harness_shared.session_turns TABLESAMPLE SYSTEM (6) REPEATABLE (42) ' +
+  // session_turns is a transcript corpus keyed workspace_id='default', not the tenant id.
+  "WHERE workspace_id='default' AND speaker IN ('user','assistant') " +
+  "AND length(text) BETWEEN 600 AND 20000 AND text !~ '^\\s*[<⟦\\[]') " +
+  "SELECT id, array_to_string(w[1:12], ' '), array_to_string(w[13:], ' ') FROM s " +
+  'WHERE cardinality(w) >= 60) TO STDOUT WITH (FORMAT csv)';
+
+export const BAKEOFF_CORPORA: Readonly<Record<BakeoffCorpusKey, BakeoffCorpus>> = {
+  'work-items': {
+    key: 'work-items', label: 'work items', queryForm: 'title (body = summary)',
+    exportSql:
+      "COPY (SELECT harness_slug||':'||feature_id, title, summary FROM harness_shared.work_items " +
+      "WHERE workspace_id='papercusp-workspace' AND lane IS DISTINCT FROM 'observation' " +
+      "AND length(coalesce(title,''))>=20 AND length(coalesce(summary,''))>=200) TO STDOUT WITH (FORMAT csv)",
+  },
+  'session-turns': {
+    key: 'session-turns', label: 'session turns', queryForm: 'first 12 words (body = the remaining words)',
+    exportSql: SESSION_TURNS_SQL,
+  },
+  documents: {
+    key: 'documents', label: 'memory/corpus documents', queryForm: 'title (body = text)',
+    exportSql:
+      "COPY (SELECT id::text, title, text FROM harness_shared.documents " +
+      "WHERE workspace_id='papercusp-workspace' AND length(coalesce(title,''))>=20 " +
+      "AND length(coalesce(text,''))>=200) TO STDOUT WITH (FORMAT csv)",
+  },
+};
+
+export function resolveBakeoffCorpus(key: string | undefined): BakeoffCorpus {
+  const k = (key ?? 'work-items') as BakeoffCorpusKey;
+  const corpus = BAKEOFF_CORPORA[k];
+  if (!corpus) throw new Error(`--corpus must be one of ${Object.keys(BAKEOFF_CORPORA).join(', ')} (got ${key})`);
+  return corpus;
+}
+
 /** Databases in setup order: bake_sql first, because it freezes the query set the others load. */
 export function bakeoffDatabases(engines: readonly BakeoffEngine[] = BM25_BAKEOFF_ENGINES): { database: string; setupFile: string }[] {
   const seen = new Map<string, string>();
