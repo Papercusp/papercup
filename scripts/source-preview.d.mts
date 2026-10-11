@@ -100,31 +100,27 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     path: string;
     sha: string;
 }[];
-/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
- * The caller retains this receipt outside the export, then verifies it before execution.
- * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
- */
-export function validateVerifierInputs({ repo, ref, inputs, inputsFile }: {
-    repo: string;
-    ref: string;
-    dest: string;
-    inputs?: string[];
-    inputsFile?: string;
-    gitCheckout?: boolean;
+export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs }: {
+    repo: any;
+    ref: any;
+    inputs?: never[] | undefined;
+    inputsFile: any;
+    tauriInputs?: boolean | undefined;
 }): Promise<{
     sha: string;
-    paths: string[];
+    paths: any[];
 }>;
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs }: {
     repo: any;
     ref: any;
     dest: any;
     inputs?: never[] | undefined;
     inputsFile: any;
     gitCheckout?: boolean | undefined;
+    tauriInputs?: boolean | undefined;
 }): Promise<{
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
@@ -146,7 +142,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
     runtimeArtifacts?: boolean;
 }): Promise<{
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
@@ -168,7 +164,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
     runtimeArtifacts?: boolean;
 }): {
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
@@ -528,6 +524,11 @@ export class PreviewError extends Error {
     constructor(message: string, exitCode?: number);
     exitCode: number;
 }
+/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
+ * The caller retains this receipt outside the export, then verifies it before execution.
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
+ */
+export const TAURI_VERIFIER_INPUTS: readonly string[];
 export const ALLOWLIST_PATH: string;
 export { main as runCli };
 /**

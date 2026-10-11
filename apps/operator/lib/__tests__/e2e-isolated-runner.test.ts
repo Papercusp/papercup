@@ -9,9 +9,10 @@
  */
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
+import { TAURI_VERIFIER_INPUTS } from '../../../../scripts/source-preview.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const RUNNER = join(REPO_ROOT, 'scripts/run-operator-e2e-isolated.sh');
@@ -150,6 +151,50 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it.each([false, true])('checks mandatory native helper drift before spawning the rig (dirty: %s)', dirty => {
+    const f = fixture(0);
+    const repo = join(f.dir, 'source');
+    const acceptance = 'apps/operator/acceptance.ts';
+    for (const path of [...TAURI_VERIFIER_INPUTS, acceptance]) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), `// ${path}\n`);
+    }
+    for (const args of [
+      ['init', '-q'],
+      ['add', '.'],
+      ['-c', 'user.name=fixture', '-c', 'user.email=fixture@invalid', 'commit', '-qm', 'source inputs'],
+    ]) {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8',
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    if (dirty) writeFileSync(join(repo, 'apps/operator/bin/release/dependency-generation.sh'), 'peer edit');
+    const inputs = join(f.dir, 'inputs.json');
+    writeFileSync(inputs, JSON.stringify([acceptance]));
+    // Redirect only the guard's repository to the synthetic source. The real
+    // launcher, CLI and mandatory profile run unchanged; no shared bytes move.
+    const node = join(f.dir, 'node');
+    writeFileSync(node, [
+      '#!/usr/bin/env bash',
+      'args=("$@")',
+      'for ((i=0; i<${#args[@]}; i++)); do',
+      '  if [ "${args[i]}" = "--repo" ]; then args[i+1]="$E2E_FIXTURE_GUARD_REPO"; fi',
+      'done',
+      'exec "$E2E_FIXTURE_NODE" "${args[@]}"',
+    ].join('\n'));
+    chmodSync(node, 0o755);
+    const marker = join(f.dir, 'rig-started');
+    writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+    const result = run(f, [], {
+      VERIFY_TAURI_SOURCE_REF: 'HEAD', VERIFY_TAURI_SOURCE_INPUTS_FILE: inputs,
+      VERIFY_TAURI_SOURCE_INPUTS: '', E2E_FIXTURE_GUARD_REPO: repo, E2E_FIXTURE_NODE: process.execPath,
+      OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+    });
+    expect(result.status, result.out).toBe(dirty ? 2 : 0);
+    expect(existsSync(marker)).toBe(!dirty);
+    if (dirty) expect(result.out).toContain('dirty tested-input mismatch: apps/operator/bin/release/dependency-generation.sh');
+  });
+
   it('rejects invalid committed acceptance inputs before spawning the native rig', () => {
     const f = fixture(0);
     const marker = join(f.dir, 'rig-started');

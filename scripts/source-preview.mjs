@@ -450,7 +450,39 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
  * The caller retains this receipt outside the export, then verifies it before execution.
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
-export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile }) {
+// Shared by early e2e admission and the native snapshot. Explicit caller
+// acceptance paths remain required; this tooling profile cannot replace them.
+export const TAURI_VERIFIER_INPUTS = Object.freeze([
+  'package.json',
+  'package-lock.json',
+  'papercusp-desktop/package.json',
+  'papercusp-desktop/package-lock.json',
+  'scripts/npm-install-safe.mjs',
+  'scripts/verify-tauri-headless.sh',
+  'scripts/source-preview.mjs',
+  'scripts/lib/committed-source-loader.mjs',
+  'scripts/restricted-hold-tree-gate.mjs',
+  'scripts/lib/spa-require-built.sh',
+  'scripts/lib/budgeted-task-scheduler.mjs',
+  'scripts/pc-heavy.sh',
+  'apps/operator/bin/release/dependency-generation.sh',
+  'papercusp-desktop/bin/tauri-guarded',
+  'papercusp-desktop/bin/lib/claim-target-dir.sh',
+  'papercusp-desktop/bin/lib/cargo-target-root.sh',
+  'papercusp-desktop/bin/lib/release-artifacts.sh',
+  'papercusp-desktop/bin/lib/federation-asserts.sh',
+  'papercusp-desktop/bin/lib/disk-preflight.sh',
+  'papercusp-desktop/bin/lib/pinned-deps.sh',
+  'papercusp-desktop/src-tauri/src/main.rs',
+  'papercusp-desktop/src-tauri/src/native_console.rs',
+  'papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs',
+  'papercusp-desktop/test/native-console-gnome.test.js',
+  'papercusp-desktop/test/monorepo-host-preflight.mjs',
+  'scripts/lib/node-test-host-preflight.mjs',
+  'packages/operator-core/lib/gnome-terminal-policy.json',
+]);
+
+export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false }) {
   if (inputsFile !== undefined) {
     const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
     if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
@@ -459,6 +491,7 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
     inputs = [...inputs, ...listed];
   }
   if (!inputs.length) throw new PreviewError('verification export needs explicit tested inputs', 2);
+  if (tauriInputs) inputs = [...inputs, ...TAURI_VERIFIER_INPUTS];
   const paths = [...new Set(inputs)].sort();
   for (const path of paths) {
     if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
@@ -487,9 +520,9 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
   return { sha, paths };
 }
 
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false }) {
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
-  const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile });
+  const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
   if (gitCheckout) {
     // Reuse the guarded local clone: detached exact ref, borrowed objects, local
     // submodule pins, no origins, and cleanup only of its own new destination.
@@ -1442,6 +1475,7 @@ function parseArgs(argv) {
     if (a === '--confirm') opts.confirm = true;
     else if (a === '--runtime-artifacts') opts.runtimeArtifacts = true;
     else if (a === '--git-checkout') opts.gitCheckout = true;
+    else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
     else if (a === '--inputs-file') {
       const path = rest[++i];
@@ -1470,7 +1504,7 @@ async function main(argv) {
       throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
     }
     console.log(JSON.stringify(await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
-      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'] })));
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true })));
     return 0;
   }
   if (cmd === 'verifier-measure') {
@@ -1485,7 +1519,8 @@ async function main(argv) {
         throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs or --inputs-file', 2);
       }
       const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
-        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], gitCheckout: opts.gitCheckout === true });
+        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], gitCheckout: opts.gitCheckout === true,
+        tauriInputs: opts.tauriInputs === true });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
     await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),

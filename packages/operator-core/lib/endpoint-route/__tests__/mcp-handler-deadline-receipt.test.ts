@@ -35,7 +35,7 @@
  * instance avoids that entirely.
  */
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -712,7 +712,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     }
   });
 
-  it('traces scratch-write settlement after the result-door bounded wait returns', async () => {
+  it('traces spill existence and trace-correlated backfill after the result-door bounded wait returns', async () => {
     const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-late-spill-'));
     const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
     const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
@@ -748,6 +748,21 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true);
       expect(beforeLateWrite.some((event) =>
         event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(false);
+      expect(h.spillPaths).toHaveLength(1);
+      expect(existsSync(h.spillPaths[0])).toBe(false);
+      const initialInvocation = h.invocations.find((candidate) =>
+        Boolean(candidate && typeof candidate === 'object' &&
+          (candidate as Record<string, unknown>).toolName === 'deadlinetest:spill')) as
+        | Record<string, unknown>
+        | undefined;
+      expect(initialInvocation).toEqual(expect.objectContaining({
+        toolName: 'deadlinetest:spill',
+        status: 'ok',
+        outputSize: expect.any(Number),
+      }));
+      expect(initialInvocation).not.toHaveProperty('outputRef');
+      expect((initialInvocation?.ctx as { requestOrigin?: { mcpRequestTraceId?: string } } | undefined)
+        ?.requestOrigin?.mcpRequestTraceId).toBe(traceId);
 
       vi.useRealTimers();
       releaseWrite();
@@ -773,6 +788,39 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       });
       expect((settled?.scratchWriteTimings as ScratchWriteTimings).quotaRecoveryDiagnostics?.sizeWalkDirectories)
         .toBeGreaterThan(0);
+      expect(existsSync(h.spillPaths[0])).toBe(true);
+      const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
+      expect(spill).not.toBeNull();
+      expect(spill!.payload.toString()).toContain(JSON.stringify(SPILL_CHECKPOINT).slice(1, -1));
+
+      let persistedBackfill: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedBackfill = h.unsafeCalls.find((call) => {
+          if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) {
+            return false;
+          }
+          try {
+            return JSON.parse(String(call.params[2])).spillSettlementStatus === 'persisted';
+          } catch {
+            return false;
+          }
+        });
+        expect(persistedBackfill).toBeDefined();
+      });
+      expect(persistedBackfill?.params[3]).toBe('ws-test');
+      expect(persistedBackfill?.params[5]).toBe('deadlinetest:spill');
+      expect(persistedBackfill?.params[7]).toBe(persistedBackfill?.params[0]);
+      const settlementMetadata = JSON.parse(String(persistedBackfill?.params[2])) as Record<string, unknown>;
+      expect(settlementMetadata).toEqual(expect.objectContaining({
+        spillPath: h.spillPaths[0],
+        spillUri: persistedBackfill?.params[0],
+        spillPending: false,
+        spillFailed: false,
+        spillSettlementStatus: 'persisted',
+        spillSettledAt: expect.any(String),
+      }));
+      expect(warn.mock.calls.some(([message]) =>
+        String(message).includes('backfillResultDoorOutputRef failed'))).toBe(false);
     } finally {
       vi.useRealTimers();
       releaseWrite();

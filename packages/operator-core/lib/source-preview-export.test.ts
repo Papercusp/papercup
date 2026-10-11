@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ADDED_FILES,
   SELECTION_LIB,
+  TAURI_VERIFIER_INPUTS,
   allowlistTops,
   exportSnapshot,
   loadReleaseHost,
@@ -490,6 +491,33 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] }))
       .rejects.toThrow(`dirty tested-input mismatch: ${input}`);
     expect(readdirSync(tmp).sort()).toEqual(before);
+  });
+
+  it('shares native tooling validation with preparation and refuses drift before allocating', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-tauri-inputs-fixture'));
+    for (const path of TAURI_VERIFIER_INPUTS) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', ...TAURI_VERIFIER_INPUTS]);
+    git(fixture.repo, ['commit', '-qm', 'native tooling inputs']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const inputsFile = join(tmp, 'verifier-tauri-inputs.json');
+    writeFileSync(inputsFile, JSON.stringify([input]));
+    const options = { repo: fixture.repo, ref, inputsFile, tauriInputs: true };
+    const checked = await validateVerifierInputs(options);
+    expect(checked.paths).toEqual([...new Set([input, ...TAURI_VERIFIER_INPUTS])].sort());
+    const dest = join(tmp, 'verifier-tauri-inputs-export');
+    const receipt = await prepareVerifierSource({ ...options, dest });
+    expect(receipt.testedInputs.map(row => row.path)).toEqual(checked.paths);
+
+    const helper = 'apps/operator/bin/release/dependency-generation.sh';
+    writeFileSync(join(fixture.repo, helper), 'changed native tooling after commit');
+    const refused = join(tmp, 'verifier-tauri-inputs-refused');
+    await expect(validateVerifierInputs(options)).rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+    await expect(prepareVerifierSource({ ...options, dest: refused }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+    expect(existsSync(refused)).toBe(false);
+    await expect(validateVerifierInputs({ repo: fixture.repo, ref, tauriInputs: true }))
+      .rejects.toThrow('verification export needs explicit tested inputs');
   });
 
   it('refuses tracked source symlinks that read outside the immutable export', async () => {
