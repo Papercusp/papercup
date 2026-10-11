@@ -31,7 +31,7 @@ export { HEADLINE_OPTS } from './headline-options';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
 import type { Sql, TransactionSql } from 'postgres';
 import {
-  EXACT_LIST_MAX_AND_ROWS,
+  boundedExactTopK,
   bm25LegIfAvailable,
   headlineTsQuery,
   lexicalEngine,
@@ -842,15 +842,25 @@ const workItem: SearchSource = {
           )
         : await list(tx, lex, from)) as unknown as Array<{ issue_id: string; rank: number }>;
       if (!exact) return primary;
-      const [gate] = (await tx`
-        SELECT count(*)::int AS n FROM (
-          SELECT 1 FROM harness_shared.engineer_issues ei
-           WHERE ei.workspace_id = ${workspaceId}
-             AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
-             AND ei._search @@ plainto_tsquery('english', ${p.query})
-           LIMIT ${EXACT_LIST_MAX_AND_ROWS + 1}) g`) as unknown as Array<{ n: number }>;
-      if (!gate || gate.n === 0 || gate.n > EXACT_LIST_MAX_AND_ROWS) return primary;
-      const exactRows = (await list(tx, exact, sql`harness_shared.engineer_issues ei`)) as unknown as Array<{ issue_id: string; rank: number }>;
+      const exactTop = boundedExactTopK(sql as unknown as Sql, {
+        columns: sql`ei.issue_id, ei.base_harness_slug`,
+        from: sql`harness_shared.engineer_issues ei`,
+        where: sql`ei.workspace_id = ${workspaceId}
+               AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+        tsv: sql`ei._search`, query: p.query, limit,
+      });
+      const exactRows = (await tx`
+        ${exact.with}
+        SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+               coalesce(ei.updated_at, ei.created_at) AS updated_at,
+               e.exact_rank AS rank,
+               ${headline(exact, sql`ei.title`, sql`ei.body`)} AS highlight
+          FROM (${exactTop}) e
+          JOIN harness_shared.engineer_issues ei
+            ON ei.issue_id = e.issue_id AND ei.base_harness_slug = e.base_harness_slug
+          ${exact.join}
+      ORDER BY e.exact_rank DESC`) as unknown as Array<{ issue_id: string; rank: number }>;
+      if (exactRows.length === 0) return primary;
       return mergeExactAndBm25(exactRows, primary, (r) => r.issue_id, limit);
     })) as unknown as Array<{
       issue_id: string;
@@ -1249,14 +1259,23 @@ const sessionTurn: SearchSource = {
           )
         : await list(lex)) as unknown as SessionTurnLexicalRow[];
       if (exact) {
-        const [gate] = (await tx`
-          SELECT count(*)::int AS n FROM (
-            SELECT 1 FROM harness_shared.session_turns
-             WHERE ${scoped()}
-               AND text_tsv @@ plainto_tsquery('english', ${p.query})
-             LIMIT ${EXACT_LIST_MAX_AND_ROWS + 1}) g`) as unknown as Array<{ n: number }>;
-        if (gate && gate.n > 0 && gate.n <= EXACT_LIST_MAX_AND_ROWS) {
-          const exactRows = (await list(exact)) as unknown as SessionTurnLexicalRow[];
+        const exactTop = boundedExactTopK(p.sql as unknown as Sql, {
+          columns: p.sql`workspace_id, source_kind, session_id, turn_idx`,
+          from: p.sql`harness_shared.session_turns`, where: scoped(),
+          tsv: p.sql`text_tsv`, query: p.query, limit: p.limit,
+        });
+        const exactRows = (await tx`
+          ${exact.with}
+          SELECT s.source_kind, s.session_id, s.turn_idx, s.speaker, s.owner, s.harness_slug, s.ts, s.text,
+                 e.exact_rank AS rank,
+                 ${p.wantHighlight === false ? p.sql`''`
+                   : p.sql`ts_headline(${exact.headlineConfig}, left(s.text, 4000),
+                            ${exact.headlineQuery}, ${HEADLINE_OPTS})`} AS highlight
+            FROM (${exactTop}) e
+            JOIN harness_shared.session_turns s USING (workspace_id, source_kind, session_id, turn_idx)
+            ${exact.join}
+        ORDER BY e.exact_rank DESC`) as unknown as SessionTurnLexicalRow[];
+        if (exactRows.length > 0) {
           primary = mergeExactAndBm25(exactRows, primary, (r) => `${r.source_kind}\u0000${r.session_id}\u0000${r.turn_idx}`, p.limit);
         }
       }
