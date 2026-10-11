@@ -175,6 +175,7 @@ export async function readClosedCodexTurnToolResult(sql: Sql, input: {
   readonly nativeTurnId: string; readonly callRecordIndex: number; readonly resultRecordIndex: number;
 }): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeTurnId: string;
   callRecordIndex: number; resultRecordIndex: number; callId: string; name: string;
+  callType: 'function_call' | 'custom_tool_call';
   arguments: string; output: string | unknown[]; isError: boolean | null; calledAt: string; at: string } | null> {
   const binding = { ...input };
   if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome, binding.nativeTurnId].some(v => typeof v !== 'string' || !v.trim()) ||
@@ -228,6 +229,7 @@ export async function readClosedCodexTurnToolResult(sql: Sql, input: {
     return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
       nativeTurnId: binding.nativeTurnId, callRecordIndex: binding.callRecordIndex, resultRecordIndex: binding.resultRecordIndex,
       callId: request.call_id, name: `${request.namespace ? request.namespace + '.' : ''}${request.name}`,
+      callType: request.type,
       arguments: args, output: response.output, isError: response.is_error ?? null,
       calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
   } catch { return null; }

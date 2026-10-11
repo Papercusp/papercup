@@ -150,6 +150,7 @@ describe('source-bound closed Codex tool results', () => {
         sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session, nativeTurnId: turn,
         callRecordIndex: 2, resultRecordIndex: 3, callId, name: kind === 'wrapper' ? 'functions.exec' : 'mcp.locks_acquire',
         arguments: args, output: kind === 'custom' ? [{ type: 'input_text', text: output }] : output,
+        callType: kind === 'custom' ? 'custom_tool_call' : 'function_call',
         isError: kind === 'custom' ? true : null, calledAt: '2026-10-11T00:00:01.000Z', at: '2026-10-11T00:00:02.000Z' });
     } finally { await fs.rm(f.home, { recursive: true, force: true }); }
   });
