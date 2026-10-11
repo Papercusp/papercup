@@ -66,6 +66,7 @@ import {
   backfillResultDoorOutputRef,
   backfillToolInvocationMetadataByCallId,
   backfillToolInvocationMetadataByMcpRequestTraceId,
+  EXACT_BACKFILL_WINDOW_SEC,
   flushPendingTelemetry,
 } from './projected-tool-deps';
 
@@ -263,7 +264,10 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     expect(unsafeCalls[0].params).toEqual(['ws-test']);
     expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
     expect(unsafeCalls[1].sql).toContain("metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4");
-    expect(unsafeCalls[1].sql).not.toContain('invoked_at >= now()');
+    // Exact key selects; the 30-second recency JOIN of the result-door backfill
+    // must never be used as the selector here.
+    expect(unsafeCalls[1].sql).not.toContain("interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('invoked_at >= now() - make_interval(secs => $5::int)');
     expect(unsafeCalls[1].params).toEqual([
       JSON.stringify({
         schedulerLateSettlement: {
@@ -275,7 +279,47 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       'ws-test',
       'scheduler:get_next',
       'dispatch-call-42',
+      EXACT_BACKFILL_WINDOW_SEC['dispatch-call-id'],
     ]);
+  });
+
+  // WI-6554700010008556: an exact key that matches no row used to walk the whole
+  // tool_invocations table backwards (mean 966 ms, max 342 s, ~1 core of DB time).
+  // Every exact-key backfill must carry a recency BOUND, wide enough for the
+  // legitimate late-settlement path and finite, so a miss stays cheap.
+  it('bounds every exact-key backfill search by a finite invoked_at window', async () => {
+    await backfillToolInvocationMetadataByCallId({
+      workspaceId: 'ws-test',
+      toolName: 'scheduler:get_next',
+      dispatchCallId: 'dispatch-call-7',
+      metadataJson: { schedulerLateSettlement: { kind: 'claimed' } },
+    });
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'work_items:get',
+      mcpRequestTraceId: 'trace-7',
+      metadataJson: { mcpRequestSettlement: { outcome: 'success' } },
+    });
+
+    const updates = unsafeCalls.filter((c) => c.sql.includes('UPDATE harness_shared.tool_invocations'));
+    expect(updates).toHaveLength(2);
+    for (const update of updates) {
+      expect(update.sql).toMatch(/AND invoked_at >= now\(\) - make_interval\(secs => \$5::int\)\s+ORDER BY invoked_at DESC/);
+      const windowSec = update.params[4];
+      expect(typeof windowSec).toBe('number');
+      expect(Number.isInteger(windowSec)).toBe(true);
+      expect(windowSec as number).toBeGreaterThan(0);
+      // Finite and bounded: never a whole-table fallback.
+      expect(windowSec as number).toBeLessThanOrEqual(24 * 60 * 60);
+    }
+    // The settle-time MCP path writes and backfills the same recent row; keep
+    // room for flush and clock lag, but no more than an hour.
+    expect(EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id']).toBeGreaterThanOrEqual(5 * 60);
+    expect(EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id']).toBeLessThanOrEqual(60 * 60);
+    // The late scheduler settlement can land long after the timed-out row.
+    expect(EXACT_BACKFILL_WINDOW_SEC['dispatch-call-id']).toBeGreaterThanOrEqual(
+      EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id'],
+    );
   });
 
   it('backfills late MCP settlement metadata by exact request trace id, never by recency', async () => {
@@ -301,12 +345,14 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
     expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4");
     expect(unsafeCalls[1].sql).toContain('ORDER BY invoked_at DESC');
-    expect(unsafeCalls[1].sql).not.toContain('invoked_at >= now()');
+    expect(unsafeCalls[1].sql).not.toContain("interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('invoked_at >= now() - make_interval(secs => $5::int)');
     expect(unsafeCalls[1].params).toEqual([
       JSON.stringify(metadataJson),
       'ws-test',
       'plans:get-spec-evidence',
       traceId,
+      EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id'],
     ]);
   });
 

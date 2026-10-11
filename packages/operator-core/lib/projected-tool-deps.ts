@@ -1469,6 +1469,26 @@ type ExactToolInvocationMetadataSelector =
   | { kind: 'dispatch-call-id'; value: string | null | undefined }
   | { kind: 'mcp-request-trace-id'; value: string | null | undefined };
 
+/**
+ * Search BOUND (never the selector) for the exact-key backfill, in seconds.
+ *
+ * The exact key still picks the row. This window only stops the search. Without
+ * it, a key that matches no row (about 7% of MCP settlements, measured
+ * 2026-10-11) walked `tool_invocations_invoked_at_cov_idx` backwards through
+ * the whole table: about 6.2M rows and a 7.6 GB heap per miss. That cost a
+ * mean of 966 ms, a max of 342 s, and about one core of continuous DB time
+ * (WI-6554700010008556). The windows are generous because the target row is
+ * always recent. `invoked_at` is the dispatch-settle wall-clock (EI-7040):
+ * - An MCP settlement backfills a row written at that same inner-dispatch
+ *   settle, so 15 minutes leaves room for flush and clock lag.
+ * - A late `scheduler:get_next` settlement can land long after the timed-out
+ *   dispatch row, and that path is rare, so its window is wider.
+ */
+export const EXACT_BACKFILL_WINDOW_SEC: Readonly<Record<ExactToolInvocationMetadataSelector['kind'], number>> = {
+  'mcp-request-trace-id': 15 * 60,
+  'dispatch-call-id': 6 * 60 * 60,
+};
+
 /** Merge late handler metadata onto the exact invocation selected by a stable request key. */
 async function backfillToolInvocationMetadataByExactSelector(input: {
   workspaceId: string | null | undefined;
@@ -1482,10 +1502,13 @@ async function backfillToolInvocationMetadataByExactSelector(input: {
 
   // Keep selector SQL closed over these two fixed JSON paths. Both keys are
   // recorded before handler settlement and avoid the recency join used by the
-  // older result-door output-ref backfill.
+  // older result-door output-ref backfill. The `invoked_at >= …` predicate is a
+  // search BOUND, not that recency join: the exact key still picks the row, and
+  // the bound only caps a miss (see EXACT_BACKFILL_WINDOW_SEC).
   const selectorSql = input.selector.kind === 'dispatch-call-id'
     ? "metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4"
     : "metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4";
+  const windowSec = EXACT_BACKFILL_WINDOW_SEC[input.selector.kind];
   try {
     await flushPendingTelemetry();
     const { sql } = getOrgPg();
@@ -1499,10 +1522,11 @@ async function backfillToolInvocationMetadataByExactSelector(input: {
              WHERE workspace_id = $2
                AND tool_name = $3
                AND ${selectorSql}
+               AND invoked_at >= now() - make_interval(secs => $5::int)
              ORDER BY invoked_at DESC
              LIMIT 1
           )`,
-        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, selectorValue],
+        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, selectorValue, windowSec],
       );
     });
   } catch (err) {

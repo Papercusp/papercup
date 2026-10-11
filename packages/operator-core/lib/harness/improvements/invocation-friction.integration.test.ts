@@ -11,6 +11,10 @@ import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../system-health/compute', () => ({ refreshHealthPanel: vi.fn(async () => {}) }));
+// capture-core's best-effort `work-item:tool-failure-reporter` emit would otherwise open
+// the protected live org-admin pool (refused since WI-10006585, which surfaced as a
+// console.warn failure). No assertion here observes the wake, so keep it in-process.
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: async () => ({}) }));
 let db: FreshPgDb;
 const source = (name: string) => readFile(fileURLToPath(new URL(
   `../../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url)), 'utf8');
@@ -22,7 +26,11 @@ beforeAll(async () => {
     status text, error_code text, error_message text, serving_build_sha text, metadata_json jsonb);
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text,
     feature_id text PRIMARY KEY, item_kind text, status text, payload jsonb)`);
-  await db.sql.unsafe(await source('1148-tool-invocation-friction-pending-index.sql.DRAFT'));
+  // Apply the ARMED migration, never a .DRAFT (WI-10007741). This guard loaded the
+  // 1148 draft for weeks, so its EXPLAIN assertions passed while no real database had
+  // either index and the expiry sweep scanned all of tool_invocations (mean 124 s).
+  // A missing armed file now fails here instead of passing vacuously.
+  await db.sql.unsafe(await source('1454-tool-invocation-friction-pending-index.sql'));
   const identityMigration = await source('865-work-items-watchdog-key-identity-guard.sql');
   // Apply the real arbiter DDL, without the unrelated legacy repair population.
   const index = identityMigration.match(/CREATE UNIQUE INDEX IF NOT EXISTS work_items_watchdog_identity_uq[\s\S]*?;/);
