@@ -4192,13 +4192,21 @@ export async function guardStagedIndexBeforeCommit(opts: {
   notePostStage(packageClosure.paths, 'package-closure exclusion');
   notePostStage(changedTrackedModulesOutsideIndex, 'changed tracked module outside this commit\'s index');
   notePostStage(absentFromIndex, 'untracked and absent from this commit');
+  const unresolvableExclusions = new Set<string>([...gitlinkGuard.paths, ...packageClosure.paths]);
   const importerOffenders = importerDependencies.length > 0
     ? await detectQuarantineImporters({
         readText: opts.readText,
         dirtyFiles: staged,
         alreadyQuarantined: importerDependencies,
-        isResolvableAtHead: async (path) => {
-          if (alwaysInfectious.has(path) || absentFromIndex.has(path)) return false;
+        // WI-6554700010008578: the guard consults this seam ONLY for side-effect-only edges
+        // (`import './x';`), which name no export, so an old provider at HEAD satisfies them.
+        // A tracked provider excluded from this commit (another group's change, a late lock,
+        // drift) therefore must not hold such an importer: forcing every excluded path to
+        // "absent" held the agent-tools/index.ts registration hub whenever ANY tool module it
+        // loads was dirty elsewhere. Named imports never reach this seam and stay held.
+        // Untracked providers and gitlink/package-closure exclusions stay unresolvable.
+        sideEffectTargetAtHead: async (path) => {
+          if (absentFromIndex.has(path) || unresolvableExclusions.has(path)) return false;
           return isModuleResolvableAtHead(runGit, repoPath, path, log);
         },
         exclusionLabel: 'post-stage exclusion, or untracked and absent from this commit',
