@@ -15,6 +15,8 @@ import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainer
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bm25Health, bm25Leg, lexicalEngine, lexicalLeg, resetBm25Availability, rrfTerm } from './rank';
 import { bm25Corpus } from './corpora';
+import type { SearchSourceParams } from '@papercusp/search';
+import { createPlanSearchSource } from '../../agent-tools/search/knowledge-sources';
 
 const SQL_DIR = path.resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
 const IMAGE = 'papercusp-pgts-test:1.5.1';
@@ -37,6 +39,10 @@ beforeAll(async () => {
     .withEnvironment({ POSTGRES_HOST_AUTH_METHOD: 'trust' })
     .withExposedPorts(5432)
     .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
+    // TEMPORARY MITIGATION: under host IO pressure initdb plus the restart took longer than
+    // testcontainers' default 60s (measured 2026-10-11). Root cause (slow dockerd and IO
+    // starvation) is tracked on EI-25658543783887821; the hook's own budget is 600s.
+    .withStartupTimeout(300_000)
     .start();
   sql = postgres({
     host: container.getHost(), port: container.getMappedPort(5432),
@@ -46,6 +52,20 @@ beforeAll(async () => {
     CREATE SCHEMA harness_shared;
     CREATE TABLE harness_shared.work_items (id int PRIMARY KEY, ws text, title text, summary text, notes text);
     CREATE TABLE harness_shared.code_recipes (id int PRIMARY KEY, title text, description text);
+    CREATE TABLE harness_shared.harness_plans (
+      workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
+      template_slug text, title text, content text, status text DEFAULT 'active',
+      archived boolean NOT NULL DEFAULT false, superseded_by text,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      _search tsvector GENERATED ALWAYS AS
+        (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))) STORED,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug));
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, template_slug, title, content) VALUES
+      ('ws1', 'h', 'kangaroo-plan', NULL, 'Kangaroo relocation', 'Move the kangaroo enclosure before the quarterly review.'),
+      ('ws1', 'h', 'quarterly-plan', NULL, 'Budget', 'Prepare the quarterly figures for the board.'),
+      ('ws1', 'h', 'other-plan', NULL, 'Unrelated', 'Nothing about marsupials here.'),
+      ('ws2', 'h', 'foreign-plan', NULL, 'Kangaroo elsewhere', 'A kangaroo plan in another workspace.'),
+      ('ws1', 'h', 'template-plan', 'tpl', 'Kangaroo template', 'A kangaroo template, not a plan.');
   `);
   const rows = Array.from({ length: 400 }, (_, i) => {
     const id = i + 1;
@@ -67,6 +87,7 @@ describe('migration 1447', () => {
     const by = new Map(out.map(r => [r.corpus_index, r.outcome]));
     expect(by.get('work_items_bm25')).toBe('present');
     expect(by.get('code_recipes_bm25')).toBe('present');
+    expect(by.get('harness_plans_bm25')).toBe('present');
     expect(by.get('documents_bm25')).toBe('skipped:table-missing');
   });
 
@@ -141,6 +162,29 @@ describe('lexical seam on BM25', () => {
 
   it('accepts operator characters in user input', async () => {
     expect((await rankIds('quokka & (routine'))[0]).toBe(1);
+  });
+});
+
+describe('plan knowledge source on BM25 (P-005)', () => {
+  const lexical = (query: string) => createPlanSearchSource().lexical({
+    sql, query, workspaceId: 'ws1', scopeFilter: null, limit: 10,
+  } as unknown as SearchSourceParams);
+
+  it('ranks with BM25: any-term match, both-term plan first, fences kept', async () => {
+    resetBm25Availability();
+    const listing = await lexical('kangaroo quarterly');
+    const keys = listing.map(h => h.key);
+    // The legacy AND query matches only kangaroo-plan; quarterly-plan holds one of the
+    // two terms, so only BM25's any-term match admits it.
+    expect(keys).toEqual(['plan:h:kangaroo-plan', 'plan:h:quarterly-plan']);
+    expect(listing[0]!.score).toBeGreaterThan(listing[1]!.score);
+    expect(listing[1]!.score).toBeGreaterThan(0);
+  });
+
+  it('highlights a row that matches only some of the query terms', async () => {
+    const listing = await lexical('kangaroo quarterly');
+    const partial = listing.find(h => h.key === 'plan:h:quarterly-plan');
+    expect(String(partial?.row.highlight)).toContain('<mark>quarterly</mark>');
   });
 });
 
