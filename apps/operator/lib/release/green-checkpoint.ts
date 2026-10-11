@@ -15960,6 +15960,9 @@ export type CheckpointExec = (
  * install-safe reader mutex, and performs the expensive live-tree publisher
  * only when that exact selector is absent.
  */
+/** The `dependency-generation.sh --retain-as` label for the gate's candidate pin. */
+export const CHECKPOINT_DEPENDENCY_RETAIN_LABEL = "checkpoint-candidate";
+
 export async function ensureCheckpointDependencyGeneration(
   cfg: ReleaseConfig,
   candidate: string,
@@ -15987,6 +15990,11 @@ export async function ensureCheckpointDependencyGeneration(
       cfg.integrationRoot,
       "--ensure-ref",
       candidate,
+      // WI-6554700010008481: pin the generation this gate is about to judge, so
+      // newer staging prebuilds cannot evict it (and its selector) before the run
+      // selects it — the eviction that ended a frozen-queue verify with no verdict.
+      "--retain-as",
+      CHECKPOINT_DEPENDENCY_RETAIN_LABEL,
     ],
     {
       timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,

@@ -54,6 +54,7 @@ import {
   beginCheckpointPreflight,
   checkpointRunLockDir,
   checkpointDependencyInputFingerprint,
+  CHECKPOINT_DEPENDENCY_RETAIN_LABEL,
   ensureCheckpointDependencyGeneration,
   realCheckpointDeps,
   runCmd,
@@ -3292,6 +3293,11 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[0].args).toEqual(
       expect.arrayContaining(["--ensure-ref", candidate]),
     );
+    // WI-6554700010008481: the prewarm pins the candidate's generation so newer
+    // staging prebuilds cannot evict it before the run selects it.
+    const retainAt = calls[0].args.indexOf("--retain-as");
+    expect(retainAt).toBeGreaterThan(-1);
+    expect(calls[0].args[retainAt + 1]).toBe(CHECKPOINT_DEPENDENCY_RETAIN_LABEL);
     expect(calls[1].args).toEqual(
       expect.arrayContaining([
         "--node-modules-generation-id",
