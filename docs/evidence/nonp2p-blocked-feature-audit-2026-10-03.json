@@ -6001,7 +6001,142 @@
      "summary": "plan lane iphone-public-release-2026-08-11#P-010 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "iphoneP010EvidenceQualification": {
+     "status": "retained-current-physical-evidence-requirement",
+     "qualifiedAt": "2026-10-11",
+     "workItem": "WI-10004737",
+     "auditProof": "WI-10005820#comment:1174132",
+     "sourceAuthority": {
+       "plan": "iphone-public-release-2026-08-11",
+       "version": 86,
+       "contentHash": "6192e3634380dddea809f42953af4bd80f7ca4deec86fcbafae52bf09ce6069c",
+       "storedStatus": "todo",
+       "effectiveStatus": "blocked",
+       "unresolvedBlockers": [
+         "P-009"
+       ],
+       "decisions": [
+         "D-017",
+         "D-021",
+         "D-023",
+         "D-024",
+         "D-025"
+       ],
+       "qualification": "Manual download preparation may proceed before store terminal acceptance; P-010 still depends on P-009 and actual signed hardware evidence is not waived. D-017 records copyright/distribution permission and Avi's planned phone route, not executed hardware or credential availability."
+     },
+     "specs": [
+       {
+         "id": "AUTO-BAR-R-4-P-010",
+         "revision": 2,
+         "contentHash": "a041fb3e501fa194c03beeaaa37c47c7b24095bc4429c188fd4a001fd3c9cdb2",
+         "lifecycle": "draft",
+         "requiredEvidence": [
+           "live"
+         ],
+         "requiredTestLayers": [
+           "physical-device"
+         ]
+       },
+       {
+         "id": "AUTO-REQ-M-001-P-010",
+         "revision": 2,
+         "contentHash": "352b8f37ccd85e5c1605fea4a88f175e0a21e4b573137d36dd0ee0fb9cd0036e",
+         "lifecycle": "active",
+         "requiredEvidence": [
+           "current source and executed result receipts",
+           "source-bound outcome comparison"
+         ],
+         "requiredTestLayers": [
+           "live"
+         ]
+       }
+     ],
+     "bindingQualification": {
+       "scope": "Current work-item filter and independent exact-two-clause filter.",
+       "evidenceCount": 0,
+       "truncatedByLimit": false,
+       "qualification": "Only the returned registered binding plane was observed. This is not a census or universal absence claim about native/device artifacts.",
+       "rubric": {
+         "revision": 3,
+         "barSetHash": "efc662fdcb7294964c8f6525cdde5dd06dd8ed0e81627e322730c1c604bc562f",
+         "barKey": "R-4",
+         "barHash": "287c978a598103d67b79c413226794ed1e3b41179467abd79081ae19bf28ba61",
+         "vetting": "unvetted",
+         "pendingAudit": "EI-24782775335411324"
+       },
+       "requiredOutcome": "Named physical iPhone and iOS version, exact signed candidate, production APNs delivery and cold/warm tap destinations, real permission/consent/voice/Bluetooth/lifecycle/cellular outcomes, and bounded 30-minute mixed-use/battery evidence. Simulator or unmeasured evidence rates unknown."
+     },
+     "subjectQualification": {
+       "state": "blocked",
+       "assignee": null,
+       "completionAuthority": null,
+       "checkpoint": null,
+       "threadWindow": {
+         "total": 0,
+         "posts": []
+       },
+       "qualification": "Retain the current dependency and physical acceptance requirement; no duplicate, obsolete, superseded or accepted conclusion."
+     },
+     "implementationQualification": {
+       "sourceHarness": "papercup-rust-mobile",
+       "sourceRegistryReference": "WI-10005820#comment:1174074",
+       "scope": "Two complete selected Swift files and three retained documentation files.",
+       "observations": [
+         "PushManager.swift requests notification authorization, conditionally registers remote notifications and sends a hex APNs token through the client. Source does not establish production delivery or cold/warm destination.",
+         "VoicePrivacyConsent.swift persists grant and removes the value on revoke. Store logic alone does not establish runtime enforcement before cloud audio transfer, permission recovery or live consent.",
+         "TESTFLIGHT-DEVICE-CHECKLIST.md supplies procedures without executed pass/fail/build/time records, targets P-008/R-2 and still instructs an Actions workflow despite D-021/D-025.",
+         "That finite ten-row checklist does not explicitly enumerate both cold and warm routing, Bluetooth/interruption or bounded battery/endurance. This is documentation coverage, not a universal test/source absence claim.",
+         "VOICE_TEST_MATRIX.md contains unticked procedural rows and mixed Android/iOS instructions. Its session-max procedure is not a measured battery trace.",
+         "store/RELEASE-CANDIDATE.md expressly documents Android provenance and is not iPhone signed-install evidence."
+       ],
+       "limits": "No native/source edits, test execution, production APNs or hardware runs. Selected source inspection does not establish whole loaded runtime behavior or source-to-artifact causality.",
+       "drainResidue": "Actions/checklist coverage mismatch retained on auditProof; no incidental new DRAIN issue or lane takeover."
+     },
+     "currentFilePins": [
+       {
+         "path": "docs/TESTFLIGHT-DEVICE-CHECKLIST.md",
+         "bytes": 2754,
+         "sha256": "e89026964ba006d0d1ec48c44fd374333b786c52a068756c907c06ce5762d4b5"
+       },
+       {
+         "path": "docs/VOICE_TEST_MATRIX.md",
+         "bytes": 8917,
+         "sha256": "bba4088b14d6e332cc04c858926541776ebfc662087ab380d61fea1df7cd78b1"
+       },
+       {
+         "path": "store/RELEASE-CANDIDATE.md",
+         "bytes": 3692,
+         "sha256": "ca1dd1a9f86f273002abcb5aee23334a946639d5744d0c53dafb5d9ff22d0ddb"
+       },
+       {
+         "path": "ios/Papercup/Sources/Papercup/PushManager.swift",
+         "bytes": 2514,
+         "sha256": "da9087a714dfe911c8d1cc5b24b56897173d85d946fcc181b1d1126d7feb10d5"
+       },
+       {
+         "path": "ios/Papercup/Sources/Papercup/VoicePrivacyConsent.swift",
+         "bytes": 729,
+         "sha256": "6e87060fe550785175988f2a15f9c76cd7583b326da56129e319f4cdb5848954"
+       }
+     ],
+     "retainedReceiptQualification": {
+       "proofRefs": [
+         "WI-10005820#comment:1174092",
+         "WI-10005820#comment:1174110"
+       ],
+       "source": "Existing completed row37 qualification; no receipt/native rerun in this continuation.",
+       "qualification": "Dated Oct1 simulator smoke, unpaired guidance and unsigned archives do not settle P-010 signed-install/APNs/permission/voice/Bluetooth/cellular/battery outcomes.",
+       "historicalPhone9Reference": "Phone9/R68/WI-10005203#comment:1156678 remains separately unresolved; no repeated failed lookup or carry-echo adoption."
+     },
+     "auditBoundary": {
+       "historicalFields": "Original version52 row, all172 original rows, prior qualifications, population and exclusions preserved.",
+       "actualAcceptance": "Not established by this scoped audit.",
+       "queueReconciliation": "Whole PERSONAL audit and 200-versus172 reconciliation remain open.",
+       "ownerWalls": "Both existing residue scope/budget and private-preview review conversations remain open with null accepted answers; already asked.",
+       "actions": "No child claim/state/hold mutation, provider/Actions/native execution, gate operation, killed-goal renewal or shipment."
+     }
+   }
   },
   {
    "id": "WI-10004738",
