@@ -494,6 +494,47 @@ export async function mutationTargetingRefusal(
 
 const OK = new Set(['created', 'unchanged']);
 
+/** Preserve write outcomes even when a later advisory or parent deadline fails. */
+export function bindingStageDiagnostics(
+  publish: (metadata: Record<string, unknown>) => void,
+  now: () => number = Date.now,
+) {
+  const startedAt = now();
+  const phaseMs: Record<string, number> = {};
+  const active: Record<string, number> = {};
+  const storedBindingIds = new Set<number>();
+  const snapshot = () => ({
+    schemaVersion: 'plans-bind-spec-evidence-stage-timings-v1',
+    totalMs: Math.max(0, now() - startedAt),
+    phaseMs: { ...phaseMs },
+    active: { ...active },
+    storedBindingIds: [...storedBindingIds],
+  });
+  const emit = () => {
+    // Diagnostics must never turn a committed binding into a failed response.
+    try { publish({ plansBindSpecEvidenceStageTimings: snapshot() }); } catch { /* diagnostic only */ }
+  };
+  return {
+    snapshot,
+    emit,
+    stored(result: { status: string; id?: number }) {
+      if (OK.has(result.status) && typeof result.id === 'number') storedBindingIds.add(result.id);
+      emit();
+    },
+    async phase<T>(name: string, operation: () => Promise<T>): Promise<T> {
+      const start = now();
+      active[name] = (active[name] ?? 0) + 1;
+      emit();
+      try { return await operation(); }
+      finally {
+        phaseMs[name] = (phaseMs[name] ?? 0) + Math.max(0, now() - start);
+        if (--active[name] === 0) delete active[name];
+        emit();
+      }
+    },
+  };
+}
+
 /**
  * The attestation advisories are a READ after the write has committed; a failure to compute
  * one must never turn a successful bind/retract into an error. It degrades to a visible
@@ -529,203 +570,236 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    const actorId = resolveAgentIdentity(ctx).ownerId;
-    if (args.retract) {
-      const retractions = await runBulk(
-        args.retract,
-        async (item) => {
-          const result = await retractSpecEvidence({
-            harnessSlug,
-            bindingId: item.bindingId,
-            reason: item.reason,
-            actorId,
-          });
-          // already_retracted is a SUCCESS: the repair is idempotent, so replaying it
-          // must not read as a failure. Only a binding that does not exist in this
-          // scope is an error — that means the caller targeted the wrong row.
-          return result.status === 'not_found'
-            ? { ok: false as const, error: 'not_found' as const, ...result }
-            : { ok: true as const, ...result };
-        },
-        { keyOf: (item) => ({ bindingId: item.bindingId }) },
+    const timing = bindingStageDiagnostics((metadata) => ctx.metadata?.(metadata));
+    try {
+      const sctx = harnessScopedCtx(args.harness, ctx);
+      const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+      const actorId = resolveAgentIdentity(ctx).ownerId;
+      const retract = args.retract;
+      if (retract) {
+        const retractions = await timing.phase('retract', () =>
+          runBulk(
+            retract,
+            async (item) => {
+              const result = await retractSpecEvidence({
+                harnessSlug,
+                bindingId: item.bindingId,
+                reason: item.reason,
+                actorId,
+              });
+              // already_retracted is a SUCCESS: the repair is idempotent, so replaying it
+              // must not read as a failure. Only a binding that does not exist in this
+              // scope is an error — that means the caller targeted the wrong row.
+              return result.status === 'not_found'
+                ? { ok: false as const, error: 'not_found' as const, ...result }
+                : { ok: true as const, ...result };
+            },
+            { keyOf: (item) => ({ bindingId: item.bindingId }) },
+          ),
+        );
+        // EI-24903278232142036: name any design attestation this retraction removed from its
+        // clause's LAST live carrier — the silent pass→unknown flip a freshness repair causes.
+        const lost = await timing.phase('retractionAdvisory', () =>
+          attestationAdvisorySafely(() =>
+            retractionAttestationAdvisory(
+              harnessSlug,
+              retractions.results.flatMap((result) =>
+                result.ok && result.status === 'retracted' && result.binding
+                  ? [
+                      {
+                        id: Number(result.binding.id),
+                        planSlug: result.binding.plan_slug,
+                        specId: result.binding.spec_id,
+                        specRevision: Number(result.binding.spec_revision),
+                      },
+                    ]
+                  : [],
+              ),
+            ),
+          ),
+        );
+        return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
+      }
+      const requested = args.items ?? [args.binding!];
+      // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
+      // it through bindingSchema, so a derived binding meets exactly the contract a hand-built one
+      // does (including the P-043 targeting check below). A failed expansion stays index-aligned
+      // and is reported in the bulk envelope like any other refused item.
+      const runScope = requested.some(isTestRunBinding)
+        ? await timing.phase('resolveRunScope', () => resolvePlanScope({ harnessSlug }))
+        : null;
+      const resolved: ResolvedBinding[] = await timing.phase('expandTestRuns', () =>
+        Promise.all(
+          requested.map(async (item): Promise<ResolvedBinding> => {
+            if (!isTestRunBinding(item)) return { ok: true, binding: item };
+            const expansion = await expandTestRunBinding(item, runScope!);
+            if (!expansion.ok) return expansion;
+            const parsed = bindingSchema.safeParse(expansion.binding);
+            if (!parsed.success) {
+              return {
+                ok: false,
+                error: 'derived_binding_invalid',
+                testRunId: item.fromTestRun,
+                message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+              };
+            }
+            const asCommitted = asCommittedRunOf(expansion.binding.details);
+            return {
+              ok: true,
+              binding: parsed.data,
+              ...(asCommitted ? { asCommitted } : {}),
+              derived: {
+                testRunId: expansion.binding.testRunId,
+                evidenceKind: expansion.binding.evidenceKind,
+                evidenceRef: expansion.binding.evidenceRef,
+                measurement: expansion.binding.measurement,
+                harnessAttribution: expansion.attribution,
+              },
+            };
+          }),
+        ),
       );
-      // EI-24903278232142036: name any design attestation this retraction removed from its
-      // clause's LAST live carrier — the silent pass→unknown flip a freshness repair causes.
-      const lost = await attestationAdvisorySafely(() =>
-        retractionAttestationAdvisory(
-          harnessSlug,
-          retractions.results.flatMap((result) =>
-            result.ok && result.status === 'retracted' && result.binding
-              ? [
-                  {
-                    id: Number(result.binding.id),
-                    planSlug: result.binding.plan_slug,
-                    specId: result.binding.spec_id,
-                    specRevision: Number(result.binding.spec_revision),
-                  },
-                ]
-              : [],
+      const bindings = resolved.map((entry) => (entry.ok ? entry.binding : undefined));
+      const measurementScope = bindings.some((binding) => binding?.measurement)
+        ? await timing.phase('resolveMeasurementScope', () => resolvePlanScope({ harnessSlug }))
+        : null;
+      // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
+      // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
+      // result echoing `slug: undefined` would hide which scope now owns the evidence.
+      const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
+      const env = await timing.phase('bindRows', () =>
+        runBulk(
+          resolved,
+          async (entry) => {
+            if (!entry.ok) {
+              const { error, testRunId, message } = entry;
+              return { ok: false as const, slug: reportedSlug, error, fromTestRun: testRunId, message };
+            }
+            const { binding } = entry;
+            const derived = entry.derived ? { derivedFromTestRun: entry.derived } : {};
+            const targetingRefusal = await timing.phase('mutationTargeting', () =>
+              mutationTargetingRefusal(binding, {
+                planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
+                harnessSlug,
+                ...(args.slug ? { slugArg: args.slug } : {}),
+                ...(args.harness ? { harnessArg: args.harness } : {}),
+              }),
+            );
+            if (targetingRefusal) {
+              return {
+                ok: false as const,
+                slug: reportedSlug,
+                error: 'mutation_target_rejected' as const,
+                ...derived,
+                ...targetingRefusal,
+              };
+            }
+            const { measurement, ...declared } = binding;
+            const measured = !measurement
+              ? null
+              : await timing.phase('measureAndPin', () =>
+                  measureBindingForStore(measurementScope!.workspaceId, harnessSlug, measurement, entry.asCommitted),
+                );
+            const result = await timing.phase('storeBinding', () =>
+              bindSpecEvidence({
+                ...declared,
+                sourceFingerprint: measured?.sourceFingerprint ?? binding.sourceFingerprint!,
+                ...(measured ? { testFingerprint: measured.testFingerprint } : {}),
+                ...(measured?.fixtureFingerprint !== undefined
+                  ? { fixtureFingerprint: measured.fixtureFingerprint }
+                  : {}),
+                ...(measured?.environmentFingerprint !== undefined
+                  ? { environmentFingerprint: measured.environmentFingerprint }
+                  : {}),
+                ...(measurement
+                  ? {
+                      details: {
+                        ...(binding.details ?? {}),
+                        currentMeasurement: measurement,
+                        // P-018: the commit this proof was measured against, so a later stale
+                        // verdict names the moved paths. Excluded from the binding fingerprint.
+                        ...(measured?.pin ? { [MEASUREMENT_PIN_DETAILS_KEY]: measured.pin } : {}),
+                      },
+                    }
+                  : {}),
+                ...(args.slug ? { planSlug: args.slug } : {}),
+                harnessSlug,
+                actorId,
+              }),
+            );
+            timing.stored(result);
+            return OK.has(result.status)
+              ? { ok: true as const, slug: reportedSlug, ...derived, ...result }
+              : { ok: false as const, slug: reportedSlug, error: result.status, ...derived, ...result };
+          },
+          {
+            keyOf: (entry) =>
+              entry.ok
+                ? { slug: reportedSlug, workItemId: entry.binding.workItemId, evidenceRef: entry.binding.evidenceRef }
+                : { slug: reportedSlug, fromTestRun: entry.testRunId },
+          },
+        ),
+      );
+      // P-004 (review-system-rework-reduction-2026-09-23): vet before proof. Advisory only —
+      // the bindings above are already written; this names the cheaper order when BAR proof
+      // lands on a rubric revision nobody has vetted yet. Computed only for bindings that
+      // actually succeeded, so a refused binding never triggers it.
+      const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
+      const workspaceId = resolveAgentIdentity(ctx).workspaceId ?? undefined;
+      const advisory = await timing.phase('vettingAdvisory', () =>
+        runWithWorkspaceIfConcrete(workspaceId, () =>
+          unvettedRubricBindAdvisory(
+            { planSlug: args.slug, harnessSlug, specIds: boundSpecIds },
+            {
+              getAcceptanceRubricsForPlan: (planSlug, options) => getAcceptanceRubricsForPlan(planSlug, options),
+              readVettingStatus: (rubric) => getAcceptanceRubricVettingStatus(rubric, { listScorecards }),
+            },
           ),
         ),
       );
-      return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
-    }
-    const requested = args.items ?? [args.binding!];
-    // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
-    // it through bindingSchema, so a derived binding meets exactly the contract a hand-built one
-    // does (including the P-043 targeting check below). A failed expansion stays index-aligned
-    // and is reported in the bulk envelope like any other refused item.
-    const runScope = requested.some(isTestRunBinding) ? await resolvePlanScope({ harnessSlug }) : null;
-    const resolved: ResolvedBinding[] = await Promise.all(
-      requested.map(async (item): Promise<ResolvedBinding> => {
-        if (!isTestRunBinding(item)) return { ok: true, binding: item };
-        const expansion = await expandTestRunBinding(item, runScope!);
-        if (!expansion.ok) return expansion;
-        const parsed = bindingSchema.safeParse(expansion.binding);
-        if (!parsed.success) {
-          return {
-            ok: false,
-            error: 'derived_binding_invalid',
-            testRunId: item.fromTestRun,
-            message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
-          };
-        }
-        const asCommitted = asCommittedRunOf(expansion.binding.details);
-        return {
-          ok: true,
-          binding: parsed.data,
-          ...(asCommitted ? { asCommitted } : {}),
-          derived: {
-            testRunId: expansion.binding.testRunId,
-            evidenceKind: expansion.binding.evidenceKind,
-            evidenceRef: expansion.binding.evidenceRef,
-            measurement: expansion.binding.measurement,
-            harnessAttribution: expansion.attribution,
-          },
-        };
-      }),
-    );
-    const bindings = resolved.map((entry) => (entry.ok ? entry.binding : undefined));
-    const measurementScope = bindings.some((binding) => binding?.measurement)
-      ? await resolvePlanScope({ harnessSlug })
-      : null;
-    // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
-    // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
-    // result echoing `slug: undefined` would hide which scope now owns the evidence.
-    const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
-    const env = await runBulk(
-      resolved,
-      async (entry) => {
-        if (!entry.ok) {
-          const { error, testRunId, message } = entry;
-          return { ok: false as const, slug: reportedSlug, error, fromTestRun: testRunId, message };
-        }
-        const { binding } = entry;
-        const derived = entry.derived ? { derivedFromTestRun: entry.derived } : {};
-        const targetingRefusal = await mutationTargetingRefusal(binding, {
-          planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
-          harnessSlug,
-          ...(args.slug ? { slugArg: args.slug } : {}),
-          ...(args.harness ? { harnessArg: args.harness } : {}),
-        });
-        if (targetingRefusal) {
-          return {
-            ok: false as const,
-            slug: reportedSlug,
-            error: 'mutation_target_rejected' as const,
-            ...derived,
-            ...targetingRefusal,
-          };
-        }
-        const measured = !binding.measurement
-          ? null
-          : await measureBindingForStore(
-              measurementScope!.workspaceId,
-              harnessSlug,
-              binding.measurement,
-              entry.asCommitted,
-            );
-        const { measurement, ...declared } = binding;
-        const result = await bindSpecEvidence({
-          ...declared,
-          sourceFingerprint: measured?.sourceFingerprint ?? binding.sourceFingerprint!,
-          ...(measured ? { testFingerprint: measured.testFingerprint } : {}),
-          ...(measured?.fixtureFingerprint !== undefined ? { fixtureFingerprint: measured.fixtureFingerprint } : {}),
-          ...(measured?.environmentFingerprint !== undefined ? { environmentFingerprint: measured.environmentFingerprint } : {}),
-          ...(measurement
-            ? {
-                details: {
-                  ...(binding.details ?? {}),
-                  currentMeasurement: measurement,
-                  // P-018: the commit this proof was measured against, so a later stale
-                  // verdict names the moved paths. Excluded from the binding fingerprint.
-                  ...(measured?.pin ? { [MEASUREMENT_PIN_DETAILS_KEY]: measured.pin } : {}),
+      // EI-24903278232142036: computed BEFORE supersession, while the siblings that still carry
+      // the attestations are live — supersession would retract them and hide the gap.
+      const gap = await timing.phase('attestationAdvisory', () =>
+        attestationAdvisorySafely(() =>
+          rebindAttestationAdvisory(
+            harnessSlug,
+            env.results.flatMap((result, index) => {
+              const binding = bindings[index];
+              if (!result.ok || !binding || typeof (result as { id?: unknown }).id !== 'number') return [];
+              const stored = result as unknown as {
+                id: number;
+                planSlug: string;
+                specId: string;
+                specRevision: number;
+              };
+              return [
+                {
+                  id: stored.id,
+                  planSlug: stored.planSlug,
+                  specId: stored.specId,
+                  specRevision: stored.specRevision,
+                  evidenceKind: binding.evidenceKind,
+                  evidenceRef: binding.evidenceRef,
+                  adequacy: (binding.details as { adequacy?: unknown } | undefined)?.adequacy,
                 },
-              }
-            : {}),
-          ...(args.slug ? { planSlug: args.slug } : {}),
-          harnessSlug,
-          actorId,
-        });
-        return OK.has(result.status)
-          ? { ok: true as const, slug: reportedSlug, ...derived, ...result }
-          : { ok: false as const, slug: reportedSlug, error: result.status, ...derived, ...result };
-      },
-      {
-        keyOf: (entry) =>
-          entry.ok
-            ? { slug: reportedSlug, workItemId: entry.binding.workItemId, evidenceRef: entry.binding.evidenceRef }
-            : { slug: reportedSlug, fromTestRun: entry.testRunId },
-      },
-    );
-    // P-004 (review-system-rework-reduction-2026-09-23): vet before proof. Advisory only —
-    // the bindings above are already written; this names the cheaper order when BAR proof
-    // lands on a rubric revision nobody has vetted yet. Computed only for bindings that
-    // actually succeeded, so a refused binding never triggers it.
-    const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
-    const workspaceId = resolveAgentIdentity(ctx).workspaceId ?? undefined;
-    const advisory = await runWithWorkspaceIfConcrete(workspaceId, () =>
-      unvettedRubricBindAdvisory(
-        { planSlug: args.slug, harnessSlug, specIds: boundSpecIds },
-        {
-          getAcceptanceRubricsForPlan: (planSlug, options) => getAcceptanceRubricsForPlan(planSlug, options),
-          readVettingStatus: (rubric) => getAcceptanceRubricVettingStatus(rubric, { listScorecards }),
-        },
-      ),
-    );
-    // EI-24903278232142036: computed BEFORE supersession, while the siblings that still carry
-    // the attestations are live — supersession would retract them and hide the gap.
-    const gap = await attestationAdvisorySafely(() =>
-      rebindAttestationAdvisory(
-        harnessSlug,
-        env.results.flatMap((result, index) => {
-          const binding = bindings[index];
-          if (!result.ok || !binding || typeof (result as { id?: unknown }).id !== 'number') return [];
-          const stored = result as unknown as { id: number; planSlug: string; specId: string; specRevision: number };
-          return [
-            {
-              id: stored.id,
-              planSlug: stored.planSlug,
-              specId: stored.specId,
-              specRevision: stored.specRevision,
-              evidenceKind: binding.evidenceKind,
-              evidenceRef: binding.evidenceRef,
-              adequacy: (binding.details as { adequacy?: unknown } | undefined)?.adequacy,
-            },
-          ];
-        }),
-      ),
-    );
-    const supersession = args.supersedeAtRevision
-      ? await supersedeSiblings({ bindings, results: env.results, harnessSlug, actorId })
-      : undefined;
-    const advisories = [advisory, gap].filter(Boolean);
-    return bulkContent({
-      ...env,
-      ...(advisories.length > 0 ? { advisories } : {}),
-      ...(supersession ? { supersession } : {}),
-    });
+              ];
+            }),
+          ),
+        ),
+      );
+      const supersession = args.supersedeAtRevision
+        ? await timing.phase('supersedeSiblings', () =>
+            supersedeSiblings({ bindings, results: env.results, harnessSlug, actorId }),
+          )
+        : undefined;
+      const advisories = [advisory, gap].filter(Boolean);
+      return bulkContent({
+        ...env,
+        ...(advisories.length > 0 ? { advisories } : {}),
+        ...(supersession ? { supersession } : {}),
+      });
+    } finally {
+      timing.emit();
+    }
   },
 });
