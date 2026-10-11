@@ -169,6 +169,11 @@ async function seedLog(store: Corestore, hbKey: string): Promise<string> {
   return own.keyHex;
 }
 
+// Per-test budgets are 90s+, not 30s. Setup (four corestores, seeding, a noise
+// handshake) is CPU-bound, and under green-checkpoint load THE DEFECT case once
+// passed its 30s budget although each waitFor is capped at 4s. TEMPORARY
+// MITIGATION: the durable fix is to find which await stretches, tracked as
+// WI-6554700010008533. A real hang still fails, only later.
 describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
   it('CONTROL: one corestore per side over a real socket serves its log fine', async () => {
     const serveStore = makeStore('ssc-ctl-serve-');
@@ -189,7 +194,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     expect(attached).toBe(true);
     await remote.update();
     expect(remote.length).toBe(1);
-  }, 30_000);
+  }, 90_000);
 
   it('THE DEFECT: a SECOND corestore replicating the same socket makes the FIRST store’s log unservable (peersCount stays 0 on a live connection)', async () => {
     // Serve side: two "harnesses" sharing one socket, exactly like the rig.
@@ -239,7 +244,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
       firstAttached: true,
       secondAttached: true,
     });
-  }, 30_000);
+  }, 90_000);
 
   /**
    * The one surviving leg of the clobber theory. The case above passes because
@@ -279,7 +284,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     expect(attached).toBe(true);
     await remote.update();
     expect(remote.length).toBe(1);
-  }, 30_000);
+  }, 90_000);
 
   it('COLD CORE + a second corestore on the socket: PROVEN BROKEN — the log is unservable forever on a live connection (characterization; INVERT when fixed)', async () => {
     const serveFirstDir = makeStoreDir('ssc-cold-1-');
@@ -327,7 +332,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     // A green here after a fix means the fix did NOT work.
     expect(coldAttached).toBe(false);
     expect(remoteCold.peersCount?.() ?? 0).toBe(0);
-  }, 30_000);
+  }, 90_000);
 
   /**
    * THE PRODUCTION SHAPE, taken from a real preserved failure bundle
@@ -403,7 +408,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     // apply and the upstream invariant shows through.
     const attachedCount = (aAttached ? 1 : 0) + (bAttached ? 1 : 0);
     expect(attachedCount).toBe(1);
-  }, 30_000);
+  }, 90_000);
 
   /**
    * THE FIX (WI-5673): the rig's real shape — two SIBLING harness stores on the
