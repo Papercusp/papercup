@@ -97,11 +97,28 @@ export function findFreeValueReferences(code, { jsx = false, known = knownGlobal
   const ast = parse(code, { jsx, loc: true, range: true, comment: false, errorOnUnknownASTType: false });
   const typeofArgs = new Set();
   const typeOnly = new Set();
+  const browserCallbacks = [];
   walk(ast, (node, inType) => {
     if (node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument?.type === 'Identifier') {
       typeofArgs.add(node.argument);
     }
     if (inType && node.type === 'Identifier') typeOnly.add(node);
+    // Playwright serializes these inline callbacks into the page realm. Their
+    // DOM constructors are supplied there, not by the Node process bundling
+    // this source. Keep the exception on the callback's range; call arguments
+    // and surrounding host code still need real bindings.
+    if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression'
+      && !node.callee.computed && node.callee.property.type === 'Identifier'
+      && ['evaluate', 'evaluateHandle', '$eval', '$$eval'].includes(node.callee.property.name)) {
+      const receiver = node.callee.object;
+      const isPage = (receiver.type === 'Identifier' && receiver.name === 'page')
+        || (receiver.type === 'MemberExpression' && !receiver.computed
+          && receiver.property.type === 'Identifier' && receiver.property.name === 'page');
+      const callback = node.arguments[node.callee.property.name.startsWith('$') ? 1 : 0];
+      if (isPage && ['ArrowFunctionExpression', 'FunctionExpression'].includes(callback?.type)) {
+        browserCallbacks.push(callback.body.range);
+      }
+    }
   });
   const scopeManager = analyze(ast, { sourceType: 'module', lib: [], jsxPragma: null, jsxFragmentName: null });
   const found = [];
@@ -111,6 +128,8 @@ export function findFreeValueReferences(code, { jsx = false, known = knownGlobal
     if (id.type !== 'Identifier') continue;
     if (typeofArgs.has(id) || typeOnly.has(id)) continue;
     if (known.has(id.name)) continue;
+    if (/^(?:HTMLElement|Element|Node|Document|HTML[A-Z]\w*Element|SVG[A-Z]\w*Element)$/.test(id.name)
+      && browserCallbacks.some(([start, end]) => id.range[0] >= start && id.range[1] <= end)) continue;
     found.push({ name: id.name, line: id.loc.start.line, column: id.loc.start.column + 1 });
   }
   return found;

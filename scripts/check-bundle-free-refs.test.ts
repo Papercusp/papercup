@@ -52,6 +52,23 @@ describe('findFreeValueReferences', () => {
     expect(freeNames('export const x = [require, module, exports, __dirname, __filename];')).toEqual([]);
   });
 
+  it('allows DOM constructors only inside serialized page callbacks, retaining host and typo failures', () => {
+    const code = [
+      'export async function observe(session: any, element: any) {',
+      '  const result = await session.page.evaluate(() => document.body instanceof HTMLElement);',
+      '  await session.page.$eval("input", node => node instanceof HTMLInputElement);',
+      '  await session.page.evaluate(() => missingBrowserHelper());',
+      '  return element instanceof HTMLElement;',
+      '}',
+    ].join('\n');
+    expect(freeNames(code)).toEqual(['missingBrowserHelper', 'HTMLElement']);
+  });
+
+  it('does not exempt evaluated arguments or non-page methods', () => {
+    expect(freeNames('export function f(page: any, service: any) { return [page.evaluate(() => 1, HTMLElement), service.evaluate(() => HTMLElement)]; }'))
+      .toEqual(['HTMLElement', 'HTMLElement']);
+  });
+
   it('treats an esbuild --define name as bound only when it is passed as known', () => {
     const code = 'export const sidecar = __PAPERCUSP_BUNDLED_SIDECAR__;';
     expect(freeNames(code)).toEqual(['__PAPERCUSP_BUNDLED_SIDECAR__']);

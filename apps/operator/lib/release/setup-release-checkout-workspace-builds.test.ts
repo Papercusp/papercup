@@ -325,6 +325,16 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         'REPO_ROOT="$TEST_RUNTIME_REPO_ROOT"',
+        // The block also carries two REAL-REPO environment probes that a fake REPO_ROOT cannot
+        // satisfy and that are not this test's subject (the npm trace of the runtime builds):
+        //   - the Playwright runtime preflight (EI-25537398622311917): sources the REAL
+        //     bundle-host-common.sh — kept real, so its NATIVE_PKGS contract is still exercised —
+        //     then probes playwright-core via `node --input-type=module - "$REPO_ROOT"`;
+        //   - prepare_vite_native_toolchain: `node --input-type=module -e '…' "$REPO_ROOT"`, which
+        //     takes the repo fs-mutex and resolves vite/rolldown from the real install.
+        // Stub ONLY the `--input-type=module` form both use; plain `node` calls still run for real.
+        'WEB_DIR="$TEST_REAL_WEB_DIR"',
+        'node() { if [[ "${1:-}" == --input-type=module ]]; then [[ "${2:-}" == - ]] && cat >/dev/null; return 0; fi; command node "$@"; }',
         'run_sidecar_cached_package() { "$@"; }',
         SIDECAR_POST_INSTALL_BLOCK,
       ].join('\n'),
@@ -332,7 +342,8 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
 
     const run = spawnSync('bash', [runner], {
       env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace,
-        TEST_RUNTIME_REPO_ROOT: root, RUNTIME_READER_MARKER: readerMarker, RUNTIME_LEASE_TRACE: leaseTrace },
+        TEST_RUNTIME_REPO_ROOT: root, TEST_REAL_WEB_DIR: resolve(REPO_ROOT, 'apps/operator'),
+        RUNTIME_READER_MARKER: readerMarker, RUNTIME_LEASE_TRACE: leaseTrace },
       encoding: 'utf8',
     });
     expect(run.status, run.stderr).toBe(0);

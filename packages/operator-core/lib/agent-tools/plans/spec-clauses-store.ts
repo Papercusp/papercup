@@ -303,7 +303,7 @@ export function specClauseContentHash(input: SpecClauseWrite): string {
  */
 export function differsOnlyInAcceptanceProvenance(
   input: SpecClauseWrite,
-  prior: { lifecycleStatus: SpecLifecycleStatus; acceptanceRef: string | null },
+  prior: { lifecycleStatus: SpecLifecycleStatus; acceptanceRef: string | null; exemption?: Record<string, unknown> | null },
   priorBarPin: SpecClauseBarPin | null,
   priorContentHash: string,
 ): boolean {
@@ -311,6 +311,17 @@ export function differsOnlyInAcceptanceProvenance(
     ...input,
     lifecycleStatus: prior.lifecycleStatus,
     acceptanceRef: prior.acceptanceRef,
+    // An accepted manual clause must clear exempt-only metadata (the schema and DB
+    // CHECK require it). That lifecycle bookkeeping changes no proof obligation.
+    // Restore it only for a pure manual promotion; every other field still hashes
+    // against the immutable prior revision, so a changed obligation never carries.
+    ...(prior.lifecycleStatus === 'exempt' &&
+      (input.lifecycleStatus === 'accepted' || input.lifecycleStatus === 'active') &&
+      input.behaviorClass === 'non-automated' &&
+      (input.requiredTestLayers?.length ?? 0) === 0 && !input.mutationRequired &&
+      input.exemption == null && prior.exemption != null
+      ? { exemption: prior.exemption }
+      : {}),
   };
   if (specClauseContentHash(asPrior) === priorContentHash) return true;
   if (input.sourceBar === undefined && priorBarPin !== null) {
@@ -543,8 +554,8 @@ export async function setSpecClause(
     // hash-equality return below guarantees SOMETHING moved, so no separate change test is needed.
     let provenanceOnlyFrom: number | null = null;
     if (identity) {
-      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null }[]>`
-        SELECT content_hash, lifecycle_status
+      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null; exemption: Record<string, unknown> | null }[]>`
+        SELECT content_hash, lifecycle_status, exemption
           FROM harness_shared.plan_spec_clause_revisions
          WHERE workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}
@@ -561,7 +572,7 @@ export async function setSpecClause(
         isEnforceableSpecLifecycle(normalized.lifecycleStatus) &&
         differsOnlyInAcceptanceProvenance(
           effectiveInput,
-          { lifecycleStatus: priorLifecycle, acceptanceRef: priorAcceptanceRef },
+          { lifecycleStatus: priorLifecycle, acceptanceRef: priorAcceptanceRef, exemption: current[0].exemption },
           priorBarPin,
           current[0].content_hash,
         )

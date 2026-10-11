@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute as isAbsolute2, join as join2, relative as relative2 } from "node:path";
+import { delimiter, extname, isAbsolute as isAbsolute2, join as join2, relative as relative2 } from "node:path";
 
 // packages/operator-core/lib/code-intelligence/contracts.ts
 var LINE_INDEX_BASE = Object.freeze({
@@ -304,6 +304,111 @@ function syntacticCalls(ts, sf, path, name) {
 var posix2 = (p) => p.split("\\").join("/");
 var keyOf = (s) => `${s.path}:${s.line1 ?? "?"}`;
 var bySite = (a, b) => a.path.localeCompare(b.path) || (a.line1 ?? 0) - (b.line1 ?? 0);
+function contextRelationships(tree, program, selected) {
+  const { ts } = tree;
+  const checker = program.getTypeChecker();
+  const sf = program.getSourceFile(selected.file);
+  let nameNode;
+  const findToken = (node) => {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node)) && node.getStart(sf) === selected.namePos) nameNode = node;
+    if (!nameNode && node.pos <= selected.namePos && node.end >= selected.namePos) ts.forEachChild(node, findToken);
+  };
+  findToken(sf);
+  if (!nameNode) return [];
+  const declaration = nameNode.parent;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const siteOf = (node, name) => ({
+    ...tsSiteOf(tree, program, node.getSourceFile().fileName, node.getStart(), ts.SyntaxKind[node.parent.kind].toLowerCase()),
+    ...name ? { name } : {}
+  });
+  const unalias = (sym) => sym && sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
+  const targetOf = (sym) => {
+    const d = unalias(sym)?.declarations?.[0];
+    if (!d) return void 0;
+    const file = d.getSourceFile();
+    if (isExternalPath(posix2(relative2(tree.root, file.fileName))) || program.isSourceFileDefaultLibrary(file)) return void 0;
+    const named = d;
+    return siteOf(named.name ?? d, sym?.name);
+  };
+  const add = (kind, node, target, name) => {
+    const site = siteOf(node, name);
+    const key = JSON.stringify([kind, site.path, site.line1, name, target?.path, target?.line1]);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ kind, site, ...target ? { target } : {} });
+    }
+  };
+  const imports = (node) => {
+    if (ts.isIdentifier(node)) {
+      const sym = checker.getSymbolAtLocation(node);
+      for (const d of sym?.flags && sym.flags & ts.SymbolFlags.Alias ? sym.declarations ?? [] : []) {
+        if (ts.isImportSpecifier(d) || ts.isImportClause(d) || ts.isNamespaceImport(d) || ts.isImportEqualsDeclaration(d)) {
+          const target = targetOf(sym);
+          if (target) add("imports", d.name, target, d.name.getText());
+        }
+      }
+    }
+    ts.forEachChild(node, imports);
+  };
+  imports(declaration);
+  const containers = ts.isClassLike(declaration) || ts.isInterfaceDeclaration(declaration) ? [declaration] : ts.isClassLike(declaration.parent) || ts.isInterfaceDeclaration(declaration.parent) ? [declaration.parent] : [];
+  for (const container of containers) {
+    if (container === declaration) {
+      for (const clause of container.heritageClauses ?? []) for (const type2 of clause.types) {
+        const target = targetOf(checker.getSymbolAtLocation(type2.expression));
+        if (target) add(
+          clause.token === ts.SyntaxKind.ImplementsKeyword ? "implementations" : "inheritance",
+          type2.expression,
+          target,
+          type2.expression.getText()
+        );
+      }
+      for (const member of container.members) {
+        const named = member;
+        if (named.name) add("members", named.name, siteOf(named.name), named.name.getText());
+      }
+    }
+    const type = checker.getTypeAtLocation(container);
+    const bases = type.flags & ts.TypeFlags.Object ? checker.getBaseTypes(type) ?? [] : [];
+    for (const member of container === declaration ? container.members : [declaration]) {
+      const named = member;
+      if (!named.name) continue;
+      const name = nameText(ts, named.name);
+      for (const base of bases) {
+        const target = targetOf(base.getProperty(name));
+        if (target) add("overrides", named.name, target, name);
+      }
+    }
+  }
+  const fields = (ts.isClassLike(declaration) || ts.isInterfaceDeclaration(declaration) ? declaration.members : [declaration]).filter((member) => ts.isPropertyDeclaration(member) || ts.isPropertySignature(member));
+  const fieldDeclarations = new Set(fields);
+  for (const file of program.getSourceFiles()) {
+    if (isExternalPath(posix2(relative2(tree.root, file.fileName))) || program.isSourceFileDefaultLibrary(file)) continue;
+    const accesses = (node) => {
+      const token = ts.isPropertyAccessExpression(node) ? node.name : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression : void 0;
+      if (token) {
+        const sym = ts.isPropertyAccessExpression(node) ? checker.getSymbolAtLocation(token) : checker.getTypeAtLocation(node.expression).getProperty(nameText(ts, token));
+        if (sym?.declarations?.some((d) => fieldDeclarations.has(d))) {
+          const target = targetOf(sym);
+          let expression = node;
+          while (ts.isParenthesizedExpression(expression.parent) || ts.isNonNullExpression(expression.parent)) expression = expression.parent;
+          const parent = expression.parent;
+          const assignment = ts.isBinaryExpression(parent) && parent.left === expression && parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+          const increment = (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken);
+          const deletion = ts.isDeleteExpression(parent);
+          const write = assignment || increment || deletion;
+          const read = (!assignment || parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken) && !deletion;
+          if (read) add("field-read", token, target, nameText(ts, token));
+          if (write) add("field-write", token, target, nameText(ts, token));
+        }
+      }
+      ts.forEachChild(node, accesses);
+    };
+    accesses(file);
+  }
+  return out.sort((a, b) => bySite(a.site, b.site) || a.kind.localeCompare(b.kind));
+}
 function classify(ts, checker, root, program, call) {
   let sym = checker.getSymbolAtLocation(call.nameNode);
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
@@ -328,7 +433,7 @@ function buildAnswer(name, started2, now, parts) {
   const error = parts.error ?? null;
   return {
     backend: "typescript-service",
-    intent: "callers",
+    intent: parts.intent ?? "callers",
     query: name,
     sites,
     truncation: { truncated: total > sites.length, totalAvailable: total, continuation: null },
@@ -344,7 +449,7 @@ function buildAnswer(name, started2, now, parts) {
       sourceCompleteness: "unverified",
       limitations: [
         "Searched files are the source files ripgrep finds containing the name as a whole word; gitignored, hidden and node_modules paths are not searched.",
-        "Unattributed sites are syntactic calls the checker did not link to a declaration of this name; each says why.",
+        parts.intent && parts.intent !== "callers" ? "Native symbol/context/callees require one selected declaration; ambiguous or unsupported declarations carry an error." : "Unattributed sites are syntactic calls the checker did not link to a declaration of this name; each says why.",
         "A site is a line: two calls on one line are one site.",
         ...parts.limitations ?? []
       ]
@@ -356,7 +461,10 @@ function buildAnswer(name, started2, now, parts) {
   };
 }
 function failedCallersAnswer(name, error, startedMs, nowMs = Date.now(), scope) {
-  const result2 = buildAnswer(name, startedMs, () => nowMs, { error });
+  const result2 = buildAnswer(name, startedMs, () => nowMs, {
+    error,
+    intent: scope?.op === "callees" ? "callees" : scope?.op && scope.op !== "callers" ? "definition" : "callers"
+  });
   return { ...result2, evidence: unmeasuredCallersEvidence(result2, scope) };
 }
 function unmeasuredCallersEvidence(result2, scope) {
@@ -381,11 +489,24 @@ function unmeasuredCallersEvidence(result2, scope) {
 function firstPartyCallers(q) {
   const now = q.now ?? (() => Date.now());
   const started2 = now();
+  const op = q.op ?? "callers";
+  const intent = op === "callees" ? "callees" : op === "callers" ? "callers" : "definition";
   const answer = (name, startedAt, clock, parts) => {
-    const result2 = buildAnswer(name, startedAt, clock, parts);
+    const result2 = buildAnswer(name, startedAt, clock, { ...parts, intent });
     return parts.evidence ? result2 : { ...result2, evidence: unmeasuredCallersEvidence(result2, q) };
   };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
+  if (!["callers", "symbol", "callees", "context"].includes(op)) {
+    return answer(q.name, started2, now, { error: `unsupported first-party graph operation '${op}'` });
+  }
+  if (op !== "callers" && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
+    const unsupported = answer(q.name, started2, now, { error: `Native graph ${op} is unsupported for '${extname(q.filePath)}'; this compiler route admits JS/TS only. Use the registered language's lsp:query or code:structural route.` });
+    return { ...unsupported, evidence: { ...unsupported.evidence, languageCapabilities: [{
+      language: { ".rs": "rust", ".py": "python", ".go": "go" }[extname(q.filePath)] ?? "unknown",
+      intent,
+      status: "unsupported"
+    }] } };
+  }
   if (!IDENTIFIER.test(q.name)) {
     return answer(q.name, started2, now, { error: `callers needs one identifier; "${q.name}" is not one` });
   }
@@ -397,6 +518,14 @@ function firstPartyCallers(q) {
   }
   const scope = resolveSearchPaths(q.root, q.paths);
   if (!scope.ok) return answer(q.name, started2, now, { error: scope.error });
+  let definingPath;
+  if (op !== "callers" && q.filePath) {
+    const selected = resolveSearchPaths(q.root, [q.filePath]);
+    if (!selected.ok) return answer(q.name, started2, now, { error: selected.error });
+    definingPath = selected.paths[0];
+    const physical = posix2(relative2(realpathSync(q.root), realpathSync(join2(q.root, definingPath))));
+    if (isExternalPath(physical)) return answer(q.name, started2, now, { error: "defining file resolves outside the repository" });
+  }
   const search = findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started2, now, { error: search.error });
   const partial = [
@@ -405,6 +534,7 @@ function firstPartyCallers(q) {
   ];
   if (search.files.length === 0) {
     return answer(q.name, started2, now, {
+      ...op !== "callers" ? { error: `No declaration named '${q.name}' in the searched source scope` } : {},
       limitations: partial,
       attribution: {
         resolved: 0,
@@ -416,19 +546,55 @@ function firstPartyCallers(q) {
       }
     });
   }
-  const tree = openScopedTsTree(q.ts, q.root, search.files);
+  const tree = openScopedTsTree(
+    q.ts,
+    q.root,
+    search.files,
+    op === "callers" ? void 0 : (_ts, _file, text) => text
+  );
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started2, now, { error: "TypeScript produced no program for the candidate files" });
-    const decls = tsDeclarations(tree, program, q.name);
-    const resolved = incomingCallSites(tree, program, decls);
+    const decls = tsDeclarations(tree, program, q.name).filter((d) => op === "callers" || tree.rootFiles.has(d.file) && (!definingPath || d.site.path === definingPath) && (q.line1 === void 0 || d.site.line1 === q.line1) && (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase()));
+    const nativeOutgoing = [];
+    const nativeRelations = /* @__PURE__ */ new Map();
+    let unsupportedTargets = 0;
+    let nativeError = null;
+    if (op !== "callers") {
+      if (decls.length !== 1) nativeError = decls.length === 0 ? `No declaration named '${q.name}' matches the defining-file/line/kind selector` : `Ambiguous symbol '${q.name}': ${decls.map((d) => `${d.site.path}:${d.site.line1}`).join(", ")}. Supply file_path and, when needed, line1.`;
+      else if (op !== "symbol") {
+        const items = hierarchyItems(tree, decls[0]);
+        if (items.length === 0 && op === "callees") nativeError = "Outgoing call hierarchy is unsupported for this declaration";
+        for (const item of items) {
+          for (const call of tree.service.provideCallHierarchyOutgoingCalls(item.file, item.selectionSpan.start)) {
+            const target = { ...tsSiteOf(tree, program, call.to.file, call.to.selectionSpan.start, call.to.kind), name: call.to.name };
+            if (isExternalPath(target.path)) {
+              unsupportedTargets += 1;
+              continue;
+            }
+            for (const span of call.fromSpans) {
+              const site = {
+                ...tsSiteOf(tree, program, item.file, span.start, call.to.kind),
+                name: call.to.name,
+                detail: `calls ${call.to.name}; target ${target.path}:${target.line1}`
+              };
+              nativeOutgoing.push(site);
+              nativeRelations.set(site, { site, kind: "callees", target });
+            }
+          }
+        }
+      }
+    }
+    const context = op === "context" && !nativeError ? contextRelationships(tree, program, decls[0]) : [];
+    for (const relation of context) nativeRelations.set(relation.site, relation);
+    const resolved = op === "callers" ? incomingCallSites(tree, program, decls) : nativeOutgoing;
     const resolvedKeys = new Set(resolved.map(keyOf));
     const declKeys = new Set(decls.map((d) => keyOf(d.site)));
     const checker = program.getTypeChecker();
     const counts = { external: 0, "other-in-repo": 0, unresolved: 0 };
     const unattributed = [];
     const seen = /* @__PURE__ */ new Set();
-    for (const file of search.files) {
+    for (const file of op === "callers" ? search.files : []) {
       const sf = program.getSourceFile(file);
       if (!sf) continue;
       for (const call of syntacticCalls(q.ts, sf, posix2(relative2(q.root, file)), q.name)) {
@@ -440,7 +606,7 @@ function firstPartyCallers(q) {
         unattributed.push({ ...call.site, detail });
       }
     }
-    const all = [...resolved.sort(bySite), ...unattributed.sort(bySite)];
+    const all = op === "callers" ? [...resolved.sort(bySite), ...unattributed.sort(bySite)] : nativeError || op === "symbol" ? decls.map((d) => d.site) : op === "context" ? [...decls.map((d) => d.site), ...nativeOutgoing.sort(bySite), ...context.map((r) => r.site)] : nativeOutgoing.sort(bySite);
     const reported = all.slice(0, limit);
     const sources = program.getSourceFiles().flatMap((sf) => {
       const path = posix2(relative2(q.root, sf.fileName));
@@ -449,12 +615,16 @@ function firstPartyCallers(q) {
         path,
         contentHash: createHash("sha256").update(sf.text).digest("hex"),
         language: /\.[cm]?jsx?$/.test(path) ? "javascript" : "typescript",
-        representation: tree.rootFiles.has(sf.fileName) ? "full-source" : "reexport-stub"
+        representation: op !== "callers" || tree.rootFiles.has(sf.fileName) ? "full-source" : "reexport-stub"
       }];
     }).sort((a, b) => a.path.localeCompare(b.path));
     const repositoryId = q.repositoryId ?? `local-root:${createHash("sha256").update(realpathSync(q.root)).digest("hex")}`;
     const sourceByPath = new Map(sources.map((source) => [source.path, source]));
     const supporting = new Set(reported.map((site) => site.path));
+    for (const site of reported) {
+      const target = nativeRelations.get(site)?.target;
+      if (target) supporting.add(target.path);
+    }
     const evidence = {
       schemaVersion: 1,
       sourceScope: {
@@ -466,10 +636,10 @@ function firstPartyCallers(q) {
       },
       graphScope: { basis: "compiler-project", sourceCompleteness: "unverified", limitations: [
         ...partial,
-        "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+        op === "callers" ? "Only candidate files are full compiler inputs; other reached files are re-export stubs." : "Candidate files and reached in-repository dependencies are full compiler snapshots; this is not a repository-wide completeness proof.",
         "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown."
       ] },
-      languageCapabilities: [...new Set(sources.map((source) => source.language))].map((language) => ({ language, intent: "callers", status: "compiler-backed" })),
+      languageCapabilities: [...new Set(sources.map((source) => source.language))].map((language) => ({ language, intent, status: "compiler-backed" })),
       siteIdentities: reported.map((site, siteIndex) => ({
         siteIndex,
         sourcePath: site.path,
@@ -478,17 +648,27 @@ function firstPartyCallers(q) {
       })),
       relationships: reported.map((site, siteIndex) => ({
         siteIndex,
-        kind: "callers",
-        origin: resolvedKeys.has(keyOf(site)) ? "compiler" : "syntax",
-        knowledge: resolvedKeys.has(keyOf(site)) ? "observed" : "unknown",
-        runtimeExecution: "unknown"
+        kind: op === "callers" ? "callers" : nativeRelations.get(site)?.kind ?? "definition",
+        origin: op !== "callers" || resolvedKeys.has(keyOf(site)) ? "compiler" : "syntax",
+        knowledge: op !== "callers" || resolvedKeys.has(keyOf(site)) ? "observed" : "unknown",
+        runtimeExecution: "unknown",
+        ...nativeRelations.get(site)?.target ? { target: {
+          site: nativeRelations.get(site).target,
+          contentHash: sourceByPath.get(nativeRelations.get(site).target.path).contentHash,
+          versionedSymbolId: versionedSymbolIdentity(repositoryId, nativeRelations.get(site).target, sourceByPath.get(nativeRelations.get(site).target.path))
+        } } : {}
       }))
     };
     return answer(q.name, started2, now, {
       sites: reported,
       evidence,
+      error: nativeError,
       total: all.length,
-      limitations: partial,
+      limitations: [
+        ...partial,
+        ...op === "context" ? ["Context joins resolved in-repository imports, declared heritage, members, overrides and typed property accesses within the bounded compiler program. Structural implementations use lsp:query op:implementations; dynamic/computed fields and unresolved/external context targets are unsupported."] : [],
+        ...unsupportedTargets ? [`Omitted ${unsupportedTargets} external call targets whose source repository/version this query cannot certify.`] : []
+      ],
       attribution: {
         resolved: resolved.length,
         unattributed: counts,
@@ -512,10 +692,10 @@ var started = Date.now();
 var result;
 try {
   const ts = loadVendoredTypescript(job.vendorDir);
-  result = firstPartyCallers({ ts, root: job.root, repositoryId: job.repositoryId, name: job.name, limit: job.limit, paths: job.paths, rgPath: job.rgPath });
+  result = firstPartyCallers({ ...job, ts });
 } catch (error) {
   const why = error instanceof Error ? error.message : String(error);
-  result = failedCallersAnswer(job.name, `could not load the vendored TypeScript from ${job.vendorDir}: ${why}`, started);
+  result = failedCallersAnswer(job.name, `could not load the vendored TypeScript from ${job.vendorDir}: ${why}`, started, Date.now(), job);
 }
 await new Promise((resolve, reject) => process.send(result, (error) => error ? reject(error) : resolve()));
 process.disconnect();

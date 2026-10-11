@@ -107,19 +107,23 @@ export function resolveLostRunRoutes(input: {
   holderOwnerId: string | null;
   holderFleetSlug: string | null;
   hostFleetSlug: string | null;
+  condition?: 'lost-run' | 'stale-progress';
 }): SevereEventRoute[] {
   const routes: SevereEventRoute[] = [];
+  const condition = input.condition === 'stale-progress'
+    ? 'qualification progress is stale'
+    : 'in-flight run died';
   if (input.holderOwnerId) {
     routes.push({
       ownerSelector: input.holderOwnerId,
-      reason: `you hold the ${input.installSlug} gate and its in-flight run died`,
+      reason: `you hold the ${input.installSlug} gate and its ${condition}`,
     });
   }
   const fleetSlug = (input.holderFleetSlug ?? input.hostFleetSlug ?? '').trim();
   if (fleetSlug) {
     routes.push({
       ownerSelector: `@fleet-leader:${fleetSlug}`,
-      reason: `the ${input.installSlug} gate's in-flight run died; fleet ${fleetSlug} leads it`,
+      reason: `the ${input.installSlug} gate's ${condition}; fleet ${fleetSlug} leads it`,
     });
   }
   return routes;
@@ -316,6 +320,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       : null;
     const routes = resolveLostRunRoutes({
       installSlug: row.install_slug,
+      condition: progressKey && liveness !== 'dead' ? 'stale-progress' : 'lost-run',
       holderOwnerId: holder,
       holderFleetSlug,
       hostFleetSlug: deps.hostFleetSlug !== undefined ? deps.hostFleetSlug : (process.env.PAPERCUSP_FLEET_SLUG ?? null),

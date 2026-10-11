@@ -296,6 +296,13 @@ describe('qualification progress in the existing lost-run sweep', () => {
     });
     expect(d.broadcast.mock.calls[0][0].body).toContain('attempt-1');
     expect(d.broadcast.mock.calls[0][0].body).toContain('preserve single flight');
+    const event = d.broadcast.mock.calls[0][0];
+    const routes = [event.route, ...event.extraRoutes];
+    expect(routes).toHaveLength(2);
+    for (const route of routes) {
+      expect(route.reason).toContain('qualification progress is stale');
+      expect(route.reason).not.toContain('died');
+    }
     await sweepLostGateRuns(sql, progressDeps(liveness));
     expect(row.retries).toBe(0);
     expect(row.progressAlarmKey).not.toBeNull();
@@ -322,6 +329,11 @@ describe('qualification progress in the existing lost-run sweep', () => {
     expect(row.retries).toBe(1);
     expect(row.qualification).toEqual(tx);
     expect(d.broadcast.mock.calls[0][0].body).toContain('proved dead');
+    const event = d.broadcast.mock.calls[0][0];
+    expect([event.route, ...event.extraRoutes].map((route) => route.reason)).toEqual([
+      'you hold the papercusp gate and its in-flight run died',
+      "the papercusp gate's in-flight run died; fleet gate-fleet leads it",
+    ]);
   });
 
   it('releases an undelivered stale-progress alarm for the next pass to retry', async () => {

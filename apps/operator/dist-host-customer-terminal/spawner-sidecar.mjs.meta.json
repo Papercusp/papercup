@@ -11364,7 +11364,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/scratch-gc.ts": {
-      "bytes": 69886,
+      "bytes": 71266,
       "imports": [
         {
           "path": "node:fs",
@@ -38693,12 +38693,12 @@
       "format": "esm"
     },
     "packages/plugin-sdk/src/provider.ts": {
-      "bytes": 34225,
+      "bytes": 39887,
       "imports": [],
       "format": "esm"
     },
     "packages/plugin-sdk/src/index.ts": {
-      "bytes": 82484,
+      "bytes": 82709,
       "imports": [
         {
           "path": "packages/plugin-sdk/src/tier-table.ts",
@@ -38714,7 +38714,7 @@
       "format": "esm"
     },
     "packages/plugin-sdk/papercusp-plugin.schema.json": {
-      "bytes": 31861,
+      "bytes": 32594,
       "imports": [],
       "format": "esm",
       "with": {
@@ -56607,7 +56607,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/improvements/agent-review-policy.ts": {
-      "bytes": 80353,
+      "bytes": 84390,
       "imports": [
         {
           "path": "node:crypto",
@@ -57594,7 +57594,7 @@
       "format": "esm"
     },
     "scripts/lib/restricted-hold-preflight.mjs": {
-      "bytes": 18793,
+      "bytes": 19166,
       "imports": [
         {
           "path": "node:child_process",
@@ -57873,7 +57873,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/plans/spec-clauses-store.ts": {
-      "bytes": 39518,
+      "bytes": 40354,
       "imports": [
         {
           "path": "node:crypto",
@@ -60668,7 +60668,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/code-intelligence/contracts.ts": {
-      "bytes": 24873,
+      "bytes": 25327,
       "imports": [],
       "format": "esm"
     },
@@ -61246,7 +61246,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/code-intelligence/first-party-callers.ts": {
-      "bytes": 21432,
+      "bytes": 34309,
       "imports": [
         {
           "path": "node:child_process",
@@ -61779,7 +61779,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/gitnexus/query.ts": {
-      "bytes": 9969,
+      "bytes": 13330,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -62904,7 +62904,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/coverage-census/attribution/pg-evidence-store.ts": {
-      "bytes": 8446,
+      "bytes": 8490,
       "imports": [
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -62912,14 +62912,14 @@
           "original": "../../embedded-pg-discovery"
         },
         {
+          "path": "libs/generic/sync/src/server/pg-adapter.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/sync/server/pg"
+        },
+        {
           "path": "node_modules/postgres/src/index.js",
           "kind": "dynamic-import",
           "original": "postgres"
-        },
-        {
-          "path": "packages/operator-core/lib/sync-sse.ts",
-          "kind": "dynamic-import",
-          "original": "../../sync-sse"
         }
       ],
       "format": "esm"
@@ -102047,7 +102047,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/improvements/agent-review.ts": {
-      "bytes": 86711,
+      "bytes": 87553,
       "imports": [
         {
           "path": "node:util",
@@ -109584,6 +109584,27 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/events/await/wake-source-predicate.ts": {
+      "bytes": 13018,
+      "imports": [
+        {
+          "path": "packages/operator-core/lib/turn-end-tracking.ts",
+          "kind": "import-statement",
+          "original": "../../turn-end-tracking"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-dispatch-states.ts",
+          "kind": "import-statement",
+          "original": "../../work-item-dispatch-states"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/db-org"
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/harness/routines/engine-loop-standdown.ts": {
       "bytes": 4311,
       "imports": [
@@ -109617,12 +109638,17 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts": {
-      "bytes": 43403,
+      "bytes": 44407,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
           "kind": "import-statement",
           "original": "@papercusp/db-org"
+        },
+        {
+          "path": "packages/operator-core/lib/events/await/wake-source-predicate.ts",
+          "kind": "import-statement",
+          "original": "../../events/await/wake-source-predicate"
         },
         {
           "path": "packages/operator-core/lib/harness/routines/loop-dead-man.ts",
@@ -111015,7 +111041,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/gym/report-set-firewall.ts": {
-      "bytes": 17089,
+      "bytes": 17356,
       "imports": [],
       "format": "esm"
     },
@@ -112096,7 +112122,7 @@
       "format": "esm"
     },
     "libs/generic/bench-metrics/src/intervals.ts": {
-      "bytes": 14141,
+      "bytes": 17747,
       "imports": [],
       "format": "esm"
     },
@@ -112206,7 +112232,7 @@
       "format": "esm"
     },
     "libs/generic/bench-metrics/src/index.ts": {
-      "bytes": 4487,
+      "bytes": 4547,
       "imports": [
         {
           "path": "libs/generic/bench-metrics/src/schema.ts",
@@ -130754,8 +130780,13 @@
       "format": "esm"
     },
     "packages/operator-core/lib/integrations/ticket-integrations.ts": {
-      "bytes": 22889,
+      "bytes": 24196,
       "imports": [
+        {
+          "path": "packages/plugin-sdk/src/provider.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/plugin-sdk/provider"
+        },
         {
           "path": "packages/operator-core/lib/integrations/provider-registry.ts",
           "kind": "import-statement",
@@ -130770,6 +130801,11 @@
           "path": "packages/operator-core/lib/integrations/connection-lifecycle.ts",
           "kind": "import-statement",
           "original": "./connection-lifecycle"
+        },
+        {
+          "path": "packages/operator-core/lib/integrations/provider-credentials.ts",
+          "kind": "import-statement",
+          "original": "./provider-credentials"
         },
         {
           "path": "packages/operator-core/lib/external-triggers/source-store.ts",
@@ -133533,12 +133569,17 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/reproducibility/schema.ts": {
-      "bytes": 14473,
+      "bytes": 16201,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
           "kind": "import-statement",
           "original": "zod"
+        },
+        {
+          "path": "libs/generic/bench-metrics/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/bench-metrics"
         },
         {
           "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
@@ -173844,6 +173885,57 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/endpoint-route/routes/user/provider-credentials.ts": {
+      "bytes": 5778,
+      "imports": [
+        {
+          "path": "packages/agent-mcp/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/agent-mcp"
+        },
+        {
+          "path": "packages/operator-core/lib/auth.ts",
+          "kind": "import-statement",
+          "original": "../../../auth"
+        },
+        {
+          "path": "packages/operator-core/lib/workspace-registry.ts",
+          "kind": "import-statement",
+          "original": "../../../workspace-registry"
+        },
+        {
+          "path": "packages/operator-core/lib/sync-sse.ts",
+          "kind": "import-statement",
+          "original": "../../../sync-sse"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/cors.ts",
+          "kind": "import-statement",
+          "original": "../../cors"
+        },
+        {
+          "path": "packages/operator-core/lib/external-triggers/source-store.ts",
+          "kind": "import-statement",
+          "original": "../../../external-triggers/source-store"
+        },
+        {
+          "path": "packages/operator-core/lib/integrations/provider-registry.ts",
+          "kind": "import-statement",
+          "original": "../../../integrations/provider-registry"
+        },
+        {
+          "path": "packages/operator-core/lib/integrations/provider-credentials.ts",
+          "kind": "import-statement",
+          "original": "../../../integrations/provider-credentials"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/user/ticket-integrations.ts",
+          "kind": "import-statement",
+          "original": "./ticket-integrations"
+        }
+      ],
+      "format": "esm"
+    },
     "scripts/lib/strip-comments-and-strings.mjs": {
       "bytes": 48540,
       "imports": [
@@ -175760,7 +175852,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/endpoint-route/routes/index.ts": {
-      "bytes": 56010,
+      "bytes": 56130,
       "imports": [
         {
           "path": "packages/operator-core/lib/endpoint-route/routes/desktop/version.ts",
@@ -178156,6 +178248,11 @@
           "path": "packages/operator-core/lib/endpoint-route/routes/user/ticket-integrations.ts",
           "kind": "import-statement",
           "original": "./user/ticket-integrations"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/user/provider-credentials.ts",
+          "kind": "import-statement",
+          "original": "./user/provider-credentials"
         },
         {
           "path": "packages/operator-core/lib/endpoint-route/routes/dev/sql.ts",
@@ -189188,7 +189285,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/loop/end.ts": {
-      "bytes": 29149,
+      "bytes": 39257,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -189256,6 +189353,11 @@
           "original": "../../events/await/compose-store"
         },
         {
+          "path": "packages/operator-core/lib/events/await/wake-source-predicate.ts",
+          "kind": "import-statement",
+          "original": "../../events/await/wake-source-predicate"
+        },
+        {
           "path": "packages/operator-core/lib/modes/store.ts",
           "kind": "import-statement",
           "original": "../../modes/store"
@@ -189274,6 +189376,11 @@
           "path": "packages/operator-core/lib/fleet-park-resume-path.ts",
           "kind": "import-statement",
           "original": "../../fleet-park-resume-path"
+        },
+        {
+          "path": "packages/operator-core/lib/owner-directives.ts",
+          "kind": "dynamic-import",
+          "original": "../../owner-directives"
         },
         {
           "path": "packages/operator-core/lib/agent-tools/orders/open-directives-guard.ts",
@@ -208218,7 +208325,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts": {
-      "bytes": 148869,
+      "bytes": 148892,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -220534,7 +220641,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts": {
-      "bytes": 32740,
+      "bytes": 35869,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -239548,7 +239655,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/events/await/store.ts": {
-      "bytes": 179319,
+      "bytes": 179697,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -253586,7 +253693,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/issues-engineer.ts": {
-      "bytes": 253400,
+      "bytes": 254574,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -254739,7 +254846,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/work-items.ts": {
-      "bytes": 581614,
+      "bytes": 582263,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -258564,7 +258671,7 @@
     }
   },
   "outputs": {
-    "apps/operator/dist-host-customer-terminal/spawner-sidecar.mjs.new.1824358": {
+    "apps/operator/dist-host-customer-terminal/spawner-sidecar.mjs.new.194529": {
       "imports": [
         {
           "path": "node:module",
@@ -279278,7 +279385,7 @@
           "bytesInOutput": 14318
         },
         "packages/operator-core/lib/scratch-gc.ts": {
-          "bytesInOutput": 43562
+          "bytesInOutput": 44641
         },
         "packages/operator-core/lib/scratch-reference.ts": {
           "bytesInOutput": 10671
@@ -279596,7 +279703,7 @@
           "bytesInOutput": 568
         },
         "libs/generic/memory/src/mem0-client.ts": {
-          "bytesInOutput": 15516
+          "bytesInOutput": 15525
         },
         "libs/generic/memory/src/score-floor.ts": {
           "bytesInOutput": 707
@@ -280862,16 +280969,16 @@
           "bytesInOutput": 1239
         },
         "packages/operator-core/lib/sync/hyperbee/epoch-key-provider-chain.ts": {
-          "bytesInOutput": 775
+          "bytesInOutput": 777
         },
         "libs/generic/seed-bundle/src/manifest.ts": {
           "bytesInOutput": 4505
         },
         "libs/generic/seed-bundle/src/registry.ts": {
-          "bytesInOutput": 1109
+          "bytesInOutput": 1115
         },
         "libs/generic/seed-bundle/src/restore.ts": {
-          "bytesInOutput": 1283
+          "bytesInOutput": 1287
         },
         "libs/generic/seed-bundle/src/crypto.ts": {
           "bytesInOutput": 5411
@@ -281048,7 +281155,7 @@
           "bytesInOutput": 1616
         },
         "libs/papercusp/packages/orchestrator/src/blueprint/validate.ts": {
-          "bytesInOutput": 18099
+          "bytesInOutput": 18101
         },
         "libs/generic/step-program/src/expr.ts": {
           "bytesInOutput": 7430
@@ -281339,7 +281446,7 @@
           "bytesInOutput": 950
         },
         "libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts": {
-          "bytesInOutput": 4405
+          "bytesInOutput": 4407
         },
         "libs/papercusp/packages/blueprint-distribution/src/pack-model.ts": {
           "bytesInOutput": 3423
@@ -281438,7 +281545,7 @@
           "bytesInOutput": 1056
         },
         "libs/papercusp-shared/src/agent/turn-error.ts": {
-          "bytesInOutput": 15991
+          "bytesInOutput": 16031
         },
         "libs/papercusp-shared/src/resilience/retry.ts": {
           "bytesInOutput": 2832
@@ -281453,7 +281560,7 @@
           "bytesInOutput": 21743
         },
         "libs/papercusp-shared/src/agent/governor-registry.ts": {
-          "bytesInOutput": 12469
+          "bytesInOutput": 12511
         },
         "libs/papercusp-shared/src/resilience/priority-admission.ts": {
           "bytesInOutput": 15222
@@ -281501,7 +281608,7 @@
           "bytesInOutput": 163
         },
         "node_modules/@anthropic-ai/sdk/lib/credentials/token-cache.mjs": {
-          "bytesInOutput": 3328
+          "bytesInOutput": 3330
         },
         "node_modules/@anthropic-ai/sdk/internal/utils/env.mjs": {
           "bytesInOutput": 415
@@ -281531,7 +281638,7 @@
           "bytesInOutput": 3418
         },
         "node_modules/@anthropic-ai/sdk/lib/credentials/credential-chain.mjs": {
-          "bytesInOutput": 5482
+          "bytesInOutput": 5494
         },
         "node_modules/@anthropic-ai/sdk/internal/decoders/line.mjs": {
           "bytesInOutput": 4049
@@ -281681,13 +281788,13 @@
           "bytesInOutput": 199
         },
         "node_modules/@anthropic-ai/sdk/client.mjs": {
-          "bytesInOutput": 34630
+          "bytesInOutput": 34632
         },
         "node_modules/@anthropic-ai/sdk/index.mjs": {
           "bytesInOutput": 1103
         },
         "libs/papercusp-shared/src/agent/chat-stream.ts": {
-          "bytesInOutput": 81306
+          "bytesInOutput": 81310
         },
         "libs/papercusp-shared/src/agent/loopback-identity-tty.mjs": {
           "bytesInOutput": 15769
@@ -281906,7 +282013,7 @@
           "bytesInOutput": 11232
         },
         "node_modules/next/dist/server/request/draft-mode.js": {
-          "bytesInOutput": 11638
+          "bytesInOutput": 11640
         },
         "node_modules/next/headers.js": {
           "bytesInOutput": 278
@@ -282194,7 +282301,7 @@
           "bytesInOutput": 2002
         },
         "packages/operator-core/lib/agent-auth-detect.ts": {
-          "bytesInOutput": 13670
+          "bytesInOutput": 13684
         },
         "packages/operator-core/lib/inference-gateway/burn-governor.ts": {
           "bytesInOutput": 7217
@@ -282203,7 +282310,7 @@
           "bytesInOutput": 8511
         },
         "packages/operator-core/lib/deployment/account-pool.ts": {
-          "bytesInOutput": 23348
+          "bytesInOutput": 23379
         },
         "packages/operator-core/lib/opus-budget-governor.ts": {
           "bytesInOutput": 4190
@@ -282218,7 +282325,7 @@
           "bytesInOutput": 7085
         },
         "packages/operator-core/lib/inference-gateway/observability.ts": {
-          "bytesInOutput": 8964
+          "bytesInOutput": 8988
         },
         "packages/operator-core/lib/agent-bin-detect.ts": {
           "bytesInOutput": 3213
@@ -282284,13 +282391,13 @@
           "bytesInOutput": 585
         },
         "libs/generic/deployment-driver/src/workspace-host-registry.ts": {
-          "bytesInOutput": 1259
+          "bytesInOutput": 1263
         },
         "libs/papercusp-publish-auth/src/jcs.ts": {
           "bytesInOutput": 2402
         },
         "libs/generic/deployment-driver/src/workspace-host-build-manifest.ts": {
-          "bytesInOutput": 18668
+          "bytesInOutput": 18680
         },
         "libs/generic/deployment-driver/src/workspace-host-required-material-fixtures.ts": {
           "bytesInOutput": 217
@@ -282350,16 +282457,16 @@
           "bytesInOutput": 2932
         },
         "packages/operator-core/lib/deployment/frame-installer.ts": {
-          "bytesInOutput": 4707
+          "bytesInOutput": 4710
         },
         "packages/operator-core/lib/deployment/latitude/latitude-driver.ts": {
-          "bytesInOutput": 11295
+          "bytesInOutput": 11312
         },
         "packages/operator-core/lib/deployment/hetzner/hetzner-api.ts": {
           "bytesInOutput": 2878
         },
         "packages/operator-core/lib/deployment/hetzner/hetzner-driver.ts": {
-          "bytesInOutput": 5408
+          "bytesInOutput": 5415
         },
         "packages/operator-core/lib/deployment/gcp/gcp-compute-api.ts": {
           "bytesInOutput": 5396
@@ -282587,7 +282694,7 @@
           "bytesInOutput": 461
         },
         "node_modules/google-auth-library/build/src/gtoken/getCredentials.js": {
-          "bytesInOutput": 3960
+          "bytesInOutput": 3962
         },
         "node_modules/google-auth-library/build/src/gtoken/tokenHandler.js": {
           "bytesInOutput": 3418
@@ -282671,7 +282778,7 @@
           "bytesInOutput": 6998
         },
         "packages/operator-core/lib/deployment/gcp/gcp-driver.ts": {
-          "bytesInOutput": 7949
+          "bytesInOutput": 7963
         },
         "packages/operator-core/lib/deployment/headless-peer.ts": {
           "bytesInOutput": 1809
@@ -282683,7 +282790,7 @@
           "bytesInOutput": 4090
         },
         "packages/operator-core/lib/deployment/bootstrap-input.ts": {
-          "bytesInOutput": 2909
+          "bytesInOutput": 2911
         },
         "packages/operator-core/lib/deployment/deploy.ts": {
           "bytesInOutput": 6465
@@ -282701,19 +282808,19 @@
           "bytesInOutput": 15220
         },
         "packages/operator-core/lib/deployment/account-pool-store.ts": {
-          "bytesInOutput": 20252
+          "bytesInOutput": 20273
         },
         "packages/operator-core/lib/inference-gateway/account-resolver.ts": {
-          "bytesInOutput": 5140
+          "bytesInOutput": 5145
         },
         "packages/operator-core/lib/operator-api-base.ts": {
           "bytesInOutput": 382
         },
         "packages/operator-core/lib/oauth/providers.ts": {
-          "bytesInOutput": 20529
+          "bytesInOutput": 20532
         },
         "packages/operator-core/lib/oauth/token.ts": {
-          "bytesInOutput": 3348
+          "bytesInOutput": 3351
         },
         "packages/operator-core/lib/inference-gateway/credential-store.ts": {
           "bytesInOutput": 21024
@@ -282737,7 +282844,7 @@
           "bytesInOutput": 9254
         },
         "packages/operator-core/lib/inference-gateway/admission-state-model.ts": {
-          "bytesInOutput": 10902
+          "bytesInOutput": 10905
         },
         "packages/operator-core/lib/inference-gateway/provider-admission-lifecycle.ts": {
           "bytesInOutput": 7523
@@ -282773,10 +282880,10 @@
           "bytesInOutput": 9683
         },
         "packages/operator-core/lib/inference-gateway/request-stage-telemetry.ts": {
-          "bytesInOutput": 38073
+          "bytesInOutput": 38075
         },
         "packages/operator-core/lib/inference-gateway/request-kernel.ts": {
-          "bytesInOutput": 25209
+          "bytesInOutput": 25233
         },
         "packages/operator-core/lib/inference-gateway/error-body-scrub.ts": {
           "bytesInOutput": 2363
@@ -282806,7 +282913,7 @@
           "bytesInOutput": 3678
         },
         "packages/operator-core/lib/inference-gateway/admission-context.ts": {
-          "bytesInOutput": 8445
+          "bytesInOutput": 8447
         },
         "libs/generic/artifact-registry/src/content-address.ts": {
           "bytesInOutput": 2096
@@ -282836,7 +282943,7 @@
           "bytesInOutput": 1180
         },
         "packages/operator-core/lib/inference-gateway/gateway.ts": {
-          "bytesInOutput": 346268
+          "bytesInOutput": 346325
         },
         "packages/operator-core/lib/inference-gateway/capacity-inventory.ts": {
           "bytesInOutput": 86881
@@ -283013,7 +283120,7 @@
           "bytesInOutput": 187
         },
         "libs/papercusp/packages/orchestrator/src/harness-profile.ts": {
-          "bytesInOutput": 1593
+          "bytesInOutput": 1605
         },
         "libs/papercusp/packages/orchestrator/src/prompt-build.ts": {
           "bytesInOutput": 64094
@@ -283052,7 +283159,7 @@
           "bytesInOutput": 7738
         },
         "libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts": {
-          "bytesInOutput": 3512
+          "bytesInOutput": 3515
         },
         "libs/papercusp/packages/orchestrator/src/feature-history.ts": {
           "bytesInOutput": 6592
@@ -283157,13 +283264,13 @@
           "bytesInOutput": 958
         },
         "packages/plugin-sdk/src/provider.ts": {
-          "bytesInOutput": 15986
+          "bytesInOutput": 19229
         },
         "packages/plugin-sdk/src/index.ts": {
-          "bytesInOutput": 13765
+          "bytesInOutput": 14119
         },
         "packages/plugin-sdk/papercusp-plugin.schema.json": {
-          "bytesInOutput": 33749
+          "bytesInOutput": 34498
         },
         "packages/plugin-loader/src/manifest-validate.ts": {
           "bytesInOutput": 1098
@@ -283226,7 +283333,7 @@
           "bytesInOutput": 1756
         },
         "packages/operator-core/lib/design-compare/provider.ts": {
-          "bytesInOutput": 11164
+          "bytesInOutput": 11177
         },
         "packages/operator-core/lib/design-compare/render-matrix.ts": {
           "bytesInOutput": 6446
@@ -283400,7 +283507,7 @@
           "bytesInOutput": 1383
         },
         "node_modules/@nodelib/fs.walk/out/index.js": {
-          "bytesInOutput": 1559
+          "bytesInOutput": 1563
         },
         "node_modules/fast-glob/out/readers/reader.js": {
           "bytesInOutput": 1204
@@ -283448,7 +283555,7 @@
           "bytesInOutput": 2782
         },
         "node_modules/fast-glob/out/index.js": {
-          "bytesInOutput": 3940
+          "bytesInOutput": 3943
         },
         "libs/test-config/src/execution-details.ts": {
           "bytesInOutput": 7482
@@ -283745,7 +283852,7 @@
           "bytesInOutput": 8534
         },
         "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts": {
-          "bytesInOutput": 34669
+          "bytesInOutput": 34683
         },
         "packages/operator-core/lib/interactive-usage/ingest-adapters.ts": {
           "bytesInOutput": 20991
@@ -285293,7 +285400,7 @@
           "bytesInOutput": 1647
         },
         "packages/operator-core/lib/coverage-census/attribution/pg-evidence-store.ts": {
-          "bytesInOutput": 3313
+          "bytesInOutput": 3253
         },
         "packages/operator-core/lib/coverage-census/attribution/sink.ts": {
           "bytesInOutput": 4622
@@ -285326,7 +285433,7 @@
           "bytesInOutput": 9658
         },
         "packages/operator-core/lib/cupboard/install-plugin-core.ts": {
-          "bytesInOutput": 22680
+          "bytesInOutput": 22719
         },
         "packages/operator-core/lib/cupboard/base-url.ts": {
           "bytesInOutput": 663
@@ -285464,7 +285571,7 @@
           "bytesInOutput": 8028
         },
         "packages/operator-core/lib/journal-read.ts": {
-          "bytesInOutput": 28966
+          "bytesInOutput": 28969
         },
         "packages/operator-core/lib/service-health.ts": {
           "bytesInOutput": 72156
@@ -285920,7 +286027,7 @@
           "bytesInOutput": 11802
         },
         "packages/operator-core/lib/events/await/resume-turn-outcome.ts": {
-          "bytesInOutput": 4860
+          "bytesInOutput": 4888
         },
         "packages/operator-core/lib/task-manager/scope-class.ts": {
           "bytesInOutput": 1828
@@ -285983,7 +286090,7 @@
           "bytesInOutput": 314
         },
         "libs/papercusp/packages/orchestrator/src/omp-gateway-config.ts": {
-          "bytesInOutput": 7522
+          "bytesInOutput": 7538
         },
         "apps/operator/scripts/psu-launcher.mjs": {
           "bytesInOutput": 127594
@@ -286340,7 +286447,7 @@
           "bytesInOutput": 10443
         },
         "packages/operator-core/lib/agent-identities/grant-provider-kinds.ts": {
-          "bytesInOutput": 991
+          "bytesInOutput": 1001
         },
         "packages/operator-core/lib/capability-envelope/identity-refusal-contract.ts": {
           "bytesInOutput": 2927
@@ -286355,13 +286462,13 @@
           "bytesInOutput": 29677
         },
         "packages/operator-core/lib/blueprint/operation-worker-binding.ts": {
-          "bytesInOutput": 26847
+          "bytesInOutput": 26852
         },
         "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": {
-          "bytesInOutput": 24584
+          "bytesInOutput": 24596
         },
         "packages/operator-core/lib/agent-identities/class-provider.ts": {
-          "bytesInOutput": 2894
+          "bytesInOutput": 2912
         },
         "packages/operator-core/lib/agent-tools/ambient-args-scope.ts": {
           "bytesInOutput": 548
@@ -286373,7 +286480,7 @@
           "bytesInOutput": 3774
         },
         "packages/operator-core/lib/agent-identities/recipe-provider-runtime.ts": {
-          "bytesInOutput": 6102
+          "bytesInOutput": 6121
         },
         "packages/operator-core/lib/agent-identities/package-orientation-classes.ts": {
           "bytesInOutput": 6192
@@ -286496,7 +286603,7 @@
           "bytesInOutput": 25283
         },
         "packages/operator-core/lib/consult/consult-dispatch.ts": {
-          "bytesInOutput": 47776
+          "bytesInOutput": 47782
         },
         "packages/operator-core/lib/agent-tools/coordination/answer-capture.ts": {
           "bytesInOutput": 2253
@@ -286577,7 +286684,7 @@
           "bytesInOutput": 10960
         },
         "packages/operator-core/lib/grading-integrity.ts": {
-          "bytesInOutput": 84948
+          "bytesInOutput": 84950
         },
         "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts": {
           "bytesInOutput": 33900
@@ -286628,7 +286735,7 @@
           "bytesInOutput": 1922
         },
         "libs/generic/decision-model/src/client.ts": {
-          "bytesInOutput": 10259
+          "bytesInOutput": 10276
         },
         "libs/generic/decision-model/src/worker-transport.ts": {
           "bytesInOutput": 18287
@@ -287195,7 +287302,7 @@
           "bytesInOutput": 6366
         },
         "packages/operator-core/lib/blueprint/operation-service.ts": {
-          "bytesInOutput": 60176
+          "bytesInOutput": 60183
         },
         "packages/operator-core/lib/agent-tools/scorecards/evaluate.ts": {
           "bytesInOutput": 20733
@@ -287393,7 +287500,7 @@
           "bytesInOutput": 1268
         },
         "packages/operator-core/lib/harness/binding-types.ts": {
-          "bytesInOutput": 1194
+          "bytesInOutput": 1209
         },
         "packages/operator-core/lib/harness/claim-status-resolver.ts": {
           "bytesInOutput": 3013
@@ -287450,13 +287557,13 @@
           "bytesInOutput": 11686
         },
         "packages/operator-core/lib/integrations/connection-lifecycle.ts": {
-          "bytesInOutput": 17589
+          "bytesInOutput": 17594
         },
         "packages/operator-core/lib/integrations/builtin-connection-adapters.ts": {
           "bytesInOutput": 5457
         },
         "packages/operator-core/lib/integrations/provider-credentials.ts": {
-          "bytesInOutput": 751
+          "bytesInOutput": 3730
         },
         "packages/operator-core/lib/integrations/source-host-fetch.ts": {
           "bytesInOutput": 1805
@@ -287468,10 +287575,10 @@
           "bytesInOutput": 4912
         },
         "packages/operator-core/lib/capability-verbs/provider-dispatch.ts": {
-          "bytesInOutput": 5272
+          "bytesInOutput": 5335
         },
         "packages/operator-core/lib/work-admission/record-source.ts": {
-          "bytesInOutput": 6513
+          "bytesInOutput": 6528
         },
         "packages/operator-core/lib/work-admission/lifecycle-config.ts": {
           "bytesInOutput": 1876
@@ -287486,7 +287593,7 @@
           "bytesInOutput": 59653
         },
         "packages/operator-core/lib/work-admission/lifecycle.ts": {
-          "bytesInOutput": 18520
+          "bytesInOutput": 18523
         },
         "packages/operator-core/lib/harness/git-sync/promotion-push-target.ts": {
           "bytesInOutput": 11348
@@ -287660,10 +287767,10 @@
           "bytesInOutput": 25280
         },
         "packages/operator-core/lib/fleet/capacity-verdict.ts": {
-          "bytesInOutput": 6062
+          "bytesInOutput": 6092
         },
         "packages/operator-core/lib/agent-tools/fleet/capacity.ts": {
-          "bytesInOutput": 28496
+          "bytesInOutput": 28554
         },
         "packages/operator-core/lib/fleet-member-idle-verdict.ts": {
           "bytesInOutput": 4715
@@ -287729,7 +287836,7 @@
           "bytesInOutput": 22008
         },
         "packages/operator-core/lib/agent-tools/fleet/leader-brief.ts": {
-          "bytesInOutput": 147235
+          "bytesInOutput": 147250
         },
         "packages/operator-core/lib/adv-agent-leader-brief.ts": {
           "bytesInOutput": 4619
@@ -288161,7 +288268,7 @@
           "bytesInOutput": 38900
         },
         "packages/operator-core/lib/integrations/ticket-integrations.ts": {
-          "bytesInOutput": 14109
+          "bytesInOutput": 14463
         },
         "packages/operator-core/lib/harness/improvements/report-attachments.ts": {
           "bytesInOutput": 11234
@@ -288182,7 +288289,7 @@
           "bytesInOutput": 2888
         },
         "packages/operator-core/lib/data-sources/documents-corpus.ts": {
-          "bytesInOutput": 8921
+          "bytesInOutput": 8933
         },
         "packages/operator-core/lib/data-sources/chat-retrieval-units.ts": {
           "bytesInOutput": 8196
@@ -288317,7 +288424,7 @@
           "bytesInOutput": 3297
         },
         "packages/operator-core/lib/rate-limit-config.ts": {
-          "bytesInOutput": 7632
+          "bytesInOutput": 7644
         },
         "packages/operator-core/lib/dream/capability-contracts.ts": {
           "bytesInOutput": 9787
@@ -288389,7 +288496,7 @@
           "bytesInOutput": 3755
         },
         "packages/operator-core/lib/harness/improvements/agent-review.ts": {
-          "bytesInOutput": 54953
+          "bytesInOutput": 55285
         },
         "packages/operator-core/lib/harness/improvements/stranded-tool-failure-sweep.ts": {
           "bytesInOutput": 20267
@@ -288749,7 +288856,7 @@
           "bytesInOutput": 4414
         },
         "packages/operator-core/lib/providers/connector-runtime.ts": {
-          "bytesInOutput": 26353
+          "bytesInOutput": 26403
         },
         "packages/operator-core/lib/connected-apps/remote-access.ts": {
           "bytesInOutput": 2538
@@ -288905,7 +289012,7 @@
           "bytesInOutput": 1404
         },
         "packages/operator-core/lib/providers/connector-push.ts": {
-          "bytesInOutput": 15257
+          "bytesInOutput": 15270
         },
         "packages/operator-core/lib/personal-vault/team-disclosure.ts": {
           "bytesInOutput": 3942
@@ -288986,7 +289093,7 @@
           "bytesInOutput": 63195
         },
         "packages/operator-core/lib/agent-usage-telemetry.ts": {
-          "bytesInOutput": 7104
+          "bytesInOutput": 7128
         },
         "packages/operator-core/lib/fleet-rate-status.ts": {
           "bytesInOutput": 2624
@@ -289172,7 +289279,7 @@
           "bytesInOutput": 20451
         },
         "packages/operator-core/lib/harness/routines/fleet-headcount-action.ts": {
-          "bytesInOutput": 50042
+          "bytesInOutput": 50088
         },
         "packages/operator-core/lib/harness/improvements/lifecycle.ts": {
           "bytesInOutput": 1993
@@ -289726,6 +289833,9 @@
         "packages/operator-core/lib/harness/routines/stalled-loops-action.ts": {
           "bytesInOutput": 3786
         },
+        "packages/operator-core/lib/events/await/wake-source-predicate.ts": {
+          "bytesInOutput": 6090
+        },
         "packages/operator-core/lib/harness/routines/engine-loop-standdown.ts": {
           "bytesInOutput": 991
         },
@@ -289733,7 +289843,7 @@
           "bytesInOutput": 487
         },
         "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts": {
-          "bytesInOutput": 21817
+          "bytesInOutput": 21693
         },
         "packages/operator-core/lib/harness/routines/silent-halt-action.ts": {
           "bytesInOutput": 1895
@@ -289922,7 +290032,7 @@
           "bytesInOutput": 893
         },
         "packages/operator-core/lib/gym/report-set-firewall.ts": {
-          "bytesInOutput": 8816
+          "bytesInOutput": 9083
         },
         "packages/operator-core/lib/gym/task-corpus.ts": {
           "bytesInOutput": 473
@@ -290438,7 +290548,7 @@
           "bytesInOutput": 33686
         },
         "packages/operator-core/lib/work-items-admission-bulk-dedup.ts": {
-          "bytesInOutput": 83034
+          "bytesInOutput": 83113
         },
         "packages/operator-core/lib/harness/routines/work-item-admission-bulk-dedup-action.ts": {
           "bytesInOutput": 4356
@@ -290654,7 +290764,7 @@
           "bytesInOutput": 523
         },
         "libs/testing-shell/src/census/diff.ts": {
-          "bytesInOutput": 4559
+          "bytesInOutput": 4567
         },
         "libs/testing-shell/src/census/run.ts": {
           "bytesInOutput": 2476
@@ -291104,13 +291214,13 @@
           "bytesInOutput": 4548
         },
         "packages/operator-core/lib/cupboard/commerce-ledger.ts": {
-          "bytesInOutput": 19317
+          "bytesInOutput": 19373
         },
         "packages/operator-core/lib/cupboard/artifact-store.ts": {
           "bytesInOutput": 2950
         },
         "packages/operator-core/lib/cupboard/entitled-delivery.ts": {
-          "bytesInOutput": 14212
+          "bytesInOutput": 14215
         },
         "packages/operator-core/lib/cupboard/ledger-p2p-bridge.ts": {
           "bytesInOutput": 19626
@@ -291311,7 +291421,7 @@
           "bytesInOutput": 14796
         },
         "packages/operator-core/lib/cupboard/capability-grant-resolver.ts": {
-          "bytesInOutput": 10805
+          "bytesInOutput": 10812
         },
         "packages/operator-core/lib/cupboard/identity-listing-surface-wire.ts": {
           "bytesInOutput": 777
@@ -293603,7 +293713,7 @@
           "bytesInOutput": 894
         },
         "packages/operator-core/lib/cupboard/capability-provider-uninstall.ts": {
-          "bytesInOutput": 6262
+          "bytesInOutput": 6264
         },
         "packages/operator-core/lib/endpoint-route/routes/plugins/uninstall.ts": {
           "bytesInOutput": 5066
@@ -293726,7 +293836,7 @@
           "bytesInOutput": 425
         },
         "packages/operator-core/lib/omp-config.ts": {
-          "bytesInOutput": 10030
+          "bytesInOutput": 10044
         },
         "packages/operator-core/lib/inference-gateway/omp-models-config.ts": {
           "bytesInOutput": 651
@@ -293741,7 +293851,7 @@
           "bytesInOutput": 4689
         },
         "packages/operator-core/lib/session-port/fit.ts": {
-          "bytesInOutput": 6192
+          "bytesInOutput": 6205
         },
         "packages/operator-core/lib/session-port/service.ts": {
           "bytesInOutput": 25232
@@ -293753,7 +293863,7 @@
           "bytesInOutput": 5999
         },
         "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts": {
-          "bytesInOutput": 124639
+          "bytesInOutput": 124701
         },
         "packages/operator-core/lib/cupboard/identity-activation-restart.ts": {
           "bytesInOutput": 2105
@@ -293825,7 +293935,7 @@
           "bytesInOutput": 3305
         },
         "packages/operator-core/lib/data-sources/live-search-adapter.ts": {
-          "bytesInOutput": 5568
+          "bytesInOutput": 5570
         },
         "packages/operator-core/lib/data-sources/granted-sources-injection.ts": {
           "bytesInOutput": 14309
@@ -294041,7 +294151,7 @@
           "bytesInOutput": 4346
         },
         "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-engine-health.ts": {
-          "bytesInOutput": 5826
+          "bytesInOutput": 5830
         },
         "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-provision.ts": {
           "bytesInOutput": 625
@@ -294245,19 +294355,19 @@
           "bytesInOutput": 805
         },
         "packages/operator-core/node_modules/@ai-sdk/provider-utils/dist/index.mjs": {
-          "bytesInOutput": 81199
+          "bytesInOutput": 81213
         },
         "packages/operator-core/node_modules/@ai-sdk/openai/dist/index.mjs": {
-          "bytesInOutput": 327871
+          "bytesInOutput": 327889
         },
         "packages/operator-core/lib/agent-loop/model-tool-name-codec.ts": {
           "bytesInOutput": 941
         },
         "packages/operator-core/lib/agent-loop/ai-sdk-port.ts": {
-          "bytesInOutput": 14308
+          "bytesInOutput": 14316
         },
         "packages/operator-core/lib/content-summary.ts": {
-          "bytesInOutput": 15098
+          "bytesInOutput": 15100
         },
         "packages/operator-core/lib/agent-tools/_disclosure-subject.ts": {
           "bytesInOutput": 296
@@ -294488,7 +294598,7 @@
           "bytesInOutput": 1547
         },
         "packages/operator-core/lib/agent-loop/model-selection.ts": {
-          "bytesInOutput": 10740
+          "bytesInOutput": 10756
         },
         "packages/operator-core/lib/latest-agent-session-memo.ts": {
           "bytesInOutput": 1346
@@ -294527,13 +294637,13 @@
           "bytesInOutput": 604
         },
         "packages/operator-core/lib/endpoint-route/routes/oauth/start.ts": {
-          "bytesInOutput": 6408
+          "bytesInOutput": 6417
         },
         "packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts": {
-          "bytesInOutput": 7964
+          "bytesInOutput": 7967
         },
         "packages/operator-core/lib/endpoint-route/routes/oauth/verify-paste.ts": {
-          "bytesInOutput": 2641
+          "bytesInOutput": 2645
         },
         "packages/operator-core/lib/publish-credentials.ts": {
           "bytesInOutput": 1270
@@ -294650,7 +294760,7 @@
           "bytesInOutput": 2334
         },
         "packages/operator-core/lib/endpoint-route/routes/misc/agent-bundle.ts": {
-          "bytesInOutput": 6298
+          "bytesInOutput": 6303
         },
         "packages/operator-core/lib/endpoint-route/routes/misc/test-buttons-echo.ts": {
           "bytesInOutput": 1420
@@ -294746,7 +294856,7 @@
           "bytesInOutput": 980
         },
         "packages/operator-core/lib/endpoint-route/routes/desktop/agent-login-envelope.ts": {
-          "bytesInOutput": 1159
+          "bytesInOutput": 1162
         },
         "packages/operator-core/lib/endpoint-route/routes/desktop/git-identity.ts": {
           "bytesInOutput": 2748
@@ -294803,7 +294913,7 @@
           "bytesInOutput": 6108
         },
         "packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts": {
-          "bytesInOutput": 9336
+          "bytesInOutput": 9341
         },
         "packages/operator-core/lib/endpoint-route/routes/desktop/setup-wizard-state.ts": {
           "bytesInOutput": 3288
@@ -295190,7 +295300,7 @@
           "bytesInOutput": 766
         },
         "packages/operator-core/lib/endpoint-route/routes/admin/deploy-accounts-register.ts": {
-          "bytesInOutput": 5734
+          "bytesInOutput": 5748
         },
         "packages/operator-core/lib/endpoint-route/routes/admin/inference-gateway-stats.ts": {
           "bytesInOutput": 955
@@ -295205,7 +295315,7 @@
           "bytesInOutput": 1455
         },
         "packages/operator-core/lib/deployment/account-link-cli.ts": {
-          "bytesInOutput": 14970
+          "bytesInOutput": 15020
         },
         "packages/operator-core/lib/endpoint-route/routes/admin/deploy-accounts-link-start.ts": {
           "bytesInOutput": 1179
@@ -295778,7 +295888,7 @@
           "bytesInOutput": 27906
         },
         "packages/operator-core/lib/su-session-engine-models.ts": {
-          "bytesInOutput": 3280
+          "bytesInOutput": 3284
         },
         "packages/operator-core/lib/su-session-approval-display.ts": {
           "bytesInOutput": 8791
@@ -296081,7 +296191,7 @@
           "bytesInOutput": 1247
         },
         "packages/operator-core/lib/workspace-host/aws-connection.ts": {
-          "bytesInOutput": 16846
+          "bytesInOutput": 16849
         },
         "packages/operator-core/lib/workspace-host/hosted-aws-host-stack.ts": {
           "bytesInOutput": 10253
@@ -296144,7 +296254,7 @@
           "bytesInOutput": 7288
         },
         "packages/operator-core/lib/workspace-host/gcp-provider.ts": {
-          "bytesInOutput": 94574
+          "bytesInOutput": 94605
         },
         "packages/operator-core/lib/workspace-host/hosted-gcp-hosting.ts": {
           "bytesInOutput": 705
@@ -296321,13 +296431,13 @@
           "bytesInOutput": 1900
         },
         "node_modules/@smithy/credential-provider-imds/dist-cjs/index.js": {
-          "bytesInOutput": 15345
+          "bytesInOutput": 15347
         },
         "node_modules/@smithy/node-http-handler/dist-cjs/index.js": {
           "bytesInOutput": 31656
         },
         "node_modules/@aws-sdk/credential-provider-http/dist-cjs/index.js": {
-          "bytesInOutput": 7502
+          "bytesInOutput": 7504
         },
         "node_modules/@aws-sdk/nested-clients/dist-es/submodules/sso-oidc/auth/httpAuthSchemeProvider.js": {
           "bytesInOutput": 1884
@@ -296615,7 +296725,7 @@
           "bytesInOutput": 5663
         },
         "node_modules/@aws-sdk/nested-clients/dist-es/submodules/sts/defaultRoleAssumers.js": {
-          "bytesInOutput": 1300
+          "bytesInOutput": 1302
         },
         "node_modules/@aws-sdk/nested-clients/dist-es/submodules/sts/index.js": {
           "bytesInOutput": 2496
@@ -296693,7 +296803,7 @@
           "bytesInOutput": 11686
         },
         "node_modules/@aws-sdk/credential-provider-node/dist-cjs/index.js": {
-          "bytesInOutput": 6885
+          "bytesInOutput": 6890
         },
         "node_modules/@aws-sdk/client-iam/dist-cjs/index.js": {
           "bytesInOutput": 270978
@@ -296708,7 +296818,7 @@
           "bytesInOutput": 73623
         },
         "node_modules/@aws-sdk/client-sts/dist-cjs/index.js": {
-          "bytesInOutput": 58403
+          "bytesInOutput": 58405
         },
         "packages/operator-core/lib/workspace-host/aws-safety.ts": {
           "bytesInOutput": 1073
@@ -296774,13 +296884,13 @@
           "bytesInOutput": 592
         },
         "node_modules/@aws-sdk/credential-provider-cognito-identity/dist-cjs/index.js": {
-          "bytesInOutput": 8331
+          "bytesInOutput": 8335
         },
         "node_modules/@aws-sdk/credential-providers/dist-cjs/loadSts-C4jOcYxJ.js": {
           "bytesInOutput": 346
         },
         "node_modules/@aws-sdk/credential-providers/dist-cjs/index.js": {
-          "bytesInOutput": 11502
+          "bytesInOutput": 11504
         },
         "packages/operator-core/lib/workspace-host/provision-bootstrap.ts": {
           "bytesInOutput": 13023
@@ -296789,13 +296899,13 @@
           "bytesInOutput": 847
         },
         "packages/operator-core/lib/workspace-host/aws-sdk-client.ts": {
-          "bytesInOutput": 69493
+          "bytesInOutput": 69515
         },
         "packages/operator-core/lib/workspace-host/aws-connection-inspection.ts": {
-          "bytesInOutput": 4548
+          "bytesInOutput": 4557
         },
         "packages/operator-core/lib/workspace-host/initialization-operations-resolver.ts": {
-          "bytesInOutput": 37232
+          "bytesInOutput": 37234
         },
         "scripts/lib/release-task-journal.mts": {
           "bytesInOutput": 23504
@@ -296828,7 +296938,7 @@
           "bytesInOutput": 2479
         },
         "packages/operator-core/lib/workspace-host/hosted-bring-up.ts": {
-          "bytesInOutput": 12605
+          "bytesInOutput": 12607
         },
         "packages/operator-core/lib/workspace-host/census-profiles.ts": {
           "bytesInOutput": 745
@@ -296840,10 +296950,10 @@
           "bytesInOutput": 3704
         },
         "packages/operator-core/lib/workspace-host/teardown-release-receipt.ts": {
-          "bytesInOutput": 2731
+          "bytesInOutput": 2745
         },
         "packages/operator-core/lib/workspace-host/provisioning-runner.ts": {
-          "bytesInOutput": 72521
+          "bytesInOutput": 72527
         },
         "packages/operator-core/lib/workspace-host/lifecycle-runner.ts": {
           "bytesInOutput": 36757
@@ -296852,7 +296962,7 @@
           "bytesInOutput": 449
         },
         "packages/operator-core/lib/dbos/workspace-host-provision-workflow.ts": {
-          "bytesInOutput": 18339
+          "bytesInOutput": 18373
         },
         "packages/operator-core/lib/workspace-host/controller-forwarding.ts": {
           "bytesInOutput": 4882
@@ -296897,7 +297007,7 @@
           "bytesInOutput": 10432
         },
         "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.ts": {
-          "bytesInOutput": 20370
+          "bytesInOutput": 20380
         },
         "packages/operator-core/lib/workspace-host/byoc-client-key-custody.ts": {
           "bytesInOutput": 3347
@@ -296924,7 +297034,7 @@
           "bytesInOutput": 3479
         },
         "packages/operator-core/lib/workspace-host/soak-aws.ts": {
-          "bytesInOutput": 3627
+          "bytesInOutput": 3629
         },
         "packages/operator-core/lib/workspace-host/soak-gcp.ts": {
           "bytesInOutput": 2657
@@ -297446,31 +297556,31 @@
           "bytesInOutput": 7521
         },
         "packages/operator-core/node_modules/@ai-sdk/anthropic/dist/index.mjs": {
-          "bytesInOutput": 260760
+          "bytesInOutput": 260775
         },
         "node_modules/@ai-sdk/google/node_modules/@ai-sdk/provider/dist/index.mjs": {
           "bytesInOutput": 12676
         },
         "node_modules/@ai-sdk/google/node_modules/@ai-sdk/provider-utils/dist/index.mjs": {
-          "bytesInOutput": 64738
+          "bytesInOutput": 64752
         },
         "node_modules/@ai-sdk/google/dist/index.mjs": {
-          "bytesInOutput": 252806
+          "bytesInOutput": 252822
         },
         "packages/operator-core/node_modules/@ai-sdk/mistral/dist/index.mjs": {
-          "bytesInOutput": 36740
+          "bytesInOutput": 36752
         },
         "packages/operator-core/node_modules/@ai-sdk/groq/dist/index.mjs": {
-          "bytesInOutput": 37148
+          "bytesInOutput": 37160
         },
         "packages/operator-core/node_modules/@ai-sdk/xai/dist/index.mjs": {
-          "bytesInOutput": 139061
+          "bytesInOutput": 139075
         },
         "node_modules/@openrouter/ai-sdk-provider/dist/index.mjs": {
-          "bytesInOutput": 199585
+          "bytesInOutput": 199605
         },
         "packages/operator-core/lib/agent-loop/provider-router.ts": {
-          "bytesInOutput": 9791
+          "bytesInOutput": 9794
         },
         "packages/operator-core/lib/agent-loop/approval-store.ts": {
           "bytesInOutput": 4382
@@ -297582,6 +297692,9 @@
         },
         "packages/operator-core/lib/endpoint-route/routes/user/ticket-integrations.ts": {
           "bytesInOutput": 5813
+        },
+        "packages/operator-core/lib/endpoint-route/routes/user/provider-credentials.ts": {
+          "bytesInOutput": 4512
         },
         "scripts/lib/strip-comments-and-strings.mjs": {
           "bytesInOutput": 11627
@@ -297755,7 +297868,7 @@
           "bytesInOutput": 542
         },
         "packages/operator-core/lib/external-bench/reproducibility/schema.ts": {
-          "bytesInOutput": 9476
+          "bytesInOutput": 9494
         },
         "packages/operator-core/lib/external-bench/reproducibility/store.ts": {
           "bytesInOutput": 9281
@@ -297803,7 +297916,7 @@
           "bytesInOutput": 6769
         },
         "packages/operator-core/lib/external-bench/current-su.ts": {
-          "bytesInOutput": 82092
+          "bytesInOutput": 82113
         },
         "packages/operator-core/lib/external-bench/native-harness-config.ts": {
           "bytesInOutput": 873
@@ -297830,7 +297943,7 @@
           "bytesInOutput": 5395
         },
         "packages/operator-core/lib/endpoint-route/routes/index.ts": {
-          "bytesInOutput": 35074
+          "bytesInOutput": 35157
         },
         "packages/operator-core/lib/endpoint-route/register.ts": {
           "bytesInOutput": 1036
@@ -297848,7 +297961,7 @@
           "bytesInOutput": 1772
         },
         "packages/operator-core/lib/coverage-census/provider-registry.ts": {
-          "bytesInOutput": 933
+          "bytesInOutput": 937
         },
         "packages/operator-core/lib/harness/routines/coverage-census-action.ts": {
           "bytesInOutput": 3147
@@ -297995,13 +298108,13 @@
           "bytesInOutput": 4259
         },
         "packages/operator-core/lib/inference-gateway/capacity-probe.ts": {
-          "bytesInOutput": 17765
+          "bytesInOutput": 17768
         },
         "packages/operator-core/lib/agent-tools/accounts/probe-capacity.ts": {
-          "bytesInOutput": 12944
+          "bytesInOutput": 12961
         },
         "packages/operator-core/lib/harness/routines/account-capacity-reprobe-action.ts": {
-          "bytesInOutput": 1575
+          "bytesInOutput": 1589
         },
         "packages/operator-core/lib/workspace-host/hosted-lifecycle-policy.ts": {
           "bytesInOutput": 1076
@@ -298559,7 +298672,7 @@
           "bytesInOutput": 5759
         },
         "packages/operator-core/lib/events/await/store.ts": {
-          "bytesInOutput": 108309
+          "bytesInOutput": 108626
         },
         "packages/operator-core/lib/external-condition-reachability.ts": {
           "bytesInOutput": 4921
@@ -298568,7 +298681,7 @@
           "bytesInOutput": 12249
         },
         "packages/operator-core/lib/harness/improvements/agent-review-policy.ts": {
-          "bytesInOutput": 48859
+          "bytesInOutput": 51378
         },
         "packages/operator-core/lib/scheduler/get-next.ts": {
           "bytesInOutput": 75764
@@ -298643,7 +298756,7 @@
           "bytesInOutput": 43386
         },
         "packages/operator-core/lib/agent-tools/plans/spec-clauses-store.ts": {
-          "bytesInOutput": 25483
+          "bytesInOutput": 26204
         },
         "packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts": {
           "bytesInOutput": 24027
@@ -298712,7 +298825,7 @@
           "bytesInOutput": 139
         },
         "packages/operator-core/lib/code-intelligence/first-party-callers.ts": {
-          "bytesInOutput": 2673
+          "bytesInOutput": 2979
         },
         "packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts": {
           "bytesInOutput": 3666
@@ -298781,7 +298894,7 @@
           "bytesInOutput": 9449
         },
         "packages/operator-core/lib/agent-tools/gitnexus/query.ts": {
-          "bytesInOutput": 6002
+          "bytesInOutput": 9527
         },
         "packages/operator-core/lib/telemetry-dispatch-wrapper.ts": {
           "bytesInOutput": 520
@@ -299831,7 +299944,7 @@
           "bytesInOutput": 1718
         },
         "packages/operator-core/lib/agent-tools/loop/end.ts": {
-          "bytesInOutput": 17534
+          "bytesInOutput": 24456
         },
         "packages/operator-core/lib/pot/session-audit.ts": {
           "bytesInOutput": 10182
@@ -299960,10 +300073,10 @@
           "bytesInOutput": 1076
         },
         "packages/operator-core/lib/inference-gateway/egress-providers/index.ts": {
-          "bytesInOutput": 1475
+          "bytesInOutput": 1478
         },
         "packages/operator-core/lib/agent-tools/egress/egress.ts": {
-          "bytesInOutput": 13826
+          "bytesInOutput": 13834
         },
         "packages/operator-core/lib/agent-tools/gateway/gateway.ts": {
           "bytesInOutput": 23071
@@ -300797,7 +300910,7 @@
           "bytesInOutput": 8319
         },
         "packages/operator-core/lib/testing-orphan-runs.ts": {
-          "bytesInOutput": 3129
+          "bytesInOutput": 3132
         },
         "packages/operator-core/lib/agent-tools/testing/prune_orphan_runs.ts": {
           "bytesInOutput": 2917
@@ -301442,7 +301555,7 @@
           "bytesInOutput": 7852
         },
         "packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts": {
-          "bytesInOutput": 55707
+          "bytesInOutput": 55737
         },
         "packages/operator-core/lib/coord-ops/trigger.ts": {
           "bytesInOutput": 1001
@@ -302369,7 +302482,7 @@
           "bytesInOutput": 40900
         },
         "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts": {
-          "bytesInOutput": 25745
+          "bytesInOutput": 28556
         },
         "packages/operator-core/lib/agent-tools/plans/get-spec-evidence.ts": {
           "bytesInOutput": 6710
@@ -303353,7 +303466,7 @@
           "bytesInOutput": 6775
         },
         "packages/operator-core/lib/blueprint/compile-packages.ts": {
-          "bytesInOutput": 25504
+          "bytesInOutput": 25519
         },
         "packages/operator-core/lib/blueprint/project-to-pg.ts": {
           "bytesInOutput": 12210
@@ -303446,7 +303559,7 @@
           "bytesInOutput": 48215
         },
         "packages/operator-core/lib/inference-gateway/spawn-env.ts": {
-          "bytesInOutput": 15510
+          "bytesInOutput": 15519
         },
         "packages/operator-core/lib/memory/session-extraction-llm.ts": {
           "bytesInOutput": 10571
@@ -303470,7 +303583,7 @@
           "bytesInOutput": 4814
         },
         "packages/operator-core/lib/harness/improvements/report-context.ts": {
-          "bytesInOutput": 9967
+          "bytesInOutput": 9980
         },
         "packages/operator-core/lib/harness/improvements/error-signature.ts": {
           "bytesInOutput": 3718
@@ -303731,7 +303844,7 @@
           "bytesInOutput": 5035
         },
         "packages/operator-core/lib/iq-battery/bee-instance.ts": {
-          "bytesInOutput": 7562
+          "bytesInOutput": 7566
         },
         "packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts": {
           "bytesInOutput": 14391
@@ -303917,7 +304030,7 @@
           "bytesInOutput": 475
         },
         "packages/operator-core/lib/sync/hyperbee/hive-epoch-boot-deps.ts": {
-          "bytesInOutput": 8127
+          "bytesInOutput": 8140
         },
         "packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts": {
           "bytesInOutput": 11360
@@ -304184,7 +304297,7 @@
           "bytesInOutput": 2949
         },
         "packages/operator-core/lib/issues-engineer.ts": {
-          "bytesInOutput": 118069
+          "bytesInOutput": 118755
         },
         "packages/operator-core/lib/verification-attempts/loop-gate.ts": {
           "bytesInOutput": 8115
@@ -304256,7 +304369,7 @@
           "bytesInOutput": 5068
         },
         "packages/operator-core/lib/work-items.ts": {
-          "bytesInOutput": 277822
+          "bytesInOutput": 278092
         },
         "packages/operator-core/lib/goals/unplanned-clusters.ts": {
           "bytesInOutput": 10924
@@ -304502,7 +304615,7 @@
           "bytesInOutput": 538
         }
       },
-      "bytes": 73237666
+      "bytes": 73277563
     }
   }
 }
