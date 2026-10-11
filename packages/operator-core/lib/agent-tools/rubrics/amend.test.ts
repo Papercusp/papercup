@@ -2,6 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { applyResultDoor } from '../../result-door';
+import { parseScratchReference } from '../../scratch-reference';
+import { safeScratchFilesystemPath } from '../../scratch-uri';
+
+const doorConstants = vi.hoisted(() => vi.fn());
+vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstants }));
 
 const rubricsMocks = vi.hoisted(() => ({
   amendRubric: vi.fn(),
@@ -120,9 +130,12 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(schema).toContain('requestReview');
     const dryRun = (z.toJSONSchema(rubricsAmendArgs) as any).properties.dryRun.description as string;
     expect(dryRun.indexOf('requestReview')).toBeGreaterThanOrEqual(0);
-    expect(amendTool.guidance!.chaining!.indexOf('requestReview')).toBeLessThan(
-      amendTool.guidance!.chaining!.indexOf('reviewPreviewPost'),
-    );
+    expect(dryRun.indexOf('reviewPreviewPost')).toBeGreaterThanOrEqual(0);
+    expect(dryRun.indexOf('requestReview')).toBeLessThan(dryRun.indexOf('reviewPreviewPost'));
+    const chaining = amendTool.guidance!.chaining!;
+    expect(chaining.indexOf('requestReview')).toBeGreaterThanOrEqual(0);
+    expect(chaining.indexOf('reviewPreviewPost')).toBeGreaterThanOrEqual(0);
+    expect(chaining.indexOf('requestReview')).toBeLessThan(chaining.indexOf('reviewPreviewPost'));
   });
 
   it('a slow amend returns a durable receipt before a shorter production dispatcher deadline', async () => {
@@ -175,6 +188,52 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(shaped.receipt.poll).toMatchObject({ tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef } });
     const full = await amendStatusTool.handler(shaped.receipt.poll.args, {} as never) as { data: any };
     expect(full.data.result.preview.approval.changes).toHaveLength(100);
+  });
+
+  it.each(['trimmed', 'standard'] as const)('preserves a usable receipt through a non-default configured output door (%s)', async tier => {
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'amend-output-door-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    const constants = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 6_400 };
+    const budget = computeTurnDoors(0, constants).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+    expect(budget).toBeLessThan(5_000);
+    doorConstants.mockReturnValue(constants);
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({
+      approvalRequired: true,
+      approval: { changes: Array.from({ length: 100 }, (_, n) => ({ barKey: `R-${n}`, afterHash: 'b'.repeat(64) })) },
+      changes: Array.from({ length: 100 }, (_, n) => ({ barKey: `R-${n}`, detail: 'explanation '.repeat(100) })),
+    });
+    try {
+      const args = { rubricRef: `acceptance-configured-${tier}`, dryRun: true };
+      const response = await amendTool.handler(args, {} as never);
+      const shaped = applyPayloadTier({ toolName: 'rubrics:amend', shape: amendTool.shape, response: response as never, tier, args }).data as any;
+      const result = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(shaped) }] }, {
+        toolName: 'rubrics:amend', ownerId: 'amend-test', workspaceId: 'ws-amend-test',
+        preservePaths: ['receipt'],
+      });
+      const text = result.content.map(item => item.text).join('');
+      expect(text.length).toBeLessThanOrEqual(budget);
+      let delivered = JSON.parse(text) as any;
+      if (!delivered.receipt) {
+        const cursor = delivered._projection?.cursor;
+        const uri = delivered.content?.[0]?.uri;
+        expect(cursor?.args?.file_path ?? uri).toEqual(expect.any(String));
+        const path = cursor?.args?.file_path ?? safeScratchFilesystemPath(uri);
+        const reference = parseScratchReference(readFileSync(path));
+        expect(reference).not.toBeNull();
+        expect(reference!.manifest).toMatchObject({ workspaceId: 'ws-amend-test', ownerId: 'amend-test' });
+        const recovered = JSON.parse(reference!.payload.subarray(reference!.manifest.bodyOffsetInPayload ?? 0).toString('utf8'));
+        delivered = recovered.content ? JSON.parse(recovered.content[0].text) : recovered;
+      }
+      expect(delivered.receipt.poll).toMatchObject({ tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef } });
+      const full = await amendStatusTool.handler(delivered.receipt.poll.args, {} as never) as { data: any };
+      expect(full.data.result.preview.approval.changes).toHaveLength(100);
+    } finally {
+      doorConstants.mockReturnValue(BAKED_DOOR_CONSTANTS);
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
   });
 
   it.each([true, false])('production cancellation preserves only a confirmed durable receipt (registered=%s)', async registered => {
