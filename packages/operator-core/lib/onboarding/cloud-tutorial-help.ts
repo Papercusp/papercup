@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, tutorialSteps, sameTutorialScope, type TutorialScope, type StepStatus, type TutorialStepId } from './cloud-tutorial-lesson';
 import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_VERSION } from './product-tutorial-lesson';
+import type { AccountTutorialProgressRecord, TutorialProgressRecord } from './cloud-tutorial-progress';
 
 export const TUTORIAL_RECOVERY = {
   'access-required': 'Sign in and select an authorized workspace, or ask your administrator to grant access. The guide cannot change permissions.',
@@ -48,6 +49,48 @@ export const tutorialAssistanceRequestSchema = z.union([tutorialHelpRequestSchem
 export type TutorialHelpContext = z.infer<typeof tutorialHelpContextSchema>;
 export type TutorialHelpRequest = z.infer<typeof tutorialHelpRequestSchema>;
 export type TutorialAssistanceRequest = z.infer<typeof tutorialAssistanceRequestSchema>;
+
+// Token requests carry lesson context only. Provider/agent IDs, prompts,
+// credentials and session limits are selected exclusively by the server.
+export const tutorialVoiceRequestSchema = z.union([
+  tutorialHelpRequestSchema.omit({ question: true }),
+  productTutorialHelpRequestSchema.omit({ question: true }),
+]);
+export type TutorialVoiceRequest = z.infer<typeof tutorialVoiceRequestSchema>;
+
+/** Paid voice admission is stricter than text help: the persisted guide must
+ * be active. The caller supplies a verified principal's scope and the record
+ * read in its tenant transaction, never browser-provided progress. */
+export function authorizeTutorialVoice(
+  scope: { tenantId: string; userId: string; workspaceId?: string },
+  input: unknown,
+  record: AccountTutorialProgressRecord | TutorialProgressRecord | null,
+): TutorialVoiceRequest {
+  const request = tutorialVoiceRequestSchema.parse(input);
+  if (request.expectedScope.tenantId !== scope.tenantId || request.expectedScope.userId !== scope.userId) {
+    throw new Error('tutorial_scope_changed');
+  }
+  if (request.context.version === PRODUCT_TUTORIAL_VERSION) {
+    // Enrollment is a real persisted record at revision 0; absence is null.
+    if (!record || !('currentLessonId' in record) || record.version !== PRODUCT_TUTORIAL_VERSION
+        || record.scope.tenantId !== scope.tenantId || record.scope.userId !== scope.userId
+        || record.disposition !== 'active' || record.currentLessonId !== request.context.step) {
+      throw new Error('tutorial_lesson_changed');
+    }
+  } else {
+    if (!('workspaceId' in request.expectedScope) || !scope.workspaceId
+        || request.expectedScope.workspaceId !== scope.workspaceId) throw new Error('tutorial_scope_changed');
+    if (!tutorialSteps(request.context.version).some(step => step.id === request.context.step)) {
+      throw new Error('tutorial_step_version_mismatch');
+    }
+    // Legacy reads synthesize active revision 0 for an absent preference.
+    if (!record || !('progress' in record) || record.revision <= 0
+        || record.progress.version !== (request.context.version ?? CLOUD_TUTORIAL_VERSION)
+        || !sameTutorialScope(record.progress.scope, { ...scope, workspaceId: scope.workspaceId })
+        || record.progress.disposition !== 'active') throw new Error('tutorial_lesson_changed');
+  }
+  return request;
+}
 
 export function tutorialHelpContext(context: TutorialHelpContext): string {
   const safe = tutorialHelpContextSchema.parse(context);

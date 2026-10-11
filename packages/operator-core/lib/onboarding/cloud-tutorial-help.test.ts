@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { authorizeTutorialHelp, authorizeProductTutorialHelp, tutorialHelpContext, publicTutorialRecovery, TUTORIAL_RECOVERY } from './cloud-tutorial-help';
+import { authorizeTutorialHelp, authorizeProductTutorialHelp, authorizeTutorialVoice, tutorialHelpContext, publicTutorialRecovery, TUTORIAL_RECOVERY } from './cloud-tutorial-help';
+import type { AccountTutorialProgressRecord, TutorialProgressRecord } from './cloud-tutorial-progress';
+import { CLOUD_TUTORIAL_ID } from './cloud-tutorial-lesson';
 import { PRODUCT_TUTORIAL_LESSONS } from './product-tutorial-lesson';
 const scope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'workspace-a' };
 const request = { expectedScope: scope, context: { step: 'workspace', status: 'waiting' }, question: 'Why is provisioning taking time?' };
@@ -7,6 +9,53 @@ const request = { expectedScope: scope, context: { step: 'workspace', status: 'w
 // does not quarantine this test file for containing the very inputs it rejects.
 const apiKeyQuestion = (): string => ['api_key=sk-', 'secretvalue123456'].join('');
 const privateKeyHeader = (): string => ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
+describe('paid tutorial voice lesson admission', () => {
+  const accountScope = { tenantId: scope.tenantId, userId: scope.userId };
+  const voice = { expectedScope: accountScope, context: { version: 3, step: 'welcome', status: 'ready' } };
+  const enrolled: AccountTutorialProgressRecord = { scope: accountScope, version: 3, revision: 0,
+    mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] };
+  it('accepts a persisted new enrollment before workspace selection', () => {
+    expect(authorizeTutorialVoice(accountScope, voice, enrolled)).toEqual(voice);
+  });
+  it.each(['paused', 'skipped', 'closed'] as const)('refuses an account guide that is %s', disposition => {
+    expect(() => authorizeTutorialVoice(accountScope, voice, { ...enrolled, disposition })).toThrow('tutorial_lesson_changed');
+  });
+  it('refuses missing, stale-lesson and foreign persisted records', () => {
+    for (const record of [null, { ...enrolled, currentLessonId: 'billing' },
+      { ...enrolled, scope: { ...accountScope, userId: 'foreign' } },
+      { ...enrolled, scope: { ...accountScope, tenantId: 'foreign' } }]) {
+      expect(() => authorizeTutorialVoice(accountScope, voice, record)).toThrow('tutorial_lesson_changed');
+    }
+  });
+  it('rejects scope forgery and provider/session overrides before admission', () => {
+    for (const patch of [{ userId: 'foreign' }, { tenantId: 'foreign' }]) {
+      expect(() => authorizeTutorialVoice(accountScope, { ...voice, expectedScope: { ...accountScope, ...patch } }, enrolled))
+        .toThrow('tutorial_scope_changed');
+    }
+    for (const patch of [{ agentId: 'chat-agent' }, { prompt: 'run tools' }, { maximumSeconds: 99999 },
+      { question: 'private' }, { token: 'injected' }]) {
+      expect(() => authorizeTutorialVoice(accountScope, { ...voice, ...patch }, enrolled)).toThrow();
+    }
+    expect(() => authorizeTutorialVoice(accountScope, { ...voice, expectedScope: scope }, enrolled)).toThrow();
+  });
+  it('requires persisted active legacy progress in the selected workspace and exact version', () => {
+    const legacy = { expectedScope: scope, context: { version: 2, step: 'workspace', status: 'ready' } };
+    const saved: TutorialProgressRecord = { revision: 1, mutationId: 'saved', progress: {
+      scope, lessonId: CLOUD_TUTORIAL_ID, version: 2, disposition: 'active' } };
+    expect(authorizeTutorialVoice(scope, legacy, saved)).toEqual(legacy);
+    for (const record of [null, { ...saved, revision: 0 },
+      { ...saved, progress: { ...saved.progress, disposition: 'paused' as const } },
+      { ...saved, progress: { ...saved.progress, version: 1 as const } },
+      { ...saved, progress: { ...saved.progress, scope: { ...scope, workspaceId: 'foreign' } } }]) {
+      expect(() => authorizeTutorialVoice(scope, legacy, record)).toThrow('tutorial_lesson_changed');
+    }
+    expect(() => authorizeTutorialVoice(accountScope, legacy, saved)).toThrow('tutorial_scope_changed');
+    expect(() => authorizeTutorialVoice(scope, { ...legacy, context: { ...legacy.context, version: 1, step: 'practice' } }, saved))
+      .toThrow('tutorial_step_version_mismatch');
+    expect(() => authorizeTutorialVoice(scope, legacy, enrolled)).toThrow('tutorial_lesson_changed');
+    expect(() => authorizeTutorialVoice(accountScope, voice, saved)).toThrow('tutorial_lesson_changed');
+  });
+});
 describe('minimal authorized lesson help', () => {
   it.each(PRODUCT_TUTORIAL_LESSONS)('keeps $id assistance within the account-only public lesson boundary', lesson => {
     const accountScope = { tenantId: scope.tenantId, userId: scope.userId };
