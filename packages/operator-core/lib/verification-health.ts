@@ -188,6 +188,14 @@ export interface VerificationHealthReport {
 }
 
 /**
+ * A `[VAL-` assertion BLOCK is a list-item header line (`  - **[VAL-<id>]**`), the same
+ * grammar val-assertions.ts parses. Prose that merely mentions the token (this plan's own
+ * text, retirement pointers) is not a block, so a raw `LIKE '%[VAL-%'` could never read 0.
+ * POSIX ARE without the newline flag: `^` is string start, so `(^|\n)` anchors each line.
+ */
+export const VAL_BLOCK_HEADER_PG_PATTERN = '(^|\\n)[ \\t]{1,8}-[ \\t]+\\*{0,2}\\[VAL-';
+
+/**
  * Per-plan rows. `has_contract` = at least one clause whose CURRENT revision is not
  * retired/exempt (the acceptance-bar-census definition of a contract). Clause counts
  * use lifecycle_status = 'active' on the current revision, and a binding counts only
@@ -196,7 +204,7 @@ export interface VerificationHealthReport {
 export const VERIFICATION_HEALTH_PLANS_QUERY = `
 SELECT p.harness_slug, p.plan_slug, p.status, p.template, p.acceptance_bar_cohort,
        (p.forced_past IS NOT NULL) AS forced,
-       (p.content LIKE '%[VAL-%') AS has_val_block,
+       (p.content ~ '${VAL_BLOCK_HEADER_PG_PATTERN}') AS has_val_block,
        p.updated_at,
        COALESCE(cl.contract_clauses, 0) > 0 AS has_contract,
        COALESCE(cl.active_clauses, 0) AS active_clauses,

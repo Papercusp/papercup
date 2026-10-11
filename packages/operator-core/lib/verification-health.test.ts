@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildVerificationHealth,
   runVerificationHealth,
+  VAL_BLOCK_HEADER_PG_PATTERN,
   VERIFICATION_HEALTH_PLANS_QUERY,
   type ContractTriageMeasure,
   type StaleAcceptanceMeasure,
@@ -173,5 +174,18 @@ describe('verification-health (P-002)', () => {
     expect(seen).toEqual([true, { workspaceId: 'ws', now: NOW }, true, { workspaceId: 'ws', now: NOW }]);
     expect(report.assessments.verificationHealth).toBe('healthy');
     expect(report.scope).toEqual({ workspaceId: 'ws', harnessSlug: null });
+  });
+
+  it('counts a [VAL- list-item BLOCK, never a prose mention of the token', () => {
+    // The pattern is interpolated into the plans query, not hand-copied.
+    expect(VERIFICATION_HEALTH_PLANS_QUERY).toContain(`p.content ~ '${VAL_BLOCK_HEADER_PG_PATTERN}'`);
+    expect(VERIFICATION_HEALTH_PLANS_QUERY).not.toContain("LIKE '%[VAL-%'");
+    // This ARE pattern uses only constructs JS RegExp reads identically.
+    const re = new RegExp(VAL_BLOCK_HEADER_PG_PATTERN);
+    const block = '- **P-001** `done` Item\n  - **[VAL-demo-001]**\n    - **Verify:** x\n';
+    expect(re.test(block)).toBe(true);
+    expect(re.test('- **P-001** `done` Item\n    - [VAL-demo-001] indented block\n')).toBe(true);
+    expect(re.test('valBlockPlans: plans whose content contains a [VAL- block.\n')).toBe(false);
+    expect(re.test('  - Validation: retired inline assertion VAL-demo-001; folded into SPEC-001-01.\n')).toBe(false);
   });
 });
