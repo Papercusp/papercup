@@ -43,6 +43,8 @@ import type { getOrgPg } from '@papercusp/db-org';
  */
 export class WorkItemIdAmbiguousError extends Error {
   readonly code = 'work_item_id_ambiguous' as const;
+  /** What `candidates` lists: harness slugs in one workspace, or workspace ids. */
+  readonly scope: 'harness' | 'workspace' = 'harness';
   constructor(
     readonly id: string,
     readonly workspaceId: string | null,
@@ -60,6 +62,50 @@ export class WorkItemIdAmbiguousError extends Error {
     );
     this.name = 'WorkItemIdAmbiguousError';
   }
+}
+
+/**
+ * WI-6554700010008365 (P-013 residue): a by-id lookup whose id the ambient workspace does NOT
+ * hold, while two or more OTHER workspaces do. Falling back to the one workspace that holds an
+ * id is deliberate (EI-15486: a routine tick can resolve the wrong ambient workspace). Taking
+ * the freshest of several is a recency choice between other workspaces' rows, so it is refused.
+ * Same `code` as the harness twin refusal, so every existing handler surfaces it; here
+ * `candidates` are workspace ids.
+ */
+export class WorkItemWorkspaceAmbiguousError extends WorkItemIdAmbiguousError {
+  override readonly scope = 'workspace' as const;
+  constructor(
+    id: string,
+    readonly ambientWorkspaceId: string,
+    workspaces: readonly string[],
+  ) {
+    super(id, null, workspaces, null);
+    this.message =
+      `work_item '${id}' is not in the current workspace '${ambientWorkspaceId}', and ` +
+      `${workspaces.length} other workspaces hold it [${workspaces.join(', ')}]. Read or write it ` +
+      `in its own workspace; choosing the most recent of several workspaces is refused.`;
+    this.name = 'WorkItemWorkspaceAmbiguousError';
+  }
+}
+
+/** Every workspace holding the id, read as `array_agg(workspace_id) OVER ()` before LIMIT. */
+export interface WorkspaceCensus {
+  __all_ws?: string[] | null;
+}
+
+/**
+ * Refuse a by-id choice that fell back from the ambient workspace to one of SEVERAL others.
+ * A choice in the ambient workspace, or the only workspace holding the id, passes.
+ */
+export function assertWorkspaceChoice(
+  id: string,
+  ambient: string,
+  chosen: string | null | undefined,
+  allWorkspaces: readonly string[] | null | undefined,
+): void {
+  if (!chosen || chosen === ambient) return;
+  const distinct = [...new Set(allWorkspaces ?? [])].sort();
+  if (distinct.length > 1) throw new WorkItemWorkspaceAmbiguousError(id, ambient, distinct);
 }
 
 /** Duck-typed so a module-split copy of the class (a mocked or re-bundled module) still matches. */

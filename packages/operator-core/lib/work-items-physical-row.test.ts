@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   WorkItemIdAmbiguousError,
+  WorkItemWorkspaceAmbiguousError,
+  assertWorkspaceChoice,
   choosePhysicalSlug,
   harnessPreference,
   harnessSlugMatches,
@@ -111,6 +113,32 @@ describe('choosePhysicalSlug (P-013 / R-5)', () => {
 
   it('no rows is none', () => {
     expect(choosePhysicalSlug([])).toEqual({ kind: 'none' });
+  });
+});
+
+describe('assertWorkspaceChoice (cross-workspace half, WI-6554700010008365)', () => {
+  it('refuses a fallback from the ambient workspace to one of several others, naming them sorted', () => {
+    let caught: unknown;
+    try {
+      assertWorkspaceChoice('WI-7', 'ambient', 'ws-b', ['ws-b', 'ws-a', 'ws-b']);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(WorkItemWorkspaceAmbiguousError);
+    // Same code as the harness twin refusal, so every existing handler surfaces it.
+    expect(isWorkItemIdAmbiguousError(caught)).toBe(true);
+    expect(caught).toMatchObject({ code: 'work_item_id_ambiguous', scope: 'workspace', candidates: ['ws-a', 'ws-b'] });
+    expect((caught as Error).message).toContain("not in the current workspace 'ambient'");
+  });
+
+  it('passes a choice in the ambient workspace, the only foreign holder, or no row at all', () => {
+    expect(() => assertWorkspaceChoice('WI-7', 'ambient', 'ambient', ['ambient', 'ws-a'])).not.toThrow();
+    expect(() => assertWorkspaceChoice('WI-7', 'ambient', 'ws-a', ['ws-a', 'ws-a'])).not.toThrow();
+    expect(() => assertWorkspaceChoice('WI-7', 'ambient', null, null)).not.toThrow();
+  });
+
+  it('control: a harness twin refusal keeps scope "harness"', () => {
+    expect(new WorkItemIdAmbiguousError('WI-7', 'ws', ['a', 'b'], null).scope).toBe('harness');
   });
 });
 
