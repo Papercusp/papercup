@@ -803,11 +803,15 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
        AND (${itemIds.length} = 0 OR r.plan_item_id = ANY(${itemIds}::text[]))
        AND ${
          options.asOf
-           ? tx`r.created_at <= ${options.asOf}::timestamptz AND NOT EXISTS (
+           // Acceptance can be recorded after revision creation. Do not expose an
+           // enforceable revision
+           // in a historical snapshot until both its content and acceptance are known.
+           ? tx`GREATEST(r.created_at, COALESCE(r.accepted_at, r.created_at)) <= ${options.asOf}::timestamptz AND NOT EXISTS (
                SELECT 1 FROM harness_shared.plan_spec_clause_revisions newer
                 WHERE newer.workspace_id = r.workspace_id AND newer.harness_slug = r.harness_slug
                   AND newer.plan_slug = r.plan_slug AND newer.spec_id = r.spec_id
-                  AND newer.revision > r.revision AND newer.created_at <= ${options.asOf}::timestamptz
+                  AND newer.revision > r.revision
+                  AND GREATEST(newer.created_at, COALESCE(newer.accepted_at, newer.created_at)) <= ${options.asOf}::timestamptz
              )`
            : options.revision !== undefined
            ? tx`r.revision = ${options.revision}`
