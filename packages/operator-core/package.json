@@ -266,6 +266,7 @@
     "@ethereumjs/vm": "10.1.3",
     "@linear/sdk": "^97.0.0",
     "@microsoft/microsoft-graph-types": "^2.43.1",
+    "@papercusp/operator-ui": "*",
     "@papercusp/test-config": "*",
     "@types/nodemailer": "^8.0.2",
     "@types/yauzl": "^3.4.0",
