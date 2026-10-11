@@ -128,6 +128,8 @@ export interface RegisterTaskOptions {
   /** Pre-mint the id (the chokepoint needs it to build the scope name before the
    *  row exists). Must satisfy `isValidTaskId`. */
   taskId?: string;
+  /** Exact identities, filtered before the result cap. Empty means no matches. */
+  taskIds?: string[];
   /** Reserve the scope unit at register time so the UNIQUE index catches a
    *  double-launch before the fork rather than after. */
   reserveScope?: boolean;
@@ -924,6 +926,7 @@ export async function listLatestStrandedByCoordOwners(
 }
 
 export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
+  if (filter.taskIds?.length === 0) return [];
   const sql = sqlOf(inject);
   const ws = filter.workspaceId ?? activeWorkspaceId();
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 2000);
@@ -936,6 +939,7 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
        ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
        ${filter.taskId ? sql`AND task_id = ${filter.taskId}` : sql``}
+       ${filter.taskIds ? sql`AND task_id = ANY(${sql.array(filter.taskIds, 25)})` : sql``}
        ${
          filter.scopeUnit
            ? sql`AND (scope_unit = ${filter.scopeUnit} OR detail #>> '{terminalProvenance,scopeUnit}' = ${filter.scopeUnit})`
