@@ -574,9 +574,9 @@ export interface DeployHealth {
   bgHostStartedAtMs: number | null;
   /** True when bg-host started BEFORE the currently-served deployment, so it cannot
    *  be executing the deployed code. `null` = NOT PROVEN EITHER WAY (an input was
-   *  unresolvable) — deliberately not `false`, mirroring `RunningGeneration.staleHost`'s
-   *  fail-toward-not-proven-fresh convention, so an unreadable host never renders a
-   *  false all-clear. */
+   *  unresolvable) — deliberately not `false`, matching the three-state
+   *  `RunningGeneration.staleHost` signal so an unreadable host never renders a false
+   *  all-clear. */
   bgHostCodeStale: boolean | null;
 }
 
