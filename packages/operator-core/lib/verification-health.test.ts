@@ -9,6 +9,7 @@ import {
   type VerificationHealth,
   type VerificationHealthPlanRow,
 } from './verification-health';
+import { VERIFICATION_HEALTH_CELL } from './cell-registrations';
 
 const NOW = new Date('2026-10-11T00:00:00.000Z');
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
@@ -175,6 +176,26 @@ describe('verification-health (P-002)', () => {
     expect(report.assessments.verificationHealth).toBe('unmeasured');
   });
 
+  it('a stale-acceptance measure that throws nulls every stale reading, staleAcceptanceScopeExcluded included', async () => {
+    const sql = {
+      async unsafe<T>(q: string): Promise<T> {
+        if (q !== VERIFICATION_HEALTH_PLANS_QUERY) throw new Error(`unexpected query: ${q}`);
+        return BASE_PLANS as unknown as T;
+      },
+    };
+    const report = await runVerificationHealth(sql, { workspaceId: 'ws', now: NOW }, {
+      async measureContractTriage() { return ZERO_TRIAGE; },
+      async measureStaleAcceptance() { throw new Error('stale measure unavailable'); },
+    });
+    const h = report.health;
+    expect([h.staleAcceptanceSurfaced, h.staleAcceptanceNeverSurfaced, h.staleAcceptanceUndispositioned, h.staleAcceptanceScopeExcluded, h.acceptancePlansConsidered])
+      .toEqual([null, null, null, null, null]);
+    expect(h.measurementErrors).toEqual([{ measure: 'measureStaleAcceptance', message: 'stale measure unavailable' }]);
+    expect([h.triageGaps, h.unreachablePlans]).toEqual([0, 0]);
+    expect(h.unmeasuredCodes).toEqual(['staleAcceptanceUndispositioned']);
+    expect(report.assessments.verificationHealth).toBe('unmeasured');
+  });
+
   it('ignores non-count metadata on a measure (lane 2 returns a thresholds object)', () => {
     const withMeta = { ...ZERO_STALE, thresholds: { surfaceAfterDays: 14, graceDays: 3, neverSurfacedAfterDays: 17 } };
     expect(build({ stale: withMeta }).staleAcceptanceUndispositioned).toBe(0);
@@ -197,6 +218,49 @@ describe('verification-health (P-002)', () => {
     expect(seen).toEqual([true, { workspaceId: 'ws', now: NOW }, true, { workspaceId: 'ws', now: NOW }]);
     expect(report.assessments.verificationHealth).toBe('healthy');
     expect(report.scope).toEqual({ workspaceId: 'ws', harnessSlug: null });
+  });
+
+  // AUTO-BAR-R-2 (rubric rev 7 method): the metric list is DERIVED from the registered cell shape,
+  // and every schema metric must move under at least one fixture delta, so this test cannot choose
+  // which metrics it covers. A metric added to the cell without a delta that moves it fails here.
+  it('every metric the registered verification.health shape names moves under some fixture delta', () => {
+    const inner = /^\{\s*health:\s*\{([^{}]*)\}/.exec(String(VERIFICATION_HEALTH_CELL.shape))?.[1];
+    expect(inner, 'the cell shape opens with a flat health: { … } block').toBeTypeOf('string');
+    const schemaMetrics = (inner ?? '').split(',').map((s) => s.trim()).filter(Boolean).sort();
+    // The registered shape and the built report name the same keys: no undeclared or phantom metric.
+    expect(Object.keys(build()).sort()).toEqual(schemaMetrics);
+
+    const bumpTriage = (k: keyof ContractTriageMeasure): VerificationHealth =>
+      build({ triage: { ...ZERO_TRIAGE, [k]: Number(ZERO_TRIAGE[k]) + 1 } });
+    const bumpStale = (k: keyof StaleAcceptanceMeasure): VerificationHealth =>
+      build({ stale: { ...ZERO_STALE, [k]: Number(ZERO_STALE[k]) + 1 } });
+    const editRow = (slug: string, over: Partial<VerificationHealthPlanRow>): VerificationHealth =>
+      build({ plans: BASE_PLANS.map((r) => (r.plan_slug === slug ? { ...r, ...over } : r)) });
+    const deltas: Array<[string, VerificationHealth]> = [
+      ['active plan added', build({ plans: [...BASE_PLANS, plan({ plan_slug: 'a4', acceptance_bar_cohort: 'post-epoch' })] })],
+      ['active clauses added', editRow('a2', { active_clauses: 3 })],
+      ['evidence bound', editRow('a1', { bound_clauses: 2 })],
+      ['contract added', editRow('a3', { has_contract: true })],
+      ['awaiting-acceptance plan added', build({ plans: [...BASE_PLANS, plan({ plan_slug: 'w3', status: 'awaiting-acceptance', updated_at: daysAgo(30) })] })],
+      ['forced ship', editRow('s2', { forced: true })],
+      ['VAL block', editRow('s2', { has_val_block: true })],
+      ...(Object.keys(ZERO_TRIAGE) as (keyof ContractTriageMeasure)[]).map((k): [string, VerificationHealth] => [`triage ${k}`, bumpTriage(k)]),
+      ...(Object.keys(ZERO_STALE) as (keyof StaleAcceptanceMeasure)[]).map((k): [string, VerificationHealth] => [`stale ${k}`, bumpStale(k)]),
+      ['triage measure threw', buildVerificationHealth({
+        plans: BASE_PLANS, triage: null, staleAcceptance: ZERO_STALE,
+        measurementErrors: [{ measure: 'measureContractTriage', message: 'boom' }], now: NOW,
+      })],
+    ];
+    const base = build();
+    const uncovered = (ds: Array<[string, VerificationHealth]>): string[] => {
+      const moved = new Set(ds.flatMap(([, h]) => changedKeys(base, h)));
+      return schemaMetrics.filter((m) => !moved.has(m));
+    };
+    for (const [label, h] of deltas) expect(changedKeys(base, h), `delta "${label}" moves a metric`).not.toEqual([]);
+    expect(uncovered(deltas)).toEqual([]);
+    // Control: the coverage check is not vacuous. Dropping the one delta that adds an
+    // awaiting-acceptance plan leaves awaitingAcceptancePlans uncovered.
+    expect(uncovered(deltas.filter(([label]) => label !== 'awaiting-acceptance plan added'))).toContain('awaitingAcceptancePlans');
   });
 
   it('counts a [VAL- list-item BLOCK, never a prose mention of the token', () => {
