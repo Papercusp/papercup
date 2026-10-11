@@ -13,16 +13,12 @@
  * scripts/lib/condition-rail-dispositions.mjs.
  */
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { inventory, CLASSES } from './lib/condition-rail-inventory.mjs';
-import { DISPOSITIONS } from './lib/condition-rail-dispositions.mjs';
-import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
+import { inventoryTree, CLASSES } from './lib/condition-rail-inventory.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
 export function runInventory() {
-  const listed = listFilesIncludingUntracked(ROOT);
-  const files = Array.isArray(listed) ? listed : listed.files;
-  return inventory({ root: ROOT, files, dispositions: DISPOSITIONS });
+  return inventoryTree(ROOT);
 }
 
 function main() {

@@ -1,3 +1,4 @@
+/** P-008: revision-6 R-7/R-8 acceptance detector at the rubric's registered path. */
 import { describe, expect, it } from 'vitest';
 import type { MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import type { SpecClauseRevision } from './spec-clauses-store';

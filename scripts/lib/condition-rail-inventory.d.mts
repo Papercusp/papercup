@@ -112,6 +112,40 @@ export function inventory({ root, files, dispositions, readFile }: {
     undispositioned: number;
     staleDispositions: string[];
 };
+/** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
+export function inventoryTree(root: string): {
+    rows: {
+        disposition: any;
+        problem: string | null;
+        id: string;
+        class: string;
+        file: string;
+        line: number;
+        symbol: string;
+        key: string;
+        enclosing: string;
+        ordinal: number;
+        onRail: boolean;
+    }[];
+    sites: {
+        id: string;
+        class: string;
+        file: string;
+        line: number;
+        symbol: string;
+        key: string;
+        enclosing: string;
+        ordinal: number;
+        onRail: boolean;
+    }[];
+    scanned: number;
+    unreadable: number;
+    byClass: {
+        [k: string]: number;
+    };
+    undispositioned: number;
+    staleDispositions: string[];
+};
 /**
  * Validate the immutable audit against live sites. In-progress migrate rows must retain their
  * original disposition; completed rows must be on the rail. The final acceptance run passes

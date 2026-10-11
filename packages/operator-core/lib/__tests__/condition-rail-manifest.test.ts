@@ -2,8 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { manifestProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
-import { runInventory } from '../../../../scripts/condition-rail-inventory.mjs';
+import { inventoryTree, manifestProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
@@ -16,7 +15,8 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
     expect(manifest.rows).toHaveLength(307);
     expect(manifest.rows.filter((row: { disposition: string }) => row.disposition === 'migrate')).toHaveLength(243);
     expect(manifest.rows.filter((row: { disposition: string }) => row.disposition === 'not-applicable')).toHaveLength(64);
-    expect(manifestProblems(manifest, runInventory(), { completedItems: RAIL_MIGRATION_COMPLETE_ITEMS })).toEqual([]);
+    expect(manifestProblems(manifest, inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url))),
+      { completedItems: RAIL_MIGRATION_COMPLETE_ITEMS })).toEqual([]);
   }, 120_000);
 
   const row = { id: 'owner-only-alarm|x.ts|check|1', disposition: 'migrate', item: 'P-007', route: 'condition' };

@@ -61,6 +61,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { stripCommentsAndStrings } from './strip-comments-and-strings.mjs';
+import { listFilesIncludingUntracked } from './tracked-files.mjs';
+import { DISPOSITIONS } from './condition-rail-dispositions.mjs';
 
 export const CLASSES = Object.freeze([
   'owner-only-alarm',
@@ -435,6 +437,13 @@ export function inventory({ root, files, dispositions = {}, readFile }) {
   const liveKeys = new Set(rows.flatMap((r) => [r.key, `${r.key}|${r.symbol}`]));
   const staleDispositions = Object.keys(dispositions).filter((k) => !liveKeys.has(k));
   return { rows, sites, scanned, unreadable, byClass, undispositioned, staleDispositions };
+}
+
+/** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
+export function inventoryTree(root) {
+  const listed = listFilesIncludingUntracked(root);
+  const files = Array.isArray(listed) ? listed : listed.files;
+  return inventory({ root, files, dispositions: DISPOSITIONS });
 }
 
 /**
