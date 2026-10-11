@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildDurableParkReleaseContract } from './durable-park-release-contract';
+import {
+  buildDurableParkReleaseContract,
+  firedTriggerCannotCertify,
+  parseEventInstantMs,
+} from './durable-park-release-contract';
 import {
   buildDurableParkEvidenceMatrix,
   buildDurableParkAuditReport,
@@ -302,6 +306,65 @@ describe('durable park audit classification', () => {
         trigger, reachability: 'satisfied', evidence: 'fired',
       } }, 'UNPARK when done')).toMatchObject({ status: 'satisfied-still-parked' });
     }
+  });
+
+  // EI-25664119449929994: measured 2026-10-11 on :3170 — all 9 live satisfied-still-parked
+  // stamps cited a latch that fired BEFORE the park (e.g. EI-24937591709395249: fired
+  // 2026-10-10 13:12:21-04, parked 2026-10-11T06:18:49Z), and 5 were work-item:status:<own id>.
+  const storedFire = (trigger: string, firedAt: string, parkedAt: string) => ({
+    claim_hold_at: parkedAt,
+    claim_hold_release: {
+      condition: 'a new failure receipt is recorded and the item transitions to failing',
+      owner: 'su-parker', trigger, reachability: 'satisfied', evidence: `event fired at ${firedAt}`,
+    },
+  });
+
+  it('downgrades a stored satisfied stamp whose cited fire predates the park', () => {
+    const liveness = classifyDurableParkReleaseLiveness(
+      storedFire('work-item:done:EI-dep', '2026-10-10 13:12:21.494399-04', '2026-10-11T06:18:49.823Z'),
+      'parked until EI-dep is done', 'EI-parked',
+    );
+    expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(liveness.findings).toContain('reachability-unverified');
+    expect(liveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(liveness.evidence).toContain('before this park');
+  });
+
+  it('keeps a stored satisfied stamp whose cited fire postdates the park', () => {
+    expect(classifyDurableParkReleaseLiveness(
+      storedFire('work-item:done:EI-dep', '2026-10-11 07:00:00.5+00', '2026-10-11T06:18:49.823Z'),
+      'parked until EI-dep is done', 'EI-parked',
+    )).toMatchObject({ status: 'satisfied-still-parked', reachability: 'satisfied' });
+  });
+
+  it("downgrades the parked item's own generic status event even after the park, but not another item's", () => {
+    const own = classifyDurableParkReleaseLiveness(
+      storedFire('work-item:status:EI-parked', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
+      'parked pending a new failure', 'EI-parked',
+    );
+    expect(own).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(own.evidence).toContain("parked item's own status event");
+    expect(classifyDurableParkReleaseLiveness(
+      storedFire('work-item:status:EI-other', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
+      'parked pending EI-other', 'EI-parked',
+    )).toMatchObject({ status: 'satisfied-still-parked' });
+  });
+
+  it('orders ledger fire times by their explicit offset and never guesses a zone', () => {
+    expect(parseEventInstantMs('2026-10-10 13:12:21.494399-04')).toBe(Date.parse('2026-10-10T17:12:21.494Z'));
+    expect(parseEventInstantMs('2026-10-10 22:42:21+05:30')).toBe(Date.parse('2026-10-10T17:12:21Z'));
+    expect(parseEventInstantMs('2026-10-10T17:12:21.494Z')).toBe(Date.parse('2026-10-10T17:12:21.494Z'));
+    expect(parseEventInstantMs('2026-10-10 13:12:21')).toBeNull();
+    // Legacy evidence from a postgres.js Date rendered via Date.toString() (measured in the
+    // real-PG claim-hold suite, 2026-10-11).
+    expect(parseEventInstantMs('Sun Oct 11 2026 07:22:44 GMT-0400 (Eastern Daylight Time)'))
+      .toBe(Date.parse('2026-10-11T11:22:44Z'));
+    expect(firedTriggerCannotCertify({
+      trigger: 'work-item:done:EI-dep', firedAt: 'yesterday', parkedAtMs: Date.parse('2026-10-11T06:18:49Z'),
+    })).toContain('unreadable time');
+    expect(firedTriggerCannotCertify({
+      trigger: 'work-item:done:EI-dep', firedAt: '2026-10-10 13:12:21-04', parkedAtMs: null,
+    })).toBeNull();
   });
 
   // SPEC-BQL-P-004-CLEARER: a park released only by its OWN work-item:done can never release

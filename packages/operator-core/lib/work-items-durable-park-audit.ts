@@ -18,6 +18,7 @@ import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
 import {
   buildDurableParkReleaseContract,
+  firedTriggerCannotCertify,
   pauseCompletionResumeContradiction,
   selfReleaseTriggerContradiction,
 } from './durable-park-release-contract';
@@ -335,7 +336,22 @@ export function classifyDurableParkReleaseLiveness(
     !eventHasSpecificCondition(trigger, true)
     ? `stored reachability "satisfied" came from broad trigger "${trigger}", which can wake a consumer but cannot establish the release condition; verify the condition itself and repair the trigger to a subject-bound key`
     : null;
-  const unverifiable = contradiction ?? selfRelease ?? broadSatisfied;
+  // EI-25664119449929994: a stored 'satisfied' stamp is credible only when the fire it cites
+  // postdates THIS park and is not the parked item's own generic status event. Legacy writers read
+  // the key's lifetime latch at park time, so every live stamp measured 2026-10-11 cited a
+  // pre-park fire. Only the writer's own "event fired at <ts>" evidence is ordered here; free
+  // evidence keeps its stamp because nothing on record contradicts it.
+  const firedEvidence = /^event fired at (.+)$/.exec(textOrNull(rawContract.evidence) ?? '');
+  const parkedAtMs = textOrNull(payload.claim_hold_at) ? Date.parse(String(payload.claim_hold_at)) : NaN;
+  const uncertifiedFire = !contradiction && !selfRelease && !broadSatisfied && trigger && reachabilityText === 'satisfied'
+    ? firedTriggerCannotCertify({
+        trigger,
+        parkId,
+        firedAt: firedEvidence?.[1] ?? null,
+        parkedAtMs: firedEvidence && Number.isFinite(parkedAtMs) ? parkedAtMs : null,
+      })
+    : null;
+  const unverifiable = contradiction ?? selfRelease ?? broadSatisfied ?? uncertifiedFire;
   const reachability = unverifiable ? 'blocked' : reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
     ? (reachabilityText as DurableParkReleaseReachability)
     : null;
@@ -980,12 +996,14 @@ export async function runWorkItemDurableParkAudit(opts: {
         reportRows.push(row);
         continue;
       }
-      // A self-release trigger depends on WHICH park carries it, so it joins the memo key.
-      const selfRelease = selfReleaseTriggerContradiction(trigger, row.id) ? row.id : null;
-      const key = JSON.stringify([condition, owner, trigger, selfRelease]);
+      // A self-referential trigger depends on WHICH park carries it, and a fire certifies only
+      // when it postdates THIS park (EI-25664119449929994), so both join the memo key.
+      const selfRelease = trigger.endsWith(`:${row.id}`) ? row.id : null;
+      const parkedAt = textOrNull(payload.claim_hold_at);
+      const key = JSON.stringify([condition, owner, trigger, selfRelease, parkedAt]);
       let current = currentContracts.get(key);
       if (!current) {
-        current = buildDurableParkReleaseContract({ condition, owner, trigger, parkId: row.id }, owner);
+        current = buildDurableParkReleaseContract({ condition, owner, trigger, parkId: row.id, parkedAt }, owner);
         currentContracts.set(key, current);
       }
       reportRows.push({ ...row, payload: { ...payload, claim_hold_release: await current } });

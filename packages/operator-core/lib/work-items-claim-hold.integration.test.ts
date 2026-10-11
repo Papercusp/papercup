@@ -176,6 +176,27 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
     expect(await readPayload(id)).toEqual(original);
   });
 
+  // EI-25664119449929994: the writer read the key's LIFETIME latch at park time, so a trigger
+  // that had fired once before the park was born 'satisfied' (all 9 live stamps, 2026-10-11).
+  it('never certifies a park from a fire that predates it, at write time or on audit refresh', async () => {
+    const id = 'WI-prepark-fire';
+    const trigger = 'work-item:done:WI-prepark-dependency';
+    await seedIssue(id, { payload: {} });
+    await recordKeyFire({ eventKey: trigger, firedBy: 'fixture-producer' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('fired');
+    const releaseContract = await buildDurableParkReleaseContract(
+      { condition: 'WI-prepark-dependency is done and the leader confirms', trigger, parkId: id }, 'park-owner');
+    expect(releaseContract.reachability).toBe('blocked');
+    expect(releaseContract.evidence).toContain('before this park');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    const audit = await runWorkItemDurableParkAudit({ workspaceId: WS, harnessSlug: H,
+      runId: 'prepark-fire-audit', sql: db.sql, artifactPath: false });
+    const park = audit.durableParks.find((p) => p.id === id);
+    expect(park?.releaseLiveness.status).toBe('unverified');
+    expect(park?.releaseLiveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(park?.releaseLiveness.evidence).toContain('before this park');
+  });
+
   it.each(['condition', 'owner', 'trigger', 'evidence', 'reachability', 'missing-contract'])('rejects an incomplete durable park (%s) without changing a lease or assignment', async (field) => {
     const original = { _claimHold: true, held_open_by: 'lease-owner', held_open_reason: 'independent review' };
     await seedIssue('WI-invalid-park', { takenBy: 'builder', payload: original });

@@ -17,6 +17,9 @@ export interface ExternalConditionReachability {
   authoritative: boolean;
   evidence: string;
   checkedAt: string;
+  /** basis 'fired' only: the fire time as the ledger rendered it, so a caller can order it
+   * against its own reference point (a durable park must not credit a pre-park fire). */
+  firedAt?: string;
 }
 
 export interface ExternalConditionReachabilityInput {
@@ -74,12 +77,17 @@ export function classifyExternalConditionReachability(
   now = new Date().toISOString(),
 ): ExternalConditionReachability {
   if (input.firedAt) {
+    // The latch path hands back a postgres.js Date despite the declared string type; String()
+    // of that renders the host-local Date.toString() form, so normalise it to ISO.
+    const raw: unknown = input.firedAt;
+    const firedAt = raw instanceof Date ? raw.toISOString() : String(raw);
     return {
       verdict: 'reachable',
       basis: 'fired',
       authoritative: true,
-      evidence: `event fired at ${input.firedAt}`,
+      evidence: `event fired at ${firedAt}`,
       checkedAt: now,
+      firedAt,
     };
   }
   if (input.liveResolver || input.registration === 'live') {

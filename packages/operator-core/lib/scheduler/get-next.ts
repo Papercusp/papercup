@@ -1803,7 +1803,7 @@ export async function sampleIssueClaimExclusions(
         parkedAt,
         age: classifyAuditAge(parkedAt, nowMs),
         unparkCondition: classifyUnparkCondition(reason),
-        releaseLiveness: classifyDurableParkReleaseLiveness(payload, reason),
+        releaseLiveness: classifyDurableParkReleaseLiveness(payload, reason, row.feature_id),
       });
     } else if (row.axis === 'agent-review') {
       const review = readAgentReviewState(payload);
