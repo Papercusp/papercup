@@ -2767,6 +2767,217 @@
     ],
     "verdict": "OPEN: eligible same-runtime endpoint and protected-custody comparison recorded; full R5/R4 acceptance remains pending named evidence."
   },
+  "retainedIntervalAssessment": {
+    "workItem": "WI-6554700010008406",
+    "decision": "D-013",
+    "taskId": "0mv3avr1drhn8oc1okv",
+    "logPath": ".papercusp/scratch/bash-7e866263-cc6.log",
+    "logSha256": "34fd41f27eff9b6e24175527c3f1023a1fca4f8c3f6afbd147e4bd0d7490a5c0",
+    "terminalExit": 0,
+    "inputPath": "docs/evidence/wi10007602-retention-interval-20261010.json",
+    "inputSha256": "b0bcd501c0cc2c4891f52ece32fc8a340d344adf7c7d46f66f441e4530d02f9a",
+    "instrument": {
+      "path": "packages/operator-core/lib/storage/retention-interval-evidence.ts",
+      "sha256": "f7f81da8a45f79ee379472b36b12babbce8d24fe39cf99e7e8cb598fa8d86aa5",
+      "testPath": "packages/operator-core/lib/storage/retention-interval-evidence.test.ts",
+      "testSha256": "c22ef84fd9d9b37baf8c7cfc9cc30892985c2670198e75b796fb6aa71df433e8",
+      "policyPath": "packages/operator-core/lib/storage/disk-space-alarm.ts",
+      "policySha256": "c9009d225742d7449283bec64f60970f68377da2347b37fd2b16c0278eadf6a7"
+    },
+    "assessment": {
+      "schemaVersion": 1,
+      "kind": "retained-storage-interval-assessment",
+      "sampledSpanMs": 3630460,
+      "intervalStatus": "pass",
+      "checks": [
+        {
+          "id": "runtime-custody",
+          "status": "pass",
+          "detail": "Compare recorded PID/script fingerprints and the sampler’s explicit service-stability witness."
+        },
+        {
+          "id": "sampled-hour-span",
+          "status": "pass",
+          "detail": "3630460ms between the recorded endpoints; no interpolation between samples."
+        },
+        {
+          "id": "registered-retention-completion",
+          "status": "pass",
+          "detail": "sched-.sessionDirGc-2026-10-11T02:50:00.000Z: completion and per-store receipt must fall inside the retained window."
+        },
+        {
+          "id": "byte-headroom:/",
+          "status": "pass",
+          "detail": "Independently recomputed available-minus-reservations and current recorded native policy floor on the same device."
+        },
+        {
+          "id": "byte-headroom:/mnt/data",
+          "status": "pass",
+          "detail": "Independently recomputed available-minus-reservations and current recorded native policy floor on the same device."
+        },
+        {
+          "id": "byte-headroom:/tmp/pcv",
+          "status": "pass",
+          "detail": "Independently recomputed available-minus-reservations and current recorded native policy floor on the same device."
+        },
+        {
+          "id": "physical-alias-budget:before",
+          "status": "pass",
+          "detail": "The explicit data/tmp aliases must use one physical-device reservation budget; never add that budget twice."
+        },
+        {
+          "id": "physical-alias-budget:after",
+          "status": "pass",
+          "detail": "The explicit data/tmp aliases must use one physical-device reservation budget; never add that budget twice."
+        },
+        {
+          "id": "protected-pins:/mnt/data/papercusp-dependency-generations",
+          "status": "pass",
+          "detail": "Compare pin identity/checkout and referenced generation device/inode/marker; ignore refreshable pin-file hashes."
+        },
+        {
+          "id": "native-store-receipt:/mnt/data/papercusp-dependency-generations",
+          "status": "pass",
+          "detail": "Exactly one successful, untruncated native execution receipt is required for each captured physical store."
+        },
+        {
+          "id": "protected-pins:/mnt/data/dependency-generations/papercusp",
+          "status": "pass",
+          "detail": "Compare pin identity/checkout and referenced generation device/inode/marker; ignore refreshable pin-file hashes."
+        },
+        {
+          "id": "native-store-receipt:/mnt/data/dependency-generations/papercusp",
+          "status": "pass",
+          "detail": "Exactly one successful, untruncated native execution receipt is required for each captured physical store."
+        },
+        {
+          "id": "inode-headroom",
+          "status": "unknown",
+          "detail": "Byte samples do not establish inode headroom when inode counts were not captured."
+        },
+        {
+          "id": "final-candidate-demand",
+          "status": "unknown",
+          "detail": "No applicable final native candidate admission-demand receipt is consumed by this interval assessor."
+        }
+      ],
+      "byteSnapshots": [
+        {
+          "endpoint": "before",
+          "path": "/",
+          "device": 66307,
+          "usableBytes": 87559102464,
+          "floorBytes": 40279831019.520004
+        },
+        {
+          "endpoint": "after",
+          "path": "/",
+          "device": 66307,
+          "usableBytes": 65175543808,
+          "floorBytes": 40279831019.520004
+        },
+        {
+          "endpoint": "before",
+          "path": "/mnt/data",
+          "device": 66304,
+          "usableBytes": 218112606208,
+          "floorBytes": 68719476736
+        },
+        {
+          "endpoint": "after",
+          "path": "/mnt/data",
+          "device": 66304,
+          "usableBytes": 220474859520,
+          "floorBytes": 68719476736
+        },
+        {
+          "endpoint": "before",
+          "path": "/tmp/pcv",
+          "device": 66304,
+          "usableBytes": 218112339968,
+          "floorBytes": 68719476736
+        },
+        {
+          "endpoint": "after",
+          "path": "/tmp/pcv",
+          "device": 66304,
+          "usableBytes": 220474859520,
+          "floorBytes": 68719476736
+        }
+      ],
+      "coverage": {
+        "population": [
+          "runtime-custody",
+          "sampled-hour-span",
+          "registered-retention-completion",
+          "byte-headroom:/",
+          "byte-headroom:/mnt/data",
+          "byte-headroom:/tmp/pcv",
+          "physical-alias-budget:before",
+          "physical-alias-budget:after",
+          "protected-pins:/mnt/data/papercusp-dependency-generations",
+          "native-store-receipt:/mnt/data/papercusp-dependency-generations",
+          "protected-pins:/mnt/data/dependency-generations/papercusp",
+          "native-store-receipt:/mnt/data/dependency-generations/papercusp",
+          "inode-headroom",
+          "final-candidate-demand"
+        ],
+        "checked": [
+          "runtime-custody",
+          "sampled-hour-span",
+          "registered-retention-completion",
+          "byte-headroom:/",
+          "byte-headroom:/mnt/data",
+          "byte-headroom:/tmp/pcv",
+          "physical-alias-budget:before",
+          "physical-alias-budget:after",
+          "protected-pins:/mnt/data/papercusp-dependency-generations",
+          "native-store-receipt:/mnt/data/papercusp-dependency-generations",
+          "protected-pins:/mnt/data/dependency-generations/papercusp",
+          "native-store-receipt:/mnt/data/dependency-generations/papercusp"
+        ],
+        "notChecked": [
+          "inode-headroom",
+          "final-candidate-demand"
+        ],
+        "notApplicable": [],
+        "residue": [
+          "inode-headroom: Byte samples do not establish inode headroom when inode counts were not captured.",
+          "final-candidate-demand: No applicable final native candidate admission-demand receipt is consumed by this interval assessor."
+        ]
+      },
+      "scope": [
+        "Assessment of retained endpoint and native retention records; no host measurement or mutation.",
+        "Byte headroom and captured protected-pin custody only; no continuous-capacity claim.",
+        "No certification of candidate admission, frontend recorder, native journal recovery, or final shipment.",
+        "A native completion receipt establishes per-store execution, not exclusive removal causality."
+      ]
+    },
+    "verification": {
+      "testTaskId": "0mv3auzzo1sbooao1ur",
+      "testLogPath": ".papercusp/scratch/bash-f20cff3a-d46.log",
+      "terminalExit": 0,
+      "passed": 20,
+      "skipped": 0,
+      "sourceBoundary": "Local working-source proof; module/test were untracked during this run. Committed instrument provenance remains to verify before binding.",
+      "scopedTypecheck": {
+        "project": "packages/operator-core",
+        "files": [
+          "packages/operator-core/lib/storage/retention-interval-evidence.ts",
+          "packages/operator-core/lib/storage/retention-interval-evidence.test.ts"
+        ],
+        "engine": "tsc-service",
+        "errorsInRequestedFiles": 0,
+        "exitCode": 0
+      }
+    },
+    "interpretation": [
+      "A new tested assessor replayed the retained records; it is not the original native sampler.",
+      "The captured byte/pin interval passes twelve recomputed checks. Inode counts were absent from those endpoint records; inode headroom remains unknown.",
+      "Applicable final native candidate admission demand remains unknown. The independent final receipt is a separate R4 requirement.",
+      "Unknown requirements remain owned by WI-10007602; no full R5 or shipment acceptance is asserted."
+    ]
+  },
   "allocationHarnessAudit": {
     "workItem": "WI-10007602",
     "checkpointHash": "472ce195c197",
