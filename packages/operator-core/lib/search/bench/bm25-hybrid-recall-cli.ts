@@ -36,6 +36,7 @@ import {
   MIN_PAIRS_PER_SOURCE,
   RECALL_K,
   armOrder,
+  legDurations,
   overallLatencyVerdict,
   overallVerdict,
   rankOf,
@@ -62,6 +63,42 @@ type SourceName = keyof typeof SOURCE_TABLES;
 interface Candidate {
   id: string;
   text: string;
+}
+
+/** Host conditions at one instant: load average, PSI, and active PG backends (all sessions). */
+interface HostSnapshot {
+  at: string;
+  loadavg: string | null;
+  psiIoSome: string | null;
+  psiCpuSome: string | null;
+  activeBackends: number | null;
+}
+
+function firstLine(file: string): string | null {
+  try {
+    return fs.readFileSync(file, 'utf8').split('\n')[0]!.trim();
+  } catch {
+    return null;
+  }
+}
+
+async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
+  let activeBackends: number | null = null;
+  try {
+    const [row] = await pg<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+       WHERE state = 'active' AND backend_type = 'client backend' AND pid <> pg_backend_pid()`;
+    activeBackends = row?.n ?? null;
+  } catch {
+    activeBackends = null;
+  }
+  return {
+    at: new Date().toISOString(),
+    loadavg: firstLine('/proc/loadavg'),
+    psiIoSome: firstLine('/proc/pressure/io'),
+    psiCpuSome: firstLine('/proc/pressure/cpu'),
+    activeBackends,
+  };
 }
 
 async function sampleCandidates(sql: Sql, source: SourceName, workspaceId: string, want: number, seed: string): Promise<Candidate[]> {
@@ -190,6 +227,7 @@ async function main(): Promise<number> {
 
   // ---- Measure: both arms per pair, alternating which goes first -------------
   const startedAt = new Date().toISOString();
+  const hostAtStart = await hostSnapshot(pg);
   try {
     for (const [i, p] of pairs.entries()) {
       const source = SEARCH_SOURCES.find((s) => s.name === p.source);
@@ -199,7 +237,7 @@ async function main(): Promise<number> {
         process.env[envVar] = arm === 'bm25' ? '1' : '0';
         const engine = await rank.lexicalEngine(pg, table);
         const t0 = performance.now();
-        const { results } = await runHybridSearch([source], {
+        const { results, legs } = await runHybridSearch([source], {
           caller: 'bench:bm25-hybrid-recall',
           sql,
           query: p.query,
@@ -213,11 +251,16 @@ async function main(): Promise<number> {
           // tool's path; it includes the final-page highlight hydration.
           deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
         });
+        const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
+        // Per-leg time from the engine's own instrument, so an R-18 tail can be attributed to
+        // a leg instead of inferred (WI-6554700010008520).
+        const legMs = legDurations(legs);
         p.arms[arm] = {
           rank: rankOf(results, p.source, p.targetId),
-          latencyMs: Math.round((performance.now() - t0) * 10) / 10,
+          latencyMs,
           engine,
           hits: results.length,
+          ...(Object.keys(legMs).length ? { legMs } : {}),
         };
       }
       if ((i + 1) % 10 === 0) console.log(`[r13] ${i + 1}/${pairs.length} pairs measured`);
@@ -226,6 +269,7 @@ async function main(): Promise<number> {
     if (envBefore === undefined) delete process.env[envVar];
     else process.env[envVar] = envBefore;
   }
+  const hostAtEnd = await hostSnapshot(pg);
 
   const summaries = sourceNames.map((s) => summarizeSource(s, pairs, Math.min(MIN_PAIRS_PER_SOURCE, perSource)));
   const verdict = overallVerdict(summaries);
@@ -266,6 +310,9 @@ async function main(): Promise<number> {
     // carries the (shared, unchanged-by-this-plan) embedding cost.
     embeddingsPrecomputed: true,
     embeddedQueries,
+    // Host conditions bracketing the timed loop. Context for reading a latency, never a
+    // cause by itself: attribute a tail with sources[].arms[].legP95Ms / pairs[].arms[].legMs.
+    host: { atStart: hostAtStart, atEnd: hostAtEnd },
     latencyVerdict,
     redactedQueries: written.redactedQueries,
     pairs: written.pairs,
@@ -293,7 +340,15 @@ function renderMarkdown(a: {
   verdict: string;
   latencyVerdict: string;
   sources: ReturnType<typeof summarizeSource>[];
+  host: { atStart: HostSnapshot; atEnd: HostSnapshot };
 }): string {
+  const legRows = a.sources.flatMap((s) =>
+    (['legacy', 'bm25'] as Arm[]).flatMap((arm) =>
+      Object.entries(s.arms[arm].legP95Ms).map(([leg, ms]) => `| ${s.source} | ${arm} | ${leg} | ${ms ?? '-'} |`),
+    ),
+  );
+  const host = (h: HostSnapshot) =>
+    `${h.at}: loadavg ${h.loadavg ?? '?'}; io ${h.psiIoSome ?? '?'}; cpu ${h.psiCpuSome ?? '?'}; active backends ${h.activeBackends ?? '?'}`;
   const rows = a.sources.flatMap((s) =>
     (['legacy', 'bm25'] as Arm[]).map((arm) => {
       const m = s.arms[arm];
@@ -322,6 +377,18 @@ function renderMarkdown(a: {
     ...paired,
     ``,
     ...a.sources.map((s) => `- ${s.source}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`),
+    ``,
+    `## Where the time goes (attribution only; R-18 judges the whole call)`,
+    ``,
+    `p95 of each leg's own duration, from the engine's \`legs.*.sourceCalls[].durationMs\`. Legs run concurrently, so they do not add up to the call.`,
+    ``,
+    `| source | arm | leg | p95 ms |`,
+    `|---|---|---|---|`,
+    ...(legRows.length ? legRows : [`| - | - | not recorded | - |`]),
+    ``,
+    `Host at start: ${host(a.host.atStart)}`,
+    ``,
+    `Host at end: ${host(a.host.atEnd)}`,
     ``,
   ].join('\n');
 }

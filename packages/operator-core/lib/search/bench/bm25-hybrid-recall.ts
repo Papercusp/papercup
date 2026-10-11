@@ -41,6 +41,33 @@ export interface ArmObservation {
   engine: 'bm25' | 'legacy';
   /** Length of the fused list; 0 is a zero-hit query. */
   hits: number;
+  /**
+   * Per-leg time inside the call, keyed `<leg>:<ranker>` (e.g. `lexical:lexical`,
+   * `semantic:embeddings`), from the search engine's own `legs.*.sourceCalls[].durationMs`
+   * (see {@link legDurations}). Legs run concurrently, so these do not sum to `latencyMs`.
+   * It attributes an R-18 tail to a leg; artifacts written before it was recorded omit it.
+   */
+  legMs?: Record<string, number>;
+}
+
+/**
+ * Sum the engine's per-source durations for every source call that actually RAN, keyed
+ * `<leg>:<ranker>`. Input is `runHybridSearch(...).legs`; anything else yields `{}` (an
+ * absent instrument is not a zero-millisecond leg, so callers should omit an empty result).
+ */
+export function legDurations(legs: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!legs || typeof legs !== 'object') return out;
+  for (const [legName, leg] of Object.entries(legs as Record<string, unknown>)) {
+    const calls = (leg as { sourceCalls?: unknown } | null)?.sourceCalls;
+    if (!Array.isArray(calls)) continue;
+    for (const c of calls as Array<{ ranker?: unknown; status?: unknown; durationMs?: unknown }>) {
+      if (c?.status !== 'ran' || typeof c.durationMs !== 'number') continue;
+      const key = `${legName}:${String(c.ranker)}`;
+      out[key] = (out[key] ?? 0) + c.durationMs;
+    }
+  }
+  return out;
 }
 
 export interface PairResult {
@@ -63,6 +90,11 @@ export interface ArmSummary {
   latencyP95Ms: number | null;
   /** Distinct engines this arm's seam reported across the source's pairs. */
   engines: string[];
+  /**
+   * p95 of each leg's own time (`ArmObservation.legMs`) over the observations that recorded
+   * it. Attribution only: R-18 judges `latencyP95Ms`, the whole call.
+   */
+  legP95Ms: Record<string, number | null>;
 }
 
 export interface PairedCounts {
@@ -123,6 +155,11 @@ export function summarizeArm(pairs: readonly PairResult[], arm: Arm): ArmSummary
   const hitsAtK = observed.filter(found).length;
   const mrr = observed.reduce((s, o) => s + (found(o) ? 1 / (o.rank as number) : 0), 0);
   const latencies = observed.map((o) => o.latencyMs).sort((a, b) => a - b);
+  const legKeys = [...new Set(observed.flatMap((o) => Object.keys(o.legMs ?? {})))].sort();
+  const legP95Ms = Object.fromEntries(legKeys.map((k) => [
+    k,
+    percentile(observed.flatMap((o) => (o.legMs && k in o.legMs ? [o.legMs[k]!] : [])).sort((a, b) => a - b), 95),
+  ]));
   return {
     scored: observed.length,
     hitsAtK,
@@ -132,6 +169,7 @@ export function summarizeArm(pairs: readonly PairResult[], arm: Arm): ArmSummary
     latencyP50Ms: percentile(latencies, 50),
     latencyP95Ms: percentile(latencies, 95),
     engines: [...new Set(observed.map((o) => o.engine))].sort(),
+    legP95Ms,
   };
 }
 

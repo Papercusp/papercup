@@ -10,6 +10,7 @@ import {
   RECALL_K,
   armOrder,
   judgeLatency,
+  legDurations,
   overallLatencyVerdict,
   overallVerdict,
   pairedCounts,
@@ -78,6 +79,53 @@ function timed(n: number, legacyMs: number, bm25Ms: number): PairResult[] {
     arms: { legacy: obs(1, 'legacy', legacyMs), bm25: obs(1, 'bm25', bm25Ms) },
   }));
 }
+
+describe('R-18 tail attribution: per-leg timing (WI-6554700010008520)', () => {
+  // The shape runHybridSearch returns in `legs` (libs/generic/search/src/hybrid.ts sourceQuery).
+  const legs = {
+    lexical: { sourceCalls: [
+      { source: 'work_item', ranker: 'lexical', status: 'ran', rows: 40, durationMs: 30 },
+      { source: 'work_item', ranker: 'lexical', status: 'ran', rows: 10, durationMs: 12 },
+    ] },
+    semantic: { sourceCalls: [
+      { source: 'work_item', ranker: 'embeddings', status: 'ran', rows: 40, durationMs: 95 },
+      { source: 'work_item', ranker: 'chunks', status: 'timed-out', rows: null, durationMs: 400 },
+      { source: 'work_item', ranker: 'embeddings', status: 'not-run', rows: null, durationMs: 0 },
+    ] },
+  };
+
+  it('sums the durations of calls that RAN, keyed <leg>:<ranker>', () => {
+    expect(legDurations(legs)).toEqual({ 'lexical:lexical': 42, 'semantic:embeddings': 95 });
+  });
+
+  it('never invents a leg: a timed-out or not-run call contributes nothing', () => {
+    expect(legDurations(legs)).not.toHaveProperty('semantic:chunks');
+  });
+
+  it('returns {} for a missing or malformed instrument rather than zero-millisecond legs', () => {
+    expect(legDurations(undefined)).toEqual({});
+    expect(legDurations({ lexical: { sourceCalls: 'nope' } })).toEqual({});
+  });
+
+  it('reports each leg p95 over the observations that recorded it, independent of the call p95', () => {
+    const pairs = Array.from({ length: 20 }, (_, i) => {
+      const p = pair(i, 1, 1);
+      // The lexical leg is flat at 20 ms; the semantic leg carries one 900 ms outlier.
+      p.arms.bm25 = { ...obs(1, 'bm25', i === 19 ? 950 : 60), legMs: { 'lexical:lexical': 20, 'semantic:embeddings': i === 19 ? 900 : 40 } };
+      return p;
+    });
+    const s = summarizeArm(pairs, 'bm25');
+    expect(s.legP95Ms).toEqual({ 'lexical:lexical': 20, 'semantic:embeddings': 40 });
+    expect(s.latencyP95Ms).toBe(60);
+    const withTail = summarizeArm([...pairs, ...pairs.slice(19)], 'bm25');
+    expect(withTail.legP95Ms['semantic:embeddings']).toBe(900);
+    expect(withTail.legP95Ms['lexical:lexical']).toBe(20);
+  });
+
+  it('records no legs for observations written before legMs existed', () => {
+    expect(summarizeArm([pair(0, 1, 1)], 'legacy').legP95Ms).toEqual({});
+  });
+});
 
 describe('R-18 latency judgment (D-019)', () => {
   it('passes when the BM25 arm p95 is at or below the legacy arm p95', () => {
