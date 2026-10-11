@@ -153,7 +153,10 @@ describe('Reports audit producer against migrated private PostgreSQL', () => {
         subject: { kind: 'work_item', ref: item.id }, origin: { authorOwnerId: OWNER,
           harnessSlug: HARNESS, authorSessionRef: SESSION } });
       expect(report!.bodyMd).toContain(`Source reference: ${reference}`);
-      expect(JSON.parse(report!.bodyMd.match(/```json\n([\s\S]*?)\n```/)![1])).toEqual(args.completion);
+      // Public dispatch reparses the input; its internal default-status marker
+      // is removed by completion before publication, not from the caller copy.
+      expect(JSON.parse(report!.bodyMd.match(/```json\n([\s\S]*?)\n```/)![1]))
+        .toEqual({ ...note, status: 'done' });
       expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: true });
       await drainDetached();
       expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`)
