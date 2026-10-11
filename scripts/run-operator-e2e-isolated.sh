@@ -91,10 +91,10 @@ unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
 # Refuse stale acceptance inputs before the rig allocates native build slots or
-# runs platform preparation. The rig still validates mandatory tooling and
-# rechecks after export to protect against edits racing this early check.
+# runs platform preparation. Include the same mandatory tooling profile as the
+# rig; the rig rechecks after export to protect against racing edits.
 if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
-  input_check_args=(--repo "$ROOT" --ref "$VERIFY_TAURI_SOURCE_REF")
+  input_check_args=(--repo "$ROOT" --ref "$VERIFY_TAURI_SOURCE_REF" --tauri-inputs)
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ]; then
     input_check_args+=(--inputs "$VERIFY_TAURI_SOURCE_INPUTS")
   fi
