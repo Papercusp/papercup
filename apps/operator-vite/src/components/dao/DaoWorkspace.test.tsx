@@ -20,7 +20,8 @@ let busListener: ((event: { name: string }) => void) | undefined;
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: ({ queryName }: { queryName: string }) => queryName === 'workspaceHosts.control'
   ? { data: hostData, error: hostError, invalidate: invalidateHosts } : { data, error: queryError, invalidate },
   onSyncBusEvent: (listener: typeof busListener) => { busListener = listener; return () => { busListener = undefined; }; } }));
-vi.mock('nuqs', () => ({
+vi.mock('nuqs', async importOriginal => ({
+  ...await importOriginal<typeof import('nuqs')>(),
   parseAsString: { withDefault: () => ({}) },
   useQueryState: (key: string) => useState(key === 'dao' ? initialDao : initialSection),
 }));
@@ -176,7 +177,7 @@ describe('DAO Workbench journeys', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workspace: { directoryId: 'other', localHomeSlug: 'other-home', status: 'connected' } }) }));
     render(<DaoWorkspace />);
     expect((await screen.findByRole('alert')).textContent).toContain('Unable to read this organization');
-    expect(screen.queryByText('Admitted contributors')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'People' })).toBeNull();
   });
   it('refreshes bound records on maintained push events without leaving the DAO', async () => {
     initialDao = community.potId; initialSection = 'members';
@@ -184,7 +185,7 @@ describe('DAO Workbench journeys', () => {
       localHomeSlug: 'renamed-home', status: 'connected', members: { status: 'ready', value: [] } } }) });
     vi.stubGlobal('fetch', fetchMock);
     render(<DaoWorkspace />);
-    await screen.findByText('No admitted contributor records are available.');
+    await screen.findByText('No current members.');
     act(() => { busListener?.({ name: 'plans.list' }); });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('combobox', { name: 'Choose a DAO' }).textContent).toBe('Builders DAO');
