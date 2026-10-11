@@ -22,6 +22,34 @@ import { fileURLToPath } from 'node:url';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 import { historicalHostedProfileCensusProducer, type HostedProfileWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
+import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
+
+/** Reuse the setup writer's exact ownership rules across workspace homes. */
+export async function readWorkspaceSetupHomes(
+  workspaces: readonly { id: string }[],
+  resolveRoot: (workspace: string) => string = papercuspRootForWorkspace,
+  activeRoot = papercuspRoot(),
+) {
+  const paths = [...new Set([activeRoot, ...workspaces.map(workspace => resolveRoot(workspace.id))])];
+  const producers = await Promise.all(paths.map(async (path, index) => {
+    const producer = await cliSetupHomeCensusProducer(path);
+    const id = `cli-setup-homes-${index}`;
+    return { roots: producer.roots.map(root => ({ ...root, id })),
+      declarations: producer.declarations.map(declaration => ({ ...declaration, root: id })) };
+  }));
+  return { roots: producers.flatMap(producer => producer.roots),
+    declarations: producers.flatMap(producer => producer.declarations) };
+}
+
+/** Credential ownership is workspace-scoped; the active pool is not a host census. */
+export async function readWorkspaceCensusAccounts(
+  workspaces: readonly { id: string }[],
+  readPool: (workspace: string) => Promise<{ accounts: { credentialRef: string }[] }> = loadAccountPool,
+) {
+  const pools = await Promise.all([...new Set(workspaces.map(workspace => workspace.id))]
+    .map(workspace => readPool(workspace)));
+  return pools.flatMap(pool => pool.accounts);
+}
 
 /** Read only source-backed tables; unrelated schemas cannot exhaust this census. */
 export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres>, sources: readonly MigrationCensusSource[]) {
@@ -75,14 +103,15 @@ const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes
   } : undefined);
 const affectedCache = await affectedTestCacheCensusProducer();
 const sidefiles = await runtimeSidefileCensusProducer();
-const setupHomes = await cliSetupHomeCensusProducer();
+const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
 const templateExpected = (await buildExpected()).expected;
 const historicalTemplateIdentity = historicalGitBlobIdentityResolver(fileURLToPath(new URL('..', import.meta.url)));
 const templateStore = await templateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
 const workspaceTemplateStores = await workspaceTemplateStoreCensusProducer(undefined, templateExpected, historicalTemplateIdentity);
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
-const credentials = await accountCredentialCensusProducer(hostCatalogs ? (await loadAccountPool()).accounts : []);
+const credentials = await accountCredentialCensusProducer(hostCatalogs
+  ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
 const checkpointLogDir = options.checkpointLogDir ?? createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts').releaseConfig().checkpointLogDir;
 const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
   { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {

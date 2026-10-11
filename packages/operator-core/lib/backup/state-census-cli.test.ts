@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { runRootCensus, readMigrationCensusColumns } from '../../../../scripts/state-census-roots.mts';
+import { runRootCensus, readMigrationCensusColumns, readWorkspaceCensusAccounts, readWorkspaceSetupHomes } from '../../../../scripts/state-census-roots.mts';
 
 // Some credential writers resolve their home at module load. Isolate before
 // collection, so the in-process census cannot enumerate the developer's home.
@@ -25,6 +25,42 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('scans inactive workspace setup homes without owning copied foreign files', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'workspace-setup-census-'));
+    try {
+      const active = join(parent, 'active');
+      const inactive = join(parent, 'inactive');
+      const name = 'deploy-credentials/.codex-setup-account-1234abcd';
+      for (const home of [active, inactive]) {
+        mkdirSync(join(home, name), { recursive: true });
+        writeFileSync(join(home, name, 'auth.json'), 'opaque');
+        writeFileSync(join(home, name, 'foreign-source.ts'), 'foreign');
+      }
+      const result = await readWorkspaceSetupHomes([{ id: 'active' }, { id: 'inactive' }, { id: 'inactive' }],
+        workspace => join(parent, workspace), active);
+      expect(result.roots.map(root => root.path)).toEqual([active, inactive]);
+      for (const root of result.roots) {
+        expect(result.declarations.filter(entry => entry.root === root.id).map(entry => [entry.name, entry.classification]))
+          .toEqual([[name, 'state'], [`${name}/auth.json`, 'secret']]);
+      }
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('retains credential references from inactive workspace pools and fails on an unreadable pool', async () => {
+    const readPool = vi.fn(async (workspace: string) => ({ accounts: [
+      { credentialRef: `token:/fixture/${workspace}/credential` },
+    ] }));
+    expect(await readWorkspaceCensusAccounts([{ id: 'active' }, { id: 'inactive' }, { id: 'active' }], readPool))
+      .toEqual([{ credentialRef: 'token:/fixture/active/credential' },
+        { credentialRef: 'token:/fixture/inactive/credential' }]);
+    expect(readPool.mock.calls).toEqual([['active'], ['inactive']]);
+    await expect(readWorkspaceCensusAccounts([{ id: 'unreadable' }], async () => {
+      throw new Error('pool unavailable');
+    })).rejects.toThrow('pool unavailable');
+    expect(await readWorkspaceCensusAccounts([], readPool)).toEqual([]);
+  });
+
   it('limits schema reads to exact source tables and preserves the overflow guard', async () => {
     const sources = [{ producer: 'fixture', tables: ['harness_shared.consult_state', 'public.records'] }];
     const matching = [{ table_schema: 'harness_shared', table_name: 'consult_state', column_name: 'routing', data_type: 'jsonb' }];
