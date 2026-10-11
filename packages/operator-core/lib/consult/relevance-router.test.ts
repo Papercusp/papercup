@@ -118,6 +118,24 @@ describe('problem-specific expertise qualification', () => {
     expect(await scoreSubjectEvidence('missing:contract', ['text'], Date.now() + 4000, { contracts, scorer })).toEqual([null]);
   });
 
+  it('keeps equal competing contracts unmeasured while preserving a supported absolute-floor win', () => {
+    expect(contrastedSubjectScore(0.8, [0.8])).toBeNull();
+    expect(contrastedSubjectScore(0.8, [0.2, 0.8])).toBeNull();
+    expect(contrastedSubjectScore(0.5, [0.5])).toBeNull();
+    expect(contrastedSubjectScore(0.5, [0.1])).toBe(SUBJECT_EVIDENCE_MIN_SCORE);
+  });
+
+  it('propagates overlapping contract ambiguity without discarding a distinct supported passage', async () => {
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const scorer = async (text: string) => text.startsWith('equal') ? [0.8, 0.8] : [0.5, 0.1];
+    expect(await scoreSubjectEvidence('computer:provision_desktop',
+      ['equal release gate checkpoint', 'distinct release gate checkpoint'], Date.now() + 4000, { contracts, scorer }))
+      .toEqual([null, SUBJECT_EVIDENCE_MIN_SCORE]);
+  });
+
   it('keeps measured peer evidence when another passage cannot be scored, and preserves missing contrasts as unknown', async () => {
     const contracts = [
       { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
