@@ -1551,6 +1551,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
+    // Papercusp tools can declare a 600s deadline plus a 5s MCP buffer.
+    // Keep Codex's per-server client timeout just above that contract.
+    'tool_timeout_sec = 610',
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
     ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
@@ -1639,7 +1642,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   const expectedSuMcpRoute =
     '[mcp_servers.papercusp-su]\nurl = "' +
     tomlEscape(mcpUrlWithClient(opts.mcpUrl, opts.sid)) +
-    '"';
+    '"\ntool_timeout_sec = 610';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
