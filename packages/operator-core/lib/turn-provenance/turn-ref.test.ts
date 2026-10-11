@@ -768,6 +768,9 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
   const VERIFIED_SELF_COMPACTION =
     '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: self-compaction; envelope lost in transit, matched by ' +
     'payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.';
+  const VERIFIED_WATCHDOG =
+    '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: watchdog; envelope lost in transit, matched by ' +
+    'payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.';
   const VERIFIED_MANGLED =
     '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: loop-fire; payload hash differs — PTY transit ' +
     'mangling). This prompt was INJECTED by the papercusp system — it was NOT typed by the human owner.';
@@ -827,6 +830,15 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
     ]);
     const stamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
     expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T12:00:00.000Z]', verdict: 'agent-injected', origin: 'self-compaction' });
+  });
+
+  it('writtenDuring preserves watchdog compaction as non-owner when the envelope is lost in transit', async () => {
+    write([
+      userLine(ENVELOPE_LOST, '2026-09-23T12:00:00.000Z'),
+      hookStampLine(VERIFIED_WATCHDOG, '2026-09-23T12:00:00.080Z'),
+    ]);
+    const stamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
+    expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T12:00:00.000Z]', verdict: 'agent-injected', origin: 'watchdog' });
   });
 
   it('verifyTurnRefs (the work_items:checkpoint refs path) agrees with the hook stamp too', async () => {
