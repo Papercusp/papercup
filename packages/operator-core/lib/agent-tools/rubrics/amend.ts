@@ -24,6 +24,7 @@ import {
   type AmendRubricInput,
 } from '../../rubrics';
 import { trackAmendRun } from './amend-receipts';
+import { getPlanRow } from '../plans/source';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
@@ -123,19 +124,34 @@ function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, 
 }
 
 /** A retry for one routed review must reuse its receipt across workers. */
-function reviewReceiptKey(
+async function reviewReceiptKey(
   args: z.infer<typeof rubricsAmendArgs>,
   identity: ReturnType<typeof resolveAgentIdentity>,
   previewSource: string,
-): string {
+): Promise<string> {
+  const rubric = await getRubric(args.rubricRef);
+  const subject = rubric?.subjectPlan && rubric.subjectHarnessSlug
+    ? await getPlanRow(rubric.subjectPlan, {
+        workspaceId: rubric.workspaceId, harnessSlug: rubric.subjectHarnessSlug,
+      })
+    : null;
   const request = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: identity.workspaceId ?? null,
     requesterId: identity.ownerId,
     rubricRef: args.rubricRef,
     // A caller post keeps its historical key; requestReview keys on its target
     // work-item, so a retry replays the receipt instead of posting again.
     previewPostRef: previewSource,
+    // Replaying a routed preview must honor both the caller's CAS expectations
+    // and the current server revisions, including callers that omitted CAS.
+    expectedRubricRevision: args.expectedRubricRevision ?? null,
+    expectedSubjectPlanRevision: args.expectedSubjectPlanRevision ?? null,
+    idempotencyKey: args.idempotencyKey ?? null,
+    rubricRevision: rubric?.revision ?? null,
+    subjectPlanRevision: subject?.version ?? null,
+    // An unmeasured legacy subject scope cannot safely identify a cached preview.
+    ...(rubric?.subjectPlan && !subject ? { unmeasuredSubject: randomUUID() } : {}),
     reason: args.reason ?? null,
     patch: amendmentPatch(args),
     reviewerModel: args.reviewerModel ?? null,
@@ -568,7 +584,7 @@ export default defineTool({
           ? `request:${args.requestReview.harness ?? ''}:${args.requestReview.workItemId}`
           : undefined);
       const receiptKey = previewSource
-        ? reviewReceiptKey(args, identity, previewSource)
+        ? await reviewReceiptKey(args, identity, previewSource)
         : 'preview-' + randomUUID();
       let registered = false;
       const receipt = () => ({

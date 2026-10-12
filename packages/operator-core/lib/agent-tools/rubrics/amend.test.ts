@@ -23,6 +23,8 @@ const rubricsMocks = vi.hoisted(() => ({
 }));
 
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
+const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
+vi.mock('../plans/source', () => ({ getPlanRow: planMocks.getPlanRow }));
 const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
   type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
@@ -106,6 +108,8 @@ const body = async (args: unknown) => {
 beforeEach(() => {
   vi.clearAllMocks();
   receiptDb.rows.clear();
+  rubricsMocks.getRubric.mockResolvedValue(undefined);
+  planMocks.getPlanRow.mockResolvedValue(null);
 });
 
 const criterion = {
@@ -814,6 +818,43 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(completed).toMatchObject({ ok: true, review: { state: 'routed', conversationId: 'conv-review-retry' } });
     expect(replay).toEqual(completed);
     expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['expectedRubricRevision', 'expectedSubjectPlanRevision', 'idempotencyKey'] as const)(
+    'does not replay a routed preview after %s changes', async field => {
+      rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+      reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({ state: 'routed', conversationId: 'conv-current' });
+      rubricsMocks.getRubric.mockResolvedValue({ revision: 3 });
+      const args = { ...patchArgs, reviewPreviewPost: 'thread-post:42',
+        expectedRubricRevision: 3, expectedSubjectPlanRevision: 8, idempotencyKey: 'request-a' };
+      const first = await body(args);
+      expect(await body({ ...args })).toEqual(first);
+      const changed = await body({ ...args, [field]: field === 'idempotencyKey' ? 'request-b' : 9 });
+      expect(changed.receipt.idempotencyKey).not.toBe(first.receipt.idempotencyKey);
+      expect(rubricsMocks.previewAcceptanceBarAmendment).toHaveBeenCalledTimes(2);
+      expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(['rubric', 'subject'] as const)('remeasures live %s revision when preview expectations were omitted', async kind => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({ state: 'routed', conversationId: 'conv-current' });
+    rubricsMocks.getRubric.mockResolvedValue({ revision: 3, workspaceId: 'subject-workspace',
+      subjectPlan: 'subject-plan', subjectHarnessSlug: 'subject-harness' });
+    planMocks.getPlanRow.mockResolvedValue({ version: 8 });
+    const args = { ...patchArgs, reviewPreviewPost: 'thread-post:42' };
+    const first = await body(args);
+    expect(await body({ ...args })).toEqual(first);
+    if (kind === 'rubric') rubricsMocks.getRubric.mockResolvedValue({ revision: 4, workspaceId: 'subject-workspace',
+      subjectPlan: 'subject-plan', subjectHarnessSlug: 'subject-harness' });
+    else planMocks.getPlanRow.mockResolvedValue({ version: 9 });
+    const changed = await body(args);
+    expect(changed.receipt.idempotencyKey).not.toBe(first.receipt.idempotencyKey);
+    expect(planMocks.getPlanRow).toHaveBeenCalledWith('subject-plan', {
+      workspaceId: 'subject-workspace', harnessSlug: 'subject-harness',
+    });
+    expect(rubricsMocks.previewAcceptanceBarAmendment).toHaveBeenCalledTimes(2);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(2);
   });
 
   it('D-034: the actual handler and local relevance-router preserve the actionable review ahead of a large preview', async () => {
