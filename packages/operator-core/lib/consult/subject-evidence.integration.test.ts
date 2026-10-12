@@ -2,13 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
 import { _resetForTests } from '@papercusp/db-org';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
 import { flushFallbackObservations } from '../degradation/fallback-observations';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
-import { isEmbedSidecarRunning, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
+import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES } from './subject-evidence.fixtures';
 import '../agent-tools/index';
@@ -145,7 +146,37 @@ describe('registered subject evidence with the real local scorer', () => {
     // Cold model construction is an evaluation prerequisite, not time granted
     // to production qualification. Every measured scenario retains its 4s cap.
     const warmStart = Date.now();
-    await scorer('SQL migration file', ['Apply a numbered PostgreSQL DDL transaction.'], { deadline: Date.now() + 15_000 });
+    try {
+      await scorer('SQL migration file', ['Apply a numbered PostgreSQL DDL transaction.'], { deadline: Date.now() + 15_000 });
+    } catch (error) {
+      // Preserve the distinction between model construction and admission before
+      // teardown removes the owned process and database. Never infer either
+      // from endpoint liveness or a missing model slot alone.
+      console.info('subject-scorer-failed-health', JSON.stringify(url ? await probeSidecarHealth(url, 5000) : null));
+      if (privateDb) {
+        const sql = postgres(privateDb.url, { max: 1, connect_timeout: 5, onnotice: () => {} });
+        try {
+          await sql`SET statement_timeout = '5000ms'`;
+          const admissions = await sql`
+            SELECT receipt_id, record
+            FROM harness_shared.resource_governor_admissions
+            ORDER BY receipt_id LIMIT 8
+          `;
+          const activity = await sql`
+            SELECT state, wait_event_type, wait_event, left(query, 200) AS query
+            FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+            LIMIT 8
+          `;
+          console.info('subject-scorer-failed-admission', JSON.stringify({ database: privateDb.name, admissions, activity }));
+        } catch (diagnosticError) {
+          console.info('subject-scorer-diagnostic-unavailable', String(diagnosticError));
+        } finally {
+          await sql.end({ timeout: 5 });
+        }
+      }
+      throw error;
+    }
     console.info('subject-scorer-ready', JSON.stringify({ warmupMs: Date.now() - warmStart }));
     const measurements = [];
     for (const scenario of HELD_OUT_SUBJECT_CASES) {
