@@ -61,6 +61,8 @@ const EPS = 1e-9;
 
 export interface DegradationThresholds {
   minEligible: number;
+  /** Lower floors for named, high-confidence failure reasons; all other reasons use minEligible. */
+  minEligibleByReason?: Readonly<Record<string, number>>;
   collapseRate: number;
   recoverRate: number;
   dominantShare: number;
@@ -68,6 +70,7 @@ export interface DegradationThresholds {
 
 export const DEFAULT_DEGRADATION_THRESHOLDS: Readonly<DegradationThresholds> = Object.freeze({
   minEligible: DEGRADATION_MIN_ELIGIBLE,
+  minEligibleByReason: Object.freeze({}),
   collapseRate: DEGRADATION_COLLAPSE_RATE,
   recoverRate: DEGRADATION_RECOVER_RATE,
   dominantShare: DEGRADATION_DOMINANT_SHARE,
@@ -137,6 +140,27 @@ registerDegradationMechanism({
     'green-checkpoint pass reuse: tasks whose prior passing proof could have been reused instead of re-running. ' +
     'A collapse means the gate is re-running work it should be reusing (run 762a13a6 reused 0 of ~7,689).',
   scopeKeyed: true,
+  thresholds: {
+    // Ordinary candidate buckets need a useful sample. A hard fail-open reason is itself
+    // sufficient evidence for that task: these observations deliberately carry one eligible
+    // unit because the selector could not safely establish the candidate denominator.
+    minEligibleByReason: {
+      'workspace-unresolved': 1,
+      'no-judged-sha': 1,
+      'head-mismatch': 1,
+      'checkout-status-unknown': 1,
+      'checkpoint-root-unverified': 1,
+      'checkpoint-restore-failed': 1,
+      'checkpoint-remains-dirty': 1,
+      'dirty-checkout': 1,
+      'no-runner-identity': 1,
+      'pg-unavailable': 1,
+      'proofs-unavailable': 1,
+      'lane-filter-unavailable': 1,
+      'skip-list-unwritable': 1,
+      'arming-threw': 1,
+    },
+  },
 });
 registerDegradationMechanism({
   mechanism: 'retrieval',
@@ -428,6 +452,13 @@ function resolveThresholds(t?: Partial<DegradationThresholds>): DegradationThres
   return { ...DEFAULT_DEGRADATION_THRESHOLDS, ...(t ?? {}) };
 }
 
+function minEligibleForReason(t: DegradationThresholds, reason: string | null): number {
+  const configured = reason ? t.minEligibleByReason?.[reason] : undefined;
+  return Number.isSafeInteger(configured) && configured! > 0
+    ? Math.min(t.minEligible, configured!)
+    : t.minEligible;
+}
+
 /**
  * PURE: what one window says. No clock, no Postgres, no broadcast, so every threshold
  * edge (19 vs 20 eligible, 0.20 vs 0.21 applied, 0.49 vs 0.50 recovery, 0.79 vs 0.80
@@ -443,13 +474,14 @@ export function judgeDegradation(
   thresholds?: Partial<DegradationThresholds>,
 ): DegradationVerdict {
   const t = resolveThresholds(thresholds);
-  if (window.appliedRate === null || window.eligible < t.minEligible) {
-    return { kind: 'insufficient', eligible: window.eligible, minEligible: t.minEligible };
+  const top = window.reasons.find((r) => r.fellBack > 0) ?? null;
+  const minEligible = minEligibleForReason(t, top?.reason ?? null);
+  if (window.appliedRate === null || window.eligible < minEligible) {
+    return { kind: 'insufficient', eligible: window.eligible, minEligible };
   }
   const rate = window.appliedRate;
   if (rate >= t.recoverRate - EPS) return { kind: 'recovered', appliedRate: rate };
   if (rate > t.collapseRate + EPS) return { kind: 'between', appliedRate: rate };
-  const top = window.reasons.find((r) => r.fellBack > 0) ?? null;
   const topShare = top ? top.fellBack / window.eligible : 0;
   const dominates = top !== null && topShare >= t.dominantShare - EPS;
   const reason = dominates && top ? top.reason : DEGRADATION_MIXED_REASON;
@@ -500,6 +532,7 @@ export function renderDegradationAlarm(
   t: DegradationThresholds,
 ): Pick<SevereEventBroadcast, 'summary' | 'body'> {
   const where = scope ? `${m.mechanism} (${scope})` : m.mechanism;
+  const minEligible = minEligibleForReason(t, verdict.topReason);
   const top = window.reasons
     .slice(0, 5)
     .map((r) => `${r.reason}: ${r.fellBack} fell back of ${r.eligible} eligible over ${r.samples} batch(es)`)
@@ -513,7 +546,7 @@ export function renderDegradationAlarm(
       `${m.description}\n\n` +
       `Window: ${window.samples} decision batch(es), ${window.eligible} eligible, ${window.applied} applied ` +
       `(rate ${verdict.appliedRate.toFixed(3)}; collapse <= ${t.collapseRate}, recover >= ${t.recoverRate}, ` +
-      `min eligible ${t.minEligible}).\n` +
+      `min eligible ${minEligible}).\n` +
       `Top reasons:\n  - ${top || '(none)'}\n\n` +
       `This condition is owned by one auto-filed work item and resolves itself once the rate reaches ` +
       `${t.recoverRate}. Data: harness_shared.fallback_observations WHERE mechanism = '${m.mechanism}'` +
