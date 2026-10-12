@@ -17,6 +17,15 @@ const processor = remark()
   .use(remarkGfm)
   .use(remarkMdxToMarkdown);
 
+/** The host owns durable storage; this source-agnostic renderer only reports outcomes. */
+export type MdxRenderObserver = (mechanism: 'mdx-render', decision: {
+  eligible: 1; applied: 0 | 1; reason: 'parse-failed' | 'applied';
+}) => void;
+let observeFallback: MdxRenderObserver | undefined;
+export function setMdxRenderObserver(observer: MdxRenderObserver | undefined): void {
+  observeFallback = observer;
+}
+
 /**
  * Fallback body for a doc whose MDX fails to parse (EI-5860). A single malformed
  * doc — a raw `<owner>` placeholder parsed as an unclosed JSX tag, or a `{expr}`
@@ -117,8 +126,11 @@ export function renderMdxToMarkdown(rawMdx: string, absolutePath: string, signal
 export async function renderMdxToMarkdownUnqueued(rawMdx: string, absolutePath: string): Promise<string> {
   try {
     const processed = await processor.process({ path: absolutePath, value: rawMdx });
-    return String(processed);
+    const rendered = String(processed);
+    try { observeFallback?.('mdx-render', { eligible: 1, applied: 1, reason: 'applied' }); } catch { /* observer cannot change rendering */ }
+    return rendered;
   } catch (err) {
+    try { observeFallback?.('mdx-render', { eligible: 1, applied: 0, reason: 'parse-failed' }); } catch { /* preserve searchable fallback */ }
     // EI-5860: remark-mdx throws on a single malformed doc (unclosed `<tag>`,
     // unparseable `{expr}`). Because adapters render every page (Promise.all),
     // one throw unwinds the entire search/outline for the corpus. Degrade
