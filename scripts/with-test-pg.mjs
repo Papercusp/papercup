@@ -31,17 +31,11 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { access, stat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
-import AsyncExitHook from 'async-exit-hook';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
-import { SHARED_TEST_PG_DURABILITY_OFF } from '../libs/test-config/src/pg-container.ts';
-import { browserCachePath } from './lib/playwright-cache-path.mjs';
-import { defaultEvidenceRoot } from '../libs/generic/verification-harness/src/evidence-root.ts';
-import { processGroupLifetime } from '../packages/operator-core/lib/fleet/process-group-lifetime.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -122,6 +116,16 @@ catch (error) {
   console.error('[with-test-pg] migration preflight failed: ' + error.message);
   process.exit(1);
 }
+
+// Invalid commands and evidence pins need only Node builtins. Runtime imports
+// can transform TypeScript and load container tooling, so keep that work behind
+// the refusal boundary as well as the actual PostgreSQL allocation below.
+const { default: AsyncExitHook } = await import('async-exit-hook');
+const { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } = await import('../libs/test-config/src/tmpdir-guard.ts');
+const { SHARED_TEST_PG_DURABILITY_OFF } = await import('../libs/test-config/src/pg-container.ts');
+const { browserCachePath } = await import('./lib/playwright-cache-path.mjs');
+const { defaultEvidenceRoot } = await import('../libs/generic/verification-harness/src/evidence-root.ts');
+const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
