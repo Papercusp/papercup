@@ -1,11 +1,11 @@
 /** Required native P010 BAR: real CLI → current operator → compiler report. */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
+import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
@@ -26,19 +26,23 @@ describe('native P018 private operator CLI incident claim and resume', () => {
     expect(build.status, build.stdout + build.stderr).toBe(0);
     const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     try {
-    const result = await new Promise<{ code: number | null; output: string }>((done, reject) => {
-      const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+    let lastStage = 'private-pg-bootstrap';
+    const progress = setInterval(() => console.log(`NATIVE_INCIDENT_API_PROGRESS=${lastStage}`), 10_000);
+    let result;
+    try {
+      result = await nativeFixtureProcess(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         join(import.meta.dirname, '__fixtures__/incident-api-client.ts'),
         join(homedir(), '.papercusp/vendor/repomix'), join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash], {
-        cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, timeoutMs: 180_000,
+        onOutput: text => {
+          for (const line of text.split('\n')) if (line.startsWith('NATIVE_INCIDENT_API_STAGE=')) {
+            lastStage = line.slice('NATIVE_INCIDENT_API_STAGE='.length);
+            console.log(line);
+          }
+        },
       });
-      let output = '';
-      for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output = (output + data).slice(-30_000); });
-      const timer = setTimeout(() => child.kill('SIGTERM'), 180_000);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('close', code => { clearTimeout(timer); done({ code, output }); });
-    });
+    } finally { clearInterval(progress); }
     expect(result.code, result.output).toBe(0);
     const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
     expect(line, result.output).toBeDefined();
@@ -47,7 +51,9 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
     });
     } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
-  }, 200_000);
+  // The build and private journey have separate producer deadlines. The test
+  // deadline must allow both plus the maintained process-group exit fence.
+  }, 120_000 + 180_000 + 20_000);
 });
 
 describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph planning advice', () => {
@@ -56,13 +62,14 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
     const producer = 'packages/operator-core/lib/agent-tools/plans/plan-dag-parallelism.ts';
     const consumer = 'packages/operator-core/lib/agent-tools/plans/lint.ts';
     const shared = 'packages/operator-core/lib/agent-tools/plans/native-planning-advice.integration.test.ts';
-    const itemIds = ['P-013', 'P-016'];
+    const itemIds = (process.env.NATIVE_PLANNING_ITEMS ?? 'P-019,P-024').split(',');
     const itemArgs = { slug: planningPlan, harness: 'papercusp', itemIds,
       projection: { pick: ['items[].item.id', 'items[].item.storedStatus', 'items[].item.blockedBy',
         'items[].coverage.workers', 'items[].coverage.holder.ownerId'] } };
     const before = call('plans:items', itemArgs);
     expect(before.items).toHaveLength(2);
-    expect(before.items.every((row: { coverage: { workers: string[] } }) => row.coverage.workers.includes(identity.ownerId))).toBe(true);
+    expect(before.items.every((row: { coverage?: { workers?: string[] } }) =>
+      row.coverage?.workers?.includes(identity.ownerId)), `Planning fixture needs two current caller-held items: ${JSON.stringify(before)}`).toBe(true);
     const claimArgs = { paths: [producer, consumer, shared],
       projection: { pick: ['active_locks[].lock_id', 'active_locks[].path', 'active_locks[].owner',
         'active_locks[].intent', 'active_locks[].coordination_domain'] } };
@@ -196,6 +203,7 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     // A current-build acceptance run may idempotently claim only its own task.
     // This test creates no work items and does not steal another session's lane.
     expect(subject.assignee).toBe(identity.ownerId);
+    expect(subject.payload?.paths?.length, 'Task brief fixture requires stored payload.paths on its caller-owned item').toBeGreaterThan(0);
     const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/task-brief.ts',
       testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
     expect(route.currentBuildTestRoute.readiness).toBe('ready');

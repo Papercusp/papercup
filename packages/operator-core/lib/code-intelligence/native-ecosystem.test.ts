@@ -23,6 +23,7 @@ import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { sourceRuntimeProvenance } from './source-runtime-provenance';
 import { nativeCliPlan, nativeCliResult, nativeCliTestTimeout } from './native-cli.fixture';
+import { nativeFixtureProcess, recoverNativeCliResult } from './native-cli.fixture';
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS, PTOOL_LIST_TOOLS_TIMEOUT_MS,
   ptoolConnectionRetryOptions, ptoolConnectAttemptTimeoutMs, timeoutForTool,
   resolvePtoolInvocationCandidates } from '../../../../apps/operator/scripts/ptool.mjs';
@@ -52,6 +53,32 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it('recovers complete spilled evidence through verified bytes and refuses corrupted or partial sources', () => {
+    const payload = Buffer.from(JSON.stringify({ content: [{ type: 'text', text: '{"ok":true,"answer":42}' }] }));
+    const envelope = { schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+      incomplete: { recoverable: true }, content: [{ kind: 'reference', uri: 'papercusp://scratch/test/page' }] };
+    const result = { status: 0, stdout: JSON.stringify(envelope), stderr: '' };
+    const page = { ok: true, encoding: 'base64', byte_offset: 0, byte_length: payload.length,
+      total_bytes: payload.length, eof: true, next_cursor: null, data: payload.toString('base64'),
+      reference: { schemaVersion: 'papercusp.scratch-reference/v1', byteCount: payload.length,
+        sha256: createHash('sha256').update(payload).digest('hex') } };
+    expect(recoverNativeCliResult(result, () => page)).toEqual({ ok: true, answer: 42 });
+    expect(() => recoverNativeCliResult(result, () => ({ ...page, data: 'corrupt' }))).toThrow(/byte page/);
+    expect(() => recoverNativeCliResult(result, () => ({ ...page, reference: { ...page.reference,
+      sha256: '0'.repeat(64) } }))).toThrow(/integrity/);
+    envelope.incomplete.recoverable = false;
+    expect(() => recoverNativeCliResult({ ...result, stdout: JSON.stringify(envelope) }, () => {
+      throw new Error('must not attempt expansion');
+    })).toThrow(/incomplete evidence/);
+  });
+  it('retains child phase diagnostics and terminates a timed-out private process', async () => {
+    const chunks: string[] = [];
+    await expect(nativeFixtureProcess(process.execPath,
+      ['-e', 'console.log("NATIVE_INCIDENT_API_STAGE=waiting-for-handler"); setInterval(() => {}, 1000)'],
+      { cwd: process.cwd(), timeoutMs: 300, onOutput: text => chunks.push(text) }))
+      .rejects.toThrow(/deadline 300ms exceeded[\s\S]*waiting-for-handler/);
+    expect(chunks.join('')).toContain('waiting-for-handler');
+  });
   it('uses the maintained staging proxy without a green fallback and honors producer deadlines', () => {
     const plan = nativeCliPlan('http://localhost:3170', 'graph:query', {}, {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071', PAPERCUSP_MCP_PROXY_PORT: '9071',

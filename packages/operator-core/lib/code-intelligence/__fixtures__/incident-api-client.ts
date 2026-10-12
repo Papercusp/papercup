@@ -32,6 +32,7 @@ assert(handlerPath && handlerHash, 'Maintained private ESM handler artifact requ
 assert.equal(createHash('sha256').update(readFileSync(handlerPath)).digest('hex'), handlerHash,
   'Prepared handler artifact changed before the private runtime loaded it');
 const { handler } = await import(/* @vite-ignore */ pathToFileURL(handlerPath).href);
+console.log('NATIVE_INCIDENT_API_STAGE=handler-loaded');
 const { superuserTokenPath } = await import('../../superuser-token.ts');
 const { loadHarnessRegistry } = await import('../../harness-registry.ts');
 const { persistHarnessTestRunsWithIds } = await import('../../testing-run-store.ts');
@@ -48,6 +49,7 @@ for (const [key, value] of Object.entries({ workspace, harness: workspace, clien
 }
 const repo = resolve(import.meta.dirname, '../../../../..');
 async function call(name: string, args: Record<string, unknown>) {
+  console.log(`NATIVE_INCIDENT_API_STAGE=cli-start:${name}`);
   const plan = nativeCliPlan(endpoint.toString(), name, args, { ...process.env,
     PAPERCUSP_SID: 'native-incident-private-owner', PAPERCUSP_WORKSPACE: workspace, PAPERCUSP_HARNESS_SLUG: workspace });
   // The host runs in this process: an asynchronous CLI leaves its HTTP loop live.
@@ -61,7 +63,9 @@ async function call(name: string, args: Record<string, unknown>) {
     child.once('close', status => { clearTimeout(timer); done({ status, stdout, stderr }); });
     child.stdin.end(JSON.stringify(args));
   });
-  return nativeCliResult(result) as Record<string, any>;
+  const decoded = nativeCliResult(result) as Record<string, any>;
+  console.log(`NATIVE_INCIDENT_API_STAGE=cli-finished:${name}`);
+  return decoded;
 }
 try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);

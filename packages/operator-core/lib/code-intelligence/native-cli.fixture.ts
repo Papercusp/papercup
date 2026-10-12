@@ -1,12 +1,47 @@
 /** Real native CLI fixture: preserve the selected runtime and producer budgets. */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
+import { processGroupLifetime } from '../fleet/process-group-lifetime';
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
   PTOOL_LIST_TOOLS_TIMEOUT_MS, timeoutForTool } from '../../../../apps/operator/scripts/ptool.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../../..');
 const processHeadroomMs = PTOOL_LIST_TOOLS_TIMEOUT_MS;
+
+/** Preserve phase evidence while a private fixture runs, including on deadline. */
+export async function nativeFixtureProcess(command: string, argv: string[], options: {
+  cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number; onOutput?: (text: string) => void;
+}) {
+  const child = spawn(command, argv, { cwd: options.cwd, env: options.env,
+    detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  const lifetime = processGroupLifetime(child, message => { output += message + '\n'; });
+  for (const stream of [child.stdout, child.stderr]) stream.on('data', data => {
+    const text = String(data);
+    output = (output + text).slice(-30_000);
+    options.onOutput?.(text);
+  });
+  let timedOut = false;
+  let termination: Promise<void> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    termination = lifetime.terminate().catch(error => {
+      output += `\nCleanup failed: ${String(error)}\n`;
+    });
+  }, options.timeoutMs);
+  try {
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => done({ code, signal }));
+    });
+    if (termination) await termination;
+    else await lifetime.waitForExit({ timeoutMs: 10_000 });
+    if (timedOut) throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded\n${output}`);
+    return { ...result, output };
+  } finally { clearTimeout(timer); }
+}
 
 export function nativeCliPlan(baseUrl: string, name: string, args: Record<string, unknown>,
   inherited: NodeJS.ProcessEnv = process.env) {
@@ -57,10 +92,46 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
     && Object.keys(parsed).every(key => key === 'ok' || key === 'data') ? parsed.data : parsed;
 }
 
-export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>) {
+/** Expand only explicitly recoverable result-door references; never accept a partial source. */
+export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult>[0],
+  read: (args: Record<string, unknown>) => Record<string, any>) {
+  let envelope;
+  try { envelope = JSON.parse(result.stdout); } catch { return nativeCliResult(result); }
+  if (result.status !== 0 || result.error || envelope?.schemaVersion !== 'papercusp.output-envelope/v1'
+    || envelope.state !== 'incomplete' || envelope.incomplete?.recoverable !== true) return nativeCliResult(result);
+  const reference = envelope.content?.length === 1 ? envelope.content[0] : null;
+  if (reference?.kind !== 'reference' || typeof reference.uri !== 'string') return nativeCliResult(result);
+  const pages: Buffer[] = [];
+  let args: Record<string, unknown> | null = { file_path: reference.uri, byte_offset: 0, byte_limit: 2_048 };
+  let manifest: { byteCount: number; sha256: string } | undefined;
+  for (let count = 0; args && count < 64; count++) {
+    const page = read(args);
+    const bytes = Buffer.from(page.data ?? '', 'base64');
+    if (page.ok !== true || page.encoding !== 'base64' || bytes.toString('base64') !== page.data
+      || bytes.length !== page.byte_length || page.byte_offset !== Buffer.concat(pages).length
+      || page.reference?.schemaVersion !== 'papercusp.scratch-reference/v1'
+      || Boolean(page.next_cursor) === Boolean(page.eof)) throw new Error('Invalid native CLI recovery byte page');
+    manifest ??= page.reference;
+    if (manifest?.byteCount !== page.total_bytes || manifest?.sha256 !== page.reference.sha256)
+      throw new Error('Native CLI recovery reference changed between pages');
+    pages.push(bytes);
+    if (page.next_cursor && page.next_cursor.tool !== 'capability:read') throw new Error('Invalid native CLI recovery cursor');
+    args = page.next_cursor?.args ?? null;
+  }
+  const payload = Buffer.concat(pages);
+  if (args || payload.length !== manifest?.byteCount
+    || createHash('sha256').update(payload).digest('hex') !== manifest?.sha256)
+    throw new Error('Native CLI recovery reference integrity failed');
+  const recovered = JSON.parse(payload.toString('utf8'));
+  if (recovered.isError === true || recovered.content?.length !== 1 || recovered.content[0].type !== 'text')
+    throw new Error('Invalid native CLI recovery payload');
+  return nativeCliResult({ ...result, stdout: recovered.content[0].text });
+}
+
+export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>): Record<string, any> {
   const plan = nativeCliPlan(baseUrl, name, args);
-  return nativeCliResult(spawnSync(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
+  return recoverNativeCliResult(spawnSync(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
     name, `--url=${plan.cliUrl}`, '--json', '-'], {
     cwd: repoRoot, encoding: 'utf8', timeout: plan.timeoutMs, input: JSON.stringify(args), env: plan.env,
-  })) as Record<string, any>;
+  }), pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs)) as Record<string, any>;
 }
