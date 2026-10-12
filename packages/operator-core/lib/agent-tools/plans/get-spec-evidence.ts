@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import {
   listSpecEvidence,
   SPEC_EVIDENCE_KINDS,
@@ -104,6 +105,10 @@ export default defineTool({
     const limit = args.limit ?? 200;
     const diagnostics: ListSpecEvidenceDiagnostics = {
       phaseMs: {},
+      committedTree: createCommittedTreeDiagnostics({
+        requestTraceId: ctx.requestOrigin?.mcpRequestTraceId,
+        toolName: 'plans:get-spec-evidence',
+      }),
       bindings: {
         selectedRows: 0,
         rowsWithRecipe: 0,

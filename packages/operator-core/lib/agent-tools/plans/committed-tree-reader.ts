@@ -44,12 +44,32 @@ export interface CommittedFile {
   size: number;
 }
 
+/** The route and caller PID at the default reader's process boundary. */
+export interface BlobBatchSpawnBoundary {
+  route: 'sidecar' | 'local';
+  /** PID of the process doing the work; local spawn cost is paid by this process. */
+  pid: number;
+}
+
+export interface CommittedTreeSpawnBoundaryRecord extends BlobBatchSpawnBoundary {
+  requestTraceId: string | null;
+  toolName: string;
+}
+
+export interface CommittedTreeCallerContext {
+  requestTraceId?: string | null;
+  toolName: string;
+}
+
 /** Read blob contents for many ids in ONE process; ids absent from the result are missing. */
 export type BlobBatchReader = (
   repoDir: string,
   blobIds: readonly string[],
   onRoute?: (route: 'sidecar' | 'local') => void,
+  onSpawnBoundary?: (boundary: BlobBatchSpawnBoundary) => void,
 ) => Promise<Map<string, Buffer>>;
+
+const MAX_SPAWN_BOUNDARY_RECORDS = 8;
 
 /** Request-owned counters, never global cache statistics or a cache reset. */
 export interface CommittedTreeDiagnostics {
@@ -67,15 +87,29 @@ export interface CommittedTreeDiagnostics {
   blobsVerified: number;
   /** Actual default-reader branch; a supplied reader is classified as injected. */
   batchRoutes: { sidecar: number; local: number; injected: number };
+  /** Present only for a caller-scoped probe; records are capped per request. */
+  requestTraceId?: string | null;
+  toolName?: string;
+  spawnBoundaryRecords?: CommittedTreeSpawnBoundaryRecord[];
+  spawnBoundaryRecordsDropped?: number;
 }
 
-export function createCommittedTreeDiagnostics(): CommittedTreeDiagnostics {
-  return {
+export function createCommittedTreeDiagnostics(caller?: CommittedTreeCallerContext): CommittedTreeDiagnostics {
+  const diagnostics: CommittedTreeDiagnostics = {
     schemaVersion: 'committed-tree-diagnostics-v1', reads: 0,
     memoHits: 0, memoMisses: 0, batchAttempts: 0, batchSucceeded: 0, batchFailed: 0,
     blobsRequested: 0, blobsReturned: 0, blobsVerified: 0,
     batchRoutes: { sidecar: 0, local: 0, injected: 0 },
   };
+  if (caller) {
+    diagnostics.requestTraceId = typeof caller.requestTraceId === 'string'
+      ? caller.requestTraceId.slice(0, 120)
+      : null;
+    diagnostics.toolName = caller.toolName.slice(0, 120);
+    diagnostics.spawnBoundaryRecords = [];
+    diagnostics.spawnBoundaryRecordsDropped = 0;
+  }
+  return diagnostics;
 }
 
 export interface CommittedTreeDeps {
@@ -232,10 +266,11 @@ export async function resolveMeasurementCommit(root: string, git: GitRunner = de
  * offload route must fail explicitly rather than fork from the operator on a
  * sidecar timeout (EI-25372596942307171). The local route is disabled-mode only.
  */
-export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds, onRoute) => {
+export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds, onRoute, onSpawnBoundary) => {
   const stdin = `${blobIds.join('\n')}\n`;
   if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
     onRoute?.('sidecar');
+    onSpawnBoundary?.({ pid: process.pid, route: 'sidecar' });
     let sidecarResult: GitStdinRunResult;
     try {
       sidecarResult = await runGitStdinViaSpawnerSidecar(
@@ -263,6 +298,7 @@ export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds, 
   }
 
   onRoute?.('local');
+  onSpawnBoundary?.({ pid: process.pid, route: 'local' });
   return new Promise((resolvePromise, reject) => {
     const child = spawn('git', ['-C', repoDir, 'cat-file', '--batch'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
@@ -512,6 +548,20 @@ export async function readCommittedFiles(
     if (diagnostics) diagnostics.memoMisses += 1;
     unread.set(located.repo, (unread.get(located.repo) ?? new Set()).add(located.blob));
   }
+  const onSpawnBoundary = diagnostics?.spawnBoundaryRecords
+    ? (boundary: BlobBatchSpawnBoundary) => {
+        const records = diagnostics.spawnBoundaryRecords!;
+        if (records.length >= MAX_SPAWN_BOUNDARY_RECORDS) {
+          diagnostics.spawnBoundaryRecordsDropped = (diagnostics.spawnBoundaryRecordsDropped ?? 0) + 1;
+          return;
+        }
+        records.push({
+          requestTraceId: diagnostics.requestTraceId ?? null,
+          toolName: diagnostics.toolName ?? 'unknown',
+          ...boundary,
+        });
+      }
+    : undefined;
   for (const [repo, blobs] of unread) {
     const batches: string[][] = [];
     let batch: string[] = [];
@@ -535,7 +585,7 @@ export async function readCommittedFiles(
       }
       try {
         const contents = await (diagnostics && readBlobs === defaultBlobBatchReader
-          ? readBlobs(repoDir(root, repo), batch, (route) => { diagnostics.batchRoutes[route] += 1; })
+          ? readBlobs(repoDir(root, repo), batch, (route) => { diagnostics.batchRoutes[route] += 1; }, onSpawnBoundary)
           : readBlobs(repoDir(root, repo), batch));
         if (diagnostics) diagnostics.blobsReturned += batch.filter((blob) => contents.has(blob)).length;
         for (const blob of batch) {

@@ -127,13 +127,39 @@ describe('plans:get-spec-evidence detail levels', () => {
       committedTree: cold,
     }) });
     listEvidence.mockImplementation(async (options) => {
-      expect(options.diagnostics!.committedTree).toBeUndefined();
+      expect(options.diagnostics!.committedTree).toMatchObject({
+        requestTraceId: null,
+        toolName: 'plans:get-spec-evidence',
+        spawnBoundaryRecords: [],
+        spawnBoundaryRecordsDropped: 0,
+      });
       options.diagnostics!.committedTree = createCommittedTreeDiagnostics();
       return [];
     });
     await tool.handler(tool.args.parse({ slug: 'plan-a', harness: 'papercusp' }) as never, { metadata } as never);
     expect(metadata.mock.calls[1][0].plansGetSpecEvidenceStageTimings.committedTree)
       .toEqual(createCommittedTreeDiagnostics());
+  });
+
+  it('threads the current MCP request trace into bounded committed-reader diagnostics', async () => {
+    const requestTraceId = 'trace-current-mcp-request';
+    let captured: ReturnType<typeof createCommittedTreeDiagnostics> | undefined;
+    listEvidence.mockImplementation(async (options) => {
+      captured = options.diagnostics!.committedTree;
+      return [];
+    });
+
+    await tool.handler(
+      tool.args.parse({ slug: 'plan-a', harness: 'papercusp' }) as never,
+      { requestOrigin: { mcpRequestTraceId: requestTraceId } } as never,
+    );
+
+    expect(captured).toMatchObject({
+      requestTraceId,
+      toolName: 'plans:get-spec-evidence',
+      spawnBoundaryRecords: [],
+      spawnBoundaryRecordsDropped: 0,
+    });
   });
 
   it('returns a per-binding currentness table, a byClause rollup and a fullBody ref by default', async () => {

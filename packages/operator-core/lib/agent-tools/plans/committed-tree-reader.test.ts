@@ -271,6 +271,27 @@ describe('fingerprintRepoFileSetAtCommit', () => {
 });
 
 describe('batched reads', () => {
+  it('records a bounded spawn-boundary trace with request identity, caller PID, and route', async () => {
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const diagnostics = createCommittedTreeDiagnostics({
+      requestTraceId: 'trace-plans-get-spec-evidence',
+      toolName: 'plans:get-spec-evidence',
+    });
+    for (let index = 0; index < 10; index += 1) {
+      __resetCommittedBlobDigestsForTest();
+      await readCommittedFiles(root, commit, ['src/a.ts'], { diagnostics });
+    }
+
+    expect(diagnostics.spawnBoundaryRecords).toHaveLength(8);
+    expect(diagnostics.spawnBoundaryRecordsDropped).toBe(2);
+    expect(diagnostics.spawnBoundaryRecords?.[0]).toEqual({
+      requestTraceId: 'trace-plans-get-spec-evidence',
+      toolName: 'plans:get-spec-evidence',
+      pid: process.pid,
+      route: 'local',
+    });
+  });
+
   it('counts unique repository/blob lookups, including aliases and repeated reads', async () => {
     const content = readFileSync(join(root, 'src/a.ts'));
     writeFileSync(join(root, 'src/alias.ts'), content);
