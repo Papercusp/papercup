@@ -128,7 +128,7 @@ export function dependencyGenerationRootRecord(integrationRoot: string): string 
   return join(integrationRoot, '.papercusp/dependency-generation-root');
 }
 
-function readRecordedDependencyGenerationRoot(integrationRoot: string): string | null {
+export function readRecordedDependencyGenerationRoot(integrationRoot: string): string | null {
   let text: string;
   try {
     text = readFileSync(dependencyGenerationRootRecord(integrationRoot), 'utf8');

@@ -28,6 +28,7 @@ const DSN_ENV_KEYS = [
   'DATABASE_URL',
   'PAPERCUSP_PG_URL',
   'PAPERCUSP_SKIP_PG_DISCOVERY',
+  'PAPERCUSP_DEPENDENCY_GENERATION_ROOT',
 ] as const;
 let savedDsnEnv: Record<string, string | undefined>;
 
@@ -441,6 +442,50 @@ describe('resolveHiveReleaseEnv — subject-hive DSN routing (EI-207096454630226
 });
 
 describe('resolveCheckpointRouting', () => {
+  it('keeps a foreign hive on its recorded store for scheduled and manual launchers', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'subject', path: dir, self_repo: true }];
+    writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), '/target/gens\n/former/gens\n');
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot, resolveDependencyGenerationRetentionRoots } =
+      await import('../../release/dependency-generation-prebuild');
+    for (const ambient of ['/operator/gens', undefined]) {
+      if (ambient) process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = ambient;
+      else delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+      const routing = await resolveCheckpointRouting({ installSlug: 'subject', workspaceId: 'default' }, '/TOOLING');
+      const childEnv = { ...process.env, ...routing.extraEnv };
+      expect(routing.extraEnv.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe('/target/gens');
+      expect(resolveDependencyGenerationRoot(dir, childEnv)).toBe('/target/gens');
+      expect(resolveDependencyGenerationRetentionRoots(dir, childEnv)).toEqual(['/target/gens', '/former/gens']);
+    }
+  });
+
+  it('retains the inherited store fallback when a foreign record is absent or invalid', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'subject', path: dir, self_repo: true }];
+    process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = '/operator/gens';
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+    for (const record of [undefined, 'relative/store\n/old/gens\n']) {
+      if (record) writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), record);
+      const routing = await resolveCheckpointRouting({ installSlug: 'subject', workspaceId: 'default' }, '/TOOLING');
+      expect(routing.extraEnv.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBeUndefined();
+      expect(resolveDependencyGenerationRoot(dir, { ...process.env, ...routing.extraEnv })).toBe('/operator/gens');
+    }
+  });
+
+  it('leaves operator-home store selection to its existing environment', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'papercusp', path: dir, self_repo: true }];
+    writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), '/recorded/gens\n');
+    process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = '/operator/gens';
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+    const routing = await resolveCheckpointRouting({ installSlug: 'papercusp', workspaceId: 'default' }, dir);
+    expect(routing.extraEnv).toEqual({});
+    expect(resolveDependencyGenerationRoot(dir, process.env)).toBe('/operator/gens');
+  });
+
   it('no installSlug → default root, empty overlay, no skip (current behavior)', async () => {
     const { resolveCheckpointRouting } = await import('./hive-release-env');
     const r = await resolveCheckpointRouting({ workspaceId: 'default' }, '/DEFAULT');

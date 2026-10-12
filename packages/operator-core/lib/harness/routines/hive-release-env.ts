@@ -264,6 +264,17 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   // release-config.ts's own '@papercusp/operator-vite' fallback by omission.
   env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace ?? '';
 
+  // A foreign hive's recorded store belongs to its integration root. Thread it
+  // through the shared scheduled/manual overlay so the operator host's ambient
+  // store cannot replace it during prewarm. Without a valid record, retain the
+  // existing inherited-env/tree-local fallback. The native writer keeps former
+  // stores in the record for pin/lease retention after a relocation.
+  const { readRecordedDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+  const recordedDependencyRoot = readRecordedDependencyGenerationRoot(entry.path);
+  if (recordedDependencyRoot) {
+    env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = recordedDependencyRoot;
+  }
+
   // EI-20709645463022690: the gate subprocess inherited the OPERATOR's DATABASE_URL, so a
   // SUBJECT pot's suite silently dialed the papercusp database instead of its own. Observed
   // on sidestage: a "schema drift — 39 tables" red that nobody could reproduce in the pot's
