@@ -232,7 +232,8 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     const claimed = call('work_items:claim', { row: `${taskBriefItem},self,papercusp`,
       projection: { pick: ['results[].taskBrief.status', 'results[].taskBrief.repository',
         'results[].taskBrief.recover', 'results[].taskBrief.scope.paths', 'results[].taskBrief.files[].path',
-        'results[].taskBrief.files[].sha256', 'results[].taskBrief.sourceFingerprint'] } });
+        'results[].taskBrief.files[].sha256', 'results[].taskBrief.sourceFingerprint',
+        'results[].taskBrief.exclusions', 'results[].taskBrief.graph'] } });
     const brief = claimed.results?.[0]?.taskBrief;
     expect(brief?.status, JSON.stringify(claimed)).toBe('current');
     expect(brief.repository.workspaceId).toBe(identity.workspaceId);
@@ -244,7 +245,8 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     }
     const resumed = call('work_items:get', { id: taskBriefItem, harness: 'papercusp', resume: true,
       projection: { pick: ['results[].resume.taskBrief.status', 'results[].resume.taskBrief.repository',
-        'results[].resume.taskBrief.sourceFingerprint', 'results[].resume.taskBrief.scope.paths'] } });
+        'results[].resume.taskBrief.sourceFingerprint', 'results[].resume.taskBrief.scope.paths',
+        'results[].resume.taskBrief.exclusions', 'results[].resume.taskBrief.graph'] } });
     const refreshed = resumed.results[0].resume.taskBrief;
     expect(refreshed?.status, JSON.stringify(resumed)).toBe('current');
     expect(refreshed.repository).toEqual(brief.repository);
