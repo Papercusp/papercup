@@ -254,6 +254,21 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
       pageFails = false; row = { ...row, armed_ms: 9000, fire_count: 5, fire_count_at_arm: 5 };
       expect((await producer.checkLoopDeadMan(input, deps)).breach).toBe(false);
       expect(resolvedKeys).toEqual(openedKeys);
+      // A re-arm that removes the bounds never enters the fire-time reader. Execute
+      // the real materializer's post-write arm/stamp boundary, preserving the same key.
+      const armText = original(prefix + 'harness/routines/loop.ts', 'await stampLoopArmedAt(sql, row.id, now.getTime())', 'try');
+      let stampsFail = false, armsResolved = 0;
+      const arm = async (armInput: Record<string, unknown>) => execute(armText, {
+        input: armInput, sql: {}, row: { id: 'fixture' }, now: new Date(9000),
+        stampLoopArmedAt: async () => { if (stampsFail) throw new Error('stamp unavailable'); },
+        require: () => ({ resolveAlarm: async (key: string) => {
+          expect(key).toBe('alarm:loop-dead-man:fixture'); armsResolved++; return true;
+        } }),
+      });
+      await arm({ active: false }); await arm({ maxFires: 5 }); await arm({ maxDurationSec: 60 });
+      expect(armsResolved).toBe(0);
+      stampsFail = true; await arm({}); expect(armsResolved).toBe(0);
+      stampsFail = false; await arm({}); expect(armsResolved).toBe(1);
       return { route: 'condition', openedKeys, resolvedKeys };
     } finally { warn.mockRestore(); page.mockRestore(); }
   },
@@ -272,4 +287,55 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
     });
     expect(shedRecords).toBe(1);
   }),
+}, {
+  id: 'always-on-boot-original-alarm-healthy-held-fresh-and-unreadable', item: 'P-009', route: 'condition',
+  rowIds: ['owner-only-alarm|apps/operator/bin/host-bootstrap.ts|runBootstrap|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    // Select this exact guard rather than another primary-only bootstrap block.
+    const file = source('apps/operator/bin/host-bootstrap.ts');
+    let guard: ts.IfStatement | undefined;
+    const visit = (node: ts.Node): void => {
+      if (ts.isIfStatement(node) && node.expression.getText(file) === 'cluster.isPrimary'
+        && node.getText(file).includes('checkBespokeActiveSeeds')) guard = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (!guard) throw new Error('missing original primary-only always-on guard');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let outcome = 'broken', pageFails = true, desktop = false, primary = true, fresh = false;
+    let reads = 0, notifications = 0;
+    const entry = { name: 'fixture-routine', installSlug: 'fixture-install', seedScript: 'seed.ts', pauseReason: null };
+    const executeGuard = async () => {
+      await execute(guard!.getText(file), {
+        cluster: { isPrimary: primary }, process: { env: { PAPERCUSP_DESKTOP: desktop ? '1' : '0' } },
+        isLikelyFreshInstallGap: async () => fresh,
+        require: (path: string) => path.endsWith('bespoke-active-seeds-check') ? {
+          operatorHomeScope: () => ({ installSlug: 'fixture-install', workspaceId: 'fixture-workspace' }),
+          checkBespokeActiveSeeds: async () => {
+            reads++; if (outcome === 'unreadable') throw new Error('check unavailable');
+            return { ok: outcome === 'healthy', missing: outcome === 'healthy' ? [] : [entry], inactive: [], dark: [],
+              escalatable: outcome === 'broken' ? [entry] : [] };
+          },
+        } : path === '@papercusp/db-org' ? { getOrgPg: () => ({ sql: {} }) }
+          : path.endsWith('alarm-attention') ? { resolveAlarm: async (key: string) => {
+            if (open.delete(key)) resolvedKeys.push(key); return true;
+          } } : path.endsWith('severe-event-broadcast') ? { broadcastSevereEvent: async ({ conditionKey, oneShot }: { conditionKey: string; oneShot: boolean }) => {
+            expect(oneShot).toBe(true); if (!open.has(conditionKey)) openedKeys.push(conditionKey);
+            open.add(conditionKey); return true;
+          } } : { notifyAttention: async () => { notifications++; if (pageFails) throw new Error('page unavailable'); } },
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    };
+    await executeGuard(); expect(openedKeys).toEqual(['alarm:always-on-routines:fixture-workspace']);
+    outcome = 'unreadable'; await executeGuard(); expect(resolvedKeys).toEqual([]);
+    desktop = true; fresh = true; await executeGuard(); expect(reads).toBe(2); expect(resolvedKeys).toEqual([]);
+    primary = false; await executeGuard(); expect(reads).toBe(2);
+    primary = true; desktop = false; pageFails = false; outcome = 'healthy'; await executeGuard();
+    expect(resolvedKeys).toEqual(openedKeys);
+    outcome = 'broken'; await executeGuard();
+    outcome = 'held'; await executeGuard(); expect(open.size).toBe(0);
+    expect(notifications).toBe(2);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
 }];
