@@ -22,6 +22,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 import { runHybridSearch } from '@papercusp/search';
 import { describeSearchLegs } from './describe-leg';
 import { SEARCH_SOURCES } from './sources';
@@ -39,6 +40,7 @@ import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { createStageAttempt, traceStageAwait, withStageAttempt } from '../../sync/hyperbee/stage-stall-log';
 
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
 
@@ -127,29 +129,73 @@ export default defineTool({
     // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI
     // fetch which has no client-side timeout) could otherwise run unbounded
     // and blow this tool's own budget. Reuses the same interactive default.
-    const { results, totalHits, embedderAvailable, legs } = await runHybridSearch(sources, {
-      caller: 'search:semantic',
-      sql: ctx.tx,
-      query: args.query,
-      workspaceId: ctx.workspaceId ?? '',
-      scopeFilter: args.harness_slug ?? null,
-      // Stage B over-fetch: retrieve a larger pool than we return so the
-      // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
-      // back to `limit`, so the caller-visible page size is unchanged — and it
-      // still slices correctly when reranking is unavailable (passthrough).
-      limit: rerankCandidateCount(limit),
-      mode,
-      embedder,
-      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
-      // See SEARCH_SEMANTIC_DEFER_HIGHLIGHT: headlines for the final page only.
-      deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
-      filters,
-      // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
-      // resolves them from the embedder instance via the policy installed by
-      // lib/search/configure-search-defaults. This surface used to be the only
-      // one of eight that floored, precisely because the floor lived here.
-      log: ctx.log,
-    });
+    const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;
+    const queryAttempt = metadata ? createStageAttempt({ rowId: '', onEvent: () => {} }) : undefined;
+    let retrievalOutcome: 'fulfilled' | 'rejected' = 'rejected';
+    const searchResult = await (async () => {
+      try {
+        const result = await withStageAttempt(queryAttempt, () => traceStageAwait('scope-query', () =>
+          runHybridSearch(sources, {
+            caller: 'search:semantic',
+            sql: ctx.tx,
+            query: args.query,
+            workspaceId: ctx.workspaceId ?? '',
+            scopeFilter: args.harness_slug ?? null,
+            // Stage B over-fetch: retrieve a larger pool than we return so the
+            // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
+            // back to `limit`, so the caller-visible page size is unchanged — and it
+            // still slices correctly when reranking is unavailable (passthrough).
+            limit: rerankCandidateCount(limit),
+            mode,
+            embedder,
+            embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
+            // See SEARCH_SEMANTIC_DEFER_HIGHLIGHT: headlines for the final page only.
+            deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
+            filters,
+            // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
+            // resolves them from the embedder instance via the policy installed by
+            // lib/search/configure-search-defaults. This surface used to be the only
+            // one of eight that floored, precisely because the floor lived here.
+            log: ctx.log,
+          }),
+        ));
+        retrievalOutcome = 'fulfilled';
+        return result;
+      } finally {
+        queryAttempt?.finish(retrievalOutcome);
+      }
+    })();
+    const { results, totalHits, embedderAvailable, legs } = searchResult;
+    const pgQueries = queryAttempt
+      ? pgResultDiagnosticSnapshot('org-admin', 32).results
+        .filter((query) => query.correlation?.attemptId === queryAttempt.context.attemptId)
+        .map((query) => ({
+          connectionId: query.connectionId,
+          queryId: query.queryId,
+          backendPid: query.backendPid,
+          elapsedMs: query.elapsedMs,
+          status: query.status,
+        }))
+      : [];
+    const queryDiagnostics = queryAttempt
+      ? {
+          ...queryAttempt.context,
+          sourceScope: scope,
+          stage: 'scope-query',
+          coverage: 'queries-created-during-retrieval',
+          timing: 'query-build-to-terminal-not-acquisition',
+          queries: pgQueries,
+        }
+      : undefined;
+    const sourceCalls = [...(legs.lexical.sourceCalls ?? []), ...(legs.semantic.sourceCalls ?? [])]
+      .map(({ source, ranker, status, rows, durationMs }) => ({ source, ranker, status, rows, durationMs }));
+    metadata?.({ searchSemanticRead: {
+      schemaVersion: 'semantic-read-v1',
+      unit: 'ms',
+      timing: 'source-call-wall-time-including-acquisition; query-build-to-terminal-not-acquisition',
+      sourceCalls,
+      queryDiagnostics,
+    } });
 
     // Stage B: cross-encoder rerank the fused page. Fail-safe — no ZeroEntropy
     // key → the RRF order unchanged (see ./rerank).
