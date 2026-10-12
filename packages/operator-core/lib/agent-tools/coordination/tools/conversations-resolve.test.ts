@@ -39,7 +39,7 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
   });
 
   it('maps a store error to a per-item { ok:false, error }', async () => {
-    resolveM.mockResolvedValue({ error: 'not_found' } as never);
+    resolveM.mockResolvedValue({ error: 'not_found' });
     const b = await body({ id: 'c1', accepted_post_id: 7 });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });

@@ -54,6 +54,12 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     for (const body of fixed) expect(detectFactMeasurements(body), body).toEqual([]);
   });
 
+  it('does not treat a labelled HN item ID as a measurement when current wording is nearby', () => {
+    const body = 'Kredit Financial historical HN item 39921317 and current first-party role verification remains open.';
+    expect(detectFactMeasurements(body)).toEqual([]);
+    expect(factMeasurementHint('currently 4 unchecked rows')).toMatch(/measurement-like|Advisory only/);
+  });
+
   it('keeps distant state language from making an unrelated number look measured', () => {
     const body = `12345 ${'x'.repeat(MEASUREMENT_CONTEXT_WINDOW * 3)} current status is stable`;
     expect(detectFactMeasurements(body)).toEqual([]);

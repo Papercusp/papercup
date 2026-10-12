@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   ident.mockReturnValue({ source: 'operator' } as never);
   contribM.mockResolvedValue({ ok: true, prepared: true, needs: ['fork_remote'] } as never);
-  auditM.mockResolvedValue(undefined as never);
+  auditM.mockResolvedValue(undefined);
 });
 
 describe('platform:contribute guards + delegation', () => {

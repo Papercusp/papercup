@@ -20,6 +20,29 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT)).each([
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+function aggregateWorkerEnv(proof: string, evidenceDir: string, ambient: NodeJS.ProcessEnv = process.env) {
+  const env: NodeJS.ProcessEnv = { ...ambient, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+    ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1', [proof]: '1' };
+  for (const key of Object.keys(env)) if ((key.startsWith('ROSTER_') && key.endsWith('_BROWSER_PROOF')
+    && !['ROSTER_COORD_BROWSER_PROOF', proof].includes(key))
+    || ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION'].includes(key)) delete env[key];
+  return env;
+}
+
+it.each(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'])(
+  'aggregate proof environment preserves %s before private allocation', proof => {
+    const env = aggregateWorkerEnv(proof, '/private-evidence', {
+      ROSTER_GIT_BROWSER_PROOF: '1', ROSTER_STOP_HTTP_MUTATION: 'misroute',
+      PC_HEAVY_PREEMPT_READY_FILE: '/enclosing-worker', PATH: '/test-path',
+    });
+    expect(env[proof]).toBe('1');
+    expect(env.ROSTER_COORD_BROWSER_PROOF).toBe('1');
+    expect(env.ROSTER_COORD_HTTP_PROOF).toBe('1');
+    expect(env.ROSTER_GIT_BROWSER_PROOF).toBeUndefined();
+    expect(env.ROSTER_STOP_HTTP_MUTATION).toBeUndefined();
+    expect(env.PC_HEAVY_PREEMPT_READY_FILE).toBeUndefined();
+    expect(env.PATH).toBe('/test-path');
+  });
 for (const [_surface, proof, expected] of [
   ['Conversations aggregate', 'ROSTER_CONVERSATIONS_BROWSER_PROOF', {
     authMethod: 'private-loopback-conversations-with-cookie', fourStoreSelection: true, filterReload: true,
@@ -54,14 +77,11 @@ for (const [_surface, proof, expected] of [
     prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
-      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1', [proof]: '1' };
-      for (const key of Object.keys(env)) if ((key.startsWith('ROSTER_') && key.endsWith('_BROWSER_PROOF')
-        && !['ROSTER_COORD_BROWSER_PROOF', proof].includes(key))
-        || ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION'].includes(key)) delete env[key];
+      const env = aggregateWorkerEnv(proof, evidenceDir);
+      expect(env[proof]).toBe('1');
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-        '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
+        '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256, '--browser-proof=' + proof],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

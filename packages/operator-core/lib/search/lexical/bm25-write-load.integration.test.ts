@@ -16,10 +16,23 @@
  * the R-7 check cannot pass by never exercising the reclaim path.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Sql } from 'postgres';
+import { fork } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import postgres, { type Sql } from 'postgres';
 import { BM25_RECLAIM_MIN_BYTES, runBm25Maintenance, type Bm25Reclaim } from './bm25-maintenance';
 import { readBm25Indexes, resetBm25Availability } from './rank';
 import { rankWorkItemIds, seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from './test-pg/bm25-test-db';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof }
+  from '../../../test/isolated-integration-proof';
+
+const root = resolve(import.meta.dirname, '../../../../..');
+const filePath = 'packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts';
+const workerGroupSuffix = ':bm25-write-load-worker';
+const isWorker = process.env.PAPERCUSP_TEST_RUN_GROUP?.endsWith(workerGroupSuffix);
+
+if (isWorker) {
 
 const VISIBILITY_BOUND_MS = 5_000;
 const SIZE_BOUND = 1.5;
@@ -44,7 +57,13 @@ beforeAll(async () => {
 }, 600_000);
 
 afterAll(async () => {
-  await db?.close();
+  if (!db) return;
+  await db.close();
+  const admin = postgres({ ...db.connection, user: 'postgres', database: 'postgres', max: 1 });
+  try {
+    expect(await admin`SELECT datname FROM pg_database WHERE datname = ${db.runTag}`,
+      'write-load database survived teardown').toEqual([]);
+  } finally { await admin.end({ timeout: 5 }); }
 });
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -90,6 +109,7 @@ interface ProbeObservation {
   committedAt: string;
   firstVisibleAt: string | null;
   ms: number;
+  attempts: Array<{ startedAt: string; completedAt: string; elapsedMs: number; found: boolean }>;
 }
 
 async function probe(n: number): Promise<ProbeObservation> {
@@ -109,11 +129,17 @@ async function probe(n: number): Promise<ProbeObservation> {
   const committed = performance.now();
   const committedAt = new Date().toISOString();
   const observation = { n, id, term: word, kind, committedAt };
+  const attempts: ProbeObservation['attempts'] = [];
   for (;;) {
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
     const ids = await rankWorkItemIds(sql, word);
+    const completedAt = new Date().toISOString();
+    const found = ids.includes(id);
+    attempts.push({ startedAt, completedAt, elapsedMs: performance.now() - started, found });
     const ms = performance.now() - committed;
-    if (ids.includes(id)) return { ...observation, firstVisibleAt: new Date().toISOString(), ms };
-    if (ms > VISIBILITY_BOUND_MS) return { ...observation, firstVisibleAt: null, ms: Number.POSITIVE_INFINITY };
+    if (found) return { ...observation, firstVisibleAt: completedAt, ms, attempts };
+    if (ms > VISIBILITY_BOUND_MS) return { ...observation, firstVisibleAt: null, ms: Number.POSITIVE_INFINITY, attempts };
     await sleep(25);
   }
 }
@@ -141,12 +167,45 @@ interface WriteLoadRun {
  */
 async function runWriteLoad(): Promise<WriteLoadRun> {
   expect([...(await readBm25Indexes(sql))]).toContain('work_items_bm25');
+  const [identity] = await sql`SELECT current_database() AS database,
+    pg_postmaster_start_time() AS server_started_at,
+    current_setting('pg_textsearch.library_version', true) AS library_version`;
+  expect(identity!.library_version).toBe('1.5.1');
 
   let loading = true;
   const probes: ProbeObservation[] = [];
   const reclaims: Bm25Reclaim[] = [];
   const maintenanceErrors: string[] = [];
   let maxWorkItemsBytes = 0;
+  // Observe the actual database independently of the busy writer pool. Keep
+  // bounded samples for a slow rank call, rather than diagnosing it from load.
+  const observer = postgres({ ...db.connection, user: 'postgres', database: db.runTag, max: 1 });
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+  loopDelay.enable();
+  const waitSamples: Array<{ at: string; pid: number; waitType: string | null;
+    wait: string | null; queryMs: number; blockers: number[] }> = [];
+  const observerErrors: string[] = [];
+  let omittedWaitSamples = 0;
+  const observerLoop = (async () => {
+    while (loading) {
+      try {
+        const rows = await observer<{ pid: number; waitType: string | null;
+          wait: string | null; queryMs: number; blockers: number[] }[]>`
+          SELECT pid, wait_event_type AS "waitType", wait_event AS wait,
+                 (extract(epoch FROM clock_timestamp() - query_start) * 1000)::float8 AS "queryMs",
+                 pg_blocking_pids(pid) AS blockers
+            FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid()
+             AND state = 'active' AND query LIKE '%SELECT w.id%'
+           ORDER BY pid`;
+        for (const row of rows) {
+          if (waitSamples.length === 2_000) { waitSamples.shift(); omittedWaitSamples++; }
+          waitSamples.push({ at: new Date().toISOString(), ...row });
+        }
+      } catch (error) { observerErrors.push(String(error)); }
+      await sleep(25);
+    }
+  })();
 
   const probeLoop = (async () => {
     for (let n = 0; loading; n++) {
@@ -178,7 +237,8 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
     batches = done.reduce((a, b) => a + b, 0);
   } finally {
     loading = false;
-    await Promise.all([probeLoop, maintenanceLoop]);
+    try { await Promise.all([probeLoop, maintenanceLoop, observerLoop]); }
+    finally { loopDelay.disable(); await observer.end({ timeout: 5 }); }
   }
   const loadMs = performance.now() - started;
 
@@ -223,6 +283,9 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
     maxWorkItemsBytes,
     reclaims,
     sizes,
+    databaseIdentity: identity,
+    diagnostics: { waitSamples, omittedWaitSamples, observerErrors,
+      loopDelayP95Ms: loopDelay.percentile(95) / 1e6, loopDelayMaxMs: loopDelay.max / 1e6 },
   };
   console.info(JSON.stringify(report));
 
@@ -269,7 +332,7 @@ describe('BM25 under sustained concurrent writes (P-008)', () => {
       expect(row).toMatchObject({
         n: measured.n, id: measured.id, term: measured.term, kind: measured.kind,
         committedAt: measured.committedAt, firstVisibleAt: measured.firstVisibleAt,
-        delayMs: measured.ms,
+        delayMs: measured.ms, attempts: measured.attempts,
       });
       expect(Number.isFinite(row.delayMs)).toBe(true);
       expect(row.delayMs).toBeGreaterThanOrEqual(0);
@@ -278,3 +341,48 @@ describe('BM25 under sustained concurrent writes (P-008)', () => {
     }
   });
 });
+} else {
+  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
+  it('retains all three write-load bars and their original isolated execution (P-008)', async context => {
+    const runId = await recordIsolatedIntegrationProof({
+      root, filePath,
+      sourcePaths: [
+        'packages/operator-core/lib/search/lexical/bm25-maintenance.ts',
+        'packages/operator-core/lib/search/lexical/rank.ts',
+        'packages/operator-core/lib/search/lexical/corpora.ts',
+        'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts',
+        'packages/operator-core/lib/search/lexical/test-pg/Dockerfile',
+        'libs/papercusp/libs/db/sql/1447-bm25-pg-textsearch-indexes.sql',
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/lib/process-identity.ts',
+        'scripts/with-test-pg.mjs', 'scripts/test-files.mjs',
+      ],
+      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/write-load-report.json'],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + workerGroupSuffix };
+        for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+          'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+          'PAPERCUSP_TEST_RUNS_DB_URL', 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+          '--isolated-runtime', '--', process.execPath,
+          '--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath,
+        ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+        const reportLine = result.output.split('\n').find(line => line.startsWith('{"p008":"bm25-write-load"'));
+        // Preserve the failing measurement too, before asserting the worker verdict.
+        if (reportLine) await writeFile(join(evidenceDir, 'write-load-report.json'), reportLine + '\n', { flag: 'wx' });
+        expect(result, result.output.slice(-8000)).toMatchObject({
+          code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+        });
+        expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+        expect(result.output).toContain('skippedTests=0');
+        expect(result.output).toMatch(/Tests\s+3 passed \(3\)/);
+        expect(reportLine, 'the original measured probe report is required').toBeDefined();
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ISOLATED_BM25_WRITE_LOAD_PROOF_RUN ' + runId);
+  }, workerOptions.testTimeoutMs);
+}

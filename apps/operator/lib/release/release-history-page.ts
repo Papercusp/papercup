@@ -46,13 +46,15 @@
  *    would be BLANK exactly when someone needs it. The beacon is the only script,
  *    and it is best-effort: if it never runs, the page is still whole.
  *
- *    ONE deliberate exception, the Instructions [owner 2026-09-28 #868: "the
+ *    The Instructions [owner 2026-09-28 #868: "the
  *    instructions should come seperate from the release cut"]. They live on their
  *    own page, instructions.html, published by its own command — so a release cut
  *    or a site publish can never roll them back, and changing them needs no cut.
  *    The index embeds that page with a tiny same-origin loader; without
  *    JavaScript the section is a plain link to the same page. See
  *    renderInstructions() and renderInstructionsHtml().
+ *    The product picker also enhances its ordinary PUI download link from the
+ *    existing accepted PUI feed. Native radio tabs and the link work without JS.
  *
  *    (This is the one place I did not take the owner's suggested route verbatim —
  *    "we can use our same vditor to display the plan". Vditor is a browser editor
@@ -633,6 +635,21 @@ ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; 
 .prose th { background: var(--surface-2); }
 .prose img { max-width: 100%; border-radius: var(--radius); }
 footer { color: var(--muted); font-size: .78rem; margin-top: 3.5rem; text-align: center; }
+.product-downloads { margin: 2rem 0; padding: 1.25rem; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
+.download-tabs { display: flex; flex-wrap: wrap; gap: .5rem; }
+.download-tabs > input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.download-tabs > label { padding: .65rem .9rem; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius); }
+.download-tabs > input:checked + label { color: var(--accent); border-color: var(--accent); background: var(--surface); }
+.download-tabs > input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 3px; }
+.download-panels { width: 100%; min-width: 0; }
+.download-panel { display: none; padding-top: 1rem; }
+#choose-server:checked ~ .download-panels #download-server,
+#choose-gui:checked ~ .download-panels #download-gui,
+#choose-psu:checked ~ .download-panels #download-psu,
+#choose-android:checked ~ .download-panels #download-android,
+#choose-iphone:checked ~ .download-panels #download-iphone { display: block; }
+.product-downloads h3 { font-size: 1.25rem; margin-top: .5rem; }
+.product-downloads .dl { display: block; overflow-x: auto; max-width: 100%; }
 `;
 
 /**
@@ -1267,6 +1284,60 @@ export function renderHoldingHtml(opts: PageOptions): string {
 }
 
 /** The whole history — every release, newest first. */
+/** Product choices reuse the recorded release artifacts; PUI retains its own accepted feed. */
+export function renderProductDownloads(releases: HydratedRelease[]): string {
+  const latest = new Map<string, { artifacts: ReleaseArtifact[]; version: string }>();
+  for (const release of releases) for (const artifact of release.row.artifacts) {
+    const key = `${artifact.product}:${artifact.platform}`;
+    if (!latest.has(key)) latest.set(key, { artifacts: [], version: release.row.version });
+    const slot = latest.get(key)!;
+    if (slot.version === release.row.version) slot.artifacts.push(artifact);
+  }
+  const product = (kind: ReleaseArtifact['product'], platform?: string) => {
+    const rows = [...latest.values()].flatMap(({ artifacts, version }) => artifacts
+      .filter(artifact => artifact.product === kind && (!platform || artifact.platform === platform)
+        && isListedArtifact(artifact)).map(artifact => ({ artifact, version })));
+    return rows.length ? rows.map(({ artifact, version }) =>
+      `<h4>${escapeHtml(artifact.platform)} · ${escapeHtml(version)}</h4>${renderDownloadTable([artifact])}`).join('\n')
+      : '<p>No download is published for this product yet.</p>';
+  };
+  const choices = [['server', 'Desktop Server'], ['gui', 'Desktop GUI'], ['psu', 'PSU + PUI'],
+    ['android', 'Android'], ['iphone', 'iPhone']];
+  const panels: Record<string, string> = {
+    server: '<p>Run Papercusp on your computer. Install and start the server before connecting a local desktop app or console.</p>' + product('server'),
+    gui: '<p>The desktop app connects to your Papercusp server or cloud desktop.</p>' + product('gui'),
+    psu: '<p>Connect to your Papercusp cloud desktop from your console. Launch PSU, select your cloud desktop and connect Claude, Codex, OMP, or the Papercusp TUI to it.</p>'
+      + '<div id="psu-downloads"><p><a href="pui/index.html">Download PSU bundled with PUI</a></p></div>'
+      + '<h4>Connect using the menus</h4><ol><li>Install the package for your computer, then run <code>psu</code>.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. First time? Choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher.</li></ol>'
+      + '<p>For an installed local server, choose <strong>Local — this computer</strong>. Windows console packages run inside WSL2.</p>',
+    android: '<p>Install the Android app to connect from your phone.</p>' + product('mobile', 'android-universal'),
+    iphone: '<p>Connect from your iPhone. Follow the signing or TestFlight instructions supplied with the build; an unsigned IPA needs signing before installation.</p>' + product('mobile', 'ios-arm64'),
+  };
+  return `<section class="product-downloads" aria-labelledby="downloads-heading"><h2 id="downloads-heading">Downloads</h2>
+<p>Choose what you want to install.</p><div class="download-tabs" role="group" aria-label="Download product">
+${choices.map(([id, label]) => `<input type="radio" name="download-product" id="choose-${id}" value="${id}"${id === 'gui' ? ' checked' : ''}><label for="choose-${id}">${label}</label>`).join('\n')}
+<div class="download-panels">${choices.map(([id, label]) => `<section class="download-panel" id="download-${id}" aria-label="${label}"><h3>${label}</h3>${panels[id]}</section>`).join('\n')}</div></div></section>
+<script data-product-downloads>
+(function () {
+  function selectFromLink() { var id = location.hash.slice(1); var input = document.getElementById(id.replace('download-', 'choose-')); if (input && input.name === 'download-product') input.checked = true; }
+  selectFromLink(); window.addEventListener('hashchange', selectFromLink);
+  fetch('pui/latest.json').then(function (response) { if (!response.ok) throw new Error('unavailable'); return response.json(); }).then(function (manifest) {
+    var releases = manifest.artifacts || {}; if (!manifest.artifacts && manifest.target) releases[manifest.target] = manifest;
+    var labels = { 'linux-x86_64': 'Linux x86_64 / Windows via WSL2', 'macos-aarch64': 'macOS Apple Silicon', 'macos-x86_64': 'macOS Intel' };
+    var list = document.createElement('div');
+    Object.keys(labels).forEach(function (target) {
+      var release = releases[target]; if (!release || release.target !== target || !/^[0-9]+\\.[0-9]+\\.[0-9]+(?:[+-][0-9A-Za-z.-]+)?$/.test(release.version) || !/^[a-f0-9]{64}$/.test(release.archiveSha256 || '')) return;
+      var expected = new URL('pui/' + release.version + '/pui-' + release.version + '-' + target + '.tar.gz', document.baseURI);
+      if (release.archiveUrl !== expected.href) return;
+      var row = document.createElement('p'); var link = document.createElement('a'); link.href = expected.href; link.textContent = 'Download ' + labels[target] + ' — PSU + PUI ' + release.version; row.appendChild(link); list.appendChild(row);
+      var checksum = document.createElement('p'); checksum.textContent = 'SHA-256: ' + release.archiveSha256; list.appendChild(checksum);
+    });
+    if (list.children.length) document.getElementById('psu-downloads').replaceChildren(list);
+  }).catch(function () { /* The ordinary download link remains available. */ });
+})();
+</script>`;
+}
+
 export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions): string {
   // The Instructions section renders on EVERY index, including an empty one.
   // It is the page's standing "how to get started", not a property of a release
@@ -1286,11 +1357,13 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
       ? `<h1>Papercusp releases</h1>
 <p class="sub">No releases have been recorded yet.</p>
 ${renderVideo()}
-${renderInstructions()}`
+${renderInstructions()}
+${renderProductDownloads(releases)}`
       : `<h1>Papercusp releases</h1>
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
 ${renderVideo()}
 ${renderInstructions()}
+${renderProductDownloads(releases)}
 ${releaseSections.join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;

@@ -395,19 +395,19 @@ beforeEach(() => {
   mockResolvedTyped(getByIdM, null);
   mockResolvedTyped(getWorkItemM, null);
   // P-001: no shared Hive in the workspace by default (un-scoped sends stay local)
-  fedScopeM.mockResolvedValue({ kind: 'none' } as never);
+  fedScopeM.mockResolvedValue({ kind: 'none' });
   // P-007: no remote sessions by default
-  remoteIdsM.mockResolvedValue(new Set<string>() as never);
-  remoteMapM.mockResolvedValue(new Map<string, number>() as never);
+  remoteIdsM.mockResolvedValue(new Set<string>());
+  remoteMapM.mockResolvedValue(new Map<string, number>());
   // P-004: non-fleeted by default → a bare '*' stays a literal hive broadcast.
-  fetchPresenceFleetM.mockResolvedValue(new Map() as never);
+  fetchPresenceFleetM.mockResolvedValue(new Map());
   resolvePresenceFleetM.mockResolvedValue({ fleetSlug: null, fleetRole: null });
   deriveFleetMembershipM.mockReturnValue({ fleetSlug: null, fleetRole: null });
   lookupEndedSessionsM.mockResolvedValue(new Map());
   // D-084: nothing traceable read by default, so an ordinary send is unchanged.
-  basedOnM.mockResolvedValue([] as never);
+  basedOnM.mockResolvedValue([]);
   // WI-6731: no premises resolved by default, so an ordinary send is unchanged.
-  premiseM.mockResolvedValue([] as never);
+  premiseM.mockResolvedValue([]);
   // state-plane-adoption P-011: no stale quotes by default — an ordinary send is
   // unchanged (matches the real resolver's []-on-anything-unresolvable contract).
   mockResolvedTyped(staleQuoteM, []);

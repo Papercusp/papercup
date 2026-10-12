@@ -138,7 +138,7 @@ const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
+  vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW]);
   vi.mocked(listMyEventKeySubscriptions).mockResolvedValue([EVENT_SUBSCRIPTION_ROW]);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW]);
   vi.mocked(deliveryBacklogSummary).mockResolvedValue({
@@ -239,7 +239,7 @@ describe('events:status projection', () => {
     vi.mocked(listActiveAwaits).mockResolvedValueOnce([
       AWAIT_ROW,
       { ...AWAIT_ROW, id: 12, eventKey: 'other:event' },
-    ] as never);
+    ]);
 
     const out = await call({ await_id: 12 });
 

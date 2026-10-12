@@ -445,6 +445,51 @@ async function usage(slug: string, tsMs: number, costUsd: number, goalId: string
 }
 
 describe('goals.* resolvers against real SQL', () => {
+  it('bounds pending collection reads together while retaining a ready collection', async () => {
+    await goal();
+    await plan('ready-plan', { harness: 'alpha', title: 'Ready collection', status: 'active' });
+    const schema = Object.fromEntries(['ready', 'slow-a', 'slow-b'].flatMap(property => [
+      [property, { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+        collection: { source: 'active-workspace-plans', policy: `${property}_policy`, order: 'priority',
+          selectable: true, defaultSelected: true } }],
+      [`${property}_policy`, { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } }],
+    ]));
+    await sql`UPDATE harness_shared.goals SET property_schema=${sql.json(schema)}
+      WHERE workspace_id=${WS} AND id=${GOAL}`;
+    const [{ resolveGoalDetail }, settings] = await Promise.all([
+      import('./goals'), import('../goal-launch-settings'),
+    ]);
+    const original = settings.readGoalPortfolioBrief;
+    let releasePending!: () => void;
+    const pending = new Promise<void>(resolve => { releasePending = resolve; });
+    const portfolio = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      if (args.collectionProperty !== 'ready') await pending;
+      return original(args);
+    });
+    try {
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, { selection: { ok: boolean }; rows: Array<{ planSlug: string }> }> };
+      };
+      expect(portfolio.mock.calls.map(([args]) => args.collectionProperty).sort())
+        .toEqual(['ready', 'slow-a', 'slow-b']);
+      expect(detail.goalData.collections.ready.selection.ok).toBe(true);
+      expect(detail.goalData.collections.ready.rows).toContainEqual(expect.objectContaining({ planSlug: 'ready-plan' }));
+      for (const property of ['slow-a', 'slow-b']) {
+        expect(detail.goalData.collections[property].selection.ok).toBe(false);
+        expect(detail.goalData.collections[property].rows).toEqual([]);
+        expect(JSON.stringify(detail.goalData.collections[property]))
+          .toContain('Active workspace plans could not be read in time.');
+      }
+    } finally {
+      // Release and drain the losing IO before the next fixture truncates.
+      releasePending();
+      await Promise.allSettled(portfolio.mock.results.filter(result => result.type === 'return')
+        .map(result => Promise.resolve(result.value)));
+      portfolio.mockRestore();
+    }
+  }, 15_000);
+
   it('reads the active-plan collection even when the goal has no attached holder', async () => {
     await goal();
     await plan('worklist-a', { harness: 'alpha', title: 'Readable without a holder', status: 'active' });

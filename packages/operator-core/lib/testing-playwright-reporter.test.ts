@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
 const source = vi.hoisted(() => ({ root: '/portal' }));
@@ -24,13 +27,13 @@ import {
 afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
 
 describe('portable Playwright ledger reporter', () => {
-  it('prepares the owned native observer from source custody and the loaded executable', async () => {
+  it.each(['', '1'])('prepares owned native custody with database isolation flag %j', async isolation => {
     const dir = mkdtempSync(join(tmpdir(), 'native-runtime-reader-'));
     const receipt = join(dir, 'receipt.json');
     try {
       writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40) }));
       vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
-      vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '1');
+      vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', isolation);
       vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'a'.repeat(40));
       vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receipt);
       vi.stubEnv('OPERATOR_SOURCE_ROOT', dir);
@@ -41,6 +44,10 @@ describe('portable Playwright ledger reporter', () => {
         fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
       expect(reader!()?.fingerprint).toBe(original?.fingerprint);
       expect(() => prepareNativeRuntimeReader(dir, 'c'.repeat(40))).toThrow('source receipt mismatch');
+      expect(() => prepareNativeRuntimeReader(tmpdir(), 'a'.repeat(40))).toThrow('source receipt mismatch');
+      vi.stubEnv('VERIFY_TAURI_PID', '0');
+      expect(() => prepareNativeRuntimeReader(dir, 'a'.repeat(40))).toThrow('source receipt mismatch');
+      vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
       source.root = dir;
       const reporter = new Reporter();
       expect(reporter.onBegin()).toBeUndefined();
@@ -51,7 +58,7 @@ describe('portable Playwright ledger reporter', () => {
       sql.mockReset().mockResolvedValue([{ id: '6788' }]);
       reporter.onTestEnd({ title: 'native lifetime', location: { file: join(dir, 'native.spec.mts') } } as never,
         { status: 'passed', startTime: caseStarted, duration: 0, errors: [] } as never);
-      await reporter.onEnd(); await reporter.onExit();
+      expect(await reporter.onEnd()).toBeUndefined(); await reporter.onExit();
       const details = sql.mock.calls[0]!.at(-1) as any;
       expect(details.runtimeEnvironmentBeforeCaptureStatus).toBe('captured');
       expect(details.runtimeEnvironmentAfterCaptureStatus).toBe('captured');
@@ -103,9 +110,52 @@ describe('portable Playwright ledger reporter', () => {
 
   it('refuses native tests before execution when source custody cannot be prepared', () => {
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
-    vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '');
-    expect(() => new Reporter().onBegin()).toThrow('native runtime requires the owned verifier');
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');
+    vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '1');
+    expect(() => new Reporter().onBegin()).toThrow('owned verifier source custody');
   });
+
+  it.each(['changed', 'unavailable', 'error'])('fails native verification when the runtime becomes %s', async outcome => {
+    vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
+    const witness = { schemaVersion: 1 as const, units: ['owned-native'], fingerprint: 'a'.repeat(64),
+      observedAt: new Date().toISOString() };
+    const read = vi.fn(() => witness).mockReturnValueOnce(witness);
+    if (outcome === 'changed') read.mockReturnValue({ ...witness, fingerprint: 'b'.repeat(64) });
+    if (outcome === 'unavailable') read.mockReturnValue(null as never);
+    if (outcome === 'error') read.mockImplementation(() => { throw new Error('observer failed'); });
+    sql.mockReset().mockResolvedValue([{ id: '6790' }]);
+    const reporter = new Reporter({ readRuntimeEnvironment: read });
+    reporter.onBegin();
+    reporter.onTestEnd({ title: 'passing assertions', location: { file: '/portal/native.spec.ts' } } as never,
+      { status: 'passed', startTime: new Date(), duration: 1, errors: [] } as never);
+    expect(await reporter.onEnd()).toEqual({ status: 'failed' });
+    await reporter.onExit();
+    expect(sql.mock.calls[0]![2]).toBe('error');
+    expect(sql.mock.calls[0]!.at(-1)).toMatchObject({ passed: 1, failed: 0 });
+    expect(sql.mock.calls[0]![6]).toContain('[native runtime witness]');
+  });
+
+  it('makes the real Playwright runner fail after a native onBegin error despite passing assertions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-reporter-exit-'));
+    try {
+      const reporterPath = createRequire(import.meta.url).resolve('@papercusp/operator-core/lib/testing-playwright-reporter');
+      const config = join(dir, 'playwright.config.cjs');
+      writeFileSync(config, `module.exports = { testDir: ${JSON.stringify(dir)}, reporter: [[${JSON.stringify(reporterPath)}]], workers: 1 };`);
+      const playwright = createRequire(import.meta.url).resolve('@playwright/test');
+      const executed = join(dir, 'assertion-passed.txt');
+      writeFileSync(join(dir, 'passed.spec.cjs'), `const { test, expect } = require(${JSON.stringify(playwright)}); test('passing assertion', () => { expect(true).toBe(true); require('node:fs').writeFileSync(${JSON.stringify(executed)}, 'passed'); });`);
+      const cli = createRequire(import.meta.url).resolve('@playwright/test/cli');
+      const result = await promisify(execFile)(process.execPath, [cli, 'test', '--config', config], {
+        cwd: dir, timeout: 30_000,
+        env: { ...process.env, VERIFY_TAURI_PID: String(process.pid), VERIFY_TAURI_SOURCE_RECEIPT: '',
+          PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1', NODE_OPTIONS: '' },
+      }).then(() => null, error => error);
+      expect(result?.code).toBe(1);
+      expect(result?.killed).not.toBe(true);
+      expect(result?.stderr).toContain('owned verifier source custody');
+      expect(readFileSync(executed, 'utf8')).toBe('passed');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
 
   it('records exact Portal case identities, runtime scope and returned ledger custody', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'portal-reporter-'));

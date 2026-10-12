@@ -72,7 +72,7 @@ describe('coord:read', () => {
       status: 'not-found',
       msgId: 'nope',
       looksTruncated: false,
-    } as never);
+    });
     const out = await run({ msg_id: 'nope' });
     expect(out).toMatchObject({ ok: true, found: false, msg_id: 'nope', message: null });
   });
@@ -208,7 +208,7 @@ describe('coord:read', () => {
       status: 'ambiguous',
       msgId: 'mrh4',
       candidates: ['mrh4rf15-0000-a', 'mrh4rf15-0000-b'],
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4' });
 
@@ -226,7 +226,7 @@ describe('coord:read', () => {
       status: 'not-found',
       msgId: 'mrh4',
       looksTruncated: true,
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4' });
 

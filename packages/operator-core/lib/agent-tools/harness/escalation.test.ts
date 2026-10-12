@@ -23,7 +23,7 @@ beforeEach(() => {
   getEscalationM.mockResolvedValue({
     ok: true,
     data: { escalation: 'E', supervisorNotes: 'N', mtimeMs: 123 },
-  } as never);
+  });
 });
 
 describe('harness:escalation args schema (EI-7146)', () => {

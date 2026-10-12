@@ -81,7 +81,7 @@ beforeEach(() => {
   });
   finalizeResumeMock.mockResolvedValue(true);
   releaseResumeMock.mockResolvedValue(true);
-  getAdvSessionMock.mockResolvedValue({ workspaceId: 'ws-test', coordOwnerId: 'su-resumed-test' } as any);
+  getAdvSessionMock.mockResolvedValue({ workspaceId: 'ws-test', coordOwnerId: 'su-resumed-test' });
   armInboxWakeMock.mockResolvedValue({
     awaitId: 1,
     eventKey: 'coord:inbox-wake:su-resumed-test',

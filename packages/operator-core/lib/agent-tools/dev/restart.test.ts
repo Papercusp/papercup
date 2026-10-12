@@ -446,7 +446,7 @@ beforeEach(() => {
     totalListening: 0,
     truncated: false,
     ownerHidden: 0,
-  } as never);
+  });
   gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
   integrationTreeRootsM.mockReturnValue(['/tree']);
   restrictedTreeHoldRefusalM.mockResolvedValue(null);
@@ -772,7 +772,7 @@ describe('dev:restart dry run', () => {
 // which reads as "the restart happened" to any caller that checks `ok`.
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
   it('target:dev REFUSES with ok:false and does NOT drain — no guard, no lock, no audit — and the note points at authorize:true', async () => {
-    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    guardM.mockImplementation(runGuard(fenceOk()));
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({
       ok: false,

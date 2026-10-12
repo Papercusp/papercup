@@ -217,8 +217,8 @@ beforeEach(() => {
     unsafe: async (_q: string, _params?: unknown[]) => [] as unknown[],
   });
   mockOrgPgSql(vi.mocked(getOrgPg), sql);
-  vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
-  vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] } as never);
+  vi.mocked(resolveProject).mockResolvedValue(PROJECT);
+  vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] });
   vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
   vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({});
   vi.mocked(recordSpawn).mockResolvedValue(undefined);
@@ -231,7 +231,7 @@ beforeEach(() => {
     toRestart: [],
     reason: 'spawn not found',
     relaunches: [],
-  } as never);
+  });
   // Default getFlag → each flag's real default (no PostHog), matching the prior
   // real-getFlag fallback. Overwatch defaults OFF, so the gate rejects it unless a
   // test overrides this. Other callers (WEDGE_AUTO_REAP/SPAWN_HANDOFF_HYDRATION) keep
@@ -350,7 +350,7 @@ describe('spawnAgentInHarness — happy path', () => {
       toRestart: ['crashed-spawn'],
       reason: 'restart (one_for_one)',
       relaunches: [],
-    } as never);
+    });
     vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
       _dir: string,
       _role: string,
@@ -360,7 +360,7 @@ describe('spawnAgentInHarness — happy path', () => {
     ) => {
       opts?.onChildPid?.(1234);
       return Promise.resolve({ output: '', exitCode: 1, stderr: 'child crashed' });
-    }) as never);
+    }));
 
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
     await flush();

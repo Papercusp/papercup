@@ -10,7 +10,12 @@ import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/executio
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
 function nativeIdentity(root: string, commit: string | null) {
-  if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1') throw new Error('native runtime requires the owned verifier');
+  // Database isolation authorizes fixture writes; it does not establish native
+  // ownership. Shared read-only journeys use the same frozen source and kernel
+  // custody checks without claiming an isolated database.
+  if (!process.env.VERIFY_TAURI_PID || !process.env.VERIFY_TAURI_SOURCE_RECEIPT
+    || !process.env.VERIFY_TAURI_SOURCE_REF || !process.env.OPERATOR_SOURCE_ROOT)
+    throw new Error('native runtime requires owned verifier source custody');
   const pid = Number(process.env.VERIFY_TAURI_PID);
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
   if (!Number.isSafeInteger(pid) || pid <= 0 || !commit || !/^[a-f0-9]{40,64}$/.test(commit)

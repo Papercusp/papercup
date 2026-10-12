@@ -36,7 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   validateM.mockReset(); // clearAllMocks keeps implementations — reset the throw from the invalid-path test
   txnM.mockReset();
-  txnM.mockImplementation(async (_domain, _owner, fn) => fn({} as never) as never);
+  txnM.mockImplementation(async (_domain, _owner, fn) => fn({} as never));
   acqM.mockResolvedValue({ ok: true, lock_id: 'L1', locks: ['', 'src'], expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
 });
 

@@ -73,7 +73,7 @@ beforeEach(() => {
   configureDb();
   schema.setTurnProofColumnsReadyForTests(null);
   vi.clearAllMocks();
-  vi.mocked(pty.findLiveHostAsync).mockResolvedValue({ sock: '/test/host.sock' } as never);
+  vi.mocked(pty.findLiveHostAsync).mockResolvedValue({ sock: '/test/host.sock' });
   vi.mocked(pty.hostSupports).mockReturnValue(true);
   vi.mocked(pty.injectIntoHostWithConfirmation).mockImplementation(async () => {
     sqlState.order.push({ kind: 'host' });

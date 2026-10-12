@@ -95,7 +95,7 @@ describe('readAnswer — "is it answered?" branches', () => {
   const caps = () => buildCoordOpCaps(base);
 
   it('no conversation → not answered', async () => {
-    getConv.mockResolvedValue(null as never);
+    getConv.mockResolvedValue(null);
     expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({ answered: false, answer: null });
   });
 
@@ -166,7 +166,7 @@ describe('readAnswer — "is it answered?" branches', () => {
   // openThread wrote to — identity-less it resolved 'default', so a
   // workspace-scoped coord:ask-owner NEVER saw its answer and always timed out.
   it('threads the caps identity into the read (same partition as the ask that was written)', async () => {
-    getConv.mockResolvedValue(null as never);
+    getConv.mockResolvedValue(null);
     await caps().readAnswer({ conversationId: 'x', askerId: 'u1' });
     expect(getConv).toHaveBeenCalledWith('x', expect.objectContaining({ ownerId: 'u1', workspaceId: 'default' }));
   });

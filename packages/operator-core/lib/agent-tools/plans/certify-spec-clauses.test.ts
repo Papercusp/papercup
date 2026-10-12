@@ -545,7 +545,7 @@ describe('plans:certify-spec-clauses', () => {
       subject: { kind: 'plan', ref: subjectRef },
       gradingAudit: { state: 'pending' },
       supersededBy: null,
-    }] as never);
+    }]);
 
     const result = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
 
@@ -684,7 +684,7 @@ describe('plans:certify-spec-clauses', () => {
       missingKeys: [],
       extraKeys: [],
       synthesized: false,
-    }] as never);
+    }]);
 
     const preview = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
 

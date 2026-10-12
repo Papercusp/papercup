@@ -110,7 +110,7 @@ describe('rubrics:list — offset pagination', () => {
 // are workspace-global) and is documented as such directly on the tool.
 describe('rubrics:list — subjectPlan filter (EI-22084090899431625)', () => {
   it('threads subjectPlan through to listRubrics and infers kind:"acceptance" when kind is omitted', async () => {
-    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null } as never);
+    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null });
     await bodyOf({ subjectPlan: 'my-plan-2026-09-01' });
     expect(listPageM).toHaveBeenCalledWith(
       expect.objectContaining({ subjectPlan: 'my-plan-2026-09-01', kind: 'acceptance' }),
@@ -118,13 +118,13 @@ describe('rubrics:list — subjectPlan filter (EI-22084090899431625)', () => {
   });
 
   it('respects an explicit kind:"any" alongside subjectPlan instead of overriding it', async () => {
-    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null } as never);
+    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null });
     await bodyOf({ subjectPlan: 'my-plan-2026-09-01', kind: 'any' });
     expect(listPageM).toHaveBeenCalledWith(expect.objectContaining({ subjectPlan: 'my-plan-2026-09-01', kind: 'any' }));
   });
 
   it('omits kind from the listRubrics call when neither kind nor subjectPlan is given (preserves the default)', async () => {
-    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null } as never);
+    listPageM.mockResolvedValue({ rubrics: [], hasMore: false, nextOffset: null });
     await bodyOf({});
     const call = listPageM.mock.calls[0]?.[0];
     expect(call).not.toHaveProperty('kind');

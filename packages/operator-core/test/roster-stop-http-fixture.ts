@@ -20,6 +20,14 @@ import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
+const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
+if (requestedBrowserProof) {
+  assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
+  const proofEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROSTER_') && key.endsWith('_PROOF')));
+  writeFileSync(join(evidence, 'requested-browser-proof.json'), JSON.stringify({ requestedBrowserProof, proofEnvironment,
+    sourceSha256: createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex') }, null, 2));
+  assert.equal(process.env[requestedBrowserProof], '1', 'requested browser proof must reach the original worker');
+}
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const base = process.env.PAPERCUSP_OPERATOR_URL!;
 assert.match(workspace, /^test-runtime-/);

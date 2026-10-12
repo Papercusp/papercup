@@ -231,6 +231,21 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     });
   });
 
+  it('preserves UTF-8 guard arguments in the exact replay receipt', () => {
+    const unicodeSubject = join(dir, 'subject-é-東京-🧪.txt');
+    writeFileSync(unicodeSubject, ORIGINAL);
+    const args = [
+      '--file', unicodeSubject, '--mutate', 's/beta/BETA/',
+      '--test', "printf '%s\\n' 'codex → codex / café / 東京 / 🧪' >/dev/null; grep -q '^beta$' {}",
+    ];
+    const { code, out } = runProbeIO(args);
+    expect(code, out).toBe(0);
+    const evidenceLine = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+    expect(evidenceLine).toBeTruthy();
+    expect(JSON.parse(evidenceLine!).argv).toEqual(args);
+    expect(readFileSync(unicodeSubject, 'utf8')).toBe(ORIGINAL);
+  });
+
   it('runs from a frozen source when the launched script is rewritten during baseline', async () => {
     const launched = join(dir, 'mutable-probe.sh');
     const marker = join(dir, 'baseline-started');

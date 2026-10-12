@@ -202,7 +202,7 @@ describe("dev:service_health handler", () => {
 
   it("reports monotonic timings for each handler phase that ran", async () => {
     probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
-    unitM.mockResolvedValue({ states: [], unitsUnknown: [], scopesUnavailable: [] } as never);
+    unitM.mockResolvedValue({ states: [], unitsUnknown: [], scopesUnavailable: [] });
 
     const b = body((await tool.handler({ units: ["papercusp-staging-api"], scope: "user" } as never, {} as never)) as Out);
 

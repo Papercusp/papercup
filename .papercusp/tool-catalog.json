@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 961,
+  "count": 962,
   "tools": [
     {
       "name": "ablation:report",
@@ -31711,6 +31711,27 @@
         "when": "You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.",
         "notWhen": "You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.",
         "chaining": "state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value's current reading to mean that — it transcribes a volatile value and misses a move landing before the call. A valued `on` on an assessed cell must name `target` — refused, not guessed. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those) — the watch outlives a gate suite; why-field is `note`. once:false re-fires per change. Cancel via events:cancel."
+      }
+    },
+    {
+      "name": "storage:census",
+      "http": {
+        "path": "/api/agent-tools/storage/census",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the 6-hourly census; flags stale, missing and coverage-gap devices. Read-only.",
+      "capabilities": [
+        "storage:read"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Finding what is using or growing on a disk before reclaiming space, or checking a disk alarm’s cause.",
+        "notWhen": "Sizes of Papercusp’s own stores by category: storage:usage. Deleting: storage:prune."
       }
     },
     {

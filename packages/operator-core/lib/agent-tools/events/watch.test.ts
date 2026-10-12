@@ -470,7 +470,7 @@ describe('P-008 predicate watch routing', () => {
 
   it('an inline first-eval ERROR unwinds the await and throws (no dangling waiter)', async () => {
     vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
-    vi.mocked(evalPredicateWatch).mockResolvedValueOnce({ fired: false, matched: false, deactivated: false, error: 'role gate: denied' } as never);
+    vi.mocked(evalPredicateWatch).mockResolvedValueOnce({ fired: false, matched: false, deactivated: false, error: 'role gate: denied' });
     await expect(call({ pattern: 'b', wake: true, predicate })).rejects.toThrow(/inline first eval.*role gate/s);
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 1, subscriberId: 'su-watcher' });
   });

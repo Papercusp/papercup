@@ -21,9 +21,11 @@ import { SCENARIOS, getScenario } from '../scenarios';
 import { listTargets } from '../targets';
 
 describe('scenario registry', () => {
-  it('exposes the full operator suite (S01–S12 + M1–M12), oracle (O1–O6), and architect (A1–A6)', () => {
+  it('retains the required scenarios and registers each scenario ID once', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
-    expect(ids).toEqual([
+    // Required coverage may not disappear, while new scenarios join the same
+    // target/assertion/cap checks below without extending an exact manifest.
+    expect(ids).toEqual(expect.arrayContaining([
       // operator legacy (S-prefixed; framework build-out)
       'op-S01-status-quick',
       'op-S02-multistep-investigation',
@@ -147,6 +149,9 @@ describe('scenario registry', () => {
       'su-S37a-absence-claim',
       'su-S37b-signature-impact',
       'su-S37c-definition-lookup',
+      'su-S38-reports-capture',
+      'su-S39-verification-map-doors',
+      'su-S40-grade-checker-rules',
       'worker-W01a-absence-claim',
       'worker-W01b-signature-impact',
       'worker-W01c-definition-lookup',
@@ -183,7 +188,8 @@ describe('scenario registry', () => {
       'sn-S16-voice-disambiguation',
       'sn-M4-one-question-per-turn',
       'sn-M8-format-utterance',
-    ].sort());
+    ]));
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('throws on unknown scenario', () => {

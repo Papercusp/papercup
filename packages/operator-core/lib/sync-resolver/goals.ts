@@ -39,6 +39,7 @@
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
+import { createReadDeadline, isReadBudgetExceeded } from './read-deadline';
 import { budgetSpendScope, type GoalPortfolioBrief } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
@@ -1374,6 +1375,7 @@ export async function resolveGoalDetail(args: {
   // goal data. Resolve each declaration through its own saved policy; the
   // agent-mode projection belongs only to the conventional worklist property.
   if (declaration.success) {
+    const withinCollectionBudget = createReadDeadline(6_000);
     await Promise.all(Object.entries(declaration.data)
       .filter(([, definition]) => definition.collection?.source === 'active-workspace-plans')
       .map(async ([property]) => {
@@ -1382,9 +1384,13 @@ export async function resolveGoalDetail(args: {
           return;
         }
         try {
-          const portfolio = await readPortfolio(property);
+          const portfolio = await withinCollectionBudget(readPortfolio(property), `goal collection ${property}`);
           if (portfolio) portfolios.set(property, portfolio);
-        } catch { collectionReadErrors.set(property, 'Active workspace plans could not be read.'); }
+        } catch (error) {
+          collectionReadErrors.set(property, isReadBudgetExceeded(error)
+            ? 'Active workspace plans could not be read in time.'
+            : 'Active workspace plans could not be read.');
+        }
       }));
   }
   const collections = Object.fromEntries(Object.entries(declaration.success ? declaration.data : {})

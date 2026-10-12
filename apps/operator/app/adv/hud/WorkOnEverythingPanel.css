@@ -221,7 +221,7 @@
 .woe__quality-duties h4 { margin: 0 0 8px; }
 .woe__quality-duties p { color: var(--fg-mute); margin: 0 0 12px; line-height: 1.5; }
 .woe__quality .woe__link { margin-right: 10px; }
-.woe__quality .woe__state[data-state='verified'] { color: var(--success, #71cfa2); }
+.woe__quality .woe__state[data-state='verified'] { color: var(--good); }
 .woe__quality .woe__table small { display: block; margin-top: 5px; }
 .woe__quality .woe__table-wrap { margin: 0; overflow-x: auto; }
 .woe__quality .woe__table { min-width: 560px; }

@@ -1072,7 +1072,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       requiredEvidence: ['live'],
       requiredTestLayers: ['unmeasured-layer-'.repeat(200)],
     }]);
-    listEvidence.mockResolvedValue([staleLiveBinding] as never);
+    listEvidence.mockResolvedValue([staleLiveBinding]);
     const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
     const summary = await call(base);
     const full = await call({ ...base, detail: 'full' });

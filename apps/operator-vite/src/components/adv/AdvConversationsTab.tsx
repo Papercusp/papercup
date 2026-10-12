@@ -678,7 +678,9 @@ export default function AdvConversationsTab() {
       ? route.thread
       : route.conv === 'agentchats'
         ? route.chat
-        : null;
+        : route.conv === 'messages'
+          ? route.cmsg
+          : null;
   const isInternalDetailRoute = route.conv !== 'inbox' && route.conv !== 'feed';
   const view = isInternalDetailRoute && !sourceSelection ? 'inbox' : route.conv;
   useEffect(() => {

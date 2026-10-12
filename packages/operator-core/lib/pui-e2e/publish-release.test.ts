@@ -200,9 +200,12 @@ describe('PUI public release publisher', () => {
     expect(page).toContain('Requires WSL2');
     expect(page).toContain('macOS Apple Silicon download is awaiting release verification');
     expect(page).not.toContain('href="https://pub.example.test/unguessable-prefix/pui/0.1.0/pui-0.1.0-macos');
-    expect(page).toContain('psu --connect-login --connect');
-    for (const backend of ['claude', 'codex', 'omp']) expect(page).toContain(`psu --connect --agent=${backend}`);
-    expect(page).toContain('pui --connect');
+    expect(page).toContain('Launch PSU, select your cloud desktop');
+    expect(page).toContain('Where should psu run?');
+    expect(page).toContain('Papercusp cloud — sign in to use a hosted workspace');
+    expect(page).toContain('Local — this computer');
+    expect(page).toContain('href="../index.html#download-gui"');
+    expect(page).not.toMatch(/(?:psu|pui) --connect/);
     expect(latest.artifacts['linux-x86_64'].archiveSha256).toBe(files.digest);
   });
 

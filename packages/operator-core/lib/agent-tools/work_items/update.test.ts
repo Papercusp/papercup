@@ -204,7 +204,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('a feature-family item maps to an unsupported_family error', async () => {
-    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
+    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' });
     const b = await body({ id: 'F-1', title: 'x' });
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });

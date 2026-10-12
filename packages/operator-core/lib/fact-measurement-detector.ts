@@ -23,6 +23,12 @@ const NUMBER = /(?<![A-Za-z0-9_:#-])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?%?|\+\d+(
 const MOVING_CONTEXT =
   /\b(?:measur(?:e|ed|ement|ing)|as\s+of|currently|right\s+now|today|latest|so\s+far|observ(?:e|ed|ation)|count(?:s|ed|ing)?|current|remaining|unchecked|adjudicated|candidate[s]?|status|open|closed|pending|supported|not[-\s]checked|working\s+tree|uncommitted)\b/i;
 
+// A stable identifier can sit near unrelated current-state prose. Treat the
+// number as a reference when a common label directly precedes it, rather than
+// letting the broad moving-context window turn it into a measurement.
+const STABLE_REFERENCE_LABEL =
+  /\b(?:HN|Hacker\s+News|work[ -]item|item|issue|ticket|record|post|story|release|migration|commit|PR)\s*(?:(?:item|id|number|no\.?)\s*)?(?:#|:)?\s*$/i;
+
 export interface FactMeasurementSignal {
   /** The numeric value or delta that triggered the advisory. */
   value: string;
@@ -53,6 +59,8 @@ export function detectFactMeasurements(text: unknown): FactMeasurementSignal[] {
       numbers.lastIndex += 1;
       continue;
     }
+    const labelStart = Math.max(0, match.index - 48);
+    if (STABLE_REFERENCE_LABEL.test(haystack.slice(labelStart, match.index))) continue;
     const start = Math.max(0, match.index - MEASUREMENT_CONTEXT_WINDOW);
     const end = Math.min(haystack.length, match.index + match[0].length + MEASUREMENT_CONTEXT_WINDOW);
     const window = haystack.slice(start, end);

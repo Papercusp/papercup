@@ -10,7 +10,9 @@
  *   - swallow every PG / git / fs error
  *   - never throw out of any hook
  *   - never write to stderr/stdout in a way that taints test output
- *   - never affect the process exit code
+ *   - never affect the process exit code for ledger failures
+ * Native verification additionally requires a stable execution-time runtime
+ * witness. A failed witness changes the native verdict, independently of PG.
  *
  * WI-10007513: maintained implementation exposed through operator-core for all apps.
  * Operator and Portal Playwright configs add this reporter to
@@ -48,6 +50,7 @@ import {
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseRecordedRuntimeEnvironment,
+  stableRecordedRuntimeEnvironment,
   type RecordedRuntimeEnvironment,
   type RuntimeEnvironmentCaptureStatus,
   type TestRunExecutionDetails,
@@ -320,13 +323,16 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
+    let preparationError: unknown;
     try {
       this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
     } catch (error) {
       this.runtimePreparationFailed = true;
-      if (process.env.VERIFY_TAURI_PID) throw new Error(`Native runtime witness preparation failed: ${String(error)}`);
+      preparationError = error;
     }
     this.runtimeBefore = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
+    if (process.env.VERIFY_TAURI_PID && this.runtimePreparationFailed)
+      throw new Error(`Native runtime witness preparation failed: ${String(preparationError)}`);
     if (process.env.VERIFY_TAURI_PID && this.runtimeBefore.status !== 'captured')
       throw new Error(`Native runtime witness unavailable before tests: ${this.runtimeBefore.status}`);
   }
@@ -395,9 +401,17 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     }
   }
 
-  async onEnd(): Promise<void> {
+  async onEnd(): Promise<void | { status: 'failed' }> {
+    // Playwright logs onBegin exceptions but can still run and pass the tests.
+    // Its awaited onEnd return is the supported way to fail this verification.
+    let nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID);
     try {
       const runtimeAfter = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
+      nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID)
+        && !stableRecordedRuntimeEnvironment(this.runtimeBefore?.witness, runtimeAfter.witness);
+      const runtimeFailure = nativeRuntimeFailed
+        ? `[native runtime witness] missing or changed: before=${this.runtimeBefore?.status ?? 'unavailable'} after=${runtimeAfter.status}`
+        : null;
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
         worktreeAfter = captureTestSourceSnapshot(this.runRoot);
@@ -415,7 +429,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
       for (const [file, agg] of this.byFile) {
         try {
           const filePath = toWorkspaceRel(file, this.runRoot);
-          const status: TestRunRow['status'] = agg.anyFail
+          const status: TestRunRow['status'] = nativeRuntimeFailed ? 'error' : agg.anyFail
             ? 'fail'
             : agg.allSkipped
             ? 'skip'
@@ -423,7 +437,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           const durationMs = Math.max(0, agg.finishedAt - agg.startedAt);
           // Preserve diagnostics in the existing text column while deployed
           // strict execution_details readers await the expanded reason field.
-          const output = [...agg.errors, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : [])].join('\n');
+          const output = [...agg.errors, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : []),
+            ...(runtimeFailure ? [runtimeFailure] : [])].join('\n');
           const outputTail = output ? output.slice(-4000) : null;
           this.pending.push(
             insertRow({
@@ -451,6 +466,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     } catch {
       /* swallow */
     }
+    if (nativeRuntimeFailed) return { status: 'failed' };
   }
 
   async onExit(): Promise<void> {

@@ -174,7 +174,7 @@ describe('scorecards:get evidence-first projection', () => {
     readScorecardEvidenceM.mockResolvedValue({
       kind: 'found',
       scorecard: { ...scorecard, gradingAudit },
-    } as never);
+    });
     gradingAuditRubricMock.mockResolvedValue({
       rubricId: 'grading-integrity',
       revision: 12,

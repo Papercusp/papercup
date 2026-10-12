@@ -3061,5 +3061,603 @@
         "scope": "Captured published generation population only; physical filesystem df covers mutable producer demand separately."
       }
     }
+  },
+  "native20261012Window": {
+    "schemaVersion": 1,
+    "verdict": "OPEN: sampled floors and completed registered steps verified; running-generation continuity, protected custody across the window, candidate demand and final receipt unverified.",
+    "recordedAfter": "2026-10-12T16:00:42.323006+00:00",
+    "previousArtifactSha256": "38a956eb97d70ad07f77c5c5dc6d107ec592d71ac197b09c14d1cff206516a0e",
+    "baseline": {
+      "taskId": "0mv5a3d6z1md4ytm1sv",
+      "logPath": ".papercusp/scratch/bash-0f7e098f-720.log",
+      "logSha256": "b1362a229201d4532635a10df6854f8fbd4a691e95088a14d67973d5c039916d",
+      "receipt": {
+        "at": "2026-10-12T13:19:12.101Z",
+        "unit": "papercusp-bg-host.service",
+        "manager": "user",
+        "nativePid": 2987909,
+        "policy": {
+          "freePctMin": 0.1,
+          "freeBytesMin": 107374182400,
+          "freeInodesPctMin": 0.05,
+          "criticalFreePctMin": 0.02,
+          "criticalFreeBytesMin": 2147483648,
+          "criticalFreeBytesCap": 68719476736
+        },
+        "snapshots": [
+          {
+            "path": "/",
+            "device": "66307",
+            "key": "dev-66307",
+            "totalBytes": 2013991550976,
+            "availableBytes": 51579793408,
+            "reservedBytes": 0,
+            "usableBytes": 51579793408,
+            "requiredBytes": 40279831019.520004,
+            "byteFloorMet": true,
+            "totalInodes": 124960768,
+            "freeInodes": 104153255,
+            "inodeFraction": 0.8334876350952004,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/mnt/data",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 212048584704,
+            "reservedBytes": 0,
+            "usableBytes": 212048584704,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 445134416,
+            "freeInodes": 417269478,
+            "inodeFraction": 0.9374010703319781,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/tmp/pcv",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 212048584704,
+            "reservedBytes": 0,
+            "usableBytes": 212048584704,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 445134416,
+            "freeInodes": 417269478,
+            "inodeFraction": 0.9374010703319781,
+            "inodeFloorMet": true
+          }
+        ],
+        "scope": "One endpoint using current policy helper with native bg-host env after alarm recovery; no producer census, cleanup, custody or sustained-window claim."
+      }
+    },
+    "after": {
+      "taskId": "0mv5fpz2hw42z9u1knp",
+      "logPath": ".papercusp/scratch/bash-d226ff7f-4c5.log",
+      "logSha256": "82cc34688aca1749d7519bb8efefd03d1de1072d34fcdfdf3b622839eda1bbb2",
+      "receipt": {
+        "at": "2026-10-12T15:56:48.030Z",
+        "unit": "papercusp-bg-host.service",
+        "manager": "user",
+        "nativePid": 2728471,
+        "policy": {
+          "freePctMin": 0.1,
+          "freeBytesMin": 107374182400,
+          "freeInodesPctMin": 0.05,
+          "criticalFreePctMin": 0.02,
+          "criticalFreeBytesMin": 2147483648,
+          "criticalFreeBytesCap": 68719476736
+        },
+        "snapshots": [
+          {
+            "path": "/",
+            "device": "66307",
+            "key": "dev-66307",
+            "totalBytes": 2013991550976,
+            "availableBytes": 147352256512,
+            "reservedBytes": 10737418240,
+            "usableBytes": 136614838272,
+            "requiredBytes": 40279831019.520004,
+            "byteFloorMet": true,
+            "totalInodes": 124960768,
+            "freeInodes": 105006614,
+            "inodeFraction": 0.840316650422635,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/mnt/data",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 524928270336,
+            "reservedBytes": 12884901888,
+            "usableBytes": 512043368448,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 756603501,
+            "inodeFraction": 0.9682633225966746,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/tmp/pcv",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 524928217088,
+            "reservedBytes": 12884901888,
+            "usableBytes": 512043315200,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 756603499,
+            "inodeFraction": 0.9682633200371746,
+            "inodeFloorMet": true
+          }
+        ],
+        "scope": "One endpoint using current policy helper with native bg-host env after alarm recovery; no producer census, cleanup, custody or sustained-window claim."
+      }
+    },
+    "registeredSteps": {
+      "source": "dbos.operation_outputs: exact workflow_uuid/function_name reads; output::jsonb->'json' report",
+      "positiveControl": "sched-.sessionDirGc-2026-10-11T02:50:00.000Z / dependency-generation-retention",
+      "rows": [
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T13:50:00.000Z",
+          "function_id": 2,
+          "started_at_epoch_ms": "1791813005148",
+          "completed_at_epoch_ms": "1791813011900",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ],
+          "skipped_integrations": 9
+        },
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T14:50:00.000Z",
+          "function_id": 2,
+          "started_at_epoch_ms": "1791816608492",
+          "completed_at_epoch_ms": "1791816634817",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "[dependency-generation] deleted prune quarantine /mnt/data/papercusp-dependency-generations/.prune-v1-08e48ac19411227980c6145838a3bbada2729a39c0f66d95e40976396fa9c654-1791816581-2322148\n",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ],
+          "skipped_integrations": 9
+        },
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T15:50:00.000Z",
+          "function_id": 2,
+          "started_at_epoch_ms": "1791820207248",
+          "completed_at_epoch_ms": "1791820214225",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "[dependency-generation] removing stale selector lease selector-103142-1791818712-5507\n",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ],
+          "skipped_integrations": 9
+        }
+      ]
+    },
+    "finalNamedStoreCustody": {
+      "taskId": "0mv5fv67j1wfuoqzosp",
+      "logPath": ".papercusp/scratch/bash-07bb8e3b-76e.log",
+      "logSha256": "ab777fc75ea2197f783f1054bd8402fdf77edbc8c6bc26792dd810e53883bbd2",
+      "receipt": {
+        "at": "2026-10-12T16:00:42.323006+00:00",
+        "unit": "papercusp-bg-host.service",
+        "nativePid": 2728471,
+        "afterNativePid": 2728471,
+        "runtimeStableDuringRead": true,
+        "scriptSha256": "4d0b7312825e11f399bb53e86e350493f4925dde0dab134c10dddb243db0b2dd",
+        "stores": [
+          {
+            "path": "/mnt/data/papercusp-dependency-generations",
+            "physical": "/mnt/data/papercusp-dependency-generations",
+            "device": 66304,
+            "generations": {
+              "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+                "device": 66304,
+                "inode": 2418438880,
+                "markerInode": 2418441858,
+                "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1": {
+                "device": 66304,
+                "inode": 12348123756,
+                "markerInode": 12364198454,
+                "markerSha256": "b4ed60ef688cb8ca571f57eae381f0c258d72990b79695dffe7d57cc6a9c7b78",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+                "device": 66304,
+                "inode": 1549392526,
+                "markerInode": 2416566183,
+                "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-461701dd01e5e8688d419df22479bf9cba4fef0e8b18a3fd6c07a8086d6685df": {
+                "device": 66304,
+                "inode": 10760529652,
+                "markerInode": 10761727516,
+                "markerSha256": "dfdffee954e0cef865e7d2ef78c4b135341e2fd48a3fe272622bf6c15923a558",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+                "device": 66304,
+                "inode": 5913877200,
+                "markerInode": 5913877206,
+                "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645": {
+                "device": 66304,
+                "inode": 15169370370,
+                "markerInode": 15169322768,
+                "markerSha256": "f2532d7650a533ea951a578aa122403bc9d36e40b94b0f790ded6c13c3495a18",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-9d4bea8deb364c8f9d8ac0f8bc04ed105ae833ac05a084a63e0832d7420175da": {
+                "device": 66304,
+                "inode": 10047087540,
+                "markerInode": 9814050481,
+                "markerSha256": "9f361c403dbfdd3fd26d1f804cf13e061d0462d41a92359ccdf4d95c57e6a9b7",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-9dc4d407676f2b9713d0af8b0553284c527538358c7f799f5e40dc3f96b21665": {
+                "device": 66304,
+                "inode": 11345315134,
+                "markerInode": 11353497239,
+                "markerSha256": "7284a9352ee280474dca3c38128435dcc65653fb13af70129c501de0a9c93216",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+                "device": 66304,
+                "inode": 9126884355,
+                "markerInode": 9158387524,
+                "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-b235e06323a71b9ee81a41bc3f1cdb3d50995f113ab1fc5f3e67c4172b954f8f": {
+                "device": 66304,
+                "inode": 7032336244,
+                "markerInode": 7032426172,
+                "markerSha256": "c7fae1137192cbd983a4ed8d3e174a7358312e63701183d38c602114a2d24f73",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f": {
+                "device": 66304,
+                "inode": 7021857157,
+                "markerInode": 7024011666,
+                "markerSha256": "4e36a9239042b25cc51e8c8284334911174816fe34e92fef6d66ffd4062a1581",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+                "device": 66304,
+                "inode": 3278127850,
+                "markerInode": 3270734824,
+                "markerSha256": "65e693fe0a164108e2e211e94c8f901c7f8c73f859aea26739ab875c323ec685",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              }
+            },
+            "pins": [
+              {
+                "name": "checkout-103bfbbc33d41d19a13a43b247223840073b7af4f24b8c4b31100a457ed39426",
+                "identity": "v1-9dc4d407676f2b9713d0af8b0553284c527538358c7f799f5e40dc3f96b21665",
+                "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/papercusp-checkpoint-admission-precheck",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "e72b982ce2e77516eda02a22358da5ce32194d2f443463e16504206e29f5a9d4"
+              },
+              {
+                "name": "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
+                "identity": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-checkpoint-admission-precheck",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "0fa46217ec86d1f00a4a2d086a95ac9fe427455c03910a33192f0cda28a55b64"
+              },
+              {
+                "name": "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+                "identity": "v1-9d4bea8deb364c8f9d8ac0f8bc04ed105ae833ac05a084a63e0832d7420175da",
+                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercusp-nightly-release",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "951e139ab6ad4bc5040ca714fb320892809495175f9d76bbf642df05fa592264"
+              },
+              {
+                "name": "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+                "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+                "checkout": "/home/marsh-office/.papercusp-workspaces/clones/hello-world-3-checkpoint",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "8cf837bdf2ce3f04ddfb11436bbdf2d9f5774c90a47ed515755b6509c92bcfc6"
+              },
+              {
+                "name": "checkout-53ddc01e5218db398064fb991e2147532d422087456bcb0314242253a24903f0",
+                "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+                "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/slack-asana-bug-drill-checkpoint-admission-precheck",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "5e2272d5b89163e49d7a2af652a138cad8e69c16589a0766475b95c468a264ef"
+              },
+              {
+                "name": "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+                "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+                "checkout": "/home/marsh-office/.papercusp-workspaces/clones/oddsmith-checkpoint",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "3542d15e538b9b731e0376c1f63ebe3639665a49a44ac6badf645dacae124034"
+              },
+              {
+                "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+                "identity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
+                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-checkpoint",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "e9b56ff42d4c9d9fb199da372bad723b25063a59380e366f4e9334b5e1deeae5"
+              },
+              {
+                "name": "ref-263719ba0b1aa62943b848ad81cedf7eef4bc257df55d97ee780534513d1cb62",
+                "identity": "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645",
+                "expires": "1791904014",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "2cbb04eb51611438c9e89aaf76d9b2cf15720c2bc64b7197e32ae541d144e6dd"
+              },
+              {
+                "name": "ref-452d0b5528ba838d89203e3d7a44421f9818a686aa4c9faeb81ddd0cfd2d28fe",
+                "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+                "expires": "1791903987",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "d934ef58cab0d4acb6dde9ab6e9f0d6fff377a78f5c11a731720204a3c033249"
+              },
+              {
+                "name": "ref-781592e23b5e3691923d76db1200185fb72b5a8172af02bb78f6b2d9f8480310",
+                "identity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
+                "expires": "1791906534",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "168f65f5d9cb4303e8b6c08dda84163129c236cc31988d488c923f582e0b6e93"
+              },
+              {
+                "name": "ref-9adeef0051baef96c114803081f342ca3efc081eaeba4c149f94d1cb4b3f5b7c",
+                "identity": "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+                "expires": "1791903862",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "06e6506d01367d3632c7569f62e14a8fe304b89cd57cb997018435a4a52edf6b"
+              },
+              {
+                "name": "ref-d372b5727e8668d341befa74355d2cd7d2890dd3f80e84e1e680289517618484",
+                "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+                "expires": "1791906859",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "bc5c0545fa5f748b10e8a586bdbd9b1e4a0d293aa11dc4482496b6a4fbee7acb"
+              },
+              {
+                "name": "ref-df0a03eb2cf9a875ea8dbbe3611f2109e0fbbc7d90d0576dadf453d79009dc49",
+                "identity": "v1-b235e06323a71b9ee81a41bc3f1cdb3d50995f113ab1fc5f3e67c4172b954f8f",
+                "expires": "1791905871",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "22e7f82e42c13b705a761acbea7c79c59ca4e5942921adbf2d0b4882b5d0100e"
+              },
+              {
+                "name": "ref-e8bc2ce3e71f7b5004535aa962154eb090d35ea8424303fb30a8cd09c533acaf",
+                "identity": "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f",
+                "expires": "1791906055",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "d55857f7cd0e6961c151e7db303ef851bc612e1a7c04e2a79edd763585c1440c"
+              }
+            ],
+            "leases": [],
+            "quarantines": [],
+            "errors": [],
+            "populationNamesStableDuringRead": true,
+            "publishLockPresent": false
+          },
+          {
+            "path": "/mnt/data/dependency-generations/papercusp",
+            "physical": "/mnt/data/dependency-generations/papercusp",
+            "device": 66304,
+            "generations": {
+              "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95": {
+                "device": 66304,
+                "inode": 14496208966,
+                "markerInode": 14542120109,
+                "markerSha256": "3351c34f4418f2a1717b3b946c5a2569fd7db6c446c195b8d4a296fc76a76c00",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              },
+              "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb": {
+                "device": 66304,
+                "inode": 15579104355,
+                "markerInode": 15695234339,
+                "markerSha256": "8fc48bbf81e0a400b112ef4c2696685e5657efd43c6040382cb8f42dcd4b1239",
+                "directoryIsSymlink": false,
+                "markerIsSymlink": false
+              }
+            },
+            "pins": [
+              {
+                "name": "checkout-2807f21ae14cfcc122ae4101e544784c544dd221f80fe7447be27669d16d61c0",
+                "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-relcut-0022-green",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "d72e1359a6378d927bfcb1278fa8735cf8bc68deedfd843982f0f0a1114c0090"
+              },
+              {
+                "name": "checkout-709e38c8022dfe5aa5162235fa897b2b72265355958192bff28477b0c70ce32d",
+                "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+                "checkout": "/home/marsh-office/papercupai-workspace/papercup-checkpoint",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "4045862f52d830480a027452d04f29c5c3380b6896b1e5bda03aec3786f3786b"
+              },
+              {
+                "name": "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+                "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercusp-relcut-0022-green",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "ecf708bd9a7726f41c029dbe395b505b86ba89233de8aea06cc9ddc7a27b3e32"
+              },
+              {
+                "name": "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259",
+                "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercup-checkpoint",
+                "host": "main-server-Precision-7865-Tower",
+                "sha256": "7262d4a4ac56a1a25aa0f80f8300c2f8421616126009ccffc3ad61fd64726735"
+              }
+            ],
+            "leases": [],
+            "quarantines": [],
+            "errors": [],
+            "populationNamesStableDuringRead": true,
+            "publishLockPresent": false
+          }
+        ],
+        "scope": "Two named retention-store metadata populations only; no recursive source-byte census or cleanup. Read stability is not a publisher lock or historical custody proof."
+      }
+    },
+    "coverage": {
+      "population": [
+        "root critical byte floor at two sampled endpoints",
+        "data/tmp physical-device critical byte floor at two sampled endpoints",
+        "byte reservations at two sampled endpoints",
+        "inode floor at two sampled endpoints",
+        "three exact registered dependency-retention steps",
+        "current and former named-store pin target presence at final custody read",
+        "same native runtime across sampled span",
+        "unchanged protected generation custody across sampled span",
+        "candidate-specific allocation demand",
+        "continuous headroom between sampled endpoints",
+        "frontend IndexedDB recorder and native SQLite recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "checked": [
+        "root critical byte floor at two sampled endpoints",
+        "data/tmp physical-device critical byte floor at two sampled endpoints",
+        "byte reservations at two sampled endpoints",
+        "inode floor at two sampled endpoints",
+        "three exact registered dependency-retention steps",
+        "current and former named-store pin target presence at final custody read"
+      ],
+      "notChecked": [
+        "same native runtime across sampled span",
+        "unchanged protected generation custody across sampled span",
+        "candidate-specific allocation demand",
+        "continuous headroom between sampled endpoints",
+        "frontend IndexedDB recorder and native SQLite recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "notApplicable": [],
+      "residue": [
+        "WI-10007602: full R5 and final acceptance remain open; this receipt does not authorize protected-file removal."
+      ]
+    },
+    "interpretation": [
+      "Native PID changed from2987909 to2728471; passing byte endpoints do not qualify a same-running-generation interval.",
+      "Observed reservations are measured from native bg-host env through the existing physical-device reader; data and tmp are aliases of device66304 and are not additive capacity.",
+      "The registered14:50 report names deletion of the .prune-v1-08e48 quarantine;15:50 names a stale selector lease. Empty per-store output does not establish no silent removals or exclusive reclaim causality.",
+      "The final metadata read finds every current pin target present in the two named stores, with stable directory names and no publisher lock observed. It does not prove publisher-locked stability or unchanged historical payload bytes.",
+      "Compared with12:41 current-store pins, two pins changed v1-08e48 to v1-36f6, one older checkout pin disappeared, and three older generations are absent. Their authorized lifecycle and full protected-data preservation are not established by these metadata endpoints.",
+      "The final custody read may seed the next comparison under native PID2728471; qualify its actual registered retention receipt and current capacity at a later endpoint rather than repeating no-delta samples."
+    ]
   }
 }
