@@ -228,6 +228,14 @@ describe('disk consumer census (real du, real PG)', () => {
         { kind: 'postgres', rootDir: locked, parts: [{ consumer: 'postgres:x', bytes: G }] },
       ]);
       expect(elsewhere).toEqual([]);
+      // A privileged (root) walk measured the locked store itself: adding the API size too
+      // would count it twice.
+      const afterRootWalk = await apiStoreConsumers(
+        dev,
+        [{ kind: 'postgres', rootDir: locked, parts: [{ consumer: `postgres:${locked} databases`, bytes: 7 * G }] }],
+        true,
+      );
+      expect(afterRootWalk).toEqual([]);
     } finally {
       chmodSync(locked, 0o700);
     }
