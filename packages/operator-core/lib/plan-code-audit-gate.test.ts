@@ -55,6 +55,14 @@ vi.mock('./rubrics', () => ({
 }));
 vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
 vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
+// These later doors have their own suites; a positive harness identity below
+// must not make this code-truth regression depend on an unrelated review record.
+vi.mock('./blind-review-gate', () => ({ evaluateBlindReviewGate: vi.fn(async () => ({
+  satisfied: true, applicable: false, acceptedReviewIds: [], rejectedReviews: [], undispositionedGaps: [],
+})) }));
+vi.mock('./independent-verification-gate', () => ({ evaluateIndependentVerificationGate: vi.fn(async () => ({
+  satisfied: true, applicable: false, inScope: 0, gaps: [],
+})) }));
 vi.mock('./agent-tools/plans/spec-clauses-store', async (orig) => ({
   ...(await orig<typeof import('./agent-tools/plans/spec-clauses-store')>()), listSpecClauses: vi.fn(),
 }));

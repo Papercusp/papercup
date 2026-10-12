@@ -1,12 +1,26 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import * as recorder from '../degradation/fallback-observations';
 import { inventoryTree, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
+
+// Some real producers import configuration whose readiness promise reads the
+// operator-state store during module evaluation. Install this dependency seam
+// before imports, rather than waiting for beforeEach after the read has started.
+const operatorState = vi.hoisted(() => ({
+  read: vi.fn(async () => null),
+  write: vi.fn(async () => undefined),
+}));
+vi.mock('../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../operator-state-pg')>()),
+  readOperatorState: operatorState.read,
+  writeOperatorState: operatorState.write,
+}));
 
 // These cases verify real producers at their dependency seams. Durable INSERTs
 // have separate integration coverage; never let incidental imported telemetry
@@ -16,6 +30,16 @@ beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); 
 afterEach(() => { recorder._resetFallbackObservationsForTests(); vi.restoreAllMocks(); });
 
 describe('condition-rail per-row executable coverage (P-017)', () => {
+  it('isolates import-time release configuration reads from real PostgreSQL', async () => {
+    const blockedBefore = readRealPgRailBlocks().blocked;
+    expect(blockedBefore).toBe(0);
+    const config = await import('../release-checkpoint-config');
+    await config.releaseCheckpointConfigReady;
+    expect(operatorState.read).toHaveBeenCalledWith('operator_release_checkpoint_config');
+    expect(config.releaseCheckpointConfig()).toEqual(config.RELEASE_CHECKPOINT_DEFAULTS);
+    expect(readRealPgRailBlocks().blocked).toBe(blockedBefore);
+  });
+
   it('has a matching executable case for every row in every completed migration', () => {
     expect(migrationCoverageProblems(manifest, RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS,
       listDegradationMechanisms().map((mechanism) => mechanism.mechanism))).toEqual([]);

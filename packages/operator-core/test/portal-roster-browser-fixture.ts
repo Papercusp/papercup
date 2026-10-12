@@ -140,6 +140,7 @@ type PortalRosterBrowserInput = {
   evals?: boolean;
   support?: boolean;
   cupboard?: boolean;
+  dev?: boolean;
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -170,7 +171,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'dev' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -182,7 +183,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.cupboard ? `
+  const entry = input.dev ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { Route as DevRoute } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/routes/dev/index.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(DevRoute.options.component))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.cupboard ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -507,7 +520,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard || input.dev);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -516,7 +529,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   }
   // CSS-enabled graphs must also resolve packages' style-conditioned exports.
   // Keep the loader and resolution predicates together as new modes are added.
-  const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git);
+  const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git || input.dev);
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom'),
@@ -524,7 +537,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       // from the shared tree. Their provider must share the same Radix context.
       ...(input.git ? { '@radix-ui/react-tooltip': dirname(dirname(
         createRequire(join(operatorRoot, 'package.json')).resolve('@radix-ui/react-tooltip'))) } : {}) },
-    tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
+    tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'),
+      paths: { '@/*': ['apps/operator/*'], ...boundary?.paths }, jsx: 'react-jsx' } },
     loader: { '.css': retainBrowserCss ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: { ...boundary.define,
@@ -589,7 +603,16 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Cupboard browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.cupboard
+  if (input.dev) {
+    for (const module of ['ApiTab', 'WorkspacePicker', 'SchemaForm', 'RightRail']) {
+      assert.ok([...originals.keys()].some(path => path.endsWith(`/app/dev/_components/${module}.tsx`)),
+        `Dev browser graph requires actual ${module}`);
+    }
+    assert.ok([...originals.keys()].some(path => path.endsWith('/apps/operator/app/dev/page.tsx')),
+      'Dev browser graph requires the actual page');
+  }
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.dev
+    ? '/apps/operator-vite/src/routes/dev/index.tsx' : input.cupboard
     ? '/apps/operator-vite/src/routes/cupboard/index.tsx' : input.support
     ? '/apps/operator-vite/src/routes/support.tsx' : input.evals
     ? '/apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' : input.frames
@@ -654,7 +677,7 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean; devRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
@@ -664,6 +687,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   assert.ok(!options.evalsRead || input.evals, 'Evaluation read preflight requires Evaluation');
   assert.ok(!options.supportRead || input.support, 'Support workflow requires the actual Support route');
   assert.ok(!options.cupboardRead || input.cupboard, 'Cupboard workflow requires the actual Cupboard route');
+  assert.ok(!options.devRead || input.dev, 'Dev workflow requires the actual Dev route');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -680,6 +704,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const frameStreams: Array<{ slug: string; closed: Promise<void> }> = [];
   const supportRequests: Array<{ sessionId: string; message: string; surface: string; status: number }> = [];
   const outwardRequests: string[] = [];
+  const devInvocations: Array<{ query: Record<string, string>; args: unknown; status: number }> = [];
+  const devTool = { name: 'dev:activity', pluginName: 'agent-mcp', description: 'Explicit fixture recent activity read',
+    capabilities: [], expose: { http: { path: '/api/agent-tools/dev/activity', methods: ['POST'] } },
+    inputSchema: { type: 'object', properties: { limit: { type: 'integer' } }, required: ['limit'] } };
   let cupboardDenied = false;
   const cupboardRequests: Array<{ query: Record<string, string>; status: number; titles: string[] }> = [];
   const cupboardRows = [
@@ -690,8 +718,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     { id: 903, slug: input.selected + '-stale', title: input.selected + ' stale', description: 'Hidden listing control',
       listing_kind: 'pack', claim_status: 'stale', harness_link: '' },
   ];
-  const componentEvidence = options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead
-    ? mkdtempSync(join(tmpdir(), options.cupboardRead ? 'cupboard-component-' : options.supportRead ? 'support-component-' : options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
+  const componentEvidence = options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead
+    ? mkdtempSync(join(tmpdir(), options.devRead ? 'dev-component-' : options.cupboardRead ? 'cupboard-component-' : options.supportRead ? 'support-component-' : options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
   if (componentEvidence) writeFileSync(join(componentEvidence, 'browser-inputs.json'), JSON.stringify({
     browserBundleSha256: digest(built.bundle),
     originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
@@ -762,7 +790,26 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.cupboardRead && request.method !== 'GET') {
+    if (options.devRead && pathname === '/api/workspaces' && request.method === 'GET') {
+      reads.push({ name: 'dev.workspaces', args: null });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ workspaces: [input.selected, input.neighbor].map(id => ({ id, name: id })) }));
+    } else if (options.devRead && pathname === '/api/plugins/tools' && request.method === 'GET') {
+      reads.push({ name: 'dev.tools', args: null });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ tools: [devTool, { ...devTool, name: 'fixture:neighbor', description: 'Unselected tool control' }] }));
+    } else if (options.devRead && pathname === '/api/agent-tools/dev/activity' && request.method === 'POST') {
+      let body = ''; for await (const chunk of request) body += String(chunk);
+      // POST invokes a read tool. These are explicit HTTP fixtures, never real dispatcher or provider evidence.
+      const status = devInvocations.length % 2 === 0 ? 403 : 200;
+      devInvocations.push({ query: Object.fromEntries(requestUrl.searchParams), args: JSON.parse(body), status });
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(status === 403 ? { error: 'explicit fixture Dev denial' }
+        : { entries: [{ marker: input.selected + '-activity' }], workspace: input.selected }));
+    } else if (options.devRead && request.method !== 'GET') {
+      writes.push({ surface: pathname, body: { method: request.method } });
+      response.writeHead(405); response.end('unexpected Dev mutation');
+    } else if (options.cupboardRead && request.method !== 'GET') {
       writes.push({ surface: pathname, body: { method: request.method } });
       response.writeHead(405); response.end('unexpected Cupboard mutation');
     } else if (options.cupboardRead && pathname === '/api/cupboard/listings') {
@@ -927,7 +974,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
-    } else if ((options.brainstormHydration || options.workflowsRead || input.git) && pathname === '/docs-preflight.css') {
+    } else if ((options.brainstormHydration || options.workflowsRead || input.git || input.dev) && pathname === '/docs-preflight.css') {
       response.writeHead(200, { 'content-type': 'text/css' });
       response.end(readFileSync(join(built.portal, 'app/tokens.css'), 'utf8') + '\n'
         + readFileSync(join(built.portal, 'app/globals.css'), 'utf8') + '\n'
@@ -937,7 +984,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
-      response.end((options.brainstormHydration || options.workflowsRead || input.git ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
+      response.end((options.brainstormHydration || options.workflowsRead || input.git || input.dev ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
         + '<div id="root"></div><script' + (input.frames ? ' type="module"' : '') + ' src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
@@ -952,7 +999,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     const address = server.address(); assert.ok(address && typeof address === 'object');
     page = await browser.newPage();
     page.setDefaultTimeout(15_000);
-    if (options.supportRead || options.cupboardRead) {
+    if (options.supportRead || options.cupboardRead || options.devRead) {
       await page.route('**/*', route => {
         const requestUrl = new URL(route.request().url());
         if (requestUrl.origin === `http://127.0.0.1:${address.port}`) return route.continue();
@@ -1016,6 +1063,11 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('app', 'cupboard'); url.searchParams.set('slug', input.selected);
       url.searchParams.set('ws', 'preflight-workspace');
     }
+    if (options.devRead) {
+      url.searchParams.set('app', 'dev'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('ws', 'preflight-workspace'); url.searchParams.set('tab', 'api');
+      url.searchParams.set('devWs', input.selected); url.searchParams.set('rail', 'closed');
+    }
     await page.goto(url.href);
     if (options.gitRead) {
       await page.waitForFunction(() => document.querySelector('.pc-adv-git')
@@ -1023,7 +1075,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.cupboard ? page.getByRole('button', { name: 'Refresh', exact: true })
+    try { await (input.dev ? page.locator('.pc-dev-api') : input.cupboard ? page.getByRole('button', { name: 'Refresh', exact: true })
       : input.support ? page.getByRole('heading', { name: 'Support', exact: true })
       : input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
       : input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
@@ -1034,6 +1086,64 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.devRead) {
+      const filter = () => page!.getByPlaceholder('Filter tools…', { exact: true });
+      const invoke = () => page!.getByRole('button', { name: 'Invoke', exact: true });
+      const limit = () => page!.locator('.pc-dev-form-row').filter({ hasText: 'limit' }).locator('input');
+      const assertScope = () => {
+        const params = new URL(page!.url()).searchParams;
+        for (const [key, value] of Object.entries({ app: 'dev', slug: input.selected, ws: 'preflight-workspace',
+          tab: 'api', devWs: input.selected, rail: 'closed', q: 'dev:activity', tool: 'dev:activity',
+          ctxH: input.selected, ctxRole: 'operator', ctxRun: 'fixture-dev-run', ctxSpawn: 'fixture-dev-spawn' })) {
+          assert.equal(params.get(key), value, `Dev URL must preserve ${key}`);
+        }
+      };
+      assert.equal(await page.getByRole('checkbox', { name: input.selected, exact: true }).isChecked(), true);
+      assert.equal(await page.getByRole('checkbox', { name: input.neighbor, exact: true }).isChecked(), false);
+      assert.equal(await page.locator('.pc-dev-right').count(), 0);
+      await filter().fill('dev:activity');
+      await page.locator('.pc-dev-api-tool').filter({ hasText: 'dev:activity' }).focus();
+      await page.keyboard.press('Enter');
+      await page.getByRole('heading', { name: 'dev:activity', exact: true }).waitFor();
+      assert.equal(await page.locator('.pc-dev-api-tool').count(), 1);
+      assert.equal(await page.getByLabel('workspace', { exact: true }).inputValue(), input.selected);
+      await page.getByLabel('harness', { exact: true }).fill(input.selected);
+      await page.getByRole('combobox', { name: 'role', exact: true }).focus();
+      await page.keyboard.press('Enter');
+      await page.getByRole('option', { name: 'operator', exact: true }).click();
+      await page.getByLabel('run', { exact: true }).fill('fixture-dev-run');
+      await page.getByLabel('spawn', { exact: true }).fill('fixture-dev-spawn');
+      await limit().fill('7');
+      await invoke().focus(); await page.keyboard.press('Enter');
+      await page.getByText('HTTP 403', { exact: true }).waitFor();
+      assert.match(await page.locator('.pc-dev-api-response').innerText(), /explicit fixture Dev denial/);
+      await invoke().focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(marker => document.querySelector('.pc-dev-api-response')?.textContent?.includes(marker), input.selected + '-activity');
+      assert.equal(await page.getByText('HTTP 403', { exact: true }).count(), 0);
+      assertScope();
+      await page.reload();
+      await page.getByRole('heading', { name: 'dev:activity', exact: true }).waitFor();
+      assertScope();
+      assert.equal(await filter().inputValue(), 'dev:activity');
+      assert.equal(await page.locator('.pc-dev-api-response').count(), 0, 'reload must not pretend a prior invocation ran again');
+      await limit().fill('7');
+      await invoke().focus(); await page.keyboard.press('Enter');
+      await page.getByText('HTTP 403', { exact: true }).waitFor();
+      await invoke().focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(marker => document.querySelector('.pc-dev-api-response')?.textContent?.includes(marker), input.selected + '-activity');
+      assert.equal(await page.getByText('HTTP 403', { exact: true }).count(), 0);
+      assert.equal(devInvocations.length, 4);
+      assert.deepEqual(devInvocations.map(r => r.status), [403, 200, 403, 200]);
+      for (const invocation of devInvocations) {
+        assert.deepEqual(invocation.query, { workspace: input.selected, role: 'operator', run: 'fixture-dev-run',
+          spawn: 'fixture-dev-spawn', harness: input.selected });
+        assert.deepEqual(invocation.args, { limit: 7 });
+      }
+      assert.deepEqual(writes, []); assert.deepEqual(outwardRequests, []); assert.deepEqual(errors, []);
+      await page.screenshot({ path: join(componentEvidence!, 'verified.png'), fullPage: true });
+      writeFileSync(join(componentEvidence!, 'receipt.json'), JSON.stringify({ reads, writes, devInvocations, outwardRequests,
+        errors, providerUsed: false, url: page.url(), scope: 'Actual Dev component with explicit local HTTP fixture; no private API, provider or hosted proof' }, null, 2));
+    }
     if (options.cupboardRead) {
       const selectedTitle = input.selected + ' pack';
       const assertScope = () => {
@@ -1476,12 +1586,15 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         shellQueryPreserved: true, noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}),
       ...(options.cupboardRead ? { cupboardRead: true, keyboardFilters: true, filterReload: true,
         warmDenial: true, coldDenial: true, keyboardRetry: true, shellQueryPreserved: true,
+        noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}),
+      ...(options.devRead ? { devRead: true, keyboardTool: true, schemaInvocation: true, deepLinkReload: true,
+        warmDenial: true, coldDenial: true, keyboardRetry: true, shellQueryPreserved: true,
         noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
   } catch (error) {
     if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
-      reads, writes, errors, supportRequests, cupboardRequests, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
+      reads, writes, errors, supportRequests, cupboardRequests, devInvocations, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
