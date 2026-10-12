@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { validateTriggerPackDeclaration, type PluginTriggerPack } from '@papercusp/plugin-sdk';
+import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import {
   DEFAULT_TICKET_DESTINATION_OPTIONS,
   TICKET_CHANNELS_INPUT,
@@ -27,11 +29,12 @@ const BUG_TRIAGE_DIR = resolve(REPO_ROOT, 'libs/papercusp/plugins/bug-triage');
 const MANIFEST = JSON.parse(readFileSync(resolve(BUG_TRIAGE_DIR, 'papercusp.json'), 'utf8')) as {
   triggerPack: {
     inputs: { required: string[]; properties: Record<string, Record<string, unknown>> };
-    bindings: Array<{ source: { kind: string; datatype: string }; target: string; eventPattern: string }>;
+    bindings: Array<{ id: string; source: { kind: string; datatype: string }; target: string; eventPattern: string; filter?: DataCondition }>;
     targets: Array<{ id: string; kind: string; path: string }>;
   };
 };
 const PLAN = readFileSync(resolve(BUG_TRIAGE_DIR, 'plan.md'), 'utf8');
+const REPORT_PLAN = readFileSync(resolve(BUG_TRIAGE_DIR, 'report.md'), 'utf8');
 
 /** Every `ticket:file` call the plan's work items instruct, with the argument names it lists. */
 function ticketFileCalls(plan: string): string[] {
@@ -39,8 +42,17 @@ function ticketFileCalls(plan: string): string[] {
     .split('\n')
     .filter((line) => /^- \*\*P-\d+\*\*/.test(line))
     // A sentence ends at a period followed by whitespace; `payload.plan_run.runId` keeps its dots.
-    .flatMap((line) => line.match(/call `ticket:file`.*?(?:\.(?=\s)|$)/g) ?? []);
+    .flatMap((line) => line.match(/[Cc]all `ticket:file`.*?(?:\.(?=\s)|$)/g) ?? []);
 }
+
+function binding(id: string) {
+  const found = MANIFEST.triggerPack.bindings.find((b) => b.id === id);
+  if (!found) throw new Error(`bug-triage declares no binding ${id}`);
+  return found;
+}
+
+/** Whether a binding's declared filter admits a chat-message payload (the runtime's evaluator). */
+const admits = (id: string, payload: Record<string, unknown>) => evaluateDataCondition(binding(id).filter ?? {}, payload);
 
 describe('bug-triage files only where the installer chose (P-007)', () => {
   it('requires the installer to pick the channels to watch and the destination to file in', () => {
@@ -61,20 +73,47 @@ describe('bug-triage files only where the installer chose (P-007)', () => {
     expect(destinationOptionSource(null)).toEqual(DEFAULT_TICKET_DESTINATION_OPTIONS);
   });
 
-  it('runs one plan per chat message from any chat provider', () => {
+  it('triages every chat message, and files reactions, reports and bug mentions from any chat provider (D-025)', () => {
     const { bindings, targets } = MANIFEST.triggerPack;
-    expect(bindings).toHaveLength(1);
-    expect(bindings[0]).toMatchObject({ source: { kind: 'external', datatype: 'chat-message' }, eventPattern: 'ext:*:message' });
-    expect(targets.filter((t) => t.id === bindings[0]!.target)).toEqual([
-      expect.objectContaining({ kind: 'plan', path: 'plan.md' }),
+    const targetOf = (id: string) => targets.filter((t) => t.id === binding(id).target);
+    expect(bindings.map((b) => [b.id, b.eventPattern, b.target])).toEqual([
+      ['message-to-triage', 'ext:*:message', 'triage-message'],
+      ['bug-reaction-to-report', 'ext:*:reaction', 'file-report'],
+      ['report-to-file', 'ext:*:report', 'file-report'],
+      ['bug-mention-to-report', 'ext:*:mention', 'file-report'],
     ]);
+    for (const b of bindings) expect(b.source).toEqual({ kind: 'external', datatype: 'chat-message' });
+    expect(validateTriggerPackDeclaration({ kind: 'plugin', triggerPack: MANIFEST.triggerPack as unknown as PluginTriggerPack })).toEqual([]);
+    expect(targetOf('message-to-triage')).toEqual([expect.objectContaining({ kind: 'plan', path: 'plan.md' })]);
+    expect(targetOf('report-to-file')).toEqual([expect.objectContaining({ kind: 'plan', path: 'report.md' })]);
+  });
+
+  it('files a :bug: reaction, any report, and a mention that asks to report a bug, and nothing else', () => {
+    const reported = { channelId: 'C1', text: 'Export 500s on big CSVs', sender: 'U3' };
+    expect(admits('bug-reaction-to-report', { ...reported, gesture: { kind: 'reaction', by: 'U5', reaction: 'bug' } })).toBe(true);
+    expect(admits('bug-reaction-to-report', { ...reported, gesture: { kind: 'reaction', by: 'U5', reaction: '+1' } })).toBe(false);
+    expect(admits('bug-reaction-to-report', { channelId: 'C1', gesture: { kind: 'reaction', by: 'U5', reaction: 'bug' } })).toBe(false);
+    expect(admits('report-to-file', { ...reported, gesture: { kind: 'report', by: 'U5', note: 'every time' } })).toBe(true);
+
+    for (const text of ['<@UBOT> bug: checkout spins', '<@UBOT> :bug:', '<@UBOT|papercusp> report a bug', '<@UBOT> Bugs in the export', '<@UBOT> 🐛']) {
+      expect(admits('bug-mention-to-report', { ...reported, text }), text).toBe(true);
+      // The channel post Slack also delivers for the same mention is not triaged too.
+      expect(admits('message-to-triage', { ...reported, text }), text).toBe(false);
+    }
+    for (const text of ['<@UBOT> help', '<@UBOT> what does the debug flag do?', 'there is a bug <@UBOT>']) {
+      expect(admits('bug-mention-to-report', { ...reported, text }), text).toBe(false);
+    }
+    expect(admits('message-to-triage', reported)).toBe(true);
+    expect(admits('message-to-triage', { ...reported, text: '<@UBOT> help' })).toBe(true);
   });
 
   it('files through one ticket:file call that names the run, never a destination, project or source', () => {
-    const calls = ticketFileCalls(PLAN);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain('planRunId=payload.plan_run.runId');
-    expect(calls[0]).not.toMatch(/destination|project|container|source/i);
+    for (const plan of [PLAN, REPORT_PLAN]) {
+      const calls = ticketFileCalls(plan);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain('planRunId=payload.plan_run.runId');
+      expect(calls[0]).not.toMatch(/destination|project|container|source/i);
+    }
   });
 
   it('quotes the reporter as untrusted evidence with the channel and message it came from', () => {

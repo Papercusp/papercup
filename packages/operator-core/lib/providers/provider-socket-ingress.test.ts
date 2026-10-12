@@ -90,6 +90,8 @@ function harness(opts: {
   openResponse?: () => Response;
   descriptor?: ProviderDescriptor;
   sources?: () => ConnectorSourceRow[];
+  /** Holds normalizing of an envelope until the returned promise settles. */
+  gate?: (envelope: Record<string, unknown>) => Promise<void>;
 } = {}): Harness {
   const sockets: FakeSocket[] = [];
   const invokes: ProviderInvokeRequest[] = [];
@@ -107,6 +109,7 @@ function harness(opts: {
         invokes.push(request);
         order.push('normalize');
         const envelope = request.args.envelope as Record<string, unknown>;
+        await opts.gate?.(envelope);
         return { records: opts.records ? opts.records(envelope) : [] };
       },
     },
@@ -195,6 +198,45 @@ describe('provider socket ingress (P-003, D-009)', () => {
     expect(h.sockets[0]!.sent).toEqual([JSON.stringify({ envelope_id: 'env-3' })]);
     expect(h.opens).toHaveLength(2);
     expect(h.invokes).toEqual([]);
+  });
+
+  it('normalizes a declared immediate envelope at once instead of behind a slow one (D-025)', async () => {
+    const envelopeIds = (h: Harness) => h.invokes.map((invoke) => (invoke.args.envelope as { envelope_id: string }).envelope_id);
+    const run = async (socketDescriptor: ProviderDescriptor) => {
+      let release!: () => void;
+      const slow = new Promise<void>((resolveSlow) => { release = resolveSlow; });
+      const h = harness({
+        descriptor: socketDescriptor,
+        gate: (envelope) => (envelope.envelope_id === 'env-slow' ? slow : Promise.resolve()),
+        records: (envelope) => [record(String(envelope.envelope_id))],
+      });
+      await h.manager.reconcile();
+      const socket = h.sockets[0]!;
+      socket.emit('message', JSON.stringify({ envelope_id: 'env-slow', type: 'events_api' }));
+      socket.emit('message', JSON.stringify({ envelope_id: 'env-queued', type: 'events_api' }));
+      socket.emit('message', JSON.stringify({ envelope_id: 'env-click', type: 'interactive' }));
+      // Every envelope is acked on arrival, whichever chain normalizes it.
+      expect(socket.sent).toHaveLength(3);
+      return { h, release };
+    };
+
+    const immediate = await run({
+      ...descriptor,
+      ingress: { socket: { ...descriptor.ingress!.socket!, immediate: { field: 'type', values: ['interactive'] } } },
+    });
+    await vi.waitFor(() => expect(immediate.h.admitted.map((r) => r.nativeId)).toEqual(['env-click']));
+    // The serialized chain still holds the envelope that arrived behind the slow one.
+    expect(envelopeIds(immediate.h)).toEqual(['env-slow', 'env-click']);
+    immediate.release();
+    await vi.waitFor(() => expect(immediate.h.admitted.map((r) => r.nativeId)).toEqual(['env-click', 'env-slow', 'env-queued']));
+
+    // Control: without the declaration the click waits its turn behind the slow envelope.
+    const serialized = await run(descriptor);
+    await vi.waitFor(() => expect(envelopeIds(serialized.h)).toEqual(['env-slow']));
+    await new Promise((settle) => setTimeout(settle, 20));
+    expect(serialized.h.admitted).toEqual([]);
+    serialized.release();
+    await vi.waitFor(() => expect(serialized.h.admitted.map((r) => r.nativeId)).toEqual(['env-slow', 'env-queued', 'env-click']));
   });
 
   it('backs off after an unexpected close instead of reconnecting in a loop', async () => {

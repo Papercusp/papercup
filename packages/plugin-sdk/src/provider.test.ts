@@ -346,6 +346,7 @@ describe('validateProviderDescriptor: ingress.socket (P-003, D-009)', () => {
   it('accepts a socket opened with a host-only setup credential, with or without ack and reconnect rules', () => {
     expect(validateProviderDescriptor(base)).toEqual([]);
     expect(validateProviderDescriptor({ ...base, ingress: { socket: { credential: 'app_token', open: { url: socket.open.url, method: 'GET', urlField: 'data.socket.url' } } } })).toEqual([]);
+    expect(withSocket({ immediate: { field: 'type', values: ['interactive'] } })).toEqual([]);
     expect(PROVIDER_INGRESS_NORMALIZE_CAPABILITY).toBe('ingress.normalize');
   });
 
@@ -382,6 +383,15 @@ describe('validateProviderDescriptor: ingress.socket (P-003, D-009)', () => {
       'provider.ingress.socket.reconnect.values repeats "disconnect"',
     );
     expect(withSocket({ reconnect: { values: ['disconnect'] } })).toContain('provider.ingress.socket.reconnect.field must be a top-level envelope field name');
+    // `immediate` is held to the same envelope-match rules as `reconnect`.
+    expect(withSocket({ immediate: ['interactive'] })).toContain('provider.ingress.socket.immediate must be an object');
+    expect(withSocket({ immediate: { field: 'payload.type', values: ['interactive'] } })).toContain(
+      'provider.ingress.socket.immediate.field must be a top-level envelope field name',
+    );
+    expect(withSocket({ immediate: { field: 'type', values: [''] } })).toContain('provider.ingress.socket.immediate.values must list at least one value');
+    expect(withSocket({ immediate: { field: 'type', values: ['interactive', 'interactive'] } })).toContain(
+      'provider.ingress.socket.immediate.values repeats "interactive"',
+    );
     expect(withSocket({ token: 'xapp-1-abc' })).toContain(
       'provider.ingress.socket.token is not allowed: a descriptor never carries a credential value',
     );
