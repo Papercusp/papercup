@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-11T05:27:20.200Z",
-  "migrationCountAtGeneration": 1238,
+  "generatedAt": "2026-10-12T11:24:19.051Z",
+  "migrationCountAtGeneration": 1255,
   "indexes": [
     {
       "schema": "audit",
@@ -2555,6 +2555,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "coord_event_log_msgs_expect_effect_idx",
+      "table": "coord_event_log",
+      "definition": "CREATE INDEX coord_event_log_msgs_expect_effect_idx ON harness_shared.coord_event_log USING btree (workspace_id) WHERE ((surface = 'messages'::text) AND (body ? 'expectEffect'::text))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "coord_event_log_msgs_from_idx",
       "table": "coord_event_log",
       "definition": "CREATE INDEX coord_event_log_msgs_from_idx ON harness_shared.coord_event_log USING btree (workspace_id, ((body ->> 'from'::text))) WHERE (surface = 'messages'::text)",
@@ -3049,6 +3056,174 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "customer_workspaces",
       "definition": "CREATE UNIQUE INDEX customer_workspaces_pkey ON harness_shared.customer_workspaces USING btree (workspace_id, id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_admins_pkey",
+      "table": "dao_hr_admins",
+      "definition": "CREATE UNIQUE INDEX dao_hr_admins_pkey ON harness_shared.dao_hr_admins USING btree (workspace_id, dao_slug, person_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_candidates_pkey",
+      "table": "dao_hr_candidates",
+      "definition": "CREATE UNIQUE INDEX dao_hr_candidates_pkey ON harness_shared.dao_hr_candidates USING btree (workspace_id, dao_slug, role_id, person_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contract_template_versions_pkey",
+      "table": "dao_hr_contract_template_versions",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contract_template_versions_pkey ON harness_shared.dao_hr_contract_template_versions USING btree (workspace_id, dao_slug, template_key, version)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contract_templates_pkey",
+      "table": "dao_hr_contract_templates",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contract_templates_pkey ON harness_shared.dao_hr_contract_templates USING btree (workspace_id, dao_slug, template_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contract_templates_slot_uniq",
+      "table": "dao_hr_contract_templates",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contract_templates_slot_uniq ON harness_shared.dao_hr_contract_templates USING btree (workspace_id, dao_slug, document_kind, engagement_type, jurisdiction, is_sample)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contracts_contract_id_key",
+      "table": "dao_hr_contracts",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contracts_contract_id_key ON harness_shared.dao_hr_contracts USING btree (contract_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contracts_envelope_id_key",
+      "table": "dao_hr_contracts",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contracts_envelope_id_key ON harness_shared.dao_hr_contracts USING btree (envelope_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_contracts_pkey",
+      "table": "dao_hr_contracts",
+      "definition": "CREATE UNIQUE INDEX dao_hr_contracts_pkey ON harness_shared.dao_hr_contracts USING btree (workspace_id, dao_slug, offer_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_counsel_approvals_pkey",
+      "table": "dao_hr_counsel_approvals",
+      "definition": "CREATE UNIQUE INDEX dao_hr_counsel_approvals_pkey ON harness_shared.dao_hr_counsel_approvals USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_counsel_approvals_version_idx",
+      "table": "dao_hr_counsel_approvals",
+      "definition": "CREATE INDEX dao_hr_counsel_approvals_version_idx ON harness_shared.dao_hr_counsel_approvals USING btree (workspace_id, dao_slug, template_key, version)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_hiring_history_pkey",
+      "table": "dao_hr_hiring_history",
+      "definition": "CREATE UNIQUE INDEX dao_hr_hiring_history_pkey ON harness_shared.dao_hr_hiring_history USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_hiring_history_subject_idx",
+      "table": "dao_hr_hiring_history",
+      "definition": "CREATE INDEX dao_hr_hiring_history_subject_idx ON harness_shared.dao_hr_hiring_history USING btree (workspace_id, dao_slug, subject_kind, subject_id, id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_issuing_entities_pkey",
+      "table": "dao_hr_issuing_entities",
+      "definition": "CREATE UNIQUE INDEX dao_hr_issuing_entities_pkey ON harness_shared.dao_hr_issuing_entities USING btree (workspace_id, dao_slug)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_offer_approvals_pkey",
+      "table": "dao_hr_offer_approvals",
+      "definition": "CREATE UNIQUE INDEX dao_hr_offer_approvals_pkey ON harness_shared.dao_hr_offer_approvals USING btree (workspace_id, dao_slug, offer_id, actor_person_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_offers_pkey",
+      "table": "dao_hr_offers",
+      "definition": "CREATE UNIQUE INDEX dao_hr_offers_pkey ON harness_shared.dao_hr_offers USING btree (workspace_id, dao_slug, offer_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_policy_audit_dao_idx",
+      "table": "dao_hr_policy_audit",
+      "definition": "CREATE INDEX dao_hr_policy_audit_dao_idx ON harness_shared.dao_hr_policy_audit USING btree (workspace_id, dao_slug, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_policy_audit_pkey",
+      "table": "dao_hr_policy_audit",
+      "definition": "CREATE UNIQUE INDEX dao_hr_policy_audit_pkey ON harness_shared.dao_hr_policy_audit USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_policy_versions_pkey",
+      "table": "dao_hr_policy_versions",
+      "definition": "CREATE UNIQUE INDEX dao_hr_policy_versions_pkey ON harness_shared.dao_hr_policy_versions USING btree (workspace_id, dao_slug, version)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_roles_pkey",
+      "table": "dao_hr_roles",
+      "definition": "CREATE UNIQUE INDEX dao_hr_roles_pkey ON harness_shared.dao_hr_roles USING btree (workspace_id, dao_slug, role_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_work_profiles_manager_idx",
+      "table": "dao_hr_work_profiles",
+      "definition": "CREATE INDEX dao_hr_work_profiles_manager_idx ON harness_shared.dao_hr_work_profiles USING btree (workspace_id, dao_slug, manager_person_id) WHERE (manager_person_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_work_profiles_member_uniq",
+      "table": "dao_hr_work_profiles",
+      "definition": "CREATE UNIQUE INDEX dao_hr_work_profiles_member_uniq ON harness_shared.dao_hr_work_profiles USING btree (workspace_id, dao_slug, member_github_user_id) WHERE (member_github_user_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_work_profiles_pkey",
+      "table": "dao_hr_work_profiles",
+      "definition": "CREATE UNIQUE INDEX dao_hr_work_profiles_pkey ON harness_shared.dao_hr_work_profiles USING btree (workspace_id, dao_slug, person_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_work_profiles_status_idx",
+      "table": "dao_hr_work_profiles",
+      "definition": "CREATE INDEX dao_hr_work_profiles_status_idx ON harness_shared.dao_hr_work_profiles USING btree (workspace_id, dao_slug, status)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "dao_hr_work_profiles_verified_wallet_uniq",
+      "table": "dao_hr_work_profiles",
+      "definition": "CREATE UNIQUE INDEX dao_hr_work_profiles_verified_wallet_uniq ON harness_shared.dao_hr_work_profiles USING btree (workspace_id, dao_slug, wallet_chain_id, wallet_address) WHERE ((wallet_verified_at IS NOT NULL) AND (wallet_address IS NOT NULL))",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -3903,6 +4078,27 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "external_prerequisite_attestations",
       "definition": "CREATE INDEX external_prerequisite_attestations_scope_expiry_key ON harness_shared.external_prerequisite_attestations USING btree (workspace_id, harness_slug, expires_at)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "fallback_observations_mechanism_time_idx",
+      "table": "fallback_observations",
+      "definition": "CREATE INDEX fallback_observations_mechanism_time_idx ON harness_shared.fallback_observations USING btree (workspace_id, mechanism, observed_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "fallback_observations_observed_at_idx",
+      "table": "fallback_observations",
+      "definition": "CREATE INDEX fallback_observations_observed_at_idx ON harness_shared.fallback_observations USING btree (observed_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "fallback_observations_pkey",
+      "table": "fallback_observations",
+      "definition": "CREATE UNIQUE INDEX fallback_observations_pkey ON harness_shared.fallback_observations USING btree (id)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
@@ -7679,6 +7875,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "plan_blind_reviews_pkey",
+      "table": "plan_blind_reviews",
+      "definition": "CREATE UNIQUE INDEX plan_blind_reviews_pkey ON harness_shared.plan_blind_reviews USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "plan_blind_reviews_plan_idx",
+      "table": "plan_blind_reviews",
+      "definition": "CREATE INDEX plan_blind_reviews_plan_idx ON harness_shared.plan_blind_reviews USING btree (workspace_id, plan_slug, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "plan_cleanup_run_findings_disposition_idx",
       "table": "plan_cleanup_run_findings",
       "definition": "CREATE INDEX plan_cleanup_run_findings_disposition_idx ON harness_shared.plan_cleanup_run_findings USING btree (workspace_id, run_id, disposition)",
@@ -10640,6 +10850,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "tool_invocations_friction_pending_expiry_idx",
+      "table": "tool_invocations",
+      "definition": "CREATE INDEX tool_invocations_friction_pending_expiry_idx ON harness_shared.tool_invocations USING btree (workspace_id, invoked_at, id) WHERE ((metadata_json ->> 'frictionCapture'::text) = 'pending'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "tool_invocations_friction_pending_idx",
+      "table": "tool_invocations",
+      "definition": "CREATE INDEX tool_invocations_friction_pending_idx ON harness_shared.tool_invocations USING btree (workspace_id, COALESCE((metadata_json ->> 'frictionAttemptAt'::text), ''::text), invoked_at, id) WHERE ((metadata_json ->> 'frictionCapture'::text) = 'pending'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "tool_invocations_goal_id_idx",
       "table": "tool_invocations",
       "definition": "CREATE INDEX tool_invocations_goal_id_idx ON harness_shared.tool_invocations USING btree (workspace_id, goal_id, invoked_at DESC) INCLUDE (coord_owner_id, goal_actor_class) WHERE (goal_id IS NOT NULL)",
@@ -10867,13 +11091,6 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "trigger_bindings_ws_work_item_idx",
       "table": "trigger_bindings",
       "definition": "CREATE INDEX trigger_bindings_ws_work_item_idx ON harness_shared.trigger_bindings USING btree (workspace_id, work_item_harness_slug, work_item_kind) WHERE ((work_item_kind IS NOT NULL) AND (detached_at IS NULL))",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_deliveries_chat_admission_failed_idx",
-      "table": "trigger_deliveries",
-      "definition": "CREATE INDEX trigger_deliveries_chat_admission_failed_idx ON harness_shared.trigger_deliveries USING btree (workspace_id, source_id, updated_at DESC) WHERE ((sink_kind = 'data-source-chat-admission'::text) AND (outcome = 'failed'::text))",
       "constraintBacked": false
     },
     {
@@ -12366,6 +12583,41 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "support_access_grants",
       "definition": "CREATE UNIQUE INDEX support_access_grants_pkey ON papercusp_auth.support_access_grants USING btree (id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "tutorial_voice_daily",
+      "table": "tutorial_voice_reservations",
+      "definition": "CREATE INDEX tutorial_voice_daily ON papercusp_auth.tutorial_voice_reservations USING btree (day)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "tutorial_voice_one_live_user",
+      "table": "tutorial_voice_reservations",
+      "definition": "CREATE UNIQUE INDEX tutorial_voice_one_live_user ON papercusp_auth.tutorial_voice_reservations USING btree (user_id) WHERE (provider_final_ref IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "tutorial_voice_reservations_pkey",
+      "table": "tutorial_voice_reservations",
+      "definition": "CREATE UNIQUE INDEX tutorial_voice_reservations_pkey ON papercusp_auth.tutorial_voice_reservations USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "tutorial_voice_unique_attempt",
+      "table": "tutorial_voice_reservations",
+      "definition": "CREATE UNIQUE INDEX tutorial_voice_unique_attempt ON papercusp_auth.tutorial_voice_reservations USING btree (issuance_attempt_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "tutorial_voice_unique_conversation",
+      "table": "tutorial_voice_reservations",
+      "definition": "CREATE UNIQUE INDEX tutorial_voice_unique_conversation ON papercusp_auth.tutorial_voice_reservations USING btree (provider_conversation_id)",
+      "constraintBacked": false
     },
     {
       "schema": "papercusp_auth",
