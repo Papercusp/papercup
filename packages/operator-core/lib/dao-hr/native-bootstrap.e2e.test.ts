@@ -55,7 +55,13 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         const child = spawn('bash', [join(root, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
           join(root, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: root,
           env: { ...env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready', VERIFY_TAURI_WINDOW: '1440x1000',
-            VERIFY_TAURI_SOURCE_INPUTS: 'packages/operator-core/lib/dao-hr/native.e2e.test.ts scripts/tauri-surface-verify-dao-hr.mts scripts/fixtures/dao-hr-documenso-ui.ts packages/operator-core/lib/dao-finance.ts',
+            VERIFY_TAURI_SOURCE_INPUTS: [
+              'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
+              'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
+              'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
+              'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
+              'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
+            ].join(','),
             NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(root, 'scripts/fixtures/dao-workbench-identity.mjs') },
           stdio: ['ignore', fd, fd] });
         code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
