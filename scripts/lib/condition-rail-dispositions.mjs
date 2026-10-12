@@ -139,7 +139,10 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
   ),
-  'log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts': migrate('P-009'),
+  // Exact frozen IDs independently reviewed in thread-post:1175595.
+  'log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts': na(
+    'seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision',
+  ),
   'log-only-fallback|packages/operator-core/lib/issues-engineer.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/learning/pot-gate/gates.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/learning/pot-gate/store.ts': migrate('P-013'),
