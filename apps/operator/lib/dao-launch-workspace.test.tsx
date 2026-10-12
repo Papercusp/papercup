@@ -157,6 +157,7 @@ describe('DAO launch checklist workspace', () => {
     expect(screen.getByRole('dialog', { name: 'Legal preparation' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(updates.mock.calls.at(-1)![0].searchParams.get('daoEdit')).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Money flow' }));
     await waitFor(() => expect(updates).toHaveBeenCalled());
     await waitFor(() => expect(updates.mock.calls.at(-1)![0].searchParams.get('daoPanel')).toBe('funding'));
@@ -195,7 +196,8 @@ describe('DAO launch checklist workspace', () => {
       return { ok: true, json: async () => ({ organization: saved }) };
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWorkspace('?daoOrg=org-1&daoPanel=governance&daoEdit=governance');
+    const updates = vi.fn();
+    renderWorkspace('?daoOrg=org-1&daoPanel=governance&daoEdit=governance', updates);
     const original = saved.sections.governance.delegation;
     for (const delegation of [!original, original]) {
       const checkbox = screen.getByRole('checkbox', { name: 'Allow vote delegation' });
@@ -204,9 +206,11 @@ describe('DAO launch checklist workspace', () => {
       expect(checkbox.getAttribute('aria-checked')).toBe(String(delegation));
       fireEvent.click(screen.getByRole('button', { name: /Save preparation/ }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(updates.mock.calls.at(-1)![0].searchParams.get('daoEdit')).toBeNull());
       expect(saved.sections.governance.delegation).toBe(delegation);
       fireEvent.click(screen.getByRole('button', { name: 'Edit governance' }));
       const dialog = await screen.findByRole('dialog', { name: 'Governance rules' });
+      await waitFor(() => expect(updates.mock.calls.at(-1)![0].searchParams.get('daoEdit')).toBe('governance'));
       expect(within(dialog).getByRole('checkbox', { name: 'Allow vote delegation' }).getAttribute('aria-checked')).toBe(String(delegation));
     }
     expect(fetchMock).toHaveBeenCalledTimes(2);
