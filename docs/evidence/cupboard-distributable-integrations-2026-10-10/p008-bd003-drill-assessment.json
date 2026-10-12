@@ -5,22 +5,22 @@
   "framework": "operational",
   "command": [
     "Real Slack post by the parent plan's drill driver su-2a4e1f4a (slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-013 BD003) into channel C0C8836LU5C at 2026-10-12T03:30:09Z",
-    "Measurement: readSlackBugTriageDrillRows + assessSlackBugTriageDrill from packages/operator-core/lib/integrations/slack-bug-triage-drill-evidence.ts (tested by slack-bug-triage-drill-evidence.test.ts), run by su-0dd6b9aa against the operator database (workspace papercusp-workspace) at 2026-10-12T04:15:46Z"
+    "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run by su-0dd6b9aa against the operator database (workspace papercusp-workspace) at 2026-10-12T04:54:14Z"
   ],
-  "startedAt": "2026-10-12T04:15:46.649Z",
-  "finishedAt": "2026-10-12T04:15:46.739Z",
+  "startedAt": "2026-10-12T04:54:14.186Z",
+  "finishedAt": "2026-10-12T04:54:14.260Z",
   "exitCode": 0,
-  "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791775809.184469 in C0C8836LU5C arrived on source f0566e25 connected through the installed slack package's provider setup, fired exactly one run (6bdb0d6b, succeeded, plan run 1335) on the installed bug-triage binding 68b68066 (installation 2e0593bb, channels [C0C8836LU5C]), and that run created Asana task 1219394945745672 in the installation's chosen project 1219381686283984. The removed in-app binding 7c3c95c0 was disarmed and ran zero times in the window 03:25Z-03:45Z.",
+  "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791775809.184469 in C0C8836LU5C arrived on source f0566e25 (kind slack, as declared) connected through the installed slack package's provider setup, fired exactly one run (6bdb0d6b, succeeded, plan run 1335) on the installed bug-triage binding 68b68066 (installation 2e0593bb, channels [C0C8836LU5C]), and that run created Asana task 1219394945745672 in the installation's chosen project 1219381686283984. The removed in-app binding 7c3c95c0 was disarmed and ran zero times in the window 03:25Z-03:45Z.",
   "assertions": [
     {
       "id": "package-socket-path",
       "passed": true,
-      "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack, credential_ref provider-setup:slack, status connected, last_error null"
+      "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
     },
     {
       "id": "chat-message-recorded",
       "passed": true,
-      "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791775809.184469"
+      "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791775809.184469:"
     },
     {
       "id": "one-run-from-installed-binding",
@@ -39,17 +39,26 @@
     }
   ],
   "plan": "cupboard-distributable-integrations-2026-10-10",
-  "items": ["P-006", "P-007", "P-008"],
-  "specs": ["SPEC-R-4-P-006", "SPEC-R-4-P-007", "SPEC-R-4-P-008"],
+  "items": [
+    "P-006",
+    "P-007",
+    "P-008"
+  ],
+  "specs": [
+    "SPEC-R-4-P-006",
+    "SPEC-R-4-P-007",
+    "SPEC-R-4-P-008"
+  ],
   "evidencePlane": "live",
   "instrument": {
-    "path": "packages/operator-core/lib/integrations/slack-bug-triage-drill-evidence.ts",
-    "testPath": "packages/operator-core/lib/integrations/slack-bug-triage-drill-evidence.test.ts"
+    "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+    "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
   },
   "drill": {
     "workspaceId": "papercusp-workspace",
+    "sourceKind": "slack",
     "channelId": "C0C8836LU5C",
-    "slackTs": "1791775809.184469",
+    "messageId": "1791775809.184469",
     "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
     "installedBindingId": "68b68066-ce37-4550-adf7-ea4824b108fa",
     "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
@@ -61,7 +70,7 @@
     "externalRef": "1219394945745672",
     "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219394945745672"
   },
-  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd003-installed-packages-slack-to-asana-live-run.json (same drill, measured by hand-run reads; this file is the same observation measured by the committed instrument)",
+  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd003-installed-packages-slack-to-asana-live-run.json (same drill, measured by hand-run reads; this file is the same observation measured by the committed instrument). Re-measured 04:54Z with the provider-neutral instrument (trigger-pack-drill-evidence.ts), which replaced slack-bug-triage-drill-evidence.ts because a provider-named module in app code breaks the shrink-only provider census.",
   "limitations": [
     "The Slack message was posted by an inline one-shot action of the drill driver, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
     "The classification step was performed by the parent plan's drill driver su-2a4e1f4a, which claimed the run's work-item WI-6554700010008784; the classifier is therefore not independent of the drill author.",
