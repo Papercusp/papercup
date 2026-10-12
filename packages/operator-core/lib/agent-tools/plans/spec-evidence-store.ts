@@ -1,7 +1,7 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
@@ -32,15 +32,17 @@ import {
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
   repoFileSetFingerprint,
+  REPO_FILE_SET_READ_LIMITS,
+  REPO_FIXTURE_READ_LIMITS,
   resolveMeasurementCommit,
   type CommittedTreeDeps,
   type CommittedTreeDiagnostics,
+  type RepoFileSetReadLimits,
 } from './committed-tree-reader';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
   buildMeasurementPin,
   diffMeasuredFiles,
-  gitBlobId,
   readMeasurementPin,
   type GitRunner,
   type MeasuredRepoFile,
@@ -245,7 +247,6 @@ export interface MeasuredRepoEvidenceFingerprints {
   environmentFingerprint?: string | null;
 }
 
-const MAX_REPO_MEASUREMENT_BYTES = 8 * 1024 * 1024;
 
 function containedBy(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -255,6 +256,7 @@ function containedBy(root: string, candidate: string): boolean {
 async function fingerprintRepoFileSet(
   repoRoot: string,
   declaredPaths: readonly string[],
+  limits: Readonly<RepoFileSetReadLimits> = REPO_FILE_SET_READ_LIMITS,
 ): Promise<{ fingerprint: string; files: Array<{ path: string; sha256: string; gitBlob: string }> }> {
   const root = await realpath(repoRoot);
   const paths = [...new Set(declaredPaths)].sort();
@@ -269,15 +271,39 @@ async function fingerprintRepoFileSet(
     const info = await stat(canonical);
     if (!info.isFile()) throw new Error(`repo_measurement_not_file:${path}`);
     totalBytes += info.size;
-    if (totalBytes > MAX_REPO_MEASUREMENT_BYTES) {
-      throw new Error(`repo_measurement_too_large:${totalBytes}>${MAX_REPO_MEASUREMENT_BYTES}`);
+    if (info.size > limits.maxFileBytes || totalBytes > limits.maxTotalBytes) {
+      throw new Error(`repo_measurement_too_large:${info.size > limits.maxFileBytes ? info.size : totalBytes}>${info.size > limits.maxFileBytes ? limits.maxFileBytes : limits.maxTotalBytes}`);
     }
-    const content = await readFile(canonical);
-    const sha256 = createHash('sha256').update(content).digest('hex');
+    // Reuse the artifact measurer's streaming/stat fence, retaining the exact digest
+    // formulas. A fixture corpus may exceed a batch, while resident payload stays 64KiB.
+    const file = await open(canonical, 'r');
+    let sha256: string;
+    let gitBlob: string;
+    try {
+      const before = await file.stat({ bigint: true });
+      if (!before.isFile() || before.size !== BigInt(info.size)) throw new Error(`repo_measurement_changed_during_read:${path}`);
+      const hash = createHash('sha256');
+      const blobHash = createHash('sha1').update(`blob ${info.size}\0`);
+      let readBytes = 0;
+      for await (const chunk of file.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+        readBytes += chunk.length;
+        if (readBytes > info.size) throw new Error(`repo_measurement_changed_during_read:${path}`);
+        hash.update(chunk);
+        blobHash.update(chunk);
+      }
+      const after = await file.stat({ bigint: true });
+      const current = await stat(canonical, { bigint: true });
+      const pin = (value: typeof before) => [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(':');
+      if (readBytes !== info.size || pin(before) !== pin(after) || pin(after) !== pin(current) || await realpath(candidate) !== canonical) {
+        throw new Error(`repo_measurement_changed_during_read:${path}`);
+      }
+      sha256 = hash.digest('hex');
+      gitBlob = blobHash.digest('hex');
+    } finally { await file.close(); }
     // The digest input stays exactly `{ path, sha256 }` so every existing fingerprint is
     // byte-identical; the git blob id rides alongside for the P-018 commit pin only.
     entries.push({ path, sha256 });
-    files.push({ path, sha256, gitBlob: gitBlobId(content) });
+    files.push({ path, sha256, gitBlob });
   }
   // One formula for the working-tree and the committed measurement (D-001), so a binding
   // reads current at commit M exactly when its stored fingerprint equals the bytes at M.
@@ -579,12 +605,13 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
     return path.slice(prefix.length + 1);
   };
   const fromRepo = (path: string) => (prefix ? `${prefix}/${path}` : path);
-  const fileSetAt = async (baseRoot: string, paths: readonly string[], atCommit: string, prefixPaths = false) => {
+  const fileSetAt = async (baseRoot: string, paths: readonly string[], atCommit: string, prefixPaths = false, limits = REPO_FILE_SET_READ_LIMITS) => {
     const measured = await fingerprintRepoFileSetAtCommit(
       prefixPaths ? repoDir : baseRoot,
       atCommit,
       prefixPaths ? paths.map(inRepo) : paths,
       deps,
+      limits,
     );
     const files = measured.files.map((file) => ({ ...file, path: prefixPaths ? fromRepo(file.path) : file.path }));
     return { fingerprint: repoFileSetFingerprint(files), files };
@@ -616,8 +643,8 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
     parsed.testPaths ? fileSetAt(root, parsed.testPaths, commit, true) : Promise.resolve(null),
     hasRepoFixturePaths(parsed)
       ? fixtureCommit
-        ? fileSetAt(fixtureRoot, fixturePaths, fixtureCommit, fixtureRoot === root)
-        : fingerprintRepoFileSet(fixtureRoot, fixturePaths)
+        ? fileSetAt(fixtureRoot, fixturePaths, fixtureCommit, fixtureRoot === root, REPO_FIXTURE_READ_LIMITS)
+        : fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS)
       : Promise.resolve(null),
   ]);
   if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
@@ -652,7 +679,7 @@ async function fingerprintRepoFilesMeasurement(
   const [source, test, fixture] = await Promise.all([
     fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
-    hasRepoFixturePaths(parsed) ? fingerprintRepoFileSet(fixtureRoot, fixturePaths) : Promise.resolve(null),
+    hasRepoFixturePaths(parsed) ? fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS) : Promise.resolve(null),
   ]);
   const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
   return {
@@ -3349,11 +3376,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH }),
                 ])].sort();
                 const fixture = await fingerprintRepoFileSetAtCommit(fixtureRoot, fixtureCommit, committedFixturePaths,
-                  committedTree ? { diagnostics: committedTree } : {});
+                  committedTree ? { diagnostics: committedTree } : {}, REPO_FIXTURE_READ_LIMITS);
                 fixtureFingerprint = fixture.fingerprint;
                 fixtureFiles = fixture.files;
               } else {
-                const fixture = await fingerprintRepoFileSet(fixtureRoot, fixturePaths);
+                const fixture = await fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS);
                 fixtureFingerprint = fixture.fingerprint;
                 fixtureFiles = fixture.files;
               }
