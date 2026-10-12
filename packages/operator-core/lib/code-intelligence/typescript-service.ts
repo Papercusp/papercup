@@ -17,7 +17,8 @@
  *    file is served as its re-export statements alone (see `reExportStub`).
  */
 import { createRequire } from 'node:module';
-import { isAbsolute, join, relative } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type * as TsModule from 'typescript';
 import type { SymbolSite } from './contracts';
 
@@ -56,14 +57,43 @@ export interface TsTree {
 }
 
 /** The root tsconfig's compiler options (when it has one), widened to read JS and never emit. */
-function treeOptions(ts: Ts, root: string): TsModule.CompilerOptions {
+function treeOptions(ts: Ts, root: string, filesystem: TsModule.System = ts.sys): TsModule.CompilerOptions {
   const configPath = join(root, 'tsconfig.json');
   let options: TsModule.CompilerOptions = {};
-  if (ts.sys.fileExists(configPath)) {
-    const read = ts.readConfigFile(configPath, ts.sys.readFile);
-    if (!read.error) options = ts.parseJsonConfigFileContent(read.config, ts.sys, root).options;
+  if (filesystem.fileExists(configPath)) {
+    const read = ts.readConfigFile(configPath, filesystem.readFile);
+    if (!read.error) options = ts.parseJsonConfigFileContent(read.config, filesystem, root).options;
   }
   return { ...options, allowJs: true, checkJs: false, noEmit: true, skipLibCheck: true };
+}
+
+/** Optional registry-authorized read boundary, including compiler config and symlink targets. */
+function scopedCompilerFilesystem(ts: Ts, readRoots: readonly string[] | undefined): TsModule.System {
+  if (readRoots === undefined) return ts.sys;
+  const canonical = (path: string): string | null => {
+    try { return realpathSync(path); } catch { return null; }
+  };
+  const roots = readRoots.map(root => canonical(resolve(root))).filter((root): root is string => root !== null);
+  // The pinned compiler's standard library is trusted infrastructure, not a repository cohort.
+  const standardLibrary = canonical(dirname(ts.getDefaultLibFilePath({})));
+  if (standardLibrary) roots.push(standardLibrary);
+  const contains = (root: string, path: string) => {
+    const rel = relative(root, path);
+    return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\'));
+  };
+  const allowed = (path: string) => {
+    const physical = canonical(resolve(path));
+    return physical !== null && roots.some(root => contains(root, physical));
+  };
+  return {
+    ...ts.sys,
+    fileExists: path => allowed(path) && ts.sys.fileExists(path),
+    readFile: path => allowed(path) ? ts.sys.readFile(path) : undefined,
+    directoryExists: path => allowed(path) && (ts.sys.directoryExists?.(path) ?? false),
+    getDirectories: path => allowed(path) ? ts.sys.getDirectories(path).filter(dir => allowed(join(path, dir))) : [],
+    readDirectory: (path, ...args) => allowed(path) ? ts.sys.readDirectory(path, ...args).filter(allowed) : [],
+    realpath: path => allowed(path) ? (ts.sys.realpath?.(path) ?? path) : path,
+  };
 }
 
 function serviceOver(
@@ -71,8 +101,9 @@ function serviceOver(
   root: string,
   files: readonly string[],
   textOf: (fileName: string) => string | undefined,
+  filesystem: TsModule.System = ts.sys,
 ): TsModule.LanguageService {
-  const options = treeOptions(ts, root);
+  const options = treeOptions(ts, root, filesystem);
   const snapshots = new Map<string, TsModule.IScriptSnapshot | undefined>();
   const host: TsModule.LanguageServiceHost = {
     getScriptFileNames: () => [...files],
@@ -87,12 +118,12 @@ function serviceOver(
     getCurrentDirectory: () => root,
     getCompilationSettings: () => options,
     getDefaultLibFileName: (o) => ts.getDefaultLibFilePath(o),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
-    realpath: ts.sys.realpath,
+    fileExists: filesystem.fileExists,
+    readFile: filesystem.readFile,
+    readDirectory: filesystem.readDirectory,
+    directoryExists: filesystem.directoryExists,
+    getDirectories: filesystem.getDirectories,
+    realpath: filesystem.realpath,
   };
   return ts.createLanguageService(host, ts.createDocumentRegistry());
 }
@@ -153,11 +184,13 @@ export function openScopedTsTree(
   root: string,
   rootFiles: readonly string[],
   stub: StubFn = reExportStub,
+  readRoots?: readonly string[],
 ): ScopedTsTree {
+  const filesystem = scopedCompilerFilesystem(ts, readRoots);
   const full = new Set(rootFiles);
   let stubbed = 0;
   const textOf = (f: string): string | undefined => {
-    const text = ts.sys.readFile(f);
+    const text = filesystem.readFile(f);
     if (text === undefined || full.has(f) || f.split('/').includes('node_modules')) return text;
     stubbed += 1;
     return stub(ts, f, text);
@@ -165,7 +198,7 @@ export function openScopedTsTree(
   return {
     ts,
     root,
-    service: serviceOver(ts, root, rootFiles, textOf),
+    service: serviceOver(ts, root, rootFiles, textOf, filesystem),
     fileCount: rootFiles.length,
     rootFiles: full,
     stubbedFiles: () => stubbed,
