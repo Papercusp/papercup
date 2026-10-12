@@ -48,6 +48,7 @@ import { DEFAULT_COORD_WORKSPACE, withPgContentionRetry } from '@papercusp/coord
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
+import { observeFallback } from './degradation/fallback-observations';
 import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
@@ -471,7 +472,9 @@ async function refreshIssuesPerWorkspace(): Promise<void> {
   try {
     const on = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
     issuesPerWorkspaceCache.set(ws, { on, readAtMs: Date.now() });
+    observeFallback('workspace-routing-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'issue-partition-flag' }, { workspaceId: ws });
   } catch (err) {
+    observeFallback('workspace-routing-read', { eligible: 1, applied: 0, reason: 'issue-partition-read-failed', scope: 'issue-partition-flag' }, { workspaceId: ws });
     // Fail-CLOSED to the legacy shared partition, and unlike workspace-brain-scope's latch this
     // error value is deliberately allowed to cache: the TTL bounds it to ISSUES_FLAG_TTL_MS, so it
     // self-heals in ~3s rather than pinning the process (cf. EI-19455760069884279).
