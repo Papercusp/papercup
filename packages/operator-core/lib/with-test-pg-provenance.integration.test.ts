@@ -1,7 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 const run = promisify(execFile);
@@ -95,6 +96,45 @@ describe('private PostgreSQL pool admission', () => {
 });
 
 describe('isolated PostgreSQL mutation evidence', () => {
+  it.each([true, false])('keeps committed-source receipts optional across the private runtime (configured=%s)', async configured => {
+    const directory = mkdtempSync(join(tmpdir(), 'private-pg-source-audit-'));
+    const auditPath = join(directory, 'load-receipts.jsonl');
+    const env = { ...process.env };
+    if (configured) env.PAPERCUSP_COMMITTED_SOURCE_AUDIT = auditPath;
+    else delete env.PAPERCUSP_COMMITTED_SOURCE_AUDIT;
+    env.PAPERCUSP_SUBSTRATE_IPC_SOCKET = '/ambient/operator.sock';
+    const child = `
+      import assert from 'node:assert/strict';
+      assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
+      assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_AUDIT, ${JSON.stringify(configured ? auditPath : undefined)});
+      await import('./scripts/lib/pg-url.mjs');
+      console.log('PRIVATE_SOURCE_AUDIT_RESULT=' + JSON.stringify({ pid: process.pid }));
+    `;
+    try {
+      const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime', '--', process.execPath,
+        '--import', join(root, 'scripts/lib/committed-source-loader.mjs'),
+        '--input-type=module', '-e', child], {
+        cwd: root, env, timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+      });
+      const line = stdout.split('\n').find(line => line.startsWith('PRIVATE_SOURCE_AUDIT_RESULT='));
+      expect(line).toBeDefined();
+      const { pid } = JSON.parse(line!.slice('PRIVATE_SOURCE_AUDIT_RESULT='.length));
+      if (configured) {
+        const records = readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(records.find(record => record.pid === pid && record.file === join(root, 'scripts/lib/pg-url.mjs'))).toMatchObject({
+          schemaVersion: 'committed-source-load-receipt-v1', boundary: 'node-esm-load-return',
+          returnedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+      } else {
+        expect(existsSync(auditPath)).toBe(false);
+      }
+      expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 200_000);
+
   it('preserves reporter provenance while replacing ambient product endpoints and identity', async () => {
     const probe = {
       PAPERCUSP_MUTATION_PROBE: '1',
