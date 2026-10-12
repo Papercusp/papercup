@@ -1294,6 +1294,37 @@ const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlar
 );
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
+// Every 6h (:35, off the :50 growth alarm): disk consumer census
+// (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Writes what is filling each
+// watched device (du at idle I/O priority + Postgres/Docker through their APIs) to
+// harness_shared.disk_census_* so storage:census can show each consumer's size and
+// 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
+// read's 18–30h baseline window. Per-device failures are recorded, never thrown.
+async function diskConsumerCensusTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('disk-consumer-census')) return;
+      const { runDiskConsumerCensusOnce } = await import('../storage/disk-consumer-census');
+      const r = await runDiskConsumerCensusOnce();
+      if (r.skipped) return;
+      for (const run of r.runs) {
+        console.log(
+          `[disk-consumer-census] ${run.device}: ${run.consumers} consumer(s), unattributed ${(run.unattributedBytes / 1024 ** 3).toFixed(1)}GiB, ${run.complete ? 'complete' : 'INCOMPLETE'} in ${Math.round(run.durationMs / 1000)}s`,
+        );
+      }
+      for (const f of r.failures) console.warn(`[disk-consumer-census] ${f.device} failed: ${f.error}`);
+    },
+    { name: 'disk-consumer-census' },
+  );
+}
+const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensus', () =>
+  DBOS.registerWorkflow(diskConsumerCensusTick, {
+    name: 'diskConsumerCensus',
+    maxRecoveryAttempts: 3,
+  }),
+);
+DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
+
 // Hourly (:40, off the :00/:50 stampede): replication-slot WAL-retention alarm
 // (infra-perf-reliability-audit-round4 P-009 / D-004). READ-ONLY pg_replication_slots
 // check; emits a notifications:recent toast when a slot pins WAL past its ceiling —

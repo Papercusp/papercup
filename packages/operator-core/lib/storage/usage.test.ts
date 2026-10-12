@@ -43,7 +43,19 @@ vi.mock('./disk', () => ({
   },
 }));
 
-import { computeStorageUsage, sumStorageUsageTotalBytes, TRIM_THRESHOLD_DAYS } from './usage';
+import {
+  attributeOwnFiles,
+  censusDepth,
+  computeStorageUsage,
+  deviceMountRoot,
+  devToMajorMinor,
+  DuTreeAccumulator,
+  joinCensusGrowth,
+  parseMountInfo,
+  sortCensusRows,
+  sumStorageUsageTotalBytes,
+  TRIM_THRESHOLD_DAYS,
+} from './usage';
 import { STORAGE_CATEGORIES } from './categories';
 
 beforeEach(() => {
@@ -141,5 +153,112 @@ describe('computeStorageUsage', () => {
   it('does not report a numeric aggregate when one category size is unknown', () => {
     expect(sumStorageUsageTotalBytes([{ totalBytes: 100 }, { totalBytes: null }])).toBeNull();
     expect(sumStorageUsageTotalBytes([{ totalBytes: 100 }, { totalBytes: 25 }])).toBe(125);
+  });
+});
+
+// ── Disk consumer census, pure half (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1) ──
+describe('disk consumer census attribution', () => {
+  const G = 1024 ** 3;
+  const M = 1024 ** 2;
+  // du prints children before parents (post-order); this is the shape of
+  // `du -x -0 -B1 --max-depth=3 /mnt/data` split on NUL.
+  const duRecords = [
+    `${12 * G}\t/mnt/data/offload/relcut-0026`,
+    `${300 * M}\t/mnt/data/offload/small`,
+    `${12 * G + 300 * M + 2 * G}\t/mnt/data/offload`, // 2 GiB of files directly in offload
+    `${5 * G}\t/mnt/data/Backup/kopia`,
+    `${5 * G}\t/mnt/data/Backup`,
+    `${12 * G + 300 * M + 2 * G + 5 * G + 1024 * G}\t/mnt/data`, // + a 1 TiB swapfile at the root
+  ];
+
+  it('lists every directory at or above the floor with its depth below the mount', () => {
+    const acc = new DuTreeAccumulator('/mnt/data', { floorBytes: G, maxDepth: 3 });
+    for (const r of duRecords) acc.addRecord(r);
+    const s = acc.result();
+    expect(s.rootBytes).toBe(12 * G + 300 * M + 2 * G + 5 * G + 1024 * G);
+    const byPath = new Map(s.consumers.map((c) => [c.consumer, c]));
+    expect(byPath.get('/mnt/data/offload/relcut-0026')).toMatchObject({ kind: 'dir', depth: 2, bytes: 12 * G });
+    expect(byPath.get('/mnt/data/Backup/kopia')).toMatchObject({ depth: 2, bytes: 5 * G });
+    expect(byPath.get('/mnt/data')).toMatchObject({ depth: 0 });
+    expect(byPath.has('/mnt/data/offload/small')).toBe(false); // under the floor
+    expect(s.records).toBe(duRecords.length);
+  });
+
+  it("finds a directory's own files (size minus child directories) so a large file at any listed level is attributed", () => {
+    const acc = new DuTreeAccumulator('/mnt/data', { floorBytes: G, maxDepth: 3 });
+    for (const r of duRecords) acc.addRecord(r);
+    const own = new Map(acc.result().ownFiles.map((o) => [o.dir, o]));
+    expect(own.get('/mnt/data')?.bytes).toBe(1024 * G); // the swapfile
+    expect(own.get('/mnt/data/offload')?.bytes).toBe(2 * G);
+    expect(own.has('/mnt/data/Backup')).toBe(false); // all of Backup is its child directory
+  });
+
+  it('splits own files into named large files plus one remainder row', () => {
+    const rows = attributeOwnFiles(
+      { dir: '/mnt/data', depth: 0, bytes: 1026 * G },
+      [
+        { path: '/mnt/data/swapfile', bytes: 1024 * G },
+        { path: '/mnt/data/notes.txt', bytes: 4096 },
+      ],
+      G,
+    );
+    expect(rows).toEqual([
+      { consumer: '/mnt/data/swapfile', kind: 'file', depth: 1, bytes: 1024 * G },
+      // The small file stays inside the remainder: only files at the floor get their own row.
+      { consumer: '/mnt/data/*', kind: 'files', depth: 1, bytes: 2 * G },
+    ]);
+    expect(attributeOwnFiles({ dir: '/', depth: 0, bytes: 3 * G }, [], G)).toEqual([
+      { consumer: '/*', kind: 'files', depth: 1, bytes: 3 * G },
+    ]);
+  });
+
+  it('ignores records outside the mount root and malformed records', () => {
+    const acc = new DuTreeAccumulator('/', { floorBytes: G, maxDepth: 2 });
+    acc.addRecord('not-a-record');
+    acc.addRecord('abc\t/home');
+    acc.addRecord(`${2 * G}\t/home`);
+    acc.addRecord(`${3 * G}\t/`);
+    const s = acc.result();
+    expect(s.records).toBe(2);
+    expect(s.consumers.map((c) => [c.consumer, c.depth])).toEqual([['/home', 1], ['/', 0]]);
+    expect(censusDepth('/mnt/data', '/mnt/database')).toBeNull();
+    expect(censusDepth('/', '/home/a/b')).toBe(3);
+  });
+
+  it('computes 24h growth by consumer key, null when the consumer was not listed at the baseline', () => {
+    const latest = [
+      { consumer: '/var/lib/x', kind: 'dir' as const, depth: 3, bytes: 30 * G },
+      { consumer: '/home/u/new', kind: 'dir' as const, depth: 3, bytes: 4 * G },
+      { consumer: 'docker:volumes', kind: 'docker' as const, depth: 0, bytes: 20 * G },
+    ];
+    const baseline = [
+      { consumer: '/var/lib/x', kind: 'dir' as const, depth: 3, bytes: 10 * G },
+      { consumer: 'docker:volumes', kind: 'docker' as const, depth: 0, bytes: 25 * G },
+    ];
+    const rows = joinCensusGrowth(latest, baseline);
+    expect(rows.map((r) => [r.consumer, r.growth24hBytes])).toEqual([
+      ['/var/lib/x', 20 * G],
+      ['/home/u/new', null],
+      ['docker:volumes', -5 * G],
+    ]);
+    expect(joinCensusGrowth(latest, null).every((r) => r.baselineBytes === null && r.growth24hBytes === null)).toBe(true);
+    expect(sortCensusRows(rows, 'growth').map((r) => r.consumer)).toEqual(['/var/lib/x', 'docker:volumes', '/home/u/new']);
+    expect(sortCensusRows(rows, 'bytes').map((r) => r.consumer)).toEqual(['/var/lib/x', 'docker:volumes', '/home/u/new']);
+  });
+
+  it('resolves a bind-mounted subdirectory to the mount that shows the whole device', () => {
+    const mountinfo = [
+      '26 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw',
+      '40 26 259:0 /tmpdir /tmp rw,relatime shared:20 - xfs /dev/nvme1n1 rw',
+      '41 26 259:0 / /mnt/data rw,relatime shared:21 - xfs /dev/nvme1n1 rw',
+      '42 26 0:5 / /dev\\040space rw - devtmpfs udev rw',
+    ].join('\n');
+    const entries = parseMountInfo(mountinfo);
+    expect(deviceMountRoot(entries, '259:0')).toBe('/mnt/data');
+    expect(deviceMountRoot(entries, '259:2')).toBe('/');
+    expect(deviceMountRoot(entries, '8:1')).toBeNull();
+    expect(entries.find((e) => e.majorMinor === '0:5')?.mountPoint).toBe('/dev space');
+    expect(devToMajorMinor(66304)).toBe('259:0');
+    expect(devToMajorMinor(66306)).toBe('259:2');
   });
 });

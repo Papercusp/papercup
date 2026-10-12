@@ -1795,6 +1795,7 @@ import './lexicon/active_pack';
 // category + the safe prune-by-category-and-age executor behind the Settings →
 // Storage page (federated categories refused; default keep-all).
 import './storage/usage';
+import './storage/census';
 import './storage/prune';
 
 // access:* (external-app-access-to-workspaces-2026-09-29 P-012) — local-only list /

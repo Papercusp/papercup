@@ -387,3 +387,208 @@ export async function computeStorageUsage(
   }
   return selectedCategories.map((cat) => out.get(cat.id)!);
 }
+
+/* ─────────────────────── Disk consumer census (pure half) ───────────────────────
+ *
+ * disk-headroom-standing-reclaim-2026-10-12 P-001 (R-1). The categories above
+ * answer "how big is each store Papercusp REGISTERED"; the census answers the
+ * device-level question the 2026-10-12 / incident needed and nothing could
+ * answer: what is filling each watched device, and what grew in the last 24h.
+ *
+ * This half is pure (attribution of one `du` tree + the 24h growth join) so it
+ * is unit-tested here; the I/O half — running du, sizing PG and docker through
+ * their own APIs, writing/reading the census tables, the schedule — lives in
+ * ./disk-consumer-census.ts.
+ */
+
+export type CensusConsumerKind = 'dir' | 'files' | 'file' | 'postgres' | 'docker' | 'unattributed';
+
+export interface CensusConsumer {
+  /** Absolute path for du-measured rows; a `postgres:` / `docker:` key for API-sized stores. */
+  consumer: string;
+  kind: CensusConsumerKind;
+  /** Path depth below the device mount point (0 = the mount point). API rows use 0. */
+  depth: number;
+  bytes: number;
+}
+
+/** A consumer is listed when it holds at least this many bytes. */
+export const CENSUS_FLOOR_BYTES = 1024 ** 3;
+/** du is asked for directories down to this depth below the mount point. */
+export const CENSUS_MAX_DEPTH = 6;
+/** R-1 falsifier: a consumer above this size the census does not list. Unattributed
+ *  bytes at or above it mean such a consumer can exist — the read flags a coverage gap. */
+export const CENSUS_COVERAGE_GAP_BYTES = 10 * 1024 ** 3;
+
+/** Depth of `path` below `mountRoot`: 0 for the root itself, null when outside it. */
+export function censusDepth(mountRoot: string, path: string): number | null {
+  const root = mountRoot.length > 1 ? mountRoot.replace(/\/+$/, '') : mountRoot;
+  if (path === root) return 0;
+  const prefix = root === '/' ? '/' : `${root}/`;
+  if (!path.startsWith(prefix)) return null;
+  return path.slice(prefix.length).split('/').filter(Boolean).length;
+}
+
+function censusParent(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i <= 0 ? '/' : path.slice(0, i);
+}
+
+/** Directory a census row's own-files residual is keyed under (`/home/x/*`). */
+export function censusFilesKey(dir: string): string {
+  return dir === '/' ? '/*' : `${dir}/*`;
+}
+
+export interface DuTreeSummary {
+  /** du's total for the mount point, or null when du never printed it (killed/failed). */
+  rootBytes: number | null;
+  /** Every directory at or above the floor, down to the max depth. */
+  consumers: CensusConsumer[];
+  /** Directories (above the max depth) whose OWN files — not subdirectories — reach the floor. */
+  ownFiles: Array<{ dir: string; depth: number; bytes: number }>;
+  /** Records accepted (inside the mount root). */
+  records: number;
+}
+
+/**
+ * Streams `du -x -0 -B1 --max-depth=N <root>` records into a consumer tree.
+ * du prints a directory after all of its children, so when a directory's own
+ * record arrives the sum of its child directories is already known and its
+ * own-files residual (`size - Σ children`) is exact. Memory stays bounded: a
+ * directory's child sum is dropped as soon as the directory itself is printed.
+ */
+export class DuTreeAccumulator {
+  private readonly childSum = new Map<string, number>();
+  private readonly consumers: CensusConsumer[] = [];
+  private readonly ownFiles: DuTreeSummary['ownFiles'] = [];
+  private rootBytes: number | null = null;
+  private records = 0;
+
+  constructor(
+    private readonly mountRoot: string,
+    private readonly opts: { floorBytes: number; maxDepth: number } = {
+      floorBytes: CENSUS_FLOOR_BYTES,
+      maxDepth: CENSUS_MAX_DEPTH,
+    },
+  ) {}
+
+  /** One `<bytes>\t<path>` record (du -0 output split on NUL). Malformed records are ignored. */
+  addRecord(record: string): void {
+    const tab = record.indexOf('\t');
+    if (tab <= 0) return;
+    const bytes = Number(record.slice(0, tab));
+    const path = record.slice(tab + 1).replace(/\n$/, '');
+    if (!Number.isFinite(bytes) || bytes < 0 || !path) return;
+    this.add(bytes, path);
+  }
+
+  add(bytes: number, path: string): void {
+    const depth = censusDepth(this.mountRoot, path);
+    if (depth === null) return;
+    this.records += 1;
+    if (depth === 0) this.rootBytes = bytes;
+    else {
+      const parent = censusParent(path);
+      this.childSum.set(parent, (this.childSum.get(parent) ?? 0) + bytes);
+    }
+    if (bytes >= this.opts.floorBytes) this.consumers.push({ consumer: path, kind: 'dir', depth, bytes });
+    if (depth < this.opts.maxDepth) {
+      const own = bytes - (this.childSum.get(path) ?? 0);
+      this.childSum.delete(path);
+      if (own >= this.opts.floorBytes) this.ownFiles.push({ dir: path, depth, bytes: own });
+    }
+  }
+
+  result(): DuTreeSummary {
+    return { rootBytes: this.rootBytes, consumers: [...this.consumers], ownFiles: [...this.ownFiles], records: this.records };
+  }
+}
+
+/**
+ * Split a directory's own-files residual into the large files that make it up
+ * (each its own `file` row) and the remainder (one `files` row). `files` are the
+ * directory's immediate regular files with ALLOCATED sizes (st_blocks × 512), the
+ * same unit du reports, so the remainder is exact.
+ */
+export function attributeOwnFiles(
+  own: { dir: string; depth: number; bytes: number },
+  files: ReadonlyArray<{ path: string; bytes: number }>,
+  floorBytes: number = CENSUS_FLOOR_BYTES,
+): CensusConsumer[] {
+  const big = files.filter((f) => f.bytes >= floorBytes).sort((a, b) => b.bytes - a.bytes);
+  const out: CensusConsumer[] = big.map((f) => ({ consumer: f.path, kind: 'file', depth: own.depth + 1, bytes: f.bytes }));
+  const rest = own.bytes - big.reduce((a, f) => a + f.bytes, 0);
+  if (rest >= floorBytes) out.push({ consumer: censusFilesKey(own.dir), kind: 'files', depth: own.depth + 1, bytes: rest });
+  return out;
+}
+
+export interface CensusGrowthRow extends CensusConsumer {
+  /** Size in the baseline run (≈24h earlier); null when the consumer was not listed then. */
+  baselineBytes: number | null;
+  /** bytes − baselineBytes; null without a baseline row (new, or under the floor 24h ago). */
+  growth24hBytes: number | null;
+}
+
+/** Join the latest run's consumers with the baseline run's on the consumer key. */
+export function joinCensusGrowth(
+  latest: readonly CensusConsumer[],
+  baseline: readonly CensusConsumer[] | null,
+): CensusGrowthRow[] {
+  const before = new Map((baseline ?? []).map((c) => [c.consumer, c.bytes]));
+  return latest.map((c) => {
+    const b = before.get(c.consumer);
+    return { ...c, baselineBytes: b ?? null, growth24hBytes: b === undefined ? null : c.bytes - b };
+  });
+}
+
+/** Largest first, or fastest-growing first (rows without a baseline last, then by size). */
+export function sortCensusRows(rows: readonly CensusGrowthRow[], orderBy: 'bytes' | 'growth' = 'bytes'): CensusGrowthRow[] {
+  const copy = [...rows];
+  if (orderBy === 'growth') {
+    return copy.sort((a, b) => {
+      if (a.growth24hBytes === null && b.growth24hBytes === null) return b.bytes - a.bytes;
+      if (a.growth24hBytes === null) return 1;
+      if (b.growth24hBytes === null) return -1;
+      return b.growth24hBytes - a.growth24hBytes;
+    });
+  }
+  return copy.sort((a, b) => b.bytes - a.bytes);
+}
+
+/** One mount from /proc/self/mountinfo. */
+export interface MountInfoEntry {
+  /** `major:minor` of the backing device. */
+  majorMinor: string;
+  /** Path inside the filesystem that is mounted here (`/` for the filesystem root). */
+  root: string;
+  mountPoint: string;
+}
+
+const unescapeMountField = (s: string): string => s.replace(/\\([0-7]{3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)));
+
+export function parseMountInfo(text: string): MountInfoEntry[] {
+  const out: MountInfoEntry[] = [];
+  for (const line of text.split('\n')) {
+    const f = line.split(' ');
+    if (f.length < 5 || !/^\d+:\d+$/.test(f[2] ?? '')) continue;
+    out.push({ majorMinor: f[2]!, root: unescapeMountField(f[3]!), mountPoint: unescapeMountField(f[4]!) });
+  }
+  return out;
+}
+
+/** The mount point that shows a device's WHOLE filesystem (root `/`), so a bind
+ *  mount of a subdirectory (e.g. /tmp on the /mnt/data disk) resolves to the
+ *  real root and the census walks the entire device. Null when none is visible. */
+export function deviceMountRoot(entries: readonly MountInfoEntry[], majorMinor: string): string | null {
+  const whole = entries.filter((e) => e.majorMinor === majorMinor && e.root === '/');
+  if (whole.length === 0) return null;
+  return whole.map((e) => e.mountPoint).sort((a, b) => a.length - b.length)[0]!;
+}
+
+/** Linux st_dev → `major:minor` (glibc gnu_dev_major/minor encoding). */
+export function devToMajorMinor(dev: number | bigint): string {
+  const d = BigInt(dev);
+  const major = ((d >> 8n) & 0xfffn) | ((d >> 32n) & ~0xfffn);
+  const minor = (d & 0xffn) | ((d >> 12n) & ~0xffn);
+  return `${major}:${minor}`;
+}

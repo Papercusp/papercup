@@ -176,6 +176,8 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   trigger_deliveries:
     'payload pruned by external-triggers/delivery-retention.ts pruneTriggerDeliveryPayloads (30d horizon; non-event-bus copies immediately); rows kept as per-sink dedupe identity',
   coord_thread_posts: 'pruned by agent-tools/coordination/message-log-gc.ts',
+  disk_census_runs: 'pruned by storage/disk-consumer-census.ts pruneDiskCensus (CENSUS_RETENTION_DAYS=30)',
+  disk_census_consumers: 'cascade-deleted with disk_census_runs by storage/disk-consumer-census.ts pruneDiskCensus',
   session_archive_files: `permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; ${NOT_AGE_PRUNABLE}`,
   session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
   session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
