@@ -19,7 +19,9 @@ function snapshot(over: Partial<IdleQueueSnapshot> = {}): IdleQueueSnapshot {
     repairHead: 'f07043bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     phase: 'awaiting-fixer',
     openedAtMs: OPENED,
+    lastAdmittedAtMs: null,
     lastResumeRunStartedAtMs: null,
+    runInFlight: false,
     failingLegs: 3,
     fixerSpawnId: null,
     fixerAlive: null,
@@ -144,6 +146,36 @@ describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
     expect(f.messages[0].body).toContain('release:checkpoint-run');
     expect(f.messages[0].body).toContain('f07043bbbbbb');
     expect(f.state.episode?.rungs['dispatch-fixer']?.outcome).toBe('not-applicable');
+  });
+
+  it('a recent admission resets idle time even when the queue itself is old', async () => {
+    const admittedAt = OPENED + 100 * MIN;
+    const f = fixture(snapshot({
+      phase: 'ready-to-verify',
+      lastAdmittedAtMs: admittedAt,
+      lastResumeRunStartedAtMs: OPENED + 20 * MIN,
+    }));
+
+    expect((await f.at(150)).decision).toBe('not-idle'); // 50 minutes since admission
+    expect(f.calls).toEqual([]);
+    await f.at(161);
+    expect(f.calls).toEqual(['wake-gate-owner:su-gate-holder']);
+  });
+
+  it('never recommends another checkpoint run while the checkpoint run lock is held', async () => {
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight: true }));
+
+    expect((await f.at(61)).decision).toBe('not-idle');
+    expect(f.calls).toEqual([]);
+    expect(f.state.episode).toBeNull();
+  });
+
+  it('preserves an aged episode without acting when checkpoint run-lock state is unknown', async () => {
+    const f = fixture(snapshot({ phase: 'ready-to-verify', runInFlight: null }));
+
+    expect((await f.at(61)).decision).toBe('wait');
+    expect(f.calls).toEqual([]);
+    expect(f.state.episode).not.toBeNull();
   });
 
   it('a round starting ends the episode; the next stall climbs the ladder again from rung 1', async () => {

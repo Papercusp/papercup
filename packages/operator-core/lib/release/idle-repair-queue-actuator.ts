@@ -27,11 +27,12 @@
  *
  * ## The idle episode
  *
- * An episode is keyed by `(candidate, idleSinceMs)` where `idleSinceMs` is the later of the
- * queue's `openedAtMs` and its `lastResumeRunStartedAtMs`. A new round starting moves
- * `idleSinceMs`, which starts a fresh episode, so a queue that keeps stalling is acted on again,
- * once per stall, never once per tick. With all three rungs spent the episode is `exhausted` and
- * the actuator stays silent until the queue moves.
+ * An episode is keyed by `(candidate, idleSinceMs)` where `idleSinceMs` is the latest of the
+ * queue's open, admission, and repair-verification-start timestamps. A new admission or round
+ * starting moves `idleSinceMs`, which starts a fresh episode, so a queue that keeps stalling is
+ * acted on again, once per stall, never once per tick. A checkpoint run lock also suppresses
+ * action while any scheduled or manual suite is active. With all three rungs spent the episode
+ * is `exhausted` and the actuator stays silent until the queue moves.
  *
  * The decision half ({@link decideIdleQueueAction}) is PURE. The pass
  * ({@link runIdleQueueActuatorPass}) takes every effect as an injected dependency, so the
@@ -74,7 +75,10 @@ export interface IdleQueueSnapshot {
   repairHead: string;
   phase: string;
   openedAtMs: number;
+  lastAdmittedAtMs: number | null;
   lastResumeRunStartedAtMs: number | null;
+  /** null = the run-lock probe failed, so the actuator must preserve state without acting. */
+  runInFlight: boolean | null;
   /** Failing legs still outstanding on the frozen candidate (the queue's `failingTests`). */
   failingLegs: number;
   fixerSpawnId: string | null;
@@ -144,7 +148,11 @@ export function decideIdleQueueAction(
   if (s.phase === 'ready-to-promote') return { kind: 'not-idle', reason: 'queue is ready to promote' };
   if (s.failingLegs <= 0) return { kind: 'not-idle', reason: 'no failing legs outstanding' };
 
-  const idleSinceMs = Math.max(s.openedAtMs, s.lastResumeRunStartedAtMs ?? 0);
+  const idleSinceMs = Math.max(
+    s.openedAtMs,
+    s.lastAdmittedAtMs ?? 0,
+    s.lastResumeRunStartedAtMs ?? 0,
+  );
   const idleMs = nowMs - idleSinceMs;
   if (!(idleMs > IDLE_REPAIR_QUEUE_MS)) {
     return { kind: 'not-idle', reason: `last round started ${hoursText(Math.max(0, idleMs))} ago` };
@@ -154,6 +162,18 @@ export function decideIdleQueueAction(
     prior && prior.candidate === s.candidate && prior.idleSinceMs === idleSinceMs
       ? { ...prior, rungs: { ...prior.rungs } }
       : { candidate: s.candidate, idleSinceMs, rungs: {} };
+
+  if (s.runInFlight === true) {
+    return { kind: 'not-idle', reason: 'a checkpoint run is in flight' };
+  }
+  if (s.runInFlight === null) {
+    return {
+      kind: 'wait',
+      reason: 'checkpoint run lock could not be measured; preserving the idle episode without acting',
+      episode,
+      nextRungAtMs: nowMs + IDLE_PASS_LEASE_MS,
+    };
+  }
 
   for (const rung of IDLE_QUEUE_RUNGS) {
     const rec = episode.rungs[rung];
@@ -462,12 +482,25 @@ export async function checkIdleRepairQueue(
           : null;
         const own = await readGateOwnership({ harness: installSlug }).catch(() => null);
         const holderState = own?.holderSessionState ?? null;
+        let runInFlight: boolean | null = null;
+        try {
+          const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }] = await Promise.all([
+            import('../release-deploy-launch'),
+            import('../release-checkpoint-launch'),
+          ]);
+          runInFlight = isCheckpointRunLockHeldCheap(integrationRoot()).held;
+        } catch {
+          // Unknown is distinct from idle: do not wake the gate owner or recommend a refire.
+          runInFlight = null;
+        }
         return {
           candidate: queue.candidate,
           repairHead: queue.repairHead,
           phase: queue.phase,
           openedAtMs: queue.openedAtMs,
+          lastAdmittedAtMs: queue.lastAdmittedAtMs ?? null,
           lastResumeRunStartedAtMs: queue.lastResumeRunStartedAtMs ?? null,
+          runInFlight,
           failingLegs: queue.failingTests.length,
           fixerSpawnId: queue.fixerSpawnId,
           fixerAlive,
