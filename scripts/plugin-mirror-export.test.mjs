@@ -8,6 +8,8 @@ import test from 'node:test';
 import {
   buildMirror,
   importSpecifiers,
+  internalReferenceProblems,
+  publishMirror,
   readCommittedPackage,
   selfContainmentProblems,
   writeMirror,
@@ -74,6 +76,73 @@ test('buildMirror refuses what the Cupboard or a standalone checkout could not u
   assert.match(buildMirror([file('provider.mjs', '')]).problems.join('\n'), /papercusp\.json is missing/);
   assert.match(buildMirror([file('papercusp.json', '{not json')]).problems.join('\n'), /does not parse/);
   assert.match(buildMirror([manifest(), file('x.mjs', "import '../../a.mjs';")]).problems.join('\n'), /escapes/);
+});
+
+test('buildMirror refuses text that cites internal context, and keeps a pack plan\'s own item ids', () => {
+  // Built at run time so this source never carries a literal home-directory path.
+  const homePath = ['', 'home', 'someone', 'papercupai-workspace'].join('/');
+  const leaky = buildMirror([
+    manifest(),
+    file('provider.mjs', '// see example-plan-2026-10-10 D-023 and WI-6554700010008315\nexport const x = 1;\n'),
+    file('README.md', `Started by su-0dd6b9aa against http://127.0.0.1:3070 from ${homePath}\n`),
+    file('notes.md', 'rows land in harness_shared.trigger_runs via packages/operator-core/lib/x.ts\n'),
+  ]);
+  assert.equal(leaky.ok, false);
+  const problems = leaky.problems.join('\n');
+  assert.match(problems, /provider\.mjs:1: an internal plan slug \('example-plan-2026-10-10'\)/);
+  assert.match(problems, /provider\.mjs:1: an internal work-item id/);
+  assert.match(problems, /README\.md:1: an internal agent session id/);
+  assert.match(problems, /README\.md:1: an internal operator port/);
+  assert.match(problems, /README\.md:1: an absolute home-directory path/);
+  assert.match(problems, /README\.md:1: the monorepo checkout name/);
+  assert.match(problems, /notes\.md:1: an internal database schema/);
+  assert.match(problems, /notes\.md:1: a monorepo source path/);
+
+  const own = [manifest(), file('plan.md', 'Do P-001, then P-002 (D-003). Released 2026-10-10 on port 3070.\n')];
+  assert.deepEqual(internalReferenceProblems(own), []);
+  assert.equal(buildMirror(own, { year: 2026 }).ok, true);
+  assert.deepEqual(internalReferenceProblems([{ path: 'logo.png', content: Buffer.from([0x89, 0, 0x2f, 0x68, 0x6f, 0x6d, 0x65]) }]), []);
+});
+
+test('publishMirror updates an existing mirror with one fast-forward commit, and makes none when nothing changed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'plugin-mirror-publish-'));
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  const id = ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid'];
+  try {
+    const remote = join(root, 'remote.git');
+    git(root, 'init', '--quiet', '--bare', '-b', 'main', remote);
+    const seed = join(root, 'seed');
+    git(root, 'clone', '--quiet', remote, seed);
+    writeFileSync(join(seed, 'README.md'), 'first publish\n');
+    git(seed, 'add', '-A');
+    git(seed, ...id, 'commit', '--quiet', '-m', 'first');
+    git(seed, 'push', '--quiet', 'origin', 'HEAD:main');
+    const first = git(seed, 'rev-parse', 'HEAD');
+
+    const built = buildMirror([manifest(), file('provider.mjs', 'export const v = 1;\n')], { year: 2026 });
+    assert.equal(built.ok, true);
+    const one = publishMirror({ outDir: join(root, 'out-1'), remote, files: built.files, message: 'export 1' });
+    assert.equal(one.status, 'published');
+    assert.equal(git(remote, 'rev-parse', 'main'), one.head);
+    assert.equal(git(remote, 'rev-parse', 'main^'), first, 'committed on top of the remote history, not as a new root');
+    assert.deepEqual(git(remote, 'ls-tree', '--name-only', 'main').split('\n').sort(), ['LICENSE', 'papercusp.json', 'provider.mjs']);
+
+    const again = publishMirror({ outDir: join(root, 'out-2'), remote, files: built.files, message: 'export 2' });
+    assert.deepEqual(again, { status: 'unchanged', head: one.head });
+
+    const empty = join(root, 'empty.git');
+    git(root, 'init', '--quiet', '--bare', '-b', 'main', empty);
+    const fresh = publishMirror({ outDir: join(root, 'out-3'), remote: empty, files: built.files, message: 'first export' });
+    assert.equal(fresh.status, 'published');
+    assert.equal(git(empty, 'rev-parse', 'main'), fresh.head);
+
+    assert.throws(
+      () => publishMirror({ outDir: join(root, 'out-1'), remote, files: built.files, message: 'x' }),
+      /must not exist or be empty/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('readCommittedPackage exports committed content only: uncommitted edits and untracked files never reach the mirror', () => {

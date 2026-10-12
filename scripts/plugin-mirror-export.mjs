@@ -17,11 +17,24 @@
 //     refused rather than published.
 //   - A LICENSE file is generated from the manifest's SPDX `license` when the package has
 //     none. Only MIT is generated; any other licence must ship its own LICENSE file.
+//   - Text that only means something inside the private monorepo (a home-directory path,
+//     a work-item or agent-session id, a dated plan slug, an operator port, an internal
+//     schema) is refused, so a source comment that cites internal context fails here and in
+//     this script's test, not at publish time.
 //
 // Usage:
 //   node scripts/plugin-mirror-export.mjs --package slack --out /tmp/papercusp-slack [--ref HEAD]
 // Prints MIRROR_FILE <path> per exported file, then MIRROR_OK files=<n>, or MIRROR_REFUSED
 // <reason> and exits 1.
+//
+// Publishing (updates an existing mirror repository):
+//   node scripts/plugin-mirror-export.mjs --package slack --out /tmp/papercusp-slack-publish \
+//     --push https://github.com/Papercusp/papercusp-slack.git
+// Clones the remote into --out (which must not exist or be empty), replaces the tree with the
+// export, and pushes ONE commit on top of the remote's history (a fast-forward). Unchanged
+// content makes no commit. Prints MIRROR_PUBLISHED head=<sha> src=<sha> or
+// MIRROR_UNCHANGED head=<sha>. The remote must already exist: creating a public repository is
+// a deliberate one-time step (`gh repo create <owner>/<repo> --public`).
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -109,6 +122,38 @@ export function selfContainmentProblems(files) {
   return problems;
 }
 
+// Text that only means something inside the private monorepo. A public mirror carrying it leaks
+// internal context and points readers at things they cannot open. A pack's own plan.md may use
+// its local P-NNN / D-NNN item ids, so those are deliberately not listed.
+const INTERNAL_REFERENCES = [
+  { re: /\/home\/[^\s'"`)]+/, what: 'an absolute home-directory path' },
+  { re: /papercupai-workspace/, what: 'the monorepo checkout name' },
+  { re: /\b(?:packages\/operator-core|apps\/operator)\//, what: 'a monorepo source path' },
+  { re: /\b(?:WI|EI)-\d{3,}\b/, what: 'an internal work-item id' },
+  { re: /\bsu-[0-9a-f]{5,}\b/, what: 'an internal agent session id' },
+  { re: /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+-20\d\d-\d\d-\d\d\b/, what: 'an internal plan slug' },
+  { re: /\bharness_shared\b/, what: 'an internal database schema' },
+  { re: /(?:127\.0\.0\.1|localhost):3[01]70\b/, what: 'an internal operator port' },
+];
+
+/** Lines that cite internal context; a mirror must describe behaviour instead. */
+export function internalReferenceProblems(files) {
+  const problems = [];
+  for (const file of files) {
+    if (file.content.includes(0)) continue; // binary
+    const lines = file.content.toString('utf8').split('\n');
+    lines.forEach((line, index) => {
+      for (const { re, what } of INTERNAL_REFERENCES) {
+        const match = re.exec(line);
+        if (match) {
+          problems.push(`${file.path}:${index + 1}: ${what} ('${match[0]}'); describe the behaviour instead of citing internal context`);
+        }
+      }
+    });
+  }
+  return problems;
+}
+
 export function mitLicense({ holder = 'Papercusp', year = new Date().getUTCFullYear() } = {}) {
   return `MIT License
 
@@ -154,6 +199,7 @@ export function buildMirror(files, { year } = {}) {
     problems.push('papercusp.json must declare a non-empty name and version (the Cupboard publish check requires both)');
   }
   problems.push(...selfContainmentProblems(files));
+  problems.push(...internalReferenceProblems(files));
 
   const out = files.map((f) => ({ path: f.path, content: f.content }));
   const hasLicense = files.some((f) => /^LICEN[CS]E(?:\.(?:md|txt))?$/i.test(f.path));
@@ -180,6 +226,40 @@ export function writeMirror(outDir, files) {
   }
 }
 
+export const MIRROR_IDENTITY = { name: 'papercupai', email: 'papercupai@users.noreply.github.com' };
+
+/**
+ * Publish `files` to the git `remote` as one commit on top of its existing history.
+ *
+ * A mirror is UPDATED, never recreated: the remote is cloned and the export committed on top,
+ * so the push is a fast-forward. (A fresh `git init` per export can only create a mirror; the
+ * second publish is rejected as unrelated history.) An empty remote gets the first commit.
+ * Content identical to the remote's makes no commit. Returns { status, head }.
+ */
+export function publishMirror({ outDir, remote, files, message, branch = 'main', identity = MIRROR_IDENTITY }) {
+  if (existsSync(outDir) && readdirSync(outDir).length > 0) {
+    throw new Error(`publish directory ${outDir} must not exist or be empty`);
+  }
+  const git = (args, cwd = outDir) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const has = (ref) => {
+    try {
+      git(['rev-parse', '--verify', '--quiet', ref]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  mkdirSync(outDir, { recursive: true });
+  git(['clone', '--quiet', remote, outDir], dirname(outDir));
+  if (has(`origin/${branch}`)) git(['checkout', '--quiet', '-B', branch, `origin/${branch}`]);
+  writeMirror(outDir, files);
+  git(['add', '-A']);
+  if (has('HEAD') && git(['status', '--porcelain']) === '') return { status: 'unchanged', head: git(['rev-parse', 'HEAD']) };
+  git(['-c', `user.name=${identity.name}`, '-c', `user.email=${identity.email}`, 'commit', '--quiet', '-m', message]);
+  git(['push', '--quiet', 'origin', `HEAD:${branch}`]);
+  return { status: 'published', head: git(['rev-parse', 'HEAD']) };
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -194,7 +274,9 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.package || !args.out) {
-    console.error('usage: plugin-mirror-export.mjs --package <name> --out <dir> [--ref <git-ref>] [--plugins-repo <dir>]');
+    console.error(
+      'usage: plugin-mirror-export.mjs --package <name> --out <dir> [--ref <git-ref>] [--plugins-repo <dir>] [--push <git-remote>]',
+    );
     process.exit(2);
   }
   const outDir = resolve(args.out);
@@ -202,15 +284,30 @@ async function main() {
     console.log('MIRROR_REFUSED --out must be outside the monorepo checkout');
     process.exit(1);
   }
-  const files = readCommittedPackage({
-    pluginsRepo: args['plugins-repo'] ? resolve(args['plugins-repo']) : DEFAULT_PLUGINS_REPO,
-    name: args.package,
-    ref: args.ref ?? 'HEAD',
-  });
+  const pluginsRepo = args['plugins-repo'] ? resolve(args['plugins-repo']) : DEFAULT_PLUGINS_REPO;
+  const ref = args.ref ?? 'HEAD';
+  const files = readCommittedPackage({ pluginsRepo, name: args.package, ref });
   const result = buildMirror(files);
   if (!result.ok) {
     for (const p of result.problems) console.log(`MIRROR_REFUSED ${p}`);
     process.exit(1);
+  }
+  if (args.push) {
+    const src = execFileSync('git', ['-C', pluginsRepo, 'log', '-1', '--format=%H', ref, '--', `plugins/${args.package}`], {
+      encoding: 'utf8',
+    }).trim();
+    const published = publishMirror({
+      outDir,
+      remote: args.push,
+      files: result.files,
+      message: `Export ${args.package} from papercusp plugins@${src.slice(0, 12)}`,
+    });
+    console.log(
+      published.status === 'published'
+        ? `MIRROR_PUBLISHED head=${published.head} src=${src}`
+        : `MIRROR_UNCHANGED head=${published.head}`,
+    );
+    return;
   }
   if (existsSync(outDir) && !existsSync(join(outDir, '.git')) && readdirSync(outDir).length > 0) {
     console.log('MIRROR_REFUSED --out exists, is not empty, and is not a git repository');
