@@ -136,6 +136,120 @@
     "result": "The reviewed current full-product source extends the identified existing product/control surfaces. R11@2 reuse assessment passes for these measured files.",
     "parentShipment": "Directive1534 remains open. This source review does not establish security correctness, current affected-suite PASS, protected native microphone use, human-heard audio, novice review, pilot baseline or exact production shipment. Older source reviews, browser runs and failures retain their original scope and lineage."
   },
+  "r11LegacyDeltaReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-010",
+    "specRevision": 5,
+    "specFingerprint": "5eed7ac8277f1af370aeefa89bac9d3361616dcab71e42207781f68259d0274d",
+    "observedAt": "2026-10-12T01:31:39.292052+00:00",
+    "commits": {
+      "papercusp": "076100a289e1dbbb07b8a05a4c268c44a65d8ad3",
+      "portal": "9832c507aad6277608b7f69168b72b793c297aa3"
+    },
+    "priorBindings": [
+      34366,
+      34367
+    ],
+    "procedure": "Read complete committed diffs from each original review pin. Verify all fifteen core and two Portal paths against current committed blobs. Assess the five changed core paths and changed Portal shell against their maintained product owners; retain the original findings for eleven byte-identical paths.",
+    "findings": [
+      "The protected voice route extends existing hosted assistance composition, strict lesson-context schemas, verified principal binding, and tenant-scoped persisted progress. The reservation/provider uses the existing TutorialVoiceTokenProvider seam; server-selected signed WebSocket URLs replace a permissive transport shape without adding a second progress store or agent loop. Optional row locking and persisted-enrollment checks extend existing hosted_user_preferences readers.",
+      "The mounted guide keeps its versioned catalogue, persisted account progress and existing voice-output player. Its changed question textarea uses bounded CSS on the existing form. Hosted analytics receives the maintained workspace-location context, and the existing telemetry writer returns before querying desktop consent for a cloud location.",
+      "The Portal shell extends existing SettingsSlots for theme/profile/saved-prompts and the existing query-owner map. Its AccountProductTutorial mount adds the maintained OperatorWorkspaceLocationProvider above the destination; the optional voice launcher dynamically imports the existing transport only after the start gesture. Existing account/session/history/theme persistence boundaries remain in place.",
+      "The other ten core paths and Portal agents-popover are byte-identical to the previous exact review pins. This completes the original measured source population, rather than replacing the fifteen-path review with the narrower full-product review."
+    ],
+    "sourceFiles": {
+      "papercusp": [
+        {
+          "path": "apps/operator/app/_components/LazyDetails.tsx",
+          "sha256": "7eca01c8efe95232f2406f002631ced6baaa82ff8fc139b28bafb3cf93e02a80",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-adapter.tsx",
+          "sha256": "79a2aa82872981734a9511431becd83e050efda3eff9ae8eba7ee4eaa08f0e8c",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-companion.tsx",
+          "sha256": "84ea26eaf2b66568692e4bb56b3ee179d915337c1d6cc5c520a70ec6a1aaacad",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-guide.tsx",
+          "sha256": "4cf71289dd180044a434752a76052f41eb4e0aafb1db0540078927f771acff57",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-session.tsx",
+          "sha256": "9da7999eb5277bc27038615c04b5de6167915abf81219adbbc30423f60c1f9a5",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/use-cloud-tutorial-progress.ts",
+          "sha256": "70dc7f2fb58f478f4f026ebc4f0c8212d536853adb0be52997fd44e16ffb16bb",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-assistance-runtime.ts",
+          "sha256": "90ff734f65e3eecf5004900a650be687665eec0942403251ec885ae80f44cb72",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress-routes.ts",
+          "sha256": "589ebbe69782acc43cc0e956b09bbd623fd169bfb7584876a156419559f48b88",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress.ts",
+          "sha256": "773f6e1f59186ce58b926f30a5e40c8582268ba25754e140be8eb5afcf199b23",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts",
+          "sha256": "64d1a204e7323bdd9866aba203388e72a0cb08062ba5ccb7d088881500517687",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-lesson.ts",
+          "sha256": "2a82ef578fb4514b270cd495f3afb9df7977717a2ebbbd91f036e08947385907",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts",
+          "sha256": "b74c6d8dc6fd64ffb0799802bef871bbdadf85d9abc86cceb2a9d8eaf45ae2fe",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+          "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-ui/src/browser-telemetry.tsx",
+          "sha256": "02273e39a12546a75e2c5a8081e5f10a5a093cbb681f84d5cbcf2b36ead18cb0",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+          "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512",
+          "matchesPrior": false
+        }
+      ],
+      "portal": [
+        {
+          "path": "packages/ui/src/agents-popover.tsx",
+          "sha256": "5ff8c18e06f4be5fda5cb5af739051c6f733c9d3b298cc469b8dccd4bf3d09f3",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/ui/src/shell.tsx",
+          "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470",
+          "matchesPrior": false
+        }
+      ]
+    },
+    "result": "Current source reuse review passes within the unchanged R11 tree clause. No hosted/native/human/affected-suite or shipment acceptance is inferred."
+  },
   "reviews": [
     {
       "specId": "AUTO-BAR-R-11-P-016",
