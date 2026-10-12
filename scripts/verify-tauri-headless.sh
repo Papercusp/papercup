@@ -2266,9 +2266,34 @@ pick_and_lock_ports
 # serving it. We still apply the same conservative rule the TS sweeper uses —
 # remove ONLY when the advertised pid is provably not running — so a racing
 # publisher is never clobbered. Best-effort: never fail the run over hygiene.
+#
+# PID liveness is namespace-relative, while HOME may still be shared with the
+# host. Only a single NSpid value proves this process is in the same namespace
+# as a host-global advertisement. If the namespace is private or /proc cannot
+# prove otherwise, move Papercusp state under this verifier's WORK directory
+# before inspecting any endpoint advertisement.
+verifier_pid_namespace_is_private() {
+  local status_file="${1:-/proc/self/status}" nspid_line
+  nspid_line="$(sed -n 's/^NSpid:[[:space:]]*//p' "$status_file" 2>/dev/null | head -1)"
+  [[ "$nspid_line" =~ ^[0-9]+$ ]] && return 1
+  return 0
+}
+prepare_verifier_papercusp_home() {
+  local status_file="${1:-/proc/self/status}" private_home
+  verifier_pid_namespace_is_private "$status_file" || return 0
+  private_home="$WORK/papercusp-home"
+  mkdir -p "$private_home" || return 1
+  PAPERCUSP_HOME="$private_home"
+  export PAPERCUSP_HOME
+  log "private or unverifiable PID namespace; using per-run Papercusp home $PAPERCUSP_HOME"
+}
+prepare_verifier_papercusp_home || {
+  echo "FATAL: cannot establish a private Papercusp home before IPC advertisement cleanup" >&2
+  exit 1
+}
 prune_stale_ipc_advert_for_port() {
   local port="$1" f pid
-  f="$HOME/.papercusp/endpoint-ipc.${port}.json"
+  f="${PAPERCUSP_HOME:-$HOME/.papercusp}/endpoint-ipc.${port}.json"
   [ -f "$f" ] || return 0
   pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' "$f" | head -1)"
   [ -n "$pid" ] || return 0
