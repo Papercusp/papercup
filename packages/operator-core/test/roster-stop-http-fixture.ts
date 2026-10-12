@@ -295,7 +295,8 @@ async function coordCanary(health: unknown) {
       await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
         ...projects.filter(project => project.label === 'foreign').map(({ slug, path }) => ({ slug, path }))] }), foreignWorkspace);
       for (const project of projects) await saveProjectFiles(project.slug, { config: JSON.stringify({
-        parity: { enabled: project.label !== 'selected' }, marker: project.label }) });
+        parity: { enabled: project.label !== 'selected' }, marker: project.label }) },
+      { workspaceId: project.label === 'foreign' ? foreignWorkspace : workspace });
       writeFileSync(join(evidence, 'portal-settings-seed.json'), JSON.stringify(settingsHarnesses, null, 2));
     }
     let brainstormHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;

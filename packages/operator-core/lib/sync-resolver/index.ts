@@ -2178,14 +2178,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessProjectFilesInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
+      const rows = await db
         .select()
         .from(t)
         .where(
           workspaceId != null
             ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
             : eq(t.harnessSlug, harnessSlug),
-        )) as unknown[];
+        );
+      if (rows.length || workspaceId == null) return rows as unknown[];
+      // Old writers left workspace_id empty. Recover that config only when the
+      // requested workspace's authoritative registry owns the harness; a foreign
+      // or unknown workspace must still receive no rows. New writes stamp it.
+      const { loadHarnessRegistry } = await import('../harness-registry');
+      const registry = await loadHarnessRegistry(workspaceId);
+      if (!registry.projects.some(project => project.slug === harnessSlug)) return [];
+      return await db.select().from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, ''))) as unknown[];
     },
   },
 

@@ -33,6 +33,9 @@ import path from 'node:path';
 import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
+import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
+export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
+  type DependencyGenerationInfraCode } from './checkpoint-log-tags';
 // Reuse the focused runner's maintained assertion-summary parser.
 import { testsExecutedFrom } from '../../../../scripts/lib/vitest-summary.mjs';
 
@@ -563,32 +566,6 @@ function openExecLog(file: string, argv: readonly string[], cwd: string): WriteS
  */
 export const ROUTER_EXIT_NOT_MEASURED = 2;
 export const ROUTER_EXIT_TEMPFAIL = 75;
-
-/**
- * WI-10004849: dependency-generation.sh refuses a physical dependency copy with a
- * typed infra exit — 76 when the host-wide copy lock timed out, 77 when the disk
- * lacks headroom for the copy. Neither says anything about the code under test.
- * Returns the marker name for either (by exit code or by the logged marker line,
- * since a wrapping script may re-map the exit), else null.
- */
-export const DEPENDENCY_GENERATION_INFRA_EXITS = Object.freeze({
-  76: 'DEPENDENCY_GENERATION_LOCK_TIMEOUT',
-  77: 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT',
-} as const);
-
-export type DependencyGenerationInfraCode =
-  (typeof DEPENDENCY_GENERATION_INFRA_EXITS)[keyof typeof DEPENDENCY_GENERATION_INFRA_EXITS];
-
-export function dependencyGenerationInfraCode(
-  exitCode: number | null | undefined,
-  output: string,
-): DependencyGenerationInfraCode | null {
-  if (exitCode === 76 || exitCode === 77) return DEPENDENCY_GENERATION_INFRA_EXITS[exitCode];
-  for (const code of Object.values(DEPENDENCY_GENERATION_INFRA_EXITS)) {
-    if (output.includes(code)) return code;
-  }
-  return null;
-}
 
 /**
  * Classify one `scripts/test-files.mjs <file>` run. Route errors, zero matches and the router's
