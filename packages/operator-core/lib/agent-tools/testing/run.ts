@@ -77,6 +77,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import {
@@ -141,6 +142,7 @@ import type { ResourceDemand } from '../../resource-governor/admission';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
+import { completedResultPayload } from '../abort-completion-payload';
 import {
   prepareTestEvidence,
   finishTestEvidence,
@@ -166,6 +168,89 @@ const PRE_LAUNCH_REFUSALS: ReadonlySet<string> = new Set([
   'mutation_probe_active', 'mutation_probe_state_unknown',
   'restricted_write_held', 'restricted_hold_state_unknown',
 ]);
+
+/**
+ * A completed testing:run verdict is durable under its run group ID. If the
+ * dispatch deadline races the handler's final return, expose that identity
+ * instead of replacing the result with an ambiguous timeout. A timeout is only
+ * authoritative when a detached recovery or still-running managed task has a
+ * durable handle; otherwise fail closed.
+ */
+export function testingRunAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  _context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const error = payload?.error;
+  if (typeof error === 'string' && PRE_LAUNCH_REFUSALS.has(error)) {
+    const evidenceBundle = payload?.evidenceBundle;
+    const evidenceStatus =
+      evidenceBundle !== null && typeof evidenceBundle === 'object' && !Array.isArray(evidenceBundle)
+        ? (evidenceBundle as Record<string, unknown>).status
+        : undefined;
+    if (evidenceBundle !== undefined && evidenceStatus !== 'not-recorded') {
+      return {
+        status: 'recovery-incomplete',
+        reason: 'testing:run refused before process start but could not confirm pending evidence was retired',
+        failures: ['evidence-retirement-unconfirmed'],
+        diagnostics: { error, evidenceStatus },
+      };
+    }
+    return {
+      status: 'not-recorded',
+      reason: 'testing:run refused before starting a test process (' + error + ')',
+      diagnostics: { error },
+    };
+  }
+
+  const runId = typeof payload?.runId === 'string' ? payload.runId.trim() : '';
+  if (!runId) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'testing:run result did not identify its run group after abort',
+      failures: ['missing-run-id'],
+    };
+  }
+
+  if (error === undefined && typeof payload?.ok === 'boolean') {
+    return {
+      status: 'recorded',
+      effectRef: 'testing-run:' + runId,
+      reason: 'testing:run returned a complete test verdict for this run group',
+      diagnostics: { runId, outcome: 'complete', ok: payload.ok },
+    };
+  }
+
+  if (error === 'timeout') {
+    const detachedRunId = typeof payload.detachedRunId === 'string' ? payload.detachedRunId.trim() : '';
+    if (detachedRunId && payload.detachedDurable === true) {
+      return {
+        status: 'recorded',
+        effectRef: 'testing-run:' + runId + ':detached:' + detachedRunId,
+        reason: 'testing:run has a durable detached recovery; do not start a duplicate run',
+        diagnostics: { runId, detachedRunId, detachedDurable: true },
+      };
+    }
+
+    const taskId = typeof payload.taskId === 'string' ? payload.taskId.trim() : '';
+    if (taskId && payload.terminationUnconfirmed === true) {
+      return {
+        status: 'recorded',
+        effectRef: 'testing-run:' + runId + ':task:' + taskId,
+        reason: 'testing:run still has a tracked foreground task; do not start a duplicate run',
+        diagnostics: { runId, taskId, terminationUnconfirmed: true },
+      };
+    }
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'testing:run result does not prove a complete verdict or durable recovery handle after abort',
+    failures: [typeof error === 'string' ? 'incomplete-run:' + error : 'missing-completion-evidence'],
+    diagnostics: { runId },
+  };
+}
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -3702,6 +3787,7 @@ export default defineTool({
   // capability suffix `run` otherwise infers `read`, which makes the MCP
   // transport skip idempotency replay and re-execute a timed-out call.
   effect: 'write',
+  abortCompletionReceipt: testingRunAbortCompletionReceipt,
   requirePrincipal: false,
   // EI-18803497769946984: the handler shells out to Vitest and blocks for the whole
   // run without ever reading `ctx.tx`. Holding the ambient workspace transaction
