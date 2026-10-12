@@ -2371,24 +2371,30 @@ export function evaluateSpecTestAdequacy(input: {
   current?: EvidenceCurrentInput[];
   /** Exact caller selectors that constrain the evidence population on replay. */
   rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] };
+  /** Full active clause population for the rubric's universal disclosed-gap check. */
+  disclosedGapEvidence?: SpecEvidenceForAdequacy[];
   /** Work-item classification; `task` is the canonical non-code kind. */
   workItemKind?: string | null;
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
+  const belongsToClause = (row: SpecEvidenceForAdequacy) =>
+    row.planSlug === clause.planSlug &&
+    row.specId === clause.specId &&
+    row.specRevision === clause.revision &&
+    row.specFingerprint === clause.contentHash;
   // WI-10002082: keep the pre-projection selector match addressable. A binding can satisfy every
   // clause selector and still be dropped by `activeSpecEvidence` (it carries no test-execution
   // identity, or a later attempt superseded it). Without this population the falsifiability refusal
   // below reports a FALSE ABSENCE — "no binding is bound" — while a live, fingerprint-matching
   // binding sits in the table, which drives binders to stack redundant re-bindings on one clause.
-  const exactSelectorMatches = input.evidence.filter(
-    (row) =>
-      row.planSlug === clause.planSlug &&
-      row.specId === clause.specId &&
-      row.specRevision === clause.revision &&
-      row.specFingerprint === clause.contentHash,
-  );
+  const exactSelectorMatches = input.evidence.filter(belongsToClause);
   const exactEvidence = activeSpecEvidence(exactSelectorMatches);
+  const exactDisclosedGapMatches = (input.disclosedGapEvidence ?? input.evidence).filter(belongsToClause);
+  const activeDisclosedGapEvidence = activeSpecEvidence(exactDisclosedGapMatches);
+  const activeDisclosedGapByLogicalReference = new Map(
+    activeDisclosedGapEvidence.map((row) => [logicalEvidenceReferenceKey(row), row]),
+  );
   const currentEvidence = exactEvidence.filter(
     (row) =>
       row.currentness.overall === 'current' ||
@@ -3283,24 +3289,23 @@ export function evaluateSpecTestAdequacy(input: {
   // without the disclosure. Keep that gap attached to the active logical
   // reference while its run/fingerprints are unchanged, and until changed proof
   // is server-current. A stale or unknown replacement has not closed the gap.
-  const activeByLogicalReference = new Map(exactEvidence.map((row) => [logicalEvidenceReferenceKey(row), row]));
-  const disclosedGapRows = exactSelectorMatches.filter((row) => {
+  const disclosedGapRows = exactDisclosedGapMatches.filter((row) => {
     if ((detailsOf(row).disclosedGap ?? []).length === 0) return false;
-    const active = activeByLogicalReference.get(logicalEvidenceReferenceKey(row));
+    const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));
     if (!active) return false;
     return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
   });
-  const freeFormNoteRows = exactSelectorMatches.filter((row) => {
+  const freeFormNoteRows = exactDisclosedGapMatches.filter((row) => {
     const note = row.details.note;
     if (typeof note !== 'string' || note.trim().length === 0) return false;
-    const active = activeByLogicalReference.get(logicalEvidenceReferenceKey(row));
+    const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));
     if (!active) return false;
     return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
   });
   const noDisclosureStatement =
     'No bound proof for ' +
     clauseIdentity(clause) +
-    ' records a structured author-disclosed gap.' +
+    ` records a structured author-disclosed gap. Checked ${activeDisclosedGapEvidence.length} active binding(s) for the clause.` +
     bindingNotesSummary(freeFormNoteRows) +
     (freeFormNoteRows.length > 0
       ? ' Record any coverage limitation under details.adequacy.disclosedGap so machine grading blocks it.'
@@ -3410,7 +3415,11 @@ export function evaluateSpecTestAdequacy(input: {
   const rawRefs = evidenceRefs.join(', ') || '(none)';
   const bodyRefs =
     rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
-  const cardEvidence = scorecardBindingEvidence(ratings, exactEvidence);
+  const cardEvidence = scorecardBindingEvidence(ratings, [
+    ...exactEvidence,
+    ...disclosedGapRows,
+    ...freeFormNoteRows,
+  ]);
   const cardBody = `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`;
   // emit caps body at 8,000 characters. Keep the full shared proof in an existing
   // uncapped criterion evidence field when it cannot fit, with an explicit pointer
