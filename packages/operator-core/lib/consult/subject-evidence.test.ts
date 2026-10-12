@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES } from './subject-evidence.fixtures';
 
@@ -5,6 +6,13 @@ const perfect = (): { id: string; scores: (number | null)[] }[] => HELD_OUT_SUBJ
   scores: c.passages.map(p => (c.relevant as readonly string[]).includes(p.id) ? 0.9 : 0.1) as (number | null)[] }));
 
 describe('held-out subject measurement integrity', () => {
+  it('preserves the preregistered labels and passages across measurement helper changes', () => {
+    // Population declared in 64e6e8cf14 and independently validated before scoring.
+    // Hash the cases alone: adding a metric must not silently relabel the holdout.
+    expect(createHash('sha256').update(JSON.stringify(HELD_OUT_SUBJECT_CASES)).digest('hex'))
+      .toBe('137246c6e7f15da78bcda87dd5e3db5395f57cee1b2ea1da720ab3075320d2eb');
+  });
+
   it('keeps no-expert cases separate from the positive recall denominator', () => {
     const results = perfect();
     results[0].scores = [0.6, 0.9];
