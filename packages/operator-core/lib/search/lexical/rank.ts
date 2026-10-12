@@ -154,8 +154,13 @@ export async function readBm25ScanScore(sql: Sql): Promise<boolean> {
   }
 }
 
-async function availabilityFor(sql: Sql, loader?: Bm25AvailabilityLoader): Promise<AvailabilityEntry> {
+async function availabilityFor(
+  sql: Sql,
+  loader?: Bm25AvailabilityLoader,
+  signal?: AbortSignal,
+): Promise<AvailabilityEntry> {
   const now = Date.now();
+  signal?.throwIfAborted();
   const hit = state.bySql.get(sql);
   if (hit && now - hit.checkedAt < AVAILABILITY_TTL_MS) return hit;
   const read = async (readSql: Sql): Promise<AvailabilityEntry> => {
@@ -166,6 +171,9 @@ async function availabilityFor(sql: Sql, loader?: Bm25AvailabilityLoader): Promi
   // Cache by the owning client, but let a caller bound/cancel catalog reads.
   // The loader is not called on a fresh cache hit.
   const entry = await (loader ? loader(read) : read(sql));
+  // A bounded transaction can return a fallback after its query catches an
+  // abort. Never let that partial observation warm the shared pool cache.
+  signal?.throwIfAborted();
   state.bySql.set(sql, entry);
   return entry;
 }
@@ -372,10 +380,12 @@ export async function bm25LegIfAvailable(
   table: Bm25CorpusTable,
   query: string,
   alias?: string,
-  options: { availabilityLoader?: Bm25AvailabilityLoader } = {},
+  options: { availabilityLoader?: Bm25AvailabilityLoader; signal?: AbortSignal } = {},
 ): Promise<LexicalLeg | null> {
+  options.signal?.throwIfAborted();
   if (!(await bm25FlagOn())) return null;
-  const availability = await availabilityFor(sql, options.availabilityLoader);
+  options.signal?.throwIfAborted();
+  const availability = await availabilityFor(sql, options.availabilityLoader, options.signal);
   if (!availability.indexes.has(bm25Corpus(table).indexName)) return null;
   const leg = bm25Leg(sql, bm25Corpus(table), query, alias);
   return availability.scanScore ? { ...leg, scanScore: sql`bm25_get_current_score()` } : leg;
