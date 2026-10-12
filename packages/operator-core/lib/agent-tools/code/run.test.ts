@@ -44,7 +44,12 @@ vi.mock('../../orchestration-trace', () => ({
 // otherwise open a real PG transaction — replace them with spies so
 // bindInnerDispatch's own branch logic (crossWorkspace / hop / fast-path) is
 // what's under test, not a live database.
-const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfConcreteMock } = vi.hoisted(() => ({
+const {
+  withWorkspaceMock,
+  synthesizeDispatchPrincipalMock,
+  runWithWorkspaceIfConcreteMock,
+  orgSqlMock,
+} = vi.hoisted(() => ({
   withWorkspaceMock: vi.fn(async (workspaceId: string, fn: (tx: unknown) => unknown) => fn({ __tx: workspaceId })),
   synthesizeDispatchPrincipalMock: vi.fn(async (tx: unknown, spawnCtx: { workspaceId: string; role: string }) => ({
     slug: `system:${spawnCtx.role}`,
@@ -53,10 +58,13 @@ const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfCo
     __tx: tx,
   })),
   runWithWorkspaceIfConcreteMock: vi.fn(async (_workspaceId: string | undefined, fn: () => unknown) => fn()),
+  // fallback-observations uses the admin pool's Sql value as a callable tag.
+  // Keep it local and inert so this suite cannot reach a real Postgres client.
+  orgSqlMock: Object.assign(vi.fn(async () => []), { __admin: true }),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: { __admin: true } }),
+  getOrgPg: () => ({ sql: orgSqlMock }),
   withWorkspace: withWorkspaceMock,
 }));
 vi.mock('../../workspace-als', async (importOriginal) => ({
@@ -1819,7 +1827,7 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
       outerCtx as never,
       echoNext,
     )) as { workspaceId: string; tx: unknown };
-    expect(result.tx).toEqual({ __admin: true });
+    expect(result.tx).toBe(orgSqlMock);
     expect(result.workspaceId).toBe('ws-bee');
     expect(withWorkspaceMock).not.toHaveBeenCalled(); // admin path bypasses the app-role tx
   });
