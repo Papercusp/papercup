@@ -1049,3 +1049,250 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
     process.env.PAPERCUSP_CAPTURE_V8_TIER_TRACE === '1' ? 240_000 : 120_000,
   );
 });
+
+describe('reusable eager CPU profiler capture windows', () => {
+  it.skipIf(!hasNode259ProfilerHeaders)(
+    'compares retaining eager code logging across stopped sampling windows with dispose and recreate',
+    async () => {
+      const maxSamples = 64;
+      const captureCount = 12;
+      const tempDir = await mkdtemp(join(tmpdir(), 'papercusp-eager-reuse-'));
+      const addonPath = join(tempDir, 'eager-profiler.node');
+
+      try {
+        await exec(
+          process.env.CXX ?? 'c++',
+          ['-std=c++20', '-shared', '-fPIC', '-O2', '-I' + nodeIncludePath, eagerAdapterPath, '-o', addonPath],
+          { timeout: 30_000, maxBuffer: 128 * 1024 },
+        );
+        expect(existsSync(addonPath)).toBe(true);
+
+        type Capture = {
+          index: number;
+          startMs: number;
+          stopMs: number;
+          startGapMaxMs: number;
+          stopGapMaxMs: number;
+          workGapMaxMs: number;
+          lifecycleGapMaxMs: number;
+          activeFrameCalls: number;
+          disposed: boolean;
+          profile: {
+            samples: number;
+            definiteSamples: number;
+            usefulSamples: number;
+            mapSamples: number;
+            cpuHotFrameSamples: number;
+            disabledHotFrameSamples: number;
+            bytes: number;
+          };
+        };
+        type LifecycleRun = {
+          mode: 'reuse' | 'recreate';
+          trial: number;
+          captures: Capture[];
+          cleanupGapMaxMs: number | null;
+          memory: { peakRssDelta: number; retainedHeapDelta: number };
+          serializations: number;
+        };
+        const run = async (mode: 'reuse' | 'recreate', trial: number): Promise<LifecycleRun> => {
+          const workerSource = [
+            "const { parentPort } = require('node:worker_threads');",
+            'let waiting = false;',
+            'function tick() { if (waiting) return; waiting = true; parentPort.postMessage(1); }',
+            "parentPort.on('message', () => { waiting = false; setTimeout(tick, 5); });",
+            'tick();',
+          ].join(' ');
+          const childScript = [
+            "import { createRequire } from 'node:module';",
+            "import { performance } from 'node:perf_hooks';",
+            "import { setTimeout as delay } from 'node:timers/promises';",
+            "import { Worker } from 'node:worker_threads';",
+            'const require = createRequire(import.meta.url);',
+            'const mode = ' + JSON.stringify(mode) + ';',
+            'const maxSamples = ' + maxSamples + ';',
+            'const captureCount = ' + captureCount + ';',
+            'const addon = require(' + JSON.stringify(addonPath) + ');',
+            'let cursor = 1;',
+            'const retained = Array.from({ length: 25000 }, (_, i) => {',
+            "  const fn = new Function('return function map_' + i + '(x) { return x + ' + i + '; }')();",
+            '  fn(i);',
+            '  return fn;',
+            '});',
+            'let activeFrameCalls = 0;',
+            'let disabledFrameCalls = 0;',
+            'function cpuHotFrame(durationMs = 4) {',
+            '  activeFrameCalls++;',
+            '  const until = performance.now() + durationMs;',
+            '  while (performance.now() < until) cursor = retained[cursor % retained.length](cursor) % retained.length;',
+            '}',
+            'function disabledHotFrame(durationMs = 4) {',
+            '  disabledFrameCalls++;',
+            '  const until = performance.now() + durationMs;',
+            '  while (performance.now() < until) cursor = retained[cursor % retained.length](cursor) % retained.length;',
+            '}',
+            'async function workFor(durationMs, frame) {',
+            '  const until = performance.now() + durationMs;',
+            '  while (performance.now() < until) { frame(); await delay(5); }',
+            '}',
+            'const worker = new Worker(' + JSON.stringify(workerSource) + ', { eval: true, execArgv: [] });',
+            'let gapWindow = null;',
+            "worker.on('message', () => { const now = performance.now(); if (gapWindow) { gapWindow.maxMs = Math.max(gapWindow.maxMs, now - gapWindow.lastMs); gapWindow.lastMs = now; } worker.postMessage('ack'); });",
+            'await new Promise(resolve => worker.once("online", resolve));',
+            'await delay(40);',
+            'async function measure(action) {',
+            '  await delay(20);',
+            '  const window = { maxMs: 0, lastMs: performance.now() };',
+            '  gapWindow = window;',
+            '  const startedNs = process.hrtime.bigint();',
+            '  const value = action();',
+            '  const returnedNs = process.hrtime.bigint();',
+            '  await delay(20);',
+            '  gapWindow = null;',
+            '  return { value, durationMs: Number(returnedNs - startedNs) / 1e6, workerGapMaxMs: window.maxMs };',
+            '}',
+            'async function measureWork(durationMs, frame) {',
+            '  await delay(20);',
+            '  const window = { maxMs: 0, lastMs: performance.now() };',
+            '  gapWindow = window;',
+            '  const startedNs = process.hrtime.bigint();',
+            '  await workFor(durationMs, frame);',
+            '  const endedNs = process.hrtime.bigint();',
+            '  await delay(20);',
+            '  gapWindow = null;',
+            '  return { startedNs, endedNs, workerGapMaxMs: window.maxMs };',
+            '}',
+            'const elapsedUs = (startNs, endNs) => Number(endNs - startNs) / 1000;',
+            'function summarize(profile, workWindow) {',
+            '  const nodes = Array.isArray(profile?.nodes) ? profile.nodes : [];',
+            '  const samples = Array.isArray(profile?.samples) ? profile.samples : [];',
+            '  const deltas = Array.isArray(profile?.timeDeltas) ? profile.timeDeltas : [];',
+            '  const byId = new Map(nodes.map(node => [node.id, node]));',
+            '  const parentById = new Map();',
+            '  for (const node of nodes) for (const child of node.children ?? []) parentById.set(child, node.id);',
+            '  let offsetUs = 0;',
+            '  const offsets = deltas.map(delta => (offsetUs += delta));',
+            '  const sampledFrames = samples.map((sampleId, index) => {',
+            '    const frames = [], seen = new Set();',
+            '    let nodeId = sampleId;',
+            '    while (nodeId !== undefined && !seen.has(nodeId)) {',
+            '      seen.add(nodeId);',
+            '      const node = byId.get(nodeId);',
+            '      if (!node) break;',
+            '      frames.push(node.callFrame?.functionName ?? "");',
+            '      nodeId = parentById.get(nodeId);',
+            '    }',
+            '    return { offsetUs: offsets[index] ?? null, frames };',
+            '  });',
+            '  const definite = sampledFrames.filter(sample => sample.offsetUs !== null && sample.offsetUs >= workWindow.definiteStartUs && sample.offsetUs <= workWindow.definiteEndUs);',
+            '  return {',
+            '    samples: samples.length,',
+            '    definiteSamples: definite.length,',
+            '    usefulSamples: definite.filter(sample => sample.frames.includes("cpuHotFrame") || sample.frames.some(name => /^map_[0-9]+$/.test(name))).length,',
+            '    mapSamples: definite.filter(sample => sample.frames.some(name => /^map_[0-9]+$/.test(name))).length,',
+            '    cpuHotFrameSamples: definite.filter(sample => sample.frames.includes("cpuHotFrame")).length,',
+            '    disabledHotFrameSamples: definite.filter(sample => sample.frames.includes("disabledHotFrame")).length,',
+            '    bytes: Buffer.byteLength(JSON.stringify(profile)),',
+            '  };',
+            '}',
+            'addon.create();',
+            'const memoryBefore = process.memoryUsage();',
+            'let peakRss = memoryBefore.rss;',
+            'let peakHeapUsed = memoryBefore.heapUsed;',
+            'const captures = [];',
+            'for (let index = 0; index < captureCount; index++) {',
+            '  const callsBefore = activeFrameCalls;',
+            '  const start = await measure(() => {',
+            '    if (mode === "recreate" && index > 0) addon.create();',
+            '    const startedNs = process.hrtime.bigint();',
+            '    addon.start(maxSamples);',
+            '    return { startedNs, returnedNs: process.hrtime.bigint() };',
+            '  });',
+            '  const work = await measureWork(350, cpuHotFrame);',
+            '  const stop = await measure(() => addon.finish(true, mode === "recreate"));',
+            '  const workWindow = {',
+            '    definiteStartUs: elapsedUs(start.value.returnedNs, work.startedNs),',
+            '    definiteEndUs: elapsedUs(start.value.startedNs, work.endedNs),',
+            '  };',
+            '  const profile = JSON.parse(stop.value.profileJson);',
+            '  captures.push({',
+            '    index,',
+            '    startMs: start.durationMs,',
+            '    stopMs: stop.durationMs,',
+            '    startGapMaxMs: start.workerGapMaxMs,',
+            '    stopGapMaxMs: stop.workerGapMaxMs,',
+            '    workGapMaxMs: work.workerGapMaxMs,',
+            '    lifecycleGapMaxMs: Math.max(start.workerGapMaxMs, stop.workerGapMaxMs),',
+            '    activeFrameCalls: activeFrameCalls - callsBefore,',
+            '    disposed: stop.value.disposed,',
+            '    profile: summarize(profile, workWindow),',
+            '  });',
+            '  const memory = process.memoryUsage();',
+            '  peakRss = Math.max(peakRss, memory.rss);',
+            '  peakHeapUsed = Math.max(peakHeapUsed, memory.heapUsed);',
+            '  if (index % 3 === 2 && global.gc) global.gc();',
+            '  await workFor(80, disabledHotFrame);',
+            '}',
+            'let cleanup = null;',
+            'if (mode === "reuse") cleanup = await measure(() => addon.dispose());',
+            'const memoryAfter = process.memoryUsage();',
+            'await worker.terminate();',
+            'process.stdout.write(JSON.stringify({ mode, trial: ' + trial + ', captures, cleanupGapMaxMs: cleanup?.workerGapMaxMs ?? null,',
+            '  memory: { peakRssDelta: peakRss - memoryBefore.rss, retainedHeapDelta: memoryAfter.heapUsed - memoryBefore.heapUsed },',
+            '  serializations: addon.serializationCount() }));',
+          ].join('\n');
+
+          const { stdout } = await exec(
+            process.execPath,
+            ['--expose-gc', '--input-type=module', '-e', childScript],
+            { timeout: 30_000, maxBuffer: 128 * 1024 },
+          );
+          return JSON.parse(stdout) as LifecycleRun;
+        };
+
+        const results: LifecycleRun[] = [];
+        for (let trial = 0; trial < 3; trial++) {
+          const order: Array<'reuse' | 'recreate'> = trial % 2 === 0 ? ['reuse', 'recreate'] : ['recreate', 'reuse'];
+          for (const mode of order) results.push(await run(mode, trial));
+        }
+        const median = (values: number[]) => {
+          const sorted = [...values].sort((a, b) => a - b);
+          return sorted[Math.floor(sorted.length / 2)];
+        };
+        const summaries = results.map(result => ({
+          mode: result.mode,
+          trial: result.trial,
+          captures: result.captures.length,
+          medianUsefulSamples: median(result.captures.map(capture => capture.profile.usefulSamples)),
+          minimumUsefulSamples: Math.min(...result.captures.map(capture => capture.profile.usefulSamples)),
+          maxStartMs: Math.max(...result.captures.map(capture => capture.startMs)),
+          maxStopMs: Math.max(...result.captures.map(capture => capture.stopMs)),
+          maxStartGapMs: Math.max(...result.captures.map(capture => capture.startGapMaxMs)),
+          maxStopGapMs: Math.max(...result.captures.map(capture => capture.stopGapMaxMs)),
+          maxWorkGapMs: Math.max(...result.captures.map(capture => capture.workGapMaxMs)),
+          maxLifecycleGapMs: Math.max(...result.captures.map(capture => capture.lifecycleGapMaxMs)),
+          disabledHotFrameSamples: result.captures.reduce((sum, capture) => sum + capture.profile.disabledHotFrameSamples, 0),
+          sampleCapRespected: result.captures.every(capture => capture.profile.samples <= maxSamples),
+          memory: result.memory,
+          serializations: result.serializations,
+        }));
+        console.info('P-003 reusable eager profiler lifecycle comparison:', JSON.stringify(summaries));
+
+        expect(results).toHaveLength(6);
+        for (const result of results) {
+          expect(result.captures).toHaveLength(captureCount);
+          expect(result.serializations).toBe(captureCount);
+          expect(result.captures.every(capture => capture.profile.samples > 0)).toBe(true);
+          expect(result.captures.every(capture => capture.profile.definiteSamples > 0)).toBe(true);
+          expect(result.captures.every(capture => capture.activeFrameCalls > 0)).toBe(true);
+          expect(result.captures.every(capture => capture.profile.samples <= maxSamples)).toBe(true);
+          expect(result.captures.every(capture => capture.disposed === (result.mode === 'recreate'))).toBe(true);
+          expect(result.captures.every(capture => Number.isFinite(capture.lifecycleGapMaxMs))).toBe(true);
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+});
