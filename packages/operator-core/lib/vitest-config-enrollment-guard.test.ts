@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { searchForWorkspaceRoot } from 'vite';
@@ -178,4 +181,59 @@ describe('Vitest config enrollment guard: stale exemptions and nested workspace 
     expect(mutated[0].content).not.toBe(real[0].content);
     expect(findNestedRootConfigsWithoutServerFragment(mutated, viteRootOf)).toEqual([BLOOM_GRID]);
   });
+});
+
+// WI-6554700010009145: under the committed-source loader, scripts/test-files.mjs makes Vite load
+// every config with configLoader 'native', i.e. a plain Node `import()` of the .ts file as ES. A
+// config that reads CommonJS globals (`__dirname`, `require`) then throws and the whole group
+// collects 0 tests. This imports each config the way Vite's nativeImportConfigFile does, in a
+// separate Node process (inside Vitest the import would go through Vite's transform instead).
+describe('Vitest config native loading', () => {
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const IMPORT_EACH = [
+    "import { pathToFileURL } from 'node:url';",
+    'const failures = [];',
+    'for (const file of JSON.parse(process.argv[1])) {',
+    '  try {',
+    "    const mod = await import(pathToFileURL(file).href + '?t=' + Date.now());",
+    "    if (typeof mod.default !== 'object' && typeof mod.default !== 'function') failures.push(file + ': default export is ' + typeof mod.default);",
+    '  } catch (error) {',
+    "    failures.push(file + ': ' + String(error?.message ?? error).split('\\n')[0]);",
+    '  }',
+    '}',
+    'process.stdout.write(JSON.stringify(failures));',
+  ].join('\n');
+  const nativeImportFailures = (files: string[]): string[] =>
+    JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', IMPORT_EACH, JSON.stringify(files)], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        env: { ...process.env, NODE_OPTIONS: '' },
+        timeout: 120_000,
+      }),
+    ) as string[];
+
+  it('loads the root config and every declared workspace config as native ES', () => {
+    const files = [
+      join(REPO_ROOT, 'vitest.config.ts'),
+      ...collectVitestConfigs().map(({ path }: { path: string }) => join(REPO_ROOT, path)),
+    ];
+    expect(files.length).toBeGreaterThan(1);
+    const failures = nativeImportFailures(files);
+    expect(failures, failures.join('\n')).toEqual([]);
+  }, 150_000);
+
+  // Falsifiability control: a config that reads `__dirname` must be reported by the same import.
+  it('reports a config that reads the CommonJS __dirname', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-config-'));
+    try {
+      const bad = join(dir, 'vitest.config.ts');
+      writeFileSync(bad, "import { resolve } from 'node:path';\nexport default { root: resolve(__dirname) };\n");
+      const failures = nativeImportFailures([bad]);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('__dirname is not defined');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
