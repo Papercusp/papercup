@@ -10,6 +10,13 @@ const state = vi.hoisted(() => ({
   /** The row the port acquired its transcript for (WI-10003198). */
   acquiredRow: null as unknown,
 }));
+// consult-backed-parking-2026-10-12#P-010: the live-source preflight's shared read.
+// Default = no bound session, so every pre-existing case here is unaffected.
+const bindingsMock = vi.hoisted(() => vi.fn());
+vi.mock('../routes/agent-mcp/pre-pinned-owner-conflicts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../routes/agent-mcp/pre-pinned-owner-conflicts')>()),
+  readPrePinnedOwnerBindings: (...args: unknown[]) => bindingsMock(...args),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: state.sql }) as never,
@@ -101,6 +108,7 @@ beforeEach(async () => {
   };
   state.inspectArgs = null;
   state.acquiredRow = null;
+  bindingsMock.mockReset().mockResolvedValue({ precursors: [], reclaimableConflicts: [], conflicts: [], sessionState: undefined });
   await sql`TRUNCATE harness_shared.session_turns CASCADE`;
   await sql`
     INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
@@ -125,6 +133,41 @@ async function inspect(body: Record<string, unknown>): Promise<Response> {
     }),
   }));
 }
+
+describe('session-port live-source preflight (consult-backed-parking-2026-10-12#P-010)', () => {
+  const liveBinding = {
+    precursors: [], reclaimableConflicts: [], sessionState: 'live',
+    conflicts: [{ id: '39975', display: null, has_session: true, launched: false, liveness: 'live' }],
+  };
+
+  it('refuses a source-identity port while that identity is bound to a live session, before reading the transcript', async () => {
+    bindingsMock.mockResolvedValueOnce(liveBinding);
+    const response = await inspect({ consultEvidenceSpan: null });
+    expect(response.status).toBe(409);
+    const body = await response.json() as { code?: string; error?: string };
+    expect(body.code).toBe('source_session_still_live');
+    expect(body.error).toMatch(/source session 41 \(su-source\) is still running \(sessionState=live\)/);
+    expect(body.error).toMatch(/Exit the source session first/);
+    expect(bindingsMock).toHaveBeenCalledWith('su-source');
+    expect(state.acquiredRow).toBeNull();
+    expect(state.inspectArgs).toBeNull();
+  });
+
+  it('never consults the binding read for an isolated-owner (consult) port', async () => {
+    bindingsMock.mockResolvedValue(liveBinding);
+    const response = await inspect({ targetOwnerId: 'su-answer-owner' });
+    expect(response.status).toBe(200);
+    expect(bindingsMock).not.toHaveBeenCalled();
+  });
+
+  it('is fail-soft: a failed binding read leaves the launch guard as the authority', async () => {
+    bindingsMock.mockRejectedValueOnce(new Error('relation "harness_shared.adv_sessions" does not exist'));
+    const response = await inspect({ consultEvidenceSpan: null });
+    expect(response.status).toBe(200);
+    expect(bindingsMock).toHaveBeenCalledTimes(1);
+    expect(state.acquiredRow).toMatchObject({ id: 41, coordOwnerId: 'su-source' });
+  });
+});
 
 describe('session-port evidence-span route (P-007)', () => {
   it.each(['claude', 'codex', 'omp'] as const)('binds an isolated answer owner on the %s target without changing the source row', async (backend) => {

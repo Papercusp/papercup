@@ -48,7 +48,6 @@ import {
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
   recordSuLaunchSpec,
-  repairStaleAdvSessionTerminalMarkers,
 } from '../../../adv-sessions';
 // stale-prompt-render-in-live-sessions-2026-08-02 P-002/D-001: the prompt-assembly
 // steps this route shares with the carry-respawn persona refresh. Both paths must
@@ -60,12 +59,8 @@ import {
   type SuLaunchSpecRecord,
 } from '../../../su-persona-render';
 import { getOrgPg } from '@papercusp/db-org';
-import {
-  classifyPrePinnedOwnerRows,
-  describePrePinnedConflicts,
-  mapPrePinnedOwnerSessionState,
-} from './pre-pinned-owner-rows';
-import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
+import { describePrePinnedConflicts } from './pre-pinned-owner-rows';
+import { readPrePinnedOwnerBindings } from './pre-pinned-owner-conflicts';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec, compileLaunchSpecificationArtifact, provisionLaunchIdentityResources, resolveLaunchIdentityModelDefault } from '../../../role-launch-spec';
@@ -2282,7 +2277,6 @@ export const bootstrapSu = defineTool({
           400,
         );
       }
-      const { sql } = getOrgPg();
       // EI-21417550055038906: a teardown that died mid-write leaves a HALF-TERMINAL
       // tuple (ended_by recorded, ended_at NULL). The freshness query below filters
       // only `ended_at IS NULL`, so that ghost read as a live binding and 409'd the
@@ -2290,14 +2284,10 @@ export const bootstrapSu = defineTool({
       // ended_at NULL). Stamp the missing timestamp first — the repair is narrow +
       // idempotent (fills only the missing ended_at, never overwrites a terminal
       // tuple), so a repaired ghost simply drops out of the query.
-      await repairStaleAdvSessionTerminalMarkers(requestedSid);
-        const live = await sql<Array<{ id: string; display: string | null; has_session: boolean; launched: boolean }>>`
-        SELECT id::text, display, (session_id IS NOT NULL) AS has_session,
-               (launched_at IS NOT NULL) AS launched
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
-         ORDER BY id DESC
-      `;
+      // That repair, the un-ended-row read and the oracle verdict below are
+      // ONE shared read (readPrePinnedOwnerBindings) — the session-port inspect
+      // route runs the same read to refuse a live-source cross-backend resume
+      // before preparation (consult-backed-parking-2026-10-12#P-010).
       // WI-37743: "fresh" must mean "not already RUNNING as someone else", not
       // "has no row at all". The spawner that pre-pinned this id also writes a
       // `display='terminal'` STARTING row for it (WI-6376) so the board can render
@@ -2324,16 +2314,10 @@ export const bootstrapSu = defineTool({
       // this route starts one pre-pinned owner at a time. The read is fail-soft:
       // an oracle failure is indistinguishable from an unknown verdict here and
       // must keep the binding blocking, never authorise a reclaim.
-        const oracleSessionState = await resolveSessionStates([{ ownerId: requestedSid }], { hydratePerId: true })
-        .then((verdicts) => verdicts.get(requestedSid)?.sessionState)
-        .catch(() => undefined);
       // Only the oracle's confirmed terminal states may reclaim. In particular,
       // recorded/live/unknown (and every other non-terminal state) remain a
       // blocking conflict; missing oracle evidence is not proof of death.
-      const liveness = mapPrePinnedOwnerSessionState(oracleSessionState);
-      const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
-        live.map((row) => ({ ...row, liveness })),
-      );
+      const { precursors, reclaimableConflicts, conflicts } = await readPrePinnedOwnerBindings(requestedSid);
       if (conflicts.length > 0) {
         // Carry WHY each live row failed the precursor test. This refusal is
         // launch-blocking and reaches the owner (psu prints it; since WI-37841 it

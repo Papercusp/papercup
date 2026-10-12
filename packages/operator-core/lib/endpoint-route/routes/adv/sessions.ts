@@ -255,6 +255,33 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   const trackedRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
   service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
+  // consult-backed-parking-2026-10-12#P-010 (D-009): a port that continues the
+  // source coordination identity is refused by bootstrap-su while that identity
+  // is still bound to a live session. Run bootstrap-su's own read here, before
+  // egress and preparation, so psu --resume names the running source instead of
+  // failing a prepared port with a launch-internal 409. Isolated-owner ports
+  // (consult) bind a fresh identity and are unaffected.
+  // Fail-SOFT, unlike bootstrap-su: this is an early preview of a refusal the
+  // launch still enforces, so a failed read must neither block the resume nor
+  // surface a database error as a live-source conflict.
+  if (body.targetOwnerId === undefined && trackedRow.coordOwnerId) {
+    const { readPrePinnedOwnerBindings, describeLiveSourceRefusal } = await import('../agent-mcp/pre-pinned-owner-conflicts');
+    const bindings = await readPrePinnedOwnerBindings(trackedRow.coordOwnerId).catch(() => null);
+    if (bindings && bindings.conflicts.length > 0) {
+      return {
+        response: json({
+          ok: false,
+          code: 'source_session_still_live',
+          error: describeLiveSourceRefusal({
+            sourceAdvSessionId,
+            ownerId: trackedRow.coordOwnerId,
+            targetBackend,
+            bindings,
+          }),
+        }, 409),
+      } as const;
+    }
+  }
   // The row whose transcript this port reads. Normally the tracked row itself;
   // for a selected native session or evidence span in an earlier incarnation, the same row
   // re-pointed at that incarnation's native session (see

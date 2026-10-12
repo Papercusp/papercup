@@ -46,7 +46,7 @@ describe('readStableLiveJsonl', () => {
       if (args[0] === path) {
         capturedHandle = handle;
         const actualStat = handle.stat.bind(handle);
-        handle.stat = async (...statArgs) => {
+        handle.stat = (async (...statArgs: Parameters<typeof actualStat>) => {
           const stat = await actualStat(...statArgs);
           // Change the actual filesystem only after the production descriptor's
           // high-water is measured; reads and close still use the real handle.
@@ -56,7 +56,7 @@ describe('readStableLiveJsonl', () => {
             writeFileSync(path, later);
           }
           return stat;
-        };
+        }) as typeof handle.stat;
       }
       return handle;
     });
