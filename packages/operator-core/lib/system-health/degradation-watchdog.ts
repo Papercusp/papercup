@@ -183,7 +183,7 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'workspace-routing-read', scopeKeyed: true,
-  description: 'Workspace route, placement, recipient and issue-partition decisions that measured their primary inventory, presence files, recipient set or flag rather than selecting a fallback after a read failure.',
+  description: 'Workspace route, placement, recipient, escalation stand-down and issue-partition decisions that measured their primary inventory, presence, stand-down set or flag rather than selecting a fallback after a read failure.',
 });
 registerDegradationMechanism({
   mechanism: 'conversation-context-read', scopeKeyed: true,
