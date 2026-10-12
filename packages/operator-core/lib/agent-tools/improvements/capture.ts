@@ -833,7 +833,7 @@ export default defineTool({
           .max(120)
           .optional()
           .describe(
-            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations.',
+            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations. Fresh change/feature filings that enter agent review release the filer claim before the response and remain unassigned until review completes.',
           ),
         origin: z
           .enum(['organic', 'drill', 'replay', 'shadow'])
@@ -1655,8 +1655,20 @@ export default defineTool({
       }
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
-      const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
+      const captured = result as {
+        created?: boolean;
+        issue?: {
+          id: string;
+          title?: string;
+          state?: string;
+          assignee?: string | null;
+          assignedBy?: string | null;
+        };
+      };
       const capturedIssue = captured.issue;
+      const initialReviewState = (result as { reviewState?: 'blocked' | 'open' }).reviewState;
+      let responseIssue = capturedIssue;
+      let responseReviewState = initialReviewState;
       // su-loop-capability-parity P-005 (D-009): an SU session's IDEATE-pass FEATURE origination
       // earns a routed-ledger provenance row (origin='su-ideate') so it rides the SAME
       // grade/outcome/priming machinery Scout's ideas do — WITHOUT skewing Scout's per-lens
@@ -1765,6 +1777,11 @@ export default defineTool({
             throw new Error(`review reopen did not apply open state (appliedState=${appliedState ?? 'null'})`);
           }
           agentReview = enrolled;
+          // enterAgentReview releases the submitter claim so an independent reviewer
+          // can take the pending row. Return the post-review state, not capture-core's
+          // pre-review INSERT snapshot (which still carries the filer as assignee).
+          responseIssue = { ...capturedIssue, state: 'open', assignee: null };
+          responseReviewState = 'open';
         } catch (error) {
           const phase: AgentReviewFailure['phase'] = enrollmentSucceeded ? 'reopen' : 'enrollment';
           await recordReviewFailure(phase, error);
@@ -1875,7 +1892,14 @@ export default defineTool({
         capturedRefSubject && capturedUnresolvedRefs
           ? unresolvedRefsWarning(capturedRefSubject, capturedUnresolvedRefs.missing)
           : undefined;
-      const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : result;
+      const responseResult = responseIssue !== capturedIssue || responseReviewState !== initialReviewState
+        ? {
+            ...(result as Record<string, unknown>),
+            ...(responseIssue ? { issue: responseIssue } : {}),
+            ...(responseReviewState ? { reviewState: responseReviewState } : {}),
+          }
+        : result;
+      const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : responseResult;
       return {
         content: [
           {

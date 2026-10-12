@@ -147,13 +147,16 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     mockCapture.mockResolvedValue({
       ok: true,
       created: true,
-      issue: { id: 'EI-42', title: 'Replace human review' },
+      issue: {
+        id: 'EI-42', title: 'Replace human review', state: 'blocked',
+        assignee: 'su-filer', assignedBy: 'su-filer',
+      },
       reviewRequired: true,
       reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
 
     const result = await callTool(
-      { title: 'Replace human review', kind: 'change', harness: 'papercusp' },
+      { title: 'Replace human review', kind: 'change', harness: 'papercusp', assign_to: 'self' },
       {
         harnessSlug: 'papercusp',
         workspaceId: 'ws-1',
@@ -175,6 +178,10 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     expect(body.agentReview).toEqual({
       entered: true,
       state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+    expect(body).toMatchObject({
+      reviewState: 'open',
+      issue: { state: 'open', assignee: null, assignedBy: 'su-filer' },
     });
   });
 
