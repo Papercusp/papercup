@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles } from '../lib/verifier-source';
-import { preparePrivateOperatorApiBundle, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle,
-  type CommittedReaderClosure } from './private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
+  resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle,
+  type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const temporary: string[] = [];
@@ -58,6 +59,152 @@ function prepareBuilder(f: ReturnType<typeof fixture>, script = 'test -f "$2"\n'
   writeFileSync(join(f.root, '.verifier-source.json'), JSON.stringify(source));
   writeFileSync(f.options.sourceReceiptPath, JSON.stringify(source));
 }
+
+function producerFixture(extraScript = '') {
+  const f = fixture();
+  writeFileSync(join(f.root, 'builder-graph.json'), readFileSync(`${f.bundle}.meta.json`));
+  prepareBuilder(f, 'printf "build\\n" >> "$2.builds"\nprintf "%s" "export const host = 1;" > "$2"\n'
+    + 'cp builder-graph.json "$2.meta.json"\ncp asset.sql "$(dirname "$2")/asset.sql"\n' + extraScript);
+  for (const name of ['hono-host.mjs', 'hono-host.mjs.meta.json', 'asset.sql']) rmSync(join(f.dir, 'prepare', name));
+  const { sha256: _bundle, metafileSha256: _graph, artifacts: _artifacts, ...pins } = f.closure;
+  const inputs: CommittedReaderPreparationInputs = { ...pins, phase: 'planned',
+    copiedArtifacts: [{ path: 'asset.sql', sourcePath: 'asset.sql' }] };
+  const inputReceiptPath = join(f.dir, 'operator-api-preflight.json');
+  const saveInputs = () => writeFileSync(inputReceiptPath, JSON.stringify(inputs)); saveInputs();
+  const selected = { inputReceiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+    selectedCommit: f.options.selectedCommit };
+  const produce = () => produceCommittedReaderPrivateApiBundle(f.root, join(f.dir, 'prepare'), selected);
+  const consume = () => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+    receiptPath: join(f.dir, 'prepare/operator-api-preflight.json'),
+    sourceReceiptPath: join(f.dir, 'prepare/verifier-source.json'), selectedCommit: selected.selectedCommit,
+  } });
+  return { ...f, inputs, saveInputs, selected, produce, consume };
+}
+
+describe('retained committed reader producer and consumer', () => {
+  it('builds once at the allocated path and consumes the original pinned artifacts without rebuilding', () => {
+    const f = producerFixture();
+    expect(f.inputs).not.toHaveProperty('sha256');
+    expect(f.inputs).not.toHaveProperty('metafileSha256');
+    const produced = f.produce();
+    const original = readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'));
+    expect(f.consume()).toEqual(produced);
+    expect(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toEqual(original);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    expect(produced.path).toBe(f.bundle);
+    const receipt = JSON.parse(String(original));
+    expect(receipt).toMatchObject({ phase: 'produced', inputReceipt: {
+      path: join(f.dir, 'prepare/operator-api-inputs.json'), sha256: digest(readFileSync(f.selected.inputReceiptPath)),
+    }, qualification: { status: 'preparation-qualified',
+      pending: ['actual-private-schema', 'actual-private-environment', 'loaded-host'] } });
+    expect(receipt.artifactCensus.map((file: { path: string }) => file.path)).toEqual([
+      'asset.sql', 'hono-host.mjs', 'hono-host.mjs.builds', 'hono-host.mjs.meta.json', 'operator-api-build.log',
+    ]);
+    expect(() => f.produce()).toThrow(/fresh allocated/);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it.each(['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'dependencyFiles',
+    'externalResolutions', 'schema', 'environment', 'copiedArtifacts'] as const)(
+    'refuses missing independent %s before builder or runtime allocation', dimension => {
+      const f = producerFixture(); delete (f.inputs as Partial<CommittedReaderPreparationInputs>)[dimension]; f.saveInputs();
+      const allocateRuntime = vi.fn();
+      expect(() => { f.produce(); allocateRuntime(); }).toThrow();
+      expect(allocateRuntime).not.toHaveBeenCalled();
+      expect(existsSync(`${f.bundle}.builds`)).toBe(false);
+      expect(existsSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toBe(false);
+    });
+
+  it.each(['omitted', 'opaque'] as const)('refuses unresolved independent %s before compiling', dimension => {
+    const f = producerFixture(); f.inputs[dimension] = ['unobserved child imports']; f.saveInputs();
+    expect(() => f.produce()).toThrow(new RegExp(dimension));
+    expect(existsSync(`${f.bundle}.builds`)).toBe(false);
+  });
+
+  it.each(['../asset.sql', 'operator-api-inputs.json', 'hono-host.mjs'])('refuses invalid or reserved copy output %s', path => {
+    const f = producerFixture(); f.inputs.copiedArtifacts[0].path = path; f.saveInputs();
+    expect(() => f.produce()).toThrow(/artifact path|reserved preparation path/);
+    expect(existsSync(`${f.bundle}.builds`)).toBe(false);
+  });
+
+  it.each(['hono-host.mjs', 'hono-host.mjs.meta.json', 'asset.sql', 'operator-api-inputs.json',
+    'verifier-source.json'])( 'refuses retained %s drift without a consumer rebuild', path => {
+      const f = producerFixture(); f.produce();
+      writeFileSync(join(f.dir, 'prepare', path), readFileSync(join(f.dir, 'prepare', path), 'utf8') + '\n');
+      const allocateRuntime = vi.fn();
+      expect(() => { f.consume(); allocateRuntime(); }).toThrow();
+      expect(allocateRuntime).not.toHaveBeenCalled();
+      expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    });
+
+  it('refuses a valid-looking partial output receipt at both consumer and sanitized worker handoffs', () => {
+    const f = producerFixture(); f.produce();
+    const path = join(f.dir, 'prepare/operator-api-preflight.json');
+    const receipt = JSON.parse(readFileSync(path, 'utf8')); receipt.qualification = { status: 'pending' };
+    writeFileSync(path, JSON.stringify(receipt));
+    expect(() => f.consume()).toThrow(/Partial produced preparation/);
+    expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + receipt.sha256,
+      '--prepared-receipt-sha=' + digest(readFileSync(path))], join(f.dir, 'execute')))
+      .toThrow(/Partial produced preparation/);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it('retains pending output after a graph gap and refuses it instead of falling back to a generic build', () => {
+    const f = producerFixture(); f.inputs.executedImports = ['helper.ts']; f.saveInputs();
+    expect(() => f.produce()).toThrow(/absent from observed import closure/);
+    const path = join(f.dir, 'prepare/operator-api-preflight.json');
+    expect(JSON.parse(readFileSync(path, 'utf8')).qualification).toEqual({ status: 'pending' });
+    expect(() => f.consume()).toThrow(/Partial produced preparation/);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it.each(['consumer', 'worker'] as const)('refuses downgraded producer phase at the %s handoff', handoff => {
+    for (const phase of [undefined, 'planned', 'legacy']) {
+      const f = producerFixture(); f.produce();
+      const path = join(f.dir, 'prepare/operator-api-preflight.json');
+      const receipt = JSON.parse(readFileSync(path, 'utf8'));
+      receipt.phase = phase; receipt.qualification = { status: 'pending' };
+      writeFileSync(path, JSON.stringify(receipt));
+      const allocateRuntime = vi.fn();
+      const consume = () => handoff === 'consumer' ? f.consume()
+        : resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + receipt.sha256,
+          '--prepared-receipt-sha=' + digest(readFileSync(path))], join(f.dir, 'execute'));
+      expect(() => { consume(); allocateRuntime(); }).toThrow(/Produced preparation phase is required/);
+      expect(allocateRuntime).not.toHaveBeenCalled();
+      expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    }
+  });
+
+  it.each(['inputReceipt', 'artifactCensus', 'qualification'] as const)(
+    'refuses a legacy-looking receipt carrying producer %s without a producer phase', dimension => {
+      const f = fixture();
+      const selected = { receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+        selectedCommit: f.options.selectedCommit };
+      preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: selected });
+      const path = join(f.dir, 'prepare/operator-api-preflight.json');
+      const receipt = JSON.parse(readFileSync(path, 'utf8'));
+      delete receipt.qualification;
+      receipt[dimension] = dimension === 'qualification' ? { status: 'pending' } : null;
+      writeFileSync(path, JSON.stringify(receipt));
+      expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+        ...selected, receiptPath: path, sourceReceiptPath: join(f.dir, 'prepare/verifier-source.json'),
+      } })).toThrow(/Produced preparation phase is required/);
+      expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + receipt.sha256,
+        '--prepared-receipt-sha=' + digest(readFileSync(path))], join(f.dir, 'execute')))
+        .toThrow(/Produced preparation phase is required/);
+    });
+
+  it('rejects an independently digested input receipt whose required pins disagree with produced claims', () => {
+    const f = producerFixture(); f.produce();
+    const inputPath = join(f.dir, 'prepare/operator-api-inputs.json');
+    const path = join(f.dir, 'prepare/operator-api-preflight.json');
+    const inputs = JSON.parse(readFileSync(inputPath, 'utf8')); inputs.executedImports = ['helper.ts'];
+    writeFileSync(inputPath, JSON.stringify(inputs));
+    const receipt = JSON.parse(readFileSync(path, 'utf8')); receipt.inputReceipt.sha256 = digest(readFileSync(inputPath));
+    writeFileSync(path, JSON.stringify(receipt));
+    expect(() => f.consume()).toThrow(/Produced input pin differs: executedImports/);
+  });
+});
 
 describe('selected committed reader preparation closure', () => {
   it('qualifies preparation without claiming actual private schema, environment or loaded-host proof', () => {
@@ -139,12 +286,8 @@ describe('selected committed reader preparation closure', () => {
   });
 
   it.each(['source-receipt.json', 'operator-api-preflight.json'])('refuses %s drift during preparation before publishing the handoff', name => {
-    const f = fixture();
-    prepareBuilder(f, `printf '\\n' >> "$(dirname "$2")/../${name}"\n`);
-    expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
-      receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
-      selectedCommit: f.options.selectedCommit,
-    } })).toThrow(/receipt changed during preparation/);
+    const f = producerFixture(`printf '\\n' >> "$(dirname "$2")/../${name}"\n`);
+    expect(() => f.produce()).toThrow(/receipt changed during preparation/);
     expect(() => readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toThrow(/ENOENT/);
   });
 

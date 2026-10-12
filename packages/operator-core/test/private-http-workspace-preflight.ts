@@ -33,73 +33,72 @@ export interface CommittedReaderClosure {
   environment: Record<string, string>;
   omitted: string[];
   opaque: string[];
+  artifactCensus?: VerifierSourceFile[];
+  phase?: 'produced';
+  inputReceipt?: { path: string; sha256: string };
+  qualification?: { status: 'pending' | 'preparation-qualified' };
 }
 
-/** Validate independent input pins before any compilation side effects. The
- * post-build qualifier reuses this contract and then checks actual bytes. */
-function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
+/** Independent input pins have no predicted bundle or graph digest. Copied
+ * artifact paths are relative to the recorder's allocated preparation folder. */
+export interface CommittedReaderPreparationInputs extends Omit<CommittedReaderClosure,
+  'sha256' | 'metafileSha256' | 'artifacts' | 'artifactCensus' | 'phase' | 'inputReceipt' | 'qualification'> {
+  phase: 'planned';
+  copiedArtifacts: { path: string; sourcePath: string }[];
+}
+
+function assertCommittedReaderInputs(closure: Omit<CommittedReaderClosure,
+  'sha256' | 'metafileSha256' | 'artifacts' | 'artifactCensus' | 'phase' | 'inputReceipt' | 'qualification'>) {
   assert.ok(closure && typeof closure === 'object' && !Array.isArray(closure),
     'Independent closure receipt must be an object');
   for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
-    'dependencyFiles', 'artifacts', 'omitted', 'opaque'] as const)
+    'dependencyFiles', 'omitted', 'opaque'] as const)
     assert.ok(Array.isArray(closure[key]), `Required closure dimension missing: ${key}`);
   for (const key of ['schema', 'environment', 'externalResolutions'] as const)
     assert.ok(closure[key] && typeof closure[key] === 'object' && !Array.isArray(closure[key]),
       `Required closure dimension missing: ${key}`);
   assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
   assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
-  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'artifacts'] as const)
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports'] as const)
     assert.ok(closure[key].length, `Required closure dimension empty: ${key}`);
-  for (const key of ['sha256', 'metafileSha256'] as const) {
-    assert.ok(typeof closure[key] === 'string', `Required closure digest missing: ${key}`);
-    assert.match(closure[key], /^[a-f0-9]{64}$/, `Required closure digest invalid: ${key}`);
-  }
   assert.ok(Object.keys(closure.schema).length && Object.keys(closure.environment).length,
     'Required private schema and environment pins are missing');
   for (const [key, expected] of Object.entries(closure.environment))
     assert.match(expected, /^[a-f0-9]{64}$/, `Environment digest missing: ${key}`);
 }
 
-/** Qualify the selected committed preparation before creating a sidecar/host.
- * Source files reuse the independent full archive census. Dependencies remain
- * a separate full materialized census, including bytes and symlink identities;
- * a lockfile is never substituted for the files Node will resolve. Unknown
- * executed imports (including an unobserved subprocess graph) must be recorded
- * as opaque and refuse this required closure.
- */
-export function qualifyCommittedReaderSource(o: {
-  root: string; bundle: string; receiptPath: string; sourceReceiptPath: string;
-  selectedCommit: string;
-  receiptSha256?: string; sourceReceiptSha256?: string;
-} & ({ preparationOnly: true } | {
-  preparationOnly?: false; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
-})) {
-  const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
-  const inside = (root: string, path: string) => {
-    const rel = relative(realpathSync(root), realpathSync(path));
-    return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
-  };
-  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
-  assert.ok(!inside(o.root, o.receiptPath), 'Closure receipt must be independent of the source archive');
-  const closureBytes = readFileSync(o.receiptPath);
-  if (o.receiptSha256) assert.equal(digest(closureBytes), o.receiptSha256, 'Pinned preparation receipt changed');
-  const closure: CommittedReaderClosure = JSON.parse(String(closureBytes));
-  assertCommittedReaderClosure(closure);
-  assert.equal(closure.sourceCommit, o.selectedCommit, 'Closure differs from selected committed source');
-  const assertSourceReceiptUnchanged = () => {
-    if (o.sourceReceiptSha256) assert.equal(digest(readFileSync(o.sourceReceiptPath)), o.sourceReceiptSha256,
-      'Pinned selected source receipt changed');
-  };
-  assertSourceReceiptUnchanged();
-  const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
-  assertSourceReceiptUnchanged();
-  assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from selected committed source');
+function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
+  assertCommittedReaderInputs(closure);
+  assert.ok(Array.isArray(closure.artifacts), 'Required closure dimension missing: artifacts');
+  assert.ok(closure.artifacts.length, 'Required closure dimension empty: artifacts');
+  for (const key of ['sha256', 'metafileSha256'] as const) {
+    assert.ok(typeof closure[key] === 'string', `Required closure digest missing: ${key}`);
+    assert.match(closure[key], /^[a-f0-9]{64}$/, `Required closure digest invalid: ${key}`);
+  }
+}
+
+const digestBytes = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+function inside(root: string, path: string) {
+  const rel = relative(realpathSync(root), realpathSync(path));
+  return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+}
+
+/** The same independent archive/dependency contract runs before building and
+ * when consuming. Static graph membership never supplies observed imports. */
+function qualifyCommittedReaderInputs(root: string, sourceReceiptPath: string, selectedCommit: string,
+  closure: Omit<CommittedReaderClosure,
+    'sha256' | 'metafileSha256' | 'artifacts' | 'artifactCensus' | 'phase' | 'inputReceipt' | 'qualification'>) {
+  assertCommittedReaderInputs(closure);
+  assert.match(selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.equal(closure.sourceCommit, selectedCommit, 'Closure differs from selected committed source');
+  const source = readVerifierSourceReceiptSync(root, sourceReceiptPath);
+  assert.equal(source.sourceCommit, selectedCommit, 'Archive differs from selected committed source');
   const sourceFiles = new Map(source.files.map(file => [file.path, file]));
   const sourcePath = (path: string) => {
     assert.ok(path && !isAbsolute(path) && !path.split('/').some(part => !part || part === '.' || part === '..')
       && !path.includes('\\'), `Invalid closure source path: ${path}`);
     assert.ok(sourceFiles.has(path), `Required source is outside selected archive: ${path}`);
-    assert.ok(inside(o.root, join(o.root, path)), `Required source resolves outside selected archive: ${path}`);
+    assert.ok(inside(root, join(root, path)), `Required source resolves outside selected archive: ${path}`);
   };
   for (const input of source.testedInputs) {
     sourcePath(input.path);
@@ -109,8 +108,101 @@ export function qualifyCommittedReaderSource(o: {
     ...closure.executedImports, ...closure.copiedSources]) sourcePath(path);
   for (const path of closure.testPaths)
     assert.ok(source.testedInputs.some(input => input.path === path), `Test is absent from selected tested inputs: ${path}`);
-  const dependencies = verifierSourceFiles(join(o.root, 'node_modules'));
+  const dependencies = verifierSourceFiles(join(root, 'node_modules'));
   assert.deepEqual(dependencies, closure.dependencyFiles, 'Materialized dependency census differs');
+  return { source, sourcePath, dependencies };
+}
+
+/** Receipt files are pinned separately. Every other retained output, including
+ * logs and copied helpers, remains in the produced artifact census. */
+const retainedReceiptNames = ['operator-api-preflight.json', 'operator-api-inputs.json', 'verifier-source.json'];
+function preparedArtifactCensus(evidenceDir: string) {
+  return verifierSourceFiles(evidenceDir).filter(file =>
+    !retainedReceiptNames.includes(file.path));
+}
+
+function plannedCopies(inputs: CommittedReaderPreparationInputs) {
+  assert.equal(inputs.phase, 'planned', 'Independent planned inputs are required before building');
+  assertCommittedReaderInputs(inputs);
+  assert.ok(Array.isArray(inputs.copiedArtifacts), 'Planned copied artifact census is required');
+  const copies = new Map<string, string>();
+  for (const copy of inputs.copiedArtifacts) {
+    assert.ok(copy.path && !isAbsolute(copy.path) && !copy.path.includes('\\')
+      && !copy.path.split('/').some(part => !part || part === '.' || part === '..'), 'Invalid planned artifact path');
+    assert.ok(!retainedReceiptNames.includes(copy.path)
+      && !['hono-host.mjs', 'hono-host.mjs.meta.json', 'operator-api-build.log'].includes(copy.path),
+      'Planned copied artifact uses a reserved preparation path');
+    assert.ok(!copies.has(copy.path), 'Duplicate planned copied artifact');
+    copies.set(copy.path, copy.sourcePath);
+  }
+  assert.deepEqual([...new Set(copies.values())].sort(), [...new Set(inputs.copiedSources)].sort(),
+    'Planned copied source census differs');
+  return copies;
+}
+
+/** The digested input receipt stays separate from the producer's output claims. */
+function retainedProducedInputs(closure: CommittedReaderClosure, bundle: string) {
+  const input = closure.inputReceipt;
+  assert.ok(input && input.path === join(dirname(bundle), 'operator-api-inputs.json'),
+    'Produced preparation requires its retained independent input receipt');
+  assert.match(input.sha256, /^[a-f0-9]{64}$/, 'Produced input receipt digest is required');
+  const bytes = readFileSync(input.path);
+  assert.equal(digestBytes(bytes), input.sha256, 'Retained independent input receipt changed');
+  const inputs: CommittedReaderPreparationInputs = JSON.parse(String(bytes));
+  const copies = plannedCopies(inputs);
+  for (const key of ['sourceCommit', 'testPaths', 'helperPaths', 'configPaths', 'executedImports',
+    'dependencyFiles', 'externalResolutions', 'copiedSources', 'schema', 'environment', 'omitted', 'opaque'] as const)
+    assert.deepEqual(closure[key], inputs[key], `Produced input pin differs: ${key}`);
+  assert.deepEqual(closure.artifacts.filter(artifact => artifact.sourcePath)
+    .map(artifact => [relative(dirname(bundle), artifact.path), artifact.sourcePath]).sort(),
+  [...copies.entries()].sort(), 'Produced copied artifact mapping differs from independent inputs');
+  return { path: input.path, bytes };
+}
+
+/** Qualify the selected committed preparation before creating a sidecar/host.
+ * Source files reuse the independent full archive census. Dependencies remain
+ * a separate full materialized census, including bytes and symlink identities;
+ * a lockfile is never substituted for the files Node will resolve. Unknown
+ * executed imports (including an unobserved subprocess graph) must be recorded
+ * as opaque and refuse this required closure.
+ */
+type CommittedReaderSourceOptions = {
+  root: string; bundle: string; receiptPath: string; sourceReceiptPath: string;
+  selectedCommit: string;
+  receiptSha256?: string; sourceReceiptSha256?: string;
+} & ({ preparationOnly: true } | {
+  preparationOnly?: false; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
+});
+
+export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
+  return qualifyCommittedReaderArtifacts(o);
+}
+
+/** Only the producer can validate an intermediate receipt; public consumers
+ * require the completed preparation status before allocating any runtime. */
+function qualifyCommittedReaderArtifacts(o: CommittedReaderSourceOptions, producing = false) {
+  const digest = digestBytes;
+  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.ok(!inside(o.root, o.receiptPath), 'Closure receipt must be independent of the source archive');
+  const closureBytes = readFileSync(o.receiptPath);
+  if (o.receiptSha256) assert.equal(digest(closureBytes), o.receiptSha256, 'Pinned preparation receipt changed');
+  const closure: CommittedReaderClosure = JSON.parse(String(closureBytes));
+  assertCommittedReaderClosure(closure);
+  let retainedInputs: ReturnType<typeof retainedProducedInputs> | undefined;
+  if (closure.phase === 'produced') {
+    if (!producing) assert.equal(closure.qualification?.status, 'preparation-qualified',
+      'Partial produced preparation is not qualified for consumption');
+    retainedInputs = retainedProducedInputs(closure, o.bundle);
+  }
+  assert.equal(closure.sourceCommit, o.selectedCommit, 'Closure differs from selected committed source');
+  const assertSourceReceiptUnchanged = () => {
+    if (o.sourceReceiptSha256) assert.equal(digest(readFileSync(o.sourceReceiptPath)), o.sourceReceiptSha256,
+      'Pinned selected source receipt changed');
+  };
+  assertSourceReceiptUnchanged();
+  const { source, sourcePath, dependencies } = qualifyCommittedReaderInputs(o.root, o.sourceReceiptPath,
+    o.selectedCommit, closure);
+  assertSourceReceiptUnchanged();
   const dependencyFiles = new Set(dependencies.map(file => `node_modules/${file.path}`));
   const graphBytes = readFileSync(`${o.bundle}.meta.json`);
   assert.equal(digest(graphBytes), closure.metafileSha256, 'Prepared build graph changed');
@@ -155,6 +247,16 @@ export function qualifyCommittedReaderSource(o: {
     assert.equal(digest(readFileSync(artifact.path)), artifact.sha256, `Prepared artifact changed: ${artifact.path}`);
   }
   assert.ok(artifactPaths.has(o.bundle) && artifactPaths.has(`${o.bundle}.meta.json`), 'Bundle and graph artifact pins are required');
+  if (closure.phase === 'produced') {
+    assert.ok(Array.isArray(closure.artifactCensus) && closure.artifactCensus.length,
+      'Produced artifact census is required');
+    assert.ok(closure.artifactCensus.every(file => file.kind === 'file'),
+      'Produced symlink artifacts require independent qualification');
+    assert.deepEqual(preparedArtifactCensus(dirname(o.bundle)), closure.artifactCensus,
+      'Produced artifact census changed');
+    assert.deepEqual([...artifactPaths].sort(), closure.artifactCensus.map(file => join(dirname(o.bundle), file.path)).sort(),
+      'Produced artifact census lacks digest pins');
+  }
   for (const path of closure.copiedSources) {
     const copies = closure.artifacts.filter(artifact => artifact.sourcePath === path);
     assert.ok(copies.length, `Copied source lacks retained artifact mapping: ${path}`);
@@ -169,7 +271,10 @@ export function qualifyCommittedReaderSource(o: {
     }
   }
   if (!o.preparationOnly) assert.deepEqual(o.schema, closure.schema, 'Applied required private schema differs');
-  return { sourceCommit: source.sourceCommit, sha256: closure.sha256, metafileSha256: closure.metafileSha256,
+  if (retainedInputs) assert.deepEqual(readFileSync(retainedInputs.path), retainedInputs.bytes,
+    'Retained independent input receipt changed during qualification');
+  return { status: 'preparation-qualified' as const,
+    sourceCommit: source.sourceCommit, sha256: closure.sha256, metafileSha256: closure.metafileSha256,
     checked: ['source', 'tested-inputs', 'build-imports', 'observed-imports', 'dependencies', 'externals',
       'config', 'copied-sources', 'artifacts',
       ...(!o.preparationOnly ? ['required-private-schema', 'required-environment'] : [])],
@@ -228,37 +333,15 @@ export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
   return socket;
 }
 
-/** Compile the native API before allocating PG, retaining the exact artifact
- * that the private worker will run instead of reading the shared graph again. */
-export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
-  committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
-}) {
+function assertPrivatePreparationEvidence() {
   // Match the child runtime's fail-closed evidence prerequisite before paying
   // for compilation. A missing reporter sink must not become a late PG failure.
   assert.ok(!(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
     || process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) || process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim(),
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
-  const selected = options?.committedReader;
-  let selectedReceipts: { source: Buffer; closure: Buffer } | undefined;
-  const assertSelectedReceiptsUnchanged = () => {
-    if (!selected || !selectedReceipts) return;
-    assert.deepEqual(readFileSync(selected.sourceReceiptPath), selectedReceipts.source,
-      'Selected source receipt changed during preparation');
-    assert.deepEqual(readFileSync(selected.receiptPath), selectedReceipts.closure,
-      'Selected closure receipt changed during preparation');
-  };
-  if (selected) {
-    assert.match(selected.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
-    selectedReceipts = { source: readFileSync(selected.sourceReceiptPath), closure: readFileSync(selected.receiptPath) };
-    assert.equal(readVerifierSourceReceiptSync(root, selected.sourceReceiptPath).sourceCommit,
-      selected.selectedCommit, 'Archive differs from selected committed source');
-    // Missing independent preparation must refuse before compilation/PG. Never
-    // synthesize a closure from this process's own source/dependency snapshot.
-    const closure: CommittedReaderClosure = JSON.parse(String(selectedReceipts.closure));
-    assertCommittedReaderClosure(closure);
-    assert.equal(closure.sourceCommit, selected.selectedCommit, 'Closure differs from selected committed source');
-    assertSelectedReceiptsUnchanged();
-  }
+}
+
+function buildPrivateOperatorApiBundle(root: string, evidenceDir: string) {
   const path = join(evidenceDir, 'hono-host.mjs');
   try {
     const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
@@ -268,24 +351,103 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     writeFileSync(join(evidenceDir, 'operator-api-build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
     throw error;
   }
-  const sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
+  return { path, sha256: digestBytes(readFileSync(path)) };
+}
+
+/** Consume independently retained artifacts without invoking the builder. The
+ * optional branch leaves the generic preparation callers unchanged. */
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
+  committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
+}) {
+  assertPrivatePreparationEvidence();
+  const selected = options?.committedReader;
   let receipt: { path: string; sha256: string; selectedSource?: {
     receiptPath: string; sha256: string; sourceCommit: string;
-  } } = { path, sha256 };
-  if (selected && selectedReceipts) {
-    assertSelectedReceiptsUnchanged();
-    const qualification = qualifyCommittedReaderSource({ root, bundle: path, ...selected, preparationOnly: true });
-    assertSelectedReceiptsUnchanged();
-    const sourceBytes = selectedReceipts.source;
+  } };
+  if (!selected) receipt = buildPrivateOperatorApiBundle(root, evidenceDir);
+  else {
+    const sourceBytes = readFileSync(selected.sourceReceiptPath);
+    const closureBytes = readFileSync(selected.receiptPath);
+    const closure: CommittedReaderClosure = JSON.parse(String(closureBytes));
+    assertCommittedReaderClosure(closure);
+    const path = join(evidenceDir, 'hono-host.mjs');
+    const qualification = qualifyCommittedReaderSource({ root, bundle: path, ...selected, preparationOnly: true,
+      sourceReceiptSha256: digestBytes(sourceBytes), receiptSha256: digestBytes(closureBytes) });
+    assert.deepEqual(readFileSync(selected.sourceReceiptPath), sourceBytes, 'Selected source receipt changed during preparation');
+    assert.deepEqual(readFileSync(selected.receiptPath), closureBytes, 'Selected closure receipt changed during preparation');
     const sourcePath = join(evidenceDir, 'verifier-source.json');
+    const retainedReceiptPath = join(evidenceDir, 'operator-api-preflight.json');
+    if (selected.receiptPath === retainedReceiptPath) {
+      const retained = JSON.parse(String(closureBytes));
+      assert.deepEqual(retained.selectedSource, { receiptPath: sourcePath, sha256: digestBytes(sourceBytes),
+        sourceCommit: selected.selectedCommit }, 'Retained selected source handoff differs');
+      assert.equal(retained.path, path, 'Retained bundle path differs');
+      // Keep the producer's original bytes and digest across this handoff.
+      return { ...retained, receiptSha256: digestBytes(closureBytes) } as typeof receipt & { receiptSha256: string };
+    }
     writeFileSync(sourcePath, sourceBytes);
-    receipt = { ...JSON.parse(String(selectedReceipts.closure)), path, sha256, qualification,
-      selectedSource: { receiptPath: sourcePath, sha256: createHash('sha256').update(sourceBytes).digest('hex'),
-        sourceCommit: selected.selectedCommit } };
+    receipt = { ...closure, path, sha256: closure.sha256, qualification,
+      selectedSource: { receiptPath: sourcePath, sha256: digestBytes(sourceBytes), sourceCommit: selected.selectedCommit } };
   }
   const receiptBytes = JSON.stringify(receipt);
   writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
   return { ...receipt, receiptSha256: createHash('sha256').update(receiptBytes).digest('hex') };
+}
+
+/** Run once in recordIsolatedIntegrationProof's existing allocated prepare
+ * folder. Required independent input gaps refuse before the compiler. Produced
+ * digests come only from retained bytes; actual schema/env/host stay pending. */
+export function produceCommittedReaderPrivateApiBundle(root: string, evidenceDir: string, selected: {
+  inputReceiptPath: string; sourceReceiptPath: string; selectedCommit: string;
+}) {
+  assertPrivatePreparationEvidence();
+  assert.ok(!inside(root, evidenceDir) && !inside(root, selected.inputReceiptPath),
+    'Preparation outputs and input receipt must be independent of the source archive');
+  const sourceBytes = readFileSync(selected.sourceReceiptPath);
+  const inputBytes = readFileSync(selected.inputReceiptPath);
+  const inputs: CommittedReaderPreparationInputs = JSON.parse(String(inputBytes));
+  const copies = plannedCopies(inputs);
+  const { sourcePath } = qualifyCommittedReaderInputs(root, selected.sourceReceiptPath, selected.selectedCommit, inputs);
+  for (const source of copies.values()) sourcePath(source);
+  assert.deepEqual(verifierSourceFiles(evidenceDir), [], 'Producer requires a fresh allocated preparation directory');
+  const unchanged = () => {
+    assert.deepEqual(readFileSync(selected.sourceReceiptPath), sourceBytes, 'Selected source receipt changed during preparation');
+    assert.deepEqual(readFileSync(selected.inputReceiptPath), inputBytes, 'Selected input receipt changed during preparation');
+  };
+  unchanged();
+  const { path, sha256 } = buildPrivateOperatorApiBundle(root, evidenceDir);
+  unchanged();
+  qualifyCommittedReaderInputs(root, selected.sourceReceiptPath, selected.selectedCommit, inputs);
+  const artifactCensus = preparedArtifactCensus(evidenceDir);
+  assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Produced symlink artifacts require independent qualification');
+  const artifacts = artifactCensus.map(file => ({ path: join(evidenceDir, file.path), sha256: file.sha256,
+    ...(copies.has(file.path) ? { sourcePath: copies.get(file.path)! } : {}) }));
+  for (const [output, source] of copies)
+    assert.ok(artifacts.some(artifact => artifact.path === join(evidenceDir, output) && artifact.sourcePath === source),
+      `Planned copied artifact missing: ${output}`);
+  const { phase: _phase, copiedArtifacts: _copies, ...pins } = inputs;
+  const closure: CommittedReaderClosure = { ...pins, phase: 'produced', sha256,
+    metafileSha256: digestBytes(readFileSync(`${path}.meta.json`)), artifacts, artifactCensus };
+  const sourcePathRetained = join(evidenceDir, 'verifier-source.json');
+  const inputsPathRetained = join(evidenceDir, 'operator-api-inputs.json');
+  const receiptPath = join(evidenceDir, 'operator-api-preflight.json');
+  writeFileSync(sourcePathRetained, sourceBytes);
+  writeFileSync(inputsPathRetained, inputBytes);
+  const receipt = { ...closure, path,
+    inputReceipt: { path: inputsPathRetained, sha256: digestBytes(inputBytes) },
+    selectedSource: { receiptPath: sourcePathRetained, sha256: digestBytes(sourceBytes), sourceCommit: selected.selectedCommit } };
+  // This intermediate receipt remains explicitly unqualified if output checks
+  // fail. No worker allocation or generic fallback is possible on that path.
+  writeFileSync(receiptPath, JSON.stringify({ ...receipt, qualification: { status: 'pending' } }));
+  unchanged();
+  const qualification = qualifyCommittedReaderArtifacts({ root, bundle: path, receiptPath,
+    sourceReceiptPath: sourcePathRetained, sourceReceiptSha256: digestBytes(sourceBytes),
+    selectedCommit: selected.selectedCommit, preparationOnly: true }, true);
+  unchanged();
+  writeFileSync(receiptPath, JSON.stringify({ ...receipt, qualification }));
+  return preparePrivateOperatorApiBundle(root, evidenceDir, { committedReader: {
+    receiptPath, sourceReceiptPath: sourcePathRetained, selectedCommit: selected.selectedCommit,
+  } });
 }
 
 /** Read and parse the receipt from the same bytes whose digest was verified. */
@@ -330,6 +492,13 @@ export function resolvePreparedCommittedReaderSource(argv: readonly string[], ev
   const prepared = readPreparedPrivateApiBundle(argv, evidenceDir);
   assert.ok(prepared?.receipt, 'Committed reader requires an independently prepared pinned API');
   const { path: bundle, receipt } = prepared;
+  const closure = receipt as unknown as CommittedReaderClosure;
+  assertCommittedReaderClosure(closure);
+  if (closure.phase === 'produced') {
+    assert.equal(closure.qualification?.status, 'preparation-qualified',
+      'Partial produced preparation is not qualified for consumption');
+    retainedProducedInputs(closure, bundle);
+  }
   const source = receipt.selectedSource;
   assert.ok(source && source.receiptPath === join(dirname(bundle), 'verifier-source.json'),
     'Committed reader requires the retained independent selected source receipt');
