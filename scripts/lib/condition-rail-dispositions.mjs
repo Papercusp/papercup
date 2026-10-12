@@ -150,7 +150,6 @@ export const DISPOSITIONS = Object.freeze({
   ),
   'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts': migrate('P-014'),
 
   // Exact annotation IDs independently approved in thread-post:1176052; runtime siblings retain their cluster.
   'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
