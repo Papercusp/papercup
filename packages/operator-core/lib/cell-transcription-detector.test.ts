@@ -169,6 +169,42 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it('does not classify a local test HEAD as deployed when the same sentence disclaims deployment', async () => {
+    const text =
+      "Live coord injection reports git-sync is still quarantined after 665 ticks: 7 files failed the content check and the content-fixer could not repair them, so human intervention is needed. " +
+      'My focused suites pass locally at HEAD cb797c99b1; this does not establish commit or deployment. ' +
+      "I could not identify from the alert whether any of the seven files are in this item's import graph.";
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
+
+  it('does not describe a staged SHA as deployed when the message explicitly says it is not deployed', async () => {
+    const text =
+      "FYI for live gate item WI-10006055: dev:pipeline_position for packages/operator-core/lib/carry-blind-window.ts reports target SHA 27733d8abafa1325b394c1c59edab6b39445b6c5 committed/on staging, not in main and not deployed; blockedOn=gate, gateVerdict=inconclusive, gateOwnership=held-live. " +
+      'The ownership cell identifies you as the live holder. ' +
+      "This is the deployment boundary for EI-25461817843124970's post-promotion verification; I will leave LIVE_GATE_OPS with you.";
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
+
+  it('still flags a locally tested HEAD when it is explicitly described as deployed', () => {
+    const hits = detectCellTranscriptions('focused suites pass locally at HEAD cb797c99b1 is deployed to :3070');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('cb797c99b1');
+  });
+
   it('DOES fire when a target commit is explicitly described as deployed', () => {
     const hits = detectCellTranscriptions('validate target commit abc1234 is deployed to :3070');
     expect(hits).toHaveLength(1);

@@ -625,6 +625,8 @@ export default defineTool({
       (!args.specFingerprint || clause.contentHash === args.specFingerprint),
     ).map((clause) => clause.specId);
     const evidenceLimit = args.limit ?? 1000;
+    const bindingSelection =
+      args.workItemIds !== undefined || args.evidenceRefs !== undefined || args.bindingIds !== undefined;
     // An empty spec filter means all specs in the store. Never widen an empty
     // plan-item selection into that read; the existing selection guard handles it.
     const allEvidence = itemSpecIds?.length === 0 ? [] : await listSpecEvidence({
@@ -665,42 +667,12 @@ export default defineTool({
         },
       };
     }
-    const artifactDisclosures = await readCurrentOperationalArtifactDisclosures(
-      typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
-      harnessSlug,
-      allEvidence,
-    );
-    const evaluationEvidence = allEvidence.map((row) => {
-      const gaps = row.id === undefined ? undefined : artifactDisclosures.get(row.id);
-      if (!gaps?.length) return row;
-      const existing = row.details.adequacy;
-      const adequacy = existing && typeof existing === 'object' && !Array.isArray(existing)
-        ? existing as Record<string, unknown>
-        : {};
-      const existingGaps = Array.isArray(adequacy.disclosedGap)
-        ? adequacy.disclosedGap.filter((gap): gap is string => typeof gap === 'string')
-        : typeof adequacy.disclosedGap === 'string'
-          ? [adequacy.disclosedGap]
-          : [];
-      return {
-        ...row,
-        details: {
-          ...row.details,
-          adequacy: {
-            ...adequacy,
-            disclosedGap: [...new Set([...existingGaps, ...gaps])],
-          },
-        },
-      };
-    });
     const explicitSelection =
       args.specIds !== undefined ||
       args.workItemIds !== undefined ||
       args.evidenceRefs !== undefined ||
       args.bindingIds !== undefined ||
       args.planItemIds !== undefined;
-    const bindingSelection =
-      args.workItemIds !== undefined || args.evidenceRefs !== undefined || args.bindingIds !== undefined;
     if (bindingSelection && allEvidence.length === 0) {
       return {
         data: {
@@ -762,6 +734,77 @@ export default defineTool({
         lifecycleStatus: clause.lifecycleStatus,
       }));
     const excludedDraftClauses = excludedClauses.filter((clause) => clause.lifecycleStatus === 'draft');
+    // Other ratings describe the caller's selected diagnostic cohort, but the
+    // disclosed-gap rubric is universal: every active binding for each clause must
+    // be checked. Keep that population separate so binding selectors cannot hide a
+    // disclosure without widening the rest of the diagnostic read.
+    const disclosedGapEvidence = bindingSelection && eligible.length > 0
+      ? await listSpecEvidence({
+          harnessSlug,
+          planSlugs: [args.slug],
+          specIds: [...new Set(eligible.map((clause) => clause.specId))],
+          specRevision: args.specRevision,
+          specFingerprint: args.specFingerprint,
+          replaySnapshot: args.replaySnapshot === true,
+          ...(args.replaySnapshot === true && current !== undefined
+            ? { currentProvenance: 'replayed-snapshot' as const }
+            : {}),
+          current,
+          limit: evidenceLimit,
+        })
+      : allEvidence;
+    if (bindingSelection && disclosedGapEvidence.length >= evidenceLimit) {
+      return {
+        data: {
+          ok: false,
+          error: 'evidence_selection_hit_limit',
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+          slug: args.slug,
+          harnessSlug,
+          classRef,
+          declaredClassRef: classRef,
+          classRefSource: classResolution.source,
+          count: disclosedGapEvidence.length,
+          selectedEvidenceCount: allEvidence.length,
+          limit: evidenceLimit,
+          remedy:
+            'The unscoped active-binding population needed for disclosed-gap reached the evidence-row ceiling; narrow the selected clauses or raise limit. A capped population cannot produce a safe disclosed-gap verdict.',
+        },
+      };
+    }
+    const artifactDisclosures = await readCurrentOperationalArtifactDisclosures(
+      typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
+      harnessSlug,
+      disclosedGapEvidence,
+    );
+    const withArtifactDisclosures = (rows: typeof allEvidence) => rows.map((row) => {
+      const gaps = row.id === undefined ? undefined : artifactDisclosures.get(row.id);
+      if (!gaps?.length) return row;
+      const existing = row.details.adequacy;
+      const adequacy = existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? existing as Record<string, unknown>
+        : {};
+      const existingGaps = Array.isArray(adequacy.disclosedGap)
+        ? adequacy.disclosedGap.filter((gap): gap is string => typeof gap === 'string')
+        : typeof adequacy.disclosedGap === 'string'
+          ? [adequacy.disclosedGap]
+          : [];
+      return {
+        ...row,
+        details: {
+          ...row.details,
+          adequacy: {
+            ...adequacy,
+            disclosedGap: [...new Set([...existingGaps, ...gaps])],
+          },
+        },
+      };
+    });
+    const evaluationEvidence = withArtifactDisclosures(allEvidence);
+    const disclosedGapEvaluationEvidence = bindingSelection
+      ? withArtifactDisclosures(disclosedGapEvidence)
+      : evaluationEvidence;
     // EI-23420771213407749: this vacuous-success guard must fire on an UNSELECTED call too.
     // Keyed on `explicitSelection` alone, a no-selector call whose clauses all get filtered
     // out (draft, or pinned away by specFingerprint) fell through to ok:true/rows:[]/count:0 —
@@ -814,10 +857,17 @@ export default defineTool({
         row.specRevision === clause.revision &&
         row.specFingerprint === clause.contentHash,
       );
+      const clauseDisclosedGapEvidence = disclosedGapEvaluationEvidence.filter((row) =>
+        row.planSlug === clause.planSlug &&
+        row.specId === clause.specId &&
+        row.specRevision === clause.revision &&
+        row.specFingerprint === clause.contentHash,
+      );
       const latestClauseEvidence = new Set(latestLogicalEvidence(clauseEvidence));
       const evaluated = evaluateSpecTestAdequacy({
         clause,
         evidence: evaluationEvidence,
+        disclosedGapEvidence: clauseDisclosedGapEvidence,
         classRef,
         harness: harnessSlug,
         sourceBarTestRequirements,

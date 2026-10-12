@@ -95,7 +95,7 @@ export const CONTEXT_WINDOW = 60;
  * sentence cannot turn a source citation into a deployment claim.
  */
 const SOURCE_HEAD_VALUE_PREFIX =
-  /(?:\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?|\b(?:working\s+tree|worktree)\b[^\n]{0,40}\b(?:git\s+)?head(?:\s+(?:sha|commit))?)\s*(?:is|=|:)?\s*$/i;
+  /(?:\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?|\b(?:working\s+tree|worktree)\b[^\n]{0,40}\b(?:git\s+)?head(?:\s+(?:sha|commit))?|\blocally\s+at\s+(?:git\s+)?head(?:\s+(?:sha|commit))?)\s*(?:is|=|:)?\s*$/i;
 
 /**
  * If a source HEAD value is explicitly described as deployed/serving/live, it is
@@ -119,14 +119,14 @@ const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
 /**
- * A commit explicitly described as committed locally/on staging is path evidence,
+ * A commit/SHA explicitly described as committed locally/on staging is path evidence,
  * not evidence that the commit is the deployed pipeline position. Keep this tied to
- * the value's `commit` label and its immediate state phrase: a generic `staging`
+ * a commit/SHA label at the value and its immediate state phrase: a generic `staging`
  * mention elsewhere must still keep ordinary staging-position claims detectable.
  */
-const STAGING_ONLY_COMMIT_PREFIX = /\bcommit\s*$/i;
+const STAGING_ONLY_COMMIT_PREFIX = /\b(?:commit|sha)\s*$/i;
 const EXPLICIT_STAGING_ONLY_COMMIT_AFTER =
-  /^\s+(?:was\s+)?committed\s+(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
+  /^\s+(?:was\s+)?committed(?:\s*\/\s*|\s+)(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
 
 /**
  * Lock and lease ids are hex-shaped by design, but they are not Git state. Keep

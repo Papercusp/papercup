@@ -1056,6 +1056,70 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
   });
 
+  it('checks every active clause binding for disclosed gaps during a pinned diagnostic read', async () => {
+    const binding = (id: number, disclosedGap?: string) => ({
+      id,
+      workItemId: `WI-${id}`,
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: `test-run:${id}`,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: id,
+      testRunExecution: {
+        status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
+      },
+      details: {
+        adequacy: {
+          testLayer: 'integration', outcome: 'passed', executed: true, collected: true,
+          fixtureCalibrated: true, falsifiable: true, pathReachable: true, oracleIndependent: true,
+          ...(disclosedGap ? { disclosedGap: [disclosedGap] } : {}),
+        },
+      },
+      currentness: {
+        overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'current', test: 'current' }, staleReasons: [], unknownReasons: [],
+      },
+    }) as never;
+    const selected = binding(38382);
+    const excluded = binding(38344, 'The unit-only row leaves cancellation coverage unproven.');
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) =>
+      options.bindingIds ? [selected] as never : [selected, excluded] as never,
+    );
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      bindingIds: [38382],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: false });
+    expect(listEvidence).toHaveBeenCalledTimes(2);
+    expect(listEvidence.mock.calls[1]?.[0]).toMatchObject({ specIds: ['SPEC-001'] });
+    expect(listEvidence.mock.calls[1]?.[0]).not.toHaveProperty('bindingIds');
+    expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({ rating: 'fail' });
+    expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('id=38344');
+    expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain(
+      'The unit-only row leaves cancellation coverage unproven.',
+    );
+    expect(result.rows[0].draggingBindingIds['disclosed-gap']).toEqual([38344]);
+    expect(result.rows[0].scorecardDraft.ratings['disclosed-gap'].evidence).toContain('id=38344');
+  });
+
   it('refuses disjoint plan-item and spec selectors without widening an empty evidence filter', async () => {
     listClauses.mockResolvedValue([]);
 
