@@ -224,16 +224,50 @@ describe('condition-rail inventory — scope, dispositions and coverage', () => 
   });
 
   it('resolves the most specific disposition and flags malformed or missing ones', () => {
-    const row = { class: 'owner-only-alarm', file: 'a.ts', line: 3, symbol: 'notifyAttention', key: 'owner-only-alarm|a.ts' };
+    const row = { id: 'owner-only-alarm|a.ts|check|1', class: 'owner-only-alarm', file: 'a.ts', line: 3, symbol: 'notifyAttention', key: 'owner-only-alarm|a.ts' };
     const cluster = { disposition: 'migrate', item: 'P-005' };
     const site = { disposition: 'not-applicable', reason: 'interactive CLI output read by the operator' };
     expect(dispositionFor(row, { 'owner-only-alarm|a.ts': cluster })).toBe(cluster);
     expect(dispositionFor(row, { 'owner-only-alarm|a.ts': cluster, 'owner-only-alarm|a.ts|notifyAttention': site })).toBe(site);
+    expect(dispositionFor(row, { [row.id]: cluster, 'owner-only-alarm|a.ts|notifyAttention': site })).toBe(cluster);
     expect(dispositionProblem(null)).toBe('missing');
     expect(dispositionProblem({ disposition: 'migrate' })).toMatch(/P-NNN/);
     expect(dispositionProblem({ disposition: 'not-applicable', reason: 'short' })).toMatch(/reason/);
     expect(dispositionProblem(cluster)).toBeNull();
     expect(dispositionProblem(site)).toBeNull();
+  });
+
+  it('excludes one reviewed annotation without exempting a same-symbol runtime sibling', () => {
+    const file = 'packages/x/lib/system-health/health.ts';
+    const source = 'function check() { const alert: Alert | null = value; return { alert: value !== null }; }';
+    const sites = scanSites(source, file);
+    expect(sites.map((site) => [site.enclosing, site.ordinal, site.symbol])).toEqual([
+      ['check', 1, 'alert'], ['check', 2, 'alert'],
+    ]);
+    const annotation = { disposition: 'not-applicable', reason: 'local type annotation does not write a health field' };
+    const migration = { disposition: 'migrate', item: 'P-014' };
+    const result = inventory({ root: '/nowhere', files: [file], readFile: () => source,
+      dispositions: { [sites[0].key]: migration, [sites[0].id]: annotation } });
+    expect(result.rows.map((row) => row.disposition)).toEqual([annotation, migration]);
+    expect(result.staleDispositions).toEqual([]);
+    // A symbol-wide exemption would silently waive the runtime field as well.
+    expect(dispositionFor(sites[1], { [sites[0].id]: annotation })).toBeNull();
+  });
+
+  it('rejects stale exact row IDs even while the cluster and symbol remain live', () => {
+    const file = 'packages/x/lib/system-health/health.ts';
+    const source = 'function check() { return { alert: failed }; }';
+    const [site] = scanSites(source, file);
+    const staleId = `${site.key}|check|2`;
+    const migration = { disposition: 'migrate', item: 'P-014' };
+    const result = inventory({ root: '/nowhere', files: [file], readFile: () => source,
+      dispositions: { [site.key]: migration, [staleId]: migration } });
+    expect(result.staleDispositions).toEqual([staleId]);
+    const migrated = inventory({ root: '/nowhere', files: [file],
+      readFile: () => source.replace('return', 'broadcastSevereEvent(event); return'),
+      dispositions: { [site.id]: migration } });
+    expect(migrated.rows).toEqual([]);
+    expect(migrated.staleDispositions).toEqual([site.id]);
   });
 
   it('inventories a file set into per-class counts, undispositioned sites and stale keys', () => {

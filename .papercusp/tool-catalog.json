@@ -23016,7 +23016,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For an audit of an existing spec-test-adequacy card, pass scorecardId with its plan slug; the evaluator loads the card’s stored recipe and replays its evidence as of card creation, returning historicalAuditOnly provenance. This historical result is not a current ship-read. Always check ok and rows.length before indexing rows[0].",
       "capabilities": [
         "plans:read"
       ],
@@ -23313,7 +23313,7 @@
           "POST"
         ]
       },
-      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:\"summary\" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:\"full\" adds fingerprints, per-dimension status and binding details.",
+      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:\"summary\" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:\"full\" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, pass exact bindingIds with includeRetracted:true; this selector is not for gate/evaluator reads.",
       "capabilities": [
         "plans:read"
       ],
@@ -23336,7 +23336,7 @@
       "guidance": {
         "when": "Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.",
         "notWhen": "Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.",
-        "chaining": "plans:bind-spec-evidence → plans:get-spec-evidence { current:[…] } → completion/acceptance gate."
+        "chaining": "plans:bind-spec-evidence → plans:get-spec-evidence { current:[…] } → completion/acceptance gate. Historical withdrawn rows are audit-only: use bindingIds with includeRetracted:true and never feed them into gate evaluation."
       }
     },
     {

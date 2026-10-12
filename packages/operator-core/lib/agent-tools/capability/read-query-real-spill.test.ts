@@ -31,7 +31,7 @@ import { BAKED_DOOR_CONSTANTS } from '../../context-doors';
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
-import { parseScratchReference, ScratchReferenceError } from '../../scratch-reference';
+import { parseScratchReference, ScratchReferenceError, writeScratchReference } from '../../scratch-reference';
 import { QUERY_DEFAULT_CONTEXT, QUERY_MAX_LINE_CHARS, querySavedResult } from './read-query';
 import readTool from './read';
 
@@ -233,6 +233,56 @@ describe('capability:read { file_path, query } over real spills (the tool surfac
     const { manifest } = load(name);
     return { workspaceId: manifest.workspaceId, ownerId: manifest.ownerId! };
   };
+
+  it('queries a large multi-line spill that its default line window refuses', async () => {
+    const workspaceId = 'ws-query-large-text';
+    const ownerId = '00000000-0000-4000-8000-000000000001';
+    const payload = Array.from({ length: 160 }, (_, i) =>
+      `entry-${i} needle-${i} ${'x'.repeat(48)}`,
+    ).join('\n');
+    const filePath = join(sandbox, 'scratch', 'large-text.scratch.md');
+    writeScratchReference({
+      filePath,
+      payload,
+      workspaceId,
+      ownerId,
+      audience: 'workspace',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(payload) }],
+    });
+    const context = {
+      projectDir: sandbox,
+      workspaceId,
+      isSuperuser: true,
+      uiClientId: ownerId,
+    } as never;
+
+    const lineWindow = await readTool.handler({ file_path: filePath } as never, context) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(JSON.parse(lineWindow.content[0].text)).toMatchObject({
+      ok: false,
+      reason: 'scratch_line_window_too_large',
+    });
+
+    const queryResult = await readTool.handler({
+      file_path: filePath,
+      query: 'needle-37',
+      query_context: 0,
+    } as never, context) as { content: Array<{ type: string; text: string }> };
+    const queryText = queryResult.content[0].text;
+    const parsed = JSON.parse(queryText) as Record<string, any>;
+    expect(parsed).toMatchObject({
+      ok: true,
+      query: 'needle-37',
+      matchCount: 1,
+      coverage: { scannedToEnd: true },
+    });
+    expect(parsed.matches).toEqual([
+      expect.objectContaining({ line: 38, text: expect.stringContaining('entry-37') }),
+    ]);
+    expect(Buffer.byteLength(queryText)).toBeLessThan(1_000);
+  });
 
   /** Every page the tool returns for one query, following `next_cursor` as a caller would. */
   async function queryAllPages(name: FixtureName, term: string) {

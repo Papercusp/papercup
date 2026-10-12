@@ -1794,19 +1794,14 @@ describe('applyResultDoor', () => {
     expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
   });
 
-  it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
-    // The projection stage is a DISPATCH-level reserved arg, so it is in no
-    // tool's inputSchema and an agent can only learn it exists from a moment
-    // like this one. If this assertion is ever deleted, the feature silently
-    // becomes unreachable — which is the failure this test exists to prevent.
+  it('a multi-line text spill teaches the bounded saved-result query recovery path', () => {
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
       { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const next = boundedBody(doored)._projection.next;
-    expect(next).toContain('projection:');
-    expect(next).toContain('pick');
-    expect(next).toContain('head');
+    expect(next).toContain('capability:read { file_path, query:"terms" }');
+    expect(next).toContain('all terms, context and coverage');
   });
 
   it('D-021: mixed over-budget text/non-text is stored once behind a typed reference', () => {
@@ -3712,12 +3707,12 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     expect(footer).not.toContain('for text, or');
   });
 
-  it('a multi-line non-JSON body offers the `pipe` operators and says `pick` does not apply', () => {
+  it('a multi-line non-JSON spill recommends a bounded saved-result query', () => {
     const footer = footerFor([{ type: 'text', text: longText(BUDGET_CHARS * 2) }], 'capability:bash');
-    expect(footer).toContain('op:"grep"');
     expect(footer).toContain('lines of non-JSON text');
-    expect(footer).toContain('`pick` does not apply');
-    expect(footer).toContain('grep (fixed/ignoreCase');
+    expect(footer).toContain('capability:read { file_path, query:"terms" }');
+    expect(footer).toContain('all terms, context and coverage');
+    expect(footer).not.toContain('projection: { pipe:');
   });
 
   it('uses byte pages when multi-line non-JSON text contains a line too large for a line window', () => {

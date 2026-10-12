@@ -230,7 +230,7 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
-  it.each(['barHash', 'priorBarHash', 'nextBarHash', 'sha256'])(
+  it.each(['barHash', 'priorBarHash', 'nextBarHash', 'sha256', 'fingerprint', 'fingerprint digest'])(
     'does not classify a labeled %s artifact digest as a deployed SHA beside release context',
     (label) => {
       const text = `The release acceptance rubric ${label} 2e12616a568397f3`;
@@ -239,6 +239,20 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
       expect(cellTranscriptionHint(text, { resolvesToCommit: collidingCommit })).toBeNull();
     },
   );
+
+  it('does not classify a checkpoint fingerprint as a deployed SHA beside unrelated release context', async () => {
+    const text = 'Checkpoint fingerprint digest fa14e401 is persisted; release status remains unchanged';
+    expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+
+    const requested: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      requested.push(token);
+      return true;
+    });
+    expect(requested).toEqual([]);
+    expect(hint).toBeNull();
+  });
 
   it('does not classify a labeled memory ID prefix as a deployed SHA even if it resolves to a commit', () => {
     const text =

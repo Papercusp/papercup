@@ -65,7 +65,8 @@ export function scanSource(raw: string, file: string): Array<{
 }>;
 /**
  * Resolve one row's disposition from a dispositions map. Most specific key wins:
- * `class|file|symbol`, then `class|file`. Returns null when the site is undispositioned.
+ * exact row ID (`class|file|enclosing|ordinal`), then `class|file|symbol`, then
+ * `class|file`. Returns null when the site is undispositioned.
  */
 export function dispositionFor(row: any, dispositions: any): any;
 /** Is a disposition entry well-formed? migrate needs a P-NNN item; not-applicable a reason. */

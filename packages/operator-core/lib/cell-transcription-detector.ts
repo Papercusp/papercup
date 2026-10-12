@@ -156,7 +156,7 @@ function isExplicitLockOrLeaseIdentifier(haystack: string, valueStart: number, v
  */
 const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
 const ARTIFACT_HASH_VALUE_PREFIX =
-  /\b(?:content[- ]?hash|(?:(?:prior|next))?bar[- ]?hash|sha[- ]?256)\s*(?::|=)?\s*$/i;
+  /\b(?:content[- ]?hash|(?:(?:prior|next))?bar[- ]?hash|(?:artifact[- ]?)?fingerprint(?:[- ]?(?:digest|hash))?|sha[- ]?256)\s*(?::|=)?\s*$/i;
 
 /**
  * Memory-store identifiers are often rendered as their leading eight hex digits.

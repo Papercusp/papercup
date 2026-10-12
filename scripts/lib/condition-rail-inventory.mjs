@@ -54,7 +54,8 @@
  * seed manifest (docs/evidence/condition-rail-inventory-seed-2026-10-11.json) is keyed by it.
  *
  * Bypass rows are dispositioned by `class|file` (see condition-rail-dispositions.mjs): a row's
- * disposition is the most specific entry among `class|file|symbol` and `class|file`.
+ * disposition is the most specific entry among the exact row ID, `class|file|symbol`,
+ * and `class|file`.
  */
 
 import { readFileSync } from 'node:fs';
@@ -430,10 +431,12 @@ export function scanSource(raw, file) {
 
 /**
  * Resolve one row's disposition from a dispositions map. Most specific key wins:
- * `class|file|symbol`, then `class|file`. Returns null when the site is undispositioned.
+ * exact row ID (`class|file|enclosing|ordinal`), then `class|file|symbol`, then
+ * `class|file`. Returns null when the site is undispositioned.
  */
 export function dispositionFor(row, dispositions) {
-  return dispositions[`${row.key}|${row.symbol}`] ?? dispositions[row.key] ?? null;
+  return (row.id ? dispositions[row.id] : null) ??
+    dispositions[`${row.key}|${row.symbol}`] ?? dispositions[row.key] ?? null;
 }
 
 /** Is a disposition entry well-formed? migrate needs a P-NNN item; not-applicable a reason. */
@@ -481,7 +484,7 @@ export function inventory({ root, files, dispositions = {}, readFile }) {
   const undispositioned = rows.filter((r) => r.problem).length;
   // A disposition key that no longer matches any bypass row is dead weight (fixed or renamed):
   // report it, and --check fails on it (D-006) so a migrated cluster cannot keep its entry.
-  const liveKeys = new Set(rows.flatMap((r) => [r.key, `${r.key}|${r.symbol}`]));
+  const liveKeys = new Set(rows.flatMap((r) => [r.id, r.key, `${r.key}|${r.symbol}`]));
   const staleDispositions = Object.keys(dispositions).filter((k) => !liveKeys.has(k));
   return { rows, sites, scanned, unreadable, byClass, undispositioned, staleDispositions };
 }
