@@ -867,6 +867,12 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       id: 52,
       workItemId: 'WI-10001789',
       evidenceRef,
+      testRunId: 18136690,
+      testRunProvenance: {
+        filePath: 'R-2-integration-leg@2d6cd439b6',
+        commitSha: '2d6cd439b6',
+        worktreeDirty: false,
+      },
       createdAt: '2026-09-18T02:36:09.882Z',
     });
 
@@ -1903,6 +1909,112 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
     expect(result.ratings.falsifiability.rating).toBe('pass');
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
+  });
+
+  it('preserves same-run mutation targets and credits only the measured scenario case', () => {
+    const testPath = 'packages/operator-core/lib/dao-hr/work-profile.integration.test.ts';
+    const evidenceRef = 'test-run 21094686 mutation-probe mutant fail packages/operator-core/lib/dao-hr/work-profile.integration.test.ts @484a585cc8a6+dirty';
+    const employeeCase = 'SPEC-P-002-C — a saved profile reloads unchanged > employee: every field round-trips';
+    const contractorCase = 'SPEC-P-002-C — a saved profile reloads unchanged > contractor: every field round-trips';
+    const mutationFor = (id: number, targeted: string) => {
+      const mutation = negativeEvidence({
+        id,
+        workItemId: 'WI-6554700010008608',
+        evidenceKind: 'mutation',
+        evidenceRef,
+        testRunId: 21094686,
+      });
+      mutation.testRunProvenance = {
+        ...mutation.testRunProvenance!,
+        filePath: testPath,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailureLines: [`${employeeCase}: expected jurisdiction to retain its original case`],
+        mutationFailedCaseTitles: [employeeCase],
+      };
+      mutation.details = {
+        ...mutation.details,
+        adequacy: {
+          ...((mutation.details.adequacy ?? {}) as Record<string, unknown>),
+          targeted,
+          outcome: 'caught',
+        },
+      };
+      return mutation;
+    };
+    const baseline = successfulTestBinding(testPath, { testCases: [employeeCase, contractorCase] });
+    baseline.id = 37600;
+    baseline.testRunId = 21094671;
+    baseline.evidenceRef = testPath;
+    const employeeMutation = mutationFor(37603, 'employee');
+    const contractorMutation = mutationFor(37604, 'contractor');
+    const scenarioClause = clause({
+      falsifier: {
+        observation: 'A saved work profile reloads with a changed or missing field.',
+        requiredScenarios: ['contractor', 'employee'],
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [baseline, employeeMutation, contractorMutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.evidence).toContain('id=37603');
+    expect(result.ratings.traceability.evidence).toContain('id=37604');
+    expect(result.ratings.falsifiability.rating).toBe('pass');
+    expect(result.ratings.falsifiability.evidence).toContain('id=37603');
+    expect(result.ratings.falsifiability.evidence).not.toContain('id=37604');
+    expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([37600, 37603, 37604]);
+  });
+
+  it('fails closed when mutation binding details point to a different canonical test run and file', () => {
+    const canonicalPath = 'packages/operator-core/lib/agent-tools/plans/reproducibility.test.ts';
+    const claimedPath = 'packages/operator-core/lib/agent-tools/plans/capability-ablations.test.ts';
+    const mutationFor = (detailsRunId: number, detailsPath: string) => evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: `test-run ${detailsRunId} mutation-probe mutant fail ${detailsPath} @abc123`,
+      testRunId: 21147093,
+      testRunProvenance: {
+        filePath: canonicalPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailureLines: [`${DEFAULT_MUTATION_TEST_CASE}: recorded failed assertion`],
+      },
+      details: {
+        testRun: { id: detailsRunId, filePath: detailsPath },
+        adequacy: {
+          falsifiable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: 'promotion-readable',
+        },
+      },
+    });
+    const grade = (mutation: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: clause({
+        behaviorClass: 'concurrency',
+        falsifier: {
+          observation: 'The promoted directive cannot be read from the open standing state.',
+          requiredScenarios: ['promotion-readable', 'refused-transition-preserved'],
+        },
+      }),
+      evidence: [evidence(), successfulTestBinding(canonicalPath), mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const consistent = grade(mutationFor(21147093, canonicalPath));
+    expect(consistent.ratings.falsifiability.rating).toBe('pass');
+    expect(consistent.ratings['plan-class-risk-floor'].rating).toBe('pass');
+
+    const mismatched = grade(mutationFor(21147118, claimedPath));
+    expect(mismatched.ratings.falsifiability.rating).not.toBe('pass');
+    expect(mismatched.ratings['plan-class-risk-floor'].rating).not.toBe('pass');
+    expect(mismatched.ratings.falsifiability.evidence).toContain('details.testRun.id=21147118');
   });
 
   it('requires the measured mutation failed case to exactly match a successful same-clause testCases entry', () => {
@@ -3228,7 +3340,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(25);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(27);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
