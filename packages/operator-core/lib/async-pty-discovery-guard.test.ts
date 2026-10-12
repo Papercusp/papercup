@@ -27,7 +27,18 @@ function isAsync(node: ts.FunctionLikeDeclaration): boolean {
   return Boolean(node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword));
 }
 
-const SYNC_DISCOVERY_NAMES = new Set(['findLiveHost', 'selfCompactionAvailability']);
+const SYNC_DISCOVERY_NAMES = new Set([
+  'findLiveHost',
+  'selfCompactionAvailability',
+  'readHostEventTail',
+  'hostStartedAt',
+  'latestRespawnNativeSession',
+  'latestRespawnNativeId',
+]);
+const OPERATOR_SOURCE_ROOTS = [
+  LIB_ROOT,
+  resolve(LIB_ROOT, '../../../apps/operator/lib'),
+];
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
@@ -243,6 +254,21 @@ describe('async PTY discovery recurrence guard', () => {
     ]);
   });
 
+  it('detects synchronous ledger-tail and host-start readers in async code', () => {
+    const fixture = `async function handler() {
+      readHostEventTail('owner');
+      hostStartedAt('owner');
+      latestRespawnNativeSession('owner');
+      latestRespawnNativeId('owner');
+    }`;
+    expect(syncDiscoveryCallsInAsyncContext(join(LIB_ROOT, 'fixture.ts'), fixture)).toEqual([
+      'fixture.ts:2 readHostEventTail',
+      'fixture.ts:3 hostStartedAt',
+      'fixture.ts:4 latestRespawnNativeSession',
+      'fixture.ts:5 latestRespawnNativeId',
+    ]);
+  });
+
   it('detects an awaited dynamic-import finder alias but ignores an unrelated alias', () => {
     const fixture = `async function handler(deps: { findHostFn?: (owner: string) => unknown }) {
       const findHost = deps.findHostFn ?? (await import('./events/await/psu-pty-discovery')).findLiveHost;
@@ -268,8 +294,8 @@ describe('async PTY discovery recurrence guard', () => {
     ]);
   });
 
-  it('keeps sync host discovery out of async operator source', () => {
-    const findings = operatorSourceFiles(LIB_ROOT).flatMap((fileName) =>
+  it('keeps sync host discovery out of async operator-core and app source', () => {
+    const findings = OPERATOR_SOURCE_ROOTS.flatMap(operatorSourceFiles).flatMap((fileName) =>
       syncDiscoveryCallsInAsyncContext(fileName, readFileSync(fileName, 'utf8')),
     );
     expect(findings).toEqual([]);
