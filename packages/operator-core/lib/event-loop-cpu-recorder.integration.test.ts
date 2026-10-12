@@ -419,69 +419,117 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           lowerRecoveryGap:
             eager.recoveryWarmup.workerGapMaxMs < inspector.recoveryWarmup.workerGapMaxMs,
         };
+        type TimedSampleSummary = {
+          samples: number;
+          hotSamples: number;
+          mapSamples: number;
+          usefulSamples: number;
+          sampleFrameCounts: Array<[string, number]>;
+          samplePathCounts: Array<[string, number]>;
+        };
+        type TimedProfile = {
+          samples: number;
+          nodes: number;
+          hotSamples: number;
+          mapSamples: number;
+          usefulSamples: number;
+          timeDeltasUs: number[];
+          timeDeltaSumUs: number;
+          profileDuration: number | null;
+          workWindow: null | {
+            possibleStartUs: number;
+            definiteStartUs: number;
+            definiteEndUs: number;
+            possibleEndUs: number;
+            possible: TimedSampleSummary;
+            definite: TimedSampleSummary;
+          };
+        };
+        type TimedCapture = {
+          workStartOffsetMs?: number;
+          workload?: { hotFrameCalls: number; churnedFunctions: number };
+          timing?: { startCallUs: number; workDurationUs: number; stopCallUs: number };
+          durationMs?: number;
+          workerGapMaxMs: number;
+          profile: TimedProfile;
+        };
+        const summarizeCapture = (capture: TimedCapture) => {
+          const profile = capture.profile;
+          const sortedDeltas = [...profile.timeDeltasUs].sort((a, b) => a - b);
+          const summarizeTimedSamples = (samples: TimedSampleSummary) => ({
+            samples: samples.samples,
+            hotSamples: samples.hotSamples,
+            mapSamples: samples.mapSamples,
+            usefulSamples: samples.usefulSamples,
+            sampleFrameCounts: samples.sampleFrameCounts.slice(0, 6),
+            samplePathCounts: samples.samplePathCounts.slice(0, 4),
+          });
+          return {
+            workStartOffsetMs: capture.workStartOffsetMs ?? null,
+            workload: capture.workload,
+            timing: capture.timing ?? null,
+            durationMs: capture.durationMs ?? null,
+            workerGapMaxMs: capture.workerGapMaxMs,
+            profile: {
+              samples: profile.samples,
+              nodes: profile.nodes,
+              hotSamples: profile.hotSamples,
+              mapSamples: profile.mapSamples,
+              usefulSamples: profile.usefulSamples,
+              timeDeltaCount: profile.timeDeltasUs.length,
+              timeDeltaSumUs: profile.timeDeltaSumUs,
+              timeDeltaMinUs: sortedDeltas[0] ?? null,
+              timeDeltaMedianUs: sortedDeltas[Math.floor(sortedDeltas.length / 2)] ?? null,
+              timeDeltaMaxUs: sortedDeltas.at(-1) ?? null,
+              profileDuration: profile.profileDuration,
+              workWindow: profile.workWindow ? {
+                possibleStartUs: profile.workWindow.possibleStartUs,
+                definiteStartUs: profile.workWindow.definiteStartUs,
+                definiteEndUs: profile.workWindow.definiteEndUs,
+                possibleEndUs: profile.workWindow.possibleEndUs,
+                possible: summarizeTimedSamples(profile.workWindow.possible),
+                definite: summarizeTimedSamples(profile.workWindow.definite),
+              } : null,
+            },
+          };
+        };
+        const summarizeStrategy = (result: {
+          startup: { durationMs: number; workerGapMaxMs: number };
+          primary: TimedCapture;
+          disabledRevocation: { serialized: boolean; disposed: boolean; sampleCount: number; durationMs: number; workerGapMaxMs: number };
+          recoveryWarmup: { durationMs: number; workerGapMaxMs: number };
+          recoveryCapture: TimedCapture;
+          recoveryPhaseSweep: TimedCapture[];
+          unsafeRevocation: { serialized: boolean; disposed: boolean; sampleCount: number; durationMs: number; workerGapMaxMs: number };
+          delayed: { cleanup: { serialized: boolean; disposed: boolean; sampleCount: number }; durationMs: number; workerGapMaxMs: number; memory: { peakRssDelta: number; retainedHeapDelta: number } };
+          serializations: number | null;
+          churnedFunctions: number;
+          recorderWarmups: number[];
+        }) => ({
+          startup: result.startup,
+          primary: summarizeCapture(result.primary),
+          disabledRevocation: result.disabledRevocation,
+          recoveryWarmup: result.recoveryWarmup,
+          recoveryCapture: summarizeCapture(result.recoveryCapture),
+          recoveryPhaseSweep: result.recoveryPhaseSweep.map(summarizeCapture),
+          unsafeRevocation: result.unsafeRevocation,
+          delayed: result.delayed,
+          serializations: result.serializations,
+          churnedFunctions: result.churnedFunctions,
+          recorderWarmups: result.recorderWarmups,
+        });
         console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({
-          inspector,
-          eager,
-          eagerNoTurboInlining,
-          eagerNoMaglevInlining,
-          eagerNoCompilerInlining,
-          inlineControl: {
-            flags: ['--no-turbo-inlining', '--no-maglev-inlining'],
-            defaultRecovery: {
-              hotSamples: eager.recoveryCapture.profile.hotSamples,
-              mapSamples: eager.recoveryCapture.profile.mapSamples,
-              usefulSamples: eager.recoveryCapture.profile.usefulSamples,
-            },
-            defaultRecoveryByPhase: eager.recoveryPhaseSweep.map(capture => ({
-              workStartOffsetMs: capture.workStartOffsetMs,
-              hotSamples: capture.profile.hotSamples,
-              mapSamples: capture.profile.mapSamples,
-              usefulSamples: capture.profile.usefulSamples,
-              samples: capture.profile.samples,
-            })),
-            noTurboInliningRecovery: {
-              hotSamples: eagerNoTurboInlining.recoveryCapture.profile.hotSamples,
-              mapSamples: eagerNoTurboInlining.recoveryCapture.profile.mapSamples,
-              usefulSamples: eagerNoTurboInlining.recoveryCapture.profile.usefulSamples,
-            },
-            noTurboInliningRecoveryByPhase: eagerNoTurboInlining.recoveryPhaseSweep.map(capture => ({
-              workStartOffsetMs: capture.workStartOffsetMs,
-              hotSamples: capture.profile.hotSamples,
-              mapSamples: capture.profile.mapSamples,
-              usefulSamples: capture.profile.usefulSamples,
-              samples: capture.profile.samples,
-            })),
-            noMaglevInliningRecovery: {
-              hotSamples: eagerNoMaglevInlining.recoveryCapture.profile.hotSamples,
-              mapSamples: eagerNoMaglevInlining.recoveryCapture.profile.mapSamples,
-              usefulSamples: eagerNoMaglevInlining.recoveryCapture.profile.usefulSamples,
-            },
-            noMaglevInliningRecoveryByPhase: eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => ({
-              workStartOffsetMs: capture.workStartOffsetMs,
-              hotSamples: capture.profile.hotSamples,
-              mapSamples: capture.profile.mapSamples,
-              usefulSamples: capture.profile.usefulSamples,
-              samples: capture.profile.samples,
-            })),
-            noCompilerInliningRecovery: {
-              hotSamples: eagerNoCompilerInlining.recoveryCapture.profile.hotSamples,
-              mapSamples: eagerNoCompilerInlining.recoveryCapture.profile.mapSamples,
-              usefulSamples: eagerNoCompilerInlining.recoveryCapture.profile.usefulSamples,
-            },
-            noCompilerInliningRecoveryByPhase: eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => ({
-              workStartOffsetMs: capture.workStartOffsetMs,
-              hotSamples: capture.profile.hotSamples,
-              mapSamples: capture.profile.mapSamples,
-              usefulSamples: capture.profile.usefulSamples,
-              samples: capture.profile.samples,
-            })),
-            phaseSweepMedianUsefulSamples: {
-              requiredPerCapture: 3,
-              default: eagerPhaseMedianUsefulSamples,
-              noTurboInlining: noTurboInliningPhaseMedianUsefulSamples,
-              noMaglevInlining: noMaglevInliningPhaseMedianUsefulSamples,
-              noCompilerInlining: noCompilerInliningPhaseMedianUsefulSamples,
-            },
+          inspector: summarizeStrategy(inspector),
+          eager: summarizeStrategy(eager),
+          noTurboInlining: summarizeStrategy(eagerNoTurboInlining),
+          noMaglevInlining: summarizeStrategy(eagerNoMaglevInlining),
+          noCompilerInlining: summarizeStrategy(eagerNoCompilerInlining),
+          phaseSweepMedianUsefulSamples: {
+            requiredPerCapture: 3,
+            default: eagerPhaseMedianUsefulSamples,
+            noTurboInlining: noTurboInliningPhaseMedianUsefulSamples,
+            noMaglevInlining: noMaglevInliningPhaseMedianUsefulSamples,
+            noCompilerInlining: noCompilerInliningPhaseMedianUsefulSamples,
           },
           gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
         }));
