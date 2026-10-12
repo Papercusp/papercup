@@ -759,7 +759,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           eagerAfterProfilerRecreation: recoveryInlineAttribution,
           inspectorSameWindowControl: recoveryInspectorInlineAttribution,
           pairedControlConclusion: recoveryInspectorInlineAttribution &&
-            recoveryInspectorInlineAttribution.definiteHotWindowCpuHotFrameSamples >= 3 &&
+            recoveryInspectorInlineAttribution.definiteHotWindowSamples >= 3 &&
             recoveryInlineAttribution.definiteHotWindowSamples >= 3
             ? recoveryInspectorInlineAttribution.definiteHotWindowCpuHotFrameSamples > recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples
               ? 'Inspector names cpuHotFrame in the same measured windows where the eager profile does not; sample timing is observed and the discrepancy is specific to the eager profiler code-map/symbolization path.'
@@ -767,7 +767,11 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             : 'The same-window Inspector control did not produce enough definite hot-window samples to distinguish code-map replay from sample timing.',
           interpretation: !cpuHotFrameInlinedIntoWorkFor
             ? recoveryInlineAttribution.definiteHotWindowSamples > 0 && recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples === 0
-              ? 'The matching compiler-trace control did not inline cpuHotFrame into workFor, yet samples definitely inside measured cpuHotFrame windows lack that frame after recreation; the miss is a sample/code-entry attribution path, not evidence that workFor omitted an inlined cpuHotFrame frame.'
+              ? recoveryInspectorInlineAttribution &&
+                recoveryInspectorInlineAttribution.definiteHotWindowSamples >= 3 &&
+                recoveryInspectorInlineAttribution.definiteHotWindowCpuHotFrameSamples === 0
+                ? 'Both the recreated eager profile and the same-window Inspector control sampled measured cpuHotFrame windows without naming cpuHotFrame; the missing frame is not specific to profiler recreation and does not establish inline-stack replay loss.'
+                : 'The matching compiler-trace control did not inline cpuHotFrame into workFor, but the paired Inspector control lacks enough same-window samples to distinguish shared sampling attribution from profiler recreation.'
               : 'The matching compiler-trace control did not inline cpuHotFrame into workFor; without definite in-hot-frame samples, the profile cannot distinguish inline metadata from sample timing.'
             : primaryInlineAttribution.workForAndCpuHotFrameSamples > 0 && recoveryInlineAttribution.workForAndCpuHotFrameSamples === 0
               ? 'The live-code profile exposed cpuHotFrame under workFor while the recreated-profiler profile did not; this is consistent with, but does not alone prove, missing replayed inline-stack metadata.'
@@ -796,7 +800,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         // interpreting a post-disposal miss as lifecycle recovery failure.
         expect(eager.primary.profile.usefulSamples).toBeGreaterThanOrEqual(1);
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
-        expect(recoveryInspectorInlineAttribution?.definiteHotWindowCpuHotFrameSamples).toBeGreaterThanOrEqual(3);
+        expect(recoveryInspectorInlineAttribution?.definiteHotWindowSamples).toBeGreaterThanOrEqual(3);
         const recoverySampleChains = eager.recoveryCapture.profile.sampleChains ?? [];
         expect(recoverySampleChains).toHaveLength(eager.recoveryCapture.profile.samples);
         for (const [index, sample] of recoverySampleChains.entries()) {
