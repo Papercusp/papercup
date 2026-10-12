@@ -67,14 +67,12 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/endpoint-route/routes/internal/escalation-event.ts': na(
     'relays an escalation the harness already recorded on the escalations surface to the owner’s desktop; the raiser owns the condition, not this relay',
   ),
-  'owner-only-alarm|packages/operator-core/lib/fleet-ekg/scan.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/human-queue-digest-action.ts': na(
     'reminder and weekly digest of the owner’s own needs-human queue; a report, not a failure signal',
   ),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts': na(
     'notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own',
   ),
-  'owner-only-alarm|packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/agent-tools/release/deploy.ts': na(
     'owner-requested force-deploy audit notice after an explicitly accepted action; no continuing failure predicate is detected by this notification',

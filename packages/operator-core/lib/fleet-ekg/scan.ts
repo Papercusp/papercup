@@ -303,7 +303,7 @@ export function defaultFleetEkgDeps(sql: Sql): FleetEkgTickDeps {
     alarm: async ({ title, body, workspaceId, notifyOwner }) => {
       const { broadcastSevereEvent } = await import('../severe-event-broadcast');
       await broadcastSevereEvent({
-        source: 'fleet-ekg', severity: 'high', summary: title, body,
+        category: 'fleet-ekg', summary: title, body,
         conditionKey: `alarm:fleet-ekg:${workspaceId}`, oneShot: true,
       }).catch(() => false);
       if (notifyOwner === false) return;

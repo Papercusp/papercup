@@ -561,14 +561,18 @@ ROUTINE_FALLBACK_MIGRATION_CASES.push({
       readLoopStatuses: async () => { if (readFails) throw new Error('status unavailable');
         return new Map([[candidate.ownerId, { active, lastRealTurnAt: new Date(nowMs - 7_200_000).toISOString() }]]); },
       readEngineLoopRows: async () => [], readHostClass: async () => null,
-      notify: async () => { pages++; throw new Error('owner page unavailable'); },
-      broadcast: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
-        broadcasts++; return rail.broadcastSevereEvent(input);
-      },
+      // Fail the initial aggregate delivery so the ORIGINAL owner notifier must
+      // execute its own rail retry before its independently failing owner page.
+      broadcast: async () => false,
       resolveCondition: async (key: string) => { resolves++; return rail.resolveAlarm(key); },
     };
     const run = execute(original(prefix + 'harness/routines/silent-halt-reconcile.ts', 'function sweepSilentHalts(', 'function'), {
-      ...rail, evaluateSilentHalt: producer.evaluateSilentHalt, hasAutonomyPosture: () => true,
+      ...rail,
+      broadcastSevereEvent: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
+        broadcasts++; return rail.broadcastSevereEvent(input);
+      },
+      require: () => ({ notifyAttention: async () => { pages++; throw new Error('owner page unavailable'); } }),
+      evaluateSilentHalt: producer.evaluateSilentHalt, hasAutonomyPosture: () => true,
       disarmEpochToken: producer.disarmEpochToken, wakeMarkerSummary: producer.wakeMarkerSummary,
       classifyEndedHolder: () => 'fixture-classification',
       SILENT_HALT_MAX_WAKES_PER_SWEEP: producer.SILENT_HALT_MAX_WAKES_PER_SWEEP,

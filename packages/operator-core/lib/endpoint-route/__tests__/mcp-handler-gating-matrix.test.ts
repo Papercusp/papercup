@@ -6106,23 +6106,43 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
       ]],
       [answeringOwner, [{ id: 542, session_id: answeringNative, active: true }]],
     ]);
-    // Match this PG-free suite's existing native-incarnation controls. A
-    // concrete workspace additionally requires a persisted kernel launch row,
-    // which this transport fixture does not provide or claim to verify.
-    const caller = (owner: string, native: string, backend: string) => superuserExtra(
-      `&client=${owner}${backend === 'claude' ? `&native_session=${native}` : ''}`,
-      backend === 'codex' ? { 'x-papercusp-native-session': native } : {},
-    );
+    // Reuse the suite's ungoverned launch-row fixture for concrete-workspace
+    // Codex calls. This verifies transport attribution, not identity grants.
+    const caller = (owner: string, native: string, backend: string) => {
+      const extra = superuserExtra(
+        `&client=${owner}${backend === 'claude' ? `&native_session=${native}` : '&workspace=ws-test'}`,
+        backend === 'codex' ? { 'x-papercusp-native-session': native } : {},
+      );
+      if (backend !== 'codex') return { extra, meta: undefined };
+      const id = native === answeringNative ? 542 : native === sourceContinuation ? 543 : 541;
+      h.kernelAuthority.rows = [{
+        control_state: null, control_generation: null, workspace_id: 'ws-test',
+        adv_session_id: id, adv_session_xmin: `consult-row-${id}`,
+        launch_header_known: false, launch_spec_type: 'object',
+        launch_spec_workspace_id: 'ws-test', launch_spec_harness_slug: 'papercup',
+        launch_spec_has_accepted_operation: false, launch_spec_accepted_operation: null,
+      }];
+      h.kernelAuthority.launchRecord = {
+        launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+        launch_spec_xmin: `consult-row-${id}`,
+      };
+      const meta = { threadId: native, callId: `call_consult-${native}` };
+      return { extra: { ...(extra as Record<string, unknown>), _meta: meta }, meta };
+    };
+    const callAs = (owner: string, native: string, backend: string) => {
+      const { extra, meta } = caller(owner, native, backend);
+      return callTool('gatingtest:scoped', {}, extra, meta);
+    };
 
     // Independent source work is valid even during a consult window.
-    const sourceCall = await callTool('gatingtest:scoped', {}, caller(sourceOwner, sourceNative, sourceBackend));
+    const sourceCall = await callAs(sourceOwner, sourceNative, sourceBackend);
     expect(sourceCall.isError, textOf(sourceCall)).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 541 });
 
     // Every legitimate source incarnation remains usable; attribution cannot
     // assume the newest row is the only native session belonging to the owner.
-    const continuationCall = await callTool('gatingtest:scoped', {}, caller(sourceOwner, sourceContinuation, sourceBackend));
+    const continuationCall = await callAs(sourceOwner, sourceContinuation, sourceBackend);
     expect(continuationCall.isError, textOf(continuationCall)).toBeUndefined();
     expect(seen).toHaveLength(2);
     expect(seen[1].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 543 });
@@ -6131,15 +6151,22 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
     // Neither nested call may reach even the existing dispatcher witness when
     // the answerer's native session presents the source's coordination SID.
     for (const action of ['claim', 'release']) {
+      const meta = targetBackend === 'codex'
+        ? { threadId: answeringNative, callId: `call_spoof-${action}` }
+        : undefined;
+      const extra = superuserExtra(
+        `&workspace=ws-test&client=${sourceOwner}&native_session=${targetBackend === 'codex' ? sourceContinuation : answeringNative}`,
+        // The inherited process header is legitimately source-owned. Codex's
+        // actual per-call thread must still win and reject the answering actor.
+        targetBackend === 'codex' ? { 'x-papercusp-native-session': sourceContinuation } : {},
+      );
       const attempted = await callTool(
         'tools:invoke',
         { name: 'gatingtest:scoped', args: { action, id: 'WI-source-claim' } },
         // Auth-failure telemetry records only an explicitly claimed workspace.
         // Rejection precedes the kernel lookup, so this adds no fake launch row.
-        superuserExtra(
-          `&workspace=ws-test&client=${sourceOwner}${targetBackend === 'claude' ? `&native_session=${answeringNative}` : ''}`,
-          targetBackend === 'codex' ? { 'x-papercusp-native-session': answeringNative } : {},
-        ),
+        meta ? { ...(extra as Record<string, unknown>), _meta: meta } : extra,
+        meta,
       );
       expect(attempted.isError).toBe(true);
       expect(textOf(attempted)).toBe('request_rejected: superuser_foreign_native_session');
@@ -6152,15 +6179,30 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
       });
     }
 
-    const answerCall = await callTool('gatingtest:scoped', {}, caller(answeringOwner, answeringNative, targetBackend));
-    expect(answerCall.isError, textOf(answerCall)).toBeUndefined();
+    // Endpoint equality must not cause a guard to freeze legitimate source
+    // work. A source-owned port/continuation remains usable after the spoof.
+    const continued = await callAs(sourceOwner, sourceContinuation, sourceBackend);
+    expect(continued.isError, textOf(continued)).toBeUndefined();
     expect(seen).toHaveLength(3);
-    expect(seen[2].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
+    expect(seen[2].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 543 });
+
+    const answerCall = await callAs(answeringOwner, answeringNative, targetBackend);
+    expect(answerCall.isError, textOf(answerCall)).toBeUndefined();
+    expect(seen).toHaveLength(4);
+    expect(seen[3].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
+    if (targetBackend === 'codex') {
+      expect(h.invocations.at(-1)?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+        carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 542,
+        valueFingerprint: createHash('sha256').update(answeringNative).digest('hex'),
+        callIdFingerprint: createHash('sha256').update(`call_consult-${answeringNative}`).digest('hex'),
+      } });
+    }
     expect(h.nativeSessionCalls).toEqual([
       { ownerId: sourceOwner, sessionId: sourceNative },
       { ownerId: sourceOwner, sessionId: sourceContinuation },
       { ownerId: sourceOwner, sessionId: answeringNative },
       { ownerId: sourceOwner, sessionId: answeringNative },
+      { ownerId: sourceOwner, sessionId: sourceContinuation },
       { ownerId: answeringOwner, sessionId: answeringNative },
     ]);
   });

@@ -262,6 +262,48 @@ describe('work_items:set_blocker', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('accepts a gate blocker when release appears only in a branch-configuration reference', async () => {
+    const item = {
+      id: 'WI-6554700010008778',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercup',
+      title: '[degraded:release-state-read:papercusp-public-site] checkpoint routing',
+      summary: 'The public-site checkpoint fallback is routing-misconfigured.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+
+    const out = await one({
+      id: item.id,
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'papercusp-public-site:integration-equals-release',
+      summary: 'Two eligible checkpoint reads fell back while routing was misconfigured.',
+      evidence: 'The branch configuration maps routing.misconfigured to integration-equals-release.',
+      nextVerb:
+        'Have the papercusp-public-site harness owner set a distinct integration branch and verify a fresh checkpoint-state read; then clear this blocker and re-read the degradation window.',
+    });
+
+    expect(out).toMatchObject({ ok: true, id: item.id });
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({
+        kind: 'gate',
+        ref: 'papercusp-public-site:integration-equals-release',
+      }),
+    ]);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      item.id,
+      'blocked',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
   it('ignores release-plane tokens in provenance evidence for an unrelated blocker', async () => {
     const item = {
       id: 'EI-23537178579858762-regression',

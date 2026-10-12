@@ -75,7 +75,10 @@ const CONCRETE_REASON_RE =
 const ACCEPTANCE_SECTION_RE = /^(?:acceptance|requirements?|validation|verification)\b/i;
 const MAIN_RELEASE_BLOCKER_RE =
   /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|green[- ]checkpoint|greenCheckpoint|\bgreen[- ]pin\b|\bproduction\b)/i;
-const GENERIC_DEPLOY_BLOCKER_RE = /(?:\brelease\b|\bdeploy(?:ed|ment|ing)?\b)/i;
+// `ref` is a typed identifier, not prose. Match known release-plane namespaces
+// explicitly; a configuration key such as `integration-equals-release` must not
+// become a deployed-main wait merely because it contains the word `release`.
+const EXPLICIT_RELEASE_PLANE_REF_RE = /^(?:release|deploy|deployment):/i;
 const EXPLICIT_STAGING_ENV_RE = /(?:\bstaging\b|\bcurrent[- ]build\b)/i;
 const LIVE_GATE_OPERATION_RE =
   /(?:green[- ]checkpoint|greenCheckpoint|gate[- ]red|re-?green|tested[/ -]deployed\s+parity|restore(?:d)?\s+(?:the\s+)?(?:tested[/ -]deployed|release)\s+parity)/i;
@@ -277,12 +280,16 @@ function isFinalLifecycleItem(item: PlanItem): boolean {
 export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): StagingFirstBlockerProblem | null {
   const blockerText = neutralizePlanIdentifiers(input.blockerText.trim());
   if (!blockerText) return null;
+  const [referenceText = '', ...nextVerbLines] = blockerText.split(/\r?\n/);
+  const reference = referenceText.trim();
+  const nextVerb = nextVerbLines.join('\n').trim();
   const stagingOnly = EXPLICIT_STAGING_ENV_RE.test(blockerText) && !MAIN_RELEASE_BLOCKER_RE.test(blockerText);
   if (stagingOnly) return null;
-  const releaseRef =
-    MAIN_RELEASE_BLOCKER_RE.test(blockerText) ||
-    (GENERIC_DEPLOY_BLOCKER_RE.test(blockerText) && !EXPLICIT_STAGING_ENV_RE.test(blockerText));
-  const strongGate = hasStrongDeployedGate(blockerText) || (input.kind === 'gate' && releaseRef);
+  const releaseReference =
+    MAIN_RELEASE_BLOCKER_RE.test(reference) || EXPLICIT_RELEASE_PLANE_REF_RE.test(reference);
+  const releaseAction = EXPLICIT_RELEASE_PLANE_REF_RE.test(nextVerb);
+  const strongGate =
+    hasStrongDeployedGate(blockerText) || (input.kind === 'gate' && (releaseReference || releaseAction));
   if (!strongGate) return null;
 
   const itemText = input.itemText.trim();

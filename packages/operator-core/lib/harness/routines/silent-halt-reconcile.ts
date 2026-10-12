@@ -576,13 +576,14 @@ export async function sweepSilentHalts(opts: {
   }
   // Refresh the condition before wake/page dedup or caps; an attempted wake is not recovery.
   const event = {
-    source: 'silent-halt-reconcile', severity: 'high' as const,
+    category: 'silent-halt-reconcile',
     summary: `${halted.length} autonomous session(s) silently halted while holding work`,
     body: halted.map(({ candidate, verdict }) => `${candidate.ownerId}: ${verdict.reason}`).join('\n'),
     conditionKey, oneShot: true,
   };
-  if (deps.broadcast) await deps.broadcast(event).catch(() => false);
-  else await broadcastSevereEvent(event).catch(() => false);
+  const conditionPublished = deps.broadcast
+    ? await deps.broadcast(event).catch(() => false)
+    : await broadcastSevereEvent(event).catch(() => false);
 
   // ── P-003 wake-first rung (R1/R2) ──────────────────────────────────────────────
   // ONE wake attempt per (owner, disarm epoch) BEFORE any owner page. The dedupe
@@ -782,6 +783,9 @@ export async function sweepSilentHalts(opts: {
   const notify =
     deps.notify ??
     (async (payload: AttentionNotifyInput & { dedupeKey?: string }) => {
+      // Keep the original owner-alarm producer on the rail too. Retry its failed
+      // aggregate delivery before paging, without duplicating a successful broadcast.
+      if (!conditionPublished) await broadcastSevereEvent(event).catch(() => false);
       const { notifyAttention } = await import('../../attention-notify');
       return notifyAttention(payload);
     });

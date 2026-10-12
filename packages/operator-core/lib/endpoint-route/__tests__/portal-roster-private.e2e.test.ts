@@ -113,6 +113,18 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     console.info('PORTAL_EVALS_COMPONENT_EVIDENCE ' + result.evidence);
   }, 180_000);
 
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Support uses keyboard FAQs and recovers denied chat with streamed fixture response and exact reload scope', async context => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const result = await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'support-selected', neighbor: 'support-neighbor', support: true }, { supportRead: true });
+    expect(result).toMatchObject({ mounted: true, supportRead: true, keyboardFaq: true, denialRecovery: true,
+      streamedAnswer: true, sessionScoped: true, humanEvent: true, deepLinkReload: true,
+      shellQueryPreserved: true, noOutwardWrites: true, providerUsed: false, evidence: expect.any(String) });
+    Object.assign(context.task.meta, { portalComponentEvidence: result.evidence });
+    console.info('PORTAL_SUPPORT_COMPONENT_EVIDENCE ' + result.evidence);
+  }, 180_000);
+
 it('retains a browser response rejection while an earlier UI action is still running', async () => {
   const failure = new Error('original browser response deadline');
   const pending = retainPortalResponse(Promise.reject(failure));
