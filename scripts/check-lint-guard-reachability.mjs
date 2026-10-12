@@ -403,8 +403,10 @@ export const ACKNOWLEDGED_PARTIAL_COVERAGE = new Map([
   ],
   // `lint:migration-fixture-drift` USED TO SIT HERE and is now RETIRED (WI-6554700010009165):
   // the bare npm alias ran the detector WITHOUT `--check`, so it exited 0 unconditionally and
-  // guarded nothing. Its enforcing sibling `lint:migration-fixture-drift:check` is the declared
-  // guard; the PostToolUse hook still runs the script by path. Watermark 2 → 1.
+  // guarded nothing. Watermark 2 → 1. Its `--check` sibling `lint:migration-fixture-drift:check`
+  // was retired in the same item: no blocking path ran it, and wiring it would fire on
+  // deliberate partial fixture stubs. The detector survives only as the advisory PostToolUse
+  // nudge, which runs scripts/check-migration-fixture-drift.mjs by path.
 ]);
 
 /** Ceiling on the partial-coverage set. SHRINK-ONLY — register a guard instead of appending. */
@@ -1199,6 +1201,76 @@ export function scanScopeSources(impls) {
 }
 
 /**
+ * `ls-files` + optional flags + `'--'` + exactly ONE bare identifier or plain call, then the
+ * argv closes. Sticky: matched at the position right after an `'ls-files'` literal.
+ */
+const LS_FILES_SINGLE_PATHSPEC_RE =
+  /\s*,\s*(?:['"]-{1,2}[\w-]+['"]\s*,\s*)*['"]--['"]\s*,\s*([A-Za-z_$][\w$]*)\s*(\()?/y;
+const ARGV_CLOSE_RE = /\s*,?\s*[\])]/y;
+
+/** The single pathspec an `'ls-files'` argv at `from` names, or null when it is not that shape. */
+function singleLsFilesPathspecAt(text, from) {
+  LS_FILES_SINGLE_PATHSPEC_RE.lastIndex = from;
+  const m = LS_FILES_SINGLE_PATHSPEC_RE.exec(text);
+  if (!m) return null;
+  let end = LS_FILES_SINGLE_PATHSPEC_RE.lastIndex;
+  if (m[2]) {
+    for (let depth = 1; depth > 0; end += 1) {
+      if (end >= text.length) return null;
+      if (text[end] === '(') depth += 1;
+      else if (text[end] === ')') depth -= 1;
+    }
+  }
+  ARGV_CLOSE_RE.lastIndex = end;
+  return ARGV_CLOSE_RE.test(text) ? { name: m[1], isCall: Boolean(m[2]) } : null;
+}
+
+/** `name` is bound somewhere in `text` to a glob or directory-prefix string/template literal. */
+function boundToStaticPathspec(text, name) {
+  const binding = new RegExp(
+    `\\b(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*=\\s*(['"\`])([^'"\`\\n]*)\\1`,
+    'g',
+  );
+  for (const m of text.matchAll(binding)) {
+    if (/[*?[]/.test(m[2]) || m[2].endsWith('/')) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `source` ENUMERATE tracked files through a `git ls-files` argv? The argv form means
+ * the literal is `'ls-files'`, NOT the string `git ls-files` — matching the latter is why an
+ * earlier measurement pass reported two repo-wide guards as having no detectable scan at all.
+ *
+ * One argv shape is NOT an enumeration: exactly ONE runtime-computed pathspec after `'--'`,
+ * e.g. `['-C', dirname(priorTarget), 'ls-files', '--', basename(priorTarget)]`. It asks "is
+ * THIS path tracked?" and lists nothing else.
+ *
+ * WHY (WI-6554700010009165, measured 2026-10-12): that exact single-path probe landed in
+ * scripts/lint-as-committed.mjs on 2026-10-08 to tell mirrored local caches from missing
+ * source. A bare `'ls-files'` match scored `lint:as-committed` — a RUNNER that lints a
+ * committed clone, not a tree scanner — `repo-wide`, hence `partial`, and the SHRINK-ONLY
+ * partial set red-pinned `lint:guard-reachability`. Same failure class as WI-38290: an
+ * unrelated `ls-files` call flips a guard's scan shape, this time inside the implementation.
+ *
+ * Deliberately NARROW, so it can only retract a false `repo-wide` claim, never invent one:
+ *  - a string-literal pathspec (`'*.ts'`), a spread (`...paths`), two pathspecs, a member
+ *    expression (`cfg.root`), or no `'--'` at all is an ENUMERATION, exactly as before;
+ *  - an identifier bound to a glob or directory-prefix literal (`const DOCS_PREFIX = 'docs/'`,
+ *    `` const pathspec = `${dir}/*.sql` ``) is an ENUMERATION, exactly as before;
+ *  - any argv this cannot read keeps the old answer.
+ */
+export function hasEnumeratingLsFiles(source) {
+  const text = String(source);
+  for (const m of text.matchAll(/['"]ls-files['"]/g)) {
+    const probe = singleLsFilesPathspecAt(text, m.index + m[0].length);
+    if (!probe) return true;
+    if (!probe.isCall && boundToStaticPathspec(text, probe.name)) return true;
+  }
+  return false;
+}
+
+/**
  * What a guard's implementation ENUMERATES. Derived by scanning the implementation, never
  * hand-declared — the same anti-drift property the tier classification relies on.
  *
@@ -1212,10 +1284,8 @@ export function deriveScanScope(source) {
     const roots = [...rootsMatch[1].matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
     if (roots.length) return { kind: 'bounded', roots };
   }
-  // `listTrackedFiles(...)`, or a `git ls-files` spawn — the argv form means the literal
-  // is `'ls-files'`, NOT the string `git ls-files`. Matching the latter is why an earlier
-  // measurement pass reported two repo-wide guards as having no detectable scan at all.
-  if (/listTrackedFiles\s*\(|['"]ls-files['"]/.test(text)) return { kind: 'repo-wide', roots: null };
+  // `listTrackedFiles(...)`, or a `git ls-files` argv that enumerates (see hasEnumeratingLsFiles).
+  if (/listTrackedFiles\s*\(/.test(text) || hasEnumeratingLsFiles(text)) return { kind: 'repo-wide', roots: null };
   if (/--files=|--changed-paths|--base\b/.test(text)) return { kind: 'diff-driven', roots: null };
   return { kind: 'undetermined', roots: null };
 }

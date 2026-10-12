@@ -35,6 +35,7 @@ import {
   stripComments,
   computeCoverage,
   deriveScanScope,
+  hasEnumeratingLsFiles,
   scanScopeSources,
   workspaceOfPath,
   parseRepoWideRegistrations,
@@ -659,6 +660,63 @@ describe('deriveScanScope', () => {
 
   it('says undetermined rather than inventing a scope', () => {
     expect(deriveScanScope('const port = 3170;').kind).toBe('undetermined');
+  });
+});
+
+/**
+ * Measured 2026-10-12 (WI-6554700010009165). scripts/lint-as-committed.mjs gained a
+ * single-path `git ls-files -- <one file>` membership probe on 2026-10-08. The bare
+ * `'ls-files'` match scored the runner `repo-wide` → `partial`, and the SHRINK-ONLY
+ * partial set red-pinned `lint:guard-reachability`, though nothing enumerated the tree.
+ */
+describe('hasEnumeratingLsFiles — a single-path membership probe enumerates nothing', () => {
+  /** The exact probe scripts/lint-as-committed.mjs carries. */
+  const AS_COMMITTED_PROBE =
+    "const tracked = spawnSync('git', ['-C', dirname(priorTarget), 'ls-files', '--', basename(priorTarget)],\n" +
+    "  { encoding: 'utf8', timeout: 15000 });";
+
+  it('does not read the as-committed probe as a whole-tree scan', () => {
+    expect(hasEnumeratingLsFiles(AS_COMMITTED_PROBE)).toBe(false);
+    expect(deriveScanScope(AS_COMMITTED_PROBE).kind).toBe('undetermined');
+  });
+
+  it('accepts flags before `--` and a bare runtime identifier as the one pathspec', () => {
+    expect(hasEnumeratingLsFiles('git(["ls-files", "--error-unmatch", "--", repoPath])')).toBe(false);
+    expect(hasEnumeratingLsFiles("run('git', ['ls-files', '--stage', '--', parentRelativePath,])")).toBe(false);
+  });
+
+  it('CONTROL: the probe beside a real enumeration is still repo-wide', () => {
+    expect(deriveScanScope(`${AS_COMMITTED_PROBE}\nconst all = git(['ls-files', '-z']);`).kind).toBe('repo-wide');
+  });
+
+  it.each([
+    ["git(['ls-files', '--', '*.ts', '*.tsx'])", 'string-literal globs'],
+    ["execFileSync('git', ['ls-files', '*.test.ts'])", 'a glob with no `--`'],
+    ["run('git', ['ls-files', '-z', '--', ...absolutePaths], { cwd: root })", 'a spread pathspec'],
+    ["git(['ls-files', '--', first, second])", 'two pathspecs'],
+    ["git(['ls-files', '--', cfg.root])", 'a member expression'],
+    ["git('ls-files')", 'no pathspec at all'],
+    ["git(['ls-files', '-z', '--recurse-submodules'])", 'flags only'],
+    ["const DOCS_PREFIX = 'apps/docs/';\ngit(['ls-files', '-z', '--', DOCS_PREFIX])", 'a directory-prefix constant'],
+    ["const pathspec = `${dir}/*.sql`;\ngit(['ls-files', '--others', '--', pathspec])", 'a glob-bound identifier'],
+  ])('still reads %s as an enumeration (%s)', (src) => {
+    expect(hasEnumeratingLsFiles(src)).toBe(true);
+    expect(deriveScanScope(src).kind).toBe('repo-wide');
+  });
+
+  it('the as-committed row is no longer scored `partial` (CONTROL: a real enumeration still is)', () => {
+    const row = { name: 'lint:as-committed', tier: 'test', blocking: true, impls: ['scripts/lint-as-committed.mjs'] };
+    const args = {
+      row,
+      enforcingTestPaths: ['packages/operator-core/lib/__tests__/lint-as-committed.test.ts'],
+      workspaceDirs: ['apps/operator', 'packages/operator-core'],
+    };
+    // Positive control: this exact row DOES score `partial` once its source really enumerates,
+    // so the `undetermined` below is the probe rule speaking, not an artifact of the row setup.
+    const enumerating = `${AS_COMMITTED_PROBE}\nconst all = git(['ls-files', '-z']);`;
+    expect(computeCoverage({ ...args, implSource: enumerating }).verdict).toBe('partial');
+    // The probe alone is no scan-shape claim, so coverage is honestly unmeasured.
+    expect(computeCoverage({ ...args, implSource: AS_COMMITTED_PROBE }).verdict).toBe('undetermined');
   });
 });
 
