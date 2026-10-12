@@ -1176,22 +1176,20 @@ export interface ScorecardRow {
    */
   linkedItems: { rel: string; dst: { kind: string; ref: string } }[];
   /**
-   * The GENERATION this scorecard graded (EI-12147; reworked WI-5397): stamped
-   * SERVER-SIDE by improvements:capture at file time (never caller-supplied) via
-   * generation-watermark.ts's readRunningGeneration(). A reader comparing an older
-   * `hostStartedAt` to the current one knows the scorecard judged a DIFFERENT
-   * generation (stale evidence after a restart/deploy), which is the ambiguity
-   * that stalled the 2026-07-14 GO call. WI-5397 widened the stamp to make that
-   * staleness EXPLICIT (`staleHost`) instead of relying on the reader to notice a
-   * hostStartedAt mismatch by hand — see generation-watermark.ts's RunningGeneration
-   * doc comment for the full shape rationale. `false` is a proven build match, `true`
-   * a proven mismatch, and `null` an unavailable comparison. Absent on pre-stamp scorecards.
+   * The Scout bg-host generation present when this scorecard was filed (EI-12147;
+   * reworked WI-5397): stamped SERVER-SIDE by improvements:capture, never caller-supplied.
+   * It is provenance about the host, not by itself evidence that the measurement depends
+   * on that host. `generationFreshness` accounts for the evidence plane when deciding
+   * whether the live host boundary applies. `staleHost` remains the stamp-time build
+   * comparison: false is a proven match, true a proven mismatch, null unavailable.
+   * Absent on pre-stamp scorecards.
    */
   gradedGeneration?: GradedGeneration;
   /**
    * WI-5277: whether {@link gradedGeneration}'s boundary is STILL the running one, judged
    * at READ time against the live bg-host watermark. Present whenever the row carries a
-   * `gradedGeneration` at all.
+   * `gradedGeneration`; explicitly `not-applicable` when a complete replay recipe proves
+   * the measured evidence is tree-only and has no runtime-environment fingerprint.
    *
    * ⚠ Do NOT substitute `gradedGeneration.staleHost` for this. That field is frozen at
    * stamp time and reports whether the scout was running the graded code THEN (`false`/
@@ -1201,8 +1199,12 @@ export interface ScorecardRow {
    * (a 4.5h soak + 6/6 verdict voided by a restart 3 minutes after emit) that no reader
    * noticed because a plausible-looking `staleHost` was sitting right next to it.
    */
-  generationFreshness?: GenerationFreshness;
+  generationFreshness?: ScorecardGenerationFreshness;
 }
+
+export type ScorecardGenerationFreshness =
+  | GenerationFreshness
+  | { status: 'not-applicable'; reason: string };
 
 /**
  * The evidence-first projection for one scorecard.
