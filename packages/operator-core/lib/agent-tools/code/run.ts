@@ -2591,6 +2591,11 @@ export function buildFacadeHelp(
   const note =
     'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
     'your allowed facade; inspect the signatures and any exclusion reason below before re-running. ' +
+    (unknownRefs.includes('tools.call') && byNs.has('tools') && !byNs.get('tools')!.verbs.includes('call')
+      ? 'The universal helper is on the ROOT object: use `tools.call("ns:verb", args)`. ' +
+        '`tools.tools.call(...)` is a missing `call` verb in the `tools` namespace; the actual ' +
+        '`tools:invoke` tool is `tools.tools.invoke({ name, args })`. '
+      : '') +
     (recursiveExecutionRefs.length
       ? `Recursive execution entrypoints ${recursiveExecutionRefs.map((ref) => `${ref} (tools.${ref.replace(':', '.')})`).join(', ')} ` +
         'are deliberately excluded from this facade to prevent nested orchestration. Keep the sequence in this outer script. '
