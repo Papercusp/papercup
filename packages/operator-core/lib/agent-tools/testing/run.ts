@@ -2790,6 +2790,7 @@ function distillNodeTestSummary(
   if (tests === null || passed === null || reportedFailed === null || tests < 1) return null;
 
   const skipped = (summaryValue('skipped') ?? 0) + (summaryValue('todo') ?? 0) + (summaryValue('cancelled') ?? 0);
+  if (passed + reportedFailed + skipped !== tests) return null;
   const durationMatch = /^(?:\s*)(?:ℹ|#)?\s*duration_ms\s+([0-9]+(?:\.[0-9]+)?)\s*$/gm;
   let durationMs: number | null = null;
   for (const match of output.matchAll(durationMatch)) durationMs = Math.max(0, Math.round(Number(match[1])));
@@ -2958,9 +2959,20 @@ export function parseRouterTerminalCompletion(output: string): RouterTerminalCom
       finishedLine = line;
     }
   }
-  if (!finishedLine) return null;
+  if (!finishedLine) {
+    // Node groups use spawnSync, so they emit no Vitest child-progress line.
+    // The final router verdict still follows ledger/finalization and provenance.
+    // Require every route to be Node plus matching, non-vacuous child summaries;
+    // otherwise preserve the timeout rather than inventing a completed verdict.
+    const routes = [...output.matchAll(/^ROUTE cwd=\S+ runner=(\S+)\s*$/gm)];
+    const nodeRuns = parseNodeTestGroupRuns(output, []);
+    if (routes.length === 0 || routes.some((route) => route[1] !== 'node:test') ||
+      nodeRuns.length !== routes.length ||
+      nodeRuns.reduce((sum, run) => sum + run.files, 0) !== executed ||
+      nodeRuns.some((run) => run.passed + run.failed <= 0)) return null;
+  }
 
-  const elapsedMatch = finishedLine.match(/\belapsedMs=(\d+)\b/);
+  const elapsedMatch = finishedLine?.match(/\belapsedMs=(\d+)\b/);
   const runElapsedMs = elapsedMatch ? Number(elapsedMatch[1]) : undefined;
   if (runElapsedMs !== undefined && (!Number.isSafeInteger(runElapsedMs) || runElapsedMs < 0)) return null;
 
