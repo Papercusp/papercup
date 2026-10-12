@@ -189,6 +189,29 @@ describe('provider socket ingress (P-003, D-009)', () => {
     expect(h.logs.join('\n')).not.toContain(APP_TOKEN);
   });
 
+  it('uses refreshed source config on an existing socket after source reconciliation', async () => {
+    let currentSource: ConnectorSourceRow = { ...source, config: { allowedBot: 'bot-old' } };
+    const h = harness({
+      sources: () => [currentSource],
+      records: (envelope) => [record(String(envelope.type))],
+    });
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+
+    socket.emit('message', JSON.stringify({ envelope_id: 'env-old', type: 'before-update' }));
+    await vi.waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0]!.args.sourceConfig).toEqual({ allowedBot: 'bot-old' });
+
+    currentSource = { ...source, config: { allowedBot: 'bot-new' } };
+    await h.manager.reconcile();
+    expect(h.sockets).toEqual([socket]);
+    expect(socket.closed).toBe(false);
+
+    socket.emit('message', JSON.stringify({ envelope_id: 'env-new', type: 'after-update' }));
+    await vi.waitFor(() => expect(h.invokes).toHaveLength(2));
+    expect(h.invokes[1]!.args.sourceConfig).toEqual({ allowedBot: 'bot-new' });
+  });
+
   it('opens a fresh socket at once when an envelope carries a declared reconnect value', async () => {
     const h = harness();
     await h.manager.reconcile();
