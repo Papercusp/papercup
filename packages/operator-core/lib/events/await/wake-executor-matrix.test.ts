@@ -168,7 +168,7 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     });
     expect(await executeWake(wake, d)).toMatchObject({ kind: 'park' });
     const host = await tb.spawnSocketHost(s.ownerId, { advSessionId: s.advSessionId });
-    expect(tb.findPsuHostDep()(s.ownerId)).toMatchObject({ ownerId: s.ownerId, sock: host.sock });
+    await expect(tb.findPsuHostDep()(s.ownerId)).resolves.toMatchObject({ ownerId: s.ownerId, sock: host.sock });
     expect(await executeWake(wake, d)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
     expect(host.received).toHaveLength(1);
     expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn', deliveryId: '460480', ownerId: s.ownerId });

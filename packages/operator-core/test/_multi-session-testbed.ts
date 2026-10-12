@@ -247,8 +247,10 @@ export class MultiSessionTestbed {
    * WI-2339 pidIsPsuHost gate is bypassed — see `findHost` for why: the stand-in
    * host records `process.pid`, whose cmdline lacks the psu-host marker.)
    */
-  findPsuHostDep(): (ownerId: string) => PsuPtyHost | null {
-    return (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
+  findPsuHostDep(): (ownerId: string) => Promise<PsuPtyHost | null> {
+    // The executor's seam is async (`typeof findLiveHostAsync`, 4f98f5cd90). Keep the
+    // synchronous discovery (no janitor side effects in tests) behind that contract.
+    return async (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
   }
 
   async destroy(): Promise<void> {

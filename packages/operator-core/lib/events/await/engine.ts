@@ -1467,11 +1467,17 @@ async function notifyPoisonedResumeSession(
   try {
     await sendMessage(emitterIdentity('await-event', first.workspaceId), {
       to,
-      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      summary: context.agent === 'codex'
+        ? `Codex session #${context.advSessionId} quarantined: its thread exceeds the model context window`
+        : `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
       body:
-        `The Claude transcript recorded repeated assistant turns rejected because a Papercusp ` +
-        `tool_reference was absent from the resumed tool list. Wake retries for this incarnation ` +
-        `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        (context.agent === 'codex'
+          ? `${context.poisonReason ?? 'Consecutive Codex turns exceeded the model context window'}. No resume or ` +
+            `native compaction can fit this thread (WI-6554700010008894). Wake retries for this incarnation ` +
+            `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n`
+          : `The Claude transcript recorded repeated assistant turns rejected because a Papercusp ` +
+            `tool_reference was absent from the resumed tool list. Wake retries for this incarnation ` +
+            `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n`) +
         `Event keys: ${group.map((delivery) => delivery.eventKey).join(', ')}\n` +
         `Last provider evidence: ${error}`,
       category: 'event',

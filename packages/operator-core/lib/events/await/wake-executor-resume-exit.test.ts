@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -39,7 +39,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     const dead = await deadPid();
     const deps: ExecuteWakeDeps = {
       resolveWakeModeFn: async () => 'auto',
-      findPsuHost: () => null, // no live socket → fall through to the resume ladder
+      findPsuHost: async () => null, // no live socket → fall through to the resume ladder
       getSession: async () =>
         ({
           pid: dead,
@@ -609,6 +609,79 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       }), missing);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantines a Codex resume whose turn failed on a context-window overflow (WI-6554700010008894)', async () => {
+    const homes = mkdtempSync(join(tmpdir(), 'wake-codex-overflow-'));
+    try {
+      const s = tb.session('A');
+      const nativeId = '01a10080-4435-7822-8b4f-d82fc7e81227';
+      const sessionsDir = join(homes, `session-${s.advSessionId}`, 'sessions', '2026', '10', '03');
+      mkdirSync(sessionsDir, { recursive: true });
+      const rolloutPath = join(sessionsDir, `rollout-2026-10-03T02-42-48-${nativeId}.jsonl`);
+      writeFileSync(
+        rolloutPath,
+        readFileSync(join(__dirname, '__fixtures__', 'codex-rollout-over-window.tail.jsonl'), 'utf8'),
+      );
+      vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', homes);
+      let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
+      let observedContext: unknown;
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 2 }));
+      const { deps } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        ensureCodexHomeForWake: (async () => ({ ok: true, repaired: false })) as never,
+        spawnDetached: (_bin, _args, _opts, onExit) => {
+          onExitWired = onExit;
+          return 4343;
+        },
+        quarantineCodexOverflowSession: quarantine as never,
+        onResumeTurnExit: (_d, _exit, context) => { observedContext = context; },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'codex',
+        coordOwnerId: s.ownerId,
+        sessionId: nativeId,
+        startedAt: '2026-10-12T11:26:21.000Z',
+        endedAt: null,
+        pid: await deadPid(),
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({
+        subscriberId: s.ownerId,
+        wakeHandle: advSessionHandle(s, { agent: 'codex', sessionId: nativeId, pid: 0 }),
+      });
+
+      expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+      // A usage-limit failure is not overflow evidence: no quarantine attempt.
+      onExitWired!({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit. usage_limit_exceeded"}}',
+        stderrTail: '',
+      });
+      await vi.waitFor(() => expect(observedContext).toBeDefined());
+      expect(quarantine).not.toHaveBeenCalled();
+      expect(observedContext).not.toMatchObject({ poisoned: true });
+
+      const overflow =
+        '{"type":"turn.failed","error":{"message":"Your input exceeds the context window of this model. context_length_exceeded"}}';
+      onExitWired!({ exitCode: 0, signal: null, stdoutTail: overflow, stderrTail: '' });
+      await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
+      expect(quarantine).toHaveBeenCalledTimes(1);
+      expect(quarantine).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'codex', transcriptPath: rolloutPath, sessionId: nativeId }),
+        overflow,
+      );
+      expect(observedContext).toMatchObject({
+        transcriptPath: rolloutPath,
+        poisonReason: expect.stringContaining('exceeded the model context window'),
+      });
+    } finally {
+      rmSync(homes, { recursive: true, force: true });
     }
   });
 

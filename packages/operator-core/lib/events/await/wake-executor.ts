@@ -203,7 +203,11 @@ import {
   readClaudeLaunchSettings,
   type ClaudeLaunchSettings,
 } from '../../model-context-budget.mjs';
-import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
+import {
+  quarantineRepeatedClaudeToolReferenceFailures,
+  quarantineRepeatedCodexContextOverflow,
+} from './poisoned-resume-session';
+import { findCodexRolloutPath, isCodexContextOverflowError } from './codex-rollout-overflow';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
@@ -2198,13 +2202,20 @@ async function notifyPoisonedResumeSession(
   send: typeof sendMessage,
 ): Promise<void> {
   try {
+    const codex = context.agent === 'codex';
     await send(inboxNotifierIdentity(delivery.workspaceId), {
       to: [delivery.subscriberId],
-      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      summary: codex
+        ? `Codex session #${context.advSessionId} quarantined: its thread exceeds the model context window`
+        : `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
       body:
-        `The Claude transcript recorded at least ${CLAUDE_TOOL_REFERENCE_POISON_TURNS} consecutive assistant turns ` +
-        `rejected because a Papercusp tool_reference was absent from the resumed tool list. Wake retries for this ` +
-        `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        (codex
+          ? `${context.poisonReason ?? 'Consecutive Codex turns exceeded the model context window'}. ` +
+            `No resume or native compaction can fit this thread; relaunch it onto a fresh thread. Wake retries for this ` +
+            `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n`
+          : `The Claude transcript recorded at least ${CLAUDE_TOOL_REFERENCE_POISON_TURNS} consecutive assistant turns ` +
+            `rejected because a Papercusp tool_reference was absent from the resumed tool list. Wake retries for this ` +
+            `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n`) +
         `Last provider evidence: ${error}`,
       category: 'event',
       extra: {
@@ -2647,6 +2658,8 @@ export interface ExecuteWakeDeps {
   onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void;
   /** Injected detector/quarantine seam for repeated unavailable Claude tool references. */
   quarantineToolReferenceSession?: typeof quarantineRepeatedClaudeToolReferenceFailures;
+  /** WI-6554700010008894: injected detector/quarantine seam for a Codex thread past its context window. */
+  quarantineCodexOverflowSession?: typeof quarantineRepeatedCodexContextOverflow;
   /** WI-10003466: move a LIVE Claude session whose transcript replays an unavailable
    *  tool reference onto fresh context (the compaction watchdog's forced carry-respawn)
    *  BEFORE any quarantine. Injected for tests; defaults to the watchdog's recovery. */
@@ -3676,6 +3689,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
   const quarantineToolReferenceSession =
     deps.quarantineToolReferenceSession ?? quarantineRepeatedClaudeToolReferenceFailures;
+  const quarantineCodexOverflowSession =
+    deps.quarantineCodexOverflowSession ?? quarantineRepeatedCodexContextOverflow;
   const recoverToolReferenceDeath =
     deps.recoverToolReferenceDeath ??
     (async (ownerId: string, opts: { workspaceId: string }): Promise<ToolReferenceDeathRecovery> => {
@@ -4184,7 +4199,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     ) {
       return {
         kind: 'drop',
-        reason: `Claude session incarnation ${handle.advSessionId} is quarantined: ${priorPoison.reason}`,
+        reason: `Session incarnation ${handle.advSessionId} is quarantined: ${priorPoison.reason}`,
       };
     }
     // The await/delivery plane is intentionally pinned to DEFAULT_COORD_WORKSPACE
@@ -5019,6 +5034,34 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
                   }
                 } catch (error) {
                   console.warn(`[wake-executor] tool-reference poison detector failed: ${(error as Error)?.message ?? error}`);
+                }
+              } else if (
+                resumeAgent === 'codex' && codexHome && codexSessionId && isCodexContextOverflowError(errorText)
+              ) {
+                // WI-6554700010008894: a Codex thread that no longer fits its model window
+                // fails every resume the same way; quarantine it once the persisted rollout
+                // shows a sustained streak, instead of re-firing the wake forever.
+                try {
+                  const rolloutPath = findCodexRolloutPath(codexHome, codexSessionId);
+                  const quarantine = await quarantineCodexOverflowSession(
+                    { ...context, transcriptPath: rolloutPath },
+                    errorText,
+                  );
+                  if (quarantine.poisoned) {
+                    context = {
+                      ...context,
+                      transcriptPath: rolloutPath,
+                      poisoned: true,
+                      poisonReason:
+                        `quarantined after ${quarantine.turns} consecutive Codex turns exceeded the model ` +
+                        'context window; relaunch it onto a fresh thread',
+                    };
+                    if (!deps.onResumeTurnExit) {
+                      await notifyPoisonedResumeSession(d, context, errorText, sendCoordMessage);
+                    }
+                  }
+                } catch (error) {
+                  console.warn(`[wake-executor] codex context-overflow detector failed: ${(error as Error)?.message ?? error}`);
                 }
               }
               deps.onResumeTurnExit!(d, observedExit, context);
