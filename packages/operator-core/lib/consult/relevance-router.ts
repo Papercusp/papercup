@@ -72,6 +72,7 @@ import { withDeadlineFallback } from '../sync-resolver/attention-counts';
 import { categoryOf, searchTools } from '../cupboard/tools-search';
 import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
 import type { RerankScoreFn } from '@papercusp/rerank';
+import type { NativeConsultConstraints } from './native-consult';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
  * module's import graph free of the search engine (only the TYPE is shared). */
@@ -410,6 +411,9 @@ export interface ConsultRouteParams {
   question: string;
   /** Optional exact durable subject whose transcript mentions may justify this route. */
   subjectRef?: string | null;
+  /** Internal native acceptance population, applied before retrieval bounds.
+   * Registration is a hint; dispatch still resolves the exact live source. */
+  nativeConsult?: NativeConsultConstraints;
   /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
    * decliner is excluded on the requester's re-call, never auto-cascaded. */
   excludeOwners?: string[];
@@ -473,6 +477,29 @@ export const SUBJECT_EVIDENCE_MIN_SCORE = 0.5;
 export const SUBJECT_EVIDENCE_OWNER_LIMIT = 8;
 export const SUBJECT_EVIDENCE_TEXT_LIMIT = 4_000;
 export const SUBJECT_EVIDENCE_TIMEOUT_MS = 4_000;
+
+/** Narrow the corpus before bounded retrieval/validation can spend its budget
+ * on incompatible sources. This does not assert liveness or boundary safety:
+ * the exact native resolver and pre-dispatch source observation remain required.
+ * Ended history can survive a registry reanchor; live evidence must name the
+ * current registered native incarnation so old turns cannot borrow a live owner. */
+function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
+  const constraint = params.nativeConsult;
+  if (!constraint) return sql`TRUE`;
+  const state = constraint.sourceState === 'live'
+    ? sql`a.ended_at IS NULL AND
+        CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
+             ELSE a.session_id END = session_turns.session_id`
+    : sql`a.ended_at IS NOT NULL`;
+  return sql`session_turns.source_kind = ${constraint.sourceBackend} AND EXISTS (
+    SELECT 1 FROM harness_shared.adv_sessions a
+     WHERE a.workspace_id = ${params.workspaceId}
+       AND a.coord_owner_id = session_turns.owner
+       AND a.agent = ${constraint.sourceBackend}
+       AND a.role IS NULL
+       AND ${state}
+  )`;
+}
 
 /** Name the problem's primary tool/path, independently of generic decision words.
  * A crossencoder can recognise a paraphrase without an exact identifier mention. */
@@ -891,6 +918,7 @@ async function routeConsultCore(
   const withheld = await measure('disclosure', () => restrictedExpertsWithheld(sql, params));
   if (withheld) base.withheld = withheld;
   const notRestricted = (sql as unknown as Sql)`NOT ${restrictedOwnerSql(sql as unknown as Sql, 'session_turns')}`;
+  const nativePopulation = nativeSourcePopulationSql(sql as unknown as Sql, params);
   const vec = deps.embed && deps.embeddingProfile
     ? await measure('embedding', () => deps.embed!(params.question)).catch(() => null)
     : null;
@@ -931,6 +959,7 @@ async function routeConsultCore(
            AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
            AND ${notRestricted}
+           AND ${nativePopulation}
       ORDER BY ${leg.order}, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
       `;
@@ -1058,6 +1087,7 @@ async function routeConsultCore(
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
        AND ${notRestricted}
+       AND ${nativePopulation}
   ORDER BY text_embedding <=> ${qVec}::vector
      LIMIT ${turnLimit}
   `))) as unknown as Array<{

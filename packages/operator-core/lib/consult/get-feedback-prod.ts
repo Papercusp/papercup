@@ -84,6 +84,7 @@ export async function getFeedbackProd(
     route: async (params) => {
       const routed = await routeConsult({
         ...params,
+        ...(request.nativeConsult ? { nativeConsult: request.nativeConsult } : {}),
         telemetry: { caller: 'consult:get_feedback', policy: request.policy ?? CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha },
         // ⚠ STAGE-2 ONLY [owner 2026-09-22]: "recently should only be considered
         // when comparing... If we have like any expert floor that an agent has to

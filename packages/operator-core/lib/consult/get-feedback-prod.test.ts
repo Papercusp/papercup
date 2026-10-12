@@ -79,6 +79,7 @@ describe('getFeedbackProd expert-routing settings', () => {
       qualified: [candidates[1]], snapshot: { nativeConsult, candidates: [candidates[1]], nativeConsultPool: candidates,
         nativeConsultSources: [expect.objectContaining({ eligible: false }), expect.objectContaining({ eligible: true })] },
     });
+    expect(h.routeConsult.mock.calls.at(-1)![0]).toMatchObject({ nativeConsult });
     expect(h.observeNativeConsultSource).toHaveBeenCalledWith(candidates[0], nativeConsult, undefined, saved.workspaceId);
   });
 

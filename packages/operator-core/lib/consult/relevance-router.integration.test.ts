@@ -143,6 +143,14 @@ beforeAll(async () => {
       closed_ts bigint,
       payload jsonb NOT NULL DEFAULT '{}'::jsonb
     )`);
+  // Registry columns match 000-baseline + 115-adv-session-native-id.sql.
+  // These are population hints; the native resolver still measures liveness.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      agent text, role text, session_id text, omp_thread_id text,
+      ended_at timestamptz
+    )`);
 
   // ── The corpus ─────────────────────────────────────────────────────────
   // alpha: highly similar (θ≈0.2), recent, verified, authored the named path.
@@ -180,6 +188,78 @@ afterAll(async () => {
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
+
+describe('native source population before retrieval and subject bounds', () => {
+  const nativeConsult = { sourceBackend: 'claude', sourceState: 'live', targetBackend: 'codex' } as const;
+  const question = 'testing:run native acceptance source';
+  const addedOwners: string[] = [];
+  afterEach(async () => {
+    await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
+    await rootSql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ANY(${addedOwners}::text[])`;
+    addedOwners.length = 0;
+  });
+  async function source(owner: string, angle: number, options: {
+    backend?: string; ended?: boolean; session?: string; currentSession?: string;
+    workspace?: string; role?: string; text?: string;
+  } = {}) {
+    addedOwners.push(owner);
+    await insertTurn(owner, angle, DAY);
+    const session = options.session ?? 'sess-' + owner;
+    await rootSql`UPDATE harness_shared.session_turns
+      SET source_kind = ${options.backend ?? 'claude'}, session_id = ${session},
+          text = ${options.text ?? question} WHERE owner = ${owner}`;
+    await rootSql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, coord_owner_id, agent, role, session_id, ended_at)
+      VALUES (${options.workspace ?? WS}, ${owner}, ${options.backend ?? 'claude'}, ${options.role ?? null},
+        ${options.currentSession ?? session}, ${options.ended ? NOW.toISOString() : null}::timestamptz)`;
+  }
+
+  it('does not spend bounded turns or subject checks on incompatible native evidence', async () => {
+    for (let n = 0; n < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; n++) {
+      await source('native-pop-codex-' + n, n * 0.005, { backend: 'codex' });
+    }
+    await source('native-pop-ended', 0.06, { ended: true });
+    await source('native-pop-old', 0.07, { currentSession: 'new-native' });
+    await source('native-pop-foreign', 0.08, { workspace: 'another-workspace' });
+    await source('native-pop-role', 0.09, { role: 'judge' });
+    await source('native-pop-live', 0.25, { text: question + ' compatible' });
+    await source('native-pop-mismatch', 0.27, { text: question + ' unrelated' });
+    await source('native-pop-below-floor', 1.4);
+    const seen: string[] = [];
+    const result = await routeConsult({ ...baseParams, question, nativeConsult,
+      turnLimit: 3, maxCandidates: 1, maxQualified: 1 }, deps(0, {
+      scoreSubjectEvidence: async (_subject, texts) => {
+        seen.push(...texts);
+        return texts.map(text => text.endsWith('compatible') ? 0.9 : 0.2);
+      },
+    }));
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['native-pop-live']);
+    expect(result.qualified[0]?.evidence.map(ref => ref.session_id)).toEqual(['sess-native-pop-live']);
+    expect(seen).toHaveLength(2);
+    expect(seen.every(text => text.endsWith('compatible') || text.endsWith('unrelated'))).toBe(true);
+    expect(result.snapshot.subjectValidation).toMatchObject({ evaluated: 2, unmeasured: 0 });
+    expect(result.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+    expect(result.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+  });
+
+  it('retains ended historical evidence across native-id reanchors, while live evidence must be current', async () => {
+    await source('native-pop-history', 0.1, { ended: true,
+      session: 'historical-native', currentSession: 'newer-ended-native' });
+    const result = await routeConsult({ ...baseParams, nativeConsult: { ...nativeConsult, sourceState: 'ended' },
+      turnLimit: 1 }, deps(0));
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['native-pop-history']);
+    expect(result.qualified[0]?.evidence[0]?.session_id).toBe('historical-native');
+  });
+
+  it('constrains lexical fallback too, without treating it as measured expertise', async () => {
+    await source('native-pop-lexical-wrong', 0, { backend: 'codex' });
+    await source('native-pop-lexical-right', 0.2);
+    const result = await routeConsult({ ...baseParams, question, nativeConsult, turnLimit: 1 }, deps(null));
+    expect(result.qualified).toEqual([]);
+    expect(result.snapshot.candidates.map(c => c.ownerId)).toEqual(['native-pop-lexical-right']);
+    expect(result.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+  });
+});
 
 describe('bounded subject evidence against real transcript SQL', () => {
   const question = 'stale desktop registry rows block computer:provision_desktop; invoke soleOwner reconciliation?';
