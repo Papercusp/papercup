@@ -8,9 +8,9 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(60_000);
 
-it.for([false, true])('binds through actual preparation and observes private cleanup on exception=%s without HTTP', async exception => {
+it.for([false, true])('binds through actual preparation and observes private cleanup on exception=%s without HTTP', { timeout: options.testTimeoutMs }, async exception => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'committed-reader-setup-'));
-  const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+  const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
     STAGING_FIRST_HTTP_SCENARIO: exception ? 'committed-reader-setup-exception' : 'committed-reader-setup',
     STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir };
   delete env.PC_HEAVY_PREEMPT_READY_FILE;
@@ -47,4 +47,4 @@ it.for([false, true])('binds through actual preparation and observes private cle
   expect(receipt.requiredSchemaColumns).toEqual(['args_json', 'invoked_at', 'metadata_json', 'serving_process_id']);
   expect(result.output).not.toContain('STAGING_FIRST_HTTP_PHASE bundle-start');
   console.info('COMMITTED_READER_SETUP_MEASURED ' + JSON.stringify({ evidenceDir, receipt }));
-}, options.testTimeoutMs);
+});

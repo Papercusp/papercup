@@ -113,8 +113,26 @@ async function loadPortalFixtureModules(portalRoot: string, phase = publicManual
     () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')), 10_000);
   const { resolveServedRelease } = await phase('portal-served-artifact-import',
     () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')), 10_000);
-  return { loadHostedTestUserKit, cleanupHostedTestResources, resolveServedRelease };
+  return {
+    loadHostedTestUserKit: loadHostedTestUserKit as (portalRoot: string) => Promise<PortalHostedTestUserKit>,
+    cleanupHostedTestResources,
+    resolveServedRelease,
+  };
 }
+
+// Structural subset of portal/e2e/hosted-test-user.ts (HostedTestUser /
+// HostedTestUserKit). The module is imported from a runtime-selected Portal
+// root, so its declarations cannot be imported statically into this program.
+type PortalHostedTestUser = {
+  sessionId: string;
+  organizationId: string;
+  workspaceId?: string;
+  cookie(origin: string): { name: string; value: string };
+  cleanup(reason: string): Promise<void>;
+};
+type PortalHostedTestUserKit = {
+  create(opts: ReturnType<typeof publicManualPortalUser> & { preassignedWorkspace?: boolean }): Promise<PortalHostedTestUser>;
+};
 
 function publicManualPortalUser() {
   // Reuse the maintained hosted tutorial fixture's TEST connection domain.
@@ -496,7 +514,7 @@ function observePortalBrowser(page: import('playwright').Page) {
   return async () => {
     const browserText = await page.locator('body').innerText({ timeout: 2000 });
     const dom = await page.evaluate(() => ({
-      title: document.title, readyState: document.readyState,
+      title: document.title, readyState: String(document.readyState),
       textboxes: Array.from(document.querySelectorAll('input, textarea, [role="textbox"]')).map((element) => ({
         tag: element.tagName, label: element.getAttribute('aria-label'),
         placeholder: element.getAttribute('placeholder'), visible: element.getClientRects().length > 0,
@@ -998,15 +1016,17 @@ describe('public manual Portal fixture preparation', () => {
       try {
         modules = await loadPortalFixtureModules(portalRoot, phase);
         const { request } = await phase('playwright-library-import', () => import('playwright'), 10_000);
-        api = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true, timeout: 5000 }));
+        // A const handle keeps the non-undefined type inside the phase closures below.
+        const httpApi = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true, timeout: 5000 }));
+        api = httpApi;
         const kit = await phase('frozen-hosted-kit-import', () => modules!.loadHostedTestUserKit(portalRoot), 10_000);
         const journeyStartedAt = new Date();
-        const document = await phase('compiled-document', () => api.get(origin));
+        const document = await phase('compiled-document', () => httpApi.get(origin));
         expect(document.status()).toBe(200);
         const served = modules.resolveServedRelease({ html: await document.text(), releasesDir: dirname(candidateRoot), journeyStartedAt });
         expect(served.buildId).toBe(metadata.buildId);
         receipt.servedRelease = served;
-        const missingCookie = await phase('anonymous-creation', () => api.post(`${origin}/api/papercup-chat/conversations`, { data: {}, headers: { origin } }));
+        const missingCookie = await phase('anonymous-creation', () => httpApi.post(`${origin}/api/papercup-chat/conversations`, { data: {}, headers: { origin } }));
         observations.anonymousCreation = { status: missingCookie.status() };
         expect(missingCookie.status()).toBe(401);
         receipt.stage = 'hosted-test-admission';
@@ -1022,7 +1042,7 @@ describe('public manual Portal fixture preparation', () => {
         connector = await phase('connected-host-preflight', () => ownHostedOperatorConnector(portalRoot, user!, headers.cookie, baseUrl!, phase));
         observations.connector = connector.observation;
         receipt.stage = 'compiled-chat-creation';
-        const created = await phase('compiled-chat-creation', () => api.post(`${origin}/api/papercup-chat/conversations`, { data: { title: 'Disposable readiness control' }, headers }));
+        const created = await phase('compiled-chat-creation', () => httpApi.post(`${origin}/api/papercup-chat/conversations`, { data: { title: 'Disposable readiness control' }, headers }));
         const createdBody = await created.json();
         observations.creation = { status: created.status(), ok: createdBody.ok, errorCode: safeHostedErrorCode(createdBody) };
         expect(created.status(), JSON.stringify(observations.creation)).toBe(201);
@@ -1031,19 +1051,19 @@ describe('public manual Portal fixture preparation', () => {
         const chatId = createdBody.chat.id;
         receipt.stage = 'authorized-empty-history';
         const historyPath = `${origin}/api/papercup-chat/conversations/${encodeURIComponent(chatId)}/turns`;
-        const history = await phase('authorized-empty-history', () => api.get(historyPath, { headers }));
+        const history = await phase('authorized-empty-history', () => httpApi.get(historyPath, { headers }));
         const historyBody = await history.json();
         observations.history = { status: history.status(), turns: historyBody.turns };
         expect(history.status()).toBe(200);
         expect(historyBody.turns).toEqual([]);
-        const listed = await phase('owned-chat-list', () => api.get(`${origin}/api/papercup-chat/conversations`, { headers }));
+        const listed = await phase('owned-chat-list', () => httpApi.get(`${origin}/api/papercup-chat/conversations`, { headers }));
         const listedBody = await listed.json();
         observations.ownedList = { status: listed.status(), containsChat: listedBody.chats?.some((chat: { chatId: string; backend: string }) => chat.chatId === chatId && chat.backend === 'converse') };
         expect(listed.status()).toBe(200);
         expect(listedBody).toMatchObject({ ok: true, chats: expect.arrayContaining([
           expect.objectContaining({ chatId, backend: 'converse' }),
         ]) });
-        const deniedHistory = await phase('anonymous-history', () => api.get(historyPath));
+        const deniedHistory = await phase('anonymous-history', () => httpApi.get(historyPath));
         observations.anonymousHistory = { status: deniedHistory.status() };
         expect(deniedHistory.status()).toBe(401);
         receipt.stage = 'passed';
@@ -2087,10 +2107,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       // an account or making a paid request. The inner Portal stays on loopback.
       await tls.assertReady();
       stage = 'hosted-fixture';
-      user = await kit.create(publicManualPortalUser());
-      const admitted = await resolveHostedSession(user.sessionId);
+      // A const handle keeps the non-undefined type inside the SQL closure below.
+      const hostedUser = await kit.create(publicManualPortalUser());
+      user = hostedUser;
+      const admitted = await resolveHostedSession(hostedUser.sessionId);
       expect(admitted).not.toBeNull();
-      expect(admitted!.organizationId).toBe(user.organizationId);
+      expect(admitted!.organizationId).toBe(hostedUser.organizationId);
       await upsertWorkspaceHostConnection({ workspaceId: controlWorkspace, id: connectionId, target: 'gcp',
         label: 'Disposable manual browser fixture', credentialRef: 'fixture://public-manual-no-provider', status: 'connected' });
       // Directory identity only: no VM or provisioner operation is created.
@@ -2100,10 +2122,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       await withWorkspace(controlWorkspace, (sql) => sql`
         INSERT INTO harness_shared.customer_workspaces
           (workspace_id, id, organization_id, workspace_host_id, display_name, state, created_by_principal_kind, created_by_principal_id)
-        VALUES (${controlWorkspace}, ${workspaceId}, ${user.organizationId}, ${hostId},
+        VALUES (${controlWorkspace}, ${workspaceId}, ${hostedUser.organizationId}, ${hostId},
           'Disposable public manual browser fixture', 'active', 'user', ${admitted!.userId})
       `);
-      const selected = await rotateHostedSession(user.sessionId, { workspaceId });
+      const selected = await rotateHostedSession(hostedUser.sessionId, { workspaceId });
       expect(selected?.workspaceId).toBe(workspaceId);
       hostedSessionId = selected!.id;
       const hostedConfig = parseEnvFile(readFileSync(hostedFile!, 'utf8'));

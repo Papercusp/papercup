@@ -27,7 +27,7 @@
  */
 import { initFlagOverrideStore, isOverrideStoreConfigured } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -54,7 +54,7 @@ export const GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID = '@global';
  * read never creates the global cutover marker as a side effect.
  */
 export async function readGlobalFlagOverridesForUpdate(
-  tx: Sql,
+  tx: Sql | TransactionSql,
 ): Promise<Partial<Record<FlagKey, boolean>> | null> {
   if (typeof (tx as { begin?: unknown }).begin === 'function') {
     throw new Error('flag_override_lock_requires_transaction');
@@ -70,7 +70,7 @@ export async function readGlobalFlagOverridesForUpdate(
 
 /** Fixed hosted-service policy bridge; retains the lock in caller transaction. */
 export async function readTutorialVoiceGlobalFlagsForUpdate(
-  tx: Sql,
+  tx: Sql | TransactionSql,
 ): Promise<Partial<Record<FlagKey, boolean>> | null> {
   if (typeof (tx as { begin?: unknown }).begin === 'function') {
     throw new Error('flag_override_lock_requires_transaction');
