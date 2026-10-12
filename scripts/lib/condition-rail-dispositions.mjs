@@ -1,6 +1,6 @@
 /**
  * Dispositions for the condition-rail inventory (plan `degradation-signals-on-condition-rail-2026-10-11`,
- * P-001, BAR R-4). Keyed `class|file` (a whole cluster) or `class|file|symbol` (one site).
+ * P-001, BAR R-4). Keyed by exact row ID, `class|file|symbol`, or `class|file` cluster.
  *
  *   { disposition: 'migrate', item: 'P-NNN' }               — moves onto the rail under that plan item
  *   { disposition: 'not-applicable', reason: '<why, >=20 chars>' }
@@ -43,6 +43,8 @@ const NA_UI = na('UI component that renders a health value computed server-side;
 const NA_WATCHDOG_TOOLING = na(
   'configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately',
 );
+
+const NA_TYPE_ANNOTATION = na("Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition.");
 
 export const DISPOSITIONS = Object.freeze({
   // ── owner-only-alarm ──────────────────────────────────────────────────────────────────────
@@ -150,17 +152,66 @@ export const DISPOSITIONS = Object.freeze({
   ),
   'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
+
+  // Exact annotation IDs independently approved in thread-post:1176052; runtime siblings retain their cluster.
+  'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalateOrphan|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|escalateCompactionStranding|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetLegEventKey|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetEventPayload|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetSubjectSignature|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetRemedy|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainRelaunchEligibility|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|3': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|4': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|5': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|6': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|7': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePullStall|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitDrainDead|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePlanFleet|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitPlanFleet|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultNotifyPlanFleetHolders|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|4': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|5': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateWedge|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|buildReportSkeleton|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultNudge|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1': NA_TYPE_ANNOTATION,
+  'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
 
   // ── bespoke-watchdog ──────────────────────────────────────────────────────────────────────
   'health-flag-no-condition|packages/operator-core/lib/release/green-stall-watchdog.ts|alarm': na(
@@ -178,7 +229,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-tunables.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts': NA_WATCHDOG_TOOLING,
-  'bespoke-watchdog|packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/inference-gateway/watchdog.mjs': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts': migrate('P-015'),
