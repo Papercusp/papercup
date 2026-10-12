@@ -218,7 +218,8 @@
 #   pointer and inline environment, against the recorded subject and mutation.
 #   An unchanged-test survivor followed by a descriptor-linked catch is refused
 #   at binding with mutation_reaim_unjustified; supply structured
-#   reaimJustification naming the prior binding and concrete reason for re-aiming.
+#   reaimJustification { survivorTestRunIds, reason } naming every prior survivor
+#   and a concrete reason for re-aiming.
 #   Detection covers ledgered mutant-leg rows; legacy rows have unknown linkage.
 #   Historical fixed-path guards that ignore the snapshot produce INCONCLUSIVE
 #   (exit 2, guard-ignores-subject); use copy-out for import-based guards.
