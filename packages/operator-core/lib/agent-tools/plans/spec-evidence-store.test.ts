@@ -70,9 +70,24 @@ import {
   agentToolRuntimeSourceWithoutStaticGuidance,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
+  hasMatchingDeclaredCaseTitle,
 } from './spec-evidence-store';
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+
+describe('Vitest it.each case-title identity', () => {
+  it.each(['ts', 'python'])('matches the rendered quoted %s label with its declared title', (label) => {
+    const suite = 'P-005 maintained grammar indexing through the native surface';
+    const declared = `${suite} > ${label} emits language-aware syntax and keeps relationships inferred`;
+    const rendered = `${suite} > '${label}' emits language-aware syntax and keeps relationships inferred`;
+
+    expect(hasMatchingDeclaredCaseTitle(declared, [rendered])).toBe(true);
+  });
+
+  it('preserves quotes embedded inside a case description', () => {
+    expect(hasMatchingDeclaredCaseTitle("suite > reads 'ts' as the source label", ['suite > reads ts as the source label'])).toBe(false);
+  });
+});
 
 let measurementRoot = '';
 const nativeToolSource = `import { defineTool } from '@papercusp/agent-mcp';
