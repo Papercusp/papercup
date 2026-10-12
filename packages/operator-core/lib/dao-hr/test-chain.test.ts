@@ -76,8 +76,23 @@ describe('DAO HR isolated JSON-RPC test chain', () => {
       .rejects.toThrow('does not own');
   });
 
-  it('fails closed on historical storage and unsupported RPC methods', async () => {
-    await expect(request('eth_getCode', [fixture.equity.address, '0x1'])).rejects.toThrow('Historical EVM storage');
+  it('retains actual receipt-block state after confirmations and later writes without changing the current head', async () => {
+    const before = await client.getBlockNumber();
+    const oldRate = await client.readContract({ ...fixture.equity, functionName: 'returnRateBps' });
+    const data = encodeFunctionData({ abi: fixture.equity.abi, functionName: 'setReturnPolicy', args: [750, 30 * 86400] });
+    const hash = await request('eth_sendTransaction', [{ from: fixture.accounts[fixture.admin], to: fixture.equity.address, data }]) as Hex;
+    const receipt = await client.getTransactionReceipt({ hash });
+    await request('evm_mine'); await request('evm_mine');
+    expect(await client.readContract({ ...fixture.equity, functionName: 'returnRateBps', blockNumber: before })).toBe(oldRate);
+    expect(await client.readContract({ ...fixture.equity, functionName: 'returnRateBps', blockNumber: receipt.blockNumber })).toBe(750);
+    expect(await client.readContract({ ...fixture.equity, functionName: 'returnRateBps' })).toBe(750);
+    expect(await client.getCode({ address: fixture.equity.address, blockNumber: receipt.blockNumber })).not.toBe('0x');
+    expect((await client.getBlock({ blockNumber: before })).number).toBe(before);
+    expect(await client.getBlockNumber()).toBeGreaterThanOrEqual(receipt.blockNumber + 2n);
+  });
+
+  it('fails closed on unrecorded historical storage and unsupported RPC methods', async () => {
+    await expect(request('eth_getCode', [fixture.equity.address, '0x0'])).rejects.toThrow('Unknown historical EVM block');
     await expect(request('eth_sendRawTransaction', ['0x01'])).rejects.toThrow('Unsupported isolated test RPC');
   });
 
