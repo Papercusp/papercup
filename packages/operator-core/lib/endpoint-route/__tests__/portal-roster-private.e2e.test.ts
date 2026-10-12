@@ -151,6 +151,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal Dev reads scoped activity through the catalog schema and recovers actual warm and cold Host denials across reload', async context => {
+    expect(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'private Dev requires a durable receipt sink before browser compilation').toBeTruthy();
     preparePrivateRosterSocketRoot();
     await verifyPrivateHudReadPolicy();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
