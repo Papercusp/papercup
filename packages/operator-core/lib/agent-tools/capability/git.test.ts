@@ -8,7 +8,7 @@
  * mocking anything — the exact vector a bee's `capability:git` would have had.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -173,6 +173,60 @@ describe('scratchClone — guarded cheap local materialisation (WI-38848)', () =
     await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow('local submodule missing');
     expect(existsSync(destination)).toBe(false);
     expect(git(source, ['rev-parse', 'HEAD:missing'])).toBe(pin);
+  });
+
+  it('clones under ignored source scratch when OS temp points elsewhere, preserving a clean donor', async () => {
+    const source = repository('cap-git-donor-scratch-');
+    writeFileSync(join(source, '.gitignore'), '/.papercusp/scratch/\n');
+    git(source, ['add', '.gitignore']);
+    git(source, ['commit', '--quiet', '-m', 'ignore owned scratch']);
+    const scratch = join(source, '.papercusp', 'scratch');
+    mkdirSync(scratch, { recursive: true });
+    const otherTemp = mkdtempSync(join(tmpdir(), 'cap-git-other-temp-'));
+    cleanup.push(otherTemp);
+    vi.stubEnv('TMPDIR', otherTemp);
+    try {
+      const destination = join(scratch, 'owned');
+      const result = await createScratchClone({ source, destination, signal: never });
+      expect(result.path).toBe(destination);
+      expect(statSync(destination).dev).toBe(statSync(source).dev);
+      expect(git(destination, ['rev-parse', 'HEAD'])).toBe(git(source, ['rev-parse', 'HEAD']));
+      expect(git(destination, ['remote'])).toBe('');
+      expect(readFileSync(join(destination, '.git/objects/info/alternates'), 'utf8').trim()).not.toBe('');
+      expect(git(source, ['status', '--porcelain'])).toBe('');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('refuses unignored source scratch and ordinary contained paths without creating them', async () => {
+    const source = repository('cap-git-unignored-scratch-');
+    const scratch = join(source, '.papercusp', 'scratch');
+    mkdirSync(scratch, { recursive: true });
+    const destination = join(scratch, 'refused');
+    await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow('must be Git-ignored');
+    expect(existsSync(destination)).toBe(false);
+    await expect(createScratchClone({ source, destination: join(source, 'ordinary'), signal: never }))
+      .rejects.toThrow('must not contain one another');
+    expect(existsSync(join(source, 'ordinary'))).toBe(false);
+  });
+
+  it('preserves existing source scratch and cleans only its fresh failed clone', async () => {
+    const source = repository('cap-git-scratch-ownership-');
+    const child = repository('cap-git-scratch-unavailable-');
+    const pin = git(child, ['rev-parse', 'HEAD']);
+    git(source, ['update-index', '--add', '--cacheinfo', `160000,${pin},missing`]);
+    writeFileSync(join(source, '.gitignore'), '/.papercusp/scratch/\n');
+    git(source, ['add', '.gitignore']);
+    git(source, ['commit', '--quiet', '-m', 'missing child and ignored scratch']);
+    const scratch = join(source, '.papercusp', 'scratch');
+    mkdirSync(join(scratch, 'existing'), { recursive: true });
+    const sentinel = join(scratch, 'existing', 'peer-work.txt');
+    writeFileSync(sentinel, 'keep');
+    await expect(createScratchClone({ source, destination: join(scratch, 'existing'), signal: never }))
+      .rejects.toThrow('must not already exist');
+    await expect(createScratchClone({ source, destination: join(scratch, 'failed'), signal: never }))
+      .rejects.toThrow('local submodule missing');
+    expect(existsSync(join(scratch, 'failed'))).toBe(false);
+    expect(readFileSync(sentinel, 'utf8')).toBe('keep');
   });
 
   it('never deletes or enters a caller-owned destination', async () => {

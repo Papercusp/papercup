@@ -382,12 +382,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -a -- "$2/node_modules" "$3/node_modules"\n');
-    git(fixture.repo, ['add', script, helper]);
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', script, helper, '.gitignore']);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
-    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
-      dest: join(tmp, 'verifier-native-dependencies-invoked'), inputs: [script], gitCheckout: true });
-    const dest = join(tmp, 'verifier-native-dependencies-invoked');
+    const scratch = join(fixture.repo, '.papercusp', 'scratch');
+    await fsPromises.mkdir(scratch, { recursive: true });
+    const dest = join(scratch, 'invoked');
+    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp');
+    await fsPromises.mkdir(otherTemp);
+    vi.stubEnv('TMPDIR', otherTemp);
+    let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    try {
+      receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
+        dest, inputs: [script], gitCheckout: true });
+    } finally { vi.unstubAllEnvs(); }
     const probe = () => spawnSync(process.execPath, [join(dest, script), 'verifier-measure'],
       { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
     expect(probe().stderr).toContain('ERR_MODULE_NOT_FOUND');
@@ -395,6 +404,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    expect(statSync(join(dest, 'node_modules/@native-proof/runtime/index.mjs')).ino)
+      .toBe(statSync(join(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs')).ino);
     rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
     expect(probe().status).toBe(0);
     expect(probe().stdout.trim()).toBe('4096');

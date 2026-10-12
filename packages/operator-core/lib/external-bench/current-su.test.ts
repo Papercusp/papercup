@@ -241,7 +241,7 @@ describe('source-bound current benchmark cost', () => {
   });
 });
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { allCapabilities, currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 import type { RuntimeVintageRow } from '../runtime-vintage';
 import { processMonotonicClock } from '../process-monotonic-clock';
@@ -1181,6 +1181,31 @@ describe('current native benchmark execution', () => {
     expect(launch).not.toHaveBeenCalled();
     expect(f.ports.verifyPreregistration).toHaveBeenCalled(); expect(f.ports.verifyContext).toHaveBeenCalled();
     expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
+  });
+  // BM-P-004-equal-solver: in a controlled protocol each runner must declare the topology it executes.
+  // The stock driver is the stock-native reference; the su driver cannot yet derive its delivered
+  // capabilities under confinement, so its controlled arm refuses before any launch or spend.
+  it('declares stock-native-reference for the stock driver and refuses a controlled su arm before launch', async () => {
+    const protocol = currentProtocolFixture();
+    const solverToolsHash = 'f'.repeat(64);
+    protocol.arms[0].control = { topology: 'solo', solverGroup: 'su-solver', solverToolsHash, capabilities: allCapabilities('on') };
+    protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-solver', solverToolsHash, capabilities: allCapabilities('off') };
+    const controlled = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+
+    const stockOpts = { ...controlled, armId: 'baseline' };
+    const s = fixture(stockOpts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: s.row.taskId }] }));
+    const { launch: suLaunch, ...common } = s.ports;
+    const stock = await currentStockBenchHarnessDriver(s.lifecycle, { ...common, launchNative }, stockOpts)
+      .spinRunAndCost({ ...request, blueprintId: 'native-codex' });
+    expect(stock.telemetry.stopReason).toBe('done');
+    expect(launchNative).toHaveBeenCalledOnce();
+    expect(suLaunch).not.toHaveBeenCalled();
+
+    const su = fixture(controlled), refused = await su.run();
+    expect(refused.telemetry.stopReason).toBe('error');
+    expect(refused.telemetry.generationError).toMatch(/frozen as solo; the runner did not declare that topology/);
+    expect(su.ports.admit).not.toHaveBeenCalled();
+    expect(su.ports.launch).not.toHaveBeenCalled();
   });
   it('restores after committed protocol verification and re-reads after admission before launching the complete frozen context', async () => {
     const f = fixture(), result = await f.run();

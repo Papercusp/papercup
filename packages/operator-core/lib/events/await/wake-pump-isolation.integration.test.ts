@@ -133,7 +133,10 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
 
     // Drive the REAL pump with the executor's psu-host discovery pointed at the
     // testbed's isolated dir (real findLiveHost + real injectIntoHost).
-    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+    // Wrapped async: the executor's seam is async (`typeof findLiveHostAsync`), and this
+    // form type-checks whether the testbed's discovery dep is sync or async.
+    const findPsuHost = tb.findPsuHostDep();
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: async (ownerId: string) => findPsuHost(ownerId) });
 
     // A's delivery landed on A's socket; B's socket got nothing.
     const recent = await store.listRecentDeliveries(a);

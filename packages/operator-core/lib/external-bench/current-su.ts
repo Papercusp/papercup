@@ -1356,7 +1356,12 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before launch.', armMeta: { currentExecution: record } };
         const task = registeredTasks.get(handle.slug);
         if (!task) throw new Error('Current benchmark task has no registered assignment.');
-        const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget });
+        // A controlled protocol must name the topology this runner really executes. The stock driver IS the
+        // stock-native reference (every product capability off, schema-enforced). The su driver declares
+        // none: its assignment confinement (denyOutside + denyAmbientContext below) does not yet derive
+        // which product capabilities it delivers, so a controlled su arm is refused rather than trusted.
+        const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget,
+          topology: kind === 'stock-native' ? 'stock-native-reference' : undefined });
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
         const { promptHashMode = 'exact-request-v1', ...runtimePins } = frozenArm.runtime;
         const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };

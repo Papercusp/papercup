@@ -28993,7 +28993,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Claim saved or delivered only after readback succeeds. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
+      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
       "capabilities": [
         "reports:write"
       ],
@@ -29056,7 +29056,7 @@
       "guidance": {
         "when": "For completed audits, reviews, analyses, postmortems, status digests, or proposals.",
         "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, `coord:send` for agent messages, and `docs:author` for reusable procedures.",
-        "chaining": "After `reports:publish`, follow reports:publish → reports:get { id: report_id } → verify. Read back the complete body and intended visibility. Claim saved or delivered only after readback succeeds. For corrections, read the original and publish with `supersedes`, then use the new report_id → verify the correction → cite it. Use the returned same-origin path directly in Papercusp/Tauri as the descriptive Markdown link target (the Reports reader uses `/reports?sel=<report_id>`). Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link or cite a bare id. Link maintained procedures via `docs:author` and `docs:get` rather than copying private incident details."
+        "chaining": "reports:publish → reports:get { id: report_id } → verify. Claim saved or delivered only after readback succeeds. Corrections: read the original, publish with `supersedes`, then new report_id → verify the correction → cite it. The Papercusp/Tauri Reports reader route is `/reports?sel=<report_id>`; never cite a bare id. Link procedures via `docs:author`/`docs:get`, not private incident details."
       }
     },
     {

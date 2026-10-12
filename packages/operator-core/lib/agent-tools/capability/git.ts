@@ -51,7 +51,7 @@ const scratchCloneSpec = z.object({
     .string()
     .min(1)
     .optional()
-    .describe('Optional absolute, non-existing destination below the OS temp directory. Omit to create one safely.'),
+    .describe('Optional absolute, non-existing destination below OS temp or the source repository\'s ignored .papercusp/scratch directory on the source filesystem. Omit to create one safely.'),
   submodules: z
     .boolean()
     .optional()

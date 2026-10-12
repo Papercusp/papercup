@@ -10,7 +10,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { substrateSignalRates, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
+import { substrateSignalRates, mergeCapabilityEvidence, withCapabilityEvidence, readCapabilityEvidence,
+  classifyExercise, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
+import type { EnsembleSelectorReceipt } from '../run-topology';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
 import { stopInvalidationListener } from '../../sync-sse';
@@ -275,6 +277,38 @@ describe('emitFromAttempt — infra failure nulls resolved (METR discipline)', (
       modelId: 'claude-opus-4-8[1m]', harnessVersion: 'fixture' }, { sql, workspaceId: WS });
     const row = (await listRunResults({ runId: RUN, sql, workspaceId: WS })).find(row => row.taskId === 'metadata-task')!;
     expect(row.armMeta).toEqual(armMeta);
+  });
+
+  // BM-P-004-exercise-evidence + BM-P-004-selector-control: the driver's merged evidence (with an
+  // unreported contributor's NULL counts) and the ensemble selector receipt must survive the canonical
+  // emit → store round-trip. A null that came back as 0 or vanished would turn "unmeasured" into "unused".
+  it('round-trips merged capability evidence (null counts preserved) and the selector receipt', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const evidence = mergeCapabilityEvidence([
+      [{ capability: 'memory-recall', available: true, delivered: 2, used: 1, refs: ['ti:solver-0'] },
+        { capability: 'locks', available: true, delivered: 0, used: 0 }],
+      [{ capability: 'memory-recall', available: true, delivered: 1, used: 1, refs: ['ti:solver-1'] }],
+      null,
+    ]);
+    const selector: EnsembleSelectorReceipt = { id: 'judge-v1', kind: 'judge-agent', via: 'judge',
+      pickIndex: 1, candidateIndices: [0, 1] };
+    const armMeta = withCapabilityEvidence({ ensembleSize: 3, solvers: 3, candidates: 2, pickIndex: 1, selector }, evidence)!;
+    await emitFromAttempt({ runId: RUN, preregHash, arm: 'papercusp', seed: 10,
+      task: { benchmark: 'swe-bench-pro', instanceId: 'evidence-task', problemStatement: 'fixture', graderMeta: {} },
+      attempt: { arm: 'papercusp', blueprintId: 'fixture', instanceId: 'evidence-task', seed: '10', diff: '',
+        tokensIn: 100, tokensOut: 20, costUsd: 0, turns: 1, wallClockMs: 10, trajectoryRef: 'source:closed-turn',
+        stopReason: 'done', armMeta },
+      grade: { instanceId: 'evidence-task', prefix: '10', resolved: true, rawGraderOutput: null,
+        graderFamily: 'swe-bench-pro', graderVersion: 'sweap-2026-06' },
+      modelId: 'claude-opus-4-8[1m]', harnessVersion: 'fixture' }, { sql, workspaceId: WS });
+    const row = (await listRunResults({ runId: RUN, sql, workspaceId: WS })).find(row => row.taskId === 'evidence-task')!;
+    expect(row.armMeta?.selector).toEqual(selector);
+    const stored = readCapabilityEvidence(row);
+    expect(stored).toEqual(evidence);
+    const memory = stored.find(e => e.capability === 'memory-recall')!;
+    expect(memory).toMatchObject({ available: true, delivered: null, used: null });
+    expect(classifyExercise(memory)).toBe('unknown');
+    expect(stored.find(e => e.capability === 'locks')).toMatchObject({ available: true, delivered: null, used: null });
   });
 
   it('a generation error → resolved null, generationStatus error, graderStatus error', async () => {

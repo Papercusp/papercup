@@ -110,15 +110,33 @@ async function localRepositoryRoot(path: string, ctx: ScratchCloneContext, label
   return canonicalRoot;
 }
 
-async function createOwnedTempDestination(requested?: string): Promise<string> {
+async function createOwnedScratchDestination(source: string, ctx: ScratchCloneContext, requested?: string):
+Promise<{ path: string; inSourceScratch: boolean }> {
   const tempRoot = await realpath(tmpdir());
-  if (!requested) return mkdtemp(join(tempRoot, 'papercusp-git-scratch-'));
+  if (!requested) return { path: await mkdtemp(join(tempRoot, 'papercusp-git-scratch-')), inSourceScratch: false };
   if (!isAbsolute(requested)) throw new Error('scratchClone.destination must be absolute.');
 
   const parent = await realpath(dirname(requested));
   const destination = resolve(parent, basename(requested));
-  if (!strictlyWithin(tempRoot, destination)) {
-    throw new Error(`scratchClone.destination must be below the OS temp directory (${tempRoot}).`);
+  // Hardlink dependency snapshots need a checkout on the donor's filesystem.
+  // Admit only the repository's canonical, ignored scratch subtree, never an
+  // arbitrary contained source path or a scratch symlink to another location.
+  const scratchRoot = join(source, '.papercusp', 'scratch');
+  const canonicalScratch = await realpath(scratchRoot).catch(() => undefined);
+  const inSourceScratch = canonicalScratch === scratchRoot && strictlyWithin(scratchRoot, destination);
+  if (!strictlyWithin(tempRoot, destination) && !inSourceScratch) {
+    throw new Error(`scratchClone.destination must be below the OS temp directory (${tempRoot}) or the source repository's ignored .papercusp/scratch directory.`);
+  }
+  if (inSourceScratch) {
+    const ignored = await ctx.runGit(['check-ignore', '--quiet', '--', relative(source, destination)], source, ctx.signal);
+    if (ignored.code !== 0) throw new Error('scratchClone source scratch destination must be Git-ignored.');
+    if ((await stat(parent)).dev !== (await stat(source)).dev) {
+      throw new Error('scratchClone source scratch destination must share the source filesystem.');
+    }
+  }
+  if ((strictlyWithin(source, destination) && !inSourceScratch)
+    || strictlyWithin(destination, source) || source === destination) {
+    throw new Error('scratchClone source and destination must not contain one another outside ignored source scratch.');
   }
   try {
     // Atomic ownership boundary: cleanup is allowed only after THIS mkdir succeeds.
@@ -127,7 +145,7 @@ async function createOwnedTempDestination(requested?: string): Promise<string> {
   } catch (error) {
     throw new Error(`scratchClone.destination must not already exist: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return destination;
+  return { path: destination, inSourceScratch };
 }
 
 async function verifyBorrowedObjects(destination: string): Promise<void> {
@@ -251,8 +269,9 @@ export async function createScratchClone(options: ScratchCloneOptions): Promise<
     `scratchClone.ref does not resolve to a commit (${requestedRef})`,
   );
 
-  const destination = await createOwnedTempDestination(options.destination);
-  if (strictlyWithin(source, destination) || strictlyWithin(destination, source) || source === destination) {
+  const owned = await createOwnedScratchDestination(source, ctx, options.destination);
+  const destination = owned.path;
+  if ((strictlyWithin(source, destination) && !owned.inSourceScratch) || strictlyWithin(destination, source) || source === destination) {
     await rm(destination, { recursive: true, force: true });
     throw new Error('scratchClone source and destination must not contain one another.');
   }
