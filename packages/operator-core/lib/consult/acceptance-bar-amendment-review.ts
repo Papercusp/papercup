@@ -287,6 +287,9 @@ export function buildAmendmentReviewBrief(
     answerOn
       ? `That first non-empty line is the signature: the apply guard takes its author and time from your post. If the change weakens a requirement or you cannot verify it, post the objection with that same ${commentCall} instead. Post once, do not edit files or recruit anyone. After the verdict comment succeeds, call \`session:end { reason: 'BAR amendment review complete' }\` to close this headless one-shot session; do not just finish the turn.`
       : `The first non-empty line is the signature: the apply guard takes its author and time from the post. Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }. consult:reply records the signed post; consult:close records the accepted answer. If the change weakens a requirement or you cannot verify it, reply with the evidence-backed objection and close it as answered; if you cannot answer here, consult:decline.`,
+    !answerOn
+      ? "If you are the headless one-shot reviewer launched for this consult, after the review settles (consult:reply then consult:close, or consult:decline), call session:end { reason: 'BAR amendment review complete' } to close this session; do not just finish the turn."
+      : '',
   ].join('\n');
 }
 

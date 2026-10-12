@@ -667,6 +667,16 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(brief).toContain("call `session:end { reason: 'BAR amendment review complete' }`");
     expect(brief).toContain('do not just finish the turn');
   });
+
+  it('asks a headless one-shot consult reviewer to close its session after the verdict', () => {
+    const brief = buildAmendmentReviewBrief(input);
+    expect(brief).toContain('consult:close');
+    expect(brief).toContain('consult:decline');
+    expect(brief).toContain('If you are the headless one-shot reviewer launched for this consult');
+    expect(brief).toContain(
+      "after the review settles (consult:reply then consult:close, or consult:decline), call session:end { reason: 'BAR amendment review complete' } to close this session; do not just finish the turn.",
+    );
+  });
 });
 
 describe('selectFreshReviewerModelForAccountSteer', () => {

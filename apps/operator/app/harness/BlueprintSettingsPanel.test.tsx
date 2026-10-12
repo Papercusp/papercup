@@ -264,6 +264,44 @@ describe('BlueprintSettingsPanel (schema-driven per-harness settings)', () => {
       .toEqual(['/api/harness/chosen/spec?phase=production', '/api/harness/chosen/spec?phase=production']);
   });
 
+  it('shows blueprint resolution errors even when the API returns HTTP 200', async () => {
+    stubBlueprintParamsFetch({ params: {}, error: 'Invalid blueprint schema' } as never);
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Invalid blueprint schema'));
+    expect(screen.queryByText(/declares no tunable settings/)).toBeNull();
+  });
+
+  it('withholds config read errors and retries the existing named query', async () => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    syncResult = { data: [], error: new Error('Config denied') };
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Config denied'));
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry settings' }));
+    expect(invalidateConfig).toHaveBeenCalledOnce();
+  });
+
+  it.each(['{"unterminated":', '[]', 'null'])('does not overwrite malformed saved config %s', async config => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    syncResult = { data: [{ config }] };
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
+  });
+
+  it('resets edits when the same harness switches spec phase', async () => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    const panel = renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'old-phase-edit' } });
+    panel.rerender(<NuqsTestingAdapter><BlueprintSettingsPanel slug="h" phase="staging" /></NuqsTestingAdapter>);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    expect(screen.queryByDisplayValue('old-phase-edit')).toBeNull();
+    expect(screen.queryByText(/unsaved change/)).toBeNull();
+  });
+
   // WI-10006501: this is the panel the Settings tab mounts by default
   // (BLUEPRINT_AWARE_SETTINGS on), so the pot's working-copy switch (P-016) must be
   // here too, keyed to the selected pot. Before the fix it existed only in the
