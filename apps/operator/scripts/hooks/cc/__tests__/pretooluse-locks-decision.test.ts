@@ -263,6 +263,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.readFileSync(join(cache, "tu-grant.domain"), "utf8")).toBe(
       fs.realpathSync(repo),
     );
+    expect(fs.readFileSync(join(cache, "tu-grant.session"), "utf8")).toBe("s");
   });
 
   it("Codex multi-file apply_patch → caches and releases every touched path", async () => {
@@ -344,7 +345,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
         coordination_domain: fs.realpathSync(repo),
       },
     });
-    for (const suffix of ["lock", "paths", "owner", "domain"])
+    for (const suffix of ["lock", "paths", "owner", "session", "domain"])
       expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
   });
 

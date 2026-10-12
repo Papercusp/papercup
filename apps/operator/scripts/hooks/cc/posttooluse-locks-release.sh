@@ -9,6 +9,9 @@
 # other calls no-op. Always exit 0 so a release failure never blocks the edit;
 # emit a PostToolUse context update when release is unconfirmed, because a lock
 # can block git-sync for its full TTL.
+# lifecycle-report.sh also replays this hook for cached entries at Stop. Those
+# synthetic calls must match both the cached owner and native session id before
+# reaching the ordinary exact lock_id+paths release path.
 #
 # EI-63: ALSO reads the sidecar $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.paths
 # (written by the matching PreToolUse's _grant()) and, when present, passes it
@@ -122,6 +125,22 @@ owner = (
     else agent_id)
 )
 
+# Stop cleanup is session-scoped. lifecycle-report.sh selects cache entries by
+# native session sidecar, and this second check rejects peer-owned entries even
+# when they share the cache directory and happen to use the same native id.
+if payload.get('hook_event_name') == 'Stop':
+    if not isinstance(session_id, str) or not session_id:
+        sys.exit(0)
+    try:
+        with open(os.path.join(cache_dir, tool_use_id + '.owner')) as f:
+            cached_owner = f.read().strip()
+        with open(os.path.join(cache_dir, tool_use_id + '.session')) as f:
+            cached_session_id = f.read().strip()
+    except Exception:
+        sys.exit(0)
+    if cached_owner != owner or cached_session_id != session_id:
+        sys.exit(0)
+
 
 def owner_marker_name(kind):
     safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
@@ -163,7 +182,7 @@ def cleanup_sidecars(base_path):
     # '.owner' is the claiming session stamped by the PreToolUse hook for the
     # orphan reconcile (EI-22176521893516708); drop it with the rest so a
     # released claim leaves nothing the sweep could later re-examine.
-    for suffix in ('.lock', '.paths', '.domain', '.owner'):
+    for suffix in ('.lock', '.paths', '.domain', '.owner', '.session'):
         try:
             os.remove(base_path + suffix)
         except Exception:
