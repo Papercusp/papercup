@@ -103,7 +103,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
   'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts': migrate('P-013'),
   'log-only-fallback|packages/docs-engine/src/render-mdx.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/agent-tools/coordination/messages.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/agent-tools/index.ts': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
