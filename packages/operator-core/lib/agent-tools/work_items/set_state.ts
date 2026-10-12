@@ -498,7 +498,7 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions ("none" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:"blocks" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect expectedState/appliedState. Readback mismatches fail.',
+    'Set state for one or many work-items: open|wip|blocked|needs-human|done|dropped (legacy aliases preserve terminal_reason). Terminal writes need completionRef + assumptions ("none" or facts:assert keys). Blocked writes need work_items:set_blocker; use work_items:link { rel:"blocks" } for internal dependencies. Plan-linked features use plans:set-status. Reopen terminal items with force:true. Supports id, ids, or items; inspect expectedState/appliedState. Readback mismatches fail.',
   guidance: {
     when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
     notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
