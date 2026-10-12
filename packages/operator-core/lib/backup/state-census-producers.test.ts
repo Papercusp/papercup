@@ -206,6 +206,17 @@ text(r);`;
       mode: '600', sessionHash: '33cd423ed43d' };
     expect((await recoverHistoricalCensusWriterEvidence([candidate], async () => source(writer,
       nestedOutput({ ...envelope, output: JSON.stringify(sessionReceipt) }))))[0].receipt).toBe(JSON.stringify(sessionReceipt));
+    const stripeReceipt = { accountId: 'acct_fixture', accountName: 'Fixture', mode: 'test',
+      plans: [{ planKey: 'cloud', priceId: 'price_fixture', productId: 'prod_fixture', label: 'Cloud', description: 'Fixture' }],
+      portalConfigurationId: 'bpc_fixture', webhookEndpointId: 'we_fixture', webhookUrl: 'https://example.test/hook', workItem: 'WI-fixture' };
+    const stripeEnvelope = { ...envelope, output: JSON.stringify(stripeReceipt) };
+    expect((await recoverHistoricalCensusWriterEvidence([candidate], async () => source(writer,
+      nestedOutput(stripeEnvelope))))[0].receipt).toBe(JSON.stringify(stripeReceipt));
+    for (const invalid of [{ ...stripeEnvelope, exit_code: 1 }, { ...stripeEnvelope, session_id: 123 },
+      { ...stripeEnvelope, output: JSON.stringify({ ...stripeReceipt, mode: 'live' }) },
+      { ...stripeEnvelope, output: JSON.stringify({ ...stripeReceipt, plans: [{}] }) }]) {
+      expect((await recoverHistoricalCensusWriterEvidence([candidate], async () => source(writer, nestedOutput(invalid))))[0].receipt).toBe('');
+    }
     for (const invalid of [{ ...envelope, exit_code: 1 }, { output: receipt, session_id: 123 },
       { ...envelope, session_id: 123 }, { ...envelope, output: 'not JSON' }, { ...envelope, output: 'null' },
       { value: envelope }]) {

@@ -189,11 +189,19 @@ async function routeToLeaderTriage(
   blockedReason: string,
   by: string,
 ): Promise<boolean> {
-  const updated = await deps.setIssueState(id, 'blocked', by);
-  if (updated) {
-    await deps.mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  // WI-6554700010009273: the reason is written BEFORE the status flips, exactly as
+  // markLeaderTriage does. Migrations 1474/1477 refuse a row ENTERING `blocked` without a named
+  // blocker, and a leader-triage park names its blocker with this (fresh) reason — status-first
+  // was refused outright. If the flip does not stick (no-op on a remote-owned/missing row, or a
+  // refusal), the reason is withdrawn so it can never later vouch for an unrelated write.
+  await deps.mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  let updated: Awaited<ReturnType<ResolveDeps['setIssueState']>> = null;
+  try {
+    updated = await deps.setIssueState(id, 'blocked', by);
+  } finally {
+    if (!updated) await deps.mergeIssuePayload(id, { blockedReason: null, blockedAt: null });
+    await deps.releaseIssue(id);
   }
-  await deps.releaseIssue(id);
   return updated != null;
 }
 

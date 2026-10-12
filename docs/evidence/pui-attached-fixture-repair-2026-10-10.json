@@ -349,7 +349,19 @@
       "logPath": ".papercusp/scratch/bash-ac98c238-049.log",
       "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-fix-20261012-1940",
       "deadline": "2026-10-12T19:58:16.655Z",
-      "state": "Pending; adopt this single existing job before any replay or source edit."
+      "state": "Canceled for Avi's system-wide pause; task ledger confirms killed by scope SIGTERM with escalation. No test verdict.",
+      "terminalAt": "2026-10-12T19:40:26.965Z",
+      "exitCode": 143,
+      "testVerdict": "undetermined"
+    },
+    "resumedNativeVerification": {
+      "taskId": "0mv5renic1ml67t51oc",
+      "logPath": ".papercusp/scratch/bash-2990b343-b0b.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-resume-20261012-2125",
+      "deadline": "2026-10-12T21:43:46.764Z",
+      "state": "Pending; single bounded replay after explicit owner-verified Avi resume.",
+      "resumeMessage": "coord-send-0a0f2ad1c8b670fe61d36a7d8f086f77edc79224edd71d32ec108f7cf72fe338",
+      "attemptAuditPosts": [1177646, 1177647]
     },
     "limitations": "No actual mounted-route tool completion, requested-note approval/effect, second-process native attachment or immutable full-candidate acceptance is claimed. All original publication holds remain."
   }

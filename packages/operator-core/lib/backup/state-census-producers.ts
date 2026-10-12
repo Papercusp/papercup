@@ -712,7 +712,15 @@ function historicalCensusReceipt(text: string): string | null {
     try { value = JSON.parse(value.output); } catch { return null; }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   }
-  return value.storageState !== undefined ||
+  // Preserve the complete historical configuration, not a path-only summary.
+  // Recovery is evidence transport; installed-content admission remains separate.
+  const stripeConfig = value.mode === 'test' && typeof value.accountId === 'string' &&
+    value.accountId.startsWith('acct_') && typeof value.accountName === 'string' &&
+    Array.isArray(value.plans) && value.plans.length > 0 &&
+    value.plans.every((plan: Record<string, unknown>) => plan && typeof plan === 'object' &&
+      ['planKey', 'priceId', 'productId', 'label', 'description'].every(key => typeof plan[key] === 'string')) &&
+    ['portalConfigurationId', 'webhookEndpointId', 'webhookUrl', 'workItem'].every(key => typeof value[key] === 'string');
+  return stripeConfig || value.storageState !== undefined ||
     (value.ok === true && typeof value.statePath === 'string' && typeof value.sessionHash === 'string')
     ? JSON.stringify(value) : null;
 }
