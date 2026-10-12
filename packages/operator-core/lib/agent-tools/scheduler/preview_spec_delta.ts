@@ -43,6 +43,7 @@ import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/
 import { previewSpecFilterPartition } from '../../scheduler/spec-predicate-partition';
 import { evaluateGoalFenceGuardForIncumbent } from '../../scheduler/spec-pool-preview';
 import { specIsIssueFamilyOnly } from './get_next';
+import { previewClaimSpecAdmission } from './set_claim_spec';
 
 /**
  * Resolve the concrete harness used by the delta read. Operator-context `'*'`
@@ -194,7 +195,7 @@ export default defineTool({
   name: 'scheduler:preview_spec_delta',
   profile: 'engineer',
   description:
-    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused. ⚠ ISSUE-FAMILY ONLY — never sees feature-family rows, unlike scheduler:get_next. `familyScopeIncomplete:true` + a leading warning mean a count here can be a FALSE ZERO for feature-family work — verify with scheduler:get_next before trusting a low/zero reading.',
+    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot. Separately, authoringAdmission reuses the write door\'s normal fixed-cohort floors, including target-fleet holders and their remaining cooldown/admission floors; scope authoring is not new acquisition. Unknown/unchecked evaluations never authorize. ⚠ Pool counts are ISSUE-FAMILY ONLY, unlike scheduler:get_next; heed familyScopeIncomplete before trusting a low/zero pool reading.',
   guidance: {
     when:
       'Before scheduler:set_claim_spec on a live cup/fleet — especially a NARROWING revision, a `not:`/glob exclusion, or any `states` change. Also to explain a starved lane: preview the CURRENT spec against a wider candidate to see what it is holding back.',
@@ -294,6 +295,36 @@ export default defineTool({
       { limit: args.limit ?? 25 },
     );
 
+    // WI-6554700010008817: an already-held cohort is absent from the acquisition
+    // pool, so a 0/0 delta cannot answer whether its remaining floors permit scope
+    // authoring. Reuse the write door's evaluator without storing another revision.
+    // Keep its separate snapshot and scope-only meaning explicit. A failed read is
+    // unknown, never an empty/accepted cohort, and never suppresses the pool reading.
+    let authoringAdmission;
+    try {
+      const admission = await previewClaimSpecAdmission({
+        spec: proposedSpec,
+        harness,
+        assignee: ident.ownerId,
+        cupId: args.cupId,
+        fleet: args.fleet,
+      });
+      authoringAdmission = {
+        status: admission.preview.checked ? 'measured' : 'not-measured',
+        wouldRefuse: admission.preview.checked ? admission.errors.length > 0 : null,
+        ...admission,
+        evaluatedAt: new Date().toISOString(),
+        note: 'Normal scope-authoring floors, evaluated separately from the pool snapshot; this does not acquire a claim or authorize unchecked feature-family work.',
+      };
+    } catch (error) {
+      authoringAdmission = {
+        status: 'unknown',
+        wouldRefuse: null,
+        error: error instanceof Error ? error.message : String(error),
+        evaluatedAt: new Date().toISOString(),
+      };
+    }
+
     const net = reading.proposedClaimable - reading.currentClaimable;
     const warnings = deriveSpecDeltaWarnings(reading);
     // EI-21177555351818650: `readClaimSpecDelta` is issue-family-only and structurally
@@ -364,6 +395,7 @@ export default defineTool({
         newlyExcluded: reading.newlyExcluded,
         newlyAdmitted: reading.newlyAdmitted,
         truncated: reading.truncated,
+        authoringAdmission,
         // EI-21177555351818650: programmatic sibling of the warning above — true whenever
         // this reading's counts cover only a SUBSET of what scheduler:get_next can claim.
         familyScopeIncomplete,
