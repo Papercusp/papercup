@@ -68,11 +68,9 @@ export const DISPOSITIONS = Object.freeze({
     'relays an escalation the harness already recorded on the escalations surface to the owner’s desktop; the raiser owns the condition, not this relay',
   ),
   'owner-only-alarm|packages/operator-core/lib/fleet-ekg/scan.ts': migrate('P-009'),
-  'owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/human-queue-digest-action.ts': na(
     'reminder and weekly digest of the owner’s own needs-human queue; a report, not a failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts': na(
     'notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own',
   ),
@@ -143,7 +141,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
   ),
-  'log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/issues-engineer.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/learning/pot-gate/gates.ts': migrate('P-013'),
