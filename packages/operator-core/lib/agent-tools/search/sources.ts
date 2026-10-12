@@ -873,6 +873,7 @@ const workItem: SearchSource = {
       lane: string | null;
       updated_at: string | Date | null;
       rank: number;
+      fusionRank?: number;
       highlight: string;
     }>;
     function list(
@@ -915,6 +916,7 @@ const workItem: SearchSource = {
       return {
         key: `work_item:${r.issue_id}`,
         score: r.rank,
+        ...(r.fusionRank === undefined ? {} : { fusionRank: r.fusionRank }),
         row: {
           source: 'work_item',
           source_id: r.issue_id,
@@ -1183,7 +1185,7 @@ const sessionTurn: SearchSource = {
     // rows (its match is the anchor alone), so the fill stays 'and'-mode only.
     const literalToken =
       p.lexicalMode === 'coverage-graded' ? null : compactLiteralToken(p.query);
-    type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string };
+    type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; fusionRank?: number; highlight: string };
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
     // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
     // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
@@ -1316,6 +1318,7 @@ const sessionTurn: SearchSource = {
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.rank,
+      ...(r.fusionRank === undefined ? {} : { fusionRank: r.fusionRank }),
       row: {
         source: 'session_turn',
         source_id: `${r.source_kind}:${r.session_id}:${r.turn_idx}`,
