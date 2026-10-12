@@ -220,8 +220,10 @@ describe('DAO launch checklist workspace', () => {
     { route: 'new', label: 'Prepare a new entity with an advisor', country: 'CA', entityName: 'Maple Cooperative', heading: 'Prepare a new legal entity' },
     { route: 'existing', label: 'Use an existing legal entity', country: 'US', entityName: 'River LLC', heading: 'Connect an existing legal entity' },
   ] as const)('saves $route legal route and $country through real controls, then restores it from the saved fixture on remount', async ({ route, label, country, entityName, heading }) => {
-    sync.data = [draft()];
-    let saved = draft();
+    const initial = draft();
+    initial.sections.legal.route = route === 'existing' ? 'new' : 'existing';
+    sync.data = [initial];
+    let saved = initial;
     const fetchMock = vi.fn(async (_url: string, options: RequestInit) => {
       const body = JSON.parse(String(options.body));
       saved = projectDaoLaunch({ ...saved, revision: saved.revision + 1, sections: body.sections });
