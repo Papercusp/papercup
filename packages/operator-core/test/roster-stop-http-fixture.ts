@@ -16,6 +16,7 @@ import { seedPrivateLearning, preflightPrivateLearning } from './portal-learning
 import { seedPrivateWorkflows, preflightPrivateWorkflows } from './portal-workflows-fixture';
 import { seedPrivateStats, preflightPrivateStats } from './portal-stats-fixture';
 import { seedPrivateGit, preflightPrivateGit } from './portal-git-fixture';
+import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -43,6 +44,7 @@ const { shutdownViaPty } = await import('../lib/events/await/psu-pty-discovery')
 const { sql } = getOrgPg();
 const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
 let api: ChildProcess | undefined;
+let cupboardCatalog: Awaited<ReturnType<typeof startPrivateCupboardCatalog>> | undefined;
 const endings: Promise<unknown>[] = [];
 const inboxInvalidations: Array<Record<string, unknown>> = [];
 let inboxInvalidationListener: { unlisten: () => Promise<void> } | undefined;
@@ -452,6 +454,7 @@ async function coordCanary(health: unknown) {
     }
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, foreign, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      ...(cupboardCatalog ? { cupboard: true, cupboardSeed: cupboardCatalog } : {}),
       ...(devSeed ? { dev: true, devSeed } : {}),
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
@@ -516,6 +519,10 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (process.env.ROSTER_CUPBOARD_BROWSER_PROOF === '1') {
+    cupboardCatalog = await startPrivateCupboardCatalog(evidence);
+    process.env.PAPERCUSP_CUPBOARD_URL = cupboardCatalog.base;
+  }
   if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
     inboxInvalidationListener = await sql.listen('sync_invalidate', payload => {
       const event = JSON.parse(payload);
@@ -652,6 +659,7 @@ finally {
     await closed; clearTimeout(timer);
   }
   await inboxInvalidationListener?.unlisten();
+  await cupboardCatalog?.close();
   await sql.end({ timeout: 5 });
   rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));

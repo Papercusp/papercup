@@ -23,6 +23,7 @@ import { observeWorkflowDenialCycle, runPrivateWorkflowsPage, type PrivateWorkfl
 import { runPrivateStatsPage, type PrivateStatsSeed } from './portal-stats-fixture';
 import { runPrivateGitPage, type PrivateGitSeed } from './portal-git-fixture';
 import { defaultAdvGitLayout } from '../lib/dock-layouts';
+import { runPrivateCupboardPage } from './portal-cupboard-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -140,6 +141,7 @@ type PortalRosterBrowserInput = {
   evals?: boolean;
   support?: boolean;
   cupboard?: boolean;
+  cupboardSeed?: { marker: string; selectedTitle: string; neighborTitle: string; hiddenTitle: string };
   dev?: boolean;
   devSeed?: { selectedMarker: string; neighborMarker: string; foreignMarker: string; neighborWorkspace: string };
   statsSeed?: PrivateStatsSeed;
@@ -1978,7 +1980,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.dev ? '/?app=dev&q=retained-shell-search'
+    const url = new URL(input.cupboard ? '/?app=cupboard&q=retained-shell-search'
+      : input.dev ? '/?app=dev&q=retained-shell-search'
       : input.workflows ? '/?app=workflows&q=retained-shell-search'
       : input.learning ? '/?app=learning&q=retained-shell-search'
       : input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
@@ -1999,6 +2002,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.cupboardSeed) {
+      const receipt = await runPrivateCupboardPage(page, context, { ...input, cupboardSeed: input.cupboardSeed }, url);
+      assert.deepEqual(pageErrors, [], 'actual Cupboard controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.devSeed) {
       const receipt = await runPrivateDevPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'actual Dev controls must stay browser-safe');

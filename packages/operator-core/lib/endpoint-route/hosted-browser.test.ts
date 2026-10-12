@@ -101,9 +101,11 @@ describe('hosted browser route boundary', () => {
       dependencies: { recordTransportFallback },
     }).routes;
     const handler = routeHandler(routes, HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH);
+    // Exercise the missing-auth runtime boundary before the route dispatcher supplies a principal.
+    const unauthenticated = { ...context(), principal: undefined } as unknown as RouteContext;
     for (const [ctx, headers, status] of [
-      [{ ...context(), principal: undefined }, { origin: ORIGIN }, 401],
-      [context(createHostedPrincipal({ ...principal, selectedWorkspaceId: null })), { origin: ORIGIN }, 403],
+      [unauthenticated, { origin: ORIGIN }, 401],
+      [context(createHostedPrincipal({ ...principal, selectedWorkspaceId: undefined })), { origin: ORIGIN }, 403],
       [context(createHostedPrincipal({ ...principal, workspaceId: 'foreign' })), { origin: ORIGIN }, 403],
       [context(), {}, 403],
       [context(), { origin: 'https://untrusted.example' }, 403],
