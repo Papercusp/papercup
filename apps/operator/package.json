@@ -40,6 +40,7 @@
     "release:workspace-host-publication-manifest": "tsx lib/release/workspace-host-publication-manifest-cli.ts",
     "release:clean-room-acceptance": "tsx lib/release/workspace-host-clean-room-acceptance-cli.ts",
     "release:p2p-candidate-manifest": "tsx lib/release/run-p2p-candidate-manifest.ts",
+    "release:p521-drill-journey-evidence": "tsx lib/release/run-p521-drill-journey-evidence.ts",
     "release:precut-containment": "tsx lib/release/precut-containment-cli.ts",
     "lint:el-tools": "node scripts/el-tools-check.mjs",
     "lint:plans": "tsx scripts/lint-plans.ts",
