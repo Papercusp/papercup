@@ -371,6 +371,10 @@ function innerTruncationRecoveryInstruction(
   if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
     return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
   }
+  const recoveryTarget = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  if (recoveryTarget === 'work_items:get' && markers.includes('checkpointTruncated')) {
+    return 'The work-item checkpoint was clipped before this result door. Read the exact stored text with work_items:get { id, checkpointOnly:true, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes. payloadTier:\'full\' cannot restore checkpoint text already clipped by the tool.';
+  }
   if (markers.includes('textTruncated') && toolName === 'work_items:get') {
     return 'The clipped prior-attempt record has a field-specific recovery handle: read its rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool.';
   }
@@ -1487,6 +1491,7 @@ function spillRecoveryNote(
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  const recoveryTarget = input.toolName === 'tools:invoke' ? input.nestedTargetToolName : input.toolName;
   if (isPlansStartCall(input)) {
     return (input.upstreamProjection || innerTruncationMarkers.length > 0
       ? 'The reference preserves only the emitted response; already-omitted fields cannot be recovered by paging. ' + referenceReader
@@ -1583,6 +1588,10 @@ function spillRecoveryNote(
     // inline than 'trimmed' does, i.e. worse than the tier the caller opted
     // out of. Spilling the untouched full body and saying so plainly is
     // honest about the size AND strictly recoverable, unlike that reprojection.
+    if (recoveryTarget === 'work_items:get' && innerTruncationMarkers.includes('checkpointTruncated')) {
+      return 'The explicit full work_items:get response exceeded the door, and its checkpoint was already clipped by the tool. The spill cannot restore that text. ' +
+        innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers, input.nestedTargetToolName);
+    }
     return (
       `${recoverable}This is the RAW, unshaped payload you explicitly requested with payloadTier:'full' ` +
       "(or an equivalent transport-cap exemption) — it does not fit inline at this size. If you don't need " +
