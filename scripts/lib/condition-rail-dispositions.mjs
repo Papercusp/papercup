@@ -152,7 +152,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts': migrate('P-014'),
 
   // Exact annotation IDs independently approved in thread-post:1176052; runtime siblings retain their cluster.
@@ -179,12 +178,9 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultNotifyPlanFleetHolders|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|2': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3': NA_TYPE_ANNOTATION,

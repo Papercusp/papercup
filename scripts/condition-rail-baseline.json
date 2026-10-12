@@ -31,7 +31,6 @@
     "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|3",
     "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|4",
     "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|readGoalPlanFleetObservation|1",
-    "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|1",
     "health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts|evaluatePerfSignals|1",
     "health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts|evaluatePerfSignals|2",
     "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
