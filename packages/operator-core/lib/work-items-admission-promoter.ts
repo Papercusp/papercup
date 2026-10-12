@@ -839,6 +839,12 @@ export interface WorkItemAdmissionQueueHealth {
     p50Ms: number | null;
     p95Ms: number | null;
   };
+  /** Current producer capacity, separate from the cumulative admission ledger above. */
+  producerPressure?: {
+    pending: number;
+    latencyWindowMs: number;
+    promotedToFirstClaim: WorkItemAdmissionQueueHealth['promotedToFirstClaim'];
+  };
   /** P-006 durable review-debt rollup; optional for older callers/mocks. */
   reviewDebt?: AdmissionReviewDebt;
 }
@@ -1087,11 +1093,15 @@ export interface WorkItemAdmissionProducerPressure {
 export function decideWorkItemAdmissionProducerPressure(
   health: WorkItemAdmissionQueueHealth,
 ): WorkItemAdmissionProducerPressure {
-  const pending = Number.isFinite(health.pending) ? Math.max(0, Math.floor(health.pending)) : 0;
-  const latencySampleSize = Number.isFinite(health.promotedToFirstClaim.sampleSize)
-    ? Math.max(0, Math.floor(health.promotedToFirstClaim.sampleSize))
+  // EI-25814378379068278: terminal pending rows and old completed claims are
+  // historical ledger entries, not current capacity. Older callers retain their
+  // existing contract; the production health writer supplies the live cohort.
+  const pressureHealth = health.producerPressure ?? health;
+  const pending = Number.isFinite(pressureHealth.pending) ? Math.max(0, Math.floor(pressureHealth.pending)) : 0;
+  const latencySampleSize = Number.isFinite(pressureHealth.promotedToFirstClaim.sampleSize)
+    ? Math.max(0, Math.floor(pressureHealth.promotedToFirstClaim.sampleSize))
     : 0;
-  const rawP95 = health.promotedToFirstClaim.p95Ms;
+  const rawP95 = pressureHealth.promotedToFirstClaim.p95Ms;
   const p95Ms = latencySampleSize > 0 && rawP95 != null && Number.isFinite(rawP95) ? Math.max(0, rawP95) : null;
 
   const deep = pending > ADMISSION_PRESSURE_DEEP_PENDING || (p95Ms ?? 0) > ADMISSION_PRESSURE_DEEP_LATENCY_MS;
@@ -2728,6 +2738,10 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
     latency_sample_size: number | string;
     p50_ms: number | string | null;
     p95_ms: number | string | null;
+    producer_pending: number | string;
+    producer_latency_sample_size: number | string;
+    producer_p50_ms: number | string | null;
+    producer_p95_ms: number | string | null;
     review_pending: number | string;
     review_overdue: number | string;
     review_re_reviewed: number | string;
@@ -2757,6 +2771,33 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
                AND wi.first_claimed_at IS NOT NULL
                AND wi.first_claimed_at >= wi.admitted_at
            ) AS p95_ms
+           ,(count(*) FILTER (
+             WHERE wi.admission = 'pending'
+               AND NOT COALESCE(harness_shared.work_item_status_is_terminal(wi.status), FALSE)
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ))::int AS producer_pending
+           ,(count(*) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ))::int AS producer_latency_sample_size
+           ,percentile_cont(0.50) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ) AS producer_p50_ms
+           ,percentile_cont(0.95) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ) AS producer_p95_ms
            ,(count(*) FILTER (
              WHERE COALESCE(wi.payload #>> '{admissionReview,state}', CASE WHEN wi.admission = 'unreviewed' THEN 'pending' END) = 'pending'
            ))::int AS review_pending
@@ -2806,6 +2847,15 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
       sampleSize: Number(row?.latency_sample_size ?? 0),
       p50Ms: numberOrNull(row?.p50_ms),
       p95Ms: numberOrNull(row?.p95_ms),
+    },
+    producerPressure: {
+      pending: Number(row?.producer_pending ?? 0),
+      latencyWindowMs: ADMISSION_PRESSURE_ELEVATED_LATENCY_MS,
+      promotedToFirstClaim: {
+        sampleSize: Number(row?.producer_latency_sample_size ?? 0),
+        p50Ms: numberOrNull(row?.producer_p50_ms),
+        p95Ms: numberOrNull(row?.producer_p95_ms),
+      },
     },
     reviewDebt: {
       pending: Number(row?.review_pending ?? 0),
