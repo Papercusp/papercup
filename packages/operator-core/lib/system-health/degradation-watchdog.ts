@@ -224,6 +224,20 @@ registerDegradationMechanism({
   description: 'Primary-count queries that measured permission to read all activity stats rather than relying on a missing capability probe or restricted read.',
   thresholds: { minEligible: 1 },
 });
+registerDegradationMechanism({
+  mechanism: 'host-startup', scopeKeyed: true,
+  description: 'Eligible cache, resolver and sidecar startup paths verified their primary startup rather than accepting a boot fallback; disabled paths and deliberate shutdown are excluded.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'db-discovery-identity',
+  description: 'Database pool identity probes that verified the trusted store rather than quarantining a proven foreign discovery endpoint; indeterminate attribution is excluded.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'mcp-workspace-resolution',
+  description: 'Scoped superuser workspace resolutions supplied explicitly or verified from the session, rather than guessed from the active registry. Deliberate unscoped administration is excluded.',
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both
