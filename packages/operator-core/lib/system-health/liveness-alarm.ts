@@ -660,10 +660,11 @@ export function evaluateLivenessAlarm(
       key: gitSyncMissedIntervalsSignature(slug),
       severity: 'blocker',
       summary:
-        `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals: ` +
-        `nothing written there is being committed. Read routines:list { name:'git-sync'` +
+        `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals. ` +
+        `Missed intervals measure the scheduler leg and do not establish commit progress; an in-flight fire ` +
+        `may have created local commits before routine completion. Read routines:list { name:'git-sync'` +
         `${slug ? `, installSlug:'${slug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
-        `execution leg, and safe_to_restart) before restarting anything.`,
+        `execution leg, and safe_to_restart) before concluding no commits were made or restarting anything.`,
     });
   }
   // WI-10006867: an install whose checkout VANISHED — reported under its real cause, never as

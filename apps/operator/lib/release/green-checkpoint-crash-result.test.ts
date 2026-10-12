@@ -255,6 +255,23 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     expect(r.runId).toBe('run-1');
   });
 
+  it('keeps an exhausted server_login_retry setup failure as no verdict', () => {
+    const error = Object.assign(
+      new Error('server_login_retry: database system is not yet accepting connections'),
+      { code: '08P01' },
+    );
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: 'abc123',
+      error,
+      runId: 'run-retry-exhausted',
+    });
+
+    expect(result.green).toBeNull();
+    expect(result.advanced).toBe(false);
+    expect(result.reason).toBe('error');
+    expect(result.crashed).toBe(true);
+  });
+
   /**
    * EI-20702428259478130 — these two pin the DISCRIMINATION, which is the whole point of the
    * field and the part a future edit is most likely to "simplify" away.

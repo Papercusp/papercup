@@ -46,36 +46,6 @@ const setStorm = vi.fn(async (_sql: unknown, _workspace: string, id: string, inp
   updatedAt: '2026-08-22T00:00:00.000Z',
 }));
 const notify = vi.fn(async (..._args: unknown[]) => {});
-const connectSlack = vi.fn(async (_sql: unknown, input: Record<string, unknown>) => ({
-  id: '20000000-0000-4000-8000-000000000001',
-  kind: 'slack',
-  status: 'connecting',
-  credentialRef: `slack-socket:${input.field ?? input.ownerUserId}`,
-  config: { teamId: 'T1' },
-}));
-const SLACK_ORG_DISABLED = 'slack_org_connector_disabled:legal_review_pending';
-const connectOrgSlack = vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => ({
-  id: '20000000-0000-4000-8000-000000000002',
-  kind: 'slack',
-  status: 'connecting',
-  credentialRef: 'slack-socket:org-T1',
-  config: { teamId: 'T1', credentialModel: 'customer-internal-app' },
-}));
-const ensureSlackFlagship = vi.fn(async (_sql: unknown, _workspaceId: string, source: { id: string }) => ({
-  plan: { created: true, schemaAdded: true },
-  binding: {
-    id: BINDING_ID,
-    sourceId: source.id,
-    sourceKind: 'slack',
-    planHarnessSlug: 'papercusp',
-    planSlug: 'slack-respond-in-thread-2026-08-22',
-    eventPattern: 'ext:slack:mention',
-    eventFilter: {},
-    action: { type: 'launch-plan' },
-    armed: false,
-    stormPolicy: {},
-  },
-}));
 const sql = vi.fn();
 
 vi.mock('../../auth/require-principal', () => ({
@@ -124,19 +94,6 @@ vi.mock('../../external-triggers/admin', () => ({
   setExternalTriggerBindingArmed: (...args: Parameters<typeof setArmed>) => setArmed(...args),
   updateExternalTriggerBindingStormPolicy: (...args: Parameters<typeof setStorm>) => setStorm(...args),
 }));
-vi.mock('../../external-triggers/slack', () => ({
-  SLACK_APP_MANIFEST_TEMPLATE: { settings: { socket_mode_enabled: true } },
-  connectOwnedSlackSource: (...args: Parameters<typeof connectSlack>) => connectSlack(...args),
-}));
-vi.mock('../../external-triggers/slack-flagship', () => ({
-  SLACK_RESPOND_IN_THREAD_PLAN: 'slack-respond-in-thread-2026-08-22',
-  ensureSlackRespondInThreadBinding: (...args: Parameters<typeof ensureSlackFlagship>) => ensureSlackFlagship(...args),
-}));
-vi.mock('../../data-sources/slack-org-connector', () => ({
-  // Literal, not SLACK_ORG_DISABLED: this factory is hoisted above that const.
-  SLACK_ORG_DISABLED_ERROR: 'slack_org_connector_disabled:legal_review_pending',
-  connectOrganizationSlackSource: (...args: Parameters<typeof connectOrgSlack>) => connectOrgSlack(...args),
-}));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 import { registerRoute } from '../define-route';
@@ -145,7 +102,7 @@ import type { ZodTypeAny } from 'zod';
 import routes from '../routes/admin/external-triggers';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
-const [read, mutate, slackManifest, slackConnect, slackConnectOrg] = routes as unknown as AnyRoute[];
+const [read, mutate] = routes as unknown as AnyRoute[];
 const URL = 'http://127.0.0.1:3070/admin/triggers';
 const BINDING_ID = '10000000-0000-4000-8000-000000000001';
 
@@ -166,21 +123,13 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('external-trigger admin route pair', () => {
-  it('keeps owner-local and Slack routes under their explicit trust gates', () => {
+  it('keeps the owner-local routes under their explicit trust gate and serves no provider-specific route', () => {
     expect(read).toMatchObject({ method: 'GET', path: '/admin/triggers' });
     expect(mutate).toMatchObject({ method: 'PATCH', path: '/admin/triggers' });
     expect(read.auth).toEqual({ trust: ['verified', 'trusted', 'unverified-loopback'] });
     expect(mutate.auth).toEqual(read.auth);
-    expect(slackManifest).toMatchObject({
-      method: 'GET',
-      path: '/admin/triggers/slack/manifest',
-      auth: { trust: ['verified', 'trusted'] },
-    });
-    expect(slackConnect).toMatchObject({
-      method: 'POST',
-      path: '/admin/triggers/slack/connect',
-      auth: { trust: ['verified', 'trusted'] },
-    });
+    // Slack setup moved into the slack package (cupboard-distributable-integrations D-025/D-026).
+    expect(routes.map((r) => (r as unknown as AnyRoute).path)).toEqual(['/admin/triggers', '/admin/triggers']);
   });
 
   it('returns the shared snapshot and the default-ON flag fails open on provider errors', async () => {
@@ -387,40 +336,6 @@ describe('external-trigger admin route pair', () => {
     expect(setStorm).not.toHaveBeenCalled();
   });
 
-  it('serves the reusable Socket Mode manifest without exposing a secret', async () => {
-    const response = await request(slackManifest, 'GET');
-    expect(await response.json()).toEqual({ ok: true, manifest: { settings: { socket_mode_enabled: true } } });
-  });
-
-  it('stores Slack tokens through the connection seam and never echoes them', async () => {
-    const response = await request(slackConnect, 'POST', {
-      appToken: 'xapp-private', botToken: 'xoxb-private', installSlug: 'papercusp', channels: ['C1'],
-    });
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toMatchObject({
-      ok: true,
-      source: { kind: 'slack', status: 'connecting' },
-      binding: { eventPattern: 'ext:slack:mention', armed: false },
-      plan: { slug: 'slack-respond-in-thread-2026-08-22', created: true, armed: false },
-    });
-    expect(JSON.stringify(body)).not.toContain('xapp-private');
-    expect(JSON.stringify(body)).not.toContain('xoxb-private');
-    expect(connectSlack).toHaveBeenCalledWith(sql, expect.objectContaining({
-      workspaceId: 'ws-test',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      appToken: 'xapp-private',
-      botToken: 'xoxb-private',
-    }));
-    expect(ensureSlackFlagship).toHaveBeenCalledWith(
-      sql,
-      'ws-test',
-      expect.objectContaining({ kind: 'slack' }),
-      'owner:22222222-2222-4222-8222-222222222222',
-    );
-    expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
-  });
-
   it('no longer accepts the retired Slack-specific configure-slack-bugs op', async () => {
     // Slack bug triage is the Cupboard bug-triage trigger pack
     // (cupboard-distributable-integrations-2026-10-10#D-019).
@@ -430,55 +345,5 @@ describe('external-trigger admin route pair', () => {
     expect(response.status).toBe(400);
     expect(sql).not.toHaveBeenCalled();
     expect(setArmed).not.toHaveBeenCalled();
-  });
-
-  // Placeholder token strings on purpose: the route never inspects the prefix
-  // (the mocked connector does), and real-looking Slack prefixes trip the secrets guard.
-  it('connects an organization Slack source as the session owner, with no flagship binding', async () => {
-    expect(slackConnectOrg).toMatchObject({
-      method: 'POST',
-      path: '/admin/triggers/slack/connect-org',
-      auth: { trust: ['verified', 'trusted'] },
-    });
-    const response = await request(slackConnectOrg, 'POST', {
-      appToken: 'app-token-private', botToken: 'bot-token-private',
-    });
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toMatchObject({ ok: true, source: { kind: 'slack', config: { credentialModel: 'customer-internal-app' } } });
-    expect(JSON.stringify(body)).not.toContain('app-token-private');
-    expect(JSON.stringify(body)).not.toContain('bot-token-private');
-    expect(connectOrgSlack).toHaveBeenCalledWith(sql, {
-      workspaceId: 'ws-test',
-      ownerUserId: '22222222-2222-4222-8222-222222222222',
-      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
-      appToken: 'app-token-private',
-      botToken: 'bot-token-private',
-      installSlug: 'papercusp',
-    });
-    expect(ensureSlackFlagship).not.toHaveBeenCalled();
-    expect(connectSlack).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
-  });
-
-  it('answers 409 disabled while the org connector flag is dark (legal read pending)', async () => {
-    connectOrgSlack.mockRejectedValueOnce(new Error(SLACK_ORG_DISABLED));
-    const response = await request(slackConnectOrg, 'POST', { appToken: 'app-token', botToken: 'bot-token' });
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ ok: false, error: 'disabled', detail: SLACK_ORG_DISABLED });
-    expect(notify).not.toHaveBeenCalled();
-  });
-
-  it('refuses a per-user channels list and cross-origin org connects before touching Slack', async () => {
-    const extra = await request(slackConnectOrg, 'POST', { appToken: 'app-token', botToken: 'bot-token', channels: ['C1'] });
-    expect(extra.status).toBe(400);
-    const crossOrigin = await request(
-      slackConnectOrg,
-      'POST',
-      { appToken: 'app-token', botToken: 'bot-token' },
-      { origin: 'https://evil.example' },
-    );
-    expect(crossOrigin.status).toBe(403);
-    expect(connectOrgSlack).not.toHaveBeenCalled();
   });
 });

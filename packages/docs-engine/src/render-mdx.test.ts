@@ -4,8 +4,37 @@
  * Tabs/Steps/Card unwrap, unknown-JSX unwrap, self-closing drop, + the preamble.
  * Run with: npx vitest run packages/docs-engine/src/render-mdx.test.ts
  */
-import { describe, expect, it } from 'vitest';
-import { raceWithAbort, renderMdxToMarkdown, renderMdxToMarkdownUnqueued, withPreamble } from './render-mdx';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { raceWithAbort, renderMdxToMarkdown, renderMdxToMarkdownUnqueued, setMdxRenderObserver, withPreamble, type MdxRenderObserver } from './render-mdx';
+
+afterEach(() => { setMdxRenderObserver(undefined); vi.restoreAllMocks(); });
+
+describe('MDX primary outcome observations', () => {
+  it('records malformed parses and primary recovery, excluding queued cancellation', async () => {
+    const sink = vi.fn();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setMdxRenderObserver(sink);
+    expect(await renderMdxToMarkdown('Broken <owner> placeholder', '/docs/broken.mdx')).toContain('placeholder');
+    expect(await renderMdxToMarkdown('# Recovered', '/docs/recovered.mdx')).toContain('Recovered');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(renderMdxToMarkdown('# Cancelled', '/docs/cancelled.mdx', controller.signal)).rejects.toThrow('cancelled');
+    expect(sink.mock.calls).toEqual([
+      ['mdx-render', { eligible: 1, applied: 0, reason: 'parse-failed' }],
+      ['mdx-render', { eligible: 1, applied: 1, reason: 'applied' }],
+    ]);
+    expect(warning).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves both primary output and searchable fallback when the observer throws', async () => {
+    const sink = vi.fn<MdxRenderObserver>(() => { throw new Error('storage unavailable'); });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setMdxRenderObserver(sink);
+    expect(await renderMdxToMarkdown('# Primary', '/docs/primary.mdx')).toContain('Primary');
+    expect(await renderMdxToMarkdown('Broken <owner> prose', '/docs/fallback.mdx')).toContain('prose');
+    expect(sink.mock.calls.map(call => call[1].applied)).toEqual([1, 0]);
+  });
+});
 
 const render = (mdx: string) => renderMdxToMarkdown(mdx, '/docs/test.mdx');
 

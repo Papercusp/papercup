@@ -1634,6 +1634,18 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     },
   );
 
+  it('distinguishes the root tools.call helper from a missing call verb in the tools namespace', () => {
+    const tools = [wiTool('tools:invoke', 'Dynamic tool dispatcher')] as never;
+    const help = buildFacadeHelp(['tools.call'], tools, new Set(['tools:invoke']));
+
+    expect(help.note).toContain('universal helper is on the ROOT object');
+    expect(help.note).toContain('use `tools.call("ns:verb", args)`');
+    expect(help.note).toContain('`tools.tools.call(...)` is a missing `call` verb');
+    expect(help.note).toContain('`tools.tools.invoke({ name, args })`');
+    expect(help.signatures).toContain('  call(toolName: string, args?: unknown): Promise<unknown>;');
+    expect(help.signatures).toContain('invoke(args?: {}): Promise<unknown>;');
+  });
+
   // EI-23783922587988483: EI-7677 bounded the unknown-NAMESPACE branch but left the unknown-VERB
   // branch (the far more common shape) rendering every signature in the namespace — measured 67,864
   // chars for ONE bad `work_items` ref, which overflows the per-result cap, spills to a scratch

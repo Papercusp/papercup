@@ -57,6 +57,26 @@ const SUMMARY_NO_DEAD = `Segments:
   Total: 1 segments, 335 pages (2.6MB), 32364 terms, 17143 docs
 `;
 
+// Actual empty event_key_registry_bm25 output on pg_textsearch 1.5.1 (2026-10-12).
+const SUMMARY_EMPTY = `Index: harness_shared.event_key_registry_bm25
+
+Corpus Statistics:
+  total_docs: 0
+  total_len: 0
+  docs_persisted: 0
+  len_persisted: 0
+
+Memtable:
+  terms: 0
+  documents: 0
+
+Segments:
+  (none)
+
+Index Size:
+  on-disk: 8192 bytes
+`;
+
 function report(over: Partial<Bm25MaintenanceReport> = {}): Bm25MaintenanceReport {
   return {
     ensure: [],
@@ -81,6 +101,24 @@ describe('parseBm25SegmentTotals', () => {
 
   it('treats every doc as alive when the Total line has no alive/dead part', () => {
     expect(parseBm25SegmentTotals(SUMMARY_NO_DEAD)).toEqual({ segments: 1, pages: 335, docs: 17143, alive: 17143 });
+  });
+
+  it('recognises the explicit zero-persisted-segment representation instead of reporting a healthy empty index as unreadable', () => {
+    const zero = { segments: 0, pages: 0, docs: 0, alive: 0 };
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY)).toEqual(zero);
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replaceAll('\n', '\r\n'))).toEqual(zero);
+    expect(estimateBm25LiveBytes(parseBm25SegmentTotals(SUMMARY_EMPTY)!)).toBe(0);
+  });
+
+  it('keeps in-memory documents separate from persisted segment totals', () => {
+    const memtableOnly = SUMMARY_EMPTY.replace('total_docs: 0', 'total_docs: 3').replace('documents: 0', 'documents: 3');
+    expect(parseBm25SegmentTotals(memtableOnly)).toEqual({ segments: 0, pages: 0, docs: 0, alive: 0 });
+  });
+
+  it('rejects contradictory or incomplete empty summaries', () => {
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('docs_persisted: 0', 'docs_persisted: 1'))).toBeNull();
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('  docs_persisted: 0\n', ''))).toBeNull();
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('  (none)', '  unknown format'))).toBeNull();
   });
 
   it('never reads a per-segment line as the total', () => {

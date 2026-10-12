@@ -86,6 +86,17 @@ describe('git-sync missed-interval alarm', () => {
     expect(s?.summary).toContain(`missed ${GIT_SYNC_MISSED_INTERVALS_ALARM + 1}`);
   });
 
+  it('does not infer absent commits from missed scheduler intervals alone', () => {
+    const signal = evaluateLivenessAlarm(
+      withDeploy({ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM + 1, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
+      null,
+    ).find((x) => x.key === 'git-sync-missed-intervals:papercusp');
+    expect(signal?.summary).toContain('Missed intervals measure the scheduler leg and do not establish commit progress');
+    expect(signal?.summary).toContain('an in-flight fire may have created local commits before routine completion');
+    expect(signal?.summary).toContain('health.git_sync_freshness');
+    expect(signal?.summary).not.toContain('nothing written there is being committed');
+  });
+
   it('is silent at the threshold and when unmeasured', () => {
     for (const data of [{ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM }, { gitSyncMaxMissedIntervals: null }, {}]) {
       expect(evaluateLivenessAlarm(withDeploy(data), null).some((x) => isGitSyncMissedIntervalsSignature(x.key))).toBe(false);

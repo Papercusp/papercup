@@ -777,6 +777,27 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
+  it('allows the exact :3170 staging-sync warning text in the carry note', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const out = await call({
+      note: 'staging candidate c571e22c9e @15:29Z contains it + all 6 fix files, blob-equal to staging)',
+    });
+
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true });
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(1);
+    expect(setLoopCarryNote).toHaveBeenCalledTimes(1);
+  });
+
   it('allows descriptive release-source validation prose in the carry note', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),

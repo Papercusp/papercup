@@ -1522,7 +1522,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   it("archives the actual candidate suite command and child completion clock", async () => {
     const sha = 'a'.repeat(40);
     const output = 'TEST_PASS_REUSE applied=false reason=disabled';
-    const { exec } = makeExec([{ code: 1, stdout: output }]);
+      const { exec, calls } = makeExec([{ code: 1, stdout: output }]);
     let clock = 100;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     try {
@@ -1535,7 +1535,21 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         cpTree, null, { candidate: sha });
       expect(result.testPassReuse?.suite).toEqual({ command: cfg.greenCmd,
         runGroupId: 'suite-clock-run', startedAtMs: 100, completedAtMs: 200 });
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT).toBe(cfg.checkpointRoot);
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_INTEGRATION_ROOT).toBe(cfg.integrationRoot);
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_RELEASE_ROOT).toBe(cfg.releaseRoot);
     } finally { now.mockRestore(); }
+  });
+
+  it("does not grant dirty-checkpoint restoration to a different candidate tree", async () => {
+    const { exec, calls } = makeExec([]);
+    await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, "base-sha", {
+      candidate: "b".repeat(40),
+    });
+
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT).toBeUndefined();
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_INTEGRATION_ROOT).toBeUndefined();
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_RELEASE_ROOT).toBeUndefined();
   });
 
   it("detects the optional lint:tsc script without requiring it from subject hives", () => {

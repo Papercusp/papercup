@@ -19,6 +19,7 @@ export interface RailMigrationCase {
 import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
 import { original, execute, source } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
+import { AGENT_ROUTING_MIGRATION_CASES } from './agent-routing-migration-cases';
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012'];
 
@@ -889,7 +890,275 @@ const workItemCallerCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+const improvementReadCases: RailMigrationCase[] = [{
+  id: 'improvement-tick-lock-original-reserve-query-contention-primary-and-body-error',
+  item: 'P-013', route: 'observation', mechanism: 'improvement-watchdog-read',
+  rowIds: [1, 2].map(ordinal => `log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    let failure: 'reserve' | 'query' | null = 'reserve', acquired = true, runs = 0, releases = 0, unlocks = 0;
+    const reserved = Object.assign(async (parts: TemplateStringsArray) => {
+      if (parts.join('').includes('pg_advisory_unlock')) { unlocks++; return []; }
+      if (failure === 'query') throw new Error('lock query unavailable');
+      return [{ ok: acquired }];
+    }, { release() { releases++; } });
+    const lock = execute(original('packages/operator-core/lib/harness/improvements/watchdog.ts', 'export async function withWatchdogTickLock', 'function'), {
+      tickLockSql: () => ({ reserve: async () => { if (failure === 'reserve') throw new Error('reserve unavailable'); return reserved; } }),
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('improvement-watchdog-read'); expect(row.scope).toBe('tick-lock');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    }, 'withWatchdogTickLock') as <T>(workspaceId: string, fn: () => Promise<T>) => Promise<{ ran: boolean; value?: T }>;
+    const work = async () => { runs++; return 42; };
+    expect(await lock('fixture', work)).toEqual({ ran: true, value: 42 });
+    failure = 'query'; expect(await lock('fixture', work)).toEqual({ ran: true, value: 42 });
+    failure = null; acquired = false; expect(await lock('fixture', work)).toEqual({ ran: false });
+    acquired = true; expect(await lock('fixture', work)).toEqual({ ran: true, value: 42 });
+    await expect(lock('fixture', async () => { runs++; throw new Error('body failed'); })).rejects.toThrow('body failed');
+    expect(runs).toBe(4); expect(releases).toBe(4); expect(unlocks).toBe(2);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'lock-reserve-failed'], [0, 'lock-query-failed'], [1, 'applied'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'improvement-watchdog-read', observations };
+  },
+}, {
+  id: 'improvement-key-dedup-original-failure-history-fallback-empty-primary-and-exclusions',
+  item: 'P-013', route: 'observation', mechanism: 'improvement-watchdog-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|runWatchdogTickBody|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { partitionSignalsByKnownKeys, watchdogKeyOf } = await import('../harness/improvements/watchdog');
+    const path = 'packages/operator-core/lib/harness/improvements/watchdog.ts';
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, signals = [{ source: 'red-test', key: 'one', title: 'One', body: 'detail', severity: 'major' }];
+    let priorSeenKeys: string[] = ['red-test:one'];
+    const run = () => execute(`let partition = { fresh: signals, knownOpen: [], staleResolved: [], standing: [] };\n${original(path, 'key-dup pre-filter failed', 'if')}\nreturn partition;`, {
+      workspaceId: 'fixture', signals, priorSeenKeys, refileEligible: new Set(), partitionSignalsByKnownKeys, watchdogKeyOf,
+      readKeyDups: async () => { if (fail) throw new Error('dup read unavailable'); return []; },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('improvement-watchdog-read'); expect(row.scope).toBe('key-dedup');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    });
+    expect(await run()).toMatchObject({ fresh: [], standing: signals });
+    priorSeenKeys = []; expect(await run()).toMatchObject({ fresh: signals, standing: [] });
+    fail = false; expect(await run()).toMatchObject({ fresh: signals, standing: [] });
+    signals = []; await run(); expect(observations).toHaveLength(3);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'key-dedup-read-failed'], [0, 'key-dedup-read-failed'], [1, 'applied'],
+    ]);
+    // The adjacent no-history path shares the same read-failure class and registry.
+    const history: ScoutReadObservation[] = [];
+    signals = [{ source: 'red-test', key: 'one', title: 'One', body: 'detail', severity: 'major' }]; fail = true;
+    const read = () => execute(`let recentTicks = [];\n${original(path, 'recentTicks = await readRecentTicks', 'if')}\nreturn recentTicks;`, {
+      workspaceId: 'fixture', signals, WATCHDOG_REFILE_HISTORY_LIMIT: 40,
+      readRecentTicks: async () => { if (fail) throw new Error('history unavailable'); return []; },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('improvement-watchdog-read'); expect(row.scope).toBe('tick-history');
+        expect(options.workspaceId).toBe('fixture'); history.push(row); return true;
+      },
+    });
+    expect(await read()).toEqual([]); fail = false; expect(await read()).toEqual([]);
+    signals = []; await read(); expect(history.map(row => row.applied)).toEqual([0, 1]);
+    return { route: 'observation', mechanism: 'improvement-watchdog-read', observations: [...observations, ...history] };
+  },
+}];
+
+const scoutCycleReadCases: RailMigrationCase[] = [{
+  id: 'scout-lens-recency-original-failure-empty-primary-workspace-capture-and-budget-exclusion',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts|ideate|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const ts = await import('typescript');
+    const file = source('packages/operator-core/lib/scout/cycle-deps.ts');
+    let statements: import('typescript').NodeArray<import('typescript').Statement> | undefined;
+    const visit = (node: import('typescript').Node): void => {
+      if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'ideate' && ts.isArrowFunction(node.initializer)
+        && ts.isBlock(node.initializer.body)) statements = node.initializer.body.statements;
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const declarations = statements!.filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(
+      entry => ['observationWorkspace', 'lensRecency'].includes(entry.name.getText(file)))).map(node => node.getText(file)).join('\n');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, capped = true, workspace = 'fixture';
+    const read = () => { workspace = 'fixture'; return execute(`${declarations}\nreturn lensRecency;`, {
+      capped, activeWorkspaceId: () => workspace,
+      readLensRecency: async () => { workspace = 'changed-during-read'; if (fail) throw new Error('ledger unavailable'); return {}; },
+      observeFallback: scoutReadSink('lens-recency', observations),
+    }); };
+    expect(await read()).toBeUndefined(); fail = false; expect(await read()).toEqual({});
+    capped = false; expect(await read()).toBeUndefined(); expect(observations).toHaveLength(2);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'lens-recency-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'scout-goal-flag-original-failure-disabled-primary-workspace-capture-and-deferred-exclusion',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts|route|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const ts = await import('typescript');
+    const file = source('packages/operator-core/lib/scout/cycle-deps.ts');
+    let statements: import('typescript').NodeArray<import('typescript').Statement> | undefined;
+    const visit = (node: import('typescript').Node): void => {
+      if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'route' && ts.isArrowFunction(node.initializer)
+        && ts.isBlock(node.initializer.body)) statements = node.initializer.body.statements;
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const text = statements!.filter(node => (ts.isIfStatement(node) && node.getText(file).startsWith('if (opts.deferDispatch)'))
+      || (ts.isVariableStatement(node) && node.declarationList.declarations.some(entry => ['goalEnabled', 'observationWorkspace'].includes(entry.name.getText(file))))
+      || (ts.isTryStatement(node) && node.getText(file).includes('goal-rail flag read failed'))).map(node => node.getText(file)).join('\n');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, enabled = false, deferDispatch = false, workspace = 'fixture';
+    const read = () => { workspace = 'fixture'; return execute(`${text}\nreturn goalEnabled;`, {
+      opts: { deferDispatch }, activeWorkspaceId: () => workspace,
+      require: (module: string) => module.endsWith('/server') ? { getFlag: async () => {
+        workspace = 'changed-during-read'; if (fail) throw new Error('flag unavailable'); return enabled;
+      } } : { FLAGS: { BLENDER_GOAL_RAIL: 'goal' } },
+      observeFallback: scoutReadSink('goal-rail', observations),
+    }); };
+    expect(await read()).toBe(true); fail = false; expect(await read()).toBe(false);
+    enabled = true; expect(await read()).toBe(true); deferDispatch = true; expect(await read()).toEqual([]);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'goal-rail-read-failed'], [1, 'applied'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}];
+
+const routeReadCases: RailMigrationCase[] = [{
+  id: 'role-launch-cwd-original-missing-fallback-missing-and-primary-directory',
+  item: 'P-013', route: 'observation', mechanism: 'agent-launch-readiness',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts|handler|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    let present = false, fallbackPresent = true;
+    const run = async () => {
+      const spec = { cwd: '/fixture/role' };
+      await execute(original('packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts', 'launch cwd', 'if'), {
+        spec, workspace: 'fixture', existsSync: (path: string) => path === '/fixture/role' ? present : fallbackPresent,
+        papercuspPathForWorkspace: (workspace: string) => { expect(workspace).toBe('fixture'); return '/fixture/workspace'; },
+        observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+          expect(mechanism).toBe('agent-launch-readiness'); expect(row.scope).toBe('role-cwd');
+          expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+        },
+      });
+      return spec.cwd;
+    };
+    expect(await run()).toBe('/fixture/workspace');
+    fallbackPresent = false; expect(await run()).toBe('/fixture/role'); // Preserve the old eventual-error behavior.
+    present = true; expect(await run()).toBe('/fixture/role');
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'launch-cwd-missing'], [0, 'launch-cwd-missing'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'agent-launch-readiness', observations };
+  },
+}, {
+  id: 'voice-spend-original-api-failure-zero-primary-cache-and-unconfigured-exclusion',
+  item: 'P-013', route: 'observation', mechanism: 'voice-spend-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|2'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, configured = true, cached: { secsUsed: number; source: string } | null = null, calls = 0;
+    const run = () => execute(`let secsUsed; let source;\n${original('packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts', 'if (cached)', 'if')}\nreturn { secsUsed, source };`, {
+      workspace: 'fixture', ym: '2026-10', now: 42, agentId: 'agent', cached,
+      readElevenLabsKey: async () => configured ? 'fixture-key' : null,
+      localMonthStartUnixSecs: () => 1,
+      fetchElSpendSecs: async () => { calls++; if (fail) throw new Error('API unavailable'); return 0; },
+      fetchPgFallbackSecs: async () => { if (configured && !cached) expect(observations.at(-1)?.applied).toBe(0); return 120; },
+      spendCache: { set() {} },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('voice-spend-read'); expect(options.workspaceId).toBe('fixture');
+        observations.push(row); return true;
+      },
+    });
+    expect(await run()).toEqual({ secsUsed: 120, source: 'pg-fallback' });
+    fail = false; expect(await run()).toEqual({ secsUsed: 0, source: 'elevenlabs' });
+    configured = false; expect(await run()).toEqual({ secsUsed: 120, source: 'pg-fallback' });
+    configured = true; cached = { secsUsed: 120, source: 'pg-fallback' };
+    expect(await run()).toEqual(cached); expect(calls).toBe(2);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'api-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'voice-spend-read', observations };
+  },
+}];
+
+const mdxRenderCases: RailMigrationCase[] = [{
+  id: 'mdx-render-original-failure-primary-and-production-host-observer',
+  item: 'P-013', route: 'observation', mechanism: 'mdx-render',
+  rowIds: ['log-only-fallback|packages/docs-engine/src/render-mdx.ts|renderMdxToMarkdownUnqueued|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    let observer: ((mechanism: string, row: typeof observations[number]) => void) | undefined;
+    await execute(original('apps/operator/bin/host-bootstrap.ts', 'setMdxRenderObserver(', 'expression'), {
+      setMdxRenderObserver: (sink: typeof observer) => { observer = sink; },
+      observeFallback: (mechanism: string, row: typeof observations[number]) => {
+        expect(mechanism).toBe('mdx-render'); observations.push(row); return true;
+      },
+    });
+    let fail = true;
+    const render = execute(original('packages/docs-engine/src/render-mdx.ts', 'export async function renderMdxToMarkdownUnqueued', 'function'), {
+      processor: { process: async () => { if (fail) throw new Error('malformed MDX'); return '# Primary'; } },
+      observeFallback: observer,
+      fallbackStripMdx: execute(original('packages/docs-engine/src/render-mdx.ts', 'function fallbackStripMdx', 'function'), {}, 'fallbackStripMdx'),
+    }, 'renderMdxToMarkdownUnqueued') as (raw: string, path: string) => Promise<string>;
+    expect(await render('---\ntitle: Broken\n---\nimport Thing from "thing";\nSearchable prose', '/docs/broken.mdx')).toBe('Searchable prose');
+    fail = false; expect(await render('# Primary', '/docs/primary.mdx')).toBe('# Primary');
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'parse-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'mdx-render', observations };
+  },
+}];
+
+const dispatchEnvelopeCases: RailMigrationCase[] = [{
+  id: 'capability-envelope-original-evaluator-failure-primary-host-wiring-and-exemptions',
+  item: 'P-013', route: 'observation', mechanism: 'capability-envelope',
+  rowIds: ['log-only-fallback|libs/generic/tooldef/src/dispatch-stack.ts|run|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const ts = await import('typescript');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const hostFile = source('packages/operator-core/lib/projected-tool-deps.ts');
+    const hostDeclaration = hostFile.statements.filter(ts.isVariableStatement)
+      .flatMap(node => [...node.declarationList.declarations])
+      .find(node => node.name.getText(hostFile) === 'PROJECTED_DEPS')!;
+    const hostInitializer = hostDeclaration.initializer!;
+    if (!ts.isObjectLiteralExpression(hostInitializer)) throw new Error('missing host deps object');
+    const hostProperty = hostInitializer.properties.find(node => node.name?.getText(hostFile) === 'observeFallback')!;
+    const host = execute(`const host = { ${hostProperty.getText(hostFile)} };`, {
+      observeFallback: (mechanism: string, row: typeof observations[number], options: { workspaceId: string }) => {
+        expect(mechanism).toBe('capability-envelope'); expect(options.workspaceId).toBe('fixture');
+        observations.push(row); return true;
+      },
+    }, 'host') as { observeFallback: NonNullable<import('@papercusp/tooldef').DispatchProjectedDeps['observeFallback']> };
+    const stepDeclaration = source('libs/generic/tooldef/src/dispatch-stack.ts').statements
+      .find(node => node.getText().startsWith('const capabilityEnvelopeStep:'))!.getText();
+    const step = execute(stepDeclaration, {}, 'capabilityEnvelopeStep') as {
+      run: (input: Record<string, unknown>) => Promise<{ ok: boolean; error?: { code: string } } | null>;
+    };
+    const deps: import('@papercusp/tooldef').DispatchProjectedDeps = { observeFallback: host.observeFallback };
+    const input = { tool: { capabilities: [] }, toolName: 'fixture:tool', input: {}, ctx: { workspaceId: 'fixture' }, deps };
+    expect(await step.run(input)).toBeNull();
+    deps.checkCapabilityEnvelope = () => null;
+    expect(await step.run(input)).toBeNull();
+    deps.checkCapabilityEnvelope = () => ({ decision: 'allow', posture: 'auto', applied: false });
+    expect(await step.run(input)).toBeNull();
+    expect(observations).toEqual([]);
+    deps.checkCapabilityEnvelope = () => { throw new Error('evaluator unavailable'); };
+    expect(await step.run(input)).toBeNull();
+    deps.checkCapabilityEnvelope = () => ({ decision: 'deny', posture: 'rejected', applied: true });
+    expect((await step.run(input))?.error?.code).toBe('capability_denied');
+    deps.checkCapabilityEnvelope = () => ({ decision: 'allow', posture: 'auto', applied: true });
+    expect(await step.run(input)).toBeNull();
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'evaluator-threw'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'capability-envelope', observations };
+  },
+}];
+
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',
@@ -997,6 +1266,7 @@ for (const kind of ['plan-item-claim', 'work-item-claim', 'work-item-replica'] a
   });
 }
 
+RAIL_MIGRATION_CASES.push(...AGENT_ROUTING_MIGRATION_CASES);
 RAIL_MIGRATION_CASES.push({
   id: 'storage-slug-original-resolver-error-and-verified-unpotted-recovery', item: 'P-011', route: 'observation',
   mechanism: 'work-item-storage-resolution',

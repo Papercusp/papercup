@@ -100,10 +100,10 @@ import {
   outputHasDeterministicFailureSignature,
   acquireCheckpointRunLock,
   checkpointRunLockSkipSummary,
-  activateScheduledCheckpointRunner,
+  activateCheckpointQualificationRunner,
   scheduledAttemptPinnedCandidate,
   scheduledAttemptPrewarmTarget,
-  startScheduledQualificationProgress,
+  startCheckpointQualificationProgress,
   checkpointRunIdFromScheduledEnv,
   createCheckpointTerminalEventBuffer,
   emitTerminalCheckpointResult,
@@ -3394,10 +3394,10 @@ describe("acquireCheckpointRunLock", () => {
     await buffer.flush(result, false);
     expect(emitted).toHaveLength(1);
   });
-  it("reports scheduled runner phases against the reserved attempt and stops before terminal output", async () => {
+  it("reports qualification runner phases against the reserved attempt and stops before terminal output", async () => {
     const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
-    const progress = startScheduledQualificationProgress({
+    const progress = startCheckpointQualificationProgress({
       target, attemptId: 'attempt-1', gateFireId: 'fire-1', runId: 'run-1', pid: process.pid,
     }, record, 60_000);
     progress.note('phase:suite');
@@ -3412,24 +3412,48 @@ describe("acquireCheckpointRunLock", () => {
     progress.note('phase:suite');
     expect(record).toHaveBeenCalledTimes(3);
   });
-  it("activates the exact scheduled reservation and refuses missing identity", async () => {
+  it("keeps qualification progress fresh while dependency preflight is pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
+      const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+      const progress = startCheckpointQualificationProgress({
+        target, attemptId: 'manual-attempt-1', gateFireId: 'manual-fire-1', runId: 'run-1', pid: process.pid,
+      }, record, 10);
+      let preflightFinished = false;
+      const preflight = new Promise<void>((resolve) => {
+        setTimeout(() => { preflightFinished = true; resolve(); }, 35);
+      });
+
+      await vi.advanceTimersByTimeAsync(35);
+      await preflight;
+      await progress.stop();
+
+      expect(preflightFinished).toBe(true);
+      expect(record).toHaveBeenCalled();
+      expect(record.mock.calls.some(([, input]) => (input as { phase: string }).phase === 'materializing')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("attaches manual or scheduled CLI processes to the exact qualification reservation", async () => {
     const reserve = vi.fn(async () => ({ status: 'updated' as const, transaction: {} as never }));
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
     const input = {
-      scheduled: true, target, attemptId: 'attempt-1', gateFireId: 'fire-1',
+      target, attemptId: 'attempt-1', gateFireId: 'fire-1',
       runId: 'run-1', candidate: 'candidate-1', pid: process.pid,
     };
-    const result = await activateScheduledCheckpointRunner(input, reserve);
+    const result = await activateCheckpointQualificationRunner(input, reserve);
     expect(result.status).toBe('updated');
     expect(reserve).toHaveBeenCalledWith(target, expect.objectContaining({
       attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1',
       candidate: 'candidate-1', pid: process.pid, pidIdentity: expect.stringMatching(/:\d+$/),
       started: true, evidenceRefs: ['checkpoint-run:run-1'],
     }));
-    expect((await activateScheduledCheckpointRunner({ ...input, gateFireId: undefined }, reserve)).status)
+    expect((await activateCheckpointQualificationRunner({ ...input, gateFireId: undefined }, reserve)).status)
       .toBe('missing-identity');
-    expect((await activateScheduledCheckpointRunner({ ...input, scheduled: false }, reserve)).status)
-      .toBe('not-scheduled');
+    expect((await activateCheckpointQualificationRunner({ ...input, attemptId: undefined }, reserve)).status)
+      .toBe('not-qualifying');
     expect(reserve).toHaveBeenCalledTimes(1);
   });
   it("a scheduled fire that joined a pinned attempt judges that attempt's candidate, not tip (WI-10002602)", async () => {
@@ -14253,6 +14277,7 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
         "lint:design-primitives",
         "lint:no-control-bytes",
         "lint:guard-reachability",
+        "lint:condition-rail",
         "lint:mock-cast-escape",
         "lint:timer-classification",
         "lint:no-raw-setinterval",

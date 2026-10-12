@@ -3330,10 +3330,9 @@ export function checkpointRunLockSkipSummary(lock: CheckpointRunLock): string {
   return `green-checkpoint skipped: another checkpoint process owns the run lock${pid}${detail}`;
 }
 
-/** Attach the CLI to the wrapper's pre-spawn reservation only on scheduled launches. */
-export async function activateScheduledCheckpointRunner(
+/** Attach a qualifying CLI process to its pre-spawn reservation. */
+export async function activateCheckpointQualificationRunner(
   input: {
-    scheduled: boolean;
     target: GateVerdictTarget | null;
     attemptId: string | undefined;
     gateFireId: string | undefined;
@@ -3342,8 +3341,8 @@ export async function activateScheduledCheckpointRunner(
     pid: number;
   },
   reserve: typeof reserveStoredQualificationRunner = reserveStoredQualificationRunner,
-): Promise<StoredQualificationMutation | { status: 'not-scheduled' | 'missing-identity' }> {
-  if (!input.scheduled) return { status: 'not-scheduled' };
+): Promise<StoredQualificationMutation | { status: 'not-qualifying' | 'missing-identity' }> {
+  if (!input.attemptId) return { status: 'not-qualifying' };
   if (!input.target || !input.attemptId || !input.gateFireId) return { status: 'missing-identity' };
   return reserve(input.target, {
     attemptId: input.attemptId,
@@ -3364,7 +3363,7 @@ export async function activateScheduledCheckpointRunner(
  * The scheduled launcher (release-actions) reuses a non-terminal logical attempt and starts this
  * CLI with no `--candidate`. Preflight then resolved the integration-branch tip, while the attempt
  * stayed pinned to its own candidate (the repair head a manual run reserved, or the candidate an
- * earlier fire recorded before a pre-suite no-verdict). `activateScheduledCheckpointRunner` refused
+ * earlier fire recorded before a pre-suite no-verdict). `activateCheckpointQualificationRunner` refused
  * that mismatch with `conflict`, the run crashed before any verdict, and every later fire re-joined
  * the same attempt, so the gate stayed wedged. A joined attempt's pinned candidate is therefore the
  * only candidate this run can activate against. Returns null (resolve as before) for a manual run,
@@ -3433,7 +3432,7 @@ export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint:
 }
 
 /** Keep the exact scheduled runner visibly alive through quiet suite phases. */
-export function startScheduledQualificationProgress(
+export function startCheckpointQualificationProgress(
   input: {
     target: GateVerdictTarget | null;
     attemptId: string | undefined;
@@ -20456,6 +20455,26 @@ export function realCheckpointDeps(
         // judge sidecar reviewBy by the frozen queue's clock, like the post-suite leg does.
         execution?.frozenCandidateOpenedAtMs,
       );
+      // This is the one candidate-suite call site. Grant dirty-checkout restoration only when
+      // the executed tree is the configured checkpoint checkout and that checkout is not the
+      // protected integration tree. The helper in affected-tests re-verifies Git's actual roots
+      // and the exact candidate SHA before any reset/clean, so a misconfigured or symlinked root
+      // fails open to running the full suite.
+      delete env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT;
+      delete env.PC_TEST_REUSE_INTEGRATION_ROOT;
+      delete env.PC_TEST_REUSE_RELEASE_ROOT;
+      const checkpointRoot = path.resolve(cfg.checkpointRoot);
+      const integrationRoot = path.resolve(cfg.integrationRoot);
+      const releaseRoot = path.resolve(cfg.releaseRoot);
+      if (
+        path.resolve(treeDir) === checkpointRoot &&
+        checkpointRoot !== integrationRoot &&
+        checkpointRoot !== releaseRoot
+      ) {
+        env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT = cfg.checkpointRoot;
+        env.PC_TEST_REUSE_INTEGRATION_ROOT = cfg.integrationRoot;
+        env.PC_TEST_REUSE_RELEASE_ROOT = cfg.releaseRoot;
+      }
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
       );
@@ -21266,6 +21285,9 @@ export function realCheckpointDeps(
                 // checkpoint source tree. Restore test artifacts to the verified ref before
                 // reuse checks; the opt-in must never be used on shared development checkouts.
                 restoreDirtyCheckpoint: true,
+                checkpointRoot: cfg.checkpointRoot,
+                integrationRoot: cfg.integrationRoot,
+                releaseRoot: cfg.releaseRoot,
               }).catch((e: unknown) => {
                 log(
                   `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
@@ -22449,6 +22471,10 @@ if (require.main === module) {
   const beginCheckpoint = async (): Promise<void> => {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
     let lock: CheckpointRunLock;
+    let qualificationProgress: ReturnType<typeof startCheckpointQualificationProgress> = {
+      note: () => {},
+      stop: async () => {},
+    };
     try {
       const pinnedCandidate = await scheduledAttemptPinnedCandidate({
         scheduled: Boolean(scheduledRunToken),
@@ -22479,6 +22505,31 @@ if (require.main === module) {
             ` for prewarm and suite selection (WI-10004180)`,
         );
       }
+      // Attach before beginCheckpointPreflight: dependency prewarm and generation publication can
+      // take minutes, so the periodic heartbeat must cover that work as well as the suite.
+      const qualificationTarget = gateVerdictTargetFromEnv();
+      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
+      const qualificationCandidate = candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? null;
+      const activation = await activateCheckpointQualificationRunner({
+        target: qualificationTarget,
+        attemptId: qualificationAttemptId,
+        gateFireId,
+        runId,
+        candidate: qualificationCandidate,
+        pid: process.pid,
+      });
+      if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        throw new Error(`checkpoint qualification runner attachment refused: ${activation.status}`);
+      }
+      qualificationProgress = startCheckpointQualificationProgress({
+        target: qualificationTarget,
+        attemptId: qualificationAttemptId,
+        gateFireId,
+        runId,
+        pid: process.pid,
+      });
+      stopQualificationProgress = qualificationProgress.stop;
+
       const preflight = await beginCheckpointPreflight(
         cfg,
         candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
@@ -22500,6 +22551,22 @@ if (require.main === module) {
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
       lock = preflight.lock;
+      if (lock.acquired) {
+        // The preflight may resolve the final executable candidate after dependency preparation.
+        // Refresh the reservation against that exact candidate before entering the suite.
+        const refreshed = await activateCheckpointQualificationRunner({
+          target: qualificationTarget,
+          attemptId: qualificationAttemptId,
+          gateFireId,
+          runId,
+          candidate: resolvedCandidateForRun,
+          pid: process.pid,
+        });
+        if (refreshed.status !== 'not-qualifying' && refreshed.status !== 'updated' && refreshed.status !== 'idempotent') {
+          lock.release();
+          throw new Error(`checkpoint qualification runner candidate refresh refused: ${refreshed.status}`);
+        }
+      }
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} FAILED before checkpoint lock:`,
@@ -22544,28 +22611,6 @@ if (require.main === module) {
           process.exit(1);
         });
     } else {
-      const activation = await activateScheduledCheckpointRunner({
-        scheduled: Boolean(scheduledRunToken),
-        target: gateVerdictTargetFromEnv(),
-        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
-        gateFireId,
-        runId,
-        candidate: resolvedCandidateForRun,
-        pid: process.pid,
-      });
-      if (activation.status !== 'not-scheduled' && activation.status !== 'updated' && activation.status !== 'idempotent') {
-        lock.release();
-        await emitCrashResult(new Error(`scheduled qualification runner activation refused: ${activation.status}`));
-        process.exit(1);
-      }
-      const qualificationProgress = startScheduledQualificationProgress({
-        target: scheduledRunToken ? gateVerdictTargetFromEnv() : null,
-        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
-        gateFireId,
-        runId,
-        pid: process.pid,
-      });
-      stopQualificationProgress = qualificationProgress.stop;
       // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
       // canceled on every normal exit path below, so it only ever fires when this run
       // misses its configured deadline (see armSelfWatchdog's doc comment).

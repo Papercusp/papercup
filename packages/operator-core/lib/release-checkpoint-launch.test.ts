@@ -793,6 +793,34 @@ describe('launchDetachedCheckpoint', () => {
     );
   });
 
+  it('EI-256693: preserves a caller-reserved runner ID through detached CLI and gate-fire recording', async () => {
+    const gateFireId = 'manual-runner-fire-1';
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const recordGateFire = vi.fn(async () => {});
+    const target = { workspaceId: 'test-workspace', installSlug: 'test-install' };
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', target, gateFireId },
+      spawnFn,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordGateFire,
+    );
+
+    child.emit('close', 0);
+    const result = await p;
+
+    expect(result.launched).toBe(true);
+    expect(result.argv).toContain(`--setenv=PAPERCUSP_GATE_FIRE_ID=${gateFireId}`);
+    expect(recordGateFire).toHaveBeenCalledWith(
+      target,
+      expect.objectContaining({ gateFireId }),
+    );
+  });
+
   it('resolves launched:false with a reason when the unit already exists (non-zero exit)', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child) as never;

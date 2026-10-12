@@ -2155,6 +2155,8 @@ export interface LaunchCheckpointOpts {
   target?: GateVerdictTarget | null;
   /** Bind the detached producer's verdict to one durable logical qualification attempt. */
   logicalAttemptId?: string;
+  /** Reuse the physical runner identity reserved by a caller before this detached launch. */
+  gateFireId?: string;
 }
 
 /**
@@ -2974,7 +2976,9 @@ export async function launchDetachedCheckpoint(
   // the P-001 fire ANCHOR (in the close handler below) and the argv env stamps can never
   // disagree about which gate the run records into.
   const verdictTarget = opts.target === undefined ? resolveHomeGateVerdictTarget() : opts.target;
-  const gateFireId = verdictTarget ? mintGateFireId() : undefined;
+  const gateFireId = verdictTarget
+    ? (isGateFireId(opts.gateFireId) ? opts.gateFireId : mintGateFireId())
+    : undefined;
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,

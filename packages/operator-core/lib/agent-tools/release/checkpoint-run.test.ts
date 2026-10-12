@@ -2398,11 +2398,15 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       expect.any(Object),
       expect.objectContaining({
         attemptId: expect.any(String),
-        runnerId: expect.stringMatching(/^manual:/),
+        runnerId: expect.any(String),
         candidate: 'aaaaaaaaaaaa',
       }),
     );
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ logicalAttemptId: expect.any(String) }));
+    const reservedRunnerId = (qualificationMocks.reserve.mock.calls[0]?.[1] as { runnerId: string }).runnerId;
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      logicalAttemptId: expect.any(String),
+      gateFireId: reservedRunnerId,
+    }));
     expect(b.ok).toBe(true);
     expect(b.logical_attempt_id).toEqual(expect.any(String));
   });

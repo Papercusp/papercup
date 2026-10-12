@@ -736,6 +736,11 @@ describe('frozen lineage carry policy', () => {
     "Carry text naming a staging sha as a 'candidate' is refused with frozen_candidate_lineage_violation.",
     // EI-25229988811743001 — "checkout" as a noun, in prose about the :3170 build directory.
     'It serves a candidate checkout (~/papercupai-workspace/papercusp-staging.generations/.candidate-<sha>) built from a LOCAL staging commit, so a locally committed fix reaches :3170 on the next staging-sync or dev:restart staging.',
+    // EI-25697802394733001 — the :3170 staging-sync generation's candidate can be blob-equal
+    // to staging without being selected as the green-checkpoint candidate.
+    'staging candidate c571e22c9e @15:29Z contains it + all 6 fix files, blob-equal to staging)',
+    // The detector must not infer candidate selection from a diagnostic sentence that reports a passing regression.
+    'Reproduced the reported :3170 staging-sync candidate text as a passing regression at the current staging HEAD',
     // EI-25198229614999965 — historical deletion correlation.
     'Root cause of candidate disappearance correlated to staging-sync prune 08:07:17Z, failed native precheck 08:07:14Z.',
   ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {

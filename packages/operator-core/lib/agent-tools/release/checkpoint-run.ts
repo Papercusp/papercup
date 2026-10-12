@@ -49,6 +49,7 @@ import {
 } from '../../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../../release-deploy-launch';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { mintGateFireId } from '../../release/gate-fire-ledger';
 import {
   attributeRetriageToRun,
   describeRefireBudget,
@@ -1719,7 +1720,9 @@ export default defineTool({
         ],
       };
     }
-    const physicalRunnerId = `manual:${logicalAttemptId}:${Date.now()}`;
+    // One identity spans the pre-spawn qualification reservation, the detached unit's
+    // gate-fire anchor, and the CLI's attached process heartbeat.
+    const physicalRunnerId = mintGateFireId();
     const qualificationReservation = await reserveStoredQualificationRunner(qualificationTarget, {
       attemptId: logicalAttemptId,
       runnerId: physicalRunnerId,
@@ -1808,7 +1811,7 @@ export default defineTool({
         extraEnv: routing.extraEnv, clearEnv: routing.clearEnv,
         target: verdictTarget, force: args.force, replaceStale: args.replaceStale,
         ...(launchCandidate ? { candidate: launchCandidate } : {}),
-        candidateSource: launchCandidateSource, logicalAttemptId,
+        candidateSource: launchCandidateSource, logicalAttemptId, gateFireId: physicalRunnerId,
       }),
       summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
         unit: effect.unit ?? null, reason: effect.reason ?? null, publishedVerdict: 'unknown' }),
