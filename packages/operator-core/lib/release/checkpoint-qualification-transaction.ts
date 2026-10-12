@@ -8,6 +8,7 @@
  * physical runner, blockers, and evidence machine-readable across processes.
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { promisify } from 'node:util';
@@ -15,6 +16,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
+import { dependencyGenerationInfraCode } from './admission-fix-precheck';
+import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -1452,6 +1455,80 @@ export function recoverQualificationScheduledTerminal(
   };
 }
 
+export interface HistoricalPreSuiteRecoveryInput {
+  attemptId: string;
+  runId: string;
+  candidate: string;
+  /** Hash of the COMPLETE archived producer log, never a tail or a summary. */
+  logSha256: string;
+  logPath: string;
+  log: string;
+  nowMs?: number;
+}
+
+function historicalRecoveryAttemptId(input: HistoricalPreSuiteRecoveryInput): string {
+  return createHash('sha256').update(JSON.stringify([
+    'historical-pre-suite-recovery-v1', input.attemptId, input.runId, input.candidate, input.logSha256,
+  ])).digest('hex').slice(0, 24);
+}
+
+/**
+ * Recover a historically misclassified dependency preflight by starting a DISTINCT attempt.
+ * Terminal verdicts remain immutable. Positive producer evidence must prove that this exact
+ * run failed before the checkpoint lock; a missing suite line alone proves nothing.
+ */
+export function recoverQualificationHistoricalPreSuiteError(
+  current: CheckpointQualificationTransaction,
+  input: HistoricalPreSuiteRecoveryInput,
+): QualificationTransition {
+  const conflict = (): QualificationTransition => ({ status: 'conflict', transaction: current });
+  if (!input.attemptId || !input.runId || !input.candidate || !input.logPath.trim() ||
+      !/^[a-f0-9]{64}$/.test(input.logSha256) ||
+      createHash('sha256').update(input.log).digest('hex') !== input.logSha256) return conflict();
+  const lines = input.log.split(/\r?\n/).filter(line => !isFixtureLogLine(line));
+  const markerLines = lines.filter(line => line.trimStart().startsWith(GREEN_CHECKPOINT_RESULT_MARKER));
+  if (markerLines.length !== 1) return conflict();
+  let result: Record<string, unknown>;
+  try {
+    result = JSON.parse(markerLines[0].trimStart().slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+  } catch { return conflict(); }
+  if (!result || result.runId !== input.runId || result.candidate !== input.candidate ||
+      result.reason !== 'error' || result.green !== null || result.advanced !== false ||
+      result.crashed !== true || result.recorded !== true) return conflict();
+  const prelock = lines.findIndex(line => line.startsWith('[green-checkpoint] FAILED before checkpoint lock:'));
+  const marker = lines.indexOf(markerLines[0]);
+  if (prelock < 0 || prelock >= marker ||
+      !lines[prelock].includes('dependency-generation.sh') ||
+      !dependencyGenerationInfraCode(null, lines.slice(0, marker).join('\n'))) return conflict();
+  if (lines.some(line => /checkpointing candidate|full suite output|TEST_FILE_RESULT|phase[=:]suite|suite (?:started|round)|running (?:affected|full) (?:test|suite)/i.test(line))) {
+    return conflict();
+  }
+  const attemptId = historicalRecoveryAttemptId(input);
+  const proofRef = `historical-pre-suite-recovery:${input.attemptId}:${input.runId}:${input.logSha256}`;
+  if (current.attemptId === attemptId && current.previousAttemptId === input.attemptId &&
+      current.evidenceRefs.includes(proofRef)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  if (current.attemptId !== input.attemptId || current.runId !== input.runId ||
+      current.candidate !== input.candidate || current.phase !== 'terminal' ||
+      current.outcome.kind !== 'code-inconclusive' || current.outcome.reason !== 'error' ||
+      current.currentPhysicalRunner !== null || current.pendingRepairHead) return conflict();
+  if ((current.consumedPhysicalRuns ?? []).some(run =>
+    run.phase === 'suite' || run.phase === 'isolating' || run.phase === 'delivering' ||
+    (run.outcome.kind !== 'pre-suite-no-verdict' &&
+      !(run.id === input.runId && run.candidate === input.candidate &&
+        run.outcome.kind === 'code-inconclusive' && run.outcome.reason === 'error')))) return conflict();
+  return beginQualificationTransaction(current, {
+    attemptId,
+    requiredAncestorSha: current.requiredAncestorSha,
+    declaredPaths: current.candidatePolicy.declaredPaths,
+    candidate: current.candidate,
+    repairHead: current.repairHead,
+    evidenceRefs: [...current.evidenceRefs, proofRef, `archived-log:${input.logPath}`, `log-sha256:${input.logSha256}`],
+    nowMs: input.nowMs,
+  });
+}
+
 /**
  * WI-10002454 (b): name the measurements behind a `settleQualificationTransaction` conflict —
  * each identity the producer carried that disagrees with the stored transaction, as
@@ -1761,6 +1838,8 @@ type StoredQualificationMutationOptions = {
   successorInput?: BeginQualificationInput | ((context: StoredQualificationRowContext) => BeginQualificationInput);
   /** A terminal pipeline result committed with the exact qualification transition. */
   terminalEvent?: { status: string; detail: Record<string, unknown> };
+  /** Preserve the predecessor snapshot atomically with an evidence-backed successor. */
+  historicalRecovery?: HistoricalPreSuiteRecoveryInput;
 };
 
 async function mutateStoredQualification(
@@ -1797,6 +1876,20 @@ async function mutateStoredQualification(
       const transition = await change(current, rowContext);
       if (transition.status !== 'updated') return transition;
       const persistTerminalEvent = async (): Promise<void> => {
+        if (options.historicalRecovery && current && transition.transaction.previousAttemptId === current.attemptId) {
+          await appendPipelineEvent({
+            workspaceId: target.workspaceId,
+            installSlug: target.installSlug,
+            kind: 'green_checkpoint',
+            status: 'qualification-recovered-pre-suite',
+            detail: {
+              attemptId: transition.transaction.attemptId,
+              predecessor: current,
+              logPath: options.historicalRecovery.logPath,
+              logSha256: options.historicalRecovery.logSha256,
+            },
+          }, tx as unknown as Sql, { required: true });
+        }
         if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
         // WI-10007497: stamp the logical attempt this event settles. The event commits in the same
         // row write as the transition, so the transaction's own id is the authoritative one; without
@@ -2153,6 +2246,35 @@ export function recordStoredQualificationScheduledTerminalRecovery(
     current ? recoverQualificationScheduledTerminal(current, input)
       : { status: 'unreadable', error: 'missing attempt' },
   );
+}
+
+/** Read the archive ourselves; validate and install its successor under the existing row lock. */
+export function recoverStoredQualificationHistoricalPreSuiteError(
+  target: GateVerdictTarget,
+  input: Omit<HistoricalPreSuiteRecoveryInput, 'log'>,
+): Promise<StoredQualificationMutation> {
+  let proof: HistoricalPreSuiteRecoveryInput;
+  try {
+    proof = { ...input, log: readFileSync(input.logPath, 'utf8') };
+  } catch (error) {
+    return Promise.resolve({ status: 'unreadable', error: error instanceof Error ? error.message : String(error) });
+  }
+  let successorInput: BeginQualificationInput;
+  return mutateStoredQualification(target, (current) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
+    if (transition.status === 'updated') {
+      successorInput = {
+        attemptId: transition.transaction.attemptId,
+        requiredAncestorSha: transition.transaction.requiredAncestorSha,
+        declaredPaths: transition.transaction.candidatePolicy.declaredPaths,
+        candidate: transition.transaction.candidate,
+        repairHead: transition.transaction.repairHead,
+        nowMs: transition.transaction.updatedAtMs,
+      };
+    }
+    return transition;
+  }, { successorInput: () => successorInput, historicalRecovery: proof });
 }
 
 /**
