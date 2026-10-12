@@ -64,6 +64,35 @@ export function sandboxEnvironment({ appUrl, databasePassword, secret, encryptio
   };
 }
 
+/** An allocation request is not cancelled by killing its Docker CLI client.
+ * Wait for the response before cleanup; a CLI timeout otherwise lets the daemon
+ * allocate a container after `docker rm` has already reported it absent.
+ * The threshold is a progress warning, not permission to abandon the request.
+ */
+export async function dockerAllocation(args, environment = {}, {
+  spawnChild = spawn, pendingAfterMs = 30_000,
+  onPending = () => console.error('[documenso-sandbox] Docker ' + args[0] + ' allocation still pending; waiting for its outcome before cleanup'),
+} = {}) {
+  const child = spawnChild('docker', args, { env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', data => { stdout = (stdout + data).slice(-2_000_000); });
+  child.stderr.on('data', data => { stderr = (stderr + data).slice(-2000); });
+  const warning = setTimeout(onPending, pendingAfterMs);
+  try {
+    return await new Promise((done, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => {
+        if (code === 0) return done(stdout.trim());
+        for (const value of Object.values(environment).filter(value => value.length >= 8)) {
+          stderr = stderr.split(value).join('[redacted]');
+        }
+        reject(new Error('Documenso sandbox Docker allocation failed: ' + args[0] + ' ' +
+          (signal ?? code) + (stderr ? ': ' + stderr : '')));
+      });
+    });
+  } finally { clearTimeout(warning); }
+}
+
 export async function runSandbox({ image, command }) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
@@ -86,12 +115,13 @@ export async function runSandbox({ image, command }) {
     }
     return result.stdout.trim();
   }
-  function start(name, args, environment = {}) {
-    // docker run can create the container and then fail during port/mount setup.
-    // Record the owned name before dispatch so cleanup covers partial allocation.
+  async function start(name, args, environment = {}) {
+    // Create and start have different effects. Await the allocation response
+    // before starting; a later start timeout cannot allocate another container.
     containers.push(name);
-    docker(['run', '--pull=never', '-d', '--name', name, '--label', 'papercusp.test.owner=' + network,
+    await dockerAllocation(['create', '--pull=never', '--name', name, '--label', 'papercusp.test.owner=' + network,
       '--network', network, ...args], environment);
+    if (!stopped) docker(['start', name]);
   }
   async function cleanup() {
     for (const name of [...containers].reverse()) {
@@ -99,6 +129,14 @@ export async function runSandbox({ image, command }) {
     }
     if (networkCreated) spawnSync('docker', ['network', 'rm', network], { stdio: 'ignore', timeout: 10_000 });
     if (directory) rmSync(directory, { recursive: true, force: true });
+    // Ignored removal exit codes are not evidence of cleanup. Verify only this
+    // run's ownership label; refuse a success result when a resource remains.
+    const remainingContainers = docker(['ps', '-aq', '--filter', 'label=papercusp.test.owner=' + network]);
+    const remainingNetworks = docker(['network', 'ls', '-q', '--filter', 'label=papercusp.test.owner=' + network]);
+    if (remainingContainers || remainingNetworks) {
+      throw new Error('Documenso sandbox cleanup incomplete for ' + network + ': containers=' +
+        (remainingContainers || 'none') + ', networks=' + (remainingNetworks || 'none'));
+    }
   }
   function stop() {
     stopped = true;
@@ -132,14 +170,16 @@ export async function runSandbox({ image, command }) {
     // The container runs as a non-root user; the enclosing directory stays private.
     chmodSync(join(directory, 'cert.p12'), 0o644);
     networkCreated = true;
-    // Match the upstream supported bridge setup. On this host, creating a
-    // published-mail container on an --internal bridge blocks before allocation
-    // (>35s), while this bridge creates in <1s. SMTP still terminates at MailDev.
-    docker(['network', 'create', '--label', 'papercusp.test.owner=' + network, network]);
+    // Match upstream's supported bridge. SMTP terminates at MailDev. Allocation
+    // may take longer than the CLI warning threshold on either bridge type.
+    await dockerAllocation(['network', 'create', '--label', 'papercusp.test.owner=' + network, network]);
+    if (stopped) return 130;
     const databasePassword = secret();
-    start(database, ['--network-alias', 'database', '-e', 'POSTGRES_USER', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB', PG_IMAGE],
+    await start(database, ['--network-alias', 'database', '-e', 'POSTGRES_USER', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB', PG_IMAGE],
       { POSTGRES_USER: 'documenso', POSTGRES_PASSWORD: databasePassword, POSTGRES_DB: 'documenso' });
-    start(mail, ['--network-alias', 'mail', '-p', '127.0.0.1::1080', MAIL_IMAGE]);
+    if (stopped) return 130;
+    await start(mail, ['--network-alias', 'mail', '-p', '127.0.0.1::1080', MAIL_IMAGE]);
+    if (stopped) return 130;
     const mailUrl = 'http://127.0.0.1:' + loopbackPort(docker(['port', mail, '1080/tcp']));
     for (let attempt = 0; ; attempt++) {
       if (stopped) return 130;
@@ -161,7 +201,7 @@ export async function runSandbox({ image, command }) {
     const appUrl = 'http://127.0.0.1:' + port;
     const environment = sandboxEnvironment({ appUrl, databasePassword, signingPassword,
       secret: secret(), encryptionKey: secret(), secondaryKey: secret() });
-    start(app, ['-p', '127.0.0.1:' + port + ':3000', '--mount',
+    await start(app, ['-p', '127.0.0.1:' + port + ':3000', '--mount',
       'type=bind,src=' + join(directory, 'cert.p12') + ',dst=/opt/documenso/cert.p12,readonly',
       ...Object.keys(environment).flatMap(key => ['-e', key]), image], environment);
     const deadline = Date.now() + 180_000;
