@@ -44,6 +44,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { Sql } from 'postgres';
+import type { Embedder } from '@papercusp/search';
+import { embedderProvenanceOf } from '../embedder-mode-registry';
 
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
@@ -84,6 +86,26 @@ import {
 } from './bm25-hybrid-recall';
 
 const PLAN = 'bm25-lexical-search-evoke-adoption-2026-10-10';
+
+/** Cache vectors outside timing without wrapping the engine's registered embedder identity. */
+export function createPrecomputedHybridQueries(embedder: Embedder) {
+  const vectors = new Map<string, Promise<number[]>>();
+  const vectorFor = (text: string, signal?: AbortSignal): Promise<number[]> => {
+    let vector = vectors.get(text);
+    if (!vector) {
+      vector = embedder(text, signal);
+      vectors.set(text, vector);
+      vector.catch(() => {
+        if (vectors.get(text) === vector) vectors.delete(text);
+      });
+    }
+    return vector;
+  };
+  return {
+    vectorFor,
+    forSearch: async (text: string) => ({ embedder, queryVector: await vectorFor(text) }),
+  };
+}
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -444,16 +466,12 @@ async function main(): Promise<number> {
     console.error('[r13] REFUSING TO RUN: the query embedder is unavailable, so hybrid search would run lexical-only.');
     return 2;
   }
-  const vectors = new Map<string, Promise<number[]>>();
-  const sharedEmbedder = (text: string, signal?: AbortSignal): Promise<number[]> => {
-    let v = vectors.get(text);
-    if (!v) {
-      v = embedder(text, signal);
-      vectors.set(text, v);
-      v.catch(() => vectors.delete(text));
-    }
-    return v;
-  };
+  const queryEmbeddingProfile = embedderProvenanceOf(embedder);
+  if (!queryEmbeddingProfile?.profileId) {
+    console.error('[r13] REFUSING TO RUN: the query embedder has no registered exact embedding profile.');
+    return 2;
+  }
+  const preparedQueries = createPrecomputedHybridQueries(embedder);
 
   // ---- Sample: three disjoint sets per source (D-025) ------------------------
   // P (paired) is the first --pairs derivable candidates, the same sample the bench drew
@@ -487,7 +505,7 @@ async function main(): Promise<number> {
   // ---- Embed every timed query before timing (D-021): otherwise the arm that runs first in a
   // pair also pays for the embedding, which lands in its R-18 latency. Warm-up queries are
   // untimed and embed on demand.
-  const embeddedQueries = await warmQueryEmbeddings([...pairs, ...steadyPairs], (q) => sharedEmbedder(q));
+  const embeddedQueries = await warmQueryEmbeddings([...pairs, ...steadyPairs], preparedQueries.vectorFor);
   console.log(`[r13] embedded ${embeddedQueries} distinct queries before timing`);
 
   // The lexical statements' queryids, refreshed from the full snapshot before each timed pass;
@@ -517,6 +535,9 @@ async function main(): Promise<number> {
   const measure = async (p: PairResult, arm: Arm, attribute = true): Promise<ArmObservation> => {
     const source = SEARCH_SOURCES.find((s) => s.name === p.source);
     if (!source) throw new Error(`search source ${p.source} is not registered`);
+    // The engine resolves floors and the stored-space filter from the original function.
+    // A cached-vector closure loses that identity and silently empties the vector leg.
+    const preparedQuery = await preparedQueries.forSearch(p.query);
     process.env[envVar] = arm === 'bm25' ? '1' : '0';
     const engine = await rank.lexicalEngine(pg, SOURCE_TABLES[p.source as SourceName]);
     const track = attribute && lexicalIds.length > 0;
@@ -540,7 +561,7 @@ async function main(): Promise<number> {
       scopeFilter: null,
       limit: RECALL_K,
       mode: 'hybrid',
-      embedder: sharedEmbedder,
+      ...preparedQuery,
       embedTimeoutMs: 30_000,
       // Mirrors search:semantic (SEARCH_SEMANTIC_DEFER_HIGHLIGHT), so R-18 times the
       // tool's path; it includes the final-page highlight hydration.
@@ -626,6 +647,7 @@ async function main(): Promise<number> {
       latencyMs,
       engine,
       hits: results.length,
+      semanticCandidates: legs.semantic.candidates,
       ...(Object.keys(legMs).length ? { legMs } : {}),
       ...(attrib ? { attrib } : {}),
       dumpActive: dump,
@@ -748,6 +770,7 @@ async function main(): Promise<number> {
     commit,
     workspaceId,
     database: server ?? null,
+    queryEmbeddingProfile,
     flagEnvVar: envVar,
     arms: ARMS,
     recallK: RECALL_K,

@@ -54,6 +54,8 @@ export interface ArmObservation {
   latencyMs: number;
   /** The lexical engine the seam (`lexicalEngine`) reported for this arm and source. */
   engine: 'bm25' | 'legacy';
+  /** Actual post-floor vector candidates entering fusion; absent on historical artifacts. */
+  semanticCandidates?: number;
   /** Length of the fused list; 0 is a zero-hit query. */
   hits: number;
   /**
@@ -365,6 +367,8 @@ export interface PairResult {
 
 export interface ArmSummary {
   scored: number;
+  /** Sum of measured vector contributions, or null when any observation lacks the measurement. */
+  semanticCandidates: number | null;
   hitsAtK: number;
   recallAtK: number;
   mrrAtK: number;
@@ -490,6 +494,9 @@ export function summarizeArm(pairs: readonly PairResult[], arm: Arm): ArmSummary
   ]));
   return {
     scored: observed.length,
+    semanticCandidates: observed.length && observed.every(o =>
+      Number.isInteger(o.semanticCandidates) && o.semanticCandidates! >= 0)
+      ? observed.reduce((sum, o) => sum + o.semanticCandidates!, 0) : null,
     hitsAtK,
     recallAtK: observed.length ? hitsAtK / observed.length : 0,
     mrrAtK: observed.length ? mrr / observed.length : 0,
@@ -537,6 +544,10 @@ export function summarizeSource(
   const warmRepeatReadCalls = warmObs.length ? warmObs.filter((a) => a.pgBlksRead > 0).length : null;
   const arms = { legacy: summarizeArm(mine, 'legacy'), bm25: summarizeArm(mine, 'bm25') };
   const reasons: string[] = [];
+  for (const arm of ARMS) {
+    if (arms[arm].semanticCandidates === null) reasons.push(`${arm} semantic contribution was not measured`);
+    else if (arms[arm].semanticCandidates === 0) reasons.push(`${arm} semantic leg contributed no candidates; this is not a hybrid comparison`);
+  }
   const incomplete = mine.filter((p) => !p.arms.legacy || !p.arms.bm25).length;
   if (incomplete > 0) reasons.push(`${incomplete} pair(s) were not scored by both arms`);
   if (mine.length < minPairs) reasons.push(`only ${mine.length} pair(s); at least ${minPairs} are needed`);

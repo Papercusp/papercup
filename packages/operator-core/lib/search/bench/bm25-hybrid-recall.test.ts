@@ -4,8 +4,12 @@
  * must read `invalid`, never `pass` — that is exactly what the first R-13 instrument
  * (memory/bench/ab-live-recall-cli.ts over memory_canonical) would have produced.
  */
-import { describe, expect, it } from 'vitest';
-import { captureCallWindow, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
+import { describe, expect, it, vi } from 'vitest';
+import { configureSearchDefaults, resetSearchDefaults, runHybridSearch, searchDefaultsHost,
+  type PgHandle, type SearchSource } from '@papercusp/search';
+import { installSearchDefaults } from '../configure-search-defaults';
+import { stampEmbedderMode } from '../embedder-mode-registry';
+import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
   LATENCY_P95_CEILING_MS,
@@ -41,8 +45,48 @@ import {
 } from './bm25-hybrid-recall';
 
 function obs(rank: number | null, engine: 'bm25' | 'legacy', latencyMs = 10, hits = 10): ArmObservation {
-  return { rank, engine, latencyMs, hits };
+  return { rank, engine, latencyMs, hits, semanticCandidates: 1 };
 }
+
+it('keeps the registered embedding space in both arms while computing each query once', async () => {
+  const previousPolicy = searchDefaultsHost();
+  installSearchDefaults();
+  const embedder = vi.fn(async () => [1, 0]);
+  stampEmbedderMode(embedder, 'gemma', 'embeddinggemma-300m@v1');
+  const queries = createPrecomputedHybridQueries(embedder);
+  const source: SearchSource = {
+    name: 'work_item',
+    lexical: async () => [],
+    embedding: async (p) => {
+      // As on the production prose surfaces, an unknown query space fails closed.
+      if (p.embeddingProfile?.profileId !== 'embeddinggemma-300m@v1') return [];
+      expect(p.qVec).toBe('[1,0]');
+      return [{ key: 'work_item:vector-target', score: 0.99, row: {
+        source: 'work_item', source_id: 'vector-target', scope: 'harness:test',
+        excerpt: 'the target is found only by the vector leg', score: 0.99,
+      } }];
+    },
+  };
+  const context = { caller: 'bench:bm25-hybrid-recall', sql: {} as PgHandle,
+    query: 'fixed query', workspaceId: 'test', scopeFilter: null, limit: 10, mode: 'hybrid' as const };
+  try {
+    const cachedVector = await queries.vectorFor(context.query);
+    // Distinguishing control: the old cached closure produced a vector but lost its identity.
+    const broken = await runHybridSearch([source], { ...context,
+      embedder: async () => cachedVector, queryVector: cachedVector });
+    expect(broken.results).toEqual([]);
+    expect(broken.legs.semantic.sourceCalls[0]?.rows).toBe(0);
+    for (const _arm of ['legacy', 'bm25']) {
+      const prepared = await queries.forSearch(context.query);
+      const result = await runHybridSearch([source], { ...context, ...prepared });
+      expect(result.results.map(r => r.source_id)).toEqual(['vector-target']);
+      expect(result.legs.semantic.sourceCalls[0]?.rows).toBe(1);
+    }
+    expect(embedder).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previousPolicy) configureSearchDefaults(previousPolicy); else resetSearchDefaults();
+  }
+});
 
 function pair(i: number, legacyRank: number | null, bm25Rank: number | null, source = 'work_item'): PairResult {
   return {
@@ -76,6 +120,26 @@ describe('saved tail replay selection', () => {
 });
 
 describe('summarizeArm', () => {
+  it('rejects a lexical-only or unmeasured source comparison even if its recall would pass', () => {
+    const pairs = Array.from({ length: 20 }, (_, i) => pair(i, 1, 1));
+    for (const p of pairs) p.arms.bm25!.semanticCandidates = 0;
+    const empty = summarizeSource('work_item', pairs);
+    expect(empty.arms.bm25.semanticCandidates).toBe(0);
+    expect(empty.verdict).toBe('invalid');
+    expect(empty.latency.verdict).toBe('invalid');
+    expect(empty.reasons.join(' ')).toContain('semantic leg contributed no candidates');
+    for (const p of pairs) delete p.arms.bm25!.semanticCandidates;
+    const unknown = summarizeSource('work_item', pairs);
+    expect(unknown.arms.bm25.semanticCandidates).toBeNull();
+    expect(unknown.verdict).toBe('invalid');
+    expect(unknown.reasons.join(' ')).toContain('semantic contribution was not measured');
+    // Individual vector misses are permitted when this source/arm actually exercises hybrid fusion.
+    for (const p of pairs) p.arms.bm25!.semanticCandidates = 0;
+    pairs[0].arms.bm25!.semanticCandidates = 3;
+    const measured = summarizeSource('work_item', pairs);
+    expect(measured.arms.bm25.semanticCandidates).toBe(3);
+    expect(measured.verdict).toBe('pass');
+  });
   it('counts recall@K, MRR and zero-hits over the observed pairs', () => {
     const pairs = [pair(0, 1, 3), pair(1, null, 1), pair(2, RECALL_K + 1, null)];
     pairs[2]!.arms.bm25 = obs(null, 'bm25', 10, 0);
