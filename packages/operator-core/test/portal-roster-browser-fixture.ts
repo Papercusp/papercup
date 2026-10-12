@@ -126,6 +126,7 @@ type PortalRosterBrowserInput = {
   cookieName: string; ownToken: string; foreignToken: string;
   shortcuts?: boolean;
   settings?: boolean;
+  harnessSettings?: boolean;
   prompts?: boolean;
   overview?: boolean;
   projectHistory?: boolean;
@@ -174,7 +175,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'dev' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'harnessSettings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'dev' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -402,7 +403,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
-  ` : input.docs || input.brainstorm || input.prs || input.insights || input.testing ? `
+  ` : input.docs || input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -413,19 +414,20 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const panel = React.createElement(React.Fragment, null,
-      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.testing ? 'testing' : input.insights ? 'insights' : input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
-      ${input.brainstorm || input.prs ? 'React.createElement(Toaster)' : 'null'},
+      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.harnessSettings ? 'settings' : input.testing ? 'testing' : input.insights ? 'insights' : input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
+      ${input.brainstorm || input.prs || input.harnessSettings ? 'React.createElement(Toaster)' : 'null'},
       ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'});
     function Fixture() {
       const [open, setOpen] = React.useState(true);
       const [, setSlug] = useQueryState('slug', parseAsString);
       return React.createElement(React.Fragment, null,
         ${input.testing ? `React.createElement('button', { 'data-testid': 'testing-switch-pot', onClick: () => setSlug(new URL(location.href).searchParams.get('nextPot')) }, 'Switch test pot'),` : ''}
+        ${input.harnessSettings ? `React.createElement('button', { 'data-testid': 'settings-switch-pot', onClick: () => setSlug(new URL(location.href).searchParams.get('nextPot')) }, 'Switch settings pot'),` : ''}
         ${input.insights ? "React.createElement('button', { onClick: () => setOpen(!open) }, open ? 'Close Insights' : 'Open Insights')," : ''}
         open ? panel : null);
     }
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      ${input.brainstorm || input.prs || input.insights || input.testing ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
+      ${input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -522,7 +524,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
+  const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings
     || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard || input.dev);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
@@ -631,7 +633,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
-    ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.brainstorm
+    ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.harnessSettings
+    ? '/apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx' : input.brainstorm
     ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.prs
     ? '/apps/operator/app/harness/PrsTab.tsx' : input.insights
     ? '/apps/operator/app/harness/insights/InsightsTab.tsx' : input.testing
@@ -1040,6 +1043,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
       ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
     if (options.brainstormHydration || options.prsRead || options.insightsRead) url.searchParams.set('slug', input.selected);
+    if (input.harnessSettings) {
+      url.searchParams.set('app', 'settings'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('nextPot', input.neighbor); url.searchParams.set('ws', 'preflight-workspace');
+    }
     if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
     if (input.stats) { url.searchParams.set('app', 'stats'); url.searchParams.set('slug', input.selected); }
     if (options.gitRead) {
@@ -1089,8 +1096,16 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
       : input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
-      : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
+      : page.getByRole('region', { name: input.harnessSettings ? 'ADV Settings workspace' : input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (input.harnessSettings) {
+      await page.getByRole('heading', { name: 'Settings — ' + input.selected, exact: true }).waitFor();
+      await page.getByText(/Schema-driven per-harness settings/).waitFor();
+      await page.getByTestId('settings-switch-pot').click();
+      await page.getByRole('heading', { name: 'Settings — ' + input.neighbor, exact: true }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get('slug'), input.neighbor);
+      assert.equal(await page.getByRole('heading', { name: 'Settings — ' + input.selected, exact: true }).count(), 0);
+    }
     if (options.devRead) {
       const filter = () => page!.getByPlaceholder('Filter tools…', { exact: true });
       const invoke = () => page!.getByRole('button', { name: 'Invoke', exact: true });
@@ -1574,7 +1589,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
           `Brainstorm preflight must compile the real ${module} module`);
       }
     }
-    return { sourceCount: built.originals.size, mounted: true, ...(options.brainstormHydration
+    return { sourceCount: built.originals.size, mounted: true,
+      ...(input.harnessSettings ? { settingsBlueprintDefault: true, settingsScopeSwitch: true } : {}), ...(options.brainstormHydration
       ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}),
       ...(options.prsRead ? { prsRead: true, filterKeyboard: true, detailReload: true, readRecovery: true,
         subjectPreserved: true, noOutwardWrites: true, providerUsed: false } : {}),
