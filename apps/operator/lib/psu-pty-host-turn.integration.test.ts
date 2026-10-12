@@ -93,7 +93,7 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
-it.each(['retry', 'late-native'] as const)(
+it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
   'keeps a repainting tagged wake pending until native submission: %s',
   async (scenario) => {
     const root = mkdtempSync(join(tmpdir(), 'pty-submit-ack-'));
@@ -110,6 +110,7 @@ it.each(['retry', 'late-native'] as const)(
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
       "let line='',crs=0;process.stdout.write('READY\\n');",
+      "if(process.env.TEST_ACCEPT==='rearmed-late-native'){const busy=setInterval(()=>process.stdout.write('BUSY\\n'),15);setTimeout(()=>clearInterval(busy),400);}",
       "process.stdin.on('data',data=>{for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
       "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
@@ -124,6 +125,8 @@ it.each(['retry', 'late-native'] as const)(
       env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: scenario === 'rearmed-late-native' ? '100' : '3000',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
@@ -140,6 +143,9 @@ it.each(['retry', 'late-native'] as const)(
       // pending. The child's first Enter only repaints its unchanged composer.
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
       expect(await waitForOutput(captured, 'REPAINT:1')).toBe(true);
+      if (scenario === 'rearmed-late-native') {
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'wake-rearm-queued' }));
+      }
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
       const deadline = Date.now() + 4000;
       while (Date.now() < deadline && !events().some((row) =>
