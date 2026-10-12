@@ -102,8 +102,11 @@ export const WORK_ITEMS_GET_BUDGET_MS = 30_000;
  */
 export const WORK_ITEMS_GET_MAX_CONCURRENCY = 4;
 
-const WORK_ITEMS_GET_SLOW_ENRICHMENT_MS = 1_000;
+const WORK_ITEMS_GET_SLOW_STAGE_MS = 1_000;
 const WORK_ITEMS_GET_MAX_ENRICHMENT_DIAGNOSTICS = 32;
+const WORK_ITEMS_GET_MAX_BASE_READ_DIAGNOSTICS = 32;
+
+type WorkItemsGetBaseReadStatus = 'pending' | 'fulfilled' | 'rejected';
 
 type WorkItemsGetEnrichmentStage = {
   name: string;
@@ -114,6 +117,8 @@ type WorkItemsGetEnrichmentStage = {
 
 type WorkItemsGetStageSample = {
   baseReadMs: number | null;
+  baseReadStatus: WorkItemsGetBaseReadStatus | null;
+  baseReadStartedAtMs: number | null;
   enrichmentMs: number | null;
   enrichmentStartedAtMs: number | null;
   enrichmentStages: WorkItemsGetEnrichmentStage[];
@@ -708,6 +713,12 @@ const workItemsGetReadSchema = z.object({
   budgetMs: z.number().int().positive(),
   elapsedMs: z.number().int().nonnegative(),
   baseReadMaxMs: z.number().int().nonnegative().nullable(),
+  baseReadDiagnostics: z.array(z.object({
+    id: z.string(),
+    status: z.enum(['pending', 'fulfilled', 'rejected']),
+    elapsedMs: z.number().int().nonnegative(),
+  })).optional(),
+  baseReadDiagnosticsOmitted: z.number().int().nonnegative().optional(),
   enrichmentMaxMs: z.number().int().nonnegative().nullable(),
   enrichmentDiagnostics: z.array(z.object({
     id: z.string(),
@@ -734,6 +745,7 @@ export default defineTool({
   guidance: {
     when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
+      "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
       "`read.enrichmentMaxMs` includes timed-out and cancelled per-item enrichment up to the shared deadline. When present, `read.enrichmentDiagnostics` identifies pending/rejected enrichment legs and completed legs taking at least 1000ms; `enrichmentDiagnosticsOmitted` counts entries beyond the 32-row cap. These are diagnostics only and carry no arguments or result bodies.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
@@ -965,12 +977,26 @@ export default defineTool({
     let projectedBatch: Awaited<ReturnType<typeof getWorkItemsByIds>> | typeof WORK_ITEMS_GET_TIMEOUT | null = null;
     let projectedBatchError: unknown = null;
     let projectedBatchElapsedMs: number | null = null;
+    let projectedBatchStatus: WorkItemsGetBaseReadStatus | null = null;
+    let projectedBatchStartedAtMs: number | null = null;
     const projectedAmbiguity = { ambiguous: [] as WorkItemIdAmbiguousError[] };
     if (canBatchProjectedBaseRead) {
       const batchStartedAt = Date.now();
+      projectedBatchStartedAtMs = batchStartedAt;
+      projectedBatchStatus = 'pending';
       const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (batchStartedAt - bulkStartedAt));
+      const projectedRead = getWorkItemsByIds(ids, args.harness, sourceReadOptions, projectedAmbiguity).then(
+        (value) => {
+          projectedBatchStatus = 'fulfilled';
+          return value;
+        },
+        (error) => {
+          projectedBatchStatus = 'rejected';
+          throw error;
+        },
+      );
       const bounded = await withWorkItemsGetBudget(
-        getWorkItemsByIds(ids, args.harness, sourceReadOptions, projectedAmbiguity),
+        projectedRead,
         { timeoutMs: remainingBudgetMs, signal: ctx.signal, label: 'work_items:get:projected-batch' },
       );
       projectedBatchElapsedMs = Date.now() - batchStartedAt;
@@ -990,6 +1016,8 @@ export default defineTool({
         const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (Date.now() - bulkStartedAt));
         const stage: WorkItemsGetStageSample = {
           baseReadMs: null,
+          baseReadStatus: null,
+          baseReadStartedAtMs: null,
           enrichmentMs: null,
           enrichmentStartedAtMs: null,
           enrichmentStages: [],
@@ -997,6 +1025,8 @@ export default defineTool({
         stageSamples[index] = stage;
         if (canBatchProjectedBaseRead) {
           stage.baseReadMs = projectedBatchElapsedMs;
+          stage.baseReadStatus = projectedBatchStatus;
+          stage.baseReadStartedAtMs = projectedBatchStartedAtMs;
           stage.enrichmentMs = 0;
           if (projectedBatch === WORK_ITEMS_GET_TIMEOUT) {
             if (projectedBatchError) {
@@ -1050,6 +1080,8 @@ export default defineTool({
         // projection-only form: do not call the low-level window reader, whose
         // COUNT(*) OVER query must clamp LIMIT 0 to one row to retain its total.
         const baseReadStartedAt = Date.now();
+        stage.baseReadStartedAtMs = baseReadStartedAt;
+        stage.baseReadStatus = 'pending';
         const workItemRead = await cachedRead<
           Awaited<ReturnType<typeof getWorkItem>> | typeof WORK_ITEMS_GET_TIMEOUT
         >(
@@ -1072,14 +1104,31 @@ export default defineTool({
             deadlineMs: remainingBudgetMs,
             onDeadline: () => WORK_ITEMS_GET_TIMEOUT,
           },
-          () =>
-            readDetail
-              ? getWorkItemDetail(id, args.harness)
-              : sourceReadOptions
-                ? getWorkItem(id, args.harness, sourceReadOptions)
-                : getWorkItem(id, args.harness),
-        );
+          async () => {
+            try {
+              const row = await (
+                readDetail
+                  ? getWorkItemDetail(id, args.harness)
+                  : sourceReadOptions
+                    ? getWorkItem(id, args.harness, sourceReadOptions)
+                    : getWorkItem(id, args.harness)
+              );
+              stage.baseReadStatus = 'fulfilled';
+              return row;
+            } catch (error) {
+              stage.baseReadStatus = 'rejected';
+              throw error;
+            }
+          },
+        ).catch((error) => {
+          if (stage.baseReadStatus === 'pending') stage.baseReadStatus = 'rejected';
+          throw error;
+        });
         stage.baseReadMs = Date.now() - baseReadStartedAt;
+        if (workItemRead !== WORK_ITEMS_GET_TIMEOUT && stage.baseReadStatus === 'pending') {
+          // A cache hit (or immediate stale value) did not need the source factory.
+          stage.baseReadStatus = 'fulfilled';
+        }
         if (workItemRead === WORK_ITEMS_GET_TIMEOUT) return WORK_ITEMS_GET_TIMEOUT;
         const workItem = workItemRead;
         if (workItem && args.attachments) {
@@ -1606,6 +1655,23 @@ export default defineTool({
       const measured = values.filter((value): value is number => value !== null);
       return measured.length ? Math.max(...measured) : null;
     };
+    const availability = env.results.map((result) => (result as { availability?: string }).availability);
+    const baseReadDiagnostics = stageSamples.flatMap((sample, index) => {
+      const status = canBatchProjectedBaseRead ? projectedBatchStatus : sample?.baseReadStatus;
+      if (!sample || !status) return [];
+      const elapsedMs =
+        sample.baseReadMs ??
+        Math.max(0, Date.now() - (sample.baseReadStartedAtMs ?? bulkStartedAt));
+      if (
+        !availability.includes('unavailable') &&
+        status === 'fulfilled' &&
+        elapsedMs < WORK_ITEMS_GET_SLOW_STAGE_MS
+      ) {
+        return [];
+      }
+      return [{ id: ids[index]!, status, elapsedMs }];
+    }).sort((a, b) => b.elapsedMs - a.elapsedMs);
+    const boundedBaseReadDiagnostics = baseReadDiagnostics.slice(0, WORK_ITEMS_GET_MAX_BASE_READ_DIAGNOSTICS);
     const enrichmentDiagnostics = stageSamples.flatMap((sample, index) =>
       (sample?.enrichmentStages ?? [])
         .map((stage) => ({
@@ -1615,11 +1681,10 @@ export default defineTool({
           elapsedMs: stage.elapsedMs ?? Math.max(0, Date.now() - stage.startedAtMs),
         }))
         .filter((stage) =>
-          stage.status !== 'fulfilled' || stage.elapsedMs >= WORK_ITEMS_GET_SLOW_ENRICHMENT_MS,
+          stage.status !== 'fulfilled' || stage.elapsedMs >= WORK_ITEMS_GET_SLOW_STAGE_MS,
         ),
     ).sort((a, b) => b.elapsedMs - a.elapsedMs);
     const boundedEnrichmentDiagnostics = enrichmentDiagnostics.slice(0, WORK_ITEMS_GET_MAX_ENRICHMENT_DIAGNOSTICS);
-    const availability = env.results.map((result) => (result as { availability?: string }).availability);
     const read = {
       schemaVersion: 'work-items-get-read-v1' as const,
       mode: sourceSelection ? 'projected' as const : 'complete' as const,
@@ -1633,6 +1698,14 @@ export default defineTool({
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
       elapsedMs: Date.now() - bulkStartedAt,
       baseReadMaxMs: maxMeasured(stageSamples.map((sample) => sample?.baseReadMs ?? null)),
+      ...(boundedBaseReadDiagnostics.length > 0
+        ? {
+            baseReadDiagnostics: boundedBaseReadDiagnostics,
+            ...(baseReadDiagnostics.length > boundedBaseReadDiagnostics.length
+              ? { baseReadDiagnosticsOmitted: baseReadDiagnostics.length - boundedBaseReadDiagnostics.length }
+              : {}),
+          }
+        : {}),
       enrichmentMaxMs: maxMeasured(stageSamples.map((sample) => sample?.enrichmentMs ?? null)),
       ...(boundedEnrichmentDiagnostics.length > 0
         ? {
