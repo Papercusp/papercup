@@ -1,7 +1,7 @@
 /** One-shot worker entry: all synchronous Codex-home filesystem work runs here. */
 import { parentPort, workerData } from 'node:worker_threads';
-import { executeCodexHomeMaterializerJob } from './role-codex-home';
-import type { CodexHomeMaterializerJob } from './role-codex-home-offload';
+import { executeCodexHomeMaterializerJob } from './role-codex-home.ts';
+import type { CodexHomeMaterializerJob } from './role-codex-home-offload.ts';
 
 if (!parentPort) throw new Error('role-codex-home.worker must run as a worker thread');
 
