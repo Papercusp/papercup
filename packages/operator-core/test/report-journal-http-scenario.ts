@@ -36,13 +36,13 @@ export async function measureReportJournalScenario(o: Options) {
   const { sql } = getOrgPg();
   const requests: Array<Record<string, unknown>> = [];
 
-  async function invoke(name: string, args: Record<string, unknown>, owner: string) {
+  async function invoke(name: string, args: Record<string, unknown>, callerSid: string) {
     const response = await fetch(o.base + '/api/agent-mcp/run-tool', { method: 'POST', headers: o.headers,
-      body: JSON.stringify({ name, args, harness: o.harness, callerSid: owner }),
+      body: JSON.stringify({ name, args, harness: o.harness, callerSid }),
       signal: AbortSignal.timeout(30_000) });
     const envelope = await response.json() as any;
     await writeFile(join(o.evidenceDir, `request-${requests.length}.json`),
-      JSON.stringify({ name, args, owner, status: response.status, envelope }), { flag: 'wx' });
+      JSON.stringify({ name, args, callerSid, status: response.status, envelope }), { flag: 'wx' });
     assert.equal(response.status, 200, JSON.stringify(envelope));
     assert.equal(envelope.ok, true, JSON.stringify(envelope));
     assert.notEqual(envelope.result?.isError, true, JSON.stringify(envelope));
@@ -54,7 +54,13 @@ export async function measureReportJournalScenario(o: Options) {
 
   async function turn(text: string) {
     const session = randomUUID();
-    const owner = 'private-reports-journal-' + session;
+    const callerSid = 'private-reports-journal-' + session;
+    // The HTTP transport qualifies the caller's identity. Read that identity
+    // through the same public route used by publication instead of guessing it.
+    const identity = await invoke('coord:whoami', {}, callerSid);
+    assert.equal(typeof identity.ownerId, 'string', JSON.stringify(identity));
+    assert.ok(identity.ownerId.trim(), 'the private actor must have a canonical owner');
+    const owner: string = identity.ownerId;
     const timestamp = new Date().toISOString();
     const path = join(dir, `rollout-${session}.jsonl`);
     await writeFile(path, JSON.stringify({ timestamp, type: 'response_item', payload: {
@@ -62,12 +68,12 @@ export async function measureReportJournalScenario(o: Options) {
     } }) + '\n', { flag: 'wx' });
     const turnRef = `${session}:${timestamp}`;
     const key = 'unpublished-report:' + createHash('sha256').update(turnRef).digest('hex');
-    return { session, owner, timestamp, path, turnRef, key };
+    return { session, callerSid, owner, timestamp, path, turnRef, key };
   }
   const ingest = (input: Awaited<ReturnType<typeof turn>>) => invoke('journal:record-turn', {
     owner: input.owner, agent: 'codex', session_id: input.session,
     source_kind: 'codex', transcript_path: input.path, harness: o.harness,
-  }, input.owner);
+  }, input.callerSid);
   const observations = (input: Awaited<ReturnType<typeof turn>>) => sql`
     SELECT issue_id, state, created_by, body, payload FROM harness_shared.engineer_issues
     WHERE payload->>'watchdogKey' = ${input.key}`;
@@ -102,8 +108,10 @@ export async function measureReportJournalScenario(o: Options) {
   assert.equal((await observations(unpublished)).length, 1);
 
   const published = await turn(reportBody);
-  const publication = await invoke('reports:publish', publicationArgs, published.owner);
+  const publication = await invoke('reports:publish', publicationArgs, published.callerSid);
   assert.equal(publication.ok, true, JSON.stringify(publication));
+  assert.equal(publication.origin.author_owner_id, published.owner,
+    'publication must retain the author measured on the same HTTP transport');
   const publicationRows = await sql`SELECT author_owner_id, body_md FROM harness_shared.report_library
     WHERE workspace_id = ${o.workspace} AND author_owner_id = ${published.owner}`;
   assert.equal(publicationRows.length, 1, 'suppression control must use the same real author');

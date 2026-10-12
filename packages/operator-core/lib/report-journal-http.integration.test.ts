@@ -21,6 +21,8 @@ it('files an unpublished Reports observation through real isolated HTTP journal 
       'packages/operator-core/lib/turn-end-tracking.ts', 'packages/operator-core/lib/turn-end-tracking-io.ts',
       'packages/operator-core/lib/turn-journal.ts', 'packages/operator-core/lib/turn-journal-store.ts',
       'packages/operator-core/lib/search/session-ingest.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/whoami.ts',
+      'packages/operator-core/lib/agent-tools/coordination/identity.ts',
       'packages/operator-core/lib/agent-tools/reports/publish.ts', 'packages/operator-core/lib/report-library.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
@@ -53,7 +55,9 @@ it('files an unpublished Reports observation through real isolated HTTP journal 
         unpublished: { journalRows: 1, observationRows: 1 },
         deduped: true, publishedSuppressed: true, progressSuppressed: true });
       expect(receipt.requests.map((request: any) => request.name)).toEqual([
-        'journal:record-turn', 'journal:record-turn', 'reports:publish', 'journal:record-turn', 'journal:record-turn',
+        'coord:whoami', 'journal:record-turn', 'journal:record-turn',
+        'coord:whoami', 'reports:publish', 'journal:record-turn',
+        'coord:whoami', 'journal:record-turn',
       ]);
       console.info('REPORT_JOURNAL_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
