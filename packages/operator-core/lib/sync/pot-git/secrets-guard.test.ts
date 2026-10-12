@@ -94,6 +94,14 @@ describe('secrets-guard rules', () => {
         path: 'packages/operator-core/lib/dao-hr/onboarding.integration.test.ts',
         relative: '../../dao-hr/onboarding.integration.test.ts',
       },
+      {
+        path: 'packages/operator-core/lib/dao-hr/contracts-esign.integration.test.ts',
+        relative: '../../dao-hr/contracts-esign.integration.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/dao-hr/contracts-esign.test.ts',
+        relative: '../../dao-hr/contracts-esign.test.ts',
+      },
     ];
     for (const file of files) {
       const content = readFileSync(join(__dirname, file.relative), 'utf8');
