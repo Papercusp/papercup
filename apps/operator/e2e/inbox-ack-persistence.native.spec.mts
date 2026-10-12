@@ -51,6 +51,23 @@ function findMessage(result: unknown, msgId: string): AttentionRecord | null {
     item.id === expectedId || item.ref?.msgId === msgId) ?? null;
 }
 
+function sentMessageId(result: Record<string, unknown>, label: string): string {
+  // coord:send uses the shared bulk envelope even for a single message.
+  // Keep direct fields for older callers, but read the per-message result
+  // when the current envelope is returned.
+  const firstResult = Array.isArray(result.results)
+    ? result.results[0] as Record<string, unknown> | undefined
+    : undefined;
+  if (firstResult?.ok === false) {
+    throw new Error(`${label} send failed: ${JSON.stringify(firstResult)}`);
+  }
+  const id = firstResult?.msg_id ?? firstResult?.msgId ?? result.msg_id ?? result.msgId;
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error(`${label} send returned no message id: ${JSON.stringify(result).slice(0, 1200)}`);
+  }
+  return id;
+}
+
 function testIdSelector(testId: string): string {
   return `[data-testid=${JSON.stringify(testId)}]`;
 }
@@ -76,7 +93,9 @@ test('native Inbox acknowledgement removes only the selected message after refre
   expect(resolve(receiptPath), 'native acceptance evidence must use a separate file from reporter JSONL receipts')
     .not.toBe(resolve(reporterReceiptPath));
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
-  expect(process.env.VERIFY_TAURI_ISOLATED_SEED).toBe('ready');
+  // verify-tauri-headless exports the verified post-boot seed as
+  // VERIFY_TAURI_SEED; ISOLATED_SEED is only its input option.
+  expect(process.env.VERIFY_TAURI_SEED).toBe('ready');
   expect(runWorkspace).toBe('papercusp-workspace');
   expect(runHarness).toBe('papercusp');
   expect(sourceRef).toMatch(/^[0-9a-f]{40,64}$/i);
@@ -152,8 +171,8 @@ test('native Inbox acknowledgement removes only the selected message after refre
     });
     const selectedMessage = await send(selectedSummary);
     const neighborMessage = await send(neighborSummary);
-    const selectedMsgId = String(selectedMessage.msg_id ?? selectedMessage.msgId ?? '');
-    const neighborMsgId = String(neighborMessage.msg_id ?? neighborMessage.msgId ?? '');
+    const selectedMsgId = sentMessageId(selectedMessage, 'selected fixture');
+    const neighborMsgId = sentMessageId(neighborMessage, 'neighbor fixture');
     expect(selectedMsgId).toBeTruthy();
     expect(neighborMsgId).toBeTruthy();
     expect(neighborMsgId).not.toBe(selectedMsgId);
