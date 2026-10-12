@@ -103,6 +103,27 @@ async function main() {
     return { status: response.status, body: await response.json().catch(() => null) };
   };
 
+  // What Settings → Integrations renders: GET /api/user/integrations/tickets (the same
+  // ticketIntegrationsOverview the page's `integrations.tickets` sync query resolves). The
+  // provider registry is built per request, so the SAME running host must list a package
+  // right after its install, with no restart (R-1: "without an app update").
+  const integrations = async () => {
+    const response = await fetch(base + '/api/user/integrations/tickets', { headers, signal: AbortSignal.timeout(30_000) });
+    const body = await response.json().catch(() => null) as any;
+    assert.equal(response.status, 200, 'integrations overview: ' + JSON.stringify(body).slice(0, 1_500));
+    const providerIds: string[] = (body?.providers ?? []).map((p: { id: string }) => p.id);
+    const packNames: string[] = [...(body?.triggerPacks ?? []), ...(body?.availableTriggerPacks ?? [])]
+      .map((p: { pluginName?: string; name?: string }) => p.pluginName ?? p.name ?? '');
+    return { providerIds, packNames };
+  };
+  const visible = (view: { providerIds: string[]; packNames: string[] }, listing: (typeof LISTINGS)[number]) =>
+    listing.providerId ? view.providerIds.includes(listing.providerId) : view.packNames.includes(listing.name);
+  const before = await integrations();
+  for (const listing of LISTINGS) {
+    assert.equal(visible(before, listing), false, `${listing.name}: already on Settings → Integrations before its install`);
+  }
+  console.log('CUPBOARD_LISTING_INSTALL_PHASE integrations-before ' + JSON.stringify(before));
+
   const installs = [];
   for (const listing of LISTINGS) {
     const request = { listingId: listing.listingId };
@@ -117,10 +138,14 @@ async function main() {
     const result = second.body;
     assert.equal(result?.ok, true, `${listing.name}: install result not ok`);
     assert.equal(result.name, listing.name, `${listing.name}: installed package name`);
-    // The provenance is what makes this an install FROM THE LISTING rather than from a URL.
-    assert.equal(result.provenance?.hadListing, true, `${listing.name}: provenance does not record a listing`);
-    assert.equal(result.provenance?.listing?.listingId, listing.listingId, `${listing.name}: provenance listing id`);
-    assert.equal(result.provenance?.listing?.githubUrl, listing.githubUrl, `${listing.name}: provenance source repo`);
+    // The request carried ONLY the listing id, so the storefront resolved the source: the
+    // install came from the Cupboard listing, not from a caller-supplied URL. A signed
+    // provenance receipt exists only for listings that pin a release (content hash or
+    // commit+tree pin); when one is returned it must name this listing.
+    assert.equal(result.source, listing.githubUrl, `${listing.name}: the listing resolved to a different source repo`);
+    if (result.provenance) {
+      assert.equal(result.provenance.listing?.listingId, listing.listingId, `${listing.name}: provenance listing id`);
+    }
     // Independent of the response: the package landed inside the private home, with its manifest.
     const installedTo = realpathSync(result.installedTo);
     assert.ok(!relative(realpathSync(privateHome), installedTo).startsWith('..'),
@@ -129,15 +154,23 @@ async function main() {
     assert.equal(manifest.name, listing.name, `${listing.name}: installed manifest name`);
     assert.equal(manifest.distribution, 'cupboard', `${listing.name}: installed manifest distribution`);
     installs.push({ name: listing.name, listingId: listing.listingId, firstStatus: first.status,
-      secondStatus: second.status, version: result.version, contentSource: result.provenance.contentSource,
-      contentFingerprint: result.provenance.contentFingerprint, githubUrl: result.provenance.listing.githubUrl,
+      secondStatus: second.status, version: result.version, source: result.source,
+      provenance: result.provenance ? { contentSource: result.provenance.contentSource,
+        contentFingerprint: result.provenance.contentFingerprint } : null,
       providerId: result.provider?.id ?? null, triggerPack: Boolean(result.triggerPack) });
     console.log('CUPBOARD_LISTING_INSTALL_PHASE installed ' + listing.name);
   }
 
+  const after = await integrations();
+  for (const listing of LISTINGS) {
+    assert.equal(visible(after, listing), true, `${listing.name}: not on Settings → Integrations after its install `
+      + JSON.stringify(after));
+  }
+  console.log('CUPBOARD_LISTING_INSTALL_PHASE integrations-after ' + JSON.stringify(after));
+
   await stopHost();
   console.log('CUPBOARD_LISTING_INSTALL_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
-    hostStopped: true, bundleSha256, health, installs }));
+    hostStopped: true, bundleSha256, health, installs, integrations: { before, after } }));
 }
 
 try { await main(); }

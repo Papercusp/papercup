@@ -27,6 +27,8 @@ it.runIf(process.env.PAPERCUSP_TEST_CUPBOARD_LIVE === '1')(
         'packages/operator-core/lib/cupboard/plugin-listings.ts',
         'packages/operator-core/lib/cupboard/resolve-listing-by-kind.ts',
         'packages/operator-core/lib/endpoint-route/routes/cupboard-install-plugin.ts',
+        'packages/operator-core/lib/endpoint-route/routes/user/ticket-integrations.ts',
+        'packages/operator-core/lib/integrations/ticket-integrations.ts',
         'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
       execute: async (observe, evidenceDir) => {
@@ -56,10 +58,16 @@ it.runIf(process.env.PAPERCUSP_TEST_CUPBOARD_LIVE === '1')(
           bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), health: { service: 'papercusp-operator' } });
         expect(receipt.installs).toEqual([
           expect.objectContaining({ name: 'slack', listingId: 'ccd90bf0-f04c-486d-93cd-2c84d8241efe', firstStatus: 409,
-            secondStatus: 200, githubUrl: 'https://github.com/Papercusp/papercusp-slack', providerId: 'slack' }),
+            secondStatus: 200, source: 'https://github.com/Papercusp/papercusp-slack', providerId: 'slack' }),
           expect.objectContaining({ name: '@papercupai/bug-triage', listingId: '508f85df-cb5a-4e92-9fdb-26c26eafd00f',
-            firstStatus: 409, secondStatus: 200, githubUrl: 'https://github.com/Papercusp/papercusp-bug-triage', triggerPack: true }),
+            firstStatus: 409, secondStatus: 200, source: 'https://github.com/Papercusp/papercusp-bug-triage', triggerPack: true }),
         ]);
+        // Settings → Integrations (its overview route) lists neither before the installs and both after,
+        // from the same running host: no restart, no app update.
+        expect(receipt.integrations.before.providerIds).not.toContain('slack');
+        expect(receipt.integrations.before.packNames).not.toContain('@papercupai/bug-triage');
+        expect(receipt.integrations.after.providerIds).toContain('slack');
+        expect(receipt.integrations.after.packNames).toContain('@papercupai/bug-triage');
         console.info('CUPBOARD_LISTING_INSTALL_VERIFIED ' + JSON.stringify(receipt.installs));
       },
     });
