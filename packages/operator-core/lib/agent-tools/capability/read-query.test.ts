@@ -63,6 +63,18 @@ describe('querySavedResult', () => {
     expect(r.nextFromLine).not.toBeNull();
   });
 
+  // R-10: a query is cheaper than paging — the bytes it returns are a small fraction of the
+  // saved result it searched (paging the same reference would return every byte).
+  it('returns under 1% of the bytes of the large saved result it searched', () => {
+    const line = `${'x'.repeat(5000)} needle ${'y'.repeat(5000)}`;
+    const body = Array.from({ length: 200 }, (_, i) => (i % 50 === 0 ? line : `filler ${i} ${'z'.repeat(9990)}`)).join('\n');
+    const r = querySavedResult(buf(body), { query: 'needle' });
+    const returned = r.matches.reduce((n, m) => n + m.text.length + m.before.join('\n').length + m.after.join('\n').length, 0);
+    expect(r.matchCount).toBe(4);
+    expect(returned).toBeGreaterThan(0);
+    expect(returned).toBeLessThan(Buffer.byteLength(body) / 100);
+  });
+
   it('falls back to plain text when a body that looks like JSON does not parse', () => {
     expect(searchableView(buf('{ not json\nsecond')).view).toBe('text');
   });
