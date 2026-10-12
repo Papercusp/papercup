@@ -34,11 +34,39 @@ const {
   reportIpcAssertionTimeout,
   useIpcCarriesFetch,
   resolveHarnessSyncTransport,
+  reportSyncTransportFallback,
 } = await import("./HarnessSyncProvider");
 
 beforeEach(() => {
   invoke.mockReset();
   syncMetrics.__resetForTests();
+});
+
+describe('reportSyncTransportFallback', () => {
+  it('uses the existing local ingress and sends only typed counts and transport names', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetch);
+    reportSyncTransportFallback('browser-sync-transport', {
+      eligible: 1, applied: 0, reason: 'preferred-unavailable', scope: 'SSE',
+      ...{ message: 'secret', url: '/private' },
+    });
+    await Promise.resolve();
+    expect(fetch).toHaveBeenCalledWith('/api/desktop/telemetry-report', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'fallback-observation', payload: {
+        source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1, applied: 0,
+        reason: 'preferred-unavailable', scope: 'SSE',
+      } }),
+    });
+  });
+
+  it('does not reject into the sync caller when local diagnostics are unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    expect(() => reportSyncTransportFallback('browser-sync-transport', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'SSE',
+    })).not.toThrow();
+    await Promise.resolve();
+  });
 });
 
 afterEach(() => {

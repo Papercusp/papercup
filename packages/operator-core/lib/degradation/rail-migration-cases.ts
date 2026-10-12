@@ -17,12 +17,92 @@ export interface RailMigrationCase {
 }
 
 import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
-import { original, execute } from './host-startup-migration-cases';
+import { original, execute, source } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
 
 const remainingSyncCases: RailMigrationCase[] = [{
+  id: 'browser-transport-original-hook-production-provider-and-sanitized-ingress', item: 'P-011', route: 'observation',
+  mechanism: 'browser-sync-transport',
+  rowIds: ['log-only-fallback|libs/generic/sync/src/fallback/useTransportFallback.ts|useTransportFallback|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const packets: Array<{ payload: unknown }> = [];
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const report = execute(original('apps/operator/providers/HarnessSyncProvider.tsx', 'export function reportSyncTransportFallback', 'function'), {
+      fetch: async (_url: string, init: { body: string }) => { packets.push(JSON.parse(init.body)); },
+    }, 'reportSyncTransportFallback');
+    const element = (type: unknown, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: { ...props, children } });
+    const provider = execute(original('apps/operator/providers/HarnessSyncProvider.tsx', 'export function HarnessSyncProvider', 'function'), {
+      React: { createElement: element }, QueryClientProvider: 'query', SyncProvider: 'sync', queryClient: {},
+      useState: (initial: () => unknown) => [initial()], useEffect() {}, useFlag: () => false,
+      useIpcCarriesFetch: () => false, resolveMaxInFlightFetches: () => 2,
+      resolveHarnessSyncTransport: () => ({ restEndpoint: '/api/zero-harness' }),
+      FLAGS: { SYNC_RESOURCE_DELTA: 'delta' }, DEFAULT_SSE_DRIFT_REPAIR_MS: 180000,
+      PERSIST_EXCLUDE_QUERY_NAMES: [], reportSyncTransportFallback: report,
+    }, 'HarnessSyncProvider') as (props: object) => { props: { children: Array<{ props: object }> } };
+    const syncProps = provider({ children: null }).props.children[0].props;
+    let hookOptions: Record<string, unknown> = {};
+    const sync = execute(original('libs/generic/sync/src/SyncProvider.tsx', 'export function SyncProvider', 'function'), {
+      React: { createElement: element }, PendingSyncAdapter: 'pending', normalizeSyncType: (value: string) => value,
+      useState: () => [false], useEffect() {},
+      useTransportFallback: (opts: Record<string, unknown>) => { hookOptions = opts; return {}; },
+    }, 'SyncProvider') as (props: object) => unknown;
+    sync(syncProps);
+    expect(hookOptions.observeFallback).toBe(report);
+
+    // Execute the original hook with deterministic lifecycle/timer dependencies.
+    // Its jsdom suite separately runs these branches through React itself.
+    let clock = 0, nextTimer = 0, refIndex = 0, effectIndex = 0, state = 'SSE';
+    const refs: Array<{ current: unknown }> = [];
+    const effects: Array<{ deps: unknown[]; cleanup?: () => void }> = [];
+    const timers = new Map<number, { at: number; fn: () => void }>();
+    const hookPath = 'libs/generic/sync/src/fallback/useTransportFallback.ts';
+    const order = source(hookPath).statements.find((node) => node.getText().startsWith('const FALLBACK_ORDER'))!.getText();
+    const hook = execute(`${order}\n${original(hookPath, 'export function useTransportFallback', 'function')}`, {
+      useState: () => [state, (next: string) => { state = next; }],
+      useRef: (initial: unknown) => refs[refIndex++] ?? (refs[refIndex - 1] = { current: initial }),
+      useCallback: (fn: unknown) => fn,
+      useEffect: (fn: () => (() => void) | void, deps: unknown[]) => {
+        const index = effectIndex++, old = effects[index];
+        if (old && deps.every((dep, i) => Object.is(dep, old.deps[i]))) return;
+        old?.cleanup?.(); effects[index] = { deps, cleanup: fn() || undefined };
+      },
+      setTimeout: (fn: () => void, ms: number) => { const id = ++nextTimer; timers.set(id, { at: clock + ms, fn }); return id; },
+      clearTimeout: (id: number) => timers.delete(id),
+    }, 'useTransportFallback') as (opts: object) => { onTransportError(error: Error): void; onTransportHealthChange(healthy: boolean): void };
+    const render = () => { refIndex = effectIndex = 0; return hook(hookOptions); };
+    const advance = (ms: number) => {
+      const end = clock + ms;
+      for (;;) {
+        const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        clock = due[1].at; timers.delete(due[0]); due[1].fn();
+      }
+      clock = end;
+    };
+    let result = render();
+    result.onTransportError(new Error('private-token'));
+    advance(10000); result = render();
+    expect(state).toBe('POLLING');
+    advance(30000); result = render();
+    expect(state).toBe('SSE'); expect(packets).toHaveLength(1);
+    result.onTransportHealthChange(true); advance(30000);
+    expect(packets).toHaveLength(2);
+    const ingress = await import('../endpoint-route/routes/desktop/telemetry-report');
+    for (const packet of packets) {
+      const row = ingress.normalizeSyncTransportPayload(packet.payload);
+      expect(row).not.toBeNull(); observations.push(row!);
+    }
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [1, 0, 'preferred-unavailable'], [1, 1, 'applied'],
+    ]);
+    expect(JSON.stringify(packets)).not.toContain('private-token');
+    for (const effect of effects) effect.cleanup?.();
+    return { route: 'observation', mechanism: 'browser-sync-transport', observations };
+  },
+}, {
   id: 'merge-cursor-original-primary-alternate-failed-and-positioned-exclusion', item: 'P-011', route: 'observation',
   mechanism: 'merge-cursor-seed',
   rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot.ts|mergeOnePass|1'],

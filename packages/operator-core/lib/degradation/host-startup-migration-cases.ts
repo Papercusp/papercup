@@ -27,7 +27,7 @@ export function original(path: string, marker: string, kind: 'function' | 'try' 
 export function execute(text: string, bindings: Record<string, unknown>, functionName?: string): unknown {
   const code = functionName ? `${text}\n${functionName};` : `(async () => { ${text} })();`;
   const compiled = ts.transpileModule(code, { compilerOptions: {
-    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React,
   } }).outputText;
   return runInNewContext(compiled, { ...bindings, exports: {}, Date, console: { warn() {}, log() {}, error() {} } });
 }

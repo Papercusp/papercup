@@ -40,6 +40,7 @@ import {
   setSyncDeltaCodec,
   CONNECTION_CAPPED_MAX_IN_FLIGHT,
   syncMetrics,
+  type SyncProviderProps,
 } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
@@ -62,6 +63,20 @@ const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // there the tick IS the freshness source.
 const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 const HOSTED_QUERY_NAME_ALLOWLIST = ['workspaceHosts.control'] as const;
+
+/** Existing same-origin local diagnostics ingress; no telemetry ring or forwarding. */
+export function reportSyncTransportFallback(
+  mechanism: 'browser-sync-transport',
+  decision: Parameters<NonNullable<SyncProviderProps['observeFallback']>>[1],
+): void {
+  void fetch('/api/desktop/telemetry-report', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'fallback-observation', payload: {
+      source: 'sync-transport', mechanism,
+      eligible: decision.eligible, applied: decision.applied, reason: decision.reason, scope: decision.scope,
+    } }),
+  }).catch(() => { /* best-effort local diagnostics must not break sync */ });
+}
 
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
@@ -328,6 +343,7 @@ export function HarnessSyncProvider({
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
         queryNameAllowlist={browserTransport.queryNameAllowlist}
+        observeFallback={reportSyncTransportFallback}
       >
         {children}
       </SyncProvider>

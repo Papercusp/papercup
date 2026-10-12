@@ -13,6 +13,38 @@ import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
 
+it('retains successful original teardown when the isolated execution assertion rejects', async () => {
+  let originalRunId = '';
+  let failure: unknown;
+  try {
+    await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/isolated-runtime-cleanup.integration.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/isolated-integration-proof.ts'],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' };
+        delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--', process.execPath, '-e', 'process.exit(1)'],
+          { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+        expect(result).toMatchObject({ code: 1, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        throw new Error('intentional post-cleanup execution rejection');
+      },
+    });
+  } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error);
+  const detail = JSON.parse((failure as Error).message.split("\n")[0]);
+  originalRunId = detail.runId;
+  expect(detail.firstFailure).toMatchObject({ phase: 'execute' });
+  expect(detail.phaseFailures).toHaveLength(1);
+  expect(detail.phaseFailures[0].detail).toContain('intentional post-cleanup execution rejection');
+  const evidence = join(defaultEvidenceRoot('isolated-integration'), originalRunId);
+  const observed = JSON.parse(readFileSync(join(evidence, 'phases/execute/lifecycle-observation.json'), 'utf8'));
+  expect(observed.ended).toMatchObject({ exitCode: 1, signal: null, runtimeRemoved: true, pgDataRemoved: true });
+  expect(existsSync(observed.lifecycle.runtimeRoot)).toBe(false);
+  expect(existsSync(observed.lifecycle.dataDir)).toBe(false);
+}, 240_000);
+
 it('pins plain-mode integration setup to its real private PG without injecting product URL overrides', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'private-admin-plain-'));
   const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir,

@@ -57,6 +57,7 @@ import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
 import desktopTelemetryReport from '../routes/desktop/telemetry-report';
 import desktopWorkspaceValidate from '../routes/desktop/workspace-validate';
 import { writeOperatorState, readOperatorState } from '../../operator-state-pg';
+import * as fallbackObservations from '../../degradation/fallback-observations';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -342,6 +343,43 @@ describe('desktop route ports', () => {
     const res = await appWith(desktopTelemetryReport as AnyRoute[])
       .request('/desktop/telemetry-report', json({ kind: 'crash' }));
     expect(res.status).toBe(403);
+  });
+
+  it('records allowlisted transport outcomes locally while telemetry is disabled, without entering the telemetry ring', async () => {
+    vi.mocked(readOperatorState).mockResolvedValue(null);
+    const record = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    try {
+      const app = appWith(desktopTelemetryReport as AnyRoute[]);
+      for (const applied of [0, 1]) {
+        const res = await app.request('/desktop/telemetry-report', json({ kind: 'fallback-observation', payload: {
+          source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1, applied,
+          reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+          message: 'secret', stack: '/private', url: 'https://private', workspaceId: 'forged',
+        } }));
+        expect(res.status).toBe(202);
+      }
+      expect(record.mock.calls).toEqual([0, 1].map((applied) => ['browser-sync-transport', {
+        eligible: 1, applied, reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+      }, { processTag: 'browser-sync-ingress' }]));
+      expect(writeOperatorState).not.toHaveBeenCalled();
+      expect(readOperatorState).not.toHaveBeenCalled();
+    } finally { record.mockRestore(); }
+  });
+
+  it.each([
+    { mechanism: 'arbitrary' }, { eligible: 0 }, { eligible: 1000 }, { applied: 2 },
+    { applied: 1, reason: 'preferred-unavailable' }, { scope: 'private/user' }, { scope: 'POLLING' },
+    { reason: 'raw error secret' }, { source: 'untrusted' },
+  ])('rejects malformed transport observations before the durable sink: %j', async (patch) => {
+    const record = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    try {
+      const res = await appWith(desktopTelemetryReport as AnyRoute[]).request('/desktop/telemetry-report', json({
+        kind: 'fallback-observation', payload: { source: 'sync-transport', mechanism: 'browser-sync-transport',
+          eligible: 1, applied: 0, reason: 'preferred-unavailable', scope: 'SSE', ...patch },
+      }));
+      expect(res.status).toBe(400);
+      expect(record).not.toHaveBeenCalled();
+    } finally { record.mockRestore(); }
   });
 
   it('archives only redacted render crashes while telemetry is disabled and deduplicates the ring', async () => {
