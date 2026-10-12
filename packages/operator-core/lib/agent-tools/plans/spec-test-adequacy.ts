@@ -701,6 +701,12 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   /\bdisclosures?\b[^.;]{0,40}\b(?:remains?|is|are)\s+(?:live|open|unresolved)\b/i,
 ];
 
+// Evidence-ledger replacement scope is operational bookkeeping, not a claim about
+// which behavior the proof covers. Strip only that clause before applying the broad
+// prose heuristic so a separate proof limitation in the same note remains visible.
+const EVIDENCE_SUPERSESSION_SCOPE_PATTERN =
+  /\b(?:replace|replaces|replaced|replacing|supersede|supersedes|superseded|superseding|rebind|rebinds|rebound|retract|retracts|retracted|retracting)\b[^.;]{0,120}\b(?:only|just)\b[^.;]{0,100}\b(?:in|within|on|at)\s+(?:the\s+)?same\s+test\s+subject\b/gi;
+
 /** Only observations with explicit coverage-boundary language count as disclosures. */
 function explicitCoverageLimitations(value: unknown): string[] {
   const raw = typeof value === 'string'
@@ -718,9 +724,11 @@ function explicitCoverageLimitations(value: unknown): string[] {
       raw
         .filter((entry): entry is string => typeof entry === 'string')
         .map((entry) => entry.trim())
-        .filter(
-          (entry) => entry.length > 0 && EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(entry)),
-        ),
+        .filter((entry) => {
+          if (entry.length === 0) return false;
+          const coverageProse = entry.replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ');
+          return EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(coverageProse));
+        }),
     ),
   ];
 }
@@ -2919,12 +2927,13 @@ export function evaluateSpecTestAdequacy(input: {
   const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
     const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
-    const planeMatchesMissingRequirement = normalizedPlane !== null && missingPlanes.includes(normalizedPlane);
+    const recognizedPlane = normalizedPlane === 'live' || normalizedPlane === 'deployed' ? normalizedPlane : null;
+    const planeMatchesMissingRequirement = recognizedPlane !== null && missingPlanes.includes(recognizedPlane);
     const evidenceKindCanSatisfyPlane = ['manual', 'operational', 'independent-verification'].includes(row.evidenceKind);
     const isNotCurrent = !currentEvidence.includes(row);
     return (
       (planeMatchesMissingRequirement && isNotCurrent) ||
-      (evidenceKindCanSatisfyPlane && (normalizedPlane === null || !requiredPlanes.includes(normalizedPlane)))
+      (evidenceKindCanSatisfyPlane && (recognizedPlane === null || !requiredPlanes.includes(recognizedPlane)))
     );
   });
   const planeRating: CorrectLayerEvidencePart | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
