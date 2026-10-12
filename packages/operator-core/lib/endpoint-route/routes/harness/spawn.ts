@@ -44,6 +44,7 @@ import {
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { trackDetached } from '../../../detached-imports';
 import { resolveInvokeProjectDir } from './invoke-project-dir';
+import { observeFallback } from '../../../degradation/fallback-observations';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
@@ -422,6 +423,8 @@ const invoke = defineTool({
     if (isHiveLaunch || isOverwatchLaunch) {
       let trackedInteractiveBackend = interactiveBackendFromSpawnBackend(routeBackend);
       let trackedGuard = backendFeatureGuard(trackedInteractiveBackend, 'forced-native-session-id');
+      const primaryTrackedBackendSupported = trackedGuard.supported || trackedInteractiveBackend === 'codex';
+      const launchWorkspaceId = activeWorkspaceId();
       if (!trackedGuard.supported && trackedInteractiveBackend !== 'codex') {
         // EI-18133554034909305 "Agent spawns are failing repeatedly": every tracked
         // hive/overwatch launch resolves omp by DEFAULT (resolveSpawnBackendModel's
@@ -450,6 +453,11 @@ const invoke = defineTool({
           );
         }
       }
+      observeFallback('agent-launch-readiness', {
+        eligible: 1, applied: primaryTrackedBackendSupported ? 1 : 0, scope: 'tracked-backend',
+        reason: primaryTrackedBackendSupported ? 'applied'
+          : backendFallbackForSpawnEnv ? 'default-backend-unsupported' : 'configured-backend-unsupported',
+      }, { workspaceId: launchWorkspaceId });
       if (!trackedGuard.supported && trackedInteractiveBackend !== 'codex') {
         return Response.json({
           ok: false,
