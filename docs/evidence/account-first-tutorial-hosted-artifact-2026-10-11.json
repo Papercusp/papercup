@@ -126,6 +126,21 @@
       "recoveryReceipt": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.json",
       "log": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.log"
     },
+    "dependencyPreflight": {
+      "observedAt": "2026-10-12T01:23:50.878Z",
+      "workItem": "WI-10007170",
+      "receipt": "/tmp/tutorial-d047-restored-custody-preflight-20261012T0124.json",
+      "receiptSha256": "a3b0b1fb1dd615ad4480df0985eaf04cfd37a3a98ab97b6e6c129f02e4ec58d3",
+      "log": "/tmp/tutorial-d047-restored-custody-preflight-20261012T0124.log",
+      "logSha256": "6252205be9cf2b5ab3a3c162d3c6c2b5d854c68bbef7f9f90f517b7bac8ec166",
+      "procedure": "Recover the original verifier preparation command from rollout 01a12a77 at 2026-10-11T10:24:40.541Z. Reuse maintained linkNodeModulesShadow from the restored Portal root, then verifyVerifierSource with runtimeArtifacts:true and assertTutorialSourceCustody with an explicit restored sourceRoot in a transient metadata view. No archived source or release metadata is edited.",
+      "result": "All 587 archived file records remain verified. Four consumed core imports resolve inside retained core 9d60 and match the restored Portal's consumed bytes; all seven Portal paths pass the maintained custody assertion. The dependency shadow reports 815 entries, seven remapped workspaces and zero fallbacks.",
+      "historicalMetadataSha256": "c10f542d98fc5b0fb749acbbe41642daf2e0a4b848648eb6c6773aca9ffdfc18",
+      "historicalSourceRootExists": false,
+      "testsRun": 0,
+      "modelCalls": 0,
+      "qualification": "Current retained source equality under documented relocation only. The original release sourceRoot remains absent. This does not establish historical out-of-root dependency equality, restore original directory identity, pass an unmodified served journey's historical sourceRoot lookup, renew runtime acceptance or prove shipment. The compiled artifact and prior test lineage remain unchanged."
+    },
     "procedure": "Maintained lint-as-committed --materialize-only at the original full core and Portal commits, with --retain-for set to the existing exact release. verifyCommittedWorkRoot checked each commit, all required manifest paths and the exact dependent artifact hold; every manifest input SHA256 matched and both Git trees were clean.",
     "taskId": "0mv456110481ijyrlpq",
     "log": "/tmp/tutorial-d047-source-rematerialize-20261011T1817.log",
