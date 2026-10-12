@@ -217,13 +217,13 @@ tested, not to be extended.
 
 ## Borrowable libraries — generic-first
 
-Domain-free libs live as standalone submodules under `libs/generic/*`; the
-catalog is `BORROWABLE.md` (generated — `npm run gen:borrowable`). **A genuinely
-domain-free algorithm STARTS as `libs/generic/<name>` behind a `configure*()`
-seam** — never inside `operator-core/lib` to be extracted later. `npm run
-lint:generic-first` (advisory) flags violations; incidental keyword hits go in
-the `ALLOW` set in `scripts/check-generic-first.mjs`. Long form + the seam
-pattern: [repo-conventions § borrowable](/internal/docs/system/repo-conventions).
+Domain-free libs under `libs/generic/*` may be standalone Git submodules or ordinary superproject directories.
+Before submodule-relative Git commands, check `git -C <path> rev-parse --show-toplevel`.
+If it reports this checkout root, use superproject-relative paths; if the target root, use submodule-relative paths.
+`BORROWABLE.md` is generated (`npm run gen:borrowable`). A genuinely domain-free algorithm STARTS as `libs/generic/<name>` behind a `configure*()` seam.
+Never inside `operator-core/lib` for later extraction. `npm run lint:generic-first` (advisory) flags violations; add incidental hits to the `ALLOW` set in
+`scripts/check-generic-first.mjs`. Long form + seam pattern:
+[repo-conventions § borrowable](/internal/docs/system/repo-conventions).
 
 ## This app is in testing — there are no users yet
 

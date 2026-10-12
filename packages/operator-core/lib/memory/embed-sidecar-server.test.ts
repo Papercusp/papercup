@@ -1648,6 +1648,40 @@ describe('rerank sidecar HTTP surface (fake rerankers, ephemeral port)', () => {
     expect(health.models).toEqual({ rerank: 'warm', 'rerank-fast': 'warm' });
   });
 
+  it.each(['resolve', 'reject'] as const)('reports boot inference completion separately from construction (%s)', async outcome => {
+    const savedWarm = process.env[EMBED_SIDECAR_WARM_ENV];
+    process.env[EMBED_SIDECAR_WARM_ENV] = 'rerank';
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const inference = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+    let started = false;
+    try {
+      handle = createEmbedSidecarServer({ port: 0, concurrency: 1, log: () => {},
+        embedDevice: { load: async () => ({ setting: null, changed: false, readError: null }) },
+        rerankBuilders: { ...fakeRerankBuilders, rerank: async () => async () => {
+          started = true;
+          await inference;
+          return [0.5];
+        } },
+      });
+      baseUrl = `http://127.0.0.1:${await handle.listening}`;
+      await vi.waitFor(() => expect(started).toBe(true));
+      const pending = await (await fetch(`${baseUrl}/healthz`)).json();
+      expect(pending.models.rerank).toBe('warm');
+      expect(pending.warmups.rerank).toBe('warming');
+      if (outcome === 'resolve') finish();
+      else fail(new Error('first inference failed'));
+      await vi.waitFor(async () => {
+        const settled = await (await fetch(`${baseUrl}/healthz`)).json();
+        expect(settled.warmups.rerank).toBe(outcome === 'resolve' ? 'warm' : 'failed');
+      });
+    } finally {
+      finish();
+      if (savedWarm === undefined) delete process.env[EMBED_SIDECAR_WARM_ENV];
+      else process.env[EMBED_SIDECAR_WARM_ENV] = savedWarm;
+    }
+  });
+
   it('caches and coalesces per (model, query, text) pair', async () => {
     await bootRerank();
     await rerank({ query: 'q', texts: ['a', 'b'] });

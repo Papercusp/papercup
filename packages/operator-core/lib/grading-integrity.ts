@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { observeFallback } from './degradation/fallback-observations';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
@@ -1180,10 +1181,13 @@ async function readActiveLoopStanddownOwners(
   nowMs: number,
 ): Promise<Set<string>> {
   try {
-    return reader
+    const owners = reader
       ? await reader(workspaceId, nowMs)
       : await listLoopStanddownOwners(getOrgPg().sql, { workspaceId, nowMs, workspaceWideOnly: true });
+    observeFallback('grading-standdown-read', { eligible: 1, applied: 1, reason: 'applied' }, { workspaceId });
+    return owners;
   } catch (error) {
+    observeFallback('grading-standdown-read', { eligible: 1, applied: 0, reason: 'standdown-read-failed' }, { workspaceId });
     console.warn(
       `[grading-integrity] workspace stand-down read failed (non-fatal, failing open): ${
         error instanceof Error ? error.message : String(error)

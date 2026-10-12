@@ -4,7 +4,11 @@
  * the mig-225 alias-aware rule exactly: coord_presence heartbeat OR a
  * RUNNING/RESTARTING spawned_agents row matched on ANY alias.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// These fresh-PG fixtures own claim state; original-row cases assert diagnostics.
+// Never let their incidental cleanup observations flush to the operator database.
+vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';

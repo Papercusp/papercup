@@ -792,6 +792,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // not brick the slot for the process lifetime).
   const embedders = new Map<string, Promise<EmbedFn>>();
   const warm: Record<string, WarmState> = {};
+  // Construction and the first governed forward pass are separate phases.
+  // A loaded model may still hold the boot inference admission.
+  const warmups: Record<string, WarmState> = {};
   const getEmbedder = (model: string, kind: GemmaEmbedKind): Promise<EmbedFn> => {
     const key = `${model}:${kind}`;
     let p = embedders.get(key);
@@ -880,7 +883,16 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     signal?: AbortSignal;
     run: (signal?: AbortSignal) => Promise<T>;
   }): Promise<T> => {
-    if (localScheduler) return input.run(input.signal);
+    const observeWarmup = (run: () => Promise<T>): Promise<T> => {
+      if (input.operation !== 'warmup') return run();
+      const key = input.kind ? `${input.model}:${input.kind}` : input.model;
+      warmups[key] = 'warming';
+      return Promise.resolve().then(run).then(
+        value => { warmups[key] = 'warm'; return value; },
+        error => { warmups[key] = 'failed'; throw error; },
+      );
+    };
+    if (localScheduler) return observeWarmup(() => input.run(input.signal));
     const operationInput: GovernedOperationInput<T> = {
       workspaceId: workspaceId!,
       namespace: 'embed-sidecar',
@@ -899,7 +911,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         unit: 'single-text',
       },
     };
-    return governed(operationInput, () => input.run(input.signal));
+    return observeWarmup(() => governed(operationInput, () => input.run(input.signal)));
   };
   let active = 0;
   interface QueueTask<T> {
@@ -1355,6 +1367,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // capabilities against this before adopting the process.
         capabilities,
         models: { ...warm },
+        warmups: { ...warmups },
         modelRevisions: Object.fromEntries(permittedModels.map((model) => [model, modelRevisions[model]])),
         // The (device, dtype) pair reranking is ACTUALLY running on — not the
         // one requested. A GPU host whose CUDA provider failed to load is

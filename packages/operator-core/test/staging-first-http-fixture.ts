@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
+import { qualifyCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -61,28 +62,55 @@ async function main() {
       throw new Error('private preparation exception control');
     return;
   }
-  const committedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader'
+  const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
+  const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
+  const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
+  const prepared = isCommittedReader ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
+  assert.ok(!isCommittedReader || prepared, 'Committed reader requires an independently prepared pinned API');
+  const bundle = prepared ?? join(evidenceDir, 'hono-host.mjs');
+  if (!prepared) {
+    console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
+    try {
+      const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
+        { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
+      writeFileSync(join(evidenceDir, 'build.log'), output);
+    } catch (error: any) {
+      writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
+      throw error;
+    }
+  }
+  const bundleBytes = readFileSync(bundle);
+  assert.ok(bundleBytes.includes(Buffer.from('staging-first-activation-guard.ts')), 'guard must be in the executed bundle');
+  if (isCommittedReader) assert.ok(bundleBytes.includes(Buffer.from('committed-tree-reader.ts')),
+    'committed reader must be in the executed bundle');
+  const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
+  let qualifySource: (() => ReturnType<typeof qualifyCommittedReaderSource>) | undefined;
+  if (isCommittedReader) {
+    assert.ok(e.VERIFY_TAURI_SOURCE_RECEIPT && e.VERIFY_TAURI_SOURCE_REF,
+      'Independent selected committed source receipt and ref are required');
+    // Compare the actual required private column/type/nullability/default
+    // catalogue, rather than inferring applied schema from migration filenames.
+    const columns = await sql`SELECT table_schema, table_name, column_name, data_type, udt_name,
+      is_nullable, column_default, ordinal_position FROM information_schema.columns
+      WHERE table_schema = 'harness_shared' ORDER BY table_name, ordinal_position`;
+    const schema = Object.fromEntries(columns.map(row => [
+      `${row.table_schema}.${row.table_name}.${row.column_name}`,
+      createHash('sha256').update(JSON.stringify({ ...row })).digest('hex'),
+    ]));
+    qualifySource = () => qualifyCommittedReaderSource({ root, bundle,
+      receiptPath: join(dirname(evidenceDir), 'prepare', 'operator-api-preflight.json'),
+      sourceReceiptPath: e.VERIFY_TAURI_SOURCE_RECEIPT!, selectedCommit: e.VERIFY_TAURI_SOURCE_REF!, schema, environment: e });
+    writeFileSync(join(evidenceDir, 'committed-reader-source-preflight.json'), JSON.stringify(qualifySource()));
+  }
+  // The required source guard runs before preparation opens its private sidecar.
+  const committedReader = isCommittedReader
     ? await (await import('./committed-reader-http-scenario')).prepareCommittedReaderScenario({
       workspace, harness, base, headers, evidenceDir,
     }) : undefined;
   disposeScenario = committedReader?.dispose;
-  const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
-  const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
-  const bundle = join(evidenceDir, 'hono-host.mjs');
-  console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
-  try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'build.log'), output);
-  } catch (error: any) {
-    writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-    throw error;
-  }
-  const bundleBytes = readFileSync(bundle);
-  assert.ok(bundleBytes.includes(Buffer.from('staging-first-activation-guard.ts')), 'guard must be in the executed bundle');
-  if (committedReader) assert.ok(bundleBytes.includes(Buffer.from('committed-tree-reader.ts')),
-    'committed reader must be in the executed bundle');
-  const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
+  // Preparation changes socket/tmp settings; compare the final host environment
+  // again. A refused pin still follows the same finally/dispose path.
+  if (qualifySource) qualifySource();
   host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));

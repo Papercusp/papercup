@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+// Producer observations are asserted by the original-row coverage matrix.
+// These dispatch fixtures must not flush diagnostics into real PostgreSQL.
+vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
+afterAll(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
 import { poolVerdictByProvider, type AccountStatusRow } from './deployment/account-pool-store';
 import type { Rubric } from './rubrics';
 import type { ScorecardEvidenceRow, ScorecardRow } from './scorecards';
@@ -186,6 +193,9 @@ function deps() {
     readCurrentGeneration,
     generationAncestry,
     listWorkspaceWideLoopStanddownOwners,
+    readProviderResets: vi.fn(async () => [] as number[]),
+    providerCanServe: vi.fn(async () => true),
+    isCurrentSourceAuditResponder: vi.fn(async () => true),
   };
 }
 

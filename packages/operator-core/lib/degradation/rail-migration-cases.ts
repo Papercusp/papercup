@@ -522,7 +522,132 @@ const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scop
   },
 }));
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...coordinationReadCases, ...remainingSyncCases, {
+const workItemCallerCases: RailMigrationCase[] = [{
+  id: 'grading-standdown-original-failed-read-empty-primary-and-owner-suppression',
+  item: 'P-013', route: 'observation', mechanism: 'grading-standdown-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/grading-integrity.ts|readActiveLoopStanddownOwners|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const path = 'packages/operator-core/lib/grading-integrity.ts';
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, owners = new Set<string>();
+    const reader = async (workspaceId: string, nowMs: number) => {
+      expect(workspaceId).toBe('fixture'); expect(nowMs).toBe(42);
+      if (fail) throw new Error('stand-down store unavailable');
+      return owners;
+    };
+    const read = execute(original(path, 'async function readActiveLoopStanddownOwners', 'function'), {
+      getOrgPg: () => ({ sql: 'isolated' }),
+      listLoopStanddownOwners: async (sql: unknown, args: { workspaceId: string; nowMs: number; workspaceWideOnly: boolean }) => {
+        expect(sql).toBe('isolated'); expect(args.workspaceWideOnly).toBe(true);
+        return reader(args.workspaceId, args.nowMs);
+      },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('grading-standdown-read'); expect(options.workspaceId).toBe('fixture');
+        observations.push(row); return true;
+      },
+    }, 'readActiveLoopStanddownOwners') as (ws: string, injectedReader: typeof reader | undefined, nowMs: number) => Promise<Set<string>>;
+    const suppress = execute(original(path, 'export async function readGradingAuditDispatchSuppression', 'function'), {
+      readActiveLoopStanddownOwners: read,
+      gradingAuditSuppressionForOwnerSet: execute(original(path, 'function gradingAuditSuppressionForOwnerSet', 'function'), {}, 'gradingAuditSuppressionForOwnerSet'),
+    }, 'readGradingAuditDispatchSuppression') as typeof import('../grading-integrity').readGradingAuditDispatchSuppression;
+    expect(await suppress('fixture', { nowMs: 42, listWorkspaceWideLoopStanddownOwners: reader })).toBeNull();
+    fail = false;
+    expect(await suppress('fixture', { nowMs: 42 })).toBeNull();
+    owners = new Set(['paused']);
+    expect(await suppress('fixture', { nowMs: 42, targetOwnerId: 'paused', listWorkspaceWideLoopStanddownOwners: reader }))
+      .toEqual({ reason: 'workspace-wide-loop-standdown', pausedOwnerCount: 1, targetOwnerId: 'paused' });
+    expect(await suppress('fixture', { nowMs: 42, targetOwnerId: 'other', listWorkspaceWideLoopStanddownOwners: reader })).toBeNull();
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'standdown-read-failed'], [1, 'applied'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'grading-standdown-read', observations };
+  },
+}, {
+  id: 'work-item-transfer-original-import-failure-partial-cleanup-primary-and-no-transfer',
+  item: 'P-013', route: 'observation', mechanism: 'work-item-lock-reclaim',
+  rowIds: [1, 2].map(ordinal => `log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const text = original('packages/operator-core/lib/work-items.ts', 'if (explicitTransferHolder)', 'if');
+    const observations: ScoutReadObservation[] = [], attempts: string[] = [];
+    let importFails = true, failures = 1;
+    const run = (holder: string | null) => execute(text, {
+      explicitTransferHolder: holder, prior: { payload: ['one.ts'] }, won: { id: 'WI-transferred' }, claimWorkspaceId: 'fixture',
+      require: (module: string) => {
+        if (importFails) throw new Error('cleanup module unavailable');
+        if (module === './work-items-release-request') return { readWorkItemPaths: (payload: unknown) => payload };
+        return { releaseReclaimedWorkItemLocks: async (args: { ownerId: string; paths: string[]; goalRef: string }) => {
+          expect(args).toEqual({ ownerId: 'prior-owner', paths: ['one.ts'], goalRef: 'WI-transferred' });
+          attempts.push(args.goalRef); return { failures };
+        } };
+      },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('work-item-lock-reclaim'); expect(row.scope).toBe('claim-transfer');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    });
+    await run('prior-owner');
+    expect(attempts).toEqual([]);
+    importFails = false; await run('prior-owner');
+    failures = 0; await run('prior-owner');
+    await run(null);
+    expect(attempts).toEqual(['WI-transferred', 'WI-transferred']);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'cleanup-unavailable'], [0, 'targeted-release-failed'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'work-item-lock-reclaim', observations };
+  },
+}, {
+  id: 'work-item-reap-original-import-partial-unexpected-failure-primary-and-empty-sweep',
+  item: 'P-013', route: 'observation', mechanism: 'work-item-lock-reclaim',
+  rowIds: [1, 2].map(ordinal => `log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const text = original('packages/operator-core/lib/work-items-stale-claims.ts', 'targeted lock cleanup unavailable', 'if');
+    const observations: Array<ScoutReadObservation & { workspaceId: string }> = [];
+    const rows = ['one', 'two', 'three'].map((id, index) => ({
+      feature_id: `WI-${id}`, workspace_id: index === 0 ? 'first-workspace' : 'second-workspace',
+      former_taken_by: 'prior-owner', payload: [id + '.ts'],
+    }));
+    let mode: 'import' | 'partial' | 'throw' | 'primary' = 'import';
+    const attempted: string[] = [];
+    const run = (input: typeof rows) => execute(text, {
+      rows: input,
+      require: (module: string) => {
+        if (mode === 'import') throw new Error('cleanup module unavailable');
+        if (module === './work-items-release-request') return { readWorkItemPaths: (payload: unknown) => payload };
+        return { releaseReclaimedWorkItemLocks: async (args: { ownerId: string; paths: string[]; goalRef: string }) => {
+          const target = rows.find(row => row.feature_id === args.goalRef)!;
+          expect(args).toEqual({ ownerId: 'prior-owner', paths: target.payload, goalRef: target.feature_id });
+          attempted.push(args.goalRef);
+          if (mode === 'throw' && args.goalRef === 'WI-two') throw new Error('unexpected release failure');
+          return { failures: mode === 'partial' && args.goalRef === 'WI-two' ? 1 : 0 };
+        } };
+      },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('work-item-lock-reclaim'); expect(row.scope).toBe('stale-sweep');
+        observations.push({ ...row, workspaceId: options.workspaceId }); return true;
+      },
+    });
+    await run(rows); expect(attempted).toEqual([]);
+    mode = 'partial'; await run(rows);
+    mode = 'throw'; attempted.length = 0; await run(rows);
+    expect(attempted).toEqual(['WI-one', 'WI-two']);
+    mode = 'primary'; await run(rows); await run([]);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'cleanup-unavailable'], [0, 'cleanup-unavailable'], [0, 'cleanup-unavailable'],
+      [1, 'applied'], [0, 'targeted-release-failed'], [1, 'applied'],
+      [1, 'applied'], [0, 'cleanup-unavailable'], [0, 'cleanup-unavailable'],
+      [1, 'applied'], [1, 'applied'], [1, 'applied'],
+    ]);
+    expect(observations.map(row => row.workspaceId)).toEqual(Array.from({ length: 4 }, () =>
+      ['first-workspace', 'second-workspace', 'second-workspace']).flat());
+    return { route: 'observation', mechanism: 'work-item-lock-reclaim', observations };
+  },
+}];
+
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',
