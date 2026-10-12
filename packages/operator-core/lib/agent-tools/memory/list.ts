@@ -23,6 +23,16 @@ import { toWireRow } from './search';
 // rows were migrated in the same pass, so no legacy kinds linger.
 const KINDS = ['user', 'feedback', 'project', 'reference'] as const;
 
+/**
+ * Bounded by default (oversized-tool-results-reduction-2026-10-12 P-003). Unbounded,
+ * every call returned the whole store: measured avg 2.2MB per call, ~149k calls/week,
+ * almost all from the TUI Memory tab refetching on every invalidate (325GB/week
+ * serialized for a list the tab shows a screenful of). `total` keeps the full count
+ * visible, so a bounded page is never read as the whole population.
+ */
+export const MEMORY_LIST_DEFAULT_LIMIT = 200;
+export const MEMORY_LIST_MAX_LIMIT = 5000;
+
 export default defineTool({
   name: 'memory:list',
   capability: 'memory:read',
@@ -66,6 +76,9 @@ export default defineTool({
       .describe('TEMPORAL (temporal-lite): point-in-time listing — only memories whose UTC half-open validity window covers this ISO timestamp (valid_at <= as_of < invalid_at). When combined with include_superseded, this window remains authoritative. Entries carry metadata.validity.'),
     include_superseded: z.boolean().optional()
       .describe('TEMPORAL (temporal-lite): without as_of, include superseded/soft-forgotten memories across the full lifecycle. With as_of, the UTC point-in-time window is authoritative. Superseded entries carry metadata.validity { status:"superseded", superseded_by }.'),
+    limit: z.number().int().positive().max(MEMORY_LIST_MAX_LIMIT).optional()
+      .describe(`Rows to return (default ${MEMORY_LIST_DEFAULT_LIMIT}). total counts all matches; truncated:true means more remain.`),
+    offset: z.number().int().nonnegative().optional().describe('Rows to skip, for the next page (use next_offset).'),
   }),
   async handler(args) {
     const user = await getSessionUserOrDefault();
@@ -97,8 +110,17 @@ export default defineTool({
         'memory:list list',
       );
 
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? MEMORY_LIST_DEFAULT_LIMIT;
+      const page = entries.slice(offset, offset + limit);
+      const truncated = offset + page.length < entries.length;
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true, results: entries.map(toWireRow) }) }],
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: true,
+          results: page.map(toWireRow),
+          total: entries.length,
+          ...(truncated ? { truncated: true, next_offset: offset + page.length } : {}),
+        }) }],
       };
     } catch (err) {
       // Degraded-never-silent: a read path returns the { ok:false, reason, results:[] }

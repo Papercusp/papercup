@@ -22,7 +22,10 @@ import {
   QUERY_DEFAULT_MAX_MATCHES,
   QUERY_MAX_CONTEXT,
   QUERY_MAX_MATCHES,
+  VIEW_DEFAULT_LIMIT,
+  VIEW_MAX_LIMIT,
   querySavedResult,
+  readSavedResultLines,
 } from './read-query';
 import { redactSensitiveText } from '../../sensitive-text';
 import {
@@ -213,10 +216,15 @@ const QUERY_EXCLUSIVITY =
 const notQuery = {
   query: z.never().optional().describe(`Only valid for a saved-result query. ${QUERY_EXCLUSIVITY}`),
 };
+/** Present on every branch but the view window, for the same reason (WI-6554700010008917). */
+const notView = {
+  view_lines: z.never().optional().describe('Only valid alone: reads lines of the searched view.'),
+};
 
 const lineWindowArgs = z.object({
   ...readPathArgs,
   ...notQuery,
+  ...notView,
   offset: z.number().int().nonnegative().optional().describe(
     `1-based line to start from. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
   ),
@@ -244,6 +252,7 @@ const lineWindowArgs = z.object({
 const byteWindowArgs = z.object({
   ...readPathArgs,
   ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -268,6 +277,7 @@ const byteWindowArgs = z.object({
 const contentIndexArgs = z.object({
   ...readPathArgs,
   ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -285,6 +295,7 @@ const contentIndexArgs = z.object({
 const evidenceClassArgs = z.object({
   ...readPathArgs,
   ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -311,8 +322,9 @@ const evidenceClassArgs = z.object({
  */
 const queryArgs = z.object({
   ...readPathArgs,
+  ...notView,
   query: z.string().trim().min(1).max(200).describe(
-    `Search the whole saved result for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. One-line JSON spills are searched pretty-printed. ${QUERY_EXCLUSIVITY}`,
+    `Search the whole saved result for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. JSON is searched pretty-printed, multi-line strings expanded between """ fences. Read around a hit with view_lines. ${QUERY_EXCLUSIVITY}`,
   ),
   query_context: z.number().int().nonnegative().max(QUERY_MAX_CONTEXT).optional().describe(`Context lines around each match (default ${QUERY_DEFAULT_CONTEXT}).`),
   query_max_matches: z.number().int().positive().max(QUERY_MAX_MATCHES).optional().describe(`Max matches returned (default ${QUERY_DEFAULT_MAX_MATCHES}); matchCount still counts all.`),
@@ -327,7 +339,31 @@ const queryArgs = z.object({
   evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
 });
 
-const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs, queryArgs]);
+/**
+ * Searched-view window (WI-6554700010008917): read lines of the SAME view a query searched, so a
+ * hit's `line` can be read in context. Raw offset/limit address the spill file's physical lines,
+ * a different coordinate space for a one-line JSON body.
+ */
+const viewWindowArgs = z.object({
+  ...readPathArgs,
+  ...notQuery,
+  view_lines: z
+    .object({
+      offset: z.number().int().positive().describe('1-based line of the searched view (a query match.line).'),
+      limit: z.number().int().positive().max(VIEW_MAX_LIMIT).optional().describe(`Lines to read (default ${VIEW_DEFAULT_LIMIT}).`),
+    })
+    .describe('Read lines of the view a query searches (pretty JSON, multi-line strings expanded); use after query. Alone only.'),
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.never().optional().describe('Not valid for view_lines.'),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs, queryArgs, viewWindowArgs]);
 
 /**
  * The handler has two intentional response paths: human-readable MCP text and a
@@ -618,13 +654,13 @@ function renderLargeLineWindow(
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
   guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
+    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
-    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
+    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around).',
     returns:
-      'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`.',
+      'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`. query returns { matches[{line,text}], matchCount, coverage, read_around, next_cursor, note? }; view_lines returns numbered text or view_window_out_of_range.',
     seeAlso: capabilityReadSeeAlso,
   },
   capability: 'capability:fs-read',
@@ -807,6 +843,28 @@ export default defineTool({
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
     }
 
+    if (args.view_lines) {
+      const v = args as z.infer<typeof viewWindowArgs>;
+      if (typeof args.query === 'string' || args.content_indexes || args.evidence_class || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined || args.raw !== undefined) {
+        return err('mixed_window_modes', 'view_lines cannot be combined with query, line, byte, content or evidence selection.');
+      }
+      const r = readSavedResultLines(bytes, {
+        offset: v.view_lines.offset,
+        limit: v.view_lines.limit,
+        bodyOffset: reference?.bodyOffsetInPayload,
+      });
+      if (!r.ok) return err(r.reason, r.message);
+      const cursorKey = args.uri ? 'uri' : 'file_path';
+      const cursorPath = args.uri ?? args.file_path ?? abs;
+      const footer = r.nextOffset === null
+        ? ''
+        : `\n… more: capability:read { ${cursorKey}, view_lines: { offset: ${r.nextOffset}, limit: ${v.view_lines.limit ?? VIEW_DEFAULT_LIMIT} } }`;
+      return { content: [{ type: 'text' as const, text:
+        `${cursorPath} — searched ${r.view} view, lines ${r.startLine}–${r.endLine} of ${r.totalLines}` +
+        `${r.clippedLines > 0 ? ` (${r.clippedLines} long line(s) clipped)` : ''}\n${r.lines.join('\n')}${footer}`,
+      }] };
+    }
+
     if (typeof args.query === 'string') {
       const q = args as z.infer<typeof queryArgs>;
       if (args.content_indexes || args.evidence_class || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined || args.raw !== undefined) {
@@ -829,6 +887,10 @@ export default defineTool({
         next_cursor: result.nextFromLine === null ? null : {
           tool: 'capability:read',
           args: { [args.uri ? 'uri' : 'file_path']: cursorPath, query: q.query, query_from_line: result.nextFromLine },
+        },
+        read_around: result.matches.length === 0 ? undefined : {
+          tool: 'capability:read',
+          args: { [args.uri ? 'uri' : 'file_path']: cursorPath, view_lines: { offset: Math.max(1, result.matches[0].line - 3), limit: 40 } },
         },
         note: result.matchCount === 0
           ? `No line in the searched ${result.view} view (${result.coverage.searchedLines} lines from line ${result.coverage.fromLine}, ${result.coverage.payloadBytes} bytes) contains every term. That is a complete negative for THIS retained body${result.coverage.upstreamPartialMarkers > 0 ? `, but the body itself carries ${result.coverage.upstreamPartialMarkers} upstream truncation marker(s) — the original tool output was partial` : ''}.`

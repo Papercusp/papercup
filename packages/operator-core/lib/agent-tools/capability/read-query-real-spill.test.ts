@@ -61,7 +61,23 @@ function oracleLines(name: FixtureName): string[] {
   if (offset === undefined) return payload.toString('utf8').split('\n');
   const header = payload.subarray(0, offset).toString('utf8').replace(/\n+$/, '').split('\n');
   const body = JSON.parse(payload.subarray(offset).toString('utf8')) as unknown;
-  return [...header, ...JSON.stringify(body, null, 1).split('\n')];
+  return [...header, ...expandMultilineStrings(JSON.stringify(body, null, 1).split('\n'))];
+}
+
+/**
+ * WI-6554700010008917 oracle, derived from JSON.stringify's own output and not from read-query.ts:
+ * a line whose whole value is a string containing a newline becomes `<indent><key>"""`, the
+ * decoded lines, then `<indent>"""<comma>`.
+ */
+function expandMultilineStrings(lines: string[]): string[] {
+  const valueLine = /^(\s*)("(?:[^"\\]|\\.)*": )?("(?:[^"\\]|\\.)*")(,?)$/;
+  return lines.flatMap((line) => {
+    const m = valueLine.exec(line);
+    if (!m) return [line];
+    const decoded = JSON.parse(m[3]) as string;
+    if (!decoded.includes('\n')) return [line];
+    return [`${m[1]}${m[2] ?? ''}"""`, ...decoded.split('\n'), `${m[1]}"""${m[4]}`];
+  });
 }
 
 const linesContaining = (lines: string[], term: string) =>

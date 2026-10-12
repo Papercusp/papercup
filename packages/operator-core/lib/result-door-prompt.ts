@@ -71,6 +71,11 @@ So when a call could return a lot, bound it AT THE SOURCE first — the tool's o
 \`limit\`/filter/\`since\` args, or a narrower query. When you cannot, reduce it in
 flight with \`projection\`.
 
+**Already cut? Search the spill, don't page it.** \`capability:read { file_path, query:"terms" }\`
+returns only the lines holding every term, with line numbers and coverage; then read
+around a hit with \`view_lines\` (the result's \`read_around\` is a ready call). Paging the
+base64 \`cursor\` is for exact bytes only.
+
 **\`projection\` is a DISPATCH argument accepted on EVERY tool** — a sibling of the
 tool's own arguments, not one of them. With \`tools:invoke\` BOTH placements work: one
 beside \`name\`/\`args\` is forwarded into the target for you; one nested inside \`args\`

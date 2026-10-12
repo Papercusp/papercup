@@ -530,7 +530,7 @@ export function buildProjectionHint(
   // preview. A longer variant evicted `_projection.omitted` samples from an
   // events:status result, hiding which history rows were cut (EI-25740925774324505).
   const asString = ` \`projection\` also accepts a JSON STRING.`;
-  const searchIt = ` Search: \`capability:read { file_path, query:"terms" }\`.`;
+  const searchIt = ` Search: \`capability:read { file_path, query:"terms" }\`, then view_lines.`;
   let shape: { json: unknown; lineCount: number };
   let hasOversizedLine: boolean;
   try {
@@ -570,7 +570,7 @@ export function buildProjectionHint(
   if (shape.lineCount > 1) {
     return (
       `${lead}${shape.lineCount} lines of non-JSON text: search the spill with ` +
-      `\`capability:read { file_path, query:"terms" }\` (all terms, context and coverage).${asString}`
+      `\`capability:read { file_path, query:"terms" }\` (all terms, context and coverage), then view_lines.${asString}`
     );
   }
   return (
