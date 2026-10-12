@@ -301,6 +301,37 @@ export async function refreshLiveSessionsBeforeRead(
 ): Promise<SessionRefreshReceipt> {
   let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
   let ownerLookupFailure: SessionRefreshFailureReason | undefined;
+  const hasExplicitOwnerScope = ownerIds.length > 0;
+  if (hasExplicitOwnerScope) {
+    // Search filters can carry durable owner sets (notably fleet ever-members)
+    // so the indexed read remains postmortem-safe. Live refresh has a different
+    // scope: only owners with a current Codex adv-session row are candidates.
+    // Intersect here before resolving files so historical members do not turn a
+    // valid historical search into a degraded freshness measurement. Keep
+    // every file-backed session kind here; sessions:list and timeline also
+    // use this helper for active Claude and OMP sessions.
+    const activeOwnerRead = await withBoundedTimeout<Array<{ owner: string }>>(
+      sql<Array<{ owner: string }>>`
+        SELECT DISTINCT coord_owner_id AS owner
+          FROM harness_shared.adv_sessions
+         WHERE ended_at IS NULL
+           AND agent IN ('claude', 'omp', 'codex')
+           AND coord_owner_id = ANY(${ownerIds}::text[])
+      ORDER BY coord_owner_id
+         LIMIT 20`,
+      {
+        fallback: [],
+        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+        label: 'sessions:live owner scope lookup',
+      },
+    );
+    if (activeOwnerRead.degraded) {
+      ownerLookupFailure = boundedFailureReason('owner_lookup', activeOwnerRead.reason);
+      return { attempted: 0, refreshed: 0, failureReasons: { [ownerLookupFailure]: 1 } };
+    }
+    ownerIds = activeOwnerRead.value.map((row) => row.owner);
+    if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
+  }
   if (ownerIds.length === 0) {
     const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
       sql<Array<{ owner: string }>>`

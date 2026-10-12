@@ -6,6 +6,10 @@ import {
   SESSION_TARGET_REFRESH_TIMEOUT_MS,
 } from './_shared';
 
+function sqlReturningLiveOwners(owners: string[]) {
+  return vi.fn(async (..._args: unknown[]) => owners.map((owner) => ({ owner })));
+}
+
 describe('refreshLiveSessionsBeforeRead', () => {
   it('refreshes explicitly requested owners concurrently and preserves owner identity', async () => {
     const ingest = vi.fn(async () => undefined);
@@ -13,9 +17,9 @@ describe('refreshLiveSessionsBeforeRead', () => {
       filePath: `/tmp/${owner}.jsonl`,
       sessionId: `session-${owner}`,
     }));
-    const sql = vi.fn() as never;
+    const sql = sqlReturningLiveOwners(['su-a', 'su-b']);
 
-    const result = await refreshLiveSessionsBeforeRead(sql, ['su-a', 'su-b', 'su-a'], { resolve, ingest });
+    const result = await refreshLiveSessionsBeforeRead(sql as never, ['su-a', 'su-b', 'su-a'], { resolve, ingest });
 
     expect(result).toEqual({ attempted: 2, refreshed: 2 });
     expect(resolve).toHaveBeenCalledTimes(2);
@@ -24,7 +28,7 @@ describe('refreshLiveSessionsBeforeRead', () => {
   });
 
   it('fails soft per live session instead of failing the read surface', async () => {
-    const result = await refreshLiveSessionsBeforeRead(vi.fn() as never, ['su-missing', 'su-live'], {
+    const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-missing', 'su-live']) as never, ['su-missing', 'su-live'], {
       resolve: async (owner) => owner === 'su-live'
         ? { filePath: '/tmp/live.jsonl', sessionId: 'live' }
         : null,
@@ -38,12 +42,45 @@ describe('refreshLiveSessionsBeforeRead', () => {
     });
   });
 
+  it('intersects historical owner filters with current file-backed sessions before resolving transcripts', async () => {
+    const resolve = vi.fn(async (owner: string) => ({
+      filePath: `/tmp/${owner}.jsonl`,
+      sessionId: `session-${owner}`,
+    }));
+    const ingest = vi.fn(async () => undefined);
+    const sql = sqlReturningLiveOwners(['su-current-codex', 'su-current-claude', 'su-current-omp']);
+    const ownerFilter = [
+      'su-current-codex',
+      'su-current-claude',
+      'su-current-omp',
+      'su-ended-a',
+      'su-ended-b',
+    ];
+
+    const result = await refreshLiveSessionsBeforeRead(
+      sql as never,
+      ownerFilter,
+      { resolve, ingest },
+    );
+
+    const [query, passedOwners] = sql.mock.calls[0] ?? [];
+    expect((query as TemplateStringsArray).join('')).toContain("agent IN ('claude', 'omp', 'codex')");
+    expect(passedOwners).toEqual(ownerFilter);
+    expect(result).toEqual({ attempted: 3, refreshed: 3 });
+    expect(resolve.mock.calls.map(([owner]) => owner).sort()).toEqual([
+      'su-current-claude',
+      'su-current-codex',
+      'su-current-omp',
+    ]);
+    expect(ingest).toHaveBeenCalledTimes(3);
+  });
+
   it('degrades a slow live resolve or ingest within the read budget', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const ingest = vi.fn(() => new Promise<never>(() => {}));
-      const pending = refreshLiveSessionsBeforeRead(vi.fn() as never, ['su-slow'], {
+      const pending = refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-slow']) as never, ['su-slow'], {
         resolve: async () => ({ filePath: '/tmp/slow.jsonl', sessionId: 'slow' }),
         ingest,
       });
@@ -126,7 +163,7 @@ describe('refreshLiveSessionsBeforeRead', () => {
   it('classifies a live transcript resolver error without exposing its raw message', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const result = await refreshLiveSessionsBeforeRead(vi.fn() as never, ['su-error'], {
+      const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-error']) as never, ['su-error'], {
         resolve: async () => { throw new Error('/private/session/path: permission denied'); },
         ingest: async () => undefined,
       });
