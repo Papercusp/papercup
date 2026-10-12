@@ -144,6 +144,7 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'unanswered',
   'loop',
   'lastToolCalls',
+  'productiveToolCalls',
   'wakeModeOverrides',
   'defaultWakeMode',
   'verdicts',
@@ -1469,6 +1470,15 @@ export default defineTool({
               'defaultWakeMode',
               () => getDefaultWakeMode(),
               'auto' as WakeMode,
+            ),
+          // Preserve decorateMemberVerdicts' default timestamp while binding
+          // its productive-call dependency to the handler's shared deadline.
+          undefined,
+          (ids) =>
+            boundedRead(
+              'productiveToolCalls',
+              () => lastProductiveToolCallAtByOwner(ids),
+              new Map<string, string>(),
             ),
         ),
       );
