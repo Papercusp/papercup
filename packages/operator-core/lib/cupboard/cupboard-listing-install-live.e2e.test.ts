@@ -60,7 +60,8 @@ it.runIf(process.env.PAPERCUSP_TEST_CUPBOARD_LIVE === '1')(
           expect.objectContaining({ name: 'slack', listingId: 'ccd90bf0-f04c-486d-93cd-2c84d8241efe', firstStatus: 409,
             secondStatus: 200, source: 'https://github.com/Papercusp/papercusp-slack', providerId: 'slack' }),
           expect.objectContaining({ name: '@papercupai/bug-triage', listingId: '508f85df-cb5a-4e92-9fdb-26c26eafd00f',
-            firstStatus: 409, secondStatus: 200, source: 'https://github.com/Papercusp/papercusp-bug-triage', triggerPack: true }),
+            // A provider-free trigger pack has no consent stop: its first call installs it.
+            firstStatus: 200, secondStatus: null, source: 'https://github.com/Papercusp/papercusp-bug-triage', triggerPack: true }),
         ]);
         // Settings → Integrations (its overview route) lists neither before the installs and both after,
         // from the same running host: no restart, no app update.

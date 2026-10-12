@@ -131,11 +131,20 @@ async function main() {
     const review = first.body?.data?.review ?? first.body?.review;
     assert.ok(review, `${listing.name}: no install review from the listing (status ${first.status}): `
       + JSON.stringify(first.body).slice(0, 1_500));
-    assert.equal(first.status, 409, `${listing.name}: an unaccepted install must stop at the review`);
-    if (listing.providerId) assert.equal(review.provider?.id, listing.providerId, `${listing.name}: review provider`);
-    const second = await post({ ...request, acceptCapabilities: true, expectedReview: review });
-    assert.equal(second.status, 200, `${listing.name}: accepted install failed: ` + JSON.stringify(second.body).slice(0, 1_500));
-    const result = second.body;
+    // Only a package that ships a provider (it reaches accounts and the network) stops at the
+    // consent review; install-plugin-core refuses it with 409 until the caller pins that review.
+    // A trigger pack with no provider installs on the first call.
+    let second: PostResult | null = null;
+    if (listing.providerId) {
+      assert.equal(first.status, 409, `${listing.name}: an unaccepted provider install must stop at the review`);
+      assert.equal(review.provider?.id, listing.providerId, `${listing.name}: review provider`);
+      second = await post({ ...request, acceptCapabilities: true, expectedReview: review });
+    } else {
+      assert.equal(review.provider ?? null, null, `${listing.name}: a provider-free package reviewed a provider`);
+    }
+    const installed = second ?? first;
+    assert.equal(installed.status, 200, `${listing.name}: install failed: ` + JSON.stringify(installed.body).slice(0, 1_500));
+    const result = installed.body;
     assert.equal(result?.ok, true, `${listing.name}: install result not ok`);
     assert.equal(result.name, listing.name, `${listing.name}: installed package name`);
     // The request carried ONLY the listing id, so the storefront resolved the source: the
@@ -154,7 +163,7 @@ async function main() {
     assert.equal(manifest.name, listing.name, `${listing.name}: installed manifest name`);
     assert.equal(manifest.distribution, 'cupboard', `${listing.name}: installed manifest distribution`);
     installs.push({ name: listing.name, listingId: listing.listingId, firstStatus: first.status,
-      secondStatus: second.status, version: result.version, source: result.source,
+      secondStatus: second?.status ?? null, version: result.version, source: result.source,
       provenance: result.provenance ? { contentSource: result.provenance.contentSource,
         contentFingerprint: result.provenance.contentFingerprint } : null,
       providerId: result.provider?.id ?? null, triggerPack: Boolean(result.triggerPack) });
