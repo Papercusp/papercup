@@ -35,6 +35,7 @@ import {
   reevaluateBarReadinessOnScopeWrite,
   stampBarReadinessNowBlock,
 } from './agent-tools/plans/plan-scope-cascade';
+import { buildAmendmentReviewBrief } from './consult/acceptance-bar-amendment-review';
 
 const iso = '2026-09-04T12:00:00.000Z';
 
@@ -1514,6 +1515,62 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     expect(diff.changes).toEqual([
       expect.objectContaining({ barKey: 'R-1', kinds: ['method-only'], fields: ['method'] }),
     ]);
+  });
+
+  it('reports changed requirement intent in the amendment candidate diff', () => {
+    const input = fixture(1);
+    const before = projectAcceptanceBarContractSnapshot(input);
+    const rubric = input.rubrics.rows[0]!;
+    const changedCriterion = {
+      ...rubric.criteria[0]!,
+      intent: {
+        request: 'Keep the amended source lineage explicit.',
+        constraints: ['Preserve the acceptance contract.'],
+        rationale: 'New references are part of the signed BAR intent.',
+        sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
+      },
+      method: 'Inspect the amended source references.',
+    };
+    changedCriterion.barHash = computeAcceptanceBarHash(changedCriterion);
+
+    const candidate = buildAcceptanceBarAmendmentCandidate(
+      before,
+      [changedCriterion],
+      new Map([['R-1', { planItemIds: ['P-001'] }]]),
+      new Map([['P-001', 'done']]),
+      {
+        rubricRevision: 3,
+        subjectPlanRevision: 8,
+        barSetHash: computeAcceptanceBarSetHash([changedCriterion]),
+        barContract: { ...rubric.barContract!, subjectPlanRevision: 8 },
+      },
+    );
+
+    const diff = diffAcceptanceBarContractSnapshots(before, candidate, 'amend');
+
+    expect(diff.changes).toEqual([
+      expect.objectContaining({
+        barKey: 'R-1',
+        kinds: ['bar-meaning', 'method-only'],
+        fields: ['intent', 'method'],
+      }),
+    ]);
+
+    const brief = buildAmendmentReviewBrief({
+      rubricRef: rubric.rubricId,
+      previewPostRef: 'thread-post:42',
+      preview: {
+        approval: {
+          schemaVersion: 1,
+          kind: 'acceptance-bar-approval',
+          rubricRef: rubric.rubricId,
+          bars: [{ barKey: 'R-1' }],
+        } as never,
+        changes: diff.changes,
+      },
+      patch: { criteria: [changedCriterion] },
+    });
+    expect(brief).toContain('Changed BARs: R-1 (bar-meaning+method-only: intent, method).');
   });
 
   it('names a required proof-layer change instead of reporting a hash-only BAR amendment', () => {

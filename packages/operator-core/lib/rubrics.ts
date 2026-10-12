@@ -36,6 +36,7 @@ import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { EvidenceRuntimeId } from './serving-runtimes';
 import {
   normalizeRequirementSections,
+  requirementSections,
   type RequirementIntent,
   type RequirementAcceptance,
   type RequirementVerification,
@@ -4395,6 +4396,7 @@ export function buildAcceptanceBarAmendmentCandidate(
         barKey,
         criterionKey: criterion.key,
         title: criterion.title,
+        requirement: requirementSections(criterion),
         barHash: criterion.barHash ?? null,
         model: criterion.model ?? '',
         method: criterion.method ?? '',
