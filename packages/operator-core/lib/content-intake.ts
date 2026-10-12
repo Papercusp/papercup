@@ -1,3 +1,8 @@
+/// <reference path="./pdfjs-worker.d.ts" />
+// The reference carries the pdf.worker.mjs module shim into EVERY program that compiles
+// this file. The scripts and operator typecheck programs reach content-intake by import,
+// not through operator-core's include glob, so a bare sibling .d.ts is invisible to
+// them (TS7016 on the worker import below).
 import { createHash } from 'node:crypto';
 import { labelExternalContent, type ExternalProvenance } from './external-content';
 import { readableHtmlText } from './html-to-text';
