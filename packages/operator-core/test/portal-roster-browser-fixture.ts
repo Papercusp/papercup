@@ -127,6 +127,8 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   harnessSettings?: boolean;
+  conversations?: boolean;
+  createDock?: boolean;
   settingsHarnesses?: { selected: string; neighbor: string; foreign: string };
   prompts?: boolean;
   overview?: boolean;
@@ -176,7 +178,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'harnessSettings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'dev' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'harnessSettings' | 'conversations' | 'createDock' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'dev' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -431,6 +433,21 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       ${input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.conversations || input.createDock ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router';
+    import { NuqsAdapter } from 'nuqs/adapters/tanstack-router';
+    import { SyncProvider } from '@papercusp/sync';
+    import { Toaster } from 'sonner';
+    import Workspace from ${JSON.stringify(input.conversations
+      ? resolve(operatorRoot, '../operator-vite/src/components/adv/AdvConversationsTab.tsx')
+      : join(operatorRoot, 'app/adv/create/AdvCreateDock.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(React.Fragment, null, React.createElement(Workspace), React.createElement(Toaster)))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
@@ -525,7 +542,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings
+  const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings || input.conversations || input.createDock
     || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard || input.dev);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
@@ -535,7 +552,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   }
   // CSS-enabled graphs must also resolve packages' style-conditioned exports.
   // Keep the loader and resolution predicates together as new modes are added.
-  const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git || input.dev);
+  const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git || input.dev || input.conversations || input.createDock);
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom'),
@@ -620,7 +637,9 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       'Dev browser graph requires the real IPC transport barrel through the maintained prefix alias');
   }
   assert.ok([...originals.keys()].some(path => path.endsWith(input.dev
-    ? '/apps/operator-vite/src/routes/dev/index.tsx' : input.cupboard
+    ? '/apps/operator-vite/src/routes/dev/index.tsx' : input.conversations
+    ? '/apps/operator-vite/src/components/adv/AdvConversationsTab.tsx' : input.createDock
+    ? '/apps/operator/app/adv/create/AdvCreateDock.tsx' : input.cupboard
     ? '/apps/operator-vite/src/routes/cupboard/index.tsx' : input.support
     ? '/apps/operator-vite/src/routes/support.tsx' : input.evals
     ? '/apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' : input.frames
@@ -803,6 +822,11 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       reads.push({ name: 'dev.workspaces', args: null });
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ workspaces: [input.selected, input.neighbor].map(id => ({ id, name: id })) }));
+    } else if ((input.conversations || input.createDock) && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      reads.push({ name, args: JSON.parse(requestUrl.searchParams.get('args') ?? '{}') });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ rows: [] }));
     } else if (input.harnessSettings && pathname.endsWith('/blueprint-params')) {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ blueprintId: 'explicit-settings-component-fixture', params: {} }));
@@ -993,7 +1017,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
-    } else if ((options.brainstormHydration || options.workflowsRead || input.git || input.dev) && pathname === '/docs-preflight.css') {
+    } else if ((options.brainstormHydration || options.workflowsRead || input.git || input.dev || input.conversations || input.createDock) && pathname === '/docs-preflight.css') {
       response.writeHead(200, { 'content-type': 'text/css' });
       response.end(readFileSync(join(built.portal, 'app/tokens.css'), 'utf8') + '\n'
         + readFileSync(join(built.portal, 'app/globals.css'), 'utf8') + '\n'
@@ -1003,7 +1027,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
-      response.end((options.brainstormHydration || options.workflowsRead || input.git || input.dev ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
+      response.end((options.brainstormHydration || options.workflowsRead || input.git || input.dev || input.conversations || input.createDock ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
         + '<div id="root"></div><script' + (input.frames ? ' type="module"' : '') + ' src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
@@ -1058,6 +1082,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('app', 'settings'); url.searchParams.set('slug', input.selected);
       url.searchParams.set('nextPot', input.neighbor); url.searchParams.set('ws', 'preflight-workspace');
     }
+    if (input.conversations || input.createDock) {
+      url.searchParams.set('app', input.conversations ? 'conversations' : 'create');
+      url.searchParams.set('ws', 'preflight-workspace');
+    }
     if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
     if (input.stats) { url.searchParams.set('app', 'stats'); url.searchParams.set('slug', input.selected); }
     if (options.gitRead) {
@@ -1098,7 +1126,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.dev ? page.locator('.pc-dev-api') : input.cupboard ? page.getByRole('button', { name: 'Refresh', exact: true })
+    try { await (input.conversations ? page.getByRole('region', { name: 'Conversation list', exact: true })
+      : input.createDock ? page.locator('.pc-adv-create') : input.dev ? page.locator('.pc-dev-api') : input.cupboard ? page.getByRole('button', { name: 'Refresh', exact: true })
       : input.support ? page.getByRole('heading', { name: 'Support', exact: true })
       : input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
       : input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
@@ -1109,7 +1138,18 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.harnessSettings ? 'ADV Settings workspace' : input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
-    if (input.harnessSettings) {
+    if (input.conversations) {
+      // The original aggregate hides search when its supplied population is
+      // empty. Wait for its resolved empty state, never a control it omits.
+      await page.getByText('No conversations', { exact: true }).waitFor();
+      for (const name of ['conversations.questionsList', 'conversations.deliberationList',
+        'conversations.agentChatList', 'conversations.agentMessageList']) {
+        assert.ok(reads.some(read => read.name === name), 'Conversations must load each original aggregate source: ' + name);
+      }
+    } else if (input.createDock) {
+      await page.getByRole('navigation', { name: 'Create view', exact: true }).waitFor();
+      assert.equal(await page.locator('.pc-adv-create__dock').count(), 1);
+    } else if (input.harnessSettings) {
       await page.getByRole('heading', { name: 'Settings — ' + input.selected, exact: true }).waitFor();
       await page.getByText(/Schema-driven per-harness settings/).waitFor();
       await page.getByTestId('settings-switch-pot').click();
@@ -1592,7 +1632,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     } else if (input.frames) {
       assert.equal(await page.locator('.pc-frames').count(), options.framesRead ? 0 : 1);
       if (options.framesRead) assert.equal(await page.getByRole('button', { name: 'Open Frames', exact: true }).count(), 1);
-    } else if (!input.harnessSettings && !input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
+    } else if (!input.conversations && !input.createDock && !input.harnessSettings && !input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
       assert.match(await page.locator('body').innerText(), /Select a /);
     }
     if (input.brainstorm) {
@@ -1633,9 +1673,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
       reads, writes, errors, supportRequests, cupboardRequests, devInvocations, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (input.harnessSettings || options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead)) {
+    if (page && (input.conversations || input.createDock || input.harnessSettings || options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       if (input.harnessSettings) writeFileSync(join(evidence, 'settings-mount-reads.json'), JSON.stringify({ reads, failedRequests }, null, 2));
+      if (input.conversations || input.createDock) writeFileSync(join(evidence, 'aggregate-create-mount-reads.json'), JSON.stringify({ reads, failedRequests }, null, 2));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
       console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);
