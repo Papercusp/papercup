@@ -294,6 +294,8 @@ registerDegradationMechanism({ mechanism: 'swarm-transport-identity', thresholds
   description: 'Fresh shared-swarm construction loaded its persisted transport seed rather than generating an ephemeral identity; cached swarm reads are excluded.' });
 registerDegradationMechanism({ mechanism: 'swarm-relay-wiring', thresholds: { minEligible: 1 },
   description: 'Configured relay keys were passed into a successfully constructed shared swarm; direct-only configuration is excluded. This measures wiring, not relay reachability.' });
+registerDegradationMechanism({ mechanism: 'browser-sync-transport', scopeKeyed: true, thresholds: { minEligible: 1 },
+  description: 'Browser preferred-transport decisions: sustained failure selects fallback (0); an actual open sustained through the stability window records primary (1). Retry attempts, explicit polling and paused/inert streams are excluded.' });
 registerDegradationMechanism({
   mechanism: 'routine-capability-read', scopeKeyed: true,
   description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',
