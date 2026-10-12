@@ -29,7 +29,7 @@ export function execute(text: string, bindings: Record<string, unknown>, functio
   const compiled = ts.transpileModule(code, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React,
   } }).outputText;
-  return runInNewContext(compiled, { ...bindings, exports: {}, Date, console: { warn() {}, log() {}, error() {} } });
+  return runInNewContext(compiled, { ...bindings, exports: {}, Date, console: { warn() {}, log() {}, error() {}, info() {} } });
 }
 const boot = 'apps/operator/bin/host-bootstrap.ts';
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
