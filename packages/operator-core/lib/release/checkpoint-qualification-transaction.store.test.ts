@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn() }));
+const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn(), appendPipelineEvent: vi.fn() }));
 
 vi.mock('../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
+vi.mock('../harness/git-sync/pipeline-events', () => ({ appendPipelineEvent: h.appendPipelineEvent }));
 
 import {
   beginQualificationTransaction,
@@ -11,9 +16,11 @@ import {
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
   retargetPreSuiteAttemptToOwningRepairHead,
+  recoverStoredQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
 } from './checkpoint-qualification-transaction';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
@@ -94,6 +101,86 @@ const successor = {
 
 beforeEach(() => {
   h.boundedOrgTxn.mockReset();
+  h.appendPipelineEvent.mockReset();
+  h.appendPipelineEvent.mockResolvedValue(undefined);
+});
+
+describe('stored historical pre-suite recovery', () => {
+  let archiveDir: string;
+  beforeEach(() => { archiveDir = mkdtempSync(join(tmpdir(), 'qualification-recovery-')); });
+  afterEach(() => { rmSync(archiveDir, { recursive: true, force: true }); });
+  const fixture = () => {
+    const current = settleQualificationTransaction(beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction, {
+      attemptId: 'attempt-1', runId: 'run-1', candidate: 'candidate-1', reason: 'error', green: null, nowMs: 200,
+    }).transaction;
+    const log = [
+      '[green-checkpoint] FAILED before checkpoint lock: dependency-generation.sh exited 77:',
+      '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT',
+      `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+        candidate: 'candidate-1', runId: 'run-1', reason: 'error', green: null,
+        advanced: false, crashed: true, recorded: true,
+      })}`,
+    ].join('\n');
+    const logPath = join(archiveDir, 'run.log');
+    writeFileSync(logPath, log);
+    return { current, input: {
+      attemptId: 'attempt-1', runId: 'run-1', candidate: 'candidate-1', logPath,
+      logSha256: createHash('sha256').update(log).digest('hex'), nowMs: 300,
+    } };
+  };
+  it('locks the exact row and archives the terminal snapshot in the same transaction', async () => {
+    const { current, input } = fixture();
+    const queue = safeQueue();
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+    const result = await recoverStoredQualificationHistoricalPreSuiteError(target, input);
+    expect(result).toMatchObject({ status: 'updated', transaction: { previousAttemptId: current.attemptId } });
+    expect(statements[0].text).toContain('FOR UPDATE');
+    expect(h.appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'qualification-recovered-pre-suite', detail: expect.objectContaining({
+        predecessor: current, logSha256: input.logSha256,
+      }),
+    }), expect.anything(), { required: true });
+    const update = statements.find(statement => statement.text.includes('UPDATE'))!;
+    expect(update.text).toContain("metadata->'repair_queue'");
+    expect(update.values).toContain(JSON.stringify(queue));
+  });
+  it('preserves and restamps the exact untested repair queue', async () => {
+    const { current, input } = fixture();
+    const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['x.test.ts'], nowMs: 150 });
+    const queue = markFrozenRepairAdmitted(red, { repairHead: 'candidate-1', nowMs: 175 });
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+    const result = await recoverStoredQualificationHistoricalPreSuiteError(target, input);
+    expect(result).toMatchObject({ status: 'updated', repairQueueReconciliation: { status: 'preserved' } });
+    expect(statements.find(statement => statement.text.includes('UPDATE'))!.text).toContain('{repair_queue,qualificationAttemptId}');
+  });
+  it('refuses a changed archive or row identity without writing', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: { ...current, runId: 'other-run' } });
+    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
+    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, { ...input, logSha256: 'a'.repeat(64) })).status).toBe('conflict');
+    expect(statements.some(statement => statement.text.includes('UPDATE'))).toBe(false);
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
+  it('fails closed on an active fixer queue or CAS miss', async () => {
+    const { current, input } = fixture();
+    const queue = markFrozenRepairFixerDispatched(safeQueue(), { spawnId: 'live-fixer', nowMs: 150 });
+    const blocked = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
+    expect(blocked.statements.some(statement => statement.text.includes('UPDATE'))).toBe(false);
+    transactionHarness({ qualificationTransaction: current, repair_queue: safeQueue() }, { casMatches: false });
+    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
+  it('requires the archive event to persist before reporting success', async () => {
+    const { current, input } = fixture();
+    transactionHarness({ qualificationTransaction: current });
+    h.appendPipelineEvent.mockRejectedValueOnce(new Error('archive event failed'));
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input)).toMatchObject({
+      status: 'unreadable', error: 'archive event failed',
+    });
+  });
 });
 
 describe('beginStoredQualification terminal repair-queue reconciliation', () => {

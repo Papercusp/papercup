@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
@@ -14,9 +15,12 @@ import {
   qualificationIntentMatches,
   reserveQualificationRunner,
   recoverQualificationScheduledTerminal,
+  recoverQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  type HistoricalPreSuiteRecoveryInput,
 } from './checkpoint-qualification-transaction';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
   createFrozenCandidateQueue,
   decideFrozenCandidateRepairQueue,
@@ -40,6 +44,81 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('historical dependency pre-suite recovery', () => {
+  const terminal = () => settleQualificationTransaction(begin(), {
+    attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+    reason: 'error', green: null, evidenceRefs: ['original-terminal-event'], nowMs: 200,
+  }).transaction;
+  const log = () => [
+    '[green-checkpoint] FAILED before checkpoint lock: dependency-generation.sh --ensure-ref candidate-1 exited 77:',
+    '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=100 avail=0',
+    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+      candidate: 'candidate-1', runId: 'run-1', reason: 'error', green: null,
+      advanced: false, crashed: true, recorded: true,
+    })}`,
+  ].join('\n');
+  const proof = (text = log()): HistoricalPreSuiteRecoveryInput => ({
+    attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+    logPath: '/archive/exact-run.log', log: text,
+    logSha256: createHash('sha256').update(text).digest('hex'), nowMs: 300,
+  });
+
+  it('creates an idempotent distinct successor without rewriting the historical terminal', () => {
+    const current = terminal();
+    const snapshot = structuredClone(current);
+    const recovered = recoverQualificationHistoricalPreSuiteError(current, proof());
+    expect(recovered.status).toBe('updated');
+    expect(recovered.transaction.attemptId).not.toBe(current.attemptId);
+    expect(recovered.transaction).toMatchObject({
+      previousAttemptId: current.attemptId, phase: 'ready', outcome: { kind: 'pending' },
+      runId: null, requiredAncestorSha: current.requiredAncestorSha,
+      candidatePolicy: current.candidatePolicy, candidate: current.candidate,
+    });
+    expect(recovered.transaction.evidenceRefs).toContain('original-terminal-event');
+    expect(recoverQualificationHistoricalPreSuiteError(recovered.transaction, proof())).toEqual({
+      status: 'idempotent', transaction: recovered.transaction,
+    });
+    expect(current).toEqual(snapshot);
+    expect(settleQualificationTransaction(current, {
+      attemptId: current.attemptId, reason: 'green', green: true, runId: 'run-1',
+    }).status).toBe('conflict');
+  });
+
+  it.each(['attemptId', 'candidate', 'runId', 'logSha256'] as const)('rejects a mismatched %s', field => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), { ...proof(), [field]: 'other' }).status).toBe('conflict');
+  });
+  it.each([
+    ['red', { kind: 'red', reason: 'not-green' }],
+    ['green', { kind: 'green', reason: 'green' }],
+    ['another inconclusive verdict', { kind: 'code-inconclusive', reason: 'gate-tooling-crash' }],
+  ] as const)('preserves a real %s terminal', (_, outcome) => {
+    const current = { ...terminal(), outcome };
+    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({ status: 'conflict', transaction: current });
+  });
+  it.each([
+    ['no positive prelock evidence', (text: string) => text.replace('FAILED before checkpoint lock:', 'dependency setup failed:')],
+    ['no typed dependency evidence', (text: string) => text.replace('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'untyped error')],
+    ['duplicate results', (text: string) => `${text}\n${text.split('\n').at(-1)}`],
+    ['malformed result', (text: string) => text.replace('"advanced":false', '"advanced":')],
+    ['wrong producer identity', (text: string) => text.replace('"runId":"run-1"', '"runId":"run-other"')],
+    ['a produced code verdict', (text: string) => text.replace('"green":null', '"green":false')],
+    ['an unrecorded result', (text: string) => text.replace('"recorded":true', '"recorded":false')],
+    ['suite start', (text: string) => `[green-checkpoint] checkpointing candidate candidate-1\n${text}`],
+    ['suite output', (text: string) => `[green-checkpoint] full suite output → /suite.log\n${text}`],
+    ['fixture-only preflight', (text: string) => text.replace('[green-checkpoint]', '[green-checkpoint:TEST-FIXTURE]')],
+  ])('rejects %s even with a correct archive hash', (_, change) => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), proof(change(log()))).status).toBe('conflict');
+  });
+  it('refuses active runners and previous measured suite history', () => {
+    const runner = { id: 'run-1', candidate: 'candidate-1', reservedAtMs: 100, evidenceRefs: [], phase: 'suite' as const };
+    const current = terminal();
+    expect(recoverQualificationHistoricalPreSuiteError({ ...current, currentPhysicalRunner: runner }, proof()).status).toBe('conflict');
+    expect(recoverQualificationHistoricalPreSuiteError({ ...current, consumedPhysicalRuns: [{
+      ...runner, endedAtMs: 200, outcome: current.outcome,
+    }] }, proof()).status).toBe('conflict');
+  });
+});
 
 describe('logical checkpoint qualification transaction', () => {
   it('keeps scheduler fires separate from suite progress and a terminal verdict', () => {
