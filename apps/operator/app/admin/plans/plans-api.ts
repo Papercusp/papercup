@@ -92,6 +92,10 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  *   1. superseded            → rejected   (terminal off-ramp)
  *   2. shipped               → shipped    (terminal success)
  *   3. awaiting-acceptance   → awaiting   (drained; implementation done, not graded)
+ *   3b. derivedLifecycle verdict implementation-complete | awaiting-acceptance
+ *                            → awaiting   (every item terminal, whatever the stored
+ *                                          status still claims — derived-status-not-
+ *                                          hand-written-2026-10-12 P-007)
  *   4. startStatus 'started' → running    (operationally running)
  *   5. ready | active        → ready      (approved, not started; `active` is legacy-approved)
  *   6. otherwise             → draft      (draft, blocked, anything else)
@@ -103,11 +107,13 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  * plan under "Running", which is the exact false reading P-004 exists to end.
  */
 export function bucketOf(
-  plan: Pick<PlanListRow, "status" | "startStatus">,
+  plan: Pick<PlanListRow, "status" | "startStatus" | "derivedLifecycle">,
 ): PlanBucket {
   if (plan.status === "superseded") return "rejected";
   if (plan.status === "shipped") return "shipped";
   if (plan.status === "awaiting-acceptance") return "awaiting";
+  const verdict = plan.derivedLifecycle?.verdict;
+  if (verdict === "implementation-complete" || verdict === "awaiting-acceptance") return "awaiting";
   if (plan.startStatus === "started") return "running";
   if (plan.status === "ready" || plan.status === "active") return "ready";
   return "draft";
@@ -131,6 +137,13 @@ export const IMPORTANCE_LEVELS: readonly Importance[] = [
   "low",
 ];
 export type PlanStartStatus = "started" | "paused" | "done" | null;
+/** Mirrors @papercusp/plan-parser's PlanLifecycleVerdict (decoupled wire type). */
+export type PlanLifecycleVerdict =
+  | "no-items"
+  | "active"
+  | "stalled"
+  | "implementation-complete"
+  | "awaiting-acceptance";
 export type PlanTriggerSource = "schedule" | "external" | "manual";
 
 /** Compact, stable label shared by the sidebar and Create-dock plan rows. */
@@ -192,6 +205,22 @@ export interface PlanListRow {
   harness: string;
   /** Operational start state — absent means never started. */
   startStatus?: Exclude<PlanStartStatus, null>;
+  /**
+   * The DERIVED lifecycle (derived-status-not-hand-written-2026-10-12 P-007):
+   * read liveness from `verdict`, never from `status`. `stalled` = live items
+   * but no plan write, linked work-item transition or live claim in 30 days.
+   * Absent from a server predating P-007.
+   */
+  derivedLifecycle?: {
+    verdict: PlanLifecycleVerdict;
+    disposition: string;
+    contradiction?: { claim: string; evidence: string };
+    idleDays?: number;
+    lastActivityAt?: string;
+    liveClaims?: number;
+    /** Signals the verdict could not see; empty = fully measured. */
+    unmeasured?: string[];
+  };
   /** Cross-plan dispatch rank — lower = dispatched first. Absent = no explicit
    *  priority (uses started_at order). */
   priority?: number;

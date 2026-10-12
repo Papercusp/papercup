@@ -1510,6 +1510,14 @@ export default defineTool({
         },
         ...(args.current ? { current: args.current } : {}),
       });
+      // derived-status-not-hand-written-2026-10-12 P-003: `now.staleness` — how many status
+      // changes the plan-event log recorded after the latest `now_updated`, never estimated
+      // from the note's text. Time-varying, so outside cachedRead; fail-soft into
+      // basis:'unavailable'; only results that carry a Now note pay the bounded read.
+      const { attachNoteStaleness } = await import('./now-note-staleness');
+      await attachNoteStaleness(
+        (env.results as Array<Record<string, unknown>>).filter((result) => result.ok === true),
+      );
     }
     // review-system-rework-reduction-2026-09-23 P-032: the opt-in per-plan efficiency read.
     // Time-varying (it reads the call ledger), so like shipReadiness it stays outside cachedRead,
