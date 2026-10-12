@@ -146,6 +146,15 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     sourceCommit: string;
     submodules: any[];
 }>;
+/** Attach dependencies to the independently invoked tree before its first Node
+ * command. Reuse the release helper's donor install mutex and private snapshot.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export function prepareVerifierDependencies({ donor, dest, receipt }: {
+    donor: string;
+    dest: string;
+    receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+}): Promise<void>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected

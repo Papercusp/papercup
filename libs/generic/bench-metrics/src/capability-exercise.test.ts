@@ -35,6 +35,12 @@ function lift(treatment: CapabilityExerciseEvidence[] | undefined, control: Capa
   ];
 }
 
+/** The repeated-session baseline arm on t1/t2: same solver re-run, no capability claim. */
+function repeated(resolved: [boolean, boolean], cheaper = false) {
+  const over: Partial<TaskRunResult> = cheaper ? { costUsd: 0.005, tokensIn: 50, tokensOut: 5, tokensTotal: 55 } : {};
+  return [row('t1', 'repeated', resolved[0], undefined, over), row('t2', 'repeated', resolved[1], undefined, over)];
+}
+
 describe('BM-P-004-exercise-evidence: a capability lift claim requires observed delivery and use', () => {
   it('admits a lift only with measured delivery AND use in treatment and measured absence in control', () => {
     const a = admitCapabilityLift(lift([coord(3, 2)]), { capability: 'fleet-leader', treatmentArm: 'coordinated', controlArm: 'solo' });
@@ -87,9 +93,39 @@ describe('BM-P-004-exercise-evidence: a capability lift claim requires observed 
     expect(c.liftAdmissions[0].refusals).toEqual(['treatment-never-exercised']);
     expect(refused.caveats.some((line) => line.includes('Capability lift NOT admitted for coordinated'))).toBe(true);
 
-    const admitted = buildCapabilityAttribution(lift([coord(2, 2)]), { control: 'solo', capabilityExercise: { coordinated: 'fleet-leader' } });
+    const admitted = buildCapabilityAttribution([...lift([coord(2, 2)]), ...repeated([true, false])],
+      { control: 'solo', capabilityArms: ['coordinated'], capabilityExercise: { coordinated: 'fleet-leader' }, repeatedSessionBaseline: 'repeated' });
     expect(admitted.capabilities[0].liftAdmitted).toBe(true);
+    expect(admitted.capabilities[0].repeatedSessionBaseline).toMatchObject({ arm: 'repeated', value: 0.5, valueDelta: 0.5, beaten: true });
     expect(admitted.caveats.some((line) => line.includes('NOT admitted'))).toBe(false);
+  });
+
+  // AUTO-BAR-R-14-P-011: a lift is never claimed without beating a matched-cost repeated-session baseline.
+  describe('matched-cost repeated-session baseline (R-14)', () => {
+    const claim = { control: 'solo', capabilityArms: ['coordinated'], capabilityExercise: { coordinated: 'fleet-leader' } };
+    it('admits nothing when no baseline is declared, and says so', () => {
+      const rep = buildCapabilityAttribution(lift([coord(2, 2)]), claim);
+      expect(rep.capabilities[0].liftAdmitted).toBe(false);
+      expect(rep.capabilities[0].repeatedSessionBaseline).toBeNull();
+      expect(rep.caveats.some((line) => line.includes('No matched-cost repeated-session baseline was declared'))).toBe(true);
+    });
+    it('refuses a declared baseline that has no rows', () => {
+      const rep = buildCapabilityAttribution(lift([coord(2, 2)]), { ...claim, repeatedSessionBaseline: 'repeated' });
+      expect(rep.capabilities[0].liftAdmitted).toBe(false);
+      expect(rep.caveats.some((line) => line.includes('(repeated) was measured'))).toBe(true);
+    });
+    it('refuses a treatment that only ties the baseline', () => {
+      const rep = buildCapabilityAttribution([...lift([coord(2, 2)]), ...repeated([true, true])], { ...claim, repeatedSessionBaseline: 'repeated' });
+      expect(rep.capabilities[0].repeatedSessionBaseline).toMatchObject({ valueDelta: 0, beaten: false });
+      expect(rep.capabilities[0].liftAdmitted).toBe(false);
+    });
+    it('refuses a treatment that wins only by spending more than the baseline', () => {
+      const rep = buildCapabilityAttribution([...lift([coord(2, 2)]), ...repeated([false, false], true)], { ...claim, repeatedSessionBaseline: 'repeated' });
+      const versus = rep.capabilities[0].repeatedSessionBaseline!;
+      expect(versus).toMatchObject({ valueDelta: 1, beaten: false });
+      expect(versus.costFraction).toBeGreaterThan(1);
+      expect(rep.capabilities[0].liftAdmitted).toBe(false);
+    });
   });
 
   it('an arm that declares no claimed capability is never admitted', () => {
@@ -117,8 +153,17 @@ describe('capability evidence persistence + merge', () => {
   });
 
   it('merges per-agent evidence; one unmeasured contributor makes the total unknown', () => {
-    const merged = mergeCapabilityEvidence([[coord(1, 2)], [coord(3, 4)], undefined]);
-    expect(merged).toEqual([coord(4, 6)]);
+    expect(mergeCapabilityEvidence([[coord(1, 2)], [coord(3, 4)]])).toEqual([coord(4, 6)]);
     expect(mergeCapabilityEvidence([[coord(1, 2)], [coord(null, 4, false)]])).toEqual([coord(null, 6, true)]);
+  });
+
+  it('never reads a partial sum as complete when a contributor reported nothing or omitted the capability', () => {
+    expect(mergeCapabilityEvidence([[coord(1, 2)], [coord(3, 4)], undefined])).toEqual([coord(null, null, true)]);
+    expect(mergeCapabilityEvidence([[coord(0, 0, false)], null])).toEqual([coord(null, null, null)]);
+    const memory = (used: number): CapabilityExerciseEvidence => ({ capability: 'memory-recall', available: true, delivered: 1, used });
+    expect(mergeCapabilityEvidence([[coord(1, 2), memory(1)], [coord(3, 4)]])).toEqual([
+      coord(4, 6), { capability: 'memory-recall', available: true, delivered: null, used: null },
+    ]);
+    expect(mergeCapabilityEvidence([undefined, null])).toEqual([]);
   });
 });

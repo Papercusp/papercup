@@ -29,7 +29,10 @@ import {
   type HunkExactSourceOutcome,
 } from './hunk-exact-admission';
 import { containmentForPaths } from './judged-sha-containment';
-import { importCompletenessPreflight } from './admission-import-completeness';
+import { importCompletenessPreflight, readAdmissionBlobBatch } from './admission-import-completeness';
+import { resolve, relative, sep } from 'node:path';
+import { precheckPopulation, isTestFilePath, type SignatureLike, type FixPrecheckPopulation } from './admission-fix-precheck';
+import { buildIndex, isTestFile, selectRelatedTests } from '../../../../scripts/lib/related-tests.mjs';
 import {
   chainAdmissionPreflights,
   lockfileManifestConsistencyPreflight,
@@ -49,8 +52,77 @@ export interface AdmissionPreflightSpec {
 type CommittedPatchInput = Omit<Parameters<typeof buildCommittedPatchSource>[0], 'git'>;
 type RetractInput = Omit<Parameters<typeof retractAdmission>[0], 'git'>;
 
+export interface ImmutablePrecheckInput {
+  root: string;
+  commit: string;
+  signature: readonly SignatureLike[];
+  admittedPaths: readonly string[];
+}
+
+/** Runs on the admission worker. Neither inventory nor blob reads consult the working tree. */
+export function immutablePrecheckPopulation(input: ImmutablePrecheckInput):
+  | { ok: true; population: FixPrecheckPopulation }
+  | { ok: false; detail: string } {
+  const root = resolve(input.root);
+  const unavailable = (detail: string) => ({ ok: false as const, detail });
+  type Entry = { mode: string; type: string; sha: string; file: string };
+  const treeAt = (cwd: string, commit: string): Entry[] => {
+    const tree = realAdmissionGit(['ls-tree', '-r', '-z', '--full-tree', commit], { cwd });
+    if (tree.status !== 0) throw new Error(`cannot read pinned tree ${cwd}@${commit}: ${tree.stderr.trim()}`);
+    return tree.stdout.split('\0').filter(Boolean).map((row) => {
+      const match = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(row);
+      if (!match) throw new Error(`malformed pinned tree in ${cwd}`);
+      return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
+    });
+  };
+  try {
+    const top = treeAt(root, input.commit);
+    const admitted = new Set(input.admittedPaths.map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, '')));
+    const gitlinks = top.filter((entry) => entry.type === 'commit' && admitted.has(entry.file));
+    // Keep ordinary admissions' existing exact-file policy. Directory gitlinks are the gap.
+    if (gitlinks.length === 0) return { ok: true, population: precheckPopulation(input) };
+    const blobs = new Map<string, string | null>();
+    const ownRoots = gitlinks.map((entry) => resolve(root, entry.file));
+    const collect = (cwd: string, commit: string, entries: Entry[], depth: number): void => {
+      if (depth > 8) throw new Error(`pinned submodule nesting exceeds inventory bound at ${cwd}`);
+      const sources = entries.filter((entry) => entry.type === 'blob' && /\.[cm]?[jt]sx?$/.test(entry.file));
+      const batch = readAdmissionBlobBatch(cwd, [...new Set(sources.filter((entry) => entry.mode !== '120000').map((entry) => entry.sha))]);
+      if (!batch.ok) throw new Error(`${cwd}@${commit}: ${batch.detail}`);
+      for (const entry of entries) {
+        if (entry.type === 'blob') blobs.set(resolve(cwd, entry.file), entry.mode === '120000' ? null : batch.contents.get(entry.sha) ?? null);
+        else if (entry.type === 'commit') {
+          const child = resolve(cwd, entry.file);
+          const identity = realAdmissionGit(['rev-parse', '--show-toplevel'], { cwd: child });
+          if (identity.status !== 0 || resolve(identity.stdout.trim()) !== child)
+            throw new Error(`pinned submodule object store unavailable: ${child}@${entry.sha}`);
+          collect(child, entry.sha, treeAt(child, entry.sha), depth + 1);
+        }
+      }
+    };
+    collect(root, input.commit, top, 0);
+    const sources = [...blobs.keys()].filter((file) => /\.[cm]?[jt]sx?$/.test(file));
+    const fs = { list: () => sources, read: (file: string) => blobs.get(file) ?? null, exists: (file: string) => blobs.has(file) };
+    const index = buildIndex({ rootDir: root, fs });
+    // A gitlink moves a directory. Expand it to immutable descendants for the existing selector.
+    const changedPaths = [...blobs.keys()].filter((file) => ownRoots.some((own) => file.startsWith(own + sep)));
+    const selected = selectRelatedTests({ rootDir: root, changedPaths, index, fs, judgedSha: input.commit });
+    const related = selected.mode === 'full' ? sources.filter(isTestFile) : selected.selected;
+    const tests = sources.filter((file) => isTestFilePath(file));
+    const own = tests.filter((file) => ownRoots.some((own) => file.startsWith(own + sep)));
+    const unmeasuredRoots = ownRoots.filter((ownRoot) => !own.some((file) => file.startsWith(ownRoot + sep)));
+    if (unmeasuredRoots.length > 0) return unavailable(`admitted gitlink has no discoverable test files: ${unmeasuredRoots.join(', ')}; no test measurement can certify its paired dependencies`);
+    // Router spellings absent from the selector's test regex cannot silently disappear.
+    const affectedTestFiles = [...new Set([...related, ...own, ...tests.filter((file) => !isTestFile(file))])]
+      .map((file) => relative(root, file).split(sep).join('/')).sort();
+    return { ok: true, population: precheckPopulation({ ...input, affectedTestFiles }) };
+  } catch (error) {
+    return unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export type AdmissionJob =
   | { kind: 'git'; argv: string[]; cwd: string }
+  | { kind: 'precheck-population'; input: ImmutablePrecheckInput }
   | { kind: 'containment'; paths: string[]; judgedSha: string; root: string; branch: string }
   | { kind: 'committed-patch'; input: CommittedPatchInput }
   | { kind: 'hunk-exact'; input: Omit<BuildHunkExactSourceInput, 'git'> }
@@ -63,6 +135,7 @@ export type AdmissionJob =
 
 export interface AdmissionJobResults {
   git: AdmissionGitResult;
+  'precheck-population': ReturnType<typeof immutablePrecheckPopulation>;
   containment: ReturnType<typeof containmentForPaths>;
   'committed-patch': ReturnType<typeof buildCommittedPatchSource>;
   'hunk-exact': HunkExactSourceOutcome;
@@ -94,6 +167,8 @@ export function executeAdmissionJob(job: AdmissionJob): AdmissionJobResults[Admi
   switch (job.kind) {
     case 'git':
       return realAdmissionGit(job.argv, { cwd: job.cwd });
+    case 'precheck-population':
+      return immutablePrecheckPopulation(job.input);
     case 'containment':
       return containmentForPaths(job.paths, job.judgedSha, job.root, undefined, job.branch);
     case 'committed-patch':

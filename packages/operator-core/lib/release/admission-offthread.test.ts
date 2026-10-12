@@ -4,8 +4,8 @@
  * Every case drives a real git repo; nothing here is mocked.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import {
   runAdmissionJob,
 } from './admission-offthread';
 import { executeAdmissionJob } from './admission-jobs';
+import { evaluateFixPrecheck, precheckPopulation } from './admission-fix-precheck';
 
 let repo: string;
 
@@ -57,6 +58,107 @@ async function loopTurnsDuring(job: Promise<unknown>): Promise<number> {
 }
 
 describe('admission off-thread host (WI-10005223)', () => {
+  it('WI-8351 selects pinned gitlink tests and paired callers despite an empty filename population', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-paired-'));
+    try {
+      const init = (cwd: string) => {
+        execFileSync('git', ['init', '-q'], { cwd });
+        execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd });
+        execFileSync('git', ['config', 'user.name', 'test'], { cwd });
+      };
+      init(fixture);
+      const child = join(fixture, 'component');
+      mkdirSync(child);
+      init(child);
+      writeFileSync(join(child, 'api.mjs'), 'export const value = 1;\n');
+      writeFileSync(join(child, 'paired.test.mjs'), "import { test } from 'node:test';\nimport { equal } from 'node:assert/strict';\nimport { value } from '../missing-parent-helper.mjs';\ntest('paired helper supports the component', () => equal(value, 1));\n// café\n");
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+      git(child, 'add', '.');
+      git(child, 'commit', '-q', '-m', 'pinned component');
+      const pin = git(child, 'rev-parse', 'HEAD');
+      writeFileSync(join(fixture, 'parent.test.mjs'), "import './component/api.mjs';\n");
+      writeFileSync(join(fixture, 'unrelated.test.mjs'), 'export const unaffected = 1;\n');
+      git(fixture, 'add', 'parent.test.mjs', 'unrelated.test.mjs');
+      git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
+      git(fixture, 'commit', '-q', '-m', 'frozen paired tree');
+      const commit = git(fixture, 'rev-parse', 'HEAD');
+      const missingHelper = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      expect(missingHelper.status).toBe(1);
+      expect(missingHelper.stdout + missingHelper.stderr).toContain('ERR_MODULE_NOT_FOUND');
+      writeFileSync(join(fixture, 'missing-parent-helper.mjs'), 'export const value = 1;\n');
+      const pairedControl = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      expect(pairedControl.status).toBe(0);
+      expect(pairedControl.stdout).toContain('# pass 1');
+      // Staging now has another checkout and untracked test; neither may enter the proof.
+      writeFileSync(join(child, 'paired.test.mjs'), 'export const silentlyRepaired = 1;\n');
+      writeFileSync(join(child, 'ambient.test.mjs'), 'throw new Error("ambient");\n');
+      git(child, 'add', '.');
+      git(child, 'commit', '-q', '-m', 'ambient change');
+      const input = { root: fixture, commit, admittedPaths: ['component'],
+        signature: [{ kind: 'workspace-task' as const, id: 'component::test' }] };
+      expect(precheckPopulation(input).files).toEqual([]);
+      const result = await runAdmissionJob({ kind: 'precheck-population', input });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.detail);
+      expect(result.population.files).toEqual(['component/paired.test.mjs', 'parent.test.mjs']);
+      expect(result.population.canProveDoesNotFix).toBe(false);
+      const failed = evaluateFixPrecheck(result.population, { ran: true, commit,
+        results: result.population.files.map((path) => ({ path, status: path.startsWith('component/') ? 'fail' : 'pass' })) });
+      expect(failed).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['component/paired.test.mjs'] });
+      expect(evaluateFixPrecheck(result.population, { ran: true, commit,
+        results: result.population.files.map((path) => ({ path, status: 'pass' })) })).toMatchObject({ ok: true, ran: true });
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 1, jobsInline: 0 });
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('WI-8351 refuses unavailable pinned submodule objects instead of measuring ambient files', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-missing-pin-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: fixture, encoding: 'utf8' }).trim();
+      git('init', '-q');
+      git('config', 'user.email', 'test@example.invalid');
+      git('config', 'user.name', 'test');
+      git('update-index', '--add', '--cacheinfo', `160000,${'a'.repeat(40)},component`);
+      git('commit', '-q', '-m', 'unavailable pin');
+      mkdirSync(join(fixture, 'component'));
+      writeFileSync(join(fixture, 'component', 'ambient.test.mjs'), 'export const fake = 1;\n');
+      const result = await runAdmissionJob({ kind: 'precheck-population', input: {
+        root: fixture, commit: git('rev-parse', 'HEAD'), admittedPaths: ['component'], signature: [] } });
+      expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('object store unavailable') });
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('WI-8351 refuses a gitlink with native tests but no router-supported inventory', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-native-inventory-'));
+    try {
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+      const init = (cwd: string) => {
+        git(cwd, 'init', '-q');
+        git(cwd, 'config', 'user.email', 'test@example.invalid');
+        git(cwd, 'config', 'user.name', 'test');
+      };
+      init(fixture);
+      const child = join(fixture, 'component');
+      mkdirSync(child);
+      init(child);
+      writeFileSync(join(child, 'api.mjs'), 'export const value = 1;\n');
+      writeFileSync(join(child, 'native.test.rs'), '#[test] fn paired_native_test() { assert!(true); }\n');
+      git(child, 'add', '.');
+      git(child, 'commit', '-q', '-m', 'native-only component');
+      const pin = git(child, 'rev-parse', 'HEAD');
+      writeFileSync(join(fixture, 'parent.test.mjs'), "import './component/api.mjs';\n");
+      git(fixture, 'add', 'parent.test.mjs');
+      git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
+      git(fixture, 'commit', '-q', '-m', 'frozen native-only tree');
+      const result = await runAdmissionJob({ kind: 'precheck-population', input: {
+        root: fixture, commit: git(fixture, 'rev-parse', 'HEAD'), admittedPaths: ['component'],
+        signature: [{ kind: 'workspace-task', id: 'component::test' }],
+      } });
+      expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('no discoverable test files') });
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 1, jobsInline: 0 });
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 60_000);
+
   it('resolves the unbundled tsx bootstrap from a source tree with no bundled worker', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     expect(admissionWorkerEntry(here)).toBe(join(here, ADMISSION_WORKER_TSX_BOOTSTRAP));

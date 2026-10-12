@@ -12,7 +12,12 @@
  * that overlay marked `blocked` are fed to the ranking as `blocked` — otherwise
  * the brief could point at an item the same payload reports as blocked.
  */
-import { deriveNextPointer, type DerivedNextPointer, type PlanItem } from '@papercusp/plan-parser';
+import {
+  deriveNextPointer,
+  type DerivedNextPointer,
+  type PlanItem,
+  type PlanStatusSummary,
+} from '@papercusp/plan-parser';
 import {
   finalizeOperationalBrief,
   known,
@@ -49,6 +54,23 @@ export interface PlanBriefFacts extends Record<string, unknown> {
   counts: BriefField<{ total: number; done: number; dropped: number; nonTerminal: number }>;
   authority: BriefField<PlanBriefAuthority>;
   acceptance: BriefField<PlanBriefAcceptance>;
+  /** derived-status-not-hand-written-2026-10-12 P-001: plans:get's read-time
+   * status (full item census, holders, latest decision), passed through. */
+  derivedStatus: BriefField<PlanStatusSummary>;
+}
+
+function readDerivedStatus(result: Rec): PlanStatusSummary | null {
+  const d = rec(result.derivedStatus);
+  return d && typeof d.text === 'string' && rec(d.counts) ? (d as unknown as PlanStatusSummary) : null;
+}
+
+/** Holders of one item's linked work item, or null when the item is not in the summary's (capped) lists. */
+function holdersOf(status: PlanStatusSummary, itemId: string): string[] | null {
+  for (const list of [status.inFlight, status.actionable, status.blocked, status.awaitingHuman]) {
+    const hit = list.find((it) => it.id === itemId);
+    if (hit) return hit.heldBy;
+  }
+  return null;
 }
 
 export type PlanOperationalBrief = OperationalBrief<PlanBriefFacts>;
@@ -346,6 +368,9 @@ export function projectPlanOperationalBrief(result: Rec, options: ProjectPlanBri
   const lifecycle = rec(result.lifecycle);
   const verdict = lifecycle ? str(lifecycle.verdict) : null;
   const frontmatterOwner = str(rec(result.frontmatter)?.owner);
+  const derivedStatus = readDerivedStatus(result);
+  const nextHolders =
+    derivedStatus?.holdersMeasured && next?.itemId ? holdersOf(derivedStatus, next.itemId) : null;
 
   return finalizeOperationalBrief<PlanBriefFacts>({
     surface: 'plan',
@@ -353,9 +378,11 @@ export function projectPlanOperationalBrief(result: Rec, options: ProjectPlanBri
     state: known(verdict ? `${status} (derived: ${verdict})` : status, verdict ? 'plans:get.status+lifecycle.verdict' : 'plans:get.status'),
     owner: frontmatterOwner
       ? known(frontmatterOwner, 'plans:get.frontmatter.owner')
-      : unknown(
-          `plans:get does not project claim holders${workItemId ? `; read work_items:get { id: '${workItemId}' }` : ''}`,
-        ),
+      : nextHolders !== null
+        ? known(nextHolders.length > 0 ? nextHolders.join(', ') : null, `plans:get.derivedStatus holders of ${next!.itemId}`)
+        : unknown(
+            `no claim holders measured for the next item${workItemId ? `; read work_items:get { id: '${workItemId}' }` : ''}`,
+          ),
     nextAction: next ? known(nextActionFor(next, workItemId, acceptance), nextSource) : unknown('no next pointer could be derived'),
     blockers,
     lastVerified: readLastVerified(result, options.auditIncluded ?? true),
@@ -366,6 +393,9 @@ export function projectPlanOperationalBrief(result: Rec, options: ProjectPlanBri
       counts: next ? known(next.counts, nextSource) : unknown('no item census in this read'),
       authority: readAuthority(result, items),
       acceptance,
+      derivedStatus: derivedStatus
+        ? known(derivedStatus, 'plans:get.derivedStatus (read-time, full item census)')
+        : unknown('plans:get returned no derivedStatus (legacy plan or an older build)'),
     },
   });
 }

@@ -136,6 +136,8 @@ const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
 const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 /** Type declarations (.d.ts / .d.mts / .d.cts) have no call sites, so no seam to count. */
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
+/** Module specifiers whose imports are pure builders, never call-count seams (see the import walk). */
+export const NON_SEAM_IMPORT_SPECIFIERS = new Set(['zod', 'zod/v3', 'zod/v4', 'zod/mini', 'typescript']);
 const EXCLUDED_DIR_RE = /(?:^|\/)(?:dist|build|node_modules|coverage|\.next|\.papercusp)\//;
 const EXCLUDED_ROOT_RE = /^(?:papercup-release|papercup-checkpoint)\//;
 /**
@@ -464,6 +466,16 @@ function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
 
   const imported = new Set();
   for (const statement of source.statements) {
+    // A pure schema-builder import (z.string(), z.enum()) is never a call-count seam: no test
+    // asserts how many times a schema was built. Counting it made every args-schema edit emit a
+    // false "SEAM CALL-COUNT INCREASE" (oversized-tool-results-reduction-2026-10-12 P-008).
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      NON_SEAM_IMPORT_SPECIFIERS.has(statement.moduleSpecifier.text)
+    ) {
+      continue;
+    }
     if (ts.isImportDeclaration(statement) && statement.importClause && !statement.importClause.isTypeOnly) {
       const clause = statement.importClause;
       if (clause.name) imported.add(clause.name.text);

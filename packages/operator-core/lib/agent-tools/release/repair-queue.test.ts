@@ -5,6 +5,7 @@ import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
+import { precheckPopulation } from '../../release/admission-fix-precheck';
 import {
   runAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
@@ -74,6 +75,7 @@ const mocks = vi.hoisted(() => ({
   alive: vi.fn(),
   audit: vi.fn(),
   admit: vi.fn(),
+  population: vi.fn(),
   admissionJobOptions: vi.fn(),
   admissionGit: vi.fn(),
   retract: vi.fn(),
@@ -183,6 +185,7 @@ vi.mock('../../release/admission-offthread', async () => {
       options?: { timeoutMs?: number; stepName?: string },
     ) => {
       mocks.admissionJobOptions(job, options);
+      if (job.kind === 'precheck-population') return mocks.population(job.input);
       return executeAdmissionJob(job);
     },
   };
@@ -395,6 +398,7 @@ beforeEach(() => {
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.importPreflight.mockReturnValue(() => null);
   mocks.hunkExact.mockReturnValue(hunkExactOf());
+  mocks.population.mockImplementation((input) => ({ ok: true, population: precheckPopulation(input) }));
   mocks.canonicalRoot.mockImplementation((root: string) => root);
   mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
     ran: true as const,
@@ -1159,6 +1163,43 @@ describe('release:repair-queue', () => {
   describe('R6 admission pre-check wiring (P-006)', () => {
     const dryRuns = () => mocks.admit.mock.calls.map((c) => (c[0] as { dryRun: boolean }).dryRun);
     const queueWithoutPrecheck = () => ({ ...queue, admissionPrecheck: undefined });
+
+    it('WI-8351 runs the built gitlink population before publication and refuses a paired helper red', async () => {
+      const pairedFiles = ['component/paired.test.mjs', 'parent.test.mjs'];
+      const gitlinkQueue = { ...queueWithoutPrecheck(), signature: [{ kind: 'workspace-task' as const, id: 'component::test' }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: gitlinkQueue });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      mocks.population.mockImplementation((input) => ({ ok: true,
+        population: precheckPopulation({ ...input, affectedTestFiles: pairedFiles }) }));
+      mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+        ran: true as const, commit, results: files.map((path) => ({ path, status: path.startsWith('component/') ? 'fail' : 'pass' })),
+      }));
+      const started = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(started).toMatchObject({ pending: true, precheckOperation: { builtCommit: NEW_HEAD, files: pairedFiles } });
+      expect(mocks.population).toHaveBeenCalledWith({ root: '/repo', commit: NEW_HEAD, signature: gitlinkQueue.signature, admittedPaths: ['component'] });
+      expect(dryRuns()).toEqual([true]);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'failed', verdict: {
+        code: 'admission-imports-red', importedRed: ['component/paired.test.mjs'], population: { canProveDoesNotFix: false },
+      } });
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      const refused = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(refused).toMatchObject({ admitted: false, refused: true, reason: 'admission-imports-red' });
+      expect(dryRuns().every((dry) => dry === true)).toBe(true);
+    });
+
+    it('WI-8351 refuses unknown immutable inventory before launching or publishing', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      mocks.population.mockReturnValue({ ok: false, detail: 'pinned component object unavailable' });
+      const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ refused: true, reason: 'admission-precheck-unavailable', builtCommit: NEW_HEAD });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true]);
+    });
     const settledPrecheckQueue = async () => {
       await drainDetached();
       const transitionResult = mocks.transition.mock.results.at(-1)?.value as

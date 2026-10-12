@@ -1520,7 +1520,7 @@ export default defineTool({
       // (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1 re-judge measures it.
       // Any other runner/setup failure refuses publication because an unmeasured result never
       // counts as passing. `skipPrecheck:true` + `precheckReason` is the deliberate ledgered opt-out.
-      const population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
+      let population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
       const skipPrecheck = args.skipPrecheck === true;
       const precheckReason = typeof args.precheckReason === 'string' ? args.precheckReason.trim() : '';
       if (skipPrecheck && precheckReason.length < 8) {
@@ -1539,7 +1539,6 @@ export default defineTool({
           mode,
         });
       }
-      const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       const buildAdmission = (dry: boolean) =>
         runJob(dry ? 'build-proof' : 'publish', {
           kind: 'admit',
@@ -1572,6 +1571,22 @@ export default defineTool({
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
       let outcome = await buildAdmission(true);
+      // WI-8351: a gitlink directory is not a test filename. Resolve its own and paired test
+      // population from the unpublished built commit BEFORE deciding whether R6 applies.
+      // The serializable job runs all tree/blob reads on the existing admission worker.
+      if (outcome.ok && !dryRun && !skipPrecheck) {
+        const inventory = await runJob('precheck-population', {
+          kind: 'precheck-population',
+          input: { root, commit: outcome.commit, signature: queue.signature ?? [], admittedPaths: paths },
+        });
+        if (!inventory.ok) {
+          return json({ ...base, ok: false, admitted: false, refused: true, dryRun: false,
+            verdict: 'refused', reason: 'admission-precheck-unavailable', detail: inventory.detail,
+            builtCommit: outcome.commit, judgedSha: queue.repairHead, containment: await containmentAt(queue.repairHead), mode });
+        }
+        population = inventory.population;
+      }
+      const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       // WI-10004151 part 2: an admitted lockfile/patch moves repairHead onto dependency inputs
       // the gate must materialise (`--ensure-ref`) before it can judge anything. Ask the SAME
       // script now whether that would succeed, so a lock no installed tree can produce is

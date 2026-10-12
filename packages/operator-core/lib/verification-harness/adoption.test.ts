@@ -174,6 +174,69 @@ describe('the GOAL Tauri driver adopts the contract', () => {
   });
 });
 
+describe('the DAO HR native delegate adopts the contract', () => {
+  it.each([false, true])('records the native verdict and propagates failure (%s)', async (fails) => {
+    const source = harnessSource('scripts/tauri-surface-verify-dao-hr.mts');
+    const footer = source.slice(source.indexOf('const selection = parseSelectionArgs('));
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vh-adoption-dao-hr-'));
+    tmpRoots.push(root);
+    const native = vi.fn(async () => {
+      if (fails) throw new Error('DAO HR native assertion refused');
+    });
+    const processFixture: { argv: string[]; exitCode?: number } = {
+      argv: ['node', 'driver.mts', '--only=native'],
+    };
+    let measured: HarnessRunResult | undefined;
+    await runInNewContext('(async () => {\n' + footer + '\n})()', {
+      parseSelectionArgs, defaultEvidenceRoot: () => root, runNativeE2e: native,
+      process: processFixture,
+      runHarness: async (args: RunHarnessArgs) => {
+        measured = await runHarness({ ...args, guardRails: [] });
+        return measured;
+      },
+    });
+    expect(native).toHaveBeenCalledExactlyOnceWith(
+      ['packages/operator-core/lib/dao-hr/native.e2e.test.ts'], { runtimeUnit: 'dao-hr-native-desktop' },
+    );
+    expect(measured?.harness).toBe('dao-hr-tauri');
+    expect(measured?.verdict).toBe(fails ? 'fail' : 'pass');
+    expect(processFixture.exitCode).toBe(fails ? 1 : 0);
+    const persisted = JSON.parse(readFileSync(path.join(measured!.evidenceDir, 'result.json'), 'utf8'));
+    expect(persisted.verdict).toBe(measured?.verdict);
+    if (fails) expect(persisted.phases[0].detail).toContain('DAO HR native assertion refused');
+  });
+});
+
+describe('the tutorial voice asset native delegate adopts the contract', () => {
+  it.each([false, true])('records the delegated shell verdict and propagates failure (%s)', (fails) => {
+    const source = harnessSource('scripts/tauri-surface-verify-tutorial-voice-assets.sh');
+    const footer = source.slice(source.indexOf('vh_run native run_native'));
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vh-adoption-tutorial-assets-'));
+    tmpRoots.push(root);
+    const script = [
+      'set -euo pipefail',
+      `source ${JSON.stringify(VH_SH)}`,
+      ...declarationLines(source),
+      'vh_init tutorial-voice-assets "$VH_ADOPTION_ROOT"',
+      'vh_bracket_trap',
+      `run_native() { return ${fails ? 7 : 0}; }`,
+      footer,
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000,
+      env: { ...process.env, VH_ADOPTION_ROOT: root, VH_LOG_FD: '1', VH_FAIL_OPEN: '0', VH_DISABLE: '0' },
+    });
+    expect(result.status, result.stderr).toBe(fails ? 1 : 0);
+    const runDir = readdirSync(root).find(dir => dir !== 'latest');
+    expect(runDir).toBeDefined();
+    const persisted = JSON.parse(readFileSync(path.join(root, runDir!, 'result.json'), 'utf8'));
+    expect(persisted.verdict).toBe(fails ? 'fail' : 'pass');
+    expect(persisted.phases).toEqual([expect.objectContaining({
+      phase: 'native', status: fails ? 'failed' : 'passed',
+    })]);
+  });
+});
+
 describe('the LLM scenario battery adopts the contract', () => {
   it('plans every real scenario as a phase', () => {
     const contract = llmBatteryContract(SCENARIOS);

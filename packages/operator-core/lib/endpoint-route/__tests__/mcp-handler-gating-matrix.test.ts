@@ -429,7 +429,13 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
       h.nativeSessionWorkspaceScopes.push(workspaceId);
       const { capturePgDiagnosticContext } = await import('@papercusp/db-org');
       h.nativeSessionDiagnosticContexts.push(capturePgDiagnosticContext());
-      if (h.nativeSessionVerifierFailure?.sessionId === sessionId) throw h.nativeSessionVerifierFailure.error;
+      const verifierFailure = h.nativeSessionVerifierFailure;
+      if (verifierFailure?.sessionId === sessionId) {
+        const { traceNamedQueryStage } = await import('../../agent-tools/db-diagnostic-correlation-wiring');
+        return await traceNamedQueryStage('native-session-verifier-global-transaction', async () => {
+          throw verifierFailure.error;
+        });
+      }
       if (h.nativeSessionRows) {
         return actual.classifyOwnerNativeSessionRows(h.nativeSessionRows.get(ownerId) ?? [], sessionId);
       }
@@ -5622,6 +5628,14 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
               code: '57014',
               message: 'verification timed out for [redacted] and [redacted]',
               durationMs: expect.any(Number),
+              stageTimings: {
+                omittedStages: 0,
+                stages: [expect.objectContaining({
+                  stage: 'native-session-verifier-global-transaction',
+                  elapsedMs: expect.any(Number),
+                  outcome: 'rejected',
+                })],
+              },
             },
           },
         },
@@ -6091,6 +6105,7 @@ describe('isolated consult native identity guard (get-feedback D-006)', () => {
     { sourceBackend: 'claude', targetBackend: 'claude', operation: 'fork' },
     { sourceBackend: 'claude', targetBackend: 'codex', operation: 'convert' },
     { sourceBackend: 'codex', targetBackend: 'claude', operation: 'convert' },
+    { sourceBackend: 'codex', targetBackend: 'codex', operation: 'convert' },
   ])('$sourceBackend → $targetBackend $operation rejects source identity before dispatch while both owners remain usable', async ({ sourceBackend, targetBackend }) => {
     const sourceOwner = 'su-consult-source';
     const answeringOwner = 'su-consult-answerer';

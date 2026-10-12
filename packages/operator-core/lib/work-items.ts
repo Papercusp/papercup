@@ -8855,6 +8855,8 @@ export async function claimNextIssueWorkItem(
   opts: {
     /** Optional caller-owned client; scheduler:get_next uses its isolated claim pool. */
     client?: OrgSql;
+    /** Pool attribution for bounded acquisition when the caller injects client. */
+    acquirePool?: string;
     /** Reuse the scheduler's bounded authority read across candidate families. */
     operationClaimRead?: ActiveOperationWorkerClaimRead;
     issueKinds?: readonly IssueStoreKind[];
@@ -9277,7 +9279,7 @@ export async function claimNextIssueWorkItem(
       }
       return { issue };
     },
-    { client: sql, signal: opts.signal },
+    { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
   )).catch(async (error) => {
     const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
     if (error instanceof CurrentBugReproductionRefusal) return null;

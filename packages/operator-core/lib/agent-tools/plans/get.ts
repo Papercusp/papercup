@@ -41,6 +41,7 @@ import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-l
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
+import { summarizePlanStatus, type PlanItemHolder } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
 import { getLatestActivationAudit, getLatestPlanAudit } from '../../plan-audits';
 import { splitPlanSections } from './plan-sections';
@@ -942,6 +943,9 @@ export default defineTool({
                   // P-003: every linked work-item per plan item, folded into workItemId /
                   // workItemIds on each item by the shared report-don't-guess rule.
                   const linkedWorkItems: Record<string, LinkedWorkItemCandidate[]> = {};
+                  // derived-status-not-hand-written-2026-10-12 P-001: who holds each item's
+                  // linked work-item, for `derivedStatus` — read from the same rows, no extra query.
+                  const linkedHolders: Record<string, PlanItemHolder[]> = {};
                   // P-003: the newest transition across work-items linked to this
                   // plan — one of the two measurable freshness sources. Taken from
                   // the query below rather than a second one: it already selects
@@ -968,12 +972,13 @@ export default defineTool({
                                 stamped_item_id: string | null;
                                 harness_slug: string;
                                 updated_ts: string | number | null;
+                                taken_by: string | null;
                               }[]
                             >`
                 SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                        payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
-                       harness_slug, updated_ts
+                       harness_slug, updated_ts, taken_by
                   FROM harness_shared.harness_features_consolidated
                  WHERE workspace_id = ${planWorkspaceId}
                    AND (source_plan_slug = ${slug}
@@ -1025,6 +1030,11 @@ export default defineTool({
                           id: row.feature_id,
                           terminal: ANY_FAMILY_TERMINAL_STATES.includes(row.status),
                         });
+                        (linkedHolders[itemId] ??= []).push({
+                          workItemId: row.feature_id,
+                          holder: row.taken_by,
+                          state: row.status,
+                        });
                         const candidate = {
                           featureId: row.feature_id,
                           status: row.status,
@@ -1041,12 +1051,14 @@ export default defineTool({
                   } catch {
                     // Non-fatal — UI degrades to no badges.
                   }
-                  return { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems };
+                  return { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems, linkedHolders };
                 })
               : Promise.resolve({
                   linkedFeatures: {},
                   linkedWorkItemUpdatedAt: null,
                   linkedWorkItems: {} as Record<string, LinkedWorkItemCandidate[]>,
+                  // Not measured on a body-first read — summarizePlanStatus reports holdersMeasured:false.
+                  linkedHolders: undefined as Record<string, PlanItemHolder[]> | undefined,
                 });
             // The P-083 per-item test-coverage stage (planItemTests) is retired with
             // inline VAL-* assertions (verification-system-improvements-2026-10-10
@@ -1060,7 +1072,7 @@ export default defineTool({
             const nowRead = timeStage('nowDecoration', () => decoratePlanNowBlock(parsed.now));
             const [
               { items: resolvedItems, blockingIssues },
-              { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems },
+              { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems, linkedHolders },
               decoratedNow,
               [acceptanceRubric, latestAudit],
             ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, nowRead, rubricAndAuditRead]);
@@ -1184,6 +1196,25 @@ export default defineTool({
               // documents as distinct from any verdict.
             }
             markStage('lifecycle');
+            // derived-status-not-hand-written-2026-10-12 P-001 (D-001): the plan's
+            // current status, DERIVED at read time from the item graph — counts by
+            // effective status, the ranked actionable list, blocked items with their
+            // blockers, holders, the latest decision — instead of hand-written Now
+            // prose. It COMPOSES what this read already computed (the lifecycle verdict
+            // and last activity above; the next-pointer's ranking) rather than
+            // re-deriving any of it. `parsed.items`, not the caller's narrowed
+            // selection, for the same census reason as the lifecycle above.
+            const derivedStatus = summarizePlanStatus({
+              items: parsed.items,
+              decisions: parsed.decisions,
+              holders: linkedHolders,
+              lifecycle: lifecycle
+                ? {
+                    verdict: lifecycle.derived.verdict,
+                    lastActivityAt: lifecycle.derived.freshness?.lastActivityAt ?? null,
+                  }
+                : null,
+            });
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -1225,6 +1256,7 @@ export default defineTool({
                     },
                   }
                 : {}),
+              derivedStatus,
               frontmatter: parsed.frontmatter,
               now: nowWithDerivedNext,
               contentHash: hashPlanContent(parsed.raw),

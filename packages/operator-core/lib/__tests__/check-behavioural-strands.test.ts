@@ -173,6 +173,19 @@ describe('the trigger: a seam gained call sites', () => {
     expect(seamCallCounts(src, 'x.ts').get('helper()')).toBe(2);
   });
 
+  it('never counts pure builder imports (zod, typescript) as seams, while a local import still counts', () => {
+    const src = [
+      "import { z } from 'zod';",
+      "import ts from 'typescript';",
+      "import { helper } from './helper';",
+      "export const schema = z.object({ a: z.string(), b: z.enum(['x']) });",
+      'export function f(n) { ts.isIdentifier(n); return helper(); }',
+    ].join('\n');
+    const keys = [...seamCallCounts(src, 'builders.ts').keys()];
+    expect(keys.some((k) => k.startsWith('z.') || k.startsWith('ts.'))).toBe(false);
+    expect(keys).toContain('helper()');
+  });
+
   it('FIXTURE PAIR: reports the seam whose call count went up', () => {
     const rows = increasedSeams(SHARED_LIB_BEFORE, SHARED_LIB_AFTER, 'hybrid.ts');
     expect(rows).toEqual([{ seam: 'source.lexical', before: 1, after: 2 }]);

@@ -154,12 +154,16 @@ const save = defineTool({
         { status: 400 },
       );
     }
+    // True once saveProviderCredentials has stored the values. A value it refuses stores nothing,
+    // so that refusal must not refresh the page; a later refusal (a source setting) must.
+    let saved = false;
     try {
       const entry = await provider(ctx.params.providerId);
       const user = await getSessionUserOrDefault(req.headers);
       let credentials = values === undefined
         ? await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, undefined, user.id)
         : await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, values, { principalUserId: user.id });
+      saved = values !== undefined;
       // Storing only your own per-person value changes nothing about the source (D-026).
       const ownOnly = perPersonKeys(entry);
       if (values !== undefined && Object.keys(values).some((key) => !ownOnly.has(key))) await syncSource(user.id, entry, credentials);
@@ -177,7 +181,7 @@ const save = defineTool({
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials, ...(source ? { source } : {}) });
     } catch (error) {
       // A refused source setting after saved values still changed the page's status.
-      if (values !== undefined) invalidate();
+      if (saved) invalidate();
       return failure(error);
     }
   },

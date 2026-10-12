@@ -1220,6 +1220,99 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'carry-delivery-original-independent-episodes-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const producer = await import('../system-health/carry-drill-drop-watchdog');
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { host: () => 'fixture-carry', now: () => now, flagEnabled: async () => true,
+      readOpenConditionKeys: async () => [...open], rail: {
+        broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+          expect(event.oneShot).toBe(true); open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+        }, resolve: async (event: { conditionKey: string }) => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } } };
+    const dropped: import('../cold-boot-drill-live').ColdBootDrillLedgerEvent = {
+      drillId: 'fixture-drill', ownerId: 'fixture-owner', sessionClass: 'fixture',
+      kind: 'carry-drill-carry-dropped', ts: new Date(now - 1_000).toISOString(),
+    };
+    await producer.runCarryDrillDropSweepOnce(now - 2_000, { ...deps,
+      readLedger: async () => [dropped], escalate: async () => {} });
+    await producer.runProductionCarryDeliverySweepOnce({ ...deps, minTerminalOutcomes: 1,
+      readEvents: async () => [{ kind: 'respawn-failed', mode: 'carry-respawn', ts: dropped.ts }], escalate: async () => {} });
+    const prior = { outcome: 'pending' as const, ts: new Date(now - 600_000).toISOString(), ageMs: 600_000, capMs: 360_000 };
+    await producer.runOrphanedRespawnSweepOnce({ ...deps, listCandidates: async () => ['fixture-owner'],
+      readPrior: async () => prior, hostLive: () => false, escalate: async () => {} });
+    expect(open.size).toBe(3);
+    await producer.runCarryDrillDropSweepOnce(now, { ...deps, readLedger: async () => [], escalate: async () => {} });
+    await producer.runProductionCarryDeliverySweepOnce({ ...deps, readEvents: async () => [], escalate: async () => {} });
+    await producer.runOrphanedRespawnSweepOnce({ ...deps, listCandidates: async () => [],
+      readPrior: async () => ({ outcome: 'none' }), hostLive: () => true, escalate: async () => {} });
+    expect(open.size).toBe(3);
+    await producer.runCarryDrillDropSweepOnce(now, { ...deps,
+      readLedger: async () => [{ ...dropped, kind: 'carry-drill-carry-delivered', ts: new Date(now).toISOString() }], escalate: async () => {} });
+    await producer.runProductionCarryDeliverySweepOnce({ ...deps, minTerminalOutcomes: 1,
+      readEvents: async () => [{ kind: 'respawn-carry-delivered', mode: 'carry-respawn', ts: new Date(now).toISOString() }], escalate: async () => {} });
+    await producer.runOrphanedRespawnSweepOnce({ ...deps, listCandidates: async () => [],
+      readPrior: async () => ({ outcome: 'delivered', ts: new Date(now).toISOString() }), hostLive: () => false, escalate: async () => {} });
+    expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'dedup-probe-original-independent-legs-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['health-flag-no-condition|packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts|reportSemanticDedupProbeUnavailable|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { reportSemanticDedupProbeUnavailable } = await import('../agent-tools/work_items/semantic-dedup-probe-alarm');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { escalate: async () => {}, rail: {
+      broadcast: async (event: { conditionKey?: string }) => {
+        open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    await reportSemanticDedupProbeUnavailable({ harnessSlug: 'fixture-dedup' }, deps);
+    expect(open.size).toBe(1);
+    await reportSemanticDedupProbeUnavailable({ harnessSlug: 'fixture-dedup',
+      coverage: { semantic: 'skipped', degraded: false } }, deps);
+    expect(open.size).toBe(1);
+    await reportSemanticDedupProbeUnavailable({ harnessSlug: 'fixture-dedup',
+      coverage: { semantic: 'ok', degraded: false } }, deps);
+    expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'installed-hook-original-drift-blindness-and-complete-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { runInstalledHookDriftSweepOnce } = await import('../system-health/installed-hook-drift-watchdog');
+    const { expect } = await import('vitest');
+    const clean: import('../desktop-install/installed-hook-drift').HookDriftReport = {
+      canonicalDir: '/fixture/canonical', installedDir: '/fixture/installed',
+      checked: ['guard.mjs'], drifted: [], clean: true };
+    let report = { ...clean, clean: false, drifted: [{ name: 'guard.mjs', status: 'divergent' as const,
+      canonicalSha256: 'new', installedSha256: 'old' }] } as typeof clean;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { host: () => 'fixture-hook', resolveCanonical: () => ({ ok: true as const,
+      dir: clean.canonicalDir, source: 'integration-root' as const }), resolveInstalled: () => clean.installedDir,
+      detect: () => report, escalateDrift: async () => {}, escalateNotMeasured: async () => {}, rail: {
+        broadcast: async (event: { conditionKey?: string }) => {
+          open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+        }, resolve: async (event: { conditionKey: string }) => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } } };
+    await runInstalledHookDriftSweepOnce(deps); expect(open.size).toBe(1);
+    report = { ...clean, clean: false, checked: [], refused: 'installed-dir-unreadable' };
+    await runInstalledHookDriftSweepOnce({ ...deps }); expect(open.size).toBe(2);
+    report = clean; await runInstalledHookDriftSweepOnce({ ...deps }); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
   id: 'unservable-critical-original-exact-item-and-measured-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1'],
   run: async () => {

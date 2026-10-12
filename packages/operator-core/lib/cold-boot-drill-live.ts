@@ -144,14 +144,20 @@ export function ownerHostEventPath(ownerId: string, dir: string = PSU_PTY_DIR): 
   return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
 }
 
-function parseJsonl<T>(body: string): T[] {
+function parseJsonl<T>(body: string, requireComplete = false): T[] {
+  if (requireComplete && body && !body.endsWith('\n')) throw new Error('Incomplete carry ledger final row');
   const out: T[] = [];
   for (const line of body.split('\n')) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
+      if (requireComplete && (!row || typeof row !== 'object' || Array.isArray(row) ||
+          typeof row.kind !== 'string' || typeof row.ts !== 'string' || !Number.isFinite(Date.parse(row.ts)))) {
+        throw new Error('Invalid carry ledger row');
+      }
       if (row && typeof row === 'object') out.push(row as T);
-    } catch {
+    } catch (error) {
+      if (requireComplete) throw error;
       // A host can be appending while the reader snapshots the file. A partial
       // final row is not a drill failure; the next grade/report sees it.
     }
@@ -159,10 +165,13 @@ function parseJsonl<T>(body: string): T[] {
   return out;
 }
 
-export async function readColdBootDrillLedger(dir: string = PSU_PTY_DIR): Promise<ColdBootDrillLedgerEvent[]> {
+export async function readColdBootDrillLedger(
+  dir: string = PSU_PTY_DIR, opts: { requireComplete?: boolean } = {},
+): Promise<ColdBootDrillLedgerEvent[]> {
   try {
-    return parseJsonl<ColdBootDrillLedgerEvent>(await fs.readFile(coldBootDrillLedgerPath(dir), 'utf8'));
-  } catch {
+    return parseJsonl<ColdBootDrillLedgerEvent>(await fs.readFile(coldBootDrillLedgerPath(dir), 'utf8'), opts.requireComplete);
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
   }
 }
@@ -170,10 +179,12 @@ export async function readColdBootDrillLedger(dir: string = PSU_PTY_DIR): Promis
 export async function readOwnerHostEvents(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
+  opts: { requireComplete?: boolean } = {},
 ): Promise<ColdBootDrillHostEvent[]> {
   try {
-    return parseJsonl<ColdBootDrillHostEvent>(await fs.readFile(ownerHostEventPath(ownerId, dir), 'utf8'));
-  } catch {
+    return parseJsonl<ColdBootDrillHostEvent>(await fs.readFile(ownerHostEventPath(ownerId, dir), 'utf8'), opts.requireComplete);
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
   }
 }

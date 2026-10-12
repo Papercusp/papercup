@@ -779,6 +779,7 @@ export async function getNextForBee(args: {
         },
         {
           client: claimSql,
+          acquirePool: 'scheduler-claim',
           signal: args.signal,
           acquireTimeoutMs,
           statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
@@ -936,7 +937,7 @@ export async function getNextForBee(args: {
       },
       {
         harness: args.harness,
-        ...(claimSql ? { client: claimSql } : {}),
+        ...(claimSql ? { client: claimSql, acquirePool: 'scheduler-claim' } : {}),
         // WI-5261: thread the caller's already-resolved workspace through explicitly —
         // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
         // depends on the AsyncLocalStorage request-scope still being intact this deep into

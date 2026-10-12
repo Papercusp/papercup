@@ -698,6 +698,32 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
  * Only paths differing from the pre-admission repair head can be owed. This check runs before
  * publication and never widens the caller's allowlist on its behalf.
  */
+/** Read immutable source blobs in one byte-framed Git batch (also used by R6 inventory). */
+export function readAdmissionBlobBatch(root: string, objectIds: readonly string[], git: AdmissionGitRunner = realAdmissionGit):
+  | { ok: true; contents: Map<string, string> }
+  | { ok: false; code: 'git-failed'; step: string; detail: string } {
+  const contents = new Map<string, string>();
+  if (objectIds.length === 0) return { ok: true, contents };
+  const failed = (detail: string) => ({ ok: false as const, code: 'git-failed' as const, step: 'source blobs', detail });
+  const batch = git(['cat-file', '--batch'], { cwd: root, input: objectIds.join('\n') + '\n' });
+  if (batch.status !== 0) return failed((batch.stderr || batch.stdout).slice(0, 400));
+  const bytes = Buffer.from(batch.stdout, 'utf8');
+  let offset = 0;
+  for (const oid of objectIds) {
+    const end = bytes.indexOf(10, offset);
+    const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(bytes.subarray(offset, end).toString('utf8'));
+    if (!header || header[1] !== oid) return failed('missing or mismatched blob header');
+    const size = Number(header[2]);
+    const next = end + 1 + size;
+    if (!Number.isSafeInteger(size) || next >= bytes.length || bytes[next] !== 10)
+      return failed('truncated or malformed blob content');
+    contents.set(oid, bytes.subarray(end + 1, next).toString('utf8'));
+    offset = next + 1;
+  }
+  if (offset !== bytes.length) return failed('unexpected trailing blob data');
+  return { ok: true, contents };
+}
+
 function checkWholeBlobSourceCohort(input: {
   root: string;
   sourceCommit: string;
@@ -737,26 +763,9 @@ function checkWholeBlobSourceCohort(input: {
     if (parsed[2] === 'blob') blobs.set(parsed[4]!, parsed[3]!);
   }
   const objectIds = [...new Set(tests.flatMap((test) => blobs.has(test) ? [blobs.get(test)!] : []))];
-  const contents = new Map<string, string>();
-  if (objectIds.length > 0) {
-    const batch = git(['cat-file', '--batch'], { cwd: input.root, input: objectIds.join('\n') + '\n' });
-    if (batch.status !== 0) return failed('source cohort blobs', (batch.stderr || batch.stdout).slice(0, 400));
-    // Git frames contents by BYTES, including when source contains non-ASCII text.
-    const bytes = Buffer.from(batch.stdout, 'utf8');
-    let offset = 0;
-    for (const oid of objectIds) {
-      const end = bytes.indexOf(10, offset);
-      const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(bytes.subarray(offset, end).toString('utf8'));
-      if (!header || header[1] !== oid) return failed('source cohort blobs', 'missing or mismatched blob header');
-      const size = Number(header[2]);
-      const next = end + 1 + size;
-      if (!Number.isSafeInteger(size) || next >= bytes.length || bytes[next] !== 10)
-        return failed('source cohort blobs', 'truncated or malformed blob content');
-      contents.set(oid, bytes.subarray(end + 1, next).toString('utf8'));
-      offset = next + 1;
-    }
-    if (offset !== bytes.length) return failed('source cohort blobs', 'unexpected trailing blob data');
-  }
+  const batch = readAdmissionBlobBatch(input.root, objectIds, git);
+  if (!batch.ok) return failed('source cohort blobs', batch.detail);
+  const { contents } = batch;
   type ImportAsk = { test: string; specifier: string; candidates: string[] };
   const asks: ImportAsk[] = [];
   for (const test of tests) {

@@ -129,6 +129,14 @@ beforeEach(() => {
 });
 
 describe('createOneWorkItem × goal dedup gate (P-004)', () => {
+  it('preserves the condition when semantic hits exist but the recent index census has no verdict', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    recentM.mockResolvedValue(null);
+    const result = await createOneWorkItem({ kind: 'bug', title: 'measured query, unreadable census' }, ctx);
+    expect(result.ok).toBe(true);
+    expect(coverageAlarm.report).toHaveBeenCalledWith({ harnessSlug: 'papercusp',
+      coverage: { lexical: 'ok', semantic: 'unknown', degraded: false } });
+  });
   it('gate + semantic leg down + no force → fails CLOSED with dedup_unavailable (the WI-39373 shape)', async () => {
     // findSemanticDupes → null = the guard could not run (fail-open elsewhere).
     const r = await createOneWorkItem(
@@ -296,6 +304,8 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
 
   it('gate + force + healthy probe with soft siblings → proceeds, PERSISTING the candidates, coverage in the result', async () => {
     guardM.mockResolvedValue(verdict([], [0.88, 0.86]));
+    recentM.mockResolvedValue({ candidates: [],
+      coverage: { scanned: 0, unembedded: 0, truncated: false, complete: true } });
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'genuinely distinct', force: true, goalDedupGate: true },
       ctx,

@@ -137,6 +137,20 @@ describe('provider credential routes', () => {
     expect(mocks.invalidate).not.toHaveBeenCalled();
   });
 
+  it('PUT that saves values and then has a source setting refused still refreshes the page', async () => {
+    const req = new Request('http://127.0.0.1/api/user/integrations/providers/fixture-chat/credentials', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: { botToken: STORED_VALUE, appToken: 'app-value' }, source: { scope: 'everyone' } }),
+    });
+    const res = await invoke('PUT', BASE, req, { providerId: 'fixture-chat' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, error: 'invalid-setting' });
+    // The values were stored before the setting was refused, so the page's status did change.
+    expect(mocks.store.size).toBe(1);
+    expect(mocks.invalidate).toHaveBeenCalledWith('integrations.tickets');
+  });
+
   it('PUT refuses an undeclared field and a malformed body', async () => {
     const unknown = await invoke('PUT', BASE, put({ webhookKey: 'x' }), { providerId: 'fixture-chat' });
     expect(unknown.status).toBe(404);

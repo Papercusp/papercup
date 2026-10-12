@@ -119,6 +119,16 @@ describe('projectWorkItemsListForUi', () => {
     expect(declared.filter((f) => !wire.has(f))).toEqual([]);
   });
 
+  it('keeps reporter enrichment on the detail contract and off the grid wire', () => {
+    const detail = readFileSync(join(REPO_ROOT, 'apps/operator/app/adv/harnesses/DetailPanel.tsx'), 'utf8');
+    const contract = /export interface WorkItemDetailRow extends WorkItemRow \{([\s\S]*?)\n\}/.exec(detail);
+    expect(contract, 'the single-item query must retain its reporter enrichment').toBeTruthy();
+    expect(contract?.[1]).toMatch(/reporterStatus\??:/);
+    expect(detail).toMatch(/useSyncQuery<WorkItemDetailRow>\(\{\s*queryName: 'workItems\.detail'/);
+    const out = projectWorkItemsListForUi([enrichedRow({ reporterStatus: { status: 'being-fixed' } })]);
+    expect(out[0]).not.toHaveProperty('reporterStatus');
+  });
+
   it('preserves the list _meta on row[0] (the authoritative total)', () => {
     const rows = [enrichedRow({ _meta: { total: 1821 } }), enrichedRow({ id: 'WI-2' })];
     const out = projectWorkItemsListForUi(rows) as Array<Record<string, unknown>>;

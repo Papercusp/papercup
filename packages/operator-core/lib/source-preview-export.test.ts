@@ -27,6 +27,7 @@ import {
   materializeCommit,
   measureVerifierSourceBytes,
   prepareVerifierSource,
+  prepareVerifierDependencies,
   validateVerifierInputs,
   runCli,
   verifyVerifierSource,
@@ -333,6 +334,74 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(dest, ['rm', '--cached', '--', input]);
     expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(fixture.repo, input)));
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
+  });
+
+  it('keeps native preparation pinned when the canonical donor changes after admission, and refuses fixed-source drift', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-race-fixture'));
+    for (const path of TAURI_VERIFIER_INPUTS) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', ...TAURI_VERIFIER_INPUTS]);
+    git(fixture.repo, ['commit', '-qm', 'native invocation source']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const sourceRoot = join(tmp, 'verifier-native-race-invocation');
+    const options = { ref, inputs: [input], tauriInputs: true };
+    const receipt = await prepareVerifierSource({ ...options, repo: fixture.repo,
+      dest: sourceRoot, gitCheckout: true });
+    const externalReceipt = join(tmp, 'verifier-native-race-receipt.json');
+    writeFileSync(externalReceipt, JSON.stringify(receipt));
+
+    // This is the v4 ordering: admission succeeds, then a peer saves the wrapper
+    // while external fixtures are being allocated, before native preparation.
+    const wrapper = 'scripts/verify-tauri-headless.sh';
+    writeFileSync(join(fixture.repo, wrapper), 'peer edit after admission');
+    await expect(validateVerifierInputs({ ...options, repo: fixture.repo }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${wrapper}`);
+    expect(await runCli(['verifier-verify', '--out', sourceRoot, '--receipt', externalReceipt])).toBe(0);
+    const nativeReceipt = await prepareVerifierSource({ ...options, repo: sourceRoot,
+      dest: join(tmp, 'verifier-native-race-runtime') });
+    expect(nativeReceipt.sourceCommit).toBe(ref);
+    expect(nativeReceipt.files).toEqual(receipt.files);
+    expect(nativeReceipt.testedInputs).toEqual(receipt.testedInputs);
+    expect(readFileSync(join(fixture.repo, wrapper), 'utf8')).toBe('peer edit after admission');
+
+    // Independence is not permission to weaken the input fence.
+    writeFileSync(join(sourceRoot, wrapper), 'tampered fixed invocation');
+    await expect(runCli(['verifier-verify', '--out', sourceRoot, '--receipt', externalReceipt]))
+      .rejects.toThrow(`tampered verification source archive: changed ${wrapper}`);
+    const refused = join(tmp, 'verifier-native-race-refused');
+    await expect(prepareVerifierSource({ ...options, repo: sourceRoot, dest: refused }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${wrapper}`);
+    expect(existsSync(refused)).toBe(false);
+  });
+
+  it('loads Node from the invoked tree before native allocation and survives donor dependency removal', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const script = 'scripts/source-preview.mjs';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    // Substitute the expensive copy only; execute real Node resolution from the
+    // independent source tree, with ambient loaders and NODE_PATH excluded.
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -a -- "$2/node_modules" "$3/node_modules"\n');
+    git(fixture.repo, ['add', script, helper]);
+    git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
+      dest: join(tmp, 'verifier-native-dependencies-invoked'), inputs: [script], gitCheckout: true });
+    const dest = join(tmp, 'verifier-native-dependencies-invoked');
+    const probe = () => spawnSync(process.execPath, [join(dest, script), 'verifier-measure'],
+      { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
+    expect(probe().stderr).toContain('ERR_MODULE_NOT_FOUND');
+    write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+      name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+    write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
+    expect(probe().status).toBe(0);
+    expect(probe().stdout.trim()).toBe('4096');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    rmSync(join(dest, 'node_modules'), { recursive: true });
+    await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
+      .rejects.toThrow('ERR_MODULE_NOT_FOUND');
   });
 
   it('preserves unlisted gitlinks and original named mappings in a real verifier checkout', async () => {

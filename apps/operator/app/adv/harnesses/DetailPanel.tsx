@@ -36,6 +36,11 @@ import {
 import { WORK_ITEM_PRESENTATION_LABELS, WORK_ITEM_PRESENTATION_REASONS } from '@papercusp/operator-core/lib/work-item-presentation-contract';
 import { formatItemWorkEvidence } from '@papercusp/operator-core/lib/item-activity';
 
+/** Reporter enrichment is loaded only by workItems.detail, never the grid feed. */
+export interface WorkItemDetailRow extends WorkItemRow {
+  reporterStatus?: Awaited<ReturnType<typeof import('@papercusp/operator-core/lib/harness/improvements/reporter-status').readReporterStatus>>;
+}
+
 // work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
 // lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
 // `in_progress`/`validating`→`wip`). Legacy spellings still render on read (see the
@@ -227,7 +232,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // P-004: selected-row authority is the existing one-row detail query. A
   // selection must remain resolvable even when the item is beyond the current
   // keyset page (or excluded by a filter), so page membership is never consulted.
-  const workItemDetailQuery = useSyncQuery<WorkItemRow>({
+  const workItemDetailQuery = useSyncQuery<WorkItemDetailRow>({
     queryName: 'workItems.detail',
     args: { harnessSlug: slug, id: kind === 'workItem' ? selectedId : '' },
     enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
@@ -478,7 +483,7 @@ export function WorkItemDetail({
   showDiscussionAction = true,
 }: {
   slug: string;
-  workItem: WorkItemRow;
+  workItem: WorkItemDetailRow;
   onSelect: (id: string) => void;
   onBack?: () => void;
   /**
@@ -638,7 +643,7 @@ export function WorkItemDetail({
   );
 }
 
-export function ReporterStatusSection({ slug, workItem }: { slug: string; workItem: WorkItemRow }) {
+export function ReporterStatusSection({ slug, workItem }: { slug: string; workItem: WorkItemDetailRow }) {
   const [answer, setAnswer] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
   const [sending, setSending] = useState(false);

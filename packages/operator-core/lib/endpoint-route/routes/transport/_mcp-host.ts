@@ -117,7 +117,7 @@ import type { ProjectionSpec, ViewResolution } from '../../../result-projection'
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
 import { readSessionConfinement } from '../../../capability-envelope/session-confinement-store';
 import { evaluateSessionConfinement } from '../../../capability-envelope/session-confinement';
-import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { registerSuNativeToolDispatcher, runOnSuNativeToolOwner, SuNativeToolOwnerError, type SuNativeToolAddress } from '../../../su-session-owner-routing';
 import { SCRATCH_SCHEME } from '../../../scratch-uri';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
@@ -1390,6 +1390,14 @@ type NativeSessionAuthFailureMetadata = {
     durationMs: number;
     requestFingerprint?: string;
     phase?: NativeSessionVerificationPhase;
+    stageTimings?: {
+      omittedStages: number;
+      stages: Array<{
+        stage: string;
+        elapsedMs: number;
+        outcome: 'pending' | 'fulfilled' | 'rejected';
+      }>;
+    };
     acquisition?: {
       label: string;
       pool: string | null;
@@ -1426,6 +1434,7 @@ function describeNativeSessionVerifierFailure(
   sessionId: string,
   durationMs: number,
   requestFingerprint?: string,
+  timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null,
 ): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
   const failure = error as {
     name?: unknown;
@@ -1506,6 +1515,22 @@ function describeNativeSessionVerifierFailure(
       ...(ticketSample ? { ticketSample } : {}),
     }
     : undefined;
+  const verifierStages = timingSnapshot?.stages
+    .filter(({ stage }) => stage.startsWith('native-session-verifier-')) ?? [];
+  const retainedVerifierStages = verifierStages.slice(0, 8).map((timing) => ({
+    stage: timing.stage,
+    elapsedMs: Number.isFinite(timing.elapsedMs)
+      ? Math.min(60_000, Math.max(0, Math.round(timing.elapsedMs)))
+      : 0,
+    outcome: timing.outcome,
+  }));
+  const stageTimings = timingSnapshot && (retainedVerifierStages.length > 0 || timingSnapshot.omittedStages > 0)
+    ? {
+      omittedStages: Math.min(32, Math.max(0, Math.floor(timingSnapshot.omittedStages) +
+        Math.max(0, verifierStages.length - retainedVerifierStages.length))),
+      stages: retainedVerifierStages,
+    }
+    : undefined;
   return {
     name,
     ...(code ? { code } : {}),
@@ -1513,6 +1538,7 @@ function describeNativeSessionVerifierFailure(
     durationMs: Math.max(0, Math.round(durationMs)),
     ...(requestFingerprint ? { requestFingerprint } : {}),
     ...(phase ? { phase } : {}),
+    ...(stageTimings ? { stageTimings } : {}),
     ...(acquisition ? { acquisition } : {}),
   };
 }
@@ -1672,14 +1698,26 @@ export async function tryBuildSpawnContext(
     let nativeSessionAudit: RequestOriginMetadata['nativeSession'];
     if (suIdentity && nativeSessionId) {
       const verificationStartedAt = Date.now();
+      let timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null;
       try {
         const binding = await withNamedQueryDiagnosticContext(
           'mcp.nativeSessionVerifier',
-          () => classifyOwnerNativeSession({
-            ownerId: suIdentity,
-            sessionId: nativeSessionId,
-            workspaceId: headerWs || wsParam || undefined,
-          }),
+          async () => {
+            try {
+              return await classifyOwnerNativeSession({
+                ownerId: suIdentity,
+                sessionId: nativeSessionId,
+                workspaceId: headerWs || wsParam || undefined,
+              });
+            } catch (error) {
+              try {
+                timingSnapshot = namedQueryStageTimings();
+              } catch {
+                /* Timing is diagnostic only; preserve the original verifier failure. */
+              }
+              throw error;
+            }
+          },
           verifierTraceId,
         );
         if (binding.binding === 'foreign') {
@@ -1751,6 +1789,7 @@ export async function tryBuildSpawnContext(
               nativeSessionId,
               Date.now() - verificationStartedAt,
               requestFingerprint,
+              timingSnapshot,
             ),
           ),
         };

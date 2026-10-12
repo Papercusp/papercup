@@ -493,11 +493,12 @@ export default defineTool({
       );
     } catch (error) {
       try {
-        ctx.log('warn', '[work_items:claimable:timing]', {
+        ctx.log(`[work_items:claimable:timing] ${JSON.stringify({
+          level: 'warn',
           outcome: 'error',
           readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
           readStageMs,
-        });
+        })}`);
       } catch {
         // Diagnostic logging must not alter claimability failure behavior.
       }
@@ -561,7 +562,8 @@ export default defineTool({
       }
     }
     try {
-      ctx.log('info', '[work_items:claimable:timing]', {
+      ctx.log(`[work_items:claimable:timing] ${JSON.stringify({
+        level: 'info',
         outcome: 'ok',
         readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
         readStageMs,
@@ -573,7 +575,7 @@ export default defineTool({
           slowestPlanGuardMs,
           ...(slowestPlanGuardRowId ? { slowestPlanGuardRowId } : {}),
         },
-      });
+      })}`);
     } catch {
       // Diagnostic logging must never change claimability output.
     }

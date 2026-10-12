@@ -77,13 +77,32 @@ const CTX = {
   progress: vi.fn(),
 } as never;
 
+// derived-status-not-hand-written-2026-10-12 P-001: the same plan with P-002
+// already done — `derivedStatus` must reflect the stored item state at read
+// time, never list a finished item as actionable.
+const DONE_PLAN = `plan-operational-brief-done-${RUN}`;
+const HOLDER = 'su-holder-fixture';
+const HELD_WORK_ITEM = `WI-brief-held-${RUN}`;
+const FREE_WORK_ITEM = `WI-brief-free-${RUN}`;
+
 type Field = { status: 'known'; value: unknown; source: string } | { status: 'unknown'; reason: string };
+type DerivedStatus = {
+  counts: Record<string, number>;
+  actionable: Array<{ id: string; heldBy: string[] }>;
+  blocked: Array<{ id: string; blockedOn: string[]; external: boolean }>;
+  holdersMeasured: boolean;
+  latestDecision: { id: string } | null;
+  next: { itemId: string | null; reason: string };
+  text: string;
+};
 type BriefResult = {
   items: Array<{ id: string; effectiveStatus: string; phase: string | null }>;
   acceptanceRubric?: unknown;
-  lifecycle?: { acceptance?: { rubricActive: boolean; rubricRef: string | null } };
+  lifecycle?: { verdict: string; acceptance?: { rubricActive: boolean; rubricRef: string | null } };
+  derivedStatus?: DerivedStatus;
   operationalBrief?: {
     schemaVersion: string;
+    owner: Field;
     blockers: Field;
     lastVerified: Field;
     nextAction: Field;
@@ -103,6 +122,29 @@ beforeAll(async () => {
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, PLAN, PLAN_CONTENT);
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, BLOCKED_PLAN, BLOCKED_PLAN_CONTENT);
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, ACCEPTANCE_PLAN, PLAN_CONTENT.replace(PLAN, ACCEPTANCE_PLAN));
+  await seedPlan(
+    fx.admin,
+    fx.workspaceId,
+    HARNESS,
+    DONE_PLAN,
+    PLAN_CONTENT.replace(PLAN, DONE_PLAN).replace('**P-002** `todo`', '**P-002** `done`'),
+  );
+  // Linked work items for PLAN: P-002 claimed by HOLDER, P-003 unclaimed.
+  for (const [id, itemId, takenBy, status] of [
+    [HELD_WORK_ITEM, 'P-002', HOLDER, 'wip'],
+    [FREE_WORK_ITEM, 'P-003', null, 'open'],
+  ] as const) {
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, summary,
+         source_plan_slug, source_plan_item_ids, payload, taken_by, created_ts, updated_ts)
+      VALUES
+        (${fx.workspaceId}, ${HARNESS}, ${id}, 'feature', ${status}, ${`Fixture ${itemId}`}, 'Fixture.',
+         ${PLAN}, ARRAY[${itemId}]::text[],
+         ${JSON.stringify({ plan_item: { plan_slug: PLAN, item_id: itemId } })}::text::jsonb,
+         ${takenBy}, 1, 1)
+    `;
+  }
   await fx.admin`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, created, updated,
@@ -115,7 +157,12 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (fx) await cleanupPlans(fx.admin, fx.workspaceId, HARNESS).catch(() => {});
+  if (fx) {
+    await fx.admin`
+      DELETE FROM harness_shared.work_items WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}
+    `.catch(() => {});
+    await cleanupPlans(fx.admin, fx.workspaceId, HARNESS).catch(() => {});
+  }
   if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
   await fx?.dispose();
@@ -127,6 +174,39 @@ async function read(args: Record<string, unknown>, slug = PLAN): Promise<BriefRe
   };
   return out.data.results[0]!;
 }
+
+describe('plans:get derivedStatus (real PG) — derived-status-not-hand-written-2026-10-12 P-001', () => {
+  it('returns derivedStatus by default, computed from item state, with linked holders and the latest decision', async () => {
+    const ds = (await read({})).derivedStatus!;
+    expect(ds).toBeDefined();
+    expect(ds.counts).toMatchObject({ total: 3, done: 1, todo: 1, blocked: 1 });
+    expect(ds.actionable).toEqual([expect.objectContaining({ id: 'P-002', heldBy: [HOLDER] })]);
+    expect(ds.blocked.map((b) => [b.id, b.blockedOn, b.external])).toEqual([['P-003', ['P-002'], false]]);
+    expect(ds.holdersMeasured).toBe(true);
+    expect(ds.latestDecision?.id).toBe('D-001');
+    expect(ds.next).toMatchObject({ itemId: 'P-002', reason: 'actionable' });
+  });
+
+  it('CONTROL: with P-002 stored done, the next read lists P-003 actionable and never P-002', async () => {
+    const ds = (await read({}, DONE_PLAN)).derivedStatus!;
+    expect(ds.actionable.map((a) => a.id)).toEqual(['P-003']);
+    expect(ds.blocked).toEqual([]);
+    expect(ds.counts).toMatchObject({ done: 2, todo: 1 });
+  });
+
+  it('the operational brief names the next item’s holder from derivedStatus', async () => {
+    const brief = (await read({ operationalBrief: true })).operationalBrief!;
+    expect(brief.owner).toMatchObject({ status: 'known', value: HOLDER });
+  });
+
+  it('CONTROL: an unclaimed next item reports a measured owner of none, not the other plan’s holder', async () => {
+    const brief = (await read({ operationalBrief: true }, DONE_PLAN)).operationalBrief!;
+    // DONE_PLAN has no linked rows: holders were MEASURED (the enrichment ran) and
+    // P-003 has none, so the owner is a known null — "unclaimed" — not unknown.
+    expect(brief.owner.status).toBe('known');
+    expect(brief.owner).toMatchObject({ value: null });
+  });
+});
 
 describe('plans:get operationalBrief (real PG)', () => {
   it('omits the brief unless requested', async () => {

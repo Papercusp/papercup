@@ -82,7 +82,17 @@ async function writer(w: number, more: () => boolean): Promise<number> {
 }
 
 /** Commits one probe item and returns how long after the commit a search first found it. */
-async function probe(n: number): Promise<{ kind: 'insert' | 'update'; ms: number }> {
+interface ProbeObservation {
+  n: number;
+  id: number;
+  term: string;
+  kind: 'insert' | 'update';
+  committedAt: string;
+  firstVisibleAt: string | null;
+  ms: number;
+}
+
+async function probe(n: number): Promise<ProbeObservation> {
   const word = probeWord(n);
   let id: number;
   let kind: 'insert' | 'update';
@@ -97,11 +107,13 @@ async function probe(n: number): Promise<{ kind: 'insert' | 'update'; ms: number
     await sql`UPDATE harness_shared.work_items SET title = ${`item ${id} ${word}`} WHERE id = ${id}`;
   }
   const committed = performance.now();
+  const committedAt = new Date().toISOString();
+  const observation = { n, id, term: word, kind, committedAt };
   for (;;) {
     const ids = await rankWorkItemIds(sql, word);
     const ms = performance.now() - committed;
-    if (ids.includes(id)) return { kind, ms };
-    if (ms > VISIBILITY_BOUND_MS) return { kind, ms: Number.POSITIVE_INFINITY };
+    if (ids.includes(id)) return { ...observation, firstVisibleAt: new Date().toISOString(), ms };
+    if (ms > VISIBILITY_BOUND_MS) return { ...observation, firstVisibleAt: null, ms: Number.POSITIVE_INFINITY };
     await sleep(25);
   }
 }
@@ -112,11 +124,14 @@ async function indexBytes(qualified: string): Promise<number> {
 }
 
 interface WriteLoadRun {
-  probes: Array<{ kind: 'insert' | 'update'; ms: number }>;
+  probes: ProbeObservation[];
   reclaims: Bm25Reclaim[];
   maintenanceErrors: string[];
   maxWorkItemsBytes: number;
   sizes: Array<{ index: string; before: number; after: number; ratio: number }>;
+  report: {
+    probeRows: Array<Omit<ProbeObservation, 'ms'> & { delayMs: number | null }>;
+  };
 }
 
 /**
@@ -128,7 +143,7 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
   expect([...(await readBm25Indexes(sql))]).toContain('work_items_bm25');
 
   let loading = true;
-  const probes: Array<{ kind: 'insert' | 'update'; ms: number }> = [];
+  const probes: ProbeObservation[] = [];
   const reclaims: Bm25Reclaim[] = [];
   const maintenanceErrors: string[] = [];
   let maxWorkItemsBytes = 0;
@@ -193,19 +208,25 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
   }
 
   const found = probes.filter(p => Number.isFinite(p.ms)).map(p => p.ms).sort((a, b) => a - b);
-  console.info(JSON.stringify({
+  const report = {
     p008: 'bm25-write-load',
     loadMs: Math.round(loadMs),
     inserts: batches * BATCH_ROWS,
     probes: probes.length,
+    // Keep the measured rows, not just quantiles: an omitted probe must remain detectable.
+    // A timed-out probe is explicit null, never Infinity silently serialized as null.
+    probeRows: probes.map(({ ms, ...observation }) => ({
+      ...observation, delayMs: Number.isFinite(ms) ? ms : null,
+    })),
     probeP50Ms: found.length ? Math.round(found[Math.floor(found.length / 2)]!) : null,
     probeMaxMs: found.length ? Math.round(found[found.length - 1]!) : null,
     maxWorkItemsBytes,
     reclaims,
     sizes,
-  }));
+  };
+  console.info(JSON.stringify(report));
 
-  return { probes, reclaims, maintenanceErrors, maxWorkItemsBytes, sizes };
+  return { probes, reclaims, maintenanceErrors, maxWorkItemsBytes, sizes, report };
 }
 
 describe('BM25 under sustained concurrent writes (P-008)', () => {
@@ -235,5 +256,25 @@ describe('BM25 under sustained concurrent writes (P-008)', () => {
     }
     expect(sizes.map(s => s.index)).toContain('harness_shared.work_items_bm25');
     expect(sizes.filter(s => s.ratio > SIZE_BOUND)).toEqual([]);
+  });
+
+  it('SPEC-P-008: reports the measured commit-to-searchable delay for every probe row', () => {
+    // Check the emitted JSON against the independently retained measurements. This fails
+    // if the reporter drops a row, substitutes a quantile, or loses its commit identity.
+    const reported = JSON.parse(JSON.stringify(run.report)).probeRows;
+    expect(reported).toHaveLength(run.probes.length);
+    expect(new Set(reported.map((p: ProbeObservation) => p.n)).size).toBe(run.probes.length);
+    for (const measured of run.probes) {
+      const row = reported.find((p: ProbeObservation) => p.n === measured.n);
+      expect(row).toMatchObject({
+        n: measured.n, id: measured.id, term: measured.term, kind: measured.kind,
+        committedAt: measured.committedAt, firstVisibleAt: measured.firstVisibleAt,
+        delayMs: measured.ms,
+      });
+      expect(Number.isFinite(row.delayMs)).toBe(true);
+      expect(row.delayMs).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(Date.parse(row.committedAt))).toBe(true);
+      expect(Number.isFinite(Date.parse(row.firstVisibleAt))).toBe(true);
+    }
   });
 });

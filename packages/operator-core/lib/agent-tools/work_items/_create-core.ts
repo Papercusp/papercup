@@ -772,6 +772,7 @@ export async function createOneWorkItem(
       !args.force || Boolean(args.requireCompleteDedupCoverage) || Boolean(args.goalDedupGate);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
+    let recentCoverageReadable = false;
     let similarOpen: SemanticDupeCandidate[] | undefined;
     let burstCandidates: SemanticDupeCandidate[] = [];
     // P-001 (silent-intake-central-resolution-2026-09-01): hard-band semantic hits that
@@ -822,6 +823,7 @@ export async function createOneWorkItem(
         summary: args.summary,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
       });
+      recentCoverageReadable = recentDupes?.coverage.complete === true;
       if (semanticLeg === 'ok' && recentDupes && !recentDupes.coverage.complete) {
         semanticLeg = 'partial';
       }
@@ -863,7 +865,11 @@ export async function createOneWorkItem(
     if (shouldScreen && dedupCoverage) {
       void reportSemanticDedupProbeUnavailable({
         harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
-        coverage: dedupCoverage,
+        // A null recent-census verdict means disabled/timed-out/unreadable,
+        // even when the independent semantic query returned hits. Preserve an
+        // existing coverage episode until the index census is measured too.
+        coverage: { ...dedupCoverage,
+          semantic: semanticLeg === 'ok' && !recentCoverageReadable ? 'unknown' : semanticLeg },
       }).catch(() => {});
     }
     // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the DRAIN

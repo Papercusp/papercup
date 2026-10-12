@@ -143,10 +143,10 @@ export function deriveLastRespawnOutcome(
  *  session that has never respawned. */
 export async function readPriorRespawnOutcome(
   ownerId: string,
-  opts: { dir?: string; now?: number } = {},
+  opts: { dir?: string; now?: number; requireComplete?: boolean } = {},
 ): Promise<PriorRespawn> {
   try {
-    const rows = opts.dir ? await readOwnerHostEvents(ownerId, opts.dir) : await readOwnerHostEvents(ownerId);
+    const rows = await readOwnerHostEvents(ownerId, opts.dir, { requireComplete: opts.requireComplete });
     return deriveLastRespawnOutcome(rows, { now: opts.now });
   } catch {
     return { outcome: 'none' };

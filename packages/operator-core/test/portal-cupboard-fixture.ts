@@ -4,11 +4,45 @@ import { createServer } from 'node:http';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrowserContext, Page } from 'playwright-core';
-import { makeSqliteDb } from '../../../apps/operator-public/src/__tests__/sqlite-d1';
-import { makeEnv, makeListingRow } from '../../../apps/operator-public/src/__tests__/fake-d1';
-import { listingsRoute } from '../../../apps/operator-public/src/routes/listings';
+
+/**
+ * The slice of apps/operator-public this fixture drives. Those sources compile
+ * only under @cloudflare/workers-types (operator-public's own tsconfig, gated
+ * by lint:tsc:workspaces). A STATIC import here drags them into operator-core's
+ * node-only program, where KVNamespace / D1Database do not exist — that held
+ * green-checkpoint candidate 70e89c73 red (WI-10006055). Adding the Workers
+ * types to operator-core instead would collide with Node's fetch/Request
+ * globals, so the boundary is a runtime load: non-literal specifiers are not
+ * followed by tsc, and vitest resolves them relative to this file.
+ */
+interface OperatorPublicCatalog {
+  makeSqliteDb(): {
+    db: unknown;
+    raw: { prepare(sql: string): { all(): unknown[]; run(...values: never[]): unknown }; close(): void };
+  };
+  makeEnv(overrides: { DB: unknown }): { env: unknown };
+  makeListingRow(overrides: Record<string, unknown>): Record<string, unknown>;
+  listingsRoute(): { fetch(request: Request, env: unknown): Promise<Response> };
+}
+
+async function loadOperatorPublicCatalog(): Promise<OperatorPublicCatalog> {
+  const src = '../../../apps/operator-public/src/';
+  const load = (path: string) => import(src + path) as Promise<Partial<OperatorPublicCatalog>>;
+  const [sqlite, fake, listings] = await Promise.all([
+    load('__tests__/sqlite-d1'), load('__tests__/fake-d1'), load('routes/listings'),
+  ]);
+  const surface = {
+    makeSqliteDb: sqlite.makeSqliteDb, makeEnv: fake.makeEnv,
+    makeListingRow: fake.makeListingRow, listingsRoute: listings.listingsRoute,
+  };
+  for (const [name, fn] of Object.entries(surface)) {
+    assert.equal(typeof fn, 'function', `apps/operator-public no longer exports ${name}`);
+  }
+  return surface as OperatorPublicCatalog;
+}
 
 export async function startPrivateCupboardCatalog(evidence: string) {
+  const { makeSqliteDb, makeEnv, makeListingRow, listingsRoute } = await loadOperatorPublicCatalog();
   const { db, raw } = makeSqliteDb();
   const { env } = makeEnv({ DB: db });
   const marker = `private-cupboard-${process.pid}`;

@@ -1,13 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { ReporterStatusSection } from './DetailPanel';
-import type { WorkItemRow } from './WorkItemsPanel';
+import { ReporterStatusSection, type WorkItemDetailRow } from './DetailPanel';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const item = { id: 'EI-source', origin: 'local', reporterStatus: {
   sourceId: 'EI-source', canonicalId: 'EI-fix', status: 'being-fixed', label: 'Being fixed', release: null,
   followUp: { question: { id: 'q1', text: 'Which file triggers it?', askedBy: 'su-fixer', askedAt: '2026-10-07T00:00:00Z' } },
-} } as WorkItemRow;
+} } as WorkItemDetailRow;
 describe('report status follow-up preview and reply', () => {
   it('sends exactly the redacted preview only after the reporter presses Send', async () => {
     const request = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ ok: true }) }));

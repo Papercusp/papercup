@@ -158,6 +158,8 @@ export interface GetNextOpts {
    * process-wide org pool. Omitted preserves every existing caller/test path.
    */
   client?: OrgSql;
+  /** Explicit acquisition attribution for an injected pool; omitted preserves legacy defaults. */
+  acquirePool?: string;
   /**
    * WI-5261: the caller's already-resolved workspace (e.g. resolveClaimSpecWorkspace's
    * output in getNextForBee) — explicitly threaded through so tier 1/2/3 don't have to
@@ -3001,6 +3003,7 @@ export async function getNextWorkItem(
     {
       client: sql,
       signal: opts.signal,
+      acquirePool: opts.acquirePool,
       readOnly: true,
       acquireTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
       statementTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
@@ -3099,6 +3102,7 @@ export async function getNextWorkItem(
         client: sql,
         operationClaimRead,
         signal: opts.signal,
+        acquirePool: opts.acquirePool,
         onResolutionStep: opts.onResolutionStep,
         issueKinds,
         ids: idValues,
@@ -3250,6 +3254,7 @@ export async function getNextWorkItem(
         {
           client: sql,
           signal: opts.signal,
+          acquirePool: opts.acquirePool,
           statementTimeoutMs,
         },
       );
@@ -3411,6 +3416,7 @@ export async function getNextWorkItem(
         client: sql,
         operationClaimRead,
         signal: opts.signal,
+        acquirePool: opts.acquirePool,
         onResolutionStep: opts.onResolutionStep,
         issueKinds,
         ids: idValues,

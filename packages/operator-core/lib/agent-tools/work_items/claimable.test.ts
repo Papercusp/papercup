@@ -219,7 +219,15 @@ describe('work_items:claimable handler', () => {
     const out = await run({ harness: 'papercup' });
 
     expect(out.claimable.map((row: { id: string }) => row.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
-    expect(logM).toHaveBeenCalledWith('info', '[work_items:claimable:timing]', expect.objectContaining({
+    expect(logM).toHaveBeenCalledTimes(1);
+    const timingMessage = logM.mock.calls[0]![0] as string;
+    const timingMarker = '[work_items:claimable:timing] ';
+    expect(timingMessage.startsWith(timingMarker)).toBe(true);
+    const timing = JSON.parse(timingMessage.slice(timingMarker.length)) as {
+      planLaneGuard: { elapsedMs: number };
+    };
+    expect(timing).toMatchObject({
+      level: 'info',
       outcome: 'ok',
       readStageMs: expect.objectContaining({
         'candidate-materialization': 12,
@@ -230,9 +238,8 @@ describe('work_items:claimable handler', () => {
         planLinkedRowsChecked: 1,
         blockedPlanRows: 0,
       }),
-    }));
-    expect((logM.mock.calls[0]![2] as { planLaneGuard: { elapsedMs: number; slowestPlanGuardMs: number } }).planLaneGuard.elapsedMs)
-      .toBeGreaterThanOrEqual(0);
+    });
+    expect(timing.planLaneGuard.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it('resolves member harnesses to their Hive home and discloses both scopes', async () => {

@@ -654,6 +654,33 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
 }
 
+/** Attach dependencies to the independently invoked tree before its first Node
+ * command. Reuse the release helper's donor install mutex and private snapshot.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export async function prepareVerifierDependencies({ donor, dest, receipt }) {
+  await verifyVerifierSource(dest, receipt);
+  const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
+  const run = (command, args) => {
+    const result = spawnSync(command, args, { cwd: dest, env, encoding: 'utf8',
+      timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
+    if (result.error || result.status !== 0)
+      throw new PreviewError(`verifier dependency preflight failed: ${result.error?.message || result.stderr || result.stdout || result.status}`, 2);
+    return result.stdout;
+  };
+  run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']);
+  await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true });
+  const script = join(dest, 'scripts/source-preview.mjs');
+  run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
+    '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]);
+  const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
+    '--ref', receipt.sourceCommit]).trim();
+  if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
+    throw new PreviewError('verifier dependency preflight returned no source size', 2);
+  await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true });
+}
+
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
@@ -673,7 +700,7 @@ export async function verifyVerifierSource(dest, expected, options = {}) {
 export function verifyVerifierSourceSync(dest, expected, options = {}) {
   try {
     const result = verifyArchivedSourceSync(dest, expected,
-      expected.operatorApiInputs ? { ...options, runtimeArtifacts: true } : options);
+      expected?.operatorApiInputs ? { ...options, runtimeArtifacts: true } : options);
     if (expected.operatorApiInputs) {
       assertOutsideArchive(dest, expected.operatorApiInputs.path);
       const bytes = pinnedReceiptBytes(expected.operatorApiInputs.path, expected.operatorApiInputs.sha256);

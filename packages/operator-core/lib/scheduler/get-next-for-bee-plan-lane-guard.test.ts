@@ -156,11 +156,12 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(getNextWorkItemMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ client: sqlMock }),
+      expect.objectContaining({ client: sqlMock, acquirePool: 'scheduler-claim' }),
     );
     expect(boundedOrgTxnMock).toHaveBeenCalledTimes(1);
     expect(boundedOrgTxnMock).toHaveBeenCalledWith(expect.any(Function), {
       client: sqlMock,
+      acquirePool: 'scheduler-claim',
       signal,
       acquireTimeoutMs: SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
       statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
@@ -204,6 +205,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       useDedicatedClaimPool: true,
     });
     const expectedSetupTimeouts = {
+      acquirePool: 'scheduler-claim',
       statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
       lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
     };

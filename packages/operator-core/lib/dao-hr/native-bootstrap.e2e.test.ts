@@ -1,5 +1,5 @@
 /** Configures external fixtures BEFORE the owned native host boots. Run with the maintained Documenso sandbox. */
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -11,6 +11,16 @@ import { startDaoHrTestChain } from '../../../../scripts/fixtures/dao-hr-test-ch
 import { startDaoHrWalletBindingFixture } from '../../../../scripts/fixtures/dao-hr-wallet-binding';
 import { register, authenticatedAccount, accountToken } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
+import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource } from '../../../../scripts/source-preview.mjs';
+
+const NATIVE_SOURCE_INPUTS = [
+  'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
+  'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
+  'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
+  'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
+  'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
+  'scripts/fixtures/dao-workbench-identity.mjs',
+];
 
 describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined native hire bootstrap', () => {
   it('runs the isolated native hire journey with actual provider accounts, hosted wallet routes and signed V2 chain', async () => {
@@ -19,17 +29,41 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
     expect(runtime).toMatchObject({ isolatedDatabase: true, externalMail: false, testCertificate: true });
     const directory = mkdtempSync(join(tmpdir(), 'dao-hr-native-'));
     const root = resolve(import.meta.dirname, '../../../..');
-    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_VERIFY_TAURI_ISOLATED: '1' };
-    const identityPath = prepareIdentityFixture(directory);
-    const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
-    env.DAO_WORKBENCH_IDENTITY_FIXTURE = identityPath;
-    const restoreIdentity = installIdentityFixture(identity, env);
+    let sourceDirectory: string | undefined;
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_VERIFY_TAURI_ISOLATED: '1',
+      PAPERCUSP_REPO_DIR: process.env.PAPERCUSP_REPO_DIR || root };
+    const evidenceRoot = '/tmp/pcv/dao-hr-native'; mkdirSync(evidenceRoot, { recursive: true });
+    const logPath = process.env.DAO_HR_NATIVE_BOOT_LOG || join(evidenceRoot, 'native-boot-' + Date.now() + '.log');
     const priorIsolation = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
-    process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
+    let restoreIdentity: (() => void) | undefined;
     let chain: Awaited<ReturnType<typeof startDaoHrTestChain>> | undefined;
     let wallet: Awaited<ReturnType<typeof startDaoHrWalletBindingFixture>> | undefined;
-    const browser = await chromium.launch({ headless: true });
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     try {
+      // Freeze the invoked wrapper and acceptance helpers before any external
+      // allocation. A preflight of the mutable donor alone leaves a boot-time race.
+      // The maintained dependency snapshot uses hardlinks. Provider TMPDIR can
+      // be on another device, so own this source tree on the donor filesystem.
+      const sourceScratch = join(root, '.papercusp', 'scratch');
+      mkdirSync(sourceScratch, { recursive: true });
+      sourceDirectory = mkdtempSync(join(sourceScratch, 'dao-hr-native-source-'));
+      expect(statSync(sourceDirectory).dev, 'Invoked source must share the dependency donor filesystem').toBe(statSync(root).dev);
+      const sourceRoot = join(sourceDirectory, 'invoked-source');
+      const sourceRef = process.env.VERIFY_TAURI_SOURCE_REF?.trim();
+      expect(Boolean(sourceRef), 'Explicit committed VERIFY_TAURI_SOURCE_REF is required').toBe(true);
+      const receipt = await prepareVerifierSource({ repo: root, ref: sourceRef!, dest: sourceRoot,
+        inputs: NATIVE_SOURCE_INPUTS, tauriInputs: true, gitCheckout: true });
+      writeFileSync(logPath + '.invoked-source-receipt.json', JSON.stringify(receipt), { mode: 0o600 });
+      await verifyVerifierSource(sourceRoot, receipt);
+      await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
+      env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
+      env.VERIFY_TAURI_SOURCE_INPUTS = NATIVE_SOURCE_INPUTS.join(',');
+      const identityPath = prepareIdentityFixture(directory);
+      const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
+      env.DAO_WORKBENCH_IDENTITY_FIXTURE = identityPath;
+      restoreIdentity = installIdentityFixture(identity, env);
+      process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
+      browser = await chromium.launch({ headless: true });
       chain = await startDaoHrTestChain(); wallet = await startDaoHrWalletBindingFixture();
       const candidate = await register(browser, { personId: 'PER-native-candidate', name: 'Native candidate', email: identity.actors.candidate.email });
       const company = await register(browser, { personId: 'PER-native-approver', name: 'Native countersigner', email: identity.actors.approver.email });
@@ -47,22 +81,14 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       env.PAPERCUSP_TEST_RUNS_DB_URL = process.env.PAPERCUSP_TEST_RUNS_DB_URL || resolveExecutedMapPgUrl().url;
       env.PAPERCUSP_TEST_RUN_WORKSPACE = process.env.PAPERCUSP_TEST_RUN_WORKSPACE || process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE!;
       expect(Boolean(env.PAPERCUSP_TEST_RUN_WORKSPACE)).toBe(true);
-      const evidenceRoot = '/tmp/pcv/dao-hr-native'; mkdirSync(evidenceRoot, { recursive: true });
-      const logPath = process.env.DAO_HR_NATIVE_BOOT_LOG || join(evidenceRoot, 'native-boot-' + Date.now() + '.log');
+      await verifyVerifierSource(sourceRoot, receipt, { runtimeArtifacts: true });
       const fd = openSync(logPath, 'w', 0o600);
       let code: number | null;
       try {
-        const child = spawn('bash', [join(root, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
-          join(root, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: root,
+        const child = spawn('bash', [join(sourceRoot, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
+          join(sourceRoot, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: sourceRoot,
           env: { ...env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready', VERIFY_TAURI_WINDOW: '1440x1000',
-            VERIFY_TAURI_SOURCE_INPUTS: [
-              'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
-              'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
-              'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
-              'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
-              'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
-            ].join(','),
-            NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(root, 'scripts/fixtures/dao-workbench-identity.mjs') },
+            NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(sourceRoot, 'scripts/fixtures/dao-workbench-identity.mjs') },
           stdio: ['ignore', fd, fd] });
         code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
       } finally { closeSync(fd); }
@@ -72,9 +98,10 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {
-      await browser.close(); await wallet?.stop(); await chain?.stop(); restoreIdentity();
+      await browser?.close(); await wallet?.stop(); await chain?.stop(); restoreIdentity?.();
       if (priorIsolation === undefined) delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
       else process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = priorIsolation;
+      if (sourceDirectory) rmSync(sourceDirectory, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
   }, 1_200_000);
