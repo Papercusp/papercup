@@ -148,20 +148,23 @@ describe('registered subject evidence with the real local scorer', () => {
     const warmStart = Date.now();
     try {
       if (url && privateHome && process.env.PAPERCUSP_EMBED_SIDECAR_WARM?.split(',').includes('rerank')) {
-        // READY means the socket is listening. The boot model is loaded behind
-        // durable admission afterward; observe that maintained health contract
-        // instead of spending a scoring deadline on unfinished construction.
+        // READY means the socket is listening; models.warm means construction
+        // finished. Await the first governed boot inference as well, so its
+        // admission cannot consume the bounded scoring prerequisite.
         let lastState: string | undefined;
         const readyState = await vi.waitUntil(async () => {
-          const readyHealth = await probeSidecarHealth(url, 5000) as { models?: Record<string, string> } | null;
-          const state = readyHealth ? readyHealth.models?.rerank ?? 'absent' : 'unavailable';
+          const readyHealth = await probeSidecarHealth(url, 5000) as {
+            models?: Record<string, string>; warmups?: Record<string, string>;
+          } | null;
+          const state = readyHealth ? readyHealth.warmups?.rerank ?? 'absent' : 'unavailable';
           if (state !== lastState) {
-            console.info('subject-scorer-model-transition', JSON.stringify({ elapsedMs: Date.now() - warmStart, state }));
+            console.info('subject-scorer-model-transition', JSON.stringify({ elapsedMs: Date.now() - warmStart,
+              state, construction: readyHealth?.models?.rerank ?? null }));
             lastState = state;
           }
           return state === 'warm' || state === 'failed' ? state : false;
         }, { timeout: 120_000, interval: 250 });
-        expect(readyState, 'owned boot reranker must finish construction before scoring').toBe('warm');
+        expect(readyState, 'owned boot reranker must finish its first inference before scoring').toBe('warm');
       }
       await scorer('SQL migration file', ['Apply a numbered PostgreSQL DDL transaction.'], { deadline: Date.now() + 15_000 });
     } catch (error) {
