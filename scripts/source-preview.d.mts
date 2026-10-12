@@ -114,9 +114,9 @@ export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInp
     paths: string[];
 }>;
 /** Prepare a source snapshot only after all declared inputs match their pin.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean }} options
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs, operatorApi }: {
     repo: string;
     ref: string;
     dest: string;
@@ -124,6 +124,14 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     inputsFile?: string;
     gitCheckout?: boolean;
     tauriInputs?: boolean;
+    operatorApi?: {
+        root: string;
+        sourceReceiptPath: string;
+        sourceReceiptSha256: string;
+        inputReceiptPath: string;
+        inputReceiptSha256: string;
+        outputPath: string;
+    };
 }): Promise<{
     testedInputs: {
         path: string;
