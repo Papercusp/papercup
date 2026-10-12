@@ -322,7 +322,7 @@
       "logSha256": "5df3cdcbd081a85b6edda3fa786bbe46726a19af8e4be3a4444dac8cb9925cea"
     },
     "limitations": [
-      "The retained full47a6 verdict remains refused. This repair has not yet passed a real native restart journey or a clean as-committed candidate acceptance. The subsequent native run failed before exercising the repaired restart path.",
+      "The retained full47a6 verdict remains refused. The resumed current-build native approval/restart journey passed as recorded below; this is not clean as-committed full-candidate acceptance. The earlier native run failed before exercising the repaired restart path.",
       "No OMP model pin, account substitution, permission bypass, timeout increase or cold REST prewarm was introduced. Independent grading and exact final Avi approval remain required."
     ]
   },
@@ -337,7 +337,16 @@
       "exitCode": 0,
       "logPath": "/tmp/pui-acceptance-7534f/fire28-mounted-mcp-guards.log",
       "logSha256": "5e41079d696249d327c485e86151f9908b220c86e5666c690611600919332126",
-      "scope": "Canonical Vitest native approval terminal and prerequisite classifier controls; real PUI mounted-device execution remains pending."
+      "scope": "Canonical Vitest native approval terminal and prerequisite classifier controls; the corresponding real native journey is recorded separately below."
+    },
+    "typecheckVerification": {
+      "taskId": "0mv5sfizd1sa77wu1kb",
+      "logPath": ".papercusp/scratch/bash-c83dc4a3-ffb.log",
+      "logSha256": "84fdf4bf769b62642d6a0f6ebe11038791d6aaab2566fef6c4abc1b1074efb30",
+      "exitCode": 0,
+      "terminalAt": "2026-10-12T21:53:35.018Z",
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/pui-e2e/release-acceptance.ts,packages/operator-core/lib/pui-e2e/release-acceptance.test.ts,packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "scope": "Three named files and four resolved importers; zero type errors. This is focused type evidence in addition to the canonical tests."
     },
     "sourceSha256": {
       "packages/operator-core/lib/pui-e2e/release-acceptance.ts": "8a5ed02c31fe8b66afd54c44d9c087ca2c5fa4a00898176e2ad0acfbb6e05a82",
@@ -359,10 +368,54 @@
       "logPath": ".papercusp/scratch/bash-2990b343-b0b.log",
       "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-resume-20261012-2125",
       "deadline": "2026-10-12T21:43:46.764Z",
-      "state": "Pending; single bounded replay after explicit owner-verified Avi resume.",
+      "state": "Passed: explicit native target-note approval/effect and same conversation after a second operator OS process.",
       "resumeMessage": "coord-send-0a0f2ad1c8b670fe61d36a7d8f086f77edc79224edd71d32ec108f7cf72fe338",
-      "attemptAuditPosts": [1177646, 1177647]
+      "attemptAuditPosts": [1177646, 1177647],
+      "testRunId": 21161988,
+      "terminalAt": "2026-10-12T21:34:08.500Z",
+      "exitCode": 0,
+      "logSha256": "4e1bd4fc3e4a301936d8ad8d4b8015f5f433e192eccd470ef89425358cf5fc72",
+      "testsPassed": 1,
+      "testsSkipped": 93,
+      "approvalReceipt": {
+        "marker": "PUI_OPERATOR_NATIVE_APPROVAL_RECEIPT",
+        "turnId": "pui-turn-pui-1791840732220479798",
+        "correlationId": "4ee5f5cc-afa5-47b2-98f0-f73d81108c3b",
+        "toolCallId": "toolu_017Lni1LdyE2UTUXjbFkJeSh",
+        "nativeTool": "write",
+        "choice": "Yes",
+        "cardReplyStatus": 200,
+        "toolCompleted": true,
+        "exactEffectVerified": true,
+        "sameTurnAndSession": true,
+        "effectSha256": "ab73d437b9af0599768bf22ffcb8c4bd9d222e6f855c554395b9eaf14e9d8f4e"
+      },
+      "restartReceipt": {
+        "marker": "PUI_OPERATOR_PROCESS_ACCEPTANCE",
+        "firstOperatorPid": 2379860,
+        "secondOperatorPid": 2475952,
+        "firstInstanceId": "734567e8-7f45-47fd-82df-7f2a7a1e9781",
+        "secondInstanceId": "11d30cf0-066c-4375-917f-828611d8a2da",
+        "sameNativeIdentity": true,
+        "nativeSessionId": "01a13207-bffd-74de-8fd0-a537c256a53c",
+        "runtimeGenerationBefore": 0,
+        "runtimeGenerationAfter": 1,
+        "sameNativeHome": true,
+        "sameModelAndAccount": true,
+        "model": "papercusp-gateway/claude-sonnet-4-6",
+        "accountRoute": "auto",
+        "preExitTranscriptSha256": "f3cb43896222e22c961eefe9546e31eda09ac4eae233fa0aeb23aa9eef427b89",
+        "resumedLifecycle": "waiting-for-owner"
+      },
+      "sourceCapture": {
+        "path": "/tmp/pui-acceptance-7534f/omp-restart-mounted-resume-20261012-2125/source-map.json",
+        "sha256": "fd29a6effc16892166cfec4a5bce40efd8056eb587513b2069476a11c902a79d",
+        "recordedSha": "3592f5530dbcace48d9d84b86d398fd860b26b00",
+        "worktreeDirty": true,
+        "status": "changed",
+        "scope": "Local repair evidence. Named launcher, fixture and approval helper collected hashes match the retained repair; the overall source capture contains uncaptured modules and does not qualify as clean BAR proof."
+      }
     },
-    "limitations": "No actual mounted-route tool completion, requested-note approval/effect, second-process native attachment or immutable full-candidate acceptance is claimed. All original publication holds remain."
+    "limitations": "Canonical mounted-device classifiers and the current-build native target-note approval/restart journey passed. The journey does not retain a standalone mounted-prerequisite receipt and is not immutable full-candidate acceptance. All original publication holds remain."
   }
 }
