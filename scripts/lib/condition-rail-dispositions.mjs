@@ -100,7 +100,7 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs': NA_CLI,
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
   // Exact original row independently reviewed in thread-post:1175978; D-048.
-  'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier': na(
+  'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|fails-open': na(
     'unit-tier database guard logs a diagnosis and immediately throws before database access; fallback wording describes the separate enum overlay, not a fallback decision at this site',
   ),
   'log-only-fallback|packages/operator-core/lib/agent-tools/index.ts': NA_FALLBACK_WAKE,
@@ -145,7 +145,7 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|apps/operator/app/harness/insights/SubstrateHealthPill.tsx': NA_UI,
   'health-flag-no-condition|packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts': migrate('P-014'),
   // Exact original row independently reviewed in thread-post:1175978; D-048.
-  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows': na(
+  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|degraded': na(
     'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback',
   ),
   'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
