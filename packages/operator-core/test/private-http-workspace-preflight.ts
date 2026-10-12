@@ -45,6 +45,7 @@ export interface CommittedReaderClosure {
 export function qualifyCommittedReaderSource(o: {
   root: string; bundle: string; receiptPath: string; sourceReceiptPath: string;
   selectedCommit: string;
+  receiptSha256?: string; sourceReceiptSha256?: string;
 } & ({ preparationOnly: true } | {
   preparationOnly?: false; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
 })) {
@@ -55,9 +56,17 @@ export function qualifyCommittedReaderSource(o: {
   };
   assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
   assert.ok(!inside(o.root, o.receiptPath), 'Closure receipt must be independent of the source archive');
-  const closure: CommittedReaderClosure = JSON.parse(readFileSync(o.receiptPath, 'utf8'));
+  const closureBytes = readFileSync(o.receiptPath);
+  if (o.receiptSha256) assert.equal(digest(closureBytes), o.receiptSha256, 'Pinned preparation receipt changed');
+  const closure: CommittedReaderClosure = JSON.parse(String(closureBytes));
   assert.equal(closure.sourceCommit, o.selectedCommit, 'Closure differs from selected committed source');
+  const assertSourceReceiptUnchanged = () => {
+    if (o.sourceReceiptSha256) assert.equal(digest(readFileSync(o.sourceReceiptPath)), o.sourceReceiptSha256,
+      'Pinned selected source receipt changed');
+  };
+  assertSourceReceiptUnchanged();
   const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
+  assertSourceReceiptUnchanged();
   assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from selected committed source');
   for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
     'dependencyFiles', 'artifacts', 'omitted', 'opaque'] as const)
@@ -217,16 +226,26 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     || process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) || process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim(),
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
   const selected = options?.committedReader;
+  let selectedReceipts: { source: Buffer; closure: Buffer } | undefined;
+  const assertSelectedReceiptsUnchanged = () => {
+    if (!selected || !selectedReceipts) return;
+    assert.deepEqual(readFileSync(selected.sourceReceiptPath), selectedReceipts.source,
+      'Selected source receipt changed during preparation');
+    assert.deepEqual(readFileSync(selected.receiptPath), selectedReceipts.closure,
+      'Selected closure receipt changed during preparation');
+  };
   if (selected) {
     assert.match(selected.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+    selectedReceipts = { source: readFileSync(selected.sourceReceiptPath), closure: readFileSync(selected.receiptPath) };
     assert.equal(readVerifierSourceReceiptSync(root, selected.sourceReceiptPath).sourceCommit,
       selected.selectedCommit, 'Archive differs from selected committed source');
     // Missing independent preparation must refuse before compilation/PG. Never
     // synthesize a closure from this process's own source/dependency snapshot.
-    const closure: CommittedReaderClosure = JSON.parse(readFileSync(selected.receiptPath, 'utf8'));
+    const closure: CommittedReaderClosure = JSON.parse(String(selectedReceipts.closure));
     assert.equal(closure.sourceCommit, selected.selectedCommit, 'Closure differs from selected committed source');
     assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
     assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
+    assertSelectedReceiptsUnchanged();
   }
   const path = join(evidenceDir, 'hono-host.mjs');
   try {
@@ -241,12 +260,14 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
   let receipt: { path: string; sha256: string; selectedSource?: {
     receiptPath: string; sha256: string; sourceCommit: string;
   } } = { path, sha256 };
-  if (selected) {
+  if (selected && selectedReceipts) {
+    assertSelectedReceiptsUnchanged();
     const qualification = qualifyCommittedReaderSource({ root, bundle: path, ...selected, preparationOnly: true });
-    const sourceBytes = readFileSync(selected.sourceReceiptPath);
+    assertSelectedReceiptsUnchanged();
+    const sourceBytes = selectedReceipts.source;
     const sourcePath = join(evidenceDir, 'verifier-source.json');
     writeFileSync(sourcePath, sourceBytes);
-    receipt = { ...JSON.parse(readFileSync(selected.receiptPath, 'utf8')), path, sha256, qualification,
+    receipt = { ...JSON.parse(String(selectedReceipts.closure)), path, sha256, qualification,
       selectedSource: { receiptPath: sourcePath, sha256: createHash('sha256').update(sourceBytes).digest('hex'),
         sourceCommit: selected.selectedCommit } };
   }
@@ -255,8 +276,8 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
   return { ...receipt, receiptSha256: createHash('sha256').update(receiptBytes).digest('hex') };
 }
 
-/** A worker may reuse only the artifact from its own original prepare phase. */
-export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenceDir: string) {
+/** Read and parse the receipt from the same bytes whose digest was verified. */
+function readPreparedPrivateApiBundle(argv: readonly string[], evidenceDir: string) {
   const values = argv.filter(value => value.startsWith('--prepared-api-sha='));
   if (!values.length) return undefined;
   assert.equal(values.length, 1, 'Pass exactly one prepared API digest');
@@ -266,18 +287,27 @@ export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenc
   assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), sha256,
     'Prepared private API changed after preflight');
   const receipts = argv.filter(value => value.startsWith('--prepared-receipt-sha='));
+  let receipt: { path: string; sha256: string; sourceCommit?: string; selectedSource?: {
+    receiptPath: string; sha256: string; sourceCommit: string;
+  } } | undefined;
+  let receiptSha256: string | undefined;
   if (receipts.length) {
     assert.equal(receipts.length, 1, 'Pass exactly one prepared receipt digest');
-    const receiptSha256 = receipts[0].slice('--prepared-receipt-sha='.length);
+    receiptSha256 = receipts[0].slice('--prepared-receipt-sha='.length);
     assert.match(receiptSha256, /^[a-f0-9]{64}$/, 'Prepared receipt digest must be SHA256');
     const receiptBytes = readFileSync(join(dirname(path), 'operator-api-preflight.json'));
     assert.equal(createHash('sha256').update(receiptBytes).digest('hex'), receiptSha256,
       'Prepared private receipt changed after preflight');
-    const receipt = JSON.parse(String(receiptBytes));
-    assert.equal(receipt.path, path, 'Prepared private receipt names another artifact');
-    assert.equal(receipt.sha256, sha256, 'Prepared private receipt names another digest');
+    receipt = JSON.parse(String(receiptBytes));
+    assert.equal(receipt!.path, path, 'Prepared private receipt names another artifact');
+    assert.equal(receipt!.sha256, sha256, 'Prepared private receipt names another digest');
   }
-  return path;
+  return { path, receipt, receiptSha256 };
+}
+
+/** A worker may reuse only the artifact from its own original prepare phase. */
+export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenceDir: string) {
+  return readPreparedPrivateApiBundle(argv, evidenceDir)?.path;
 }
 
 /** Selected source crosses the sanitized child boundary through the parent's
@@ -285,9 +315,9 @@ export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenc
 export function resolvePreparedCommittedReaderSource(argv: readonly string[], evidenceDir: string) {
   assert.equal(argv.filter(value => value.startsWith('--prepared-receipt-sha=')).length, 1,
     'Committed reader requires one pinned preparation receipt');
-  const bundle = resolvePreparedPrivateApiBundle(argv, evidenceDir);
-  assert.ok(bundle, 'Committed reader requires an independently prepared pinned API');
-  const receipt = JSON.parse(readFileSync(join(dirname(bundle), 'operator-api-preflight.json'), 'utf8'));
+  const prepared = readPreparedPrivateApiBundle(argv, evidenceDir);
+  assert.ok(prepared?.receipt, 'Committed reader requires an independently prepared pinned API');
+  const { path: bundle, receipt } = prepared;
   const source = receipt.selectedSource;
   assert.ok(source && source.receiptPath === join(dirname(bundle), 'verifier-source.json'),
     'Committed reader requires the retained independent selected source receipt');
@@ -295,7 +325,8 @@ export function resolvePreparedCommittedReaderSource(argv: readonly string[], ev
   assert.equal(source.sourceCommit, receipt.sourceCommit, 'Prepared source selection differs');
   assert.equal(createHash('sha256').update(readFileSync(source.receiptPath)).digest('hex'), source.sha256,
     'Retained selected source receipt changed after preflight');
-  return { sourceReceiptPath: source.receiptPath as string, selectedCommit: source.sourceCommit as string };
+  return { sourceReceiptPath: source.receiptPath, selectedCommit: source.sourceCommit,
+    sourceReceiptSha256: source.sha256, receiptSha256: prepared.receiptSha256! };
 }
 
 /** Isolated workers intentionally discard PAPERCUSP_* ambient settings.
