@@ -1166,6 +1166,36 @@ describe('plans:audit phase:activation', () => {
     expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
   });
 
+  it('previews the evidence-plane conflict that BAR seeding refuses', async () => {
+    const conflictingPlan = barPlanCompleteWithDesign
+      .replace(
+        '"falsifier":"A second criterion claims the same BAR.","requiredTestLayers"',
+        '"falsifier":"A second criterion claims the same BAR.","evidencePlane":"tree","requiredTestLayers"',
+      )
+      .replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
+    resolvePlanContent(conflictingPlan);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+    mockPreviewActivation.mockResolvedValue({ ok: true, preview: true } as never);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'bar_evidence_plane_invalid',
+      problems: [expect.objectContaining({
+        code: 'bar_evidence_plane_invalid',
+        barKey: 'R-1',
+        detail: 'R-1 has conflicting Acceptance and map evidence planes',
+      })],
+    });
+    expect(mockPreviewActivation).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
   it('previews the writer contract-completeness refusal for a never-seeded prose BAR (P-003)', async () => {
     resolvePlanContent(barPlanWithDesign);
     mockOrgSql
