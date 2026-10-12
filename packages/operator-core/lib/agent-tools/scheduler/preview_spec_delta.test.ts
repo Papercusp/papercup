@@ -31,15 +31,22 @@ vi.mock('../../scheduler/spec-predicate-partition', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../scheduler/spec-predicate-partition')>()),
   previewSpecFilterPartition: (...args: unknown[]) => admissionMocks.previewSpecFilterPartition(...args),
 }));
-vi.mock('../../work-items', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../work-items')>()),
-  getWorkItem: (...args: unknown[]) => admissionMocks.getWorkItem(...args),
-  explainIssueClaimFloors: (...args: unknown[]) => admissionMocks.explainIssueClaimFloors(...args),
-}));
-vi.mock('../coordination/audience-host', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../coordination/audience-host')>()),
-  listFleetControlMembers: (...args: unknown[]) => admissionMocks.listFleetControlMembers(...args),
-}));
+vi.mock('./set_claim_spec', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./set_claim_spec')>();
+  return {
+    ...original,
+    // Exercise the real evaluator through its own persisted-read seams.
+    // Concurrent dynamic imports can otherwise escape a partial ESM mock;
+    // the unit rail caught that for the second ID in a mixed cohort.
+    previewClaimSpecAdmission: (args: Parameters<typeof original.previewClaimSpecAdmission>[0]) =>
+      original.previewClaimSpecAdmission({
+        ...args,
+        resolveFamily: async (id, harness) => (await admissionMocks.getWorkItem(id, harness))?.family ?? null,
+        explain: (...args) => admissionMocks.explainIssueClaimFloors(...args),
+        resolveFleetMembers: (fleet) => admissionMocks.listFleetControlMembers(fleet),
+      }),
+  };
+});
 
 const proposedSpecWithoutRevision = {
   specVersion: '1.0',
