@@ -10,6 +10,9 @@
  * value is checked with the SDK's own `providerCredentialValueIssue` before it is sent, the same
  * check the host runs, so the page and the host never disagree about what is acceptable.
  *
+ * A field the package declares `perPrincipal` (D-026) is each signed-in person's own: its status
+ * describes the viewer's value, and the card says so.
+ *
  * Writes go to /api/user/integrations/providers/:id/credentials; that route invalidates
  * `integrations.tickets`, so the card's status updates from the live query rather than a poll.
  */
@@ -112,6 +115,11 @@ export function ProviderCredentialsForm({
           <div key={field.key} style={fieldStyle} data-credential={field.key} data-configured={field.configured ? 'true' : 'false'}>
             <div style={fieldHead}>
               <span style={labelText}>{field.label}</span>
+              {field.perPrincipal && (
+                <span style={metaText} data-per-principal="true">
+                  Your own: only your searches use it, and nobody else sees it
+                </span>
+              )}
               {field.configured && (
                 <span style={metaText}>{field.savedAt ? `Saved ${formatTime(field.savedAt)}` : 'Saved'}</span>
               )}

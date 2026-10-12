@@ -7,8 +7,12 @@
  * per-field status (configured or not, and when it was saved).
  *
  *   GET    /user/integrations/providers/:providerId/credentials        each declared field's status
- *   PUT    /user/integrations/providers/:providerId/credentials        { values: { key: value } } — all or nothing
+ *   PUT    /user/integrations/providers/:providerId/credentials        { values?: { key: value }, source?: { scope?, liveSearch? } }
  *   DELETE /user/integrations/providers/:providerId/credentials/:key   forget one value
+ *
+ * `values` is all or nothing. `source` is the source settings the provider's descriptor offers
+ * (integrations/provider-source-settings.ts, D-026 ruling 4), applied after any values are saved so
+ * one save can connect a source and share it.
  *
  * Values are stored under the harness the provider's sources read their tokens from
  * (DEFAULT_SOURCE_TOKEN_HARNESS), the same one the OAuth connect link writes. Every write
@@ -30,6 +34,12 @@ import {
   ProviderCredentialError,
   type ProviderCredentialErrorCode,
 } from '../../../integrations/provider-credentials';
+import {
+  applyProviderSourceSettings,
+  ProviderSourceSettingsError,
+  type ProviderSourceSettingsErrorCode,
+  type ProviderSourceSettingsState,
+} from '../../../integrations/provider-source-settings';
 import { TICKET_INTEGRATIONS_QUERY } from './ticket-integrations';
 
 const STATUS_BY_CODE: Record<ProviderCredentialErrorCode, number> = {
@@ -39,6 +49,14 @@ const STATUS_BY_CODE: Record<ProviderCredentialErrorCode, number> = {
   'empty-request': 400,
   'invalid-principal': 400,
   'principal-required': 400,
+};
+
+const SETTINGS_STATUS_BY_CODE: Record<ProviderSourceSettingsErrorCode, number> = {
+  'invalid-setting': 400,
+  'scope-not-offered': 409,
+  'live-search-not-offered': 409,
+  'live-search-needs-organization': 409,
+  'no-source': 409,
 };
 
 /** Keys of the provider's per-person fields, which each signed-in user stores as their own (D-026). */
@@ -67,6 +85,9 @@ function failure(error: unknown): Response {
       { ok: false, error: error.code, detail: error.message, ...(error.field ? { field: error.field } : {}) },
       { status: STATUS_BY_CODE[error.code] },
     );
+  }
+  if (error instanceof ProviderSourceSettingsError) {
+    return Response.json({ ok: false, error: error.code, detail: error.message }, { status: SETTINGS_STATUS_BY_CODE[error.code] });
   }
   if (error instanceof RouteRefusal) {
     return Response.json({ ok: false, error: error.code, detail: error.message }, { status: error.status });
@@ -120,19 +141,43 @@ const save = defineTool({
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
     const body = await req.json().catch(() => null);
-    if (!isPlainObject(body) || !isPlainObject(body.values)) {
-      return Response.json({ ok: false, error: 'bad_request', detail: 'body must be { values: { <field>: <value> } }' }, { status: 400 });
+    const values = isPlainObject(body) ? body.values : undefined;
+    const sourceSettings = isPlainObject(body) ? body.source : undefined;
+    if (
+      !isPlainObject(body)
+      || (values === undefined && sourceSettings === undefined)
+      || (values !== undefined && !isPlainObject(values))
+      || (sourceSettings !== undefined && !isPlainObject(sourceSettings))
+    ) {
+      return Response.json(
+        { ok: false, error: 'bad_request', detail: 'body must be { values?: { <field>: <value> }, source?: { scope?, liveSearch? } }' },
+        { status: 400 },
+      );
     }
     try {
       const entry = await provider(ctx.params.providerId);
       const user = await getSessionUserOrDefault(req.headers);
-      const credentials = await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, body.values, { principalUserId: user.id });
+      let credentials = values === undefined
+        ? await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, undefined, user.id)
+        : await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, values, { principalUserId: user.id });
       // Storing only your own per-person value changes nothing about the source (D-026).
       const ownOnly = perPersonKeys(entry);
-      if (Object.keys(body.values).some((key) => !ownOnly.has(key))) await syncSource(user.id, entry, credentials);
+      if (values !== undefined && Object.keys(values).some((key) => !ownOnly.has(key))) await syncSource(user.id, entry, credentials);
+      let source: ProviderSourceSettingsState[] | undefined;
+      if (sourceSettings !== undefined) {
+        source = await applyProviderSourceSettings(
+          getOrgPg().sql,
+          { workspaceId: activeWorkspaceId(), ownerUserId: user.id },
+          entry.descriptor,
+          sourceSettings,
+        );
+        credentials = await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, undefined, user.id);
+      }
       invalidate();
-      return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
+      return Response.json({ ok: true, providerId: entry.descriptor.id, credentials, ...(source ? { source } : {}) });
     } catch (error) {
+      // A refused source setting after saved values still changed the page's status.
+      if (values !== undefined) invalidate();
       return failure(error);
     }
   },

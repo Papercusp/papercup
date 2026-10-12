@@ -31,6 +31,7 @@ const field = (overrides: Partial<ProviderCredentialStatus> = {}): ProviderCrede
   placeholder: 'chat-…',
   pattern: 'chat-[0-9]+-[a-z]+',
   hosts: ['api.fixture-chat.test'],
+  perPrincipal: false,
   configured: false,
   savedAt: null,
   ...overrides,

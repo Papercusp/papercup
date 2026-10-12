@@ -28,6 +28,7 @@ import {
 import { createSourceHostFetch } from './source-host-fetch';
 import { descriptorOAuthPlugin } from './connection-lifecycle';
 import { providerCredentialStatus, type ProviderCredentialStatus } from './provider-credentials';
+import { providerSourceSettingsOffer, type ProviderSourceSettingsOffer } from './provider-source-settings';
 import {
   clientRegistrationRefOf,
   oauthClientRegistrationStatuses,
@@ -135,6 +136,11 @@ export interface TicketProviderSummary {
    */
   credentials: ProviderCredentialStatus[];
   /**
+   * The source settings the descriptor offers on this page (D-026 ruling 4): organization-wide
+   * sharing when it declares membership, live search when it also declares `search.live`.
+   */
+  sourceSettings: ProviderSourceSettingsOffer;
+  /**
    * The vendor app the owner creates before connecting (`setup.appRegistration`, P-002), or null
    * when the provider declares none.
    */
@@ -163,6 +169,10 @@ export interface TicketSourceSummary {
   lastSyncAt: string | null;
   nextAttemptAt: string | null;
   failureCount: number;
+  /** Who can read what the source syncs (D-026 ruling 4): the owner alone, the organization, or one pot. */
+  scope: string;
+  /** Searched live at read time instead of copied (`sync_mode = 'federated'`). */
+  liveSearch: boolean;
   /** The reported config keys only (REPORTED_CONFIG_KEYS); never credentials or cursors. */
   config: Record<string, unknown>;
   /** Required config the source still lacks; it cannot sync until these are set. */
@@ -304,6 +314,7 @@ export function summarizeIntegrationProvider(
     requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
     connectHref: d.oauth ? ticketConnectHref(d) : null,
     credentials,
+    sourceSettings: providerSourceSettingsOffer(d),
     appRegistration: providerAppRegistrationView(d),
     oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce } : null,
   };
@@ -311,6 +322,8 @@ export function summarizeIntegrationProvider(
 
 interface SourceSyncRow {
   id: string;
+  scope: string;
+  sync_mode: string;
   sync_last_success_at: Date | string | null;
   sync_next_attempt_at: Date | string | null;
   sync_failure_count: number | null;
@@ -347,7 +360,7 @@ export async function ticketIntegrationsOverview(
     ? [[], [], [], []] as const
     : await Promise.all([
       sql<SourceSyncRow[]>`
-        SELECT id::text, sync_last_success_at, sync_next_attempt_at, sync_failure_count
+        SELECT id::text, scope, sync_mode, sync_last_success_at, sync_next_attempt_at, sync_failure_count
           FROM harness_shared.data_sources
          WHERE workspace_id = ${scope.workspaceId} AND id::text = ANY(${sql.array(ids)}::text[])`,
       sql<Array<{ id: string; n: number }>>`
@@ -381,6 +394,8 @@ export async function ticketIntegrationsOverview(
       lastSyncAt: isoOrNull(s?.sync_last_success_at),
       nextAttemptAt: isoOrNull(s?.sync_next_attempt_at),
       failureCount: s?.sync_failure_count ?? 0,
+      scope: s?.scope ?? 'personal',
+      liveSearch: s?.sync_mode === 'federated',
       config: schema ? reportedConfig(schema, config) : {},
       missingConfig: schema ? missingTicketConfig(schema, config) : [],
       mirrored: mirrored.get(source.id) ?? 0,
@@ -400,7 +415,8 @@ export async function ticketIntegrationsOverview(
           const ref = clientRefs.get(entry.descriptor.id);
           return summarizeIntegrationProvider(
             entry,
-            await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage),
+            // The viewer's own per-person values read as configured for them alone (D-026).
+            await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage, scope.ownerUserId),
             ref ? (clients.get(ref) ?? null) : null,
           );
         }),

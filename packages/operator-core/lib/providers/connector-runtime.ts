@@ -448,7 +448,11 @@ const SOURCE_COLUMNS = (sql: postgres.Sql) => sql`
   sync_wake_requested_at AS "wakeRequestedAt",
   scope`;
 
-/** Sources of the given provider kinds that are due for a sync pass now. */
+/**
+ * Sources of the given provider kinds that are due for a sync pass now. A federated source is
+ * searched live instead of copied (live-search-adapter.ts, cupboard-distributable-integrations-
+ * 2026-10-10 D-026), so it never gets a pass: no backfill, no membership walk.
+ */
 export async function listDueConnectorSources(
   sql: postgres.Sql,
   workspaceId: string,
@@ -462,6 +466,7 @@ export async function listDueConnectorSources(
      WHERE workspace_id = ${workspaceId}
        AND kind = ANY(${sql.array([...kinds])}::text[])
        AND status = ANY(${sql.array([...CONNECTOR_SYNC_STATUSES])}::text[])
+       AND sync_mode <> 'federated'
        AND (sync_next_attempt_at IS NULL OR sync_next_attempt_at <= now())
        ${sourceIds ? sql`AND id::text = ANY(${sql.array([...sourceIds])}::text[])` : sql``}
      ORDER BY sync_wake_requested_at NULLS LAST, sync_next_attempt_at NULLS FIRST, id`;

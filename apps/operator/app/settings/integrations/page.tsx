@@ -45,6 +45,7 @@ import { isExternalWebUrl, openExternalWebUrl } from '../../_components/External
 import { isDesktop } from '@/lib/ipc-status-tauri';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
+import { ProviderSourceSettingsForm } from './ProviderSourceSettingsForm';
 import { ProviderOAuthClientForm } from './ProviderOAuthClientForm';
 import { TriggerPackSection, TriggerPackSetup } from './TriggerPackSection';
 
@@ -219,7 +220,8 @@ export default function IntegrationsSettingsPage() {
 
 /** A credentials-only provider's status, from its declared fields (never a stored value). */
 function credentialStatus(provider: TicketProviderSummary): string {
-  const fields = provider.credentials;
+  // A per-person field is each reader's own and never part of connecting the provider (D-026).
+  const fields = provider.credentials.filter((field) => !field.perPrincipal);
   const missing = fields.filter((field) => !field.configured).length;
   if (fields.length === 0) return 'Nothing to set up';
   return missing === 0 ? 'Connected' : `Needs ${missing} of ${fields.length} credential${fields.length === 1 ? '' : 's'}`;
@@ -289,6 +291,12 @@ function ProviderCard({
       <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} />
       <ProviderOAuthClientForm providerId={provider.id} displayName={provider.displayName} client={provider.oauthClient ?? null} />
       <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
+      <ProviderSourceSettingsForm
+        providerId={provider.id}
+        displayName={provider.displayName}
+        offer={provider.sourceSettings}
+        sources={sources}
+      />
       {sources.length === 0 ? (
         <p style={muteText}>No {provider.displayName} account connected.</p>
       ) : (

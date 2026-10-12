@@ -39,6 +39,8 @@ function source(overrides: Record<string, unknown>) {
     lastSyncAt: null,
     nextAttemptAt: null,
     failureCount: 0,
+    scope: 'personal',
+    liveSearch: false,
     config: {},
     missingConfig: [],
     mirrored: 0,

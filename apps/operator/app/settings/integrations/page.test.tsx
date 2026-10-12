@@ -96,6 +96,7 @@ const LINEAR = {
   requiredConfig: ['teamIds'],
   connectHref: '/api/oauth/start?provider=linear&return=%2Fsettings%2Fintegrations',
   credentials: [],
+  sourceSettings: { organization: false, liveSearch: false },
   appRegistration: null,
   oauthClient: oauthClient('linear'),
 };
@@ -110,6 +111,7 @@ const ASANA = {
   requiredConfig: ['projectGids'],
   connectHref: '/api/oauth/start?provider=asana&return=%2Fsettings%2Fintegrations',
   credentials: [],
+  sourceSettings: { organization: false, liveSearch: false },
   appRegistration: null,
   oauthClient: oauthClient('asana'),
 };
@@ -125,6 +127,8 @@ function source(overrides: Record<string, unknown> = {}) {
     lastSyncAt: null,
     nextAttemptAt: null,
     failureCount: 0,
+    scope: 'personal',
+    liveSearch: false,
     config: { accountLabel: 'Acme' },
     missingConfig: ['teamIds', 'harnessSlug'],
     mirrored: 0,
@@ -154,8 +158,9 @@ const CHAT = {
   requiredConfig: [],
   connectHref: null,
   credentials: [
-    { key: 'botToken', label: 'Bot token', help: null, helpUrl: null, placeholder: null, pattern: null, hosts: ['chat.example'], configured: false, savedAt: null },
+    { key: 'botToken', label: 'Bot token', help: null, helpUrl: null, placeholder: null, pattern: null, hosts: ['chat.example'], perPrincipal: false, configured: false, savedAt: null },
   ],
+  sourceSettings: { organization: false, liveSearch: false },
   appRegistration: null,
   oauthClient: null,
 };
