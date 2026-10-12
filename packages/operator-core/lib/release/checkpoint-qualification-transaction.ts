@@ -346,7 +346,7 @@ export interface CancelQualificationInput {
 
 export type QualificationTransition =
   | { status: 'updated' | 'idempotent'; transaction: CheckpointQualificationTransaction }
-  | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction };
+  | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction; refusalReason?: string };
 
 /**
  * A scheduled fire may safely retarget only a runner placeholder that never attached a CLI.
@@ -1487,27 +1487,29 @@ export function recoverQualificationHistoricalPreSuiteError(
   current: CheckpointQualificationTransaction,
   input: HistoricalPreSuiteRecoveryInput,
 ): QualificationTransition {
-  const conflict = (): QualificationTransition => ({ status: 'conflict', transaction: current });
+  const conflict = (refusalReason: string): QualificationTransition => ({
+    status: 'conflict', transaction: current, refusalReason,
+  });
   if (!input.attemptId || !input.runId || !input.candidate || !input.logPath.trim() ||
-      !/^[a-f0-9]{64}$/.test(input.logSha256) ||
-      createHash('sha256').update(input.log).digest('hex') !== input.logSha256) return conflict();
+      !/^[a-f0-9]{64}$/.test(input.logSha256)) return conflict('archive-input-invalid');
+  if (createHash('sha256').update(input.log).digest('hex') !== input.logSha256) return conflict('archive-hash-mismatch');
   const lines = input.log.split(/\r?\n/).filter(line => !isFixtureLogLine(line));
   const markerLines = lines.filter(line => line.trimStart().startsWith(GREEN_CHECKPOINT_RESULT_MARKER));
-  if (markerLines.length !== 1) return conflict();
+  if (markerLines.length !== 1) return conflict('archive-result-count');
   let result: Record<string, unknown>;
   try {
     result = JSON.parse(markerLines[0].trimStart().slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
-  } catch { return conflict(); }
+  } catch { return conflict('archive-result-json'); }
   if (!result || result.runId !== input.runId || result.candidate !== input.candidate ||
       result.reason !== 'error' || result.green !== null || result.advanced !== false ||
-      result.crashed !== true || result.recorded !== true) return conflict();
+      result.crashed !== true || result.recorded !== true) return conflict('archive-result-mismatch');
   const prelock = lines.findIndex(line => line.startsWith('[green-checkpoint] FAILED before checkpoint lock:'));
   const marker = lines.indexOf(markerLines[0]);
   if (prelock < 0 || prelock >= marker ||
       !lines[prelock].includes('dependency-generation.sh') ||
-      !dependencyGenerationInfraCode(null, lines.slice(prelock, marker).join('\n'))) return conflict();
+      !dependencyGenerationInfraCode(null, lines.slice(prelock, marker).join('\n'))) return conflict('archive-prelock-unproven');
   if (lines.some(line => /checkpointing candidate|full suite output|TEST_FILE_RESULT|phase[=:]suite|suite (?:started|round)|running (?:affected|full) (?:test|suite)/i.test(line))) {
-    return conflict();
+    return conflict('archive-suite-evidence');
   }
   const attemptId = historicalRecoveryAttemptId(input);
   const proofRef = `historical-pre-suite-recovery:${input.attemptId}:${input.runId}:${input.logSha256}`;
@@ -1515,15 +1517,17 @@ export function recoverQualificationHistoricalPreSuiteError(
       current.evidenceRefs.includes(proofRef)) {
     return { status: 'idempotent', transaction: current };
   }
-  if (current.attemptId !== input.attemptId || current.runId !== input.runId ||
-      current.candidate !== input.candidate || current.phase !== 'terminal' ||
+  if (current.attemptId !== input.attemptId) return conflict('predecessor-attempt-mismatch');
+  if (current.runId !== input.runId) return conflict('predecessor-run-mismatch');
+  if (current.candidate !== input.candidate) return conflict('predecessor-candidate-mismatch');
+  if (current.phase !== 'terminal' ||
       current.outcome.kind !== 'code-inconclusive' || current.outcome.reason !== 'error' ||
-      current.currentPhysicalRunner !== null || current.pendingRepairHead) return conflict();
+      current.currentPhysicalRunner !== null || current.pendingRepairHead) return conflict('predecessor-not-recoverable');
   if ((current.consumedPhysicalRuns ?? []).some(run =>
     run.phase === 'suite' || run.phase === 'isolating' || run.phase === 'delivering' ||
     (run.outcome.kind !== 'pre-suite-no-verdict' &&
       !(run.id === input.runId && run.candidate === input.candidate &&
-        run.outcome.kind === 'code-inconclusive' && run.outcome.reason === 'error')))) return conflict();
+        run.outcome.kind === 'code-inconclusive' && run.outcome.reason === 'error')))) return conflict('consumed-run-not-pre-suite');
   return beginQualificationTransaction(current, {
     attemptId,
     requiredAncestorSha: current.requiredAncestorSha,
@@ -1885,7 +1889,8 @@ async function mutateStoredQualification(
       const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
       const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
       if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
-        return { status: 'conflict' as const, transaction: current };
+        return { status: 'conflict' as const, transaction: current,
+          ...(options.historicalRecovery ? { refusalReason: 'pending-head-queue-mismatch' } : {}) };
       }
       // Keep async probes under this row lock. Moving the probe outside the mutation would let
       // it describe one runner while the following decision acts on a replacement.
@@ -1937,6 +1942,7 @@ async function mutateStoredQualification(
           status: 'conflict' as const,
           transaction: predecessor!,
           repairQueueReconciliation: reconciliation,
+          ...(options.historicalRecovery ? { refusalReason: 'repair-queue-reconciliation' } : {}),
         };
       }
       if (reconciliation?.status === 'retired') {
@@ -1970,6 +1976,7 @@ async function mutateStoredQualification(
               status: 'blocked',
               reason: 'cas-miss',
             },
+            ...(options.historicalRecovery ? { refusalReason: 'repair-queue-cas-miss' } : {}),
           };
         }
         await persistTerminalEvent();
@@ -2009,6 +2016,7 @@ async function mutateStoredQualification(
               status: 'blocked',
               reason: 'cas-miss',
             },
+            ...(options.historicalRecovery ? { refusalReason: 'repair-queue-cas-miss' } : {}),
           };
         }
         await persistTerminalEvent();
@@ -2280,7 +2288,9 @@ export function recoverStoredQualificationHistoricalPreSuiteError(
   return mutateStoredQualification(target, (current) => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
     if (request && !qualificationRequestPolicyMatches(current, request)) {
-      return { status: 'conflict', transaction: current };
+      return { status: 'conflict', transaction: current,
+        refusalReason: current.requiredAncestorSha !== (request.requiredAncestorSha?.trim() || null)
+          ? 'request-ancestor-mismatch' : 'request-paths-mismatch' };
     }
     const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
     if (transition.status === 'updated') {

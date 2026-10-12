@@ -1150,6 +1150,9 @@ export default defineTool({
           launched: false,
           reason: 'historical_pre_suite_recovery_refused',
           recovery_status: recovery?.status ?? 'preflight-refused',
+          recovery_refusal_reason: recovery && 'refusalReason' in recovery ? recovery.refusalReason : undefined,
+          recovery_queue_reason: recovery && 'repairQueueReconciliation' in recovery
+            ? recovery.repairQueueReconciliation?.reason : undefined,
           error: recovery && 'error' in recovery ? recovery.error : undefined,
           note: 'NOT launched: exact archived pre-suite evidence, unchanged request policy and safe successor reconciliation were not all verified. The original terminal remains authoritative.',
         }) }] };

@@ -168,12 +168,13 @@ describe('stored historical pre-suite recovery', () => {
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
   it.each([
-    { requiredAncestorSha: 'other-ancestor', declaredPaths: [] },
-    { requiredAncestorSha: 'candidate-1', declaredPaths: ['extra.ts'] },
-  ])('refuses a changed request policy under the row lock without archiving or writing', async request => {
+    ['request-ancestor-mismatch', { requiredAncestorSha: 'other-ancestor', declaredPaths: [] }],
+    ['request-paths-mismatch', { requiredAncestorSha: 'candidate-1', declaredPaths: ['extra.ts'] }],
+  ] as const)('refuses a changed request policy under the row lock without archiving or writing (%s)', async (refusalReason, request) => {
     const { current, input } = fixture();
     const { statements } = transactionHarness({ qualificationTransaction: current });
-    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input, request)).status).toBe('conflict');
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input, request))
+      .toMatchObject({ status: 'conflict', refusalReason });
     expect(statements[0].text).toContain('FOR UPDATE');
     expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
@@ -183,10 +184,14 @@ describe('stored historical pre-suite recovery', () => {
     const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['x.test.ts'], nowMs: 125 });
     const queue = markFrozenRepairFixerDispatched(red, { spawnId: 'live-fixer', nowMs: 150 });
     const blocked = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
-    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input))
+      .toMatchObject({ status: 'conflict', refusalReason: 'repair-queue-reconciliation',
+        repairQueueReconciliation: { status: 'blocked' } });
     expect(blocked.statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     transactionHarness({ qualificationTransaction: current, repair_queue: safeQueue() }, { casMatches: false });
-    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input))
+      .toMatchObject({ status: 'conflict', refusalReason: 'repair-queue-cas-miss',
+        repairQueueReconciliation: { reason: 'cas-miss' } });
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
   it('requires the archive event to persist before reporting success', async () => {
@@ -196,6 +201,15 @@ describe('stored historical pre-suite recovery', () => {
     expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input)).toMatchObject({
       status: 'unreadable', error: 'archive event failed',
     });
+  });
+  it('attributes a changed path policy without writing or exposing the stored transaction to a new read', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input, {
+      requiredAncestorSha: current.requiredAncestorSha, declaredPaths: ['different.ts'],
+    })).toMatchObject({ status: 'conflict', refusalReason: 'request-paths-mismatch' });
+    expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
 });
 
