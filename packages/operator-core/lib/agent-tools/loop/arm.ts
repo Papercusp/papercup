@@ -20,6 +20,7 @@
  * P-059/D-080.)
  */
 import { performance } from 'node:perf_hooks';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
@@ -815,7 +816,9 @@ export default defineTool({
     let prior: PriorLoopFacts | null = null;
     try {
       prior = await measure('read_active_loop_facts', () => readActiveLoopFacts(ownerId));
+      observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'loop-prior-facts' });
     } catch (e) {
+      observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'prior-facts-unavailable', scope: 'loop-prior-facts' });
       console.warn(
         `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
       );

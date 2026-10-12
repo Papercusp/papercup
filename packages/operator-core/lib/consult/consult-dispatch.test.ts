@@ -1522,12 +1522,28 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  it('never substitutes seed models when the configured native target is absent', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+      loadRanks: async () => [],
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native-empty', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch).toMatchObject({ dispatched: false, attempts: [],
+      detail: expect.stringContaining('no configured allowed model') });
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.capacity).toHaveLength(0);
+  });
+
   it('keeps native backend constraints on a later cascade and preserves a walled target as unavailable', async () => {
     const { deps, calls } = makeFakes({
       readDispatchChoice: async () => ({ reviewerModel: null,
         nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
       probeBackendAvailable: async () => ({ available: false, detail: 'target account unavailable' }),
-    } as never);
+    });
     const result = await makeConsultReachDispatcher(CTX, deps)({
       responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
       evidence: OPTS.evidence,
@@ -1541,7 +1557,7 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
     const { deps, calls } = makeFakes({
       readDispatchChoice: async () => ({ reviewerModel: null,
         nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
-    } as never, { source: { live: true } });
+    }, { source: { live: true } });
     const result = await makeConsultReachDispatcher(CTX, deps)({
       responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
       evidence: OPTS.evidence,

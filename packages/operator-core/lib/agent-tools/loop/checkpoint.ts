@@ -22,6 +22,7 @@
  * recent wakes' notes survive a clear so a cold successor still sees the trajectory.
  */
 import { z } from 'zod';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPgContentionRetry } from '@papercusp/coordination/event-log';
 import { DbCallDeadlineError } from '@papercusp/db-org';
@@ -888,6 +889,8 @@ export default defineTool({
       label: 'loop:checkpoint armed-routine scope probe',
     });
     const armedRoutine = routineProbe.value;
+    observeFallback('routine-capability-read', { eligible: 1, applied: routineProbe.degraded ? 0 : 1,
+      reason: routineProbe.degraded ? 'armed-scope-unavailable' : 'applied', scope: 'loop-checkpoint-scope' });
     if (routineProbe.degraded) {
       routineProbeFailed = true;
       const reason = routineProbe.errorMessage ?? routineProbe.reason ?? 'unknown bounded-read failure';

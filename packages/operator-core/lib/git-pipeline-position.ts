@@ -36,6 +36,7 @@ import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
   projectGreenCheckpointPause,
+  type GitSyncContentError,
   type GateFailingTestsProvenance,
   type GitPipelineSnapshot,
 } from './git-pipeline-stats';
@@ -1970,6 +1971,8 @@ export interface GitSyncLegs {
   consecutiveErrorTicks: number;
   /** Dirty paths whose live edit locks deferred their entire repo commit group. */
   skippedPaths: GitSyncSkippedPath[];
+  /** Files excluded from the last pass's commit by a content detector. */
+  contentErrors?: GitSyncContentError[];
   /**
    * Repos the last tick actually PUSHED. Empty with status 'synced' is the trap —
    * BUT only when this member is supposed to push at all. Read `pushMode` first:
@@ -3813,6 +3816,24 @@ export function gitSyncDeferralFor(
   };
 }
 
+/** A content-quarantined file cannot be committed by simply repeating the sync. */
+export function gitSyncContentQuarantineFor(
+  path: string | null,
+  gitSync: Pick<GitSyncLegs, 'contentErrors'>,
+): { reason: 'content-quarantine'; detail: string; lever: string } | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  const entry = (gitSync.contentErrors ?? []).find((error) => error.path === want);
+  if (!entry) return null;
+  return {
+    reason: 'content-quarantine',
+    detail:
+      `The last git-sync pass quarantined this path because the ${entry.detector} content check flagged it. ` +
+      'Repeating the sync cannot commit it until that finding is fixed.',
+    lever: `fix this path's ${entry.detector} content-check finding; git-sync will retry it on the next pass`,
+  };
+}
+
 /**
  * Derive the stage table from state the caller ALREADY computed — this function
  * makes no git calls and adds no measurement, so it is pure and unit-testable.
@@ -3910,7 +3931,9 @@ export function computeStages(
   // WI-10006493: git-sync:run is only the lever when a sync CAN commit this path. When the last
   // pass deliberately deferred it (a migration guard, or a live edit lock), forcing another pass
   // defers it again, so the blocker and its owner are named instead.
-  const deferral = p.dirtyUncommitted ? gitSyncDeferralFor(p.input?.path ?? null, p.gitSync) : null;
+  const deferral = p.dirtyUncommitted
+    ? gitSyncContentQuarantineFor(p.input?.path ?? null, p.gitSync) ?? gitSyncDeferralFor(p.input?.path ?? null, p.gitSync)
+    : null;
   stages.push({
     name: 'committed',
     plane: 'delivery',
@@ -7276,6 +7299,7 @@ export async function gitPipelinePosition(
       conflicts: snap.gitSync?.lastConflicts ?? [],
       errors: snap.gitSync?.lastErrors ?? [],
       skippedPaths: snap.gitSync?.skippedPaths ?? [],
+      contentErrors: snap.gitSync?.contentErrors ?? [],
       pushMode: snap.gitSync?.pushMode ?? null,
       ownHeadPublish: snap.gitSync?.ownHeadPublish ?? null,
     },

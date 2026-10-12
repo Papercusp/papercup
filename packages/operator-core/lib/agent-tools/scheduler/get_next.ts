@@ -376,9 +376,11 @@ export function getNextPreflightTimeoutResult(
 /**
  * Return a structured retryable result for a bounded admin-pool transaction that hit a
  * PostgreSQL statement/lock timeout. This is distinct from the JS watchdog result above:
- * the database has already rejected the transaction, so preserving its typed message (and
- * blocker hint, when available) gives the caller the actual contention diagnosis instead of
- * converting it into a generic MCP `handler_error`.
+ * PostgreSQL rejected the transaction, so preserving the SQLSTATE and the safely labeled
+ * diagnostic snapshot gives the caller the actual timeout without converting it into a
+ * generic MCP `handler_error`. A PostgreSQL-origin timeout alone does not establish that
+ * the query was waiting on a lock; it may have exceeded its statement budget for another
+ * reason.
  */
 export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep?: string): {
   ok: false;
@@ -414,7 +416,7 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
       ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.message}. ` +
         'Retry now; no claim was returned. ' +
         callerBudgetAdvice
-      : `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
+      : `scheduler:get_next claim hit a PostgreSQL timeout (${error.pgCode}): ${error.message}. ` +
         'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
 }

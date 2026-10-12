@@ -205,7 +205,7 @@ import {
 } from '../../model-context-budget.mjs';
 import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
-import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
+import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
@@ -433,6 +433,8 @@ export interface HeadlessResumeTurnInput {
   resumeId: string | null;
   cwd: string;
   argv: string[];
+  /** Declared child route, not the gateway's eventual account selection. */
+  declaredAccountRoute?: Pick<WakeAccountRoute, 'mode' | 'accountId'> | null;
 }
 
 export interface HeadlessResumeTurnAccounting {
@@ -471,6 +473,9 @@ export function defaultAccountHeadlessResumeTurn(input: HeadlessResumeTurnInput)
         coordOwnerId: input.coordOwnerId,
         advSessionId: input.advSessionId,
         agent: input.agent,
+        declaredAccountRoute: input.declaredAccountRoute
+          ? { mode: input.declaredAccountRoute.mode, accountId: input.declaredAccountRoute.accountId }
+          : null,
       },
     },
     input.pid,
@@ -498,10 +503,22 @@ export function defaultAccountHeadlessResumeTurn(input: HeadlessResumeTurnInput)
     finish: (exit) => {
       if (finished) return;
       finished = true;
+      // EI-25724272623153106: the event engine classified these tails, but
+      // the durable task row retained only the exit code/signal. Scrub BEFORE
+      // classification truncates the message, so a cut credential cannot leak.
+      // Successful model output is never retained as a diagnostic.
+      const outcome = classifyResumeTurnExit({
+        ...exit,
+        stdoutTail: redactSensitiveText(exit.stdoutTail),
+        stderrTail: redactSensitiveText(exit.stderrTail),
+        ...(input.agent === 'codex' ? { outputProtocol: 'codex-jsonl' as const } : {}),
+      });
       finishSyncEnrolment(enrolment, {
         state: exit.signal ? 'killed' : 'exited',
         exitCode: exit.exitCode,
-        exitReason: exit.signal ?? null,
+        exitReason: exit.signal ?? (outcome.ok
+          ? null
+          : redactSensitiveText(`${outcome.error.class}: ${outcome.error.message}`).slice(0, 1024)),
       });
     },
   };
@@ -5043,6 +5060,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
               : (fresh?.sessionId ?? handle.sessionId ?? null),
           cwd,
           argv: ledgerSafeResumeArgv(resume.bin, resume.args, resumeText),
+          declaredAccountRoute: resumeAgent === 'codex' ? codexAccountRoute : accountRoute,
         });
         // Write the pid BEFORE reporting delivered. Otherwise the next wake reads
         // the dead predecessor's pid and resumes the session a second time.

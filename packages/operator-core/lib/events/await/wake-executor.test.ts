@@ -4153,6 +4153,77 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
     }
   });
 
+  it('EI-24890753013901545 removes missing native references before replay and restores Papercusp refs in the resume seed', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-claude-native-reference-'));
+    const ownerId = 'su-native-reference';
+    const sessionId = '11111111-2222-3333-4444-555555555555';
+    const transcriptPath = pjoin(claudeRoot, ownerId, 'projects', '-repo', `${sessionId}.jsonl`);
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevTools = process.env.PAPERCUSP_TOOLS;
+    const prevToken = process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    process.env.PAPERCUSP_TOOLS = 'tools:find,coord:orient';
+    process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = pjoin(claudeRoot, 'missing-token');
+    mkdirSync(pjoin(claudeRoot, ownerId, 'projects', '-repo'), { recursive: true });
+    writeFileSync(transcriptPath, JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_search_tool_result',
+          tool_use_id: 'search-1',
+          content: {
+            type: 'tool_search_tool_search_result',
+            tool_references: [
+              { type: 'tool_reference', tool_name: 'ExitPlanMode' },
+              { type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' },
+            ],
+          },
+        }],
+      },
+    }));
+    let transcriptAtSpawn = '';
+    const spawnDetached = vi.fn(() => {
+      transcriptAtSpawn = readFileSync(transcriptPath, 'utf8');
+      return 4321;
+    });
+    try {
+      const out = await executeWake(
+        work({ subscriberId: ownerId, wakeHandle: advHandle({ sessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: ownerId, sessionId })) as never,
+          collectSessionFiles: vi.fn(async () => [{
+            rel: `projects/-repo/${sessionId}.jsonl`,
+            abs: transcriptPath,
+            bytes: 1,
+            mtimeMs: 1,
+          }]) as never,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+      expect(transcriptAtSpawn).not.toContain('ExitPlanMode');
+      expect(transcriptAtSpawn).toContain('mcp__papercusp-su__plans_audit');
+      expect(transcriptAtSpawn).toContain('"tool_reference"');
+      const [, , opts] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+      expect(opts.env.PAPERCUSP_TOOLS).toContain('mcp__papercusp-su__plans_audit');
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevTools === undefined) delete process.env.PAPERCUSP_TOOLS;
+      else process.env.PAPERCUSP_TOOLS = prevTools;
+      if (prevToken === undefined) delete process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+      else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevToken;
+      rmSync(claudeRoot, { recursive: true, force: true });
+    }
+  });
+
   it('WI-10005900: claude resume clamps the effort inherited from the isolated settings.json the CHILD will read', async () => {
     const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');

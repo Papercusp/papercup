@@ -19,6 +19,12 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import {
+  findLiveHostAsync,
+  hostSupports,
+  injectIntoHostWithConfirmation,
+  PSU_PTY_DIR,
+} from './psu-pty-discovery';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
@@ -2962,12 +2968,18 @@ export type AckDeliveryResult = {
   /** The caller owns an existing delivery that was already terminal. */
   alreadySettled: boolean;
   status?: string;
+  /** The live host accepted a cancellation request, but has not confirmed its pre-write barrier yet. */
+  cancellationRequested?: boolean;
 };
 
-export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
+async function markDeliveryAcked(
+  input: { deliveryId: number; subscriberId: string },
+  options: { pendingOrParked: boolean; delivering: boolean },
+): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = (await turnProofColumnsReady())
+  const hasTurnProof = await turnProofColumnsReady();
+  const rows = hasTurnProof
     ? await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
@@ -2975,7 +2987,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
            turn_proof = 'observed', turn_started_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-       AND status IN ('pending', 'parked')
+       AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
+         OR (${options.delivering} AND status = 'delivering'))
      RETURNING id
   `
     : await sql`
@@ -2983,28 +2996,86 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-       AND status IN ('pending', 'parked')
+       AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
+         OR (${options.delivering} AND status = 'delivering'))
      RETURNING id
   `;
-  if (rows.length > 0) return { acked: true, alreadySettled: false };
+  return rows.length > 0;
+}
+
+type DirectDeliveryCancelResult = 'confirmed-before-write' | 'requested' | 'unconfirmed';
+
+async function requestDirectDeliveryCancellation(
+  input: { deliveryId: number; subscriberId: string },
+): Promise<DirectDeliveryCancelResult> {
+  try {
+    const host = await findLiveHostAsync(input.subscriberId, PSU_PTY_DIR);
+    if (!host || !hostSupports(host, 'delivery-cancel')) return 'unconfirmed';
+
+    const result = await injectIntoHostWithConfirmation(host.sock, {
+      mode: 'delivery-cancel',
+      data: '',
+      ownerId: input.subscriberId,
+      deliveryId: String(input.deliveryId),
+    });
+    // Bare close, timeout, a request queued behind the host's gates, or a
+    // refusal is NOT the pre-write receipt required to settle a delivering row.
+    if (result.confirmation !== 'acked' || !result.ok) return 'unconfirmed';
+    if (result.reason === 'cancelled-before-write') return 'confirmed-before-write';
+    if (result.reason === 'cancel-requested') return 'requested';
+  } catch {
+    // This is an optional recall attempt. A transport/discovery miss preserves
+    // the durable row as delivering; it must not turn into an optimistic ACK.
+  }
+  return 'unconfirmed';
+}
+
+export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
+  if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: false })) {
+    return { acked: true, alreadySettled: false };
+  }
 
   // A wake can be settled by the inbox/wake path between the nudge and the
   // caller's acknowledgement. Distinguish that benign race from a missing or
   // peer-owned delivery so events:cancel can report an explicit outcome.
-  const settled = await sql<{ status: string }[]>`
-    SELECT status
-      FROM harness_shared.event_wake_deliveries
-     WHERE workspace_id = ${ws} AND id = ${input.deliveryId}
-       AND subscriber_id = ${input.subscriberId}
-     LIMIT 1
-  `;
-  if (settled.length > 0) {
-    const status = settled[0].status;
-    if (status === 'pending' || status === 'parked' || status === 'delivering') {
-      return { acked: false, alreadySettled: false, status };
+  const readOwnedStatus = async (): Promise<string | undefined> => {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ status: string }[]>`
+      SELECT status
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
+         AND subscriber_id = ${input.subscriberId}
+       LIMIT 1
+    `;
+    return rows[0]?.status;
+  };
+
+  let status = await readOwnedStatus();
+  if (status === 'delivering') {
+    const cancellation = await requestDirectDeliveryCancellation(input);
+    if (cancellation === 'confirmed-before-write') {
+      // Only the host's acknowledged pre-write barrier permits a direct ACK of
+      // a row the pump already claimed. Include queued states too: the pump may
+      // have re-armed the exact delivery while the host was confirming its
+      // tombstone, but that host will still refuse this id before any PTY byte.
+      if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: true })) {
+        return { acked: true, alreadySettled: false };
+      }
     }
-    return { acked: false, alreadySettled: true, status };
+    // The pump can win the terminal update while the host request is in flight.
+    // Re-read rather than returning a stale `delivering` snapshot.
+    status = await readOwnedStatus();
+    if (status === 'pending' || status === 'parked' || status === 'delivering') {
+      return {
+        acked: false,
+        alreadySettled: false,
+        status,
+        ...(cancellation === 'requested' && status === 'delivering' ? { cancellationRequested: true } : {}),
+      };
+    }
   }
+
+  if (status != null) return { acked: false, alreadySettled: true, status };
   return { acked: false, alreadySettled: false };
 }
 

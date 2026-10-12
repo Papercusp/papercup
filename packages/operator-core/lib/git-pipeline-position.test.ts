@@ -3098,6 +3098,46 @@ describe('computeStages: position x health', () => {
     });
   });
 
+  describe('EI-25225672179870571: a content-quarantined path needs its finding fixed', () => {
+    const path = 'docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt';
+    const contentError = { path, detector: 'identity-leak' };
+
+    it('names the content finding and never recommends repeating git-sync while it remains', () => {
+      const s = computeStages(
+        input({
+          dirtyUncommitted: true,
+          input: { path },
+          gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] },
+        }),
+      );
+      const committed = stage(s, 'committed');
+      expect(committed).toMatchObject({ position: 'pending', health: 'stalled' });
+      expect(committed.detail).toMatch(/identity-leak/);
+      expect(committed.detail).not.toMatch(/git-sync:run/);
+      expect(committed.lever).toMatch(/identity-leak/);
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+
+      const { blockedOn, nextAction } = deriveBlocker(s);
+      expect(blockedOn).toBe('committed');
+      expect(nextAction).toMatch(/identity-leak/);
+      expect(nextAction).not.toMatch(/git-sync:run/);
+    });
+
+    it('keeps the normal sync lever for a different path and ignores a clean quarantined path', () => {
+      const unrelated = computeStages(
+        input({
+          dirtyUncommitted: true,
+          input: { path: 'docs/other.txt' },
+          gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] },
+        }),
+      );
+      expect(stage(unrelated, 'committed').lever).toMatch(/^git-sync:run/);
+
+      const clean = computeStages(input({ input: { path }, gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] } }));
+      expect(stage(clean, 'committed')).toMatchObject({ position: 'past', detail: null, lever: null });
+    });
+  });
+
   it('EI-21175951870654462: a fresh-invocation route is past serving with no restart blocker', () => {
     const runtime = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
     const serving = evaluateServing({

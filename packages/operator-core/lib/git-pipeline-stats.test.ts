@@ -34,6 +34,7 @@ import {
   deriveInRoutineGateStalled,
   combineGateStallSignals,
   skippedPathArr,
+  contentErrorArr,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import { decideStallNotification } from './release/stall-escalation-ladder';
@@ -1254,5 +1255,28 @@ describe('skippedPathArr: every persisted git-sync deferral variant survives the
       ]),
     ).toEqual([{ ...fence, blockingAgents: ['su-author'] }]);
     expect(skippedPathArr(undefined)).toEqual([]);
+  });
+});
+
+describe('contentErrorArr: content-quarantine metadata maps to exact pipeline paths', () => {
+  it('normalizes root scopes and keeps only the detector key', () => {
+    expect(
+      contentErrorArr([
+        'superproject/docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt [identity-leak]',
+        'root/docs/other.txt [mdx]',
+        'libs/papercusp/libs/db/sql/1234-x.sql [sql-comment-backtick]',
+        'superproject/apps/operator/x.ts [quarantined-importer of superproject/private/root.txt (identity-leak)]',
+      ]),
+    ).toEqual([
+      { path: 'docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt', detector: 'identity-leak' },
+      { path: 'docs/other.txt', detector: 'mdx' },
+      { path: 'libs/papercusp/libs/db/sql/1234-x.sql', detector: 'sql-comment-backtick' },
+      { path: 'apps/operator/x.ts', detector: 'quarantined-importer' },
+    ]);
+  });
+
+  it('drops malformed rows and unknown detector keys', () => {
+    expect(contentErrorArr([null, 4, 'missing-detector', 'superproject/no-bracket', ' [identity-leak]'])).toEqual([]);
+    expect(contentErrorArr(undefined)).toEqual([]);
   });
 });

@@ -203,6 +203,28 @@ describe('events:cancel dual-path result', () => {
     expect(out.results[0].warning).toMatch(/already in flight and cannot be recalled/);
   });
 
+  it('reports a host-accepted cancellation as pending until the pre-write barrier is confirmed', async () => {
+    vi.mocked(ackDelivery).mockResolvedValue({
+      acked: false,
+      alreadySettled: false,
+      status: 'delivering',
+      cancellationRequested: true,
+    });
+
+    const out = await call({ delivery_id: 3 });
+
+    expect(out).toMatchObject({
+      ok: false,
+      results: [{
+        delivery_id: 3,
+        acked: false,
+        status: 'delivering',
+        cancellation_requested: true,
+      }],
+    });
+    expect(out.results[0].warning).toMatch(/has not confirmed its pre-write barrier/);
+  });
+
   it('ack-only already-delivered result says the host handoff is not recallable', async () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: true, status: 'delivered' });
     const out = await call({ delivery_id: 3 });

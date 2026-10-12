@@ -778,6 +778,33 @@ describe('deliveryDedupSettlement', () => {
 });
 
 describe('EI-16685 pending inbox-wake cancellation', () => {
+  it('decodes the capability-gated direct ACK mode without turn text', () => {
+    expect(decodeControl(encodeControl({
+      mode: 'delivery-cancel', data: '', ownerId: 'su-a', deliveryId: '81',
+    }))).toEqual({
+      mode: 'delivery-cancel', data: '', gated: false, ownerId: 'su-a', deliveryId: '81',
+    });
+
+    const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    expect(source).toMatch(/caps:\s*\[[^\]]*'delivery-cancel'/);
+    expect(source).toContain("if (msg.mode === 'delivery-cancel')");
+  });
+
+  it('reserves an unknown single delivery ACK before its original injection arrives', () => {
+    const d = makeDeliveryDedup();
+    expect(d.requestCancel(['81'], [], true)).toEqual({
+      status: 'cancelled', deliveryIds: ['81'], handledMsgIds: [],
+    });
+
+    // A delayed original injection must hit the tombstone instead of becoming
+    // a fresh turn, and the first-write gate recognizes it as already cancelled.
+    d.markPending('81');
+    expect(d.state('81')).toBe('cancelled');
+    expect(d.beginWrite(['81'])).toEqual({
+      status: 'cancelled', deliveryIds: ['81'], handledMsgIds: [],
+    });
+  });
+
   it('keeps legacy turn envelopes unchanged and decodes complete additive cancellation metadata', () => {
     expect(decodeControl(encodeControl({
       mode: 'turn', data: 'legacy retry', ownerId: 'su-a', deliveryId: '81',

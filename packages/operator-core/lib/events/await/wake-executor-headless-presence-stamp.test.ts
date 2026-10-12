@@ -14,6 +14,8 @@ import { hostname } from 'node:os';
 const h = vi.hoisted(() => ({
   touchHeartbeat: vi.fn(async (_ownerId: string, _liveness?: unknown) => {}),
   setAdvSessionPid: vi.fn(async (..._args: unknown[]) => {}),
+  completeSyncEnrolment: vi.fn(),
+  finishSyncEnrolment: vi.fn(),
 }));
 
 vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => ({
@@ -26,8 +28,8 @@ vi.mock('../../adv-sessions', async (importOriginal) => ({
 }));
 vi.mock('../../task-manager/enroll-sync', () => ({
   beginSyncEnrolment: () => ({}),
-  completeSyncEnrolment: () => {},
-  finishSyncEnrolment: () => {},
+  completeSyncEnrolment: h.completeSyncEnrolment,
+  finishSyncEnrolment: h.finishSyncEnrolment,
 }));
 
 import { defaultAccountHeadlessResumeTurn, type HeadlessResumeTurnInput } from './wake-executor';
@@ -48,6 +50,8 @@ describe('WI-10005725 — resume-headless turns stamp their own pid onto presenc
   beforeEach(() => {
     h.touchHeartbeat.mockReset().mockResolvedValue(undefined);
     h.setAdvSessionPid.mockReset().mockResolvedValue(undefined);
+    h.completeSyncEnrolment.mockReset();
+    h.finishSyncEnrolment.mockReset();
   });
 
   it('stamps the CHILD pid and this host, so the oracle probes the running turn', async () => {
@@ -75,5 +79,76 @@ describe('WI-10005725 — resume-headless turns stamp their own pid onto presenc
   it('an adv-session write failure still surfaces through pidRecorded (contract unchanged)', async () => {
     h.setAdvSessionPid.mockRejectedValue(new Error('adv write failed'));
     await expect(defaultAccountHeadlessResumeTurn(input).pidRecorded).rejects.toThrow('adv write failed');
+  });
+
+  it('retains the declared route as references without persisting route credentials', async () => {
+    await defaultAccountHeadlessResumeTurn({
+      ...input,
+      declaredAccountRoute: {
+        mode: 'pin',
+        accountId: 'reviewer-account',
+        env: { OPENAI_API_KEY: 'private-route-credential' },
+      } as HeadlessResumeTurnInput['declaredAccountRoute'],
+    }).pidRecorded;
+    const spec = h.completeSyncEnrolment.mock.calls[0][1];
+    expect(spec.detail.declaredAccountRoute).toEqual({ mode: 'pin', accountId: 'reviewer-account' });
+    expect(JSON.stringify(spec)).not.toContain('private-route-credential');
+  });
+
+  it('retains the quota failure and redacts credentials before classifier truncation', () => {
+    const secret = `sk-${'a'.repeat(240)}`;
+    const accounting = defaultAccountHeadlessResumeTurn(input);
+    accounting.finish({
+      exitCode: 1,
+      signal: null,
+      stdoutTail: `Usage limit reached; api_key=${secret}`,
+      stderrTail: '',
+    });
+    const close = h.finishSyncEnrolment.mock.calls[0][1];
+    expect(close).toMatchObject({ state: 'exited', exitCode: 1 });
+    expect(close.exitReason).toMatch(/^usage_limit:.*Usage limit reached/);
+    expect(close.exitReason).toContain('[redacted]');
+    expect(close.exitReason).not.toContain('sk-');
+    expect(close.exitReason).not.toContain('a'.repeat(16));
+  });
+
+  it('records a Codex protocol failure even when the CLI exits zero', () => {
+    defaultAccountHeadlessResumeTurn({ ...input, agent: 'codex' }).finish({
+      exitCode: 0,
+      signal: null,
+      stdoutTail: JSON.stringify({ type: 'turn.failed', error: { message: 'insufficient_quota' } }),
+      stderrTail: '',
+    });
+    expect(h.finishSyncEnrolment.mock.calls[0][1]).toMatchObject({
+      state: 'exited',
+      exitCode: 0,
+      exitReason: expect.stringMatching(/^usage_limit:/),
+    });
+  });
+
+  it.each(['claude', 'codex'])('does not retain successful %s model output and closes once', (agent) => {
+    const accounting = defaultAccountHeadlessResumeTurn({ ...input, agent });
+    const exit = {
+      exitCode: 0,
+      signal: null,
+      stdoutTail: agent === 'codex'
+        ? `${JSON.stringify({ type: 'item.completed', item: { text: 'private successful answer' } })}\n${JSON.stringify({ type: 'turn.completed' })}`
+        : 'private successful answer',
+      stderrTail: '',
+    };
+    accounting.finish(exit);
+    accounting.finish(exit);
+    expect(h.finishSyncEnrolment).toHaveBeenCalledTimes(1);
+    expect(h.finishSyncEnrolment.mock.calls[0][1]).toEqual({ state: 'exited', exitCode: 0, exitReason: null });
+  });
+
+  it('preserves the existing signal termination reason', () => {
+    defaultAccountHeadlessResumeTurn(input).finish({
+      exitCode: null,
+      signal: 'SIGTERM',
+      stdoutTail: '',
+      stderrTail: '',
+    });
+    expect(h.finishSyncEnrolment.mock.calls[0][1]).toEqual({ state: 'killed', exitCode: null, exitReason: 'SIGTERM' });
   });
 });

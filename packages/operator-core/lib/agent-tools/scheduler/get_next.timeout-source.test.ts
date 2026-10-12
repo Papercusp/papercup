@@ -3,15 +3,12 @@
  *
  * The scheduler's claim ladder deliberately raises `OrgTxnTimeoutError('57014')` when its
  * OWN wall-clock budget expires, so an abandoned claim can never be misread as "nothing
- * matched". That part is correct and stays. What was wrong is that the resulting error and
- * caller-facing result asserted a PostgreSQL statement_timeout — "the database stalled" —
- * for a timeout PostgreSQL never raised, leaving the two causes indistinguishable to
- * whoever triages the result.
+ * matched". That part is correct and stays. The error text must distinguish that caller
+ * budget from a PostgreSQL timeout, and a fresh-connection blocker snapshot must never be
+ * presented as the cause of the timed-out operation.
  *
- * The measured cost: this exact `pgCode: '57014'` was reported twice as reproduced PG
- * contention under fleet claim, sending triage at the connection pool for a budget that
- * ran out inside the scheduler. Both cases remain retryable and keep the same code; they
- * simply no longer claim the same cause.
+ * Both cases remain retryable and keep the same code; their messages identify the
+ * measured timeout source without claiming query cost, lock wait, or a particular blocker.
  */
 import { describe, expect, it } from 'vitest';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -21,7 +18,8 @@ describe('OrgTxnTimeoutError timeoutSource (EI-21831306274538775)', () => {
   it('defaults to pg, so every pre-existing raise site keeps its meaning', () => {
     const err = new OrgTxnTimeoutError('57014', new Error('boom'));
     expect(err.timeoutSource).toBe('pg');
-    expect(err.message).toContain('the database stalled');
+    expect(err.message).toContain('statement_timeout');
+    expect(err.message).not.toContain('the database stalled');
   });
 
   it('a caller-budget timeout does NOT claim the database stalled', () => {
@@ -46,11 +44,23 @@ describe('OrgTxnTimeoutError timeoutSource (EI-21831306274538775)', () => {
 });
 
 describe('getNextContentionResult surfaces the cause (EI-21831306274538775)', () => {
-  it('reports real PG contention as PostgreSQL contention', () => {
-    const out = getNextContentionResult(new OrgTxnTimeoutError('57014', new Error('x')));
+  it('reports a PostgreSQL timeout without inferring contention', () => {
+    const out = getNextContentionResult(
+      new OrgTxnTimeoutError(
+        '57014',
+        new Error('canceling statement due to statement timeout'),
+        'observed head blocker pid 42',
+      ),
+    );
     expect(out.timeoutSource).toBe('pg');
     expect(out.retryable).toBe(true);
-    expect(out.message).toContain('transient PostgreSQL contention');
+    expect(out.message).toContain('PostgreSQL timeout (57014)');
+    expect(out.message).not.toContain('contention');
+    expect(out.message).not.toContain('database stalled');
+    expect(out.message).not.toContain('likely blocked by pid');
+    expect(out.message).toContain('separate-connection blocker snapshot');
+    expect(out.message).toContain('not confirmed to block this operation');
+    expect(out.message).toContain('observed head blocker pid 42');
   });
 
   it('reports a ladder-budget timeout WITHOUT blaming PG, and says where to look instead', () => {

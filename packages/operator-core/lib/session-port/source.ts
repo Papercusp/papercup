@@ -39,6 +39,8 @@ export interface StableSource {
   completeBytes: number;
   source: 'live-jsonl' | 'archive-manifest';
   relpath: string | null;
+  /** Measured from the same open descriptor as the bounded live prefix. */
+  fileIdentity?: { path: string; device: number; inode: number; links: number };
 }
 
 function nativeTranscriptName(backend: 'codex' | 'omp', name: string, sessionId: string): boolean {
@@ -142,6 +144,7 @@ export async function readStableLiveJsonl(
       completeBytes: complete.length,
       source: 'live-jsonl',
       relpath: null,
+      fileIdentity: { path, device: stat.dev, inode: stat.ino, links: stat.nlink },
     };
   } finally {
     await fh.close();

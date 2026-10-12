@@ -2555,6 +2555,53 @@ describe('sweepStalledLoops — host-aware disarm (parked-agent-census P-007)', 
     routedWarning('su-unbound');
   });
 
+  it('a pending-turn-stuck host reserves its carry route before queuing the same owner', async () => {
+    const ownerId = 'su-pending';
+    const now = Date.now();
+    const sql = fakeSql([{ id: 'rt_pending', target_owner_id: ownerId }]);
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+    const queueHostRelaunch = vi.fn<NonNullable<StalledLoopsSweepDeps['queueHostRelaunch']>>(async () => ({ queued: true }));
+    const result = await sweepStalledLoops({ sql, workspaceId: 'ws' }, {
+      getStatuses: async () => new Map([[ownerId, stalled(ownerId)]]),
+      probeReachability: reach(false), autoPause, routeToHostRecovery, queueHostRelaunch,
+      broadcast: vi.fn<BroadcastFn>(async () => true),
+      readStalledHost: hostFor({ [ownerId]: {
+        host: { ...recyclable, ownerId },
+        events: [45, 30, 15].map(minutes => ({ kind: 'duplicate-delivery-id', state: 'pending',
+          ts: new Date(now - minutes * 60_000).toISOString() })) as StalledLoopHostReading['events'],
+      } }),
+    });
+    expect(routeToHostRecovery).toHaveBeenCalledWith(sql, 'rt_pending', expect.any(String), 'pending-turn-stuck', { deferFire: true });
+    expect(queueHostRelaunch).toHaveBeenCalledWith(ownerId, 'ws');
+    expect(routeToHostRecovery.mock.invocationCallOrder[0]).toBeLessThan(queueHostRelaunch.mock.invocationCallOrder[0]!);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(result.routedToHostRecovery).toEqual([{ ownerId, condition: 'pending-turn-stuck' }]);
+    expect(result.retainedHostRecoveryWalls).toEqual([]);
+    routedWarning(ownerId);
+  });
+
+  it('an owner-attended quota wall retains its obligation without recycling or disarming', async () => {
+    const ownerId = 'su-quota';
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+    const queueHostRelaunch = vi.fn<NonNullable<StalledLoopsSweepDeps['queueHostRelaunch']>>(async () => ({ queued: true }));
+    const retainHostRecoveryWall = vi.fn<NonNullable<StalledLoopsSweepDeps['retainHostRecoveryWall']>>(async () => ({ retained: true, changed: false }));
+    const sql = fakeSql([{ id: 'rt_quota', target_owner_id: ownerId }]);
+    const result = await sweepStalledLoops({ sql, workspaceId: 'ws' }, {
+      getStatuses: async () => new Map([[ownerId, stalled(ownerId)]]),
+      probeReachability: reach(false), autoPause, routeToHostRecovery, queueHostRelaunch, retainHostRecoveryWall,
+      broadcast: vi.fn<BroadcastFn>(async () => true),
+      readStalledHost: hostFor({ [ownerId]: { host: { ...recyclable, ownerId, bridgeTty: true, quotaBlocked: true }, events: [] } }),
+    });
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(routeToHostRecovery).not.toHaveBeenCalled();
+    expect(queueHostRelaunch).not.toHaveBeenCalled();
+    expect(retainHostRecoveryWall).toHaveBeenCalledWith(sql, 'rt_quota', expect.objectContaining({ ownerId, condition: 'quota-blocked' }));
+    expect(result.retainedHostRecoveryWalls).toEqual([expect.objectContaining({ ownerId, condition: 'quota-blocked' })]);
+    expect(result.paused).toBe(0);
+  });
+
   it('CONTROL — a HEALTHY host is disarmed exactly as before: ordinary reason, no route, no host finding', async () => {
     const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
     const getStatuses = vi.fn(async () => new Map([['su-dead', stalled('su-dead')]]));

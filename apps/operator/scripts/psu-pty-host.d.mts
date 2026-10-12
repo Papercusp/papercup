@@ -2343,11 +2343,25 @@ export function decodeControl(payload: any): {
     data: string;
     force: boolean;
 } | {
+    deliveryId: any;
     ownerId: any;
     mode: string;
     data: string;
     gated: boolean;
 } | {
+    deliveryId?: undefined;
+    ownerId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    deliveryId: any;
+    ownerId?: undefined;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    deliveryId?: undefined;
     ownerId?: undefined;
     mode: string;
     data: string;
@@ -4014,7 +4028,7 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
      *  boundary before the caller may settle the durable wake as suppressed. */
-    requestCancel(ids: any, handledMsgIds: any): {
+    requestCancel(ids: any, handledMsgIds: any, reserveUnknown?: boolean): {
         status: string;
         deliveryIds?: undefined;
         handledMsgIds?: undefined;

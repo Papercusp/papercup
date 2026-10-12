@@ -1,0 +1,122 @@
+/** Internal native acceptance constraints; ordinary consults keep their policy. */
+import { z } from 'zod';
+import type { RouteResult, RoutingCandidate } from './relevance-router';
+import type { ResumeTarget } from '../agent-launch-core';
+import type { AdvSessionRow } from '../adv-sessions';
+import type { StableSource } from '../session-port/source';
+import type { CarryBriefHeldItem } from '../carry-brief';
+
+export const nativeConsultConstraintsSchema = z.object({
+  sourceBackend: z.enum(['claude', 'codex', 'omp']),
+  targetBackend: z.enum(['claude', 'codex', 'omp']),
+  sourceState: z.enum(['live', 'ended']),
+}).strict();
+export type NativeConsultConstraints = z.infer<typeof nativeConsultConstraintsSchema>;
+
+export type NativeConsultBoundary = {
+  status: 'measured'; capturedAt: string; sourceAdvSessionId: number;
+  sourceNativeSessionId: string; sourceOwnerId: string;
+  snapshot: { kind: StableSource['source']; highWaterBytes: number; completeBytes: number;
+    sha256: string; archiveRelpath: string | null; fileIdentity: StableSource['fileIdentity'] | null };
+  claims: { checked: Array<{ id: string; harness: string | null; plan: string | null; items: string[] }>;
+    truncated: false; scope: string };
+} | { status: 'unknown'; reason: string };
+
+interface NativeConsultBoundaryDeps {
+  readSession: (id: number, workspaceId: string) => Promise<AdvSessionRow | null>;
+  readSource: (source: AdvSessionRow) => Promise<StableSource>;
+  readClaims: (ownerId: string, workspaceId: string) => Promise<CarryBriefHeldItem[]>;
+  now: () => string;
+}
+
+/** Persist a before observation on the existing routing snapshot, before any
+ * dispatch. Endpoint equality later is corroboration; actor attribution is separate. */
+export async function captureNativeConsultBoundary(
+  target: ResumeTarget, workspaceId: string, injected?: NativeConsultBoundaryDeps,
+): Promise<NativeConsultBoundary> {
+  try {
+    const deps = injected ?? await (async () => {
+      const [{ getAdvSessionInWorkspace }, { acquireTrackedSessionSource }, { readHeldWorkItems }] = await Promise.all([
+        import('../adv-sessions'), import('../session-port/service'), import('../carry-brief'),
+      ]);
+      return { readSession: getAdvSessionInWorkspace, readSource: acquireTrackedSessionSource,
+        readClaims: (ownerId: string, ws: string) => readHeldWorkItems(ownerId, ws,
+          { limit: 201, getWorkItemCheckpointFn: async () => null }),
+        now: () => new Date().toISOString() };
+    })();
+    if (!target.sessionId || !target.ownerId) throw new Error('exact source native/owner identity missing');
+    const row = await deps.readSession(target.advSessionId, workspaceId);
+    const backend = target.agent === 'claude-code' ? 'claude' : target.agent;
+    if (!row || row.coordOwnerId !== target.ownerId || row.agent !== backend || row.role != null) {
+      throw new Error('source row/backend/owner binding changed');
+    }
+    const currentNative = row.agent === 'omp' ? row.ompThreadId ?? row.sessionId : row.sessionId;
+    if (target.live && (row.endedAt || currentNative !== target.sessionId)) {
+      throw new Error('live native incarnation changed before boundary observation');
+    }
+    // The resolver has already validated exact historical incarnation ownership.
+    const exactRow = { ...row, sessionId: target.sessionId,
+      ...(row.agent === 'omp' ? { ompThreadId: target.sessionId } : {}), endedAt: target.endedAt };
+    const capturedAt = deps.now();
+    const source = await deps.readSource(exactRow);
+    if (target.live && (source.source !== 'live-jsonl' || !source.fileIdentity)) {
+      throw new Error('live source was not read from its canonical descriptor');
+    }
+    if (!source.completeBytes) throw new Error('source complete prefix is empty');
+    const held = await deps.readClaims(target.ownerId, workspaceId);
+    if (held.length > 200) throw new Error('claim census exceeds the 200-item observation bound');
+    return { status: 'measured', capturedAt, sourceAdvSessionId: row.id,
+      sourceNativeSessionId: target.sessionId, sourceOwnerId: target.ownerId,
+      snapshot: { kind: source.source, highWaterBytes: source.highWaterBytes,
+        completeBytes: source.completeBytes, sha256: source.sha256, archiveRelpath: source.relpath,
+        fileIdentity: source.fileIdentity ?? null },
+      claims: { checked: held.map(item => ({ id: item.id, harness: item.harness,
+        plan: item.sourcePlanSlug ?? null, items: item.sourcePlanItemIds ?? [] })).sort((a, b) => a.id.localeCompare(b.id)),
+        truncated: false, scope: 'canonical nonterminal held work-items; plan-only claims, wakes and actor history are separate evidence' } };
+  } catch (error) {
+    return { status: 'unknown', reason: String(error) };
+  }
+}
+
+export interface NativeConsultSourceObservation {
+  ownerId: string;
+  evidenceSessions: string[];
+  sessionId: string | null;
+  backend: string | null;
+  state: 'live' | 'ended' | 'unknown';
+  eligible: boolean;
+  reason: string;
+  before?: NativeConsultBoundary;
+}
+
+/** Filter the real ranked pool without changing its scores, order or floors.
+ * Exclusions remain on the same persisted snapshot, outside the selection pool. */
+export async function filterNativeConsultRoute(
+  route: RouteResult,
+  constraint: NativeConsultConstraints,
+  resolve: (candidate: RoutingCandidate) => Promise<NativeConsultSourceObservation>,
+): Promise<RouteResult> {
+  const observations: NativeConsultSourceObservation[] = [];
+  const eligible = new Set<string>();
+  for (const candidate of route.snapshot.candidates) {
+    const observation = await resolve(candidate);
+    observations.push(observation);
+    if (observation.eligible) eligible.add(candidate.ownerId);
+  }
+  const retain = (candidate: RoutingCandidate): RoutingCandidate => {
+    const source = observations.find(row => row.ownerId === candidate.ownerId)!;
+    return { ...candidate, evidence: candidate.evidence.filter(ref => ref.session_id === source.sessionId) };
+  };
+  const qualified = route.qualified.filter(candidate => eligible.has(candidate.ownerId)).map(retain);
+  return {
+    ...route,
+    qualified,
+    verdict: route.verdict === 'relevance_unmeasured' ? route.verdict : qualified.length ? 'routed' : 'no_qualified_responder',
+    snapshot: { ...route.snapshot,
+      candidates: route.snapshot.candidates.filter(candidate => eligible.has(candidate.ownerId)).map(retain),
+      nativeConsultPool: route.snapshot.candidates,
+      nativeConsult: constraint,
+      nativeConsultSources: observations,
+    },
+  };
+}

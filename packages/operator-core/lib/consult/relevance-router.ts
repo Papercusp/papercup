@@ -259,6 +259,9 @@ export interface RoutingSnapshot {
   policy?: string;
   /** A per-review launch constraint copied into every cascade step. */
   reviewerModel?: import('./get-feedback-core').ConsultReviewerModel;
+  nativeConsult?: import('./native-consult').NativeConsultConstraints;
+  nativeConsultSources?: import('./native-consult').NativeConsultSourceObservation[];
+  nativeConsultPool?: RoutingCandidate[];
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
   cascade?: import('./grading-cascade').SourceAuditCascadeMeta | import('./grading-cascade').GradingCascadeMeta;
 }

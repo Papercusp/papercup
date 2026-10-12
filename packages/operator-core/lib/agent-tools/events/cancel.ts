@@ -229,7 +229,10 @@ export default defineTool({
             }
           }
           if (!ack.acked && !ack.alreadySettled && ack.status === 'delivering') {
-            const warning = 'This delivery is already in flight and cannot be recalled; it may still reach the recipient.';
+            if (ack.cancellationRequested) out.cancellation_requested = true;
+            const warning = ack.cancellationRequested
+              ? 'The host accepted cancellation, but has not confirmed its pre-write barrier; this delivery remains in flight and may still reach the recipient.'
+              : 'This delivery is already in flight and cannot be recalled; it may still reach the recipient.';
             out.warning = out.warning ? `${out.warning} ${warning}` : warning;
           }
           if (!ack.acked && !ack.alreadySettled && item.await_id == null && item.root_id == null) {

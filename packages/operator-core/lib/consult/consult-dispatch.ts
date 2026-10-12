@@ -65,12 +65,14 @@ import { papercuspPathForWorkspace } from '../papercusp-root';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import {
   resolveExpertModelAllowlist,
+  normalizeExpertModelAllowlist,
   type AllowedExpertModel,
   type ExpertBackend,
   type ExpertModelAllowlistDeps,
 } from './expert-model-allowlist';
 import type { ConsultReviewerModel } from './get-feedback-core';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+import { captureNativeConsultBoundary, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
 
 /** How long the dispatcher waits for the answering session's pty host to
  * register before reporting verified:null (booting). Same budget and same
@@ -164,12 +166,13 @@ type ResolvedResumeTarget = Extract<Awaited<ReturnType<typeof resolveResumeTarge
  * Only when NO evidence session belongs to the candidate is the walk refused, and the
  * refusal names every session tried so the walk record shows why.
  */
-async function resolveDispatchSource(
-  opts: { sourceOwnerId: string; evidence?: readonly ConsultDispatchEvidenceRef[] },
+export async function resolveDispatchSource(
+  opts: { sourceOwnerId: string; evidence?: readonly ConsultDispatchEvidenceRef[]; nativeConsult?: NativeConsultConstraints },
   d: Pick<ConsultDispatchDeps, 'resolveResumeTarget'>,
 ): Promise<{ target: ResolvedResumeTarget; evidenceSource: ConsultEvidenceSource | null } | { refusal: string }> {
   const sources = rankConsultEvidenceSources(opts.evidence);
   if (sources.length === 0) {
+    if (opts.nativeConsult) return { refusal: 'native consult requires exact evidence session refs; owner fallback is forbidden' };
     const target = await d.resolveResumeTarget({ agentId: opts.sourceOwnerId });
     return target.ok ? { target, evidenceSource: null } : { refusal: `source session unresolvable: ${target.detail}` };
   }
@@ -188,6 +191,13 @@ async function resolveDispatchSource(
           `expected ${opts.sourceOwnerId}`,
       );
     } else {
+      if (opts.nativeConsult) {
+        const mismatch = nativeSourceMismatch(target, opts.nativeConsult);
+        if (mismatch) {
+          rejected.push(`${source.sessionId}: ${mismatch}`);
+          continue;
+        }
+      }
       return { target, evidenceSource: source };
     }
   }
@@ -196,6 +206,46 @@ async function resolveDispatchSource(
       ? rejected[0]!
       : `no evidence session resolves to ${opts.sourceOwnerId} (${rejected.length} tried): ${rejected.join('; ')}`,
   };
+}
+
+function nativeSourceState(target: ResolvedResumeTarget): 'live' | 'ended' | 'unknown' {
+  return target.live === true ? 'live' : target.live === false && target.endedAt ? 'ended' : 'unknown';
+}
+
+function nativeSourceMismatch(target: ResolvedResumeTarget, constraint: NativeConsultConstraints): string | null {
+  const backend = target.agent === 'claude-code' ? 'claude' : target.agent;
+  if (backend !== constraint.sourceBackend) return `source backend ${backend ?? 'unknown'} differs from ${constraint.sourceBackend}`;
+  const state = nativeSourceState(target);
+  return state === constraint.sourceState ? null : `source state ${state} differs from ${constraint.sourceState}`;
+}
+
+/** The routing filter and dispatch walk resolve the same exact evidence/owner seam. */
+export async function observeNativeConsultSource(
+  candidate: { ownerId: string; evidence: ConsultDispatchEvidenceRef[] }, constraint: NativeConsultConstraints,
+  deps: Pick<ConsultDispatchDeps, 'resolveResumeTarget'> = { resolveResumeTarget },
+  workspaceId?: string,
+): Promise<NativeConsultSourceObservation> {
+  const base = { ownerId: candidate.ownerId, evidenceSessions: rankConsultEvidenceSources(candidate.evidence).map(s => s.sessionId) };
+  try {
+    const resolved = await resolveDispatchSource({ sourceOwnerId: candidate.ownerId, evidence: candidate.evidence, nativeConsult: constraint }, deps);
+    if (!('refusal' in resolved) && workspaceId) {
+      const before = await captureNativeConsultBoundary(resolved.target, workspaceId);
+      if (before.status === 'unknown') {
+        return { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
+          state: nativeSourceState(resolved.target), eligible: false,
+          reason: `source boundary unmeasured: ${before.reason}`, before };
+      }
+      return { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
+        state: nativeSourceState(resolved.target), eligible: true,
+        reason: 'exact source matched and pre-dispatch boundary measured', before };
+    }
+    return 'refusal' in resolved
+      ? { ...base, sessionId: null, backend: null, state: 'unknown', eligible: false, reason: resolved.refusal }
+      : { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
+          state: nativeSourceState(resolved.target), eligible: true, reason: 'exact native session, owner, backend and state matched' };
+  } catch (error) {
+    return { ...base, sessionId: null, backend: null, state: 'unknown', eligible: false, reason: `source resolution unavailable: ${String(error)}` };
+  }
 }
 
 /**
@@ -281,6 +331,9 @@ export interface BackendAvailability {
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Test seam for the saved per-review model, read again on every cascade leg. */
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
+  readDispatchChoice?: (workspaceId: string, conversationId: string) => Promise<{
+    reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+  }>;
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
   isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
   resolveResumeTarget: typeof resolveResumeTarget;
@@ -960,6 +1013,7 @@ export async function dispatchConsultResponder(
     sourceOwnerId: string;
     conversationId: string;
     reviewerModel?: ConsultReviewerModel;
+    nativeConsult?: NativeConsultConstraints;
     /** Router-matched transcript turns; exact native session wins over the
      * owner's newest session so the routed evidence and carried source agree. */
     evidence?: ConsultDispatchEvidenceRef[];
@@ -1185,18 +1239,23 @@ async function walkConsultDispatch(
       }
     }
 
-    const allowedRanks = await resolveExpertModelAllowlist(ctx.workspaceId, d);
+    // A matrix trial may not substitute seed models for missing configured ranks.
+    const allowedRanks = opts.nativeConsult
+      ? normalizeExpertModelAllowlist(await d.loadRanks?.(ctx.workspaceId))
+      : await resolveExpertModelAllowlist(ctx.workspaceId, d);
     const requested = opts.reviewerModel;
+    const backendRanks = opts.nativeConsult ? allowedRanks.filter(rank => rank.agent === opts.nativeConsult!.targetBackend) : allowedRanks;
     const ranks = requested
-      ? allowedRanks.filter((rank) => rank.agent === requested.agent && rank.model === requested.model)
+      ? backendRanks.filter((rank) => rank.agent === requested.agent && rank.model === requested.model)
         .map((rank) => ({
           ...rank,
           model: requested.effort ? `${rank.model}:${requested.effort}` : rank.model,
         }))
-      : allowedRanks;
+      : backendRanks;
     if (ranks.length === 0) {
       return give(requested
         ? `requested reviewer model ${requested.agent}/${requested.model} is absent from the current expert allowlist`
+        : opts.nativeConsult ? `native target backend ${opts.nativeConsult.targetBackend} has no configured allowed model`
         : 'the expert-model allowlist resolved empty — no model is allowed to answer consults');
     }
 
@@ -1818,13 +1877,14 @@ export function makeConsultReachDispatcher(
     // The routed consult's saved snapshot is the authority on later reply,
     // decline and expiry cascades. A closure from the initial call is gone by
     // then, so never rely on it to keep the model constraint.
-    const reviewerModel = await (deps.readReviewerModel ?? readPersistedReviewerModel)(
-      ctx.workspaceId, opts.conversationId,
-    );
+    const choice = deps.readDispatchChoice ? await deps.readDispatchChoice(ctx.workspaceId, opts.conversationId)
+      : deps.readReviewerModel ? { reviewerModel: await deps.readReviewerModel(ctx.workspaceId, opts.conversationId), nativeConsult: null }
+      : await readPersistedDispatchChoice(ctx.workspaceId, opts.conversationId);
+    const { reviewerModel, nativeConsult } = choice;
     // Initial getFeedbackProd binds workspace ranks itself. Later decline and
     // expiry writers construct a new dispatcher, so load that same workspace
     // setting here instead of comparing the saved choice against the seed.
-    const dispatchDeps = reviewerModel && !deps.loadRanks
+    const dispatchDeps = (reviewerModel || nativeConsult) && !deps.loadRanks
       ? {
           ...deps,
           loadRanks: (workspaceId: string) =>
@@ -1838,6 +1898,7 @@ export function makeConsultReachDispatcher(
         sourceOwnerId: opts.responder,
         conversationId: opts.conversationId,
         ...(reviewerModel ? { reviewerModel } : {}),
+        ...(nativeConsult ? { nativeConsult } : {}),
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
@@ -1901,14 +1962,17 @@ export async function continueCascadeDispatchProd(
   });
 }
 
-async function readPersistedReviewerModel(workspaceId: string, conversationId: string): Promise<ConsultReviewerModel | null> {
+async function readPersistedDispatchChoice(workspaceId: string, conversationId: string): Promise<{
+  reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+}> {
   const { getOrgPg } = await import('@papercusp/db-org');
-  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown }>>`
-    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model
+  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown }>>`
+    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
   `;
-  if (row?.reviewer_model == null) return null;
+  const nativeConsult = row?.native_consult == null ? null : nativeConsultConstraintsSchema.parse(row.native_consult);
+  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult };
   if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY) {
     throw new Error('reviewer model exists outside its acceptance amendment policy');
   }
@@ -1920,5 +1984,5 @@ async function readPersistedReviewerModel(workspaceId: string, conversationId: s
     (model.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(String(model.effort)))) {
     throw new Error('invalid persisted reviewer model');
   }
-  return model as unknown as ConsultReviewerModel;
+  return { reviewerModel: model as unknown as ConsultReviewerModel, nativeConsult };
 }

@@ -112,6 +112,14 @@ export interface RoutineInfo {
   } | null;
 }
 
+/** Stable, privacy-bounded projection of one git-sync content-quarantine key. */
+export interface GitSyncContentError {
+  /** Superproject-relative path, suitable for exact matching against a pipeline query. */
+  path: string;
+  /** Detector name only; persisted keys can also carry importer paths and are not echoed. */
+  detector: string;
+}
+
 export interface GitPipelineSnapshot {
   slug: string;
   generatedAtMs: number;
@@ -134,6 +142,8 @@ export interface GitPipelineSnapshot {
     lastErrors: string[];
     /** Live-lock paths that caused a whole repo commit group to defer. */
     skippedPaths?: GitSyncSkippedPath[];
+    /** Files excluded from commits by the last pass's content guards. */
+    contentErrors?: GitSyncContentError[];
     /**
      * The member's EFFECTIVE push mode this tick: `'push'`, or `'commit-only:<reason>'`
      * where reason is the hive git mode (`bridged` / `p2p-only`) or `config`.
@@ -953,6 +963,34 @@ export function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
   }
   return out;
 }
+
+/**
+ * Parse git-sync's persisted `last_content_errors` keys without carrying the human
+ * error text or importer path into pipeline-position output. The writer format is
+ * `<scope>/<file> [<detector>]`; `superproject` and legacy `root` scopes map to the
+ * queried superproject-relative path, while submodule scope prefixes already form
+ * that path when joined with the file.
+ */
+export function contentErrorArr(v: unknown): GitSyncContentError[] {
+  if (!Array.isArray(v)) return [];
+  const out: GitSyncContentError[] = [];
+  for (const entry of v) {
+    if (typeof entry !== 'string') continue;
+    const marker = entry.lastIndexOf(' [');
+    if (marker <= 0 || !entry.endsWith(']')) continue;
+    const scopedPath = entry.slice(0, marker);
+    const detector = entry.slice(marker + 2, -1).match(/^[a-z0-9_-]+/i)?.[0];
+    if (!detector) continue;
+    const path = scopedPath.startsWith('superproject/')
+      ? scopedPath.slice('superproject/'.length)
+      : scopedPath.startsWith('root/')
+        ? scopedPath.slice('root/'.length)
+        : scopedPath;
+    if (!path) continue;
+    out.push({ path, detector });
+  }
+  return out;
+}
 function dateMs(v: unknown): number | null {
   if (v instanceof Date) return v.getTime();
   if (typeof v === 'string') {
@@ -1756,6 +1794,7 @@ export async function gitPipelineSnapshot(
       lastConflicts: strArr(meta.last_conflicts),
       lastErrors: strArr(meta.last_errors),
       skippedPaths: skippedPathArr(meta.last_skipped_paths),
+      contentErrors: contentErrorArr(meta.last_content_errors),
       // EI-18812945811758018: 'push' | 'commit-only:<reason>' | null (older rows, before
       // git-sync recorded it). NEVER default this to 'push' — an absent mode is UNKNOWN,
       // and guessing "it pushes" is what made an empty lastPushed read as a fault.

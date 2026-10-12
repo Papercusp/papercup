@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { zstdCompressSync } from 'node:zlib';
 import type { SessionArchiveStore } from '../session-archive';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readCanonicalNativeArchive, readStableLiveJsonl } from './source';
@@ -16,6 +16,8 @@ describe('readStableLiveJsonl', () => {
     expect(source.highWaterBytes).toBe(14);
     expect(source.completeBytes).toBe(8);
     expect(source.source).toBe('live-jsonl');
+    const stat = statSync(path);
+    expect(source.fileIdentity).toEqual({ path, device: stat.dev, inode: stat.ino, links: stat.nlink });
   });
 
   it('rejects before allocating beyond the configured cap', async () => {

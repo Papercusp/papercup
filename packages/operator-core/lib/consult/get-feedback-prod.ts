@@ -112,7 +112,15 @@ export async function getFeedbackProd(
           }]));
         },
       });
-      return options.filterRoute ? options.filterRoute(routed) : routed;
+      let constrained = routed;
+      if (request.nativeConsult) {
+        const [{ filterNativeConsultRoute }, { observeNativeConsultSource }] = await Promise.all([
+          import('./native-consult'), import('./consult-dispatch'),
+        ]);
+        constrained = await filterNativeConsultRoute(routed, request.nativeConsult,
+          candidate => observeNativeConsultSource(candidate, request.nativeConsult!, undefined, request.workspaceId));
+      }
+      return options.filterRoute ? options.filterRoute(constrained) : constrained;
     },
     open: async (input) => {
       const opened = await conversations.openConversation(identity, {

@@ -648,6 +648,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
             coordOwnerId: null,
             cwd: s.cwd,
             workspaceId: 'row-ws',
+            launchArgv: ['--account=auto'],
           }) as never,
         spawnDetached: () => 4242,
         accountHeadlessResumeTurn: (input) => {
@@ -679,6 +680,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         coordOwnerId: s.ownerId,
         agent: 'claude',
         resumeId: 'native-A',
+        declaredAccountRoute: { mode: 'auto', accountId: null },
       });
       // The ledger argv never carries the wake text verbatim.
       expect(inputs[0]!.argv.some((a) => a.startsWith('<wake-text '))).toBe(true);

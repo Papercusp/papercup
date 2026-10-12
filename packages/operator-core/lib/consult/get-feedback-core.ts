@@ -159,6 +159,8 @@ export interface GetFeedbackRequest {
    */
   policy?: string;
   reviewerModel?: ConsultReviewerModel;
+  /** Internal testing:run constraint, included in the saved payload fingerprint. */
+  nativeConsult?: import('./native-consult').NativeConsultConstraints;
   /** Internal consumer metadata, persisted before any delivery or revival. */
   cascade?: SourceAuditCascadeMeta;
 }
@@ -1171,7 +1173,7 @@ export async function getFeedbackCore(
   //     The SELECT doubles as the capability probe: pgvector absent / column
   //     not migrated throws, and the leg degrades to normal routing (the
   //     per-source degrade contract) — the INSERT then also skips the column.
-  const archiveFloor = req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
+  const archiveFloor = req.nativeConsult ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
   const qVecStr = route.queryVec && route.queryVec.length > 0 && route.queryProfile
     ? JSON.stringify(route.queryVec)
     : null;
@@ -1361,6 +1363,7 @@ export async function getFeedbackCore(
   // recognize a review consult (rubric-vetting) and convert it to pullable work.
   if (req.policy) route.snapshot.policy = req.policy;
   if (req.reviewerModel) route.snapshot.reviewerModel = req.reviewerModel;
+  if (req.nativeConsult) route.snapshot.nativeConsult = req.nativeConsult;
   const chosenSel = selected[0] ?? null;
   const chosen = chosenSel?.candidate ?? null;
   const chosenVia: SelectionVia | null = chosenSel?.via ?? null;

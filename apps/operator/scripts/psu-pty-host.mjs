@@ -6292,6 +6292,7 @@ export function decodeControl(payload) {
       o &&
       o.v === 1 &&
       (o.mode === 'turn' ||
+        o.mode === 'delivery-cancel' ||
         o.mode === 'raw' ||
         o.mode === 'osc' ||
         o.mode === 'reset' ||
@@ -6318,6 +6319,16 @@ export function decodeControl(payload) {
           ...('expectedStartedAt' in o ? { expectedStartedAt: o.expectedStartedAt } : {}),
           gated: false,
           ...decodeOwnerIdentity(o),
+        };
+      // A direct subscriber ACK is a control request, not an agent turn. Old
+      // hosts never receive this additive mode unless they advertise support.
+      if (o.mode === 'delivery-cancel')
+        return {
+          mode: 'delivery-cancel',
+          data: '',
+          gated: false,
+          ...decodeOwnerIdentity(o),
+          ...decodeDeliveryId(o),
         };
       if (o.mode === 'raw')
         return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
@@ -8542,16 +8553,24 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
      *  boundary before the caller may settle the durable wake as suppressed. */
-    requestCancel(ids, handledMsgIds) {
+    requestCancel(ids, handledMsgIds, reserveUnknown = false) {
       const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
       const messageIds = Array.isArray(handledMsgIds) ? [...new Set(handledMsgIds)] : [];
-      if (!deliveryIds.length || !messageIds.length || deliveryIds.some((id) => typeof id !== 'string' || !id)) {
+      if (!deliveryIds.length || (!messageIds.length && !reserveUnknown) || deliveryIds.some((id) => typeof id !== 'string' || !id)) {
         return { status: 'invalid' };
       }
       const t = now();
       sweep(t);
       const current = deliveryIds.map((id) => entries.get(id));
-      if (current.some((entry) => !entry)) return { status: 'unknown' };
+      if (current.some((entry) => !entry)) {
+        // An explicit subscriber ACK can race ahead of the original host
+        // injection. Reserve its ID so a later arrival cannot become a fresh write.
+        if (reserveUnknown && deliveryIds.length === 1 && !current[0]) {
+          entries.set(deliveryIds[0], { state: 'cancelled', at: t, writeStarted: true, handledMsgIds: [] });
+          return { status: 'cancelled', deliveryIds, handledMsgIds: [] };
+        }
+        return { status: 'unknown' };
+      }
       if (current.every((entry) => entry.state === 'cancelled')) {
         return { status: 'cancelled', deliveryIds, handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))] };
       }
@@ -10193,7 +10212,7 @@ export function hostThroughPty(o) {
     // 'auth-recovery' (parked-agent-census P-004): this host publishes
     // authBlocked and resets it on recycle, so the operator may recycle a
     // headless child whose in-memory login is dead.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start'],
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel'],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -12816,6 +12835,48 @@ export function hostThroughPty(o) {
           reason: refusalReason,
           deliveryIds: msg.cancelDeliveryIds,
           handledMsgIds: msg.handledMsgIds,
+        });
+        return { ok: false, reason: refusalReason };
+      }
+      if (msg.mode === 'delivery-cancel') {
+        if (!msg.ownerId || msg.ownerId !== ownerId || !msg.deliveryId) {
+          appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+            reason: 'invalid-direct-ack-cancellation',
+            deliveryId: msg.deliveryId ?? null,
+            source: 'subscriber-ack',
+          });
+          return { ok: false, reason: 'cancel-envelope-invalid' };
+        }
+        const cancellation = deliveryDedup.requestCancel([msg.deliveryId], [], true);
+        if (cancellation.status === 'requested') {
+          appendHostEvent(ownerId, 'delivery-cancellation-requested', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: [],
+            source: 'subscriber-ack',
+          });
+          return { ok: true, reason: 'cancel-requested' };
+        }
+        if (cancellation.status === 'cancelled') {
+          appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: [],
+            bytesWritten: 0,
+            source: 'subscriber-ack',
+          });
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
+        const refusalReason = {
+          invalid: 'cancel-envelope-invalid',
+          unknown: 'delivery-unknown',
+          conflict: 'delivery-cancellation-conflict',
+          completed: 'delivery-already-committed',
+          writing: 'delivery-already-writing',
+        }[cancellation.status] ?? 'delivery-cancellation-refused';
+        appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+          reason: refusalReason,
+          deliveryIds: [msg.deliveryId],
+          handledMsgIds: [],
+          source: 'subscriber-ack',
         });
         return { ok: false, reason: refusalReason };
       }

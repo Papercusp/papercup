@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     openConversation: vi.fn(),
     routeConsult: vi.fn(async (_params: unknown, _deps: unknown) => ({ verdict: 'no_qualified_responder' })),
     makeConsultReachDispatcher: vi.fn((_context: unknown, _deps: unknown) => async () => ({})),
+    observeNativeConsultSource: vi.fn(async (_candidate: unknown, _constraint: unknown) => ({})),
     readConsultExpertRoutingSettings: vi.fn(async () => routingSettings),
   };
 });
@@ -43,7 +44,8 @@ vi.mock('../search/prose-vector-dims', () => ({ resolveProseProfileSelection: h.
 vi.mock('../agent-tools/coordination/liveness-oracle', () => ({ resolveSessionStates: h.resolveSessionStates }));
 vi.mock('../harness/routines/release-pause-ttl', () => ({ listLoopStanddownOwners: h.listLoopStanddownOwners }));
 vi.mock('../agent-tools/coordination/conversations', () => ({ openConversation: h.openConversation }));
-vi.mock('./consult-dispatch', () => ({ makeConsultReachDispatcher: h.makeConsultReachDispatcher }));
+vi.mock('./consult-dispatch', () => ({ makeConsultReachDispatcher: h.makeConsultReachDispatcher,
+  observeNativeConsultSource: h.observeNativeConsultSource }));
 vi.mock('./expert-routing-settings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./expert-routing-settings')>();
   return { ...actual, readConsultExpertRoutingSettings: h.readConsultExpertRoutingSettings };
@@ -52,6 +54,34 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
 import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
+  it('restores the native source constraint during durable recovery and filters the real ranked pool before selection', async () => {
+    const nativeConsult = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } as const;
+    const saved = { workspaceId: 'workspace-native', requesterId: 'native-requester', question: 'native recovery',
+      requestKey: 'native-key', allowDispatch: true, nativeConsult };
+    await continueFeedbackRequestProd(saved.workspaceId, 'native-conv');
+    const recovery = h.continueFeedbackRequestCore.mock.calls.at(-1)![2] as {
+      execute: (request: unknown, accepted: unknown) => Promise<unknown>;
+    };
+    await recovery.execute(saved, { conversation_id: 'native-conv', thread_id: 'thr-native', leaseToken: 'native-lease' });
+    expect(h.getFeedbackCore.mock.calls.at(-1)![0]).toMatchObject({ nativeConsult });
+    const candidates = [
+      { ownerId: 'wrong-owner', score: 0.95, evidence: [{ session_id: 'wrong-native', turn_idx: 1, sim: 0.95 }] },
+      { ownerId: 'right-owner', score: 0.9, evidence: [{ session_id: 'right-native', turn_idx: 3, sim: 0.9 }] },
+    ];
+    h.routeConsult.mockResolvedValueOnce({ verdict: 'routed', qualified: candidates,
+      snapshot: { candidates }, queryVec: null } as never);
+    h.observeNativeConsultSource.mockImplementationOnce(async () => ({ ownerId: 'wrong-owner', eligible: false,
+      sessionId: null, evidenceSessions: ['wrong-native'], backend: null, state: 'unknown', reason: 'evidence session ownership changed' }));
+    h.observeNativeConsultSource.mockImplementationOnce(async () => ({ ownerId: 'right-owner', eligible: true,
+      sessionId: 'right-native', evidenceSessions: ['right-native'], backend: 'claude', state: 'ended', reason: 'matched' }));
+    const deps = h.getFeedbackCore.mock.calls.at(-1)![1] as { route: (params: unknown) => Promise<unknown> };
+    expect(await deps.route({ question: saved.question })).toMatchObject({
+      qualified: [candidates[1]], snapshot: { nativeConsult, candidates: [candidates[1]], nativeConsultPool: candidates,
+        nativeConsultSources: [expect.objectContaining({ eligible: false }), expect.objectContaining({ eligible: true })] },
+    });
+    expect(h.observeNativeConsultSource).toHaveBeenCalledWith(candidates[0], nativeConsult, undefined, saved.workspaceId);
+  });
+
   beforeEach(() => vi.clearAllMocks());
 
   it('persists and returns acceptance before embedder/settings acquisition, then resumes the same identity', async () => {

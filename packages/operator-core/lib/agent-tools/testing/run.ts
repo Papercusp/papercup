@@ -98,6 +98,7 @@ import {
   type SpawnRequest,
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
+import { nativeConsultScenarioSchema } from './native-consult';
 import { resolveAgentWorkspaceRoot, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
@@ -3699,6 +3700,9 @@ export default defineTool({
   // verdict. The dedicated capability grant stays inert for every other tool.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
+    nativeConsult: nativeConsultScenarioSchema.optional().describe(
+      'Run one attributed native consult on this operator through the durable consult lifecycle. Requires work_item_id and concrete harness/workspace. Source/backend constraints survive restart and cascade; accepted pending work is not a passed test or native receipt. Mutually exclusive with Vitest/evidence selectors.',
+    ),
     recheckReason: z
       .string()
       .trim()
@@ -3789,6 +3793,28 @@ export default defineTool({
   async handler(args, ctx) {
     const handlerStartedAt = performance.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
+    if (args.nativeConsult) {
+      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'maxFailures', 'recheckReason']
+        .some(key => (args as Record<string, unknown>)[key] !== undefined)) {
+        return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
+      }
+      if (!args.work_item_id) return { data: { ok: false, error: 'native_consult_requires_work_item' } };
+      const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*') {
+        return { data: { ok: false, error: 'native_consult_requires_concrete_scope' } };
+      }
+      const identity = resolveAgentIdentity(ctx);
+      const refusal = await loopLaunchRefusal({ workspaceId: ctx.workspaceId,
+        workItemId: args.work_item_id, background: true, timeoutMs: MAX_TIMEOUT_MS });
+      if (refusal) return { data: refusal };
+      try {
+        const { acceptNativeConsultScenario } = await import('./native-consult');
+        return { data: await acceptNativeConsultScenario({ scenario: args.nativeConsult, identity,
+          workspaceId: ctx.workspaceId, harnessSlug, workItemId: args.work_item_id }) };
+      } catch (error) {
+        return { data: { ok: false, error: 'native_consult_acceptance_failed', message: String(error) } };
+      }
+    }
     if (args.rootHarnessSlug !== undefined && !args.files) {
       return {
         data: {
