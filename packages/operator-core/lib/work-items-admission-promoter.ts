@@ -28,6 +28,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   hasStrictOwnerAction,
   readAgentReviewState,
+  agentReviewIsReproductionValidation,
   implementationReadinessProjectedFloorSql,
   intakeStageClaimFloorFromFragmentsSql,
   implementationReadinessValidFromJsonSql,
@@ -3627,7 +3628,13 @@ function endpointProtection(
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
   const review = readAgentReviewState(snapshot.payload);
-  if (review?.status === 'pending' || review?.status === 'revision-requested') {
+  // Duplicate admission precedes the ordinary reproduction-validation claim. Reuse
+  // that lane's predicate for screening/promotion only: changing or merging either
+  // endpoint still requires its independent agent review to have cleared.
+  const reproductionValidationAdmission = snapshot.kind === 'bug' &&
+    (role === 'promote' || role === 'reference') &&
+    agentReviewIsReproductionValidation(snapshot.payload);
+  if ((review?.status === 'pending' || review?.status === 'revision-requested') && !reproductionValidationAdmission) {
     return { reason: 'review-gated', detail: `${role} ${snapshot.id} is agent-review ${review.status}` };
   }
   if (options.requireImplementationReadiness && (role === 'loser' || role === 'canonical')) {

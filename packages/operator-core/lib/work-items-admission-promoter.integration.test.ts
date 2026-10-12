@@ -3,7 +3,7 @@ import { hostname } from 'node:os';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages } from './harness/improvements/agent-review-policy';
+import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages, intakeStageAdmitsClaim, implementationReadinessAdmitsClaim } from './harness/improvements/agent-review-policy';
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
@@ -1753,6 +1753,60 @@ describe('work-item admission promoter (real Postgres)', () => {
     const admissionOf = async (id: string) =>
       (await db.sql<Array<{ admission: string }>>`
         SELECT admission FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]?.admission;
+
+    it.each(['pending', 'unreviewed'])('screens a %s reproduction-validation bug without granting implementation authority', async (admission) => {
+      const agentReview = {
+        status: 'revision-requested', revisionKind: 'reproduction',
+        submittedBy: 'su-reporter', ledgerIdeaId: 'idea-validation', round: 1,
+      };
+      const implementationReadiness = {
+        schemaVersion: 'implementation-readiness-v1', status: 'not-ready', source: 'agent-review',
+        reason: 'fixture-reproduction-required', updatedAt: '2026-08-26T11:00:00.000Z',
+      };
+      await seedItem({ id: 'WI-existing', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({
+        id: 'WI-validation', admission, createdAtMs: NOW - 10_000,
+        payload: { agentReview, implementationReadiness },
+      });
+      const modelCall = distinctCall();
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: `prescreen-validation-${admission}`,
+        sql: db.sql, llmCall: modelCall, now: () => NOW,
+      });
+
+      expect(modelCall).toHaveBeenCalledTimes(1);
+      expect(promptKeys(modelCall)).toEqual(['WI-existing::WI-validation']);
+      expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ selected: 1, selfBlocked: 0, deferred: 0 });
+      const [row] = await db.sql<Array<{ admission: string; payload: Record<string, unknown>; taken_by: string | null }>>`
+        SELECT admission, payload, taken_by FROM harness_shared.work_items WHERE feature_id = 'WI-validation'`;
+      expect(row).toMatchObject({ admission: 'admitted', taken_by: null, payload: { agentReview, implementationReadiness } });
+      const claimInput = { payload: row!.payload, kind: 'bug', title: 'vitest clone failure', summary: 'same finding and same retry remedy', createdAtMs: NOW - 10_000 };
+      expect(intakeStageAdmitsClaim(claimInput)).toBe(true);
+      expect(implementationReadinessAdmitsClaim(claimInput)).toBe(false);
+    }, 60_000);
+
+    it('keeps a reproduction-validation duplicate pending when the destructive merge guard refuses it', async () => {
+      const agentReview = {
+        status: 'revision-requested', revisionKind: 'reproduction',
+        submittedBy: 'su-reporter', ledgerIdeaId: 'idea-validation', round: 1,
+      };
+      await seedItem({ id: 'WI-existing', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-validation', payload: { agentReview }, createdAtMs: NOW - 10_000 });
+      const modelCall = judgementCall('r-finding-merge');
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-validation-duplicate',
+        sql: db.sql, llmCall: modelCall, now: () => NOW,
+      });
+
+      expect(modelCall).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'review-gated' }] });
+      const [row] = await db.sql<Array<{ admission: string; status: string; payload: Record<string, unknown> }>>`
+        SELECT admission, status, payload FROM harness_shared.work_items WHERE feature_id = 'WI-validation'`;
+      expect(row).toMatchObject({ admission: 'pending', status: 'open', payload: { agentReview } });
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+      expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    }, 60_000);
 
     it('skips an older self-blocked re-review row and refills the batch with the row behind it', async () => {
       // Before the prescreen the oldest row took the only slot every tick, was refused
