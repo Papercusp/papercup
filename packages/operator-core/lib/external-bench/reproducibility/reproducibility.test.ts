@@ -89,7 +89,8 @@ describe('BM-P-004-equal-solver: one mismatched solver field breaks the same-sol
   });
 
   it('refuses a comparison across solver groups, unknown arms, uncontrolled arms or a single arm', () => {
-    const regrouped = controlledProtocolFixture(); controlOf(regrouped, 'ensemble').solverGroup = 'other-solver';
+    // Regroup a non-baseline arm: the ensemble is the ablation's R-14 baseline and must stay in fixture-solver.
+    const regrouped = controlledProtocolFixture(); controlOf(regrouped, 'independent').solverGroup = 'other-solver';
     expect(issuesOf(regrouped)).toEqual([]);
     expect(() => requireSameSolverComparison(regrouped, [...SAME_SOLVER_TOPOLOGIES])).toThrow(/share one solver group/);
     expect(() => requireSameSolverComparison(controlledProtocolFixture(), ['solo', 'missing'])).toThrow(/not in the frozen protocol/);
@@ -126,6 +127,15 @@ describe('BM-P-004-ablation: an ablation switches off exactly one capability of 
     ['stock reference declared as an ablation', p => { controlOf(p, 'stock').ablation = { of: 'solo', treatment: 'locks' }; }, /not an ablation/],
     ['ensemble without its block', p => { delete controlOf(p, 'ensemble').ensemble; }, /exactly when the topology is ensemble/],
     ['ensemble block on a solo arm', p => { controlOf(p, 'solo').ensemble = structuredClone(controlOf(p, 'ensemble').ensemble); }, /exactly when the topology is ensemble/],
+    // R-14 (benchmark-coverage-frontierswe-v2-2026-10-10#D-022): every ablation's solver group carries a
+    // matched-cost repeated-session baseline — an independent ensemble arm distinct from the ablation's control.
+    ['no repeated-session baseline', p => { p.arms = p.arms.filter(arm => arm.id !== 'ensemble'); }, /repeated-session baseline/],
+    ['baseline only in another solver group', p => { controlOf(p, 'ensemble').solverGroup = 'other-solver'; }, /repeated-session baseline/],
+    ['baseline that is the ablation\'s own control', p => {
+      const ablation = controlOf(p, 'coordinated-no-locks');
+      ablation.topology = 'ensemble'; ablation.ensemble = structuredClone(controlOf(p, 'ensemble').ensemble);
+      ablation.ablation = { of: 'ensemble', treatment: 'locks' };
+    }, /repeated-session baseline/],
   ];
 
   it.each(defects)('rejects %s', (_name, mutate, message) => {

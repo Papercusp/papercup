@@ -153,6 +153,16 @@ function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (stri
         baseControl.capabilities[treatment] !== 'on' || control.capabilities[treatment] !== 'off') {
       issues.push({ path, message: `An ablation must switch off exactly ${treatment} relative to its control.` });
     }
+    // R-14 (benchmark-coverage-frontierswe-v2-2026-10-10#D-022): a capability lift is only claimable against a
+    // matched-cost repeated-session baseline. That is an independent ensemble of the SAME solver (one solver
+    // group freezes the per-assignment generationBudget, so cost is matched by construction). It must be a
+    // full arm distinct from the ablation's own control; a control cannot strictly beat itself.
+    const hasBaseline = arms.some(candidate => candidate !== base && candidate !== arm &&
+      candidate.control!.solverGroup === control.solverGroup && !candidate.control!.ablation &&
+      candidate.control!.topology === 'ensemble' && candidate.control!.ensemble?.isolation === 'independent');
+    if (!hasBaseline) {
+      issues.push({ path, message: `An ablation needs a repeated-session baseline: an independent ensemble arm in solver group ${control.solverGroup}, distinct from its control.` });
+    }
   });
   return issues;
 }
