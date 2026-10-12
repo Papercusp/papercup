@@ -219,8 +219,15 @@ async function bm25MaintenanceTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
+        const startedAt = Date.now();
         const { sql } = getOrgPg();
-        const line = formatBm25MaintenanceReport(await runBm25Maintenance(sql));
+        const report = await runBm25Maintenance(sql);
+        const finishedAt = Date.now();
+        const line = formatBm25MaintenanceReport(report, {
+          startedAtMs: startedAt,
+          finishedAtMs: finishedAt,
+          durationMs: Math.max(0, finishedAt - startedAt),
+        });
         if (line) console.log(line);
       } catch (err) {
         console.warn(`[bm25-maintenance] run skipped (non-fatal): ${(err as Error).message}`);
