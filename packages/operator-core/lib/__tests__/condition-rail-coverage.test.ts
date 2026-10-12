@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as recorder from '../degradation/fallback-observations';
-import { migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
+import { inventoryTree, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
@@ -20,6 +20,17 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
     expect(migrationCoverageProblems(manifest, RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS,
       listDegradationMechanisms().map((mechanism) => mechanism.mechanism))).toEqual([]);
   });
+
+  it('retains each implemented P-011 original site identity on the rail', () => {
+    const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+    expect(live.unreadable).toBe(0);
+    for (const testCase of RAIL_MIGRATION_CASES.filter((entry) => entry.item === 'P-011')) {
+      for (const id of testCase.rowIds) {
+        expect(manifest.rows.find((row: { id: string }) => row.id === id), id).toBeDefined();
+        expect(live.sites.find((site: { id: string }) => site.id === id)?.onRail, id).toBe(true);
+      }
+    }
+  }, 120_000);
 
   for (const testCase of RAIL_MIGRATION_CASES) {
     it(`${testCase.item}: ${testCase.id}`, async () => {

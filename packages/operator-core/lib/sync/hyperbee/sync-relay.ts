@@ -24,6 +24,7 @@
  */
 
 import { getVoiceRelayKeys } from '../../voice-node/voice-relay';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /**
  * The `relayThrough` constructor option for the shared sync swarm. Omitted
@@ -54,8 +55,11 @@ export function syncRelayKeyReader(
  */
 export async function resolveSyncRelayKeys(read: () => Promise<Buffer[]>): Promise<Buffer[]> {
   try {
-    return await read();
+    const keys = await read();
+    observeFallback('sync-relay-config', { eligible: 1, applied: 1, reason: 'applied' });
+    return keys;
   } catch (e) {
+    observeFallback('sync-relay-config', { eligible: 1, applied: 0, reason: 'relay-key-read-failed' });
     console.warn(
       `[swarm] ⚠ could not read relay keys — the sync swarm has NO relay fallback this boot: ${
         e instanceof Error ? e.message : String(e)

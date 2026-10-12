@@ -25,11 +25,16 @@ const PC_HEAVY = '/repo/scripts/pc-heavy.sh';
 const ctx = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
 
 describe('buildOperatorE2eInvocation', () => {
-  it('wraps the runner in pc-heavy and stamps the routine run group plus the caller ledger identity', () => {
+  it('pins committed source and stamps the routine run group plus the caller ledger identity', () => {
     const inv = buildOperatorE2eInvocation(
       ROOT,
       { fireId: 'wf-123', workspaceId: 'ws-1', harnessSlug: 'papercusp' },
-      { PATH: '/bin', PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1', PAPERCUSP_TEST_RUN_GROUP: 'stale' },
+      {
+        PATH: '/bin',
+        PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1',
+        PAPERCUSP_TEST_RUN_GROUP: 'stale',
+        VERIFY_TAURI_SOURCE_REF: '',
+      },
       () => true,
     );
     expect(inv.command).toBe('bash');
@@ -41,6 +46,7 @@ describe('buildOperatorE2eInvocation', () => {
       PAPERCUSP_TEST_RUN_GROUP: 'operator-e2e-nightly:wf-123',
       PAPERCUSP_TEST_RUN_WORKSPACE: 'ws-1',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      VERIFY_TAURI_SOURCE_REF: 'HEAD',
     });
     // A disabled reporter would make the whole run evidence-free.
     expect(inv.env).not.toHaveProperty('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER');

@@ -118,6 +118,12 @@ export function buildOperatorE2eInvocation(
   env.PAPERCUSP_TEST_RUN_GROUP = runGroup;
   env.PAPERCUSP_TEST_RUN_WORKSPACE = ids.workspaceId;
   env.PAPERCUSP_TEST_RUN_HARNESS = ids.harnessSlug;
+  // This standing routine must snapshot committed current-build source. The
+  // generic runner treats an explicitly empty VERIFY_TAURI_SOURCE_REF as a
+  // request for mutable working-tree mode, which can fail on unrelated peer
+  // file locks. Pin HEAD here; manual invocations retain the runner's opt-in
+  // working-tree behavior.
+  env.VERIFY_TAURI_SOURCE_REF = 'HEAD';
   // verify-tauri-headless.sh refuses to launch without PAPERCUSP_SID (its provenance anchor).
   // bg-host has no session id, so the first real routine fire died at launch with
   // "PAPERCUSP_SID is unset" while every probe run inherited the agent's own id. A routine

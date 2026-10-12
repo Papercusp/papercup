@@ -72,6 +72,170 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
   },
 }];
 
+for (const kind of ['plan-item-claim', 'work-item-claim', 'work-item-replica'] as const) {
+  const path = kind === 'plan-item-claim' ? 'plan-items/claim-authority-swarm.ts'
+    : kind === 'work-item-claim' ? 'work-item-claim-authority-swarm.ts' : 'work-item-replica-authority-swarm.ts';
+  RAIL_MIGRATION_CASES.push({
+    id: `${kind}-real-authority-routing-fallback-and-recovery`, item: 'P-011', route: 'observation',
+    mechanism: 'swarm-authority-route',
+    rowIds: [`log-only-fallback|packages/operator-core/lib/${path}|route|1`],
+    run: async () => {
+      const { expect, vi } = await import('vitest');
+      const recorder = await import('./fallback-observations');
+      const rpc = await import('../authority/peer-rpc-transport');
+      const watchdog = await import('../system-health/degradation-watchdog');
+      const observations: Array<{ eligible: number; applied: number; reason: string; scope?: string | null }> = [];
+      const scope = `${kind}:rail-fixture`;
+      const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+        if (mechanism === 'swarm-authority-route' && row.scope === scope) observations.push(row);
+        return true;
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const previousTransport = rpc.getPeerRpcTransport();
+      let remote = true;
+      const presence = async () => remote ? [{ device_pubkey: 'aaa-authority', github_user_id: 1,
+        machine_label: 'remote', last_seen_ms: 1_000 }] : [];
+      const deps = { fetchPresenceRows: presence, fetchHivePresenceRows: presence,
+        resolveSelf: async () => ({ devicePubkey: 'zzz-self', githubUserId: 2 }),
+        now: () => 1_000, useHrwRendezvous: false, evictionMonitor: null };
+      try {
+        const producer = kind === 'plan-item-claim'
+          ? new (await import('../plan-items/claim-authority-swarm')).SwarmClaimAuthority(deps)
+          : kind === 'work-item-claim'
+            ? new (await import('../work-item-claim-authority-swarm')).SwarmWorkItemClaimAuthority(deps)
+            : new (await import('../work-item-replica-authority-swarm')).SwarmWorkItemReplicaAuthority(deps);
+        // A no-op identity probe is not an eligible claim/replica decision.
+        expect(await producer.isSelf('rail-fixture')).toBe(false);
+        expect(observations).toHaveLength(0);
+        rpc.setPeerRpcTransport(null);
+        const op = { local: async () => 'local-value', remote: { kind: 'rail-case', payload: {}, decode: String } };
+        for (let i = 0; i < 20; i++) expect(await producer.route('rail-fixture', op)).toBe('local-value');
+        expect(observations).toHaveLength(20);
+        expect(observations.every((row) => row.applied === 0 && row.reason === 'authority-unreachable')).toBe(true);
+        const verdict = () => watchdog.judgeDegradation(recorder.summarizeFallbackWindow('swarm-authority-route', 60_000,
+          observations.map((row) => ({ ...row, samples: 1 }))), { mechanism: 'swarm-authority-route', scope },
+          watchdog.getDegradationMechanism('swarm-authority-route')!.thresholds);
+        expect(verdict().kind).toBe('collapsed');
+        rpc.setPeerRpcTransport({ rpc: async () => 'remote-value' });
+        for (let i = 0; i < 25; i++) expect(await producer.route('rail-fixture', op)).toBe('remote-value');
+        expect(verdict().kind).toBe('recovered');
+        remote = false;
+        expect(await producer.route('rail-fixture', op)).toBe('local-value');
+        expect(observations.at(-1)).toMatchObject({ eligible: 1, applied: 1, reason: 'applied' });
+        expect(warn).toHaveBeenCalledTimes(20);
+        return { route: 'observation', mechanism: 'swarm-authority-route', observations };
+      } finally { rpc.setPeerRpcTransport(previousTransport); sink.mockRestore(); warn.mockRestore(); }
+    },
+  });
+}
+
+RAIL_MIGRATION_CASES.push({
+  id: 'substrate-activation-facts-real-probe-failure-empty-and-recovery', item: 'P-011', route: 'observation',
+  mechanism: 'substrate-activation-probe',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-active-set-facts.ts|gatherActivationFacts|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../sync/hyperbee/substrate-active-set-facts');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'substrate-activation-probe') observations.push(row);
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const entries = [{ workspaceId: 'rail-workspace', harnessSlug: 'one' }, { workspaceId: 'rail-workspace', harnessSlug: 'two' }];
+    const good = { pendingOutboxCounts: async () => new Map([['rail-workspace::one', 3]]),
+      lastPresenceMs: async () => new Map([['rail-workspace::two', 1000]]) };
+    try {
+      for (const failedDependency of ['pendingOutboxCounts', 'lastPresenceMs'] as const) {
+        const result = await producer.gatherActivationFacts(entries,
+          { ...good, [failedDependency]: async () => { throw new Error('probe unavailable'); } });
+        expect(result.every((row) => row.pinned && row.pendingOutboxRows === 1)).toBe(true);
+      }
+      expect(await producer.gatherActivationFacts([], good)).toEqual([]);
+      expect(observations).toHaveLength(2);
+      const recovered = await producer.gatherActivationFacts(entries, good);
+      expect(recovered[0]).toMatchObject({ pendingOutboxRows: 3, pinned: false });
+      expect(recovered[1]).toMatchObject({ lastPresenceMs: 1000, pendingOutboxRows: 0 });
+      expect(observations).toEqual([
+        { eligible: 2, applied: 0, reason: 'activation-probe-failed' },
+        { eligible: 2, applied: 0, reason: 'activation-probe-failed' },
+        { eligible: 2, applied: 2, reason: 'applied' },
+      ]);
+      return { route: 'observation', mechanism: 'substrate-activation-probe', observations };
+    } finally { sink.mockRestore(); warn.mockRestore(); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'sync-relay-real-reader-failure-empty-config-and-primary', item: 'P-011', route: 'observation',
+  mechanism: 'sync-relay-config',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/sync-relay.ts|resolveSyncRelayKeys|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../sync/hyperbee/sync-relay');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'sync-relay-config') observations.push(row);
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await producer.resolveSyncRelayKeys(async () => { throw new Error('relay store unavailable'); })).toEqual([]);
+      expect(await producer.resolveSyncRelayKeys(async () => [])).toEqual([]);
+      const keys = [Buffer.alloc(32, 1)];
+      expect(await producer.resolveSyncRelayKeys(async () => keys)).toEqual(keys);
+      expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([
+        [0, 'relay-key-read-failed'], [1, 'applied'], [1, 'applied'],
+      ]);
+      return { route: 'observation', mechanism: 'sync-relay-config', observations };
+    } finally { sink.mockRestore(); warn.mockRestore(); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'authority-env-real-parser-invalid-cache-and-verified-config', item: 'P-011', route: 'observation',
+  mechanism: 'authority-peer-addresses',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/authority/transport-wiring.ts|envAddressMap|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../authority/transport-wiring');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'authority-peer-addresses') observations.push(row);
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const saved = process.env[producer.PEER_ADDRESSES_ENV];
+    const peer = { devicePubkey: 'fixture-key', githubUserId: 1, machineLabel: 'fixture-peer' };
+    try {
+      producer._testing.reset(); delete process.env[producer.PEER_ADDRESSES_ENV];
+      expect(await producer.resolvePeerAddress(peer)).toBeNull();
+      expect(observations).toHaveLength(0); // no configuration was requested
+      producer._testing.reset(); process.env[producer.PEER_ADDRESSES_ENV] = '{invalid';
+      expect(await producer.resolvePeerAddress(peer)).toBeNull();
+      expect(await producer.resolvePeerAddress(peer)).toBeNull();
+      expect(observations).toEqual([{ eligible: 1, applied: 0, reason: 'invalid-json' }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      producer._testing.reset(); process.env[producer.PEER_ADDRESSES_ENV] = JSON.stringify({ 'fixture-key': 'http://fixture-peer' });
+      expect(await producer.resolvePeerAddress(peer)).toBe('http://fixture-peer');
+      expect(await producer.resolvePeerAddress(peer)).toBe('http://fixture-peer');
+      expect(observations.at(-1)).toEqual({ eligible: 1, applied: 1, reason: 'applied' });
+      expect(observations).toHaveLength(2); // memoization cannot invent healthy samples
+      producer._testing.reset(); producer.configurePeerAddressResolver(async () => 'http://configured-peer');
+      expect(await producer.resolvePeerAddress(peer)).toBe('http://configured-peer');
+      expect(observations).toHaveLength(2); // env path was bypassed
+      return { route: 'observation', mechanism: 'authority-peer-addresses', observations };
+    } finally {
+      producer._testing.reset();
+      if (saved === undefined) delete process.env[producer.PEER_ADDRESSES_ENV]; else process.env[producer.PEER_ADDRESSES_ENV] = saved;
+      sink.mockRestore(); warn.mockRestore();
+    }
+  },
+});
+
 RAIL_MIGRATION_CASES.push({
   id: 'spawner-sidecar-fallback-primary-denominator-and-recovery', item: 'P-012', route: 'observation',
   mechanism: 'spawner-sidecar-exec',
