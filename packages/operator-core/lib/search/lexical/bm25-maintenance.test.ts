@@ -119,6 +119,8 @@ describe('parseBm25SegmentTotals', () => {
     expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('docs_persisted: 0', 'docs_persisted: 1'))).toBeNull();
     expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('  docs_persisted: 0\n', ''))).toBeNull();
     expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('  (none)', '  unknown format'))).toBeNull();
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.replace('  (none)', '  (none)\n  L0 Segment 1: pages=1, docs=1'))).toBeNull();
+    expect(parseBm25SegmentTotals(SUMMARY_EMPTY.split('Index Size:')[0]!)).toBeNull();
   });
 
   it('never reads a per-segment line as the total', () => {

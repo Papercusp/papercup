@@ -183,12 +183,21 @@ export interface Bm25SegmentTotals {
 
 /**
  * Parses `Total: 6 segments, 740 pages (5.8MB), 72780 terms, 31372 docs (alive=26143, dead=5229)`.
- * The alive/dead part is absent when no segment holds a dead doc. Null when there is no
- * Total line (an index with no segments yet, or a changed output format).
+ * The alive/dead part is absent when no segment holds a dead doc. An explicitly empty
+ * segment section with zero persisted docs has zero totals, even if the memtable has
+ * documents. Null for incomplete, contradictory or unrecognised output.
  */
 export function parseBm25SegmentTotals(summary: string): Bm25SegmentTotals | null {
   const m = /Total:\s*(\d+)\s+segments?,\s*(\d+)\s+pages?\b[^\n]*?\b(\d+)\s+docs\b(?:\s*\(alive=(\d+),\s*dead=\d+\))?/.exec(summary);
-  if (!m) return null;
+  if (!m) {
+    // pg_textsearch 1.5.x omits Total entirely when no segments have been flushed.
+    // Require both explicit witnesses: a missing Total alone is still unreadable.
+    const persisted = /^[ \t]*docs_persisted:[ \t]*(\d+)[ \t]*\r?$/m.exec(summary);
+    const emptySegments = /^Segments:\r?\n[ \t]*\(none\)[ \t]*\r?\n(?:[ \t]*\r?\n)*Index Size:/m.test(summary);
+    return persisted?.[1] === '0' && emptySegments
+      ? { segments: 0, pages: 0, docs: 0, alive: 0 }
+      : null;
+  }
   const docs = Number(m[3]);
   return { segments: Number(m[1]), pages: Number(m[2]), docs, alive: m[4] === undefined ? docs : Number(m[4]) };
 }
