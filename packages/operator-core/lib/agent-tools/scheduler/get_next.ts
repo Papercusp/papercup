@@ -92,6 +92,7 @@ import { captureWakeHandleForOwner as captureWakeHandleForOwnerStore } from '../
 import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
 import { readGoalHolderAuthority } from '../../goals/holder-authority';
 import { getOrgPg } from '@papercusp/db-org';
+import { shapeGetNextResult } from './get-next-shape';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -1256,6 +1257,9 @@ export function schedulerDispositionMetadata(
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
+  // WI-6554700010008923: agent tiers drop payload bookkeeping and de-dupe the
+  // no-claim exclusion counters; payloadTier:'full' returns the complete object.
+  shape: { standard: shapeGetNextResult, trimmed: shapeGetNextResult },
   description:
     "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a declared plan and without a spec uses warned default ordering, while a plan-bound caller fails closed. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
   guidance: {
