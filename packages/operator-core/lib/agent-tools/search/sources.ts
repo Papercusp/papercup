@@ -27,6 +27,7 @@ import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
 import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import { HEADLINE_OPTS } from './headline-options';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 export { HEADLINE_OPTS } from './headline-options';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
 import type { Sql, TransactionSql } from 'postgres';
@@ -1157,7 +1158,9 @@ const sessionTurn: SearchSource = {
     // `undefined` is the supported degradation: literal-token recall falls back
     // to the bounded substring FILL below. RE-ARM ORDER if this is ever
     // revisited: apply migration 1163 FIRST, then restore this argument.
+    p.signal?.throwIfAborted();
     const bm25 = await bm25LegIfAvailable(p.sql as unknown as Sql, 'session_turns', p.query);
+    p.signal?.throwIfAborted();
     const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`, undefined, bm25);
     // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
     // it and the two are fused (see the work_item source and EXACT_LIST_MAX_AND_ROWS).
@@ -1186,13 +1189,10 @@ const sessionTurn: SearchSource = {
     const literalToken =
       p.lexicalMode === 'coverage-graded' ? null : compactLiteralToken(p.query);
     type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; fusionRank?: number; highlight: string };
-    // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
-    // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
-    // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
-    // true`), so the bound is installed HERE, per the readiness-reconcile.ts
-    // `SET LOCAL` pattern.
-    const rows = (await p.sql.begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
+    // The hybrid engine aborts this signal when the source budget expires.
+    // boundedOrgTxn makes active postgres-js queries in the primary read
+    // observe that abort while retaining the source's 8s statement cap.
+    const primary = await boundedOrgTxn(async (tx) => {
       // R2 live proof: correlated transcript terms can be underestimated 25x.
       // Setup cost 100 still selected a serial rank/sort over 88k matches.
       // Full-query current/profile/current controls selected two workers at
@@ -1282,21 +1282,27 @@ const sessionTurn: SearchSource = {
         }
       }
 
-      // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
-      // so under the old single OR query it could only ever occupy slots the
-      // dictionary match left empty. Running it ONLY for those slots, only for
-      // a compact token, and only over the newest LITERAL_FALLBACK_WINDOW_ROWS
-      // in-scope turns keeps that recall while removing the full-table scan
-      // from every other call. Newest-first among the fill rows.
-      const need = p.limit - primary.length;
-      if (literalToken === null || need <= 0) return primary;
-      // Fail-soft: the fill is a recall supplement, so if it errors (its own
-      // statement bound, a cancel) the SAVEPOINT rolls back just the fill and
-      // the index-served rows are still returned rather than the whole leg.
-      const fill = await tx
-        .savepoint(async (sp) => {
-          await sp.unsafe('SET LOCAL max_parallel_workers_per_gather = 0');
-          return (await sp`
+      return primary;
+    }, {
+      client: p.sql,
+      acquirePool: 'org-admin',
+      signal: p.signal,
+      readOnly: true,
+      statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+    });
+
+    // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
+    // so under the old single OR query it could only ever occupy slots the
+    // dictionary match left empty. Running it ONLY for those slots, only for
+    // a compact token, and only over the newest LITERAL_FALLBACK_WINDOW_ROWS
+    // in-scope turns keeps that recall while removing the full-table scan
+    // from every other call. Newest-first among the fill rows. Use its own
+    // bounded transaction so cancellation does not depend on a nested savepoint
+    // query that the outer transaction's cancellation tracker cannot see.
+    const need = p.limit - primary.length;
+    const fill = literalToken === null || need <= 0 ? [] : await boundedOrgTxn(async tx => {
+      await tx.unsafe('SET LOCAL max_parallel_workers_per_gather = 0');
+      return (await tx`
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              0 AS rank,
              ${p.wantHighlight === false ? p.sql`''` : p.sql`left(text, 4000)`} AS highlight
@@ -1311,10 +1317,14 @@ const sessionTurn: SearchSource = {
     ORDER BY ingested_at DESC
        LIMIT ${need}
     `) as unknown as SessionTurnLexicalRow[];
-        })
-        .catch(() => [] as SessionTurnLexicalRow[]);
-      return [...primary, ...fill];
-    })) as unknown as SessionTurnLexicalRow[];
+    }, {
+      client: p.sql,
+      acquirePool: 'org-admin',
+      signal: p.signal,
+      readOnly: true,
+      statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+    }).catch(() => [] as SessionTurnLexicalRow[]);
+    const rows = [...primary, ...fill];
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.rank,
