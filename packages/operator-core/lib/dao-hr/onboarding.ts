@@ -6,12 +6,12 @@ import { getOrgPg } from '@papercusp/db-org';
 import { decodeEventLog, decodeFunctionData, encodeAbiParameters, keccak256, stringToHex, type Address, type Hex } from 'viem';
 import type { HivePolicy } from '../hive-policy-schema';
 import { equityArtifacts, inspectEquity, prepareEquityTransaction, type EquityChainReader } from '../equity/runtime';
-import { readWalletBinding, type WalletBindingHostedResult } from '../cupboard/wallet-binding-io';
+import { readWalletBinding, requestWalletBindingChallenge, submitWalletBinding, type WalletBindingHostedResult } from '../cupboard/wallet-binding-io';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 import { resolveFederatedPotScope } from '../federated-pot-scope';
 import { upsertHiveMember, type UpsertHiveMemberInput } from '../hive-membership-store';
 import { getContractExecution, type ContractExecution } from './contracts-esign';
-import { getHiringOffer, resolveHiringActor, type HiringOffer } from './hiring';
+import { getHiringOffer, HiringError, resolveHiringActor, type HiringOffer } from './hiring';
 import { completeOnboarding, getWorkProfile, linkMemberIdentity, linkVerifiedWallet, saveWorkProfile, setWorkProfileStatus, type WorkProfile } from './work-profile';
 
 type Key = { workspaceId: string; daoSlug: string; offerId: string };
@@ -103,6 +103,7 @@ async function history(sql: Sql, key: Key, state: string, actor: string) {
 /** Frozen signed document hash is also the on-chain grant key. start=0 is the
  * D015 execution-time schedule; other rules use signed absolute timestamps. */
 export function buildHirePlan(offer: HiringOffer, contract: OnboardingContract, profile: WorkProfile, bound: Binding, issuerCommitment: Hex): HirePlan {
+  if (offer.amendsOfferId) fail('invalid_stage','An amendment is admin-executed; it cannot open another hire vote.');
   if (!['signed','binding'].includes(contract.state) || !contract.document_hash || !contract.sealed_pdf || !contract.audit_certificate || !contract.completed_at ||
     '0x' + createHash('sha256').update(contract.sealed_pdf).digest('hex') !== contract.document_hash)
     fail('invalid_stage', 'Both signatures and the exact sealed contract are required.');
@@ -132,7 +133,10 @@ export async function verifyOnboardingIdentity(key: Key, deps: OnboardingDeps = 
   const wallet = deps.wallet ? await deps.wallet() : await readWalletBinding({authToken:who.authToken});
   return sql.begin(async tx => {
     const conn = tx as unknown as Sql;
-    await tx`SELECT contract_id FROM harness_shared.dao_hr_contracts WHERE contract_id=${contract.contract_id} FOR UPDATE`;
+    const [locked] = await tx<OnboardingContract[]>`SELECT * FROM harness_shared.dao_hr_contracts WHERE contract_id=${contract.contract_id} FOR UPDATE`;
+    if (!locked || locked.state !== 'signed') fail('invalid_stage', 'Sign the approved offer before onboarding.');
+    if (locked.candidate_github_id !== null && Number(locked.candidate_github_id) !== who.githubUserId)
+      fail('identity_mismatch', 'The candidate identity changed while authentication was in progress.');
     const offer = await getHiringOffer(key,{sql:conn});
     const [role] = await tx<Array<{title:string;level:string;manager_person_id:string|null}>>`SELECT title,level,manager_person_id FROM harness_shared.dao_hr_roles WHERE workspace_id=${key.workspaceId} AND dao_slug=${key.daoSlug} AND role_id=${offer.roleId}`;
     const profileKey = {...key,personId:offer.personId};
@@ -148,13 +152,22 @@ export async function verifyOnboardingIdentity(key: Key, deps: OnboardingDeps = 
       if(other) fail('wallet_required','This verified wallet already belongs to another person in this DAO.');
     }
     const profile = await linkVerifiedWallet({...profileKey,principalGithubUserId:who.githubUserId,binding:wallet},{sql:conn});
-    if (contract.hire_plan && !same(profile.wallet?.address,contract.hire_plan.wallet)) fail('wallet_required','The prepared hire wallet cannot change.');
+    if (locked.hire_plan && !same(profile.wallet?.address,locked.hire_plan.wallet)) fail('wallet_required','The prepared hire wallet cannot change.');
     await tx`UPDATE harness_shared.dao_hr_contracts SET candidate_github_id=${who.githubUserId},candidate_github_login=${who.githubLogin} WHERE contract_id=${contract.contract_id}`;
     if (profile.status === 'candidate') await setWorkProfileStatus({...profileKey,status:'offered'},{sql:conn});
     const current = await getWorkProfile(profileKey,{sql:conn});
     if(current?.status === 'offered') await setWorkProfileStatus({...profileKey,status:'onboarding'},{sql:conn});
-    if(contract.candidate_github_id === null) await history(conn,key,'identity-and-wallet-verified',profile.personId);
+    if(locked.candidate_github_id === null) await history(conn,key,'identity-and-wallet-verified',profile.personId);
     return getWorkProfile(profileKey,{sql:conn});
+  }).catch((error: unknown) => {
+    // The preflight gives a useful error, but concurrent requests can both pass
+    // it. The database arbitrates that race and rolls back every identity link.
+    const conflict = error as { code?: string; constraint_name?: string };
+    if (conflict.code === '23505' && conflict.constraint_name === 'dao_hr_work_profiles_verified_wallet_uniq')
+      fail('wallet_required', 'This verified wallet already belongs to another person in this DAO.');
+    if (conflict.code === '23505' && conflict.constraint_name === 'dao_hr_work_profiles_member_uniq')
+      fail('identity_mismatch', 'This identity already belongs to another person in this DAO.');
+    throw error;
   });
 }
 export async function prepareHireProposal(key: Key, policy: HivePolicy, deps: OnboardingDeps = {}) {
@@ -192,9 +205,13 @@ function event(logs: readonly ChainLog[],p:HirePlan,governor:boolean,name:string
   return logs.some(log=>{
     if(!same(log.address,governor?p.governor:p.equity)) return false;
     let decoded;try{decoded=decodeEventLog({abi:equityArtifacts.contracts[governor?'EquityGovernorV2':'PapercuspEquityV2'].abi,data:log.data,topics:log.topics as [Hex,...Hex[]],strict:true});}catch{return false;}
-    return decoded.eventName===name&&Object.entries(expected).every(([k,v])=>same((decoded.args as Record<string,unknown>)[k],v));
+    return decoded.eventName===name&&Object.entries(expected).every(([k,v])=>same((decoded.args as unknown as Record<string,unknown>)[k],v));
   });
 }
+// Engagement changes share the authenticated identity and canonical receipt
+// boundary. Client transaction hashes remain lookup keys only.
+export { chain as onboardingChain, candidate as authenticateContractCandidate,
+  unchanged as assertHireDeployment, confirmedCall as confirmedEquityCall, event as equityReceiptEvent };
 async function requirePlan(key:Key,policy:HivePolicy,deps:OnboardingDeps) {
   const contract=await row(key,deps);if(!contract.hire_plan) fail('invalid_stage','Prepare the signed hire first.');
   unchanged(contract.hire_plan,policy);return {contract,p:contract.hire_plan,c:await chain(deps)};
@@ -280,4 +297,43 @@ export function onboardingChecklist(contract:OnboardingContract,profile:WorkProf
     {key:'acceptance',label:'Issuer terms accepted',complete:done&&!!contract.terms_acceptance_proof},
     {key:'membership',label:'DAO membership admitted',complete:done&&!!contract.admitted_at&&profile?.status==='active'},
   ];
+}
+
+/** Signer access exists before membership. The HR roster grants the admin view;
+ * everyone else must prove the exact contract signer through GitHub. */
+export async function readOnboarding(key: Key, policy: HivePolicy, deps: OnboardingDeps = {}) {
+  const contract = await row(key, deps);
+  let isAdmin = false, isCandidate = false;
+  try { await (deps.adminPerson?.() ?? resolveHiringActor(key, { sql: db(deps) })); isAdmin = true; }
+  catch (error) { if (!(error instanceof HiringError && error.code === 'not_admin')) throw error; }
+  try { await candidate(contract, deps); isCandidate = true; }
+  catch (error) { if (!isAdmin || !(error instanceof OnboardingError)) throw error; }
+  const offer = await getHiringOffer(key, deps), profile = await getWorkProfile({ ...key, personId: offer.personId }, deps);
+  let chainError: string | null = null;
+  if (contract.hire_plan && contract.state !== 'lapsed') {
+    try {
+      const p = contract.hire_plan, c = await chain(deps); unchanged(p, policy);
+      if (contract.hire_execution_proof) {
+        const executed = await confirmedCall(c, p, contract.hire_execution_proof.transactionHash, true, 'execute', [p.targets, p.values, p.calldatas, p.descriptionHash]);
+        if (!same(executed.proof.blockHash, contract.hire_execution_proof.blockHash) ||
+          Number(await read(c, p, 'state', [BigInt(p.proposalId)], await c.getBlockNumber(), true)) !== 7) fail('invalid_proof', 'The hire execution is no longer canonical.');
+        const current = await verifyGrant(c, p, await c.getBlockNumber(), executed.block.timestamp);
+        if (contract.terms_acceptance_proof) {
+          await confirmedCall(c, p, contract.terms_acceptance_proof.transactionHash, false, 'acceptTerms', [p.issuerCommitment], p.wallet);
+          if (current.holder[3] !== true) fail('invalid_proof', 'Issuer terms are no longer accepted.');
+        }
+      }
+    } catch (error) { chainError = error instanceof OnboardingError ? error.message : 'Chain proof could not be verified. Retry the chain read.'; }
+  }
+  return { offerId: key.offerId, state: contract.state, bindingEligible: contract.can_bind, isAdmin, isCandidate,
+    checklist: onboardingChecklist(contract, profile, chainError), chainError,
+    plan: contract.hire_plan, proposalId: contract.hire_proposal_ref, documentHash: contract.document_hash };
+}
+
+/** Reuse the hosted signed-challenge door with the same authenticated signer
+ * token. No caller-supplied member id or naked wallet address becomes a link. */
+export async function runOnboardingWalletAction(key: Key, action: { action: 'wallet-challenge'; walletAddress: string; chainId: number } | { action: 'wallet-verify'; challengeId: string; signature: string }, deps: OnboardingDeps = {}) {
+  const who = await candidate(await row(key, deps), deps);
+  return action.action === 'wallet-challenge' ? requestWalletBindingChallenge({ walletAddress: action.walletAddress, chainId: action.chainId }, { authToken: who.authToken }) :
+    submitWalletBinding({ challengeId: action.challengeId, signature: action.signature }, { authToken: who.authToken });
 }

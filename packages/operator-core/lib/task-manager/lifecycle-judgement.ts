@@ -34,6 +34,8 @@ export const LIFECYCLE_IDLE_QUIET_MS = 6 * 60 * 60_000;
 export const LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_JUDGE_INTERVAL_MS = 60 * 60_000;
+/** Keep one work-item retry per task/keep-count epoch within the judge cadence. */
+export const LIFECYCLE_JUDGE_RETRY_FLOOR_MS = LIFECYCLE_JUDGE_INTERVAL_MS;
 export const LIFECYCLE_SWEEP_INTERVAL_MS = 5 * 60_000;
 /**
  * Reuse the maintained coding/operator persona rather than minting a parallel
@@ -161,6 +163,7 @@ export interface OpenLifecycleCandidateItem {
   id: string;
   taskId: string;
   harnessSlug: string | null;
+  lastReleasedAt?: string | Date | null;
   /** A claim is dispatch ownership, even when the item still has open status. */
   takenBy?: string | null;
   /**
@@ -279,10 +282,19 @@ function cpuActivityEvidence(
   return { state: currentCpuUsec === previous.cpuUsec ? 'idle' : 'active', previous, current };
 }
 
-function parsedMs(value: string | null | undefined): number | null {
+function parsedMs(value: string | Date | null | undefined): number | null {
   if (!value) return null;
-  const ms = Date.parse(value);
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+function lifecycleJudgeRetryEpochKey(
+  taskId: string,
+  verdict: ProcessLifecycleVerdict | undefined,
+): string {
+  // Condition keys are task-scoped; a later keep verdict starts its own retry epoch.
+  const keepCount = verdict?.decision === 'keep' ? verdict.keepCount : 0;
+  return taskId + ':' + keepCount;
 }
 
 function validLogMtime(value: number | null, nowMs: number): number | null {
@@ -781,6 +793,7 @@ export interface LifecycleSweepResult {
   candidates: number;
   suppressedByKeep: number;
   suppressedByVerdict: number;
+  suppressedByRetryFloor: number;
   probesPersisted: number;
   enforcement: LifecycleVerdictEnforcement[];
   candidateItems: string[];
@@ -849,19 +862,59 @@ export async function runLifecycleJudgementSweep(
 
   // Query after filing. This also recovers items left open by an earlier failed
   // launch even if their task stopped matching the detector in the meantime.
-  const open = (await deps.listOpenCandidateItems(input.workspaceId)).filter(
-    (item) =>
-      !item.takenBy &&
-      !item.assignee &&
-      !settledVerdictTaskIds.has(item.taskId) &&
-      latestVerdicts.get(item.taskId)?.decision !== 'gone',
-  );
+  const openCandidates = await deps.listOpenCandidateItems(input.workspaceId);
+  const currentTaskIds = new Set(taskIds);
+  const recoveredTaskIds = [
+    ...new Set(openCandidates.map((item) => item.taskId).filter((taskId) => !currentTaskIds.has(taskId))),
+  ];
+  if (recoveredTaskIds.length > 0) {
+    const recoveredVerdicts = await deps.readLatestVerdicts(input.workspaceId, recoveredTaskIds);
+    for (const [taskId, verdict] of recoveredVerdicts) latestVerdicts.set(taskId, verdict);
+  }
+
+  const retryFloorByEpoch = new Map<string, number>();
+  for (const item of openCandidates) {
+    const releasedAtMs = parsedMs(item.lastReleasedAt);
+    if (releasedAtMs === null) continue;
+    const verdict = latestVerdicts.get(item.taskId);
+    const decidedAtMs = parsedMs(verdict?.decidedAt);
+    // The newer verdict timestamp starts a new keep-count epoch even if the row's release is older.
+    const floorStartMs = Math.max(releasedAtMs, decidedAtMs ?? releasedAtMs);
+    const epochKey = lifecycleJudgeRetryEpochKey(item.taskId, verdict);
+    retryFloorByEpoch.set(
+      epochKey,
+      Math.max(retryFloorByEpoch.get(epochKey) ?? Number.NEGATIVE_INFINITY, floorStartMs),
+    );
+  }
+
+  const suppressedByKeepTaskIds = new Set(evaluation.suppressedByKeep);
+  const suppressedByVerdictTaskIds = new Set(evaluation.suppressedByVerdict);
+  const suppressedByRetryFloorTaskIds = new Set<string>();
+  const open = openCandidates.filter((item) => {
+    if (item.takenBy || item.assignee) return false;
+    const verdict = latestVerdicts.get(item.taskId);
+    if (settledVerdictTaskIds.has(item.taskId) || verdict?.decision === 'gone') {
+      suppressedByVerdictTaskIds.add(item.taskId);
+      return false;
+    }
+    if (activeKeepVerdict(verdict, nowMs)) {
+      suppressedByKeepTaskIds.add(item.taskId);
+      return false;
+    }
+    const floorStartMs = retryFloorByEpoch.get(lifecycleJudgeRetryEpochKey(item.taskId, verdict));
+    if (floorStartMs !== undefined && nowMs < floorStartMs + LIFECYCLE_JUDGE_RETRY_FLOOR_MS) {
+      suppressedByRetryFloorTaskIds.add(item.taskId);
+      return false;
+    }
+    return true;
+  });
   if (open.length === 0) {
     return {
       rowsInspected: rows.length,
       candidates: evaluation.candidates.length,
-      suppressedByKeep: evaluation.suppressedByKeep.length,
-      suppressedByVerdict: evaluation.suppressedByVerdict.length,
+      suppressedByKeep: suppressedByKeepTaskIds.size,
+      suppressedByVerdict: suppressedByVerdictTaskIds.size,
+      suppressedByRetryFloor: suppressedByRetryFloorTaskIds.size,
       probesPersisted,
       enforcement,
       candidateItems,
@@ -884,8 +937,9 @@ export async function runLifecycleJudgementSweep(
     return {
       rowsInspected: rows.length,
       candidates: evaluation.candidates.length,
-      suppressedByKeep: evaluation.suppressedByKeep.length,
-      suppressedByVerdict: evaluation.suppressedByVerdict.length,
+      suppressedByKeep: suppressedByKeepTaskIds.size,
+      suppressedByVerdict: suppressedByVerdictTaskIds.size,
+      suppressedByRetryFloor: suppressedByRetryFloorTaskIds.size,
       probesPersisted,
       enforcement,
       candidateItems,
@@ -911,8 +965,9 @@ export async function runLifecycleJudgementSweep(
   return {
     rowsInspected: rows.length,
     candidates: evaluation.candidates.length,
-    suppressedByKeep: evaluation.suppressedByKeep.length,
-    suppressedByVerdict: evaluation.suppressedByVerdict.length,
+    suppressedByKeep: suppressedByKeepTaskIds.size,
+    suppressedByVerdict: suppressedByVerdictTaskIds.size,
+    suppressedByRetryFloor: suppressedByRetryFloorTaskIds.size,
     probesPersisted,
     enforcement,
     candidateItems,
@@ -1009,10 +1064,11 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       task_id: string;
       harness_slug: string | null;
       taken_by: string | null;
+      last_released_at: Date | string | null;
     }>>`
       SELECT feature_id AS id,
              payload #>> '{processLifecycleCandidate,taskId}' AS task_id,
-             harness_slug, taken_by
+             harness_slug, taken_by, last_released_at
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
@@ -1030,6 +1086,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       id: row.id,
       taskId: row.task_id,
       harnessSlug: row.harness_slug ?? null,
+      lastReleasedAt: row.last_released_at ?? null,
       takenBy: row.taken_by,
     }));
   },

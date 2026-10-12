@@ -6,6 +6,10 @@ import { HiringError, resolveHiringActor } from '../../../dao-hr/hiring';
 import { completeContractSigning, ContractSigningError, getContractExecution, prepareContractExecution, startContractSigning } from '../../../dao-hr/contracts-esign';
 import { DocumensoError } from '../../../dao-hr/documenso';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { resolveFederatedPotScope } from '../../../federated-pot-scope';
+import { getHivePolicy } from '../../../hive-policy-store';
+import { admitHire, OnboardingError, prepareHireAcceptance, prepareHireProposal, readOnboarding, reconcileFailedHire, recordHireExecution, recordHireProposal, runOnboardingWalletAction, verifyOnboardingIdentity } from '../../../dao-hr/onboarding';
+import { WorkProfileError } from '../../../dao-hr/work-profile';
 
 const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('prepare'),offerId:z.string().min(1),companyPersonId:z.string().min(1),startDate:z.string(),templates:z.array(z.object({templateKey:z.string().min(1),version:z.number().int().positive()}).strict()).min(2).max(4)}).strict(),
@@ -13,8 +17,8 @@ const actions=z.discriminatedUnion('action',[
 ]);
 function failure(error:unknown){
   if(error instanceof ZodError)return Response.json({ok:false,error:'invalid_input',message:'Contract fields are missing or invalid.'},{status:400});
-  if(error instanceof ContractTemplateError||error instanceof ContractSigningError||error instanceof HiringError||error instanceof DocumensoError)
-    return Response.json({ok:false,error:error.code,message:error.message},{status:error.code==='not_admin'||error.code==='invalid_webhook'?403:error.code==='invalid_input'?400:409});
+  if(error instanceof ContractTemplateError||error instanceof ContractSigningError||error instanceof HiringError||error instanceof DocumensoError||error instanceof OnboardingError||error instanceof WorkProfileError)
+    return Response.json({ok:false,error:error.code,message:error.message},{status:['not_admin','invalid_webhook','identity_required','identity_mismatch'].includes(error.code)?403:error.code==='invalid_input'?400:409});
   throw error;
 }
 const get=defineTool({method:'GET',path:'/pot/:id/contracts',auth:'loopback',async handler(req,ctx){
@@ -56,4 +60,44 @@ const webhook=defineTool({method:'POST',path:'/dao-hr/documenso/webhook',auth:'p
     return Response.json({ok:true,contractId:row.contract_id,state:row.state});
   }catch(error){return failure(error);}
 }});
-export default [get,post,document,webhook];
+const hash = z.string().regex(/^0x[0-9a-fA-F]{64}$/).transform(value => value as `0x${string}`);
+const onboardingActions = z.discriminatedUnion('action', [
+  z.object({ action: z.enum(['verify-identity', 'prepare-hire', 'prepare-acceptance', 'reconcile-failed-hire']) }).strict(),
+  z.object({ action: z.enum(['record-proposal', 'record-execution', 'admit']), transactionHash: hash }).strict(),
+  z.object({ action: z.literal('wallet-challenge'), walletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/), chainId: z.number().int().positive().safe() }).strict(),
+  z.object({ action: z.literal('wallet-verify'), challengeId: z.string().min(1).max(100), signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/) }).strict(),
+]);
+async function onboardingPolicy(key: { workspaceId: string; daoSlug: string }) {
+  return (await getHivePolicy(key.workspaceId, await resolveFederatedPotScope(key.workspaceId, key.daoSlug)))?.policy ?? {};
+}
+const onboardingGet = defineTool({ method:'GET', path:'/pot/:id/contracts/:offerId/onboarding', auth:'loopback', async handler(_req,ctx) {
+  try {
+    const key={workspaceId:activeWorkspaceId(),daoSlug:ctx.params.id!,offerId:ctx.params.offerId!};
+    return Response.json({ok:true,onboarding:await readOnboarding(key,await onboardingPolicy(key))},{headers:{'Cache-Control':'private, no-store'}});
+  } catch(error) { return failure(error); }
+}});
+const onboardingPost = defineTool({ method:'POST', path:'/pot/:id/contracts/:offerId/onboarding', auth:'loopback', async handler(req,ctx) {
+  const refusal=requireAllowedOriginOr403(req);if(refusal)return refusal;
+  try {
+    const action=onboardingActions.parse(await req.json().catch(()=>null));
+    const key={workspaceId:activeWorkspaceId(),daoSlug:ctx.params.id!,offerId:ctx.params.offerId!},policy=await onboardingPolicy(key);
+    await readOnboarding(key,policy);
+    let result:unknown;
+    switch(action.action) {
+      case 'verify-identity': await verifyOnboardingIdentity(key); result={verified:true}; break;
+      case 'prepare-hire': result=await prepareHireProposal(key,policy); break;
+      case 'prepare-acceptance': result=await prepareHireAcceptance(key,policy); break;
+      case 'reconcile-failed-hire': result=await reconcileFailedHire(key,policy); break;
+      case 'record-proposal': result=await recordHireProposal(key,policy,action.transactionHash); break;
+      case 'record-execution': result=await recordHireExecution(key,policy,action.transactionHash); break;
+      case 'admit': result=await admitHire(key,policy,action.transactionHash); break;
+      case 'wallet-challenge': case 'wallet-verify': {
+        const wallet=await runOnboardingWalletAction(key,action);
+        if(!wallet.ok)return Response.json(wallet,{status:wallet.status});
+        result=wallet.value;break;
+      }
+    }
+    return Response.json({ok:true,result},{headers:{'Cache-Control':'private, no-store'}});
+  } catch(error) { return failure(error); }
+}});
+export default [get,post,document,webhook,onboardingGet,onboardingPost];

@@ -836,6 +836,9 @@ describe('published launch args schema', () => {
     expect(descriptions.model.description).toContain('For ordinary in-place resume, omit it');
     expect(descriptions.carry.description).toContain('Do not set it with in-place `resume`/`fork`');
     expect(descriptions.successor.description).toContain('explicit fresh-context `account`, `model`, or `carry` settings');
+    expect(descriptions.agent.description).toContain('an explicit different backend requests a session port that retains the source identity');
+    expect(descriptions.agent.description).toContain('Live-source resumes automatically fork, so they cannot cross backends');
+    expect(descriptions.agent.description).toContain('A fork keeps the recorded backend');
   });
 
   it('does not impose a local agent-count ceiling before governed admission', () => {

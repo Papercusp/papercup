@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as recorder from '../degradation/fallback-observations';
+
+beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); });
+afterEach(() => { vi.restoreAllMocks(); });
 import { execFileSync } from 'node:child_process';
 import {
   evaluatePrimaryCount,

@@ -12,6 +12,7 @@ export function isWatchdogModule(file: any): boolean;
 export function railStructure(raw: any, file: any): {
     functions: any[];
     railCalls: any[];
+    logMessages: Map<any, any>;
     length: any;
 };
 /**

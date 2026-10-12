@@ -1505,10 +1505,10 @@ export default defineTool({
       ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
       : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.';
 
-    // Bound the candidate names before activating them. Otherwise a large schema
-    // can cause the response to omit a matched tool while still adding that
-    // invisible tool to the session surface (the activation contract is about
-    // the hits the caller can actually see and invoke).
+    // Bound the candidate names before activating them in the ordinary tier.
+    // An explicit full-tier request carries every hit in the raw result; the
+    // result door can spill that payload, so the inline discovery budget must
+    // not silently replace a requested full schema with compact text.
     const activationBase = {
       query: args.query,
       semantic,
@@ -1517,24 +1517,9 @@ export default defineTool({
       howToCall: activatedHowToCall,
       totalMatches: hits.length,
     };
-    let activationCandidate = boundDiscoveryHits(activationBase, projectedHits);
-    let fullSchemaFallback = false;
-    const fullSchemaWasTrimmed = fullArgSchemaRequested && activationCandidate.hits.some((candidate) => {
-      const requestedSchema = JSON.stringify(schemaByTool.get(candidate.tool));
-      return typeof requestedSchema === 'string' && candidate.argSchema !== requestedSchema;
-    });
-    if (
-      fullArgSchemaRequested &&
-      hits.length > 0 &&
-      (activationCandidate.hits.length === 0 || fullSchemaWasTrimmed)
-    ) {
-      // A full schema for even the top hit can exceed the entire result door.
-      // Keep the match useful by retrying with the same bounded schema shown by
-      // the ordinary discovery path; the response marks this downgrade below.
-      projectedHits = hits.map((h) => projectHit(h, false));
-      fullSchemaFallback = true;
-      activationCandidate = boundDiscoveryHits(activationBase, projectedHits);
-    }
+    const activationHits = fullArgSchemaRequested
+      ? projectedHits
+      : boundDiscoveryHits(activationBase, projectedHits).hits;
 
     // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
     // tools for THIS session so a seeded (small-surface) client can call them.
@@ -1545,22 +1530,22 @@ export default defineTool({
     // failure break discovery: the hits are still returned.
     let activated = false;
     try {
-      activated = ctx.activateTools?.(activationCandidate.hits.map((h) => h.tool)) ?? false;
+      activated = ctx.activateTools?.(activationHits.map((h) => h.tool)) ?? false;
     } catch {
       /* activation is best-effort; discovery still succeeds */
     }
 
     const howToCall = activated ? activatedHowToCall : inactiveHowToCall;
-    const bounded = boundDiscoveryHits(
-      { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
-      projectedHits,
-    );
-    const noHitFits = hits.length > 0 && bounded.hits.length === 0;
+    const bounded = fullArgSchemaRequested
+      ? { hits: projectedHits, truncated: false }
+      : boundDiscoveryHits(
+          { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
+          projectedHits,
+        );
+    const noHitFits = !fullArgSchemaRequested && hits.length > 0 && bounded.hits.length === 0;
     const budgetNote = noHitFits
       ? ' No matching schema fit the response budget; retry with a narrower query.'
-      : fullSchemaFallback
-        ? ' Full argument schemas exceeded the response budget; compact schemas are returned.'
-        : '';
+      : '';
     const finalHowToCall = howToCall + budgetNote;
     return {
       content: [
@@ -1570,7 +1555,7 @@ export default defineTool({
             query: args.query,
             count: bounded.hits.length,
             totalMatches: hits.length,
-            truncated: bounded.truncated || fullSchemaFallback || noHitFits,
+            truncated: bounded.truncated || noHitFits,
             semantic,
             registry,
             // true ⇒ the server-side session allowlist grew and emitted the

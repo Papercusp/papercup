@@ -114,6 +114,50 @@ describe('capability:git-evidence', () => {
     });
   });
 
+  it('distinguishes an absent committed path from an ls-tree lookup failure', async () => {
+    const root = repository();
+    const commitSha = git(root, ['rev-parse', 'HEAD']);
+    const runWithTreeResult = async (path: string, treeResult: { code: number | null; output: string }) => {
+      const calls: string[][] = [];
+      const result = await runJudgeGitEvidence({
+        op: 'readFileAtCommit',
+        commitSha,
+        path,
+      }, {
+        repositoryDir: root,
+        signal: never,
+        runner: async (argv) => {
+          calls.push(argv);
+          if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') {
+            return { code: 0, output: `${root}\n` };
+          }
+          if (argv[0] === 'rev-parse' && argv[1] === '--verify') {
+            return { code: 0, output: `${commitSha}\n` };
+          }
+          if (argv[0] === 'ls-tree') return treeResult;
+          throw new Error(`Unexpected Git invocation: ${argv.join(' ')}`);
+        },
+      });
+
+      expect(calls.at(-1)?.[0]).toBe('ls-tree');
+      return result;
+    };
+
+    const absent = await runWithTreeResult('missing.txt', { code: 0, output: '' });
+    expect(git(root, ['cat-file', '-t', `${commitSha}:evidence.txt`])).toBe('blob');
+    const lookupFailure = await runWithTreeResult('evidence.txt', {
+      code: 128,
+      output: 'fatal: simulated tree lookup failure',
+    });
+
+    expect(absent).toMatchObject({ ok: false, reason: 'file_not_found_at_commit' });
+    expect(absent).not.toHaveProperty('retryable');
+    expect(lookupFailure).toMatchObject({ ok: false, reason: 'file_lookup_failed', retryable: true });
+    expect(lookupFailure).toMatchObject({
+      message: expect.stringContaining('fatal: simulated tree lookup failure'),
+    });
+  });
+
   it('follows the superproject commit’s pinned gitlink and exposes the resolved blob identity', async () => {
     const root = repository();
     const submodule = join(root, 'nested');

@@ -45,11 +45,43 @@ export interface CommittedFile {
 }
 
 /** Read blob contents for many ids in ONE process; ids absent from the result are missing. */
-export type BlobBatchReader = (repoDir: string, blobIds: readonly string[]) => Promise<Map<string, Buffer>>;
+export type BlobBatchReader = (
+  repoDir: string,
+  blobIds: readonly string[],
+  onRoute?: (route: 'sidecar' | 'local') => void,
+) => Promise<Map<string, Buffer>>;
+
+/** Request-owned counters, never global cache statistics or a cache reset. */
+export interface CommittedTreeDiagnostics {
+  schemaVersion: 'committed-tree-diagnostics-v1';
+  reads: number;
+  /** Unique (repository, blob) lookups PER read; repeated reads add observations. */
+  memoHits: number;
+  memoMisses: number;
+  batchAttempts: number;
+  /** Success means every requested blob passed content-address validation. */
+  batchSucceeded: number;
+  batchFailed: number;
+  blobsRequested: number;
+  blobsReturned: number;
+  blobsVerified: number;
+  /** Actual default-reader branch; a supplied reader is classified as injected. */
+  batchRoutes: { sidecar: number; local: number; injected: number };
+}
+
+export function createCommittedTreeDiagnostics(): CommittedTreeDiagnostics {
+  return {
+    schemaVersion: 'committed-tree-diagnostics-v1', reads: 0,
+    memoHits: 0, memoMisses: 0, batchAttempts: 0, batchSucceeded: 0, batchFailed: 0,
+    blobsRequested: 0, blobsReturned: 0, blobsVerified: 0,
+    batchRoutes: { sidecar: 0, local: 0, injected: 0 },
+  };
+}
 
 export interface CommittedTreeDeps {
   git?: GitRunner;
   readBlobs?: BlobBatchReader;
+  diagnostics?: CommittedTreeDiagnostics;
   /** Whether `<root>/<repo>` is a nested repository; defaults to a `.git` entry probe. */
   exists?: (repo: string) => Promise<boolean>;
 }
@@ -183,9 +215,10 @@ export async function resolveMeasurementCommit(root: string, git: GitRunner = de
  * offload route must fail explicitly rather than fork from the operator on a
  * sidecar timeout (EI-25372596942307171). The local route is disabled-mode only.
  */
-export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds) => {
+export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds, onRoute) => {
   const stdin = `${blobIds.join('\n')}\n`;
   if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
+    onRoute?.('sidecar');
     let sidecarResult: GitStdinRunResult;
     try {
       sidecarResult = await runGitStdinViaSpawnerSidecar(
@@ -212,6 +245,7 @@ export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds) 
     return parseCatFileBatch(sidecarResult.stdout);
   }
 
+  onRoute?.('local');
   return new Promise((resolvePromise, reject) => {
     const child = spawn('git', ['-C', repoDir, 'cat-file', '--batch'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
@@ -410,6 +444,8 @@ export async function readCommittedFiles(
   deps: CommittedTreeDeps = {},
 ): Promise<Map<string, CommittedFile | null>> {
   const readBlobs = deps.readBlobs ?? defaultBlobBatchReader;
+  const diagnostics = deps.diagnostics;
+  if (diagnostics) diagnostics.reads += 1;
   const declared = [...new Set(paths)];
   const normalizedOf = new Map(declared.map((path) => [path, normalizedRepoPath(path)] as const));
   const locations = await locateCommittedBlobs(root, commit, [...new Set(normalizedOf.values())], deps);
@@ -425,17 +461,39 @@ export async function readCommittedFiles(
   }
 
   const unread = new Map<string, Set<string>>();
+  const observed = new Map<string, Set<string>>();
   for (const located of blobOf.values()) {
-    if (!located || blobDigests.byBlob.has(located.blob)) continue;
+    if (!located || observed.get(located.repo)?.has(located.blob)) continue;
+    observed.set(located.repo, (observed.get(located.repo) ?? new Set()).add(located.blob));
+    if (blobDigests.byBlob.has(located.blob)) {
+      if (diagnostics) diagnostics.memoHits += 1;
+      continue;
+    }
+    if (diagnostics) diagnostics.memoMisses += 1;
     unread.set(located.repo, (unread.get(located.repo) ?? new Set()).add(located.blob));
   }
   for (const [repo, blobs] of unread) {
-    const contents = await readBlobs(repoDir(root, repo), [...blobs]);
-    for (const blob of blobs) {
-      const content = contents.get(blob);
-      if (!content) throw new Error(`repo_measurement_blob_missing:${blob}`);
-      if (gitBlobId(content) !== blob) throw new Error(`repo_measurement_blob_mismatch:${blob}`);
-      rememberDigest(blob, content);
+    if (diagnostics) {
+      diagnostics.batchAttempts += 1;
+      diagnostics.blobsRequested += blobs.size;
+      if (readBlobs !== defaultBlobBatchReader) diagnostics.batchRoutes.injected += 1;
+    }
+    try {
+      const contents = await (diagnostics && readBlobs === defaultBlobBatchReader
+        ? readBlobs(repoDir(root, repo), [...blobs], (route) => { diagnostics.batchRoutes[route] += 1; })
+        : readBlobs(repoDir(root, repo), [...blobs]));
+      if (diagnostics) diagnostics.blobsReturned += [...blobs].filter((blob) => contents.has(blob)).length;
+      for (const blob of blobs) {
+        const content = contents.get(blob);
+        if (!content) throw new Error(`repo_measurement_blob_missing:${blob}`);
+        if (gitBlobId(content) !== blob) throw new Error(`repo_measurement_blob_mismatch:${blob}`);
+        rememberDigest(blob, content);
+        if (diagnostics) diagnostics.blobsVerified += 1;
+      }
+      if (diagnostics) diagnostics.batchSucceeded += 1;
+    } catch (error) {
+      if (diagnostics) diagnostics.batchFailed += 1;
+      throw error;
     }
   }
 

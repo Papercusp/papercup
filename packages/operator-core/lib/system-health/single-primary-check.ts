@@ -145,6 +145,7 @@ import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { readActiveAnnouncedQuiesce, type AnnouncedQuiesceEvidence } from './announced-quiesce';
 import { execFileViaSidecar } from '../fleet/git-via-sidecar';
+import { observeFallback } from '../degradation/fallback-observations';
 
 /** The `announced-quiesce` subject this guard reads — see announced-quiesce.ts. Any agent
  *  registers under this exact subject via `supervision:announce-quiesce { subject: 'bg-host' }`. */
@@ -581,6 +582,12 @@ export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | n
             OR COALESCE((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false))
              AS can_read_all_stats`;
   const row = rows[0];
+  observeFallback('primary-count-capability', {
+    eligible: 1,
+    applied: row?.can_read_all_stats === true ? 1 : 0,
+    reason: !row ? 'probe-row-absent' : row.can_read_all_stats === undefined ? 'probe-column-absent'
+      : row.can_read_all_stats === false ? 'stats-permission-denied' : 'applied',
+  });
   if (!row) return null;
   // Blind reader ⇒ the count is unanswerable, NOT zero. Checked before `n` so a stats-blind
   // process can never page "all background work is down" off its own missing permission.

@@ -88,7 +88,10 @@ export async function readVerdictRateWindow(
     Number.isSafeInteger(Number(value)) && Number(value) >= 0;
   if (!row || !countMeasured(row.fires) || !countMeasured(row.verdicts) ||
       row.last_verdict_ms === undefined ||
-      (row.last_verdict_ms !== null && !countMeasured(row.last_verdict_ms))) {
+      (row.last_verdict_ms !== null &&
+        (!(typeof row.last_verdict_ms === 'number' ||
+          (typeof row.last_verdict_ms === 'string' && row.last_verdict_ms.trim() !== '')) ||
+         !Number.isFinite(Number(row.last_verdict_ms)) || Number(row.last_verdict_ms) < 0))) {
     // Aggregate SQL returns a complete row even for an empty population. Missing or
     // malformed results are unknown measurements, never zero fires and recovery.
     throw new Error('verdict-rate window measurement is incomplete');

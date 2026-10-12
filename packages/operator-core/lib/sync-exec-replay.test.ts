@@ -111,6 +111,20 @@ describe('execFileResult', () => {
     expect((await execFileResult(process.execPath, ['-e', 'process.exit(3)'])).status).toBe(3);
     expect((await execFileResult('/nonexistent/wi10005261-binary', [])).status).toBeNull();
   });
+
+  it('preserves native failure evidence instead of conflating a missing binary with a killed child', async () => {
+    const missing = await execFileResult('/nonexistent/ei25735005110182664-binary', []);
+    expect(missing.status).toBeNull();
+    expect(missing.error).toMatchObject({ code: 'ENOENT', signal: null, killed: false });
+
+    const timed = await execFileResult(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 100 });
+    expect(timed.status).toBeNull();
+    expect(timed.error).toMatchObject({ code: null, signal: 'SIGTERM', killed: true });
+
+    const exited = await execFileResult(process.execPath, ['-e', 'process.exit(3)']);
+    expect(exited.status).toBe(3);
+    expect(exited.error).toMatchObject({ code: 3, signal: null, killed: false });
+  });
 });
 
 describe('real probe equivalence (currentCheckpointCandidate on a real repo)', () => {

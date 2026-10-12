@@ -96,7 +96,11 @@ export const defaultGitRunner: GitRunner = async (cwd, args) => {
   const exec = gitReadIsContentAddressed(argv) ? execFileResultShared : execFileResult;
   const result = await exec('git', argv, { timeout: GIT_TIMEOUT_MS });
   if (result.status === 0) return result.stdout;
-  const why = result.status === null ? 'killed or timed out' : `exit ${result.status}`;
+  const why = result.status === null
+    ? result.error
+      ? `no exit status; code=${result.error.code ?? 'none'}, signal=${result.error.signal ?? 'none'}, killed=${result.error.killed}`
+      : 'no exit status'
+    : `exit ${result.status}`;
   throw new Error(`Command failed (${why}): git ${argv.join(' ')}\n${result.stderr}`);
 };
 

@@ -224,6 +224,44 @@ function hasConditionKeyProperty(arg) {
 const RAIL_FUNCTION_SET = new Set(RAIL_FUNCTIONS);
 const ALARM_FUNCTION_SET = new Set(ALARM_FUNCTIONS);
 
+/** Read literal alternatives used by a log, including preceding lexical const bindings. */
+function logLiteralText(node, sf, seen = new Set()) {
+  if (!node || seen.has(node)) return '';
+  const nextSeen = new Set(seen).add(node);
+  const read = (child) => logLiteralText(child, sf, nextSeen);
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isTemplateExpression(node)) {
+    return node.head.text + node.templateSpans.map((span) => read(span.expression) + span.literal.text).join('');
+  }
+  if (ts.isConditionalExpression(node)) return `${read(node.whenTrue)} ${read(node.whenFalse)}`;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return read(node.left) + read(node.right);
+  }
+  if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+    return read(node.expression);
+  }
+  if (!ts.isIdentifier(node)) return '';
+  for (let scope = node.parent; scope; scope = scope.parent) {
+    if (isFunctionLike(scope) && scope.parameters.some((p) => ts.isIdentifier(p.name) && p.name.text === node.text)) {
+      return ''; // A parameter shadows an outer constant, even if its value is unknown.
+    }
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+    let binding = null;
+    for (const statement of scope.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === node.text) {
+          binding = { declaration, constant: !!(statement.declarationList.flags & ts.NodeFlags.Const) };
+        }
+      }
+    }
+    if (binding) {
+      return binding.constant && binding.declaration.end < node.getStart(sf) ? read(binding.declaration.initializer) : '';
+    }
+  }
+  return '';
+}
+
 /**
  * Parse one source text into the structure the rail predicate needs: every function-like node's
  * span and name chain, and the start offset of every rail call. Pure.
@@ -232,6 +270,7 @@ export function railStructure(raw, file) {
   const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, scriptKindFor(file));
   const functions = []; // { start, end, name, parentIndex }
   const railCalls = []; // start offsets
+  const logMessages = new Map();
   const visit = (node, parentIndex) => {
     let here = parentIndex;
     if (isFunctionLike(node)) {
@@ -240,6 +279,11 @@ export function railStructure(raw, file) {
     }
     if (ts.isCallExpression(node)) {
       const name = calleeName(node.expression);
+      if (ts.isPropertyAccessExpression(node.expression) &&
+          /^(warn|error|log|info)$/.test(name ?? '') &&
+          /^(console|log|logger|LOG)$/.test(node.expression.expression.getText(sf))) {
+        logMessages.set(node.getStart(sf), node.arguments.map((arg) => logLiteralText(arg, sf)).join(' '));
+      }
       if (name && RAIL_FUNCTION_SET.has(name)) railCalls.push(node.getStart(sf));
       else if (name && ALARM_FUNCTION_SET.has(name) && hasConditionKeyProperty(node.arguments[0])) {
         railCalls.push(node.getStart(sf));
@@ -248,7 +292,7 @@ export function railStructure(raw, file) {
     ts.forEachChild(node, (child) => visit(child, here));
   };
   visit(sf, -1);
-  return { functions, railCalls, length: raw.length };
+  return { functions, railCalls, logMessages, length: raw.length };
 }
 
 /** Index of the innermost function containing `offset`, or -1 at module scope. */
@@ -297,6 +341,8 @@ export function scanSites(raw, file) {
   const masked = stripCommentsAndStrings(raw, file);
   const starts = lineStarts(masked);
   const found = []; // { class, index, symbol, moduleLevel, railExempt }
+  let structure;
+  const getStructure = () => (structure ??= railStructure(raw, file));
   const add = (cls, index, symbol, opts = {}) => found.push({ class: cls, index, symbol, ...opts });
 
   // 1. owner alarms
@@ -310,7 +356,8 @@ export function scanSites(raw, file) {
   // 2. fallback decisions announced in a log line
   LOG_CALL_RE.lastIndex = 0;
   for (let m; (m = LOG_CALL_RE.exec(masked)); ) {
-    const args = callArgsRaw(raw, m.index + m[0].length - 1, masked);
+    const rawArgs = callArgsRaw(raw, m.index + m[0].length - 1, masked);
+    const args = FALLBACK_WORDING_RE.test(rawArgs) ? rawArgs : (getStructure().logMessages.get(m.index) ?? rawArgs);
     if (!FALLBACK_WORDING_RE.test(args)) continue;
     add('log-only-fallback', m.index, args.match(FALLBACK_WORDING_RE)[0].toLowerCase().replace(/\s+/g, '-'));
   }
@@ -348,7 +395,7 @@ export function scanSites(raw, file) {
   }
 
   if (found.length === 0) return [];
-  const structure = railStructure(raw, file);
+  structure = getStructure();
   found.sort((a, b) => a.index - b.index);
   const ordinals = new Map();
   return found.map((f) => {

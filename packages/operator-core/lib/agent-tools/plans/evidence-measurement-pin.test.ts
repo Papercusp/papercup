@@ -83,6 +83,17 @@ describe('defaultGitRunner (EI-24852529885337741)', () => {
     );
   });
 
+  it('keeps missing-executable evidence in the first line recorded by measurement callers', async () => {
+    vi.stubEnv('PATH', join(root, 'no-executables'));
+    try {
+      await expect(defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])).rejects.toThrow(
+        /^Command failed \([^\n]*code=ENOENT[^\n]*signal=none[^\n]*killed=false[^\n]*\): git /,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('shares one child between concurrent identical content-addressed reads', async () => {
     const head = git(root, 'rev-parse', 'HEAD');
     const args = ['rev-parse', '--verify', '--quiet', `${head}:src/a.ts`];

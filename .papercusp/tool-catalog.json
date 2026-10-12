@@ -7067,7 +7067,7 @@
           "POST"
         ]
       },
-      "description": "List escalations addressed to the human — newest-first, bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. ⚠ `total`/`count` is JUST this page's size, NOT the backlog size — a small maxRecords can make it look like ground truth (EI-16170). For status=open, use `trueOpenTotal` (an unbounded exact count) as the real backlog size, and page the WHOLE backlog with `offset` (0, then +maxRecords, …) until `truncated:false` (sum of pages == trueOpenTotal; EI-18712273081050373 — offset does REAL backward pagination for status=open, unlike a bare maxRecords bump which only widens the recency window and can miss old escalations). `truncated:true` means older escalations exist beyond the window. A `body` over 500 chars is truncated in list mode (`bodyTruncated:true` + `bodyLength`). EI-15377: `conditionKey`/`q` re-check one known escalation without dumping the whole backlog — see returns for match-completeness caveats. Full detail + examples: /internal/docs/agent-insights/coord-escalations-pagination-semantics.",
+      "description": "List escalations addressed to the human — newest-first, bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. ⚠ `total`/`count` is JUST this page's size, NOT the backlog size — a small maxRecords can make it look like ground truth (EI-16170). For status=open, use `trueOpenTotal` (an unbounded exact count) as the real backlog size, and page the WHOLE backlog with `offset` (0, then +maxRecords, …) until `truncated:false` (sum of pages == trueOpenTotal; EI-18712273081050373 — offset does REAL backward pagination for status=open, unlike a bare maxRecords bump which only widens the recency window and can miss old escalations). `truncated:true` means older escalations exist beyond the window. A `body` over 500 chars is truncated in list mode (`bodyTruncated:true` + `bodyLength`). Pass `msg_id` to read and fold one known record. Judge callers must use that exact-ID form; unfiltered and windowed reads are refused. EI-15377: `conditionKey`/`q` re-check one known escalation without dumping the whole backlog — see returns for match-completeness caveats. Full detail + examples: /internal/docs/agent-insights/coord-escalations-pagination-semantics.",
       "capabilities": [
         "coord:read"
       ],
@@ -7089,11 +7089,12 @@
         "doc-steward",
         "release-fixer",
         "merge-resolver",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "Showing the human inbox; diagnostics; checking your own past escalations.",
-        "notWhen": "A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes."
+        "notWhen": "For judge evidence, do not use a broad SQL read: pass the known msg_id for one exact read. Other callers may use the bounded list and filters."
       }
     },
     {
@@ -28778,7 +28779,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue for the selected harness scope (operator home when unscoped). `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.",
+      "description": "Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins reviewed source against staging drift. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.",
       "capabilities": [
         "operator:write"
       ],
@@ -28992,7 +28993,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with `docs:get`, and link the maintained procedure from the report without copying private incident details.",
+      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path.",
       "capabilities": [
         "reports:write"
       ],
@@ -29053,9 +29054,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, analyses, status digests, or proposals.",
-        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Reusable procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.",
-        "chaining": "reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite a descriptive Markdown link using the returned same-origin path directly in Papercusp/Tauri (operator reader: /reports?sel=<report_id>). Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link. Claim saved or delivered only after readback succeeds. For corrections: read the original → publish with supersedes → new report_id → verify the correction → cite it."
+        "when": "For completed audits, reviews, analyses, postmortems, status digests, or proposals.",
+        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, `coord:send` for agent messages, and `docs:author` for reusable procedures.",
+        "chaining": "After publish, call `reports:get { id: report_id }`; verify the complete body and visibility before citing a descriptive Markdown link. Use the returned same-origin path in Papercusp/Tauri; an absolute URL requires a verified GUI origin. Never guess or request an origin or cite a bare id. For corrections, read the original and publish with `supersedes`. Link maintained procedures via `docs:author` and `docs:get` rather than copying private incident details."
       }
     },
     {
@@ -35927,7 +35928,7 @@
           "POST"
         ]
       },
-      "description": "Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions (\"none\" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:\"blocks\" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect expectedState/appliedState. Readback mismatches fail.",
+      "description": "Set state for one or many work-items: open|wip|blocked|needs-human|done|dropped (legacy aliases preserve terminal_reason). Terminal writes need completionRef + assumptions (\"none\" or facts:assert keys). Blocked writes need work_items:set_blocker; use work_items:link { rel:\"blocks\" } for internal dependencies. Plan-linked features use plans:set-status. Reopen terminal items with force:true. Supports id, ids, or items; inspect expectedState/appliedState. Readback mismatches fail.",
       "capabilities": [
         "work_items:write"
       ],

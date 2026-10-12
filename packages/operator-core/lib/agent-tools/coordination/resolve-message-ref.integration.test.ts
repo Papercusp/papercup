@@ -22,6 +22,7 @@ import { readCoordFeed } from './feed';
 import { coordHasPgFastPath, coordWorkspaceId } from './log';
 import ackTool from './tools/ack';
 import readTool from './tools/read';
+import threadTool from './tools/thread';
 
 let fx: BaselineCoordFixture;
 
@@ -231,6 +232,33 @@ describe('resolveMessageRef (WI-6725)', () => {
       msg_id: fullId,
       message: { msg_id: fullId, summary: 'idempotent coord send' },
     });
+  });
+
+  it('EI-25728544049822981: coord:thread resolves a full idempotent coord:send id', async () => {
+    expect(coordHasPgFastPath()).toBe(true);
+    const fullId = `coord-send-${'c'.repeat(64)}`;
+    await sendMessage(ASKER, {
+      to: [READER.ownerId],
+      msgId: fullId,
+      summary: 'idempotent coord send thread root',
+    });
+
+    const result = await threadTool.handler({ root_msg_id: fullId }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      root: string;
+      entries: Array<{ msg_id: string; summary?: string }>;
+    };
+    expect(payload.root).toBe(fullId);
+    expect(payload.entries.map((entry) => entry.msg_id)).toContain(fullId);
+    expect(payload.entries[0]?.summary).toBe('idempotent coord send thread root');
+  });
+
+  it('coord:thread names the coord:send full-ID shape when a reference is truncated', async () => {
+    const truncatedId = `coord-send-${'d'.repeat(56)}`;
+    const result = await threadTool.handler({ root_msg_id: truncatedId }, {} as never);
+    const payload = (result as { data?: unknown }).data as { found: boolean; detail?: string };
+    expect(payload.found).toBe(false);
+    expect(payload.detail).toContain("or 'coord-send-<64 hex>'");
   });
 
   it('does not call a missing idempotent coord:send ID truncated', async () => {

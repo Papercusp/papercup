@@ -128,6 +128,7 @@ export default defineTool({
         requestedLimit: limit,
         phaseMs: diagnostics.phaseMs,
         bindings: diagnostics.bindings,
+        committedTree: diagnostics.committedTree,
       },
     });
     const truncatedByLimit = evidenceWithLookahead.length > limit;

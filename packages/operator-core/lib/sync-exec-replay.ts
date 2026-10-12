@@ -28,6 +28,12 @@ export interface ExecResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** Native execFile failure evidence; a null status alone cannot identify a timeout. */
+  error?: {
+    code: string | number | null;
+    signal: string | null;
+    killed: boolean;
+  };
 }
 
 /** Structurally identical to release-checkpoint-launch's `ExecSyncLike`. */
@@ -102,8 +108,13 @@ export function execFileResult(cmd: string, args: string[], options: { timeout?:
       { encoding: 'utf8', timeout: options.timeout, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (!err) return resolve({ status: 0, stdout, stderr });
-        const code = (err as { code?: unknown }).code;
-        resolve({ status: typeof code === 'number' ? code : null, stdout: stdout ?? '', stderr: stderr ?? '' });
+        const code = err.code;
+        resolve({
+          status: typeof code === 'number' ? code : null,
+          stdout: stdout ?? '',
+          stderr: stderr ?? '',
+          error: { code: code ?? null, signal: err.signal ?? null, killed: err.killed === true },
+        });
       },
     );
   });

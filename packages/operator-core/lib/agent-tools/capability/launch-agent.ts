@@ -588,7 +588,7 @@ export default defineTool({
         .enum(['claude', 'codex', 'omp'])
         .optional()
         .describe(
-          'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for an in-place resume/fork — a session resumes under the CLI it was recorded on; an identity-preserving successor may explicitly override the predecessor backend.',
+          'Which agent CLI backs a FRESH launch (default: the psu default). For resume, an explicit different backend requests a session port that retains the source identity; supply a compatible model. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend. An identity-preserving successor may explicitly override the predecessor backend.',
         ),
       role: z
         .string()

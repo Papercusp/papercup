@@ -11,7 +11,7 @@
  * as a gitlink. The DB, harness registry and lock queue are the only seams mocked.
  */
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,6 +84,7 @@ const {
   measureAndPinRepoFilesEvidenceAtCommitForScope,
   MEASUREMENT_PIN_DETAILS_KEY,
 } = await import('./spec-evidence-store');
+const { createCommittedTreeDiagnostics } = await import('./committed-tree-reader');
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], {
@@ -185,6 +186,28 @@ beforeEach(async () => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('listSpecEvidence measures repo-files proof at the measurement commit', () => {
+  it('attributes real cold and warm committed measurements to separate request counters', async () => {
+    // A fresh content address guarantees a miss without resetting the shared memo.
+    writeFileSync(join(root, 'src/a.ts'), `export const nonce = '${randomBytes(32).toString('hex')}';\n`);
+    git(root, 'commit', '-q', '-am', 'fresh diagnostic source');
+    h.rows = [h.rows[0]!];
+    const diagnostics = () => ({ phaseMs: {}, committedTree: createCommittedTreeDiagnostics(),
+      bindings: { selectedRows: 0, rowsWithRecipe: 0, measured: 0, unavailable: 0, skipped: 0,
+        totalMeasurementMs: 0, maxMeasurementMs: 0 } });
+    const cold = diagnostics();
+    const first = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'], diagnostics: cold });
+    expect(cold.committedTree).toEqual({ schemaVersion: 'committed-tree-diagnostics-v1', reads: 1,
+      memoHits: 0, memoMisses: 1, batchAttempts: 1, batchSucceeded: 1, batchFailed: 0,
+      blobsRequested: 1, blobsReturned: 1, blobsVerified: 1,
+      batchRoutes: { sidecar: 0, local: 1, injected: 0 } });
+    const snapshot = structuredClone(cold.committedTree);
+    const warm = diagnostics();
+    const second = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'], diagnostics: warm });
+    expect(warm.committedTree).toEqual({ ...createCommittedTreeDiagnostics(), reads: 1, memoHits: 1 });
+    expect(cold.committedTree).toEqual(snapshot);
+    expect(first[0]?.currentness).toEqual(second[0]?.currentness);
+  });
+
   it('pins fixture SQL membership at the commit and names committed changes, additions, and removals', async () => {
     const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
       sourcePaths: ['src/a.ts'], fixtureGlobs: ['libs/sub/sql/*.sql'] };

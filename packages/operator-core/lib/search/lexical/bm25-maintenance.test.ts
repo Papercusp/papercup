@@ -116,6 +116,19 @@ describe('formatBm25MaintenanceReport', () => {
     }))).toBe('[bm25-maintenance] dropped orphan harness_shared.carry_notes_bm25_ccnew,harness_shared.work_items_bm25_ccold1');
   });
 
+  it('attaches the measured interval to a non-empty maintenance log line and keeps no-op runs quiet', () => {
+    const interval = {
+      startedAtMs: Date.parse('2026-10-12T01:00:00.000Z'),
+      finishedAtMs: Date.parse('2026-10-12T01:00:01.250Z'),
+      durationMs: 1_250,
+    };
+    expect(formatBm25MaintenanceReport(report({ built: 'work_items_bm25' }), interval)).toBe(
+      '[bm25-maintenance] built work_items_bm25; startedAt=2026-10-12T01:00:00.000Z '
+      + 'finishedAt=2026-10-12T01:00:01.250Z durationMs=1250',
+    );
+    expect(formatBm25MaintenanceReport(report(), interval)).toBeNull();
+  });
+
   it('names a reclaimed index with its sizes and the ratio that triggered it, and pending reclaims', () => {
     const line = formatBm25MaintenanceReport(report({
       reclaimed: { index: 'harness_shared.work_items_bm25', beforeBytes: 11_362_304, afterBytes: 2_547_712, ratio: 4.46 },

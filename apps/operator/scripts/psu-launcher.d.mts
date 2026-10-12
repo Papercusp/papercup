@@ -853,10 +853,12 @@ export function recordSessionOwner(nativeSessionId: any, coordOwnerId: any, { ho
  *   stream?: { write: (chunk: any, encoding?: any, cb?: any) => boolean },
  *   argv?: string[],
  *   now?: () => Date,
+ *   captureStream?: boolean,
+ *   prune?: boolean,
  * }} [opts]
- * @returns {{ path: string, uninstall: () => void } | null}
+ * @returns {{ path: string, record: (text: string) => void, uninstall: () => void } | null}
  */
-export function installBootLogCapture(ownerId: string | null | undefined, { home, maxBytes, stream, argv, now, }?: {
+export function installBootLogCapture(ownerId: string | null | undefined, { home, maxBytes, stream, argv, now, captureStream, prune, }?: {
     home?: string;
     maxBytes?: number;
     stream?: {
@@ -864,10 +866,33 @@ export function installBootLogCapture(ownerId: string | null | undefined, { home
     };
     argv?: string[];
     now?: () => Date;
+    captureStream?: boolean;
+    prune?: boolean;
 }): {
     path: string;
+    record: (text: string) => void;
     uninstall: () => void;
 } | null;
+/** Measure preparation separately from time a human spends choosing a menu.
+ * Records fixed phase names only; diagnostic failures cannot fail startup.
+ * @param {{ record?: (row: any) => void, notice?: (step: string, elapsedMs: number) => void,
+ * now?: () => number, slowAfterMs?: number }} [options]
+ */
+export function createStartupStepRunner({ record, notice, now, slowAfterMs }?: {
+    record?: (row: any) => void;
+    notice?: (step: string, elapsedMs: number) => void;
+    now?: () => number;
+    slowAfterMs?: number;
+}): (step: any, operation: any) => any;
+/** End the render span at the actual prompt write, before waiting for input.
+ * @param {string} message
+ * @param {() => Promise<any>} prompt
+ * @param {{ step: ReturnType<typeof createStartupStepRunner>, output?: any }} options
+ */
+export function traceFirstPromptOutput(message: string, prompt: () => Promise<any>, { step, output }: {
+    step: ReturnType<typeof createStartupStepRunner>;
+    output?: any;
+}): Promise<any>;
 /** The durable identity recorded when this native session was born. */
 export function recoverSessionIdentity(nativeSessionId: any, { home }?: {
     home?: string | undefined;

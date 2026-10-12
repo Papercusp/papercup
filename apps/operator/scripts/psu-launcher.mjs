@@ -3352,8 +3352,10 @@ export function recordSessionOwner(
  *   stream?: { write: (chunk: any, encoding?: any, cb?: any) => boolean },
  *   argv?: string[],
  *   now?: () => Date,
+ *   captureStream?: boolean,
+ *   prune?: boolean,
  * }} [opts]
- * @returns {{ path: string, uninstall: () => void } | null}
+ * @returns {{ path: string, record: (text: string) => void, uninstall: () => void } | null}
  */
 export function installBootLogCapture(
   ownerId,
@@ -3363,6 +3365,8 @@ export function installBootLogCapture(
     stream = process.stderr,
     argv = process.argv.slice(2),
     now = () => new Date(),
+    captureStream = true,
+    prune = true,
   } = {},
 ) {
   const file = ensurePsuLaunchLogPath(ownerId, { home });
@@ -3402,7 +3406,7 @@ export function installBootLogCapture(
   // function that was there, or a second install/uninstall cycle leaves a stack
   // of bound wrappers behind and the stream never returns to its own method.
   const original = stream.write;
-  stream.write = (chunk, encoding, cb) => {
+  const teeWrite = (chunk, encoding, cb) => {
     try {
       append(
         typeof chunk === "string"
@@ -3417,20 +3421,22 @@ export function installBootLogCapture(
     }
     return original.call(stream, chunk, encoding, cb);
   };
+  if (captureStream) stream.write = teeWrite;
   // Housekeeping, not correctness: one small file per launch would otherwise
   // accrete forever. Best-effort and bounded (see prunePsuLaunchLogs).
   try {
-    prunePsuLaunchLogs({ home });
+    if (prune) prunePsuLaunchLogs({ home });
   } catch {
     /* never blocks a launch */
   }
   return {
     path: file,
+    record: append,
     /** Restore the original stream + stop writing. Tests use it; production
      *  never needs to — the process exiting is the natural end of capture. */
     uninstall() {
       live = false;
-      stream.write = original;
+      if (captureStream && stream.write === teeWrite) stream.write = original;
       try {
         closeSync(fd);
       } catch {
@@ -3438,6 +3444,81 @@ export function installBootLogCapture(
       }
     },
   };
+}
+
+/** Measure preparation separately from time a human spends choosing a menu.
+ * Records fixed phase names only; diagnostic failures cannot fail startup.
+ * @param {{ record?: (row: any) => void, notice?: (step: string, elapsedMs: number) => void,
+ * now?: () => number, slowAfterMs?: number }} [options]
+ */
+export function createStartupStepRunner({ record = () => {}, notice = () => {},
+  now = Date.now, slowAfterMs = 5_000 } = {}) {
+  return function startupStep(step, operation) {
+    const startedAt = now();
+    const emit = (phase) => {
+      try { record({ schemaVersion: "psu-startup-step-v1", step, phase,
+        atMs: now(), elapsedMs: Math.max(0, now() - startedAt) }); } catch { /* diagnostic only */ }
+    };
+    let announced = false;
+    const announce = () => {
+      if (announced) return;
+      announced = true;
+      emit("waiting");
+      try { notice(step, Math.max(0, now() - startedAt)); } catch { /* diagnostic only */ }
+    };
+    emit("started");
+    const timer = setTimeout(announce, slowAfterMs);
+    timer.unref?.();
+    const finish = (phase) => {
+      clearTimeout(timer);
+      // A synchronous filesystem or terminal write can block the timer too.
+      if (now() - startedAt >= slowAfterMs) announce();
+      emit(phase);
+    };
+    try {
+      const result = operation();
+      if (result && typeof result.then === "function") {
+        return Promise.resolve(result).then((value) => {
+          finish("finished"); return value;
+        }, (error) => { finish("failed"); throw error; });
+      }
+      finish("finished");
+      return result;
+    } catch (error) {
+      finish("failed");
+      throw error;
+    }
+  };
+}
+
+/** End the render span at the actual prompt write, before waiting for input.
+ * @param {string} message
+ * @param {() => Promise<any>} prompt
+ * @param {{ step: ReturnType<typeof createStartupStepRunner>, output?: any }} options
+ */
+export function traceFirstPromptOutput(message, prompt, { step, output = process.stdout }) {
+  let rendered, failed;
+  const ready = new Promise((resolve, reject) => { rendered = resolve; failed = reject; });
+  // The prompt owns its error; the render observer records it independently.
+  const observed = step(`menu-render:${message}`, () => ready);
+  observed.catch(() => {});
+  const original = output.write;
+  let text = "";
+  const restore = () => { if (output.write === tracedWrite) output.write = original; };
+  const tracedWrite = function (chunk, ...args) {
+    const result = original.call(output, chunk, ...args);
+    text = (text + String(chunk)).slice(-2048);
+    if (text.includes(message)) { restore(); rendered(); }
+    return result;
+  };
+  output.write = tracedWrite;
+  try {
+    return Promise.resolve(prompt()).then((answer) => {
+      rendered(); return answer;
+    }, (error) => { failed(error); throw error; }).finally(restore);
+  } catch (error) {
+    restore(); failed(error); throw error;
+  }
 }
 
 /** The durable identity recorded when this native session was born. */
@@ -8988,13 +9069,13 @@ export const SU_SUBAGENTS_CHOICES = [
  *  boolean threaded into args.allowSubagents (→ roleLaunchArgs/suLaunchArgs). A
  *  `--allow-subagents` / `--no-subagents` flag preselects + skips this (mirrors
  *  --context-size). claude-only — omp/codex have no deny flag and are unaffected. */
-async function pickSubagents() {
-  const { select } = await import("@inquirer/prompts");
-  return select({
+async function pickSubagents(startupStep) {
+  const { select } = await startupStep("subagents-picker-import", () => import("@inquirer/prompts"));
+  return traceFirstPromptOutput("Subagents", () => select({
     message: "Subagents",
     default: false,
     choices: SU_SUBAGENTS_CHOICES,
-  });
+  }), { step: startupStep });
 }
 
 /** One short-lived snapshot per workspace/provider/section for a launch. Share
@@ -17113,8 +17194,26 @@ async function main() {
     process.stdout.write(`psu ${psuClientVersion()}\n`);
     return;
   }
-  const terminalNotice = terminalStartupNotice({ headless: args.headless });
-  if (terminalNotice) process.stderr.write(terminalNotice);
+  // Plain interactive launches have no owner id yet. Reuse the existing bounded
+  // boot-log store with a launch-local key; do not capture argv or terminal text.
+  // Existing programmatic launches retain their stderr tee. Their regular prune
+  // also collects these short-lived logs; housekeeping stays off the menu path.
+  const startupLog = args.ownerId
+    ? installBootLogCapture(args.ownerId)
+    : args.picker && !args.setClaudeToken && !args.clearClaudeToken
+      ? installBootLogCapture(`startup-${randomUUID()}`, { argv: [], captureStream: false, prune: false })
+      : null;
+  const startupStep = createStartupStepRunner({
+    record: (row) => startupLog?.record(`# startup ${JSON.stringify({ pid: process.pid, ...row })}\n`),
+    notice: (step, elapsedMs) => process.stderr.write(
+      `psu: startup is waiting at ${step} (${Math.round(elapsedMs / 1000)}s).` +
+      (startupLog ? ` Details: ${startupLog.path}` : "") + "\n",
+    ),
+  });
+  startupStep("terminal-notice", () => {
+    const terminalNotice = terminalStartupNotice({ headless: args.headless });
+    if (terminalNotice) process.stderr.write(terminalNotice);
+  });
   readLaunchOptions = createLaunchOptionsReader();
   if (await recoveryFlow(args, { rawArgv: connection.argv })) return;
   // A host-code adoption handoff is consumed BEFORE any normal fresh/resume
@@ -17129,7 +17228,7 @@ async function main() {
   // PAPERCUSP_SID, so the env-only fallback was null for exactly the population that
   // lost its handoff — and an ambiguous or MISSING handoff then logged no event at all.
   const adoptionEventOwnerId = adoptionOwnerId || args.ownerId || null;
-  const hostHandoff = isHostAdoptionReexec
+  const hostHandoff = startupStep("host-handoff-lookup", () => isHostAdoptionReexec
     ? readHostHandoffForParentPid(process.ppid, {
         onReject: (rejection) => {
           const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
@@ -17142,7 +17241,7 @@ async function main() {
           });
         },
       })
-    : null;
+    : null);
   if (isHostAdoptionReexec) {
     const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
     if (ownerIdForHandoff) {
@@ -17176,7 +17275,6 @@ async function main() {
   // the failure banner can name a cause instead of "the terminal closed".
   // Never throws and returns null on any trouble — a diagnostic side-channel
   // must not be able to fail the launch it is diagnosing.
-  if (args.ownerId) installBootLogCapture(args.ownerId);
   // headless-fleet-launch P-001: publish the headless posture into the env BEFORE any
   // launch flow. runWrapper builds its child env from sanitizeInheritedEnv(process.env)
   // (which preserves PAPERCUSP_*), so this single assignment is what (a) makes
@@ -17192,7 +17290,7 @@ async function main() {
     clearClaudeTokenFlow();
     return;
   }
-  await reconcileRecoveryAuditSoft();
+  await startupStep("recovery-audit-reconciliation", reconcileRecoveryAuditSoft);
   // --fork only has meaning when resuming an existing session — warn (don't fail)
   // so a stray `psu --fork` on a fresh launch doesn't silently look honored.
   if (args.fork && !args.resume) {
@@ -17213,7 +17311,7 @@ async function main() {
   let role = args.role || null;
   let rolesMeta = null;
   if (!role && args.picker) {
-    const picked = await pickRole();
+    const picked = await startupStep("default-role", pickRole);
     role = picked.role;
     rolesMeta = picked.roles;
   }
@@ -17223,7 +17321,7 @@ async function main() {
   // --allow-subagents / --no-subagents flag preselects + skips it. Runs before the
   // su/role branch so BOTH paths carry args.allowSubagents into their launch args.
   if (args.picker && args.allowSubagents == null)
-    args.allowSubagents = await pickSubagents();
+    args.allowSubagents = await pickSubagents(startupStep);
   // EI-996 (owner ask 2026-06-17: planners should "be full su agents and get the
   // full su prompt, but just a few lines added about their planner role"): a
   // SU-TIER role skips roleFlow entirely and falls through to the plain SU flow

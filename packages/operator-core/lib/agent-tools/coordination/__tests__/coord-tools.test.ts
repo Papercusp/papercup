@@ -643,6 +643,28 @@ describe('coord:escalations handler status filter', () => {
     const done = parse(await run(escalationsTool, { status: 'resolved' }));
     expect(done.escalations.map((e: { summary: string }) => e.summary)).toEqual(['a']);
   });
+
+  it('lets judge read one known escalation by exact msg_id and refuses list/search reads', async () => {
+    const opened = parse(await run(escalateTool, { severity: 'advisory', summary: 'judge evidence target' }));
+
+    expect(escalationsTool.agentRoles).toContain('judge');
+    const exact = parse(await runWithCtx(escalationsTool, { msg_id: opened.msg_id }, { role: 'judge' }));
+    expect(exact.escalations).toHaveLength(1);
+    expect(exact.escalations[0]).toMatchObject({ msg_id: opened.msg_id, summary: 'judge evidence target' });
+    expect(exact.truncated).toBe(false);
+
+    const unfiltered = await runWithCtx(escalationsTool, {}, { role: 'judge' });
+    expect(unfiltered.isError).toBe(true);
+    expect(parse(unfiltered)).toMatchObject({ error: 'judge_requires_exact_msg_id' });
+
+    const filtered = await runWithCtx(
+      escalationsTool,
+      { msg_id: opened.msg_id, q: 'judge evidence' },
+      { role: 'judge' },
+    );
+    expect(filtered.isError).toBe(true);
+    expect(parse(filtered)).toMatchObject({ error: 'judge_requires_exact_msg_id' });
+  });
 });
 
 describe('coord:handoff + coord:handoffs handlers (open → accept → list filter)', () => {

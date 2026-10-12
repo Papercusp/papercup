@@ -9,6 +9,7 @@ import {
   LIFECYCLE_JUDGE_BLUEPRINT_ID,
   LIFECYCLE_JUDGE_EXTRAS,
   LIFECYCLE_JUDGE_INTERVAL_MS,
+  LIFECYCLE_JUDGE_RETRY_FLOOR_MS,
   LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
   LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS,
@@ -915,6 +916,143 @@ describe('runLifecycleJudgementSweep', () => {
     expect(upsert).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it('loads and honors a keep verdict for a recovered open item missing from current task rows', async () => {
+    const verdict: ProcessLifecycleVerdict = {
+      taskId: 'recovered-task',
+      decision: 'keep',
+      reason: 'still active',
+      keepCount: 4,
+      recheckAt: new Date(NOW + LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+      decidedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+    };
+    const readLatest = vi.fn(async (_workspaceId: string, taskIds: readonly string[]) =>
+      taskIds.includes('recovered-task')
+        ? new Map([['recovered-task', verdict]])
+        : new Map<string, ProcessLifecycleVerdict>());
+    const claim = vi.fn(async (items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0]) =>
+      items.map((item) => ({ ...item })));
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const result = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      depsForRunner({
+        readLatestVerdicts: readLatest,
+        listOpenCandidateItems: async () => [{
+          id: 'WI-recovered',
+          taskId: 'recovered-task',
+          harnessSlug: 'papercusp',
+          lastReleasedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS),
+        }],
+        claimOpenCandidateItems: claim,
+        spawnJudge: spawn,
+      }),
+    );
+
+    expect(readLatest.mock.calls.map((call) => call[1])).toEqual([[], ['recovered-task']]);
+    expect(result.suppressedByKeep).toBe(1);
+    expect(result.suppressedByRetryFloor).toBe(0);
+    expect(result.openItems).toEqual([]);
+    expect(claim).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('prevents a second recovered-row claim under a new judge owner after a recent release', async () => {
+    let lastReleasedAt = new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS);
+    const claimOwners: string[] = [];
+    const claim = vi.fn(async (
+      items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0],
+      assignee: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[1],
+    ) => {
+      claimOwners.push(assignee);
+      return items.map((item) => ({ ...item, takenBy: assignee, assignee }));
+    });
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const deps = depsForRunner({
+      listOpenCandidateItems: async () => [{
+        id: 'WI-released',
+        taskId: 'released-task',
+        harnessSlug: 'papercusp',
+        lastReleasedAt,
+      }],
+      claimOpenCandidateItems: claim,
+      spawnJudge: spawn,
+    });
+
+    const first = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      deps,
+    );
+    // The first judge has released the same stable condition row; its next owner id will differ.
+    lastReleasedAt = new Date(NOW);
+    const retry = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + 5 * 60_000 },
+      deps,
+    );
+
+    expect(first.judge.attempted).toBe(true);
+    expect(claimOwners).toHaveLength(1);
+    expect(claimOwners[0]).toMatch(/^system:operator\/s-/);
+    expect(first.suppressedByRetryFloor).toBe(0);
+    expect(retry.suppressedByRetryFloor).toBe(1);
+    expect(retry.openItems).toEqual([]);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a fresh retry-floor epoch when the latest keepCount advances', async () => {
+    let verdict: ProcessLifecycleVerdict = {
+      taskId: 'epoch-task',
+      decision: 'keep',
+      reason: 'first keep epoch is due',
+      keepCount: 4,
+      recheckAt: new Date(NOW - LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+      decidedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+    };
+    const readLatest = async (_workspaceId: string, taskIds: readonly string[]) =>
+      taskIds.includes('epoch-task')
+        ? new Map([['epoch-task', verdict]])
+        : new Map<string, ProcessLifecycleVerdict>();
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const deps = depsForRunner({
+      readLatestVerdicts: readLatest,
+      listOpenCandidateItems: async () => [{
+        id: 'WI-epoch',
+        taskId: 'epoch-task',
+        harnessSlug: 'papercusp',
+        lastReleasedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS),
+      }],
+      spawnJudge: spawn,
+    });
+
+    const dueOldEpoch = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      deps,
+    );
+    verdict = {
+      ...verdict,
+      reason: 'new keep count starts a new retry epoch',
+      keepCount: 5,
+      recheckAt: new Date(NOW).toISOString(),
+      decidedAt: new Date(NOW).toISOString(),
+    };
+    const freshEpoch = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + 5 * 60_000 },
+      deps,
+    );
+    const afterFloor = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_RETRY_FLOOR_MS + 1 },
+      deps,
+    );
+
+    expect(dueOldEpoch.judge.attempted).toBe(true);
+    expect(freshEpoch.suppressedByRetryFloor).toBe(1);
+    expect(freshEpoch.openItems).toEqual([]);
+    expect(afterFloor.judge.attempted).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('task-reconcile production wiring', () => {
@@ -924,6 +1062,7 @@ describe('task-reconcile production wiring', () => {
   it('keeps the lifecycle sweep on the existing task-reconcile routine', () => {
     expect(actionSource).toContain("registerSystemAction('task-reconcile'");
     expect(actionSource).toContain('runLifecycleJudgementSweep({');
+    expect(lifecycleSource).toContain('harness_slug, taken_by, last_released_at');
     expect(actionSource).toContain('confirmedResidueTaskIds');
     expect(actionSource).toContain('intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS');
   });

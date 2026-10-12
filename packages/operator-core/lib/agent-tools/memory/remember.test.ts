@@ -106,6 +106,7 @@ import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthr
 import { resolveConflictJudge } from '../../memory/conflict-judge';
 import { resolveFactFederationSlug } from '../../agent-facts/store';
 import { getFlag } from '@papercusp/flags/server';
+import { resetMemoryDegradedForTest } from '../../memory/op-deadline';
 
 type FakeBackend = {
   name: string;
@@ -932,6 +933,47 @@ describe('memory:remember — verbatim guard + dedup fall-through (GAP 7)', () =
     // The catch{} at the dedup site must not strip the verbatim guard on the
     // fall-through write.
     expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
+  });
+
+  it('a dedup-search timeout does not suppress the fresh transient write retry', async () => {
+    const previousTimeout = process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+    const previousDedup = process.env.PAPERCUSP_MEMORY_DEDUP;
+    const previousAttempts = process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+    const previousBackoff = process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+    process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = '20';
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '2';
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '0';
+    resetMemoryDegradedForTest();
+
+    try {
+      const b = fakeBackend([], ['m-recovered']);
+      b.search.mockImplementation(() => new Promise(() => {}));
+      let writeCalls = 0;
+      b.remember.mockImplementation(() => {
+        writeCalls += 1;
+        return writeCalls === 1
+          ? new Promise(() => {})
+          : Promise.resolve({ ids: ['m-recovered'] });
+      });
+      useBackend(b);
+      vi.mocked(journalPendingWrite).mockResolvedValueOnce('journal-retry-test');
+
+      const res = await remember.handler({ content: 'a retryable project-memory fact', kind: 'project' }, fakeCtx);
+      expect(envelope(res)).toMatchObject({ ok: true, ids: ['m-recovered'] });
+      expect(b.search).toHaveBeenCalledTimes(1);
+      expect(b.remember).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousTimeout === undefined) delete process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+      else process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = previousTimeout;
+      if (previousDedup === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+      else process.env.PAPERCUSP_MEMORY_DEDUP = previousDedup;
+      if (previousAttempts === undefined) delete process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+      else process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = previousAttempts;
+      if (previousBackoff === undefined) delete process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+      else process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = previousBackoff;
+      resetMemoryDegradedForTest();
+    }
   });
 });
 

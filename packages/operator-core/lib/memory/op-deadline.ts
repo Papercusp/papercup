@@ -344,9 +344,10 @@ export function memoryWriteRetryBackoffMs(): number {
  *     / bad key) — retrying it just adds latency — so those propagate on the
  *     first attempt.
  *   - SKIPS the retry when the process was ALREADY in the degraded cooldown
- *     BEFORE this write (captured up front): a sustained / known-wedged backend
- *     should fail fast, not pile retries on. Only a FRESH (possibly transient)
- *     timeout is retried.
+ *     before the write workflow: a sustained / known-wedged backend should fail
+ *     fast, not pile retries on. Callers that run optional backend checks first
+ *     can pass `degradedAtStart` from before those checks, so an advisory timeout
+ *     in the same request does not suppress the fresh write's bounded retry.
  *   - Bounded (`memoryWriteMaxAttempts`, default 2) with a short backoff, so the
  *     worst-case wait (attempts × deadline + backoffs) stays well under the
  *     ~55–60s MCP transport cap.
@@ -360,14 +361,14 @@ export function memoryWriteRetryBackoffMs(): number {
 export async function withMemoryWriteRetry<T>(
   attempt: () => Promise<T>,
   label: string,
-  opts: { sleep?: (ms: number) => Promise<void> } = {},
+  opts: { sleep?: (ms: number) => Promise<void>; degradedAtStart?: boolean } = {},
 ): Promise<T> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // Snapshot the degraded state BEFORE the first attempt — this write's own
   // timeout will arm the latch (via withMemoryToolTimeout), so reading it after
   // would always look degraded. A process that was already degraded when the
   // write STARTED is a sustained wedge → fail fast, no retry.
-  const alreadyDegraded = isMemoryDegraded();
+  const alreadyDegraded = opts.degradedAtStart ?? isMemoryDegraded();
   const maxAttempts = memoryWriteMaxAttempts();
   let lastErr: unknown;
   for (let i = 0; i < maxAttempts; i++) {

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
 import {
   __resetCommittedBlobDigestsForTest,
+  createCommittedTreeDiagnostics,
   defaultBlobBatchReader,
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
@@ -229,6 +230,40 @@ describe('fingerprintRepoFileSetAtCommit', () => {
 });
 
 describe('batched reads', () => {
+  it('counts unique repository/blob lookups, including aliases and repeated reads', async () => {
+    const content = readFileSync(join(root, 'src/a.ts'));
+    writeFileSync(join(root, 'src/alias.ts'), content);
+    writeFileSync(join(sub, 'sql/001.sql'), content);
+    git(sub, 'commit', '-q', '-am', 'shared blob in nested repository');
+    git(root, 'add', 'src/alias.ts', 'libs/sub');
+    git(root, 'commit', '-q', '-m', 'blob aliases');
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const diagnostics = createCommittedTreeDiagnostics();
+    await readCommittedFiles(root, commit, [...paths, 'src/alias.ts', 'src/a.ts'], { diagnostics });
+    expect(diagnostics).toEqual({ schemaVersion: 'committed-tree-diagnostics-v1', reads: 1,
+      memoHits: 0, memoMisses: 2, batchAttempts: 2, batchSucceeded: 2, batchFailed: 0,
+      blobsRequested: 2, blobsReturned: 2, blobsVerified: 2,
+      batchRoutes: { sidecar: 0, local: 2, injected: 0 } });
+    await readCommittedFiles(root, commit, [...paths, 'src/alias.ts'], { diagnostics });
+    expect(diagnostics).toMatchObject({ reads: 2, memoHits: 2, memoMisses: 2, batchAttempts: 2 });
+  });
+
+  it.each(['missing', 'mismatch', 'throw'] as const)('counts an injected %s failure without claiming success', async (failure) => {
+    const diagnostics = createCommittedTreeDiagnostics();
+    const error = new Error('original injected failure');
+    const readBlobs: BlobBatchReader = async (_dir, ids) => {
+      if (failure === 'throw') throw error;
+      return failure === 'missing' ? new Map() : new Map([[ids[0]!, Buffer.from('wrong bytes')]]);
+    };
+    const result = readCommittedFiles(root, git(root, 'rev-parse', 'HEAD'), ['src/a.ts'], { diagnostics, readBlobs });
+    if (failure === 'throw') await expect(result).rejects.toBe(error);
+    else await expect(result).rejects.toThrow(`repo_measurement_blob_${failure}`);
+    expect(diagnostics).toEqual({ schemaVersion: 'committed-tree-diagnostics-v1', reads: 1,
+      memoHits: 0, memoMisses: 1, batchAttempts: 1, batchSucceeded: 0, batchFailed: 1,
+      blobsRequested: 1, blobsReturned: failure === 'mismatch' ? 1 : 0, blobsVerified: 0,
+      batchRoutes: { sidecar: 0, local: 0, injected: 1 } });
+  });
+
   function counting() {
     const calls: string[][] = [];
     let blobBatches = 0;

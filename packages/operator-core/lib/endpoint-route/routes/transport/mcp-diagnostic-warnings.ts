@@ -119,6 +119,42 @@ function isPopulatedWorkItemParkResult(body: Record<string, unknown>): boolean {
     typeof body.by === 'string' && body.by.trim().length > 0;
 }
 
+function isPopulatedCapabilityReadResult(body: Record<string, unknown>): boolean {
+  if (body.ok !== true || typeof body.file_path !== 'string' || body.file_path.trim().length === 0) {
+    return false;
+  }
+
+  // `capability:read` returns exact text in `structuredContent.body`. Empty files
+  // are still successful reads: the file path and declared body field prove the
+  // read completed, even when the body itself has zero characters.
+  if (typeof body.body === 'string') return true;
+
+  // The remaining machine-readable modes have explicit receipts around their
+  // selected bytes/content. Preserve empty byte pages and empty selections too;
+  // their offsets/counts are authoritative, unlike an unshaped empty result.
+  if (
+    body.encoding === 'base64' &&
+    typeof body.byte_offset === 'number' && Number.isSafeInteger(body.byte_offset) && body.byte_offset >= 0 &&
+    typeof body.byte_length === 'number' && Number.isSafeInteger(body.byte_length) && body.byte_length >= 0 &&
+    typeof body.total_bytes === 'number' && Number.isSafeInteger(body.total_bytes) && body.total_bytes >= 0 &&
+    typeof body.eof === 'boolean' &&
+    typeof body.data === 'string' &&
+    'next_cursor' in body
+  ) return true;
+
+  if (
+    Array.isArray(body.content) &&
+    Array.isArray(body.selected_indexes) &&
+    typeof body.total_content_items === 'number' && Number.isSafeInteger(body.total_content_items) &&
+    body.total_content_items >= 0 &&
+    body.reference !== null && typeof body.reference === 'object'
+  ) return true;
+
+  return Array.isArray(body.evidence) &&
+    typeof body.evidence_class === 'string' &&
+    body.reference !== null && typeof body.reference === 'object';
+}
+
 function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (Array.isArray(parsed)) return parsed.length > 0;
   if (!parsed || typeof parsed !== 'object') return false;
@@ -132,6 +168,7 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   // empty files and a negative ancestry result are still successful, populated reads.
   if (isPopulatedGitEvidenceResult(body)) return true;
   if (isPopulatedWorkItemParkResult(body)) return true;
+  if (isPopulatedCapabilityReadResult(body)) return true;
   // code:run wraps the script's returned summary with orchestration metadata instead of a
   // conventional `results` field. Only recognize this distinctive successful envelope, then
   // classify the summary itself so an empty script result still keeps the warning.
@@ -215,7 +252,7 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
   for (const key of [
     'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents',
-    'sessions', 'watch', 'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'sessions', 'turns', 'watch', 'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
     'workItem', 'event_inspection',
   ]) {
     if (!(key in body)) continue;

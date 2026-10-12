@@ -21,6 +21,7 @@ vi.mock('./spec-evidence-store', async (original) => ({
 
 import tool from './get-spec-evidence';
 import { listSpecEvidence } from './spec-evidence-store';
+import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const listEvidence = vi.mocked(listSpecEvidence);
@@ -96,6 +97,29 @@ beforeEach(() => {
 });
 
 describe('plans:get-spec-evidence detail levels', () => {
+  it('forwards only this request\'s committed-reader observations into metadata', async () => {
+    const metadata = vi.fn();
+    const cold = { ...createCommittedTreeDiagnostics(), reads: 1, memoMisses: 2,
+      batchAttempts: 1, batchSucceeded: 1, blobsRequested: 2, blobsReturned: 2, blobsVerified: 2,
+      batchRoutes: { sidecar: 1, local: 0, injected: 0 } };
+    listEvidence.mockImplementation(async (options) => {
+      options.diagnostics!.committedTree = cold;
+      return [];
+    });
+    await tool.handler(tool.args.parse({ slug: 'plan-a', harness: 'papercusp' }) as never, { metadata } as never);
+    expect(metadata).toHaveBeenCalledWith({ plansGetSpecEvidenceStageTimings: expect.objectContaining({
+      committedTree: cold,
+    }) });
+    listEvidence.mockImplementation(async (options) => {
+      expect(options.diagnostics!.committedTree).toBeUndefined();
+      options.diagnostics!.committedTree = createCommittedTreeDiagnostics();
+      return [];
+    });
+    await tool.handler(tool.args.parse({ slug: 'plan-a', harness: 'papercusp' }) as never, { metadata } as never);
+    expect(metadata.mock.calls[1][0].plansGetSpecEvidenceStageTimings.committedTree)
+      .toEqual(createCommittedTreeDiagnostics());
+  });
+
   it('returns a per-binding currentness table, a byClause rollup and a fullBody ref by default', async () => {
     const summary = await call({ harness: 'papercusp', slug: 'plan-a' });
     const full = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'full' });

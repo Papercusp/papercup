@@ -286,7 +286,7 @@ export default defineTool({
           found: false,
           ...(resolution.looksTruncated
             ? {
-                detail: `No message id starts with '${args.root_msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
+                detail: `No message id starts with '${args.root_msg_id}'. Note this is NOT a recognized full msg_id (expected '<short>-0000-<32 hex>' or 'coord-send-<64 hex>') — if you copied it out of prose it may have been truncated at the source.`,
               }
             : {}),
         },

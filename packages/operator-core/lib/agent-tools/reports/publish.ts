@@ -36,30 +36,13 @@ import {
 export default defineTool({
   name: 'reports:publish',
   description:
-    'Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) ' +
-    'to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid ' +
-    'allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server ' +
-    'stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the ' +
-    'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
-    'verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. ' +
-    'Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only ' +
-    'when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve ' +
-    'dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with ' +
-    '`docs:get`, and link the maintained procedure from the report without copying private incident details.',
+    'Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path.',
   guidance: {
-    when:
-      'When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, ' +
-      'analyses, status digests, or proposals.',
+    when: 'For completed audits, reviews, analyses, postmortems, status digests, or proposals.',
     notWhen:
-      'Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, ' +
-      '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Reusable ' +
-      'procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.',
+      'Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, `coord:send` for agent messages, and `docs:author` for reusable procedures.',
     chaining:
-      'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → ' +
-      'cite a descriptive Markdown link using the returned same-origin path directly in Papercusp/Tauri ' +
-      '(operator reader: /reports?sel=<report_id>). Use an absolute HTTP(S) URL only when a verified GUI origin is available; ' +
-      'never guess or ask the owner for an origin solely to format the link. Claim saved or delivered only after readback succeeds. ' +
-      'For corrections: read the original → publish with supersedes → new report_id → verify the correction → cite it.',
+      'After publish, call `reports:get { id: report_id }`; verify the complete body and visibility before citing a descriptive Markdown link. Use the returned same-origin path in Papercusp/Tauri; an absolute URL requires a verified GUI origin. Never guess or request an origin or cite a bare id. For corrections, read the original and publish with `supersedes`. Link maintained procedures via `docs:author` and `docs:get` rather than copying private incident details.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +

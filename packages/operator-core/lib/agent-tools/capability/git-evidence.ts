@@ -143,7 +143,7 @@ export type GitEvidenceResult =
         args: Extract<GitEvidenceArgs, { op: 'readFileAtCommit' }>;
       } | null;
     }
-  | { ok: false; reason: string; message?: string };
+  | { ok: false; reason: string; message?: string; retryable?: boolean };
 
 /** Keep a base64 page plus its recovery cursor inside the result door. */
 export function doorSafeGitEvidencePageBytes(
@@ -348,7 +348,12 @@ async function runJudgeGitEvidenceInner(
         if (evidenceFailureFrom(error)) throw error;
         if (options.signal.aborted) throw error;
         const message = error instanceof Error ? error.message : String(error);
-        throw new GitEvidenceReadFailure({ ok: false, reason: 'file_lookup_failed', message: message.slice(0, 300) });
+        throw new GitEvidenceReadFailure({
+          ok: false,
+          reason: 'file_lookup_failed',
+          message: message.slice(0, 300),
+          retryable: true,
+        });
       }
       if (!location) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'file_not_found_at_commit' });

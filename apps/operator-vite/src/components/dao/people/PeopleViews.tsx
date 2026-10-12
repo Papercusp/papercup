@@ -6,6 +6,7 @@ import type { DaoPerson, DaoWorkspaceView } from '@papercusp/operator-core/lib/d
 import { reportingForest, type OrgNode } from './org-chart';
 import EquityViews from './EquityViews';
 import HiringViews from './HiringViews';
+import OnboardingViews from './OnboardingViews';
 
 const personKey = (person: DaoPerson) => person.personId ?? 'member:' + person.memberId;
 
@@ -19,7 +20,8 @@ function ReportingLines({ nodes, open }: { nodes: OrgNode[]; open: (person: DaoP
 }
 
 export default function PeopleViews({ view, onRefresh }: { view: DaoWorkspaceView; onRefresh?: () => void }) {
-  const [tab, setTab] = useQueryState('peopleTab', parseAsStringEnum(['directory', 'profile', 'org', 'cap', 'my', 'hiring']).withDefault('directory'));
+  const [tab, setTab] = useQueryState('peopleTab', parseAsStringEnum(['directory', 'profile', 'org', 'cap', 'my', 'hiring', 'onboarding']).withDefault('directory'));
+  const [onboardingOffer, setOnboardingOffer] = useQueryState('onboardingOffer', parseAsString.withDefault(''));
   const [selected, setSelected] = useQueryState('person', parseAsString.withDefault(''));
   const people = useMemo(() => view.people?.status === 'ready' ? view.people.value :
     view.members?.status === 'ready' ? view.members.value.map<DaoPerson>(member => ({
@@ -33,6 +35,7 @@ export default function PeopleViews({ view, onRefresh }: { view: DaoWorkspaceVie
   const showOrg = tab === 'org';
   const showEquity = tab === 'cap' || tab === 'my';
   const showHiring = tab === 'hiring';
+  const showOnboarding = tab === 'onboarding';
   const org = useMemo(() => reportingForest(people), [people]);
   function open(row: DaoPerson) { void setSelected(personKey(row)); void setTab('profile'); }
   const columns: ColumnDef<DaoPerson>[] = [
@@ -47,16 +50,22 @@ export default function PeopleViews({ view, onRefresh }: { view: DaoWorkspaceVie
   return <section className="dao-card" aria-label="People">
     <h2>People</h2>
     <div role="tablist" aria-label="People views" className="dao-actions">
-      <button type="button" role="tab" aria-selected={!showProfile && !showOrg && !showEquity && !showHiring} onClick={() => { void setTab('directory'); }}>Directory</button>
+      <button type="button" role="tab" aria-selected={!showProfile && !showOrg && !showEquity && !showHiring && !showOnboarding} onClick={() => { void setTab('directory'); }}>Directory</button>
       <button type="button" role="tab" aria-selected={showProfile} disabled={!selected} onClick={() => { void setTab('profile'); }}>Profile</button>
       <button type="button" role="tab" aria-selected={showOrg} onClick={() => { void setTab('org'); }}>Org chart</button>
       <button type="button" role="tab" aria-selected={tab === 'cap'} onClick={() => { void setTab('cap'); }}>Cap table</button>
       <button type="button" role="tab" aria-selected={tab === 'my'} onClick={() => { void setTab('my'); }}>My equity</button>
       <button type="button" role="tab" aria-selected={showHiring} onClick={() => { void setTab('hiring'); }}>Hiring</button>
+      <button type="button" role="tab" aria-selected={showOnboarding} onClick={() => { void setTab('onboarding'); }}>Onboarding</button>
     </div>
     {view.people?.status === 'error' ? <p role="alert">{view.people.message} <button type="button" onClick={onRefresh}>Retry</button></p> :
       !view.people ? <p role="status" aria-live="polite">Work profiles are unavailable. <button type="button" onClick={onRefresh}>Refresh people</button></p> : null}
-    {showHiring ? view.localHomeSlug ? <HiringViews key={view.localHomeSlug} daoSlug={view.localHomeSlug} /> : <p>Connect to this DAO to view hiring.</p> : showEquity ? <EquityViews view={view} mine={tab === 'my'} onRefresh={onRefresh} /> : showOrg ? <section aria-label="Org chart"><h3>Reporting lines</h3>{people.length ? <ReportingLines nodes={org} open={open} /> :
+    {showOnboarding ? view.localHomeSlug ? <>
+      <form className="dao-form" aria-label="Open signed offer" onSubmit={event => { event.preventDefault(); void setOnboardingOffer(String(new FormData(event.currentTarget).get('offer'))); }}>
+        <label>Offer reference<input key={onboardingOffer} name="offer" defaultValue={onboardingOffer} required /></label><button type="submit">Open onboarding</button>
+      </form>
+      {onboardingOffer ? <OnboardingViews key={view.localHomeSlug + ':' + onboardingOffer} daoSlug={view.localHomeSlug} offerId={onboardingOffer} onChanged={onRefresh} /> : <p>Enter the offer reference from your hiring administrator.</p>}
+    </> : <p>Connect to this DAO to open onboarding.</p> : showHiring ? view.localHomeSlug ? <HiringViews key={view.localHomeSlug} daoSlug={view.localHomeSlug} /> : <p>Connect to this DAO to view hiring.</p> : showEquity ? <EquityViews view={view} mine={tab === 'my'} onRefresh={onRefresh} /> : showOrg ? <section aria-label="Org chart"><h3>Reporting lines</h3>{people.length ? <ReportingLines nodes={org} open={open} /> :
       populationReady ? <p>No current members.</p> : null}</section> : !showProfile ? people.length ? <div role="table" aria-label="People directory"><RichGrid rows={people} columns={columns}
       getRowId={row => String(row.memberId)} /></div> :
       populationReady ? <p>No current members.</p> : null : person ? <article aria-label={person.displayName + ' profile'}>

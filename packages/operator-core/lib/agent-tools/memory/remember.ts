@@ -23,7 +23,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
-import { MemoryTimeoutError, memoryToolTimeoutMs, withMemoryTimeout, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
+import { MemoryTimeoutError, memoryToolTimeoutMs, withMemoryTimeout, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason, isMemoryDegraded } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
 import { expandRefsForEmbed } from '../../memory/ref-expand';
 import { getWorkItem } from '../../work-items';
@@ -223,6 +223,11 @@ export default defineTool({
     }),
   ),
   async handler(args, ctx) {
+    // Keep this request-start snapshot: the advisory dedup search below can
+    // timeout and arm the process-wide degraded latch, but that must not make
+    // this same request skip the single bounded retry for a transient WRITE
+    // timeout. A latch already active before the request still fails fast.
+    const memoryDegradedAtRequestStart = isMemoryDegraded();
     let user: Awaited<ReturnType<typeof getSessionUserOrDefault>>;
     try {
       user = await withMemoryTimeout(
@@ -824,7 +829,9 @@ export default defineTool({
         // conversation-extraction path (backend.rememberConversation) keeps the
         // LLM extraction, where pulling facts out of a chat window earns it.
         verbatim: true,
-      }), 'memory:remember remember'));
+      }), 'memory:remember remember', {
+        degradedAtStart: memoryDegradedAtRequestStart,
+      }));
     } catch (err) {
       // Every legible write-failure class below leaves the journal row
       // `pending` — the embed-backfill tick replays it (with a near-dup

@@ -34,6 +34,26 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  const nativeConsult = { request_key: 'native-retry', question: 'Does the archived source reach the configured backend?',
+    tried: 'Read the exact dispatcher and launcher', observed: 'Prior native source failed to launch',
+    decision_at_stake: 'Whether historical conversion is supported',
+    sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' };
+
+  it('requires an explicit held work-item for native consults before resolving or launching anything', async () => {
+    expect(await callHandler({ nativeConsult })).toMatchObject({ ok: false, error: 'native_consult_requires_work_item' });
+  });
+
+  it.each(['files', 'changedPaths', 'recoverEvidence', 'remeasureEvidence', 'evidence', 'rootHarnessSlug', 'testNamePattern'])(
+    'refuses native consult mixed with %s before launching anything', async (selector) => {
+      expect(await callHandler({ nativeConsult, work_item_id: 'WI-1', [selector]: [] })).toMatchObject({
+        ok: false, error: 'mutually_exclusive_selectors',
+      });
+    });
+
+  it('rejects a native source/backend selector outside the finite contract', () => {
+    expect(runTool.args.safeParse({ nativeConsult: { ...nativeConsult, targetBackend: 'unknown' } }).success).toBe(false);
+  });
+
   it('is classified as a write so a timed-out MCP call can replay its result', () => {
     expect(runTool.effect).toBe('write');
   });

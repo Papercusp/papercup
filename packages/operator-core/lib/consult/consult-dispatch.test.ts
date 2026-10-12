@@ -1522,6 +1522,35 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  it('keeps native backend constraints on a later cascade and preserves a walled target as unavailable', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+      probeBackendAvailable: async () => ({ available: false, detail: 'target account unavailable' }),
+    } as never);
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch.dispatched).toBe(false);
+    expect(result.dispatch.attempts).toEqual([expect.objectContaining({ agent: 'codex', reason: 'account-walled' })]);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('rechecks native source state before a later cascade instead of using a changed live source', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+    } as never, { source: { live: true } });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch.dispatched).toBe(false);
+    expect(result.dispatch.detail).toContain('source state');
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('keeps a saved reviewer model and effort on a later cascade leg', async () => {
     const { deps, calls } = makeFakes({
       readReviewerModel: async () => ({ agent: 'codex', model: 'sol', effort: 'xhigh' }),

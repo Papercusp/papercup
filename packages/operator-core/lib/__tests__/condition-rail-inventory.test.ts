@@ -115,6 +115,27 @@ describe('condition-rail inventory — site identity and rail-call mutations (P-
 });
 
 describe('condition-rail inventory — class 2: log-only fallback decisions', () => {
+  it('keeps a fallback site when its message moves into a local conditional constant', () => {
+    const source = "function recordSidecarFallback(rejected) { const outcome = rejected ? 'rejected; local execution avoided' : 'fallback to local execution'; console.warn(`[sidecar] ${outcome}`); }";
+    const rows = scanSource(source, 'packages/x/lib/sidecar.ts');
+    expect(rows.map((row) => row.id)).toEqual([
+      'log-only-fallback|packages/x/lib/sidecar.ts|recordSidecarFallback|1',
+    ]);
+    expect(scanSource(source.replace('console.warn', "observeFallback('sidecar', decision); console.warn"),
+      'packages/x/lib/sidecar.ts')).toEqual([]);
+  });
+
+  it('follows constant aliases and concatenation while respecting lexical shadows', () => {
+    expect(classesOf("const message = 'falling back'; function check() { const alias = message; logger.warn('gate: ' + alias); }",
+      'packages/x/lib/gate.ts')).toEqual(['log-only-fallback']);
+    for (const source of [
+      "function other() { const message = 'falling back'; } function check() { console.warn(message); }",
+      "const message = 'falling back'; function check(message) { console.warn(message); }",
+      "const message = 'falling back'; function check() { const message = 'finished'; console.warn(message); }",
+      "const message = 'falling back'; function check() { let message = unknown; console.warn(message); }",
+    ]) expect(classesOf(source, 'packages/x/lib/gate.ts')).toEqual([]);
+  });
+
   it('reads long arguments and ignores literal closing parentheses when locating the call end', () => {
     const long = `console.warn('${'x'.repeat(500)} falling back');`;
     const parens = `console.warn('connection (peer) closed: falling back');`;

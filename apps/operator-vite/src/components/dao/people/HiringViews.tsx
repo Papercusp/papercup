@@ -3,6 +3,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
 import ContractSigningViews from './ContractSigningViews';
+import OnboardingViews from './OnboardingViews';
 
 const cadences = ['hourly','weekly','biweekly','monthly','annual','per-milestone'];
 const states: Record<string, string> = { offered: 'Awaiting internal approval', approved: 'Approved for contract', 'contract-generated': 'Awaiting signatures', signed: 'Signed; awaiting hire vote', 'hire-proposed': 'Hire vote open', hired: 'Hired', rejected: 'Rejected', lapsed: 'Lapsed' };
@@ -125,6 +126,10 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
         <li key={h.id}>{h.state} · {name(h.actorPersonId)} · <time>{h.at}</time></li>)}</ol>
       {offer.state === 'offered' ? <p>Internal approval is required before contract generation.</p> :
         <ContractSigningViews key={offer.offerId} daoSlug={daoSlug} offer={offer} people={data.people} onChanged={() => void load()} />}
+      {['signed','hire-proposed','hired','lapsed'].includes(offer.state) ? <>
+        <p>Candidate onboarding offer reference: <code>{offer.offerId}</code>. The candidate can open it in People → Onboarding.</p>
+        <OnboardingViews key={'onboarding:' + offer.offerId} daoSlug={daoSlug} offerId={offer.offerId} onChanged={() => void load()} />
+      </> : null}
     </article> : offerId ? <p>The selected offer is unavailable in this DAO.</p> : null}
   </section>;
 }

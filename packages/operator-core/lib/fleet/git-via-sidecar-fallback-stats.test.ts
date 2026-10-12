@@ -11,7 +11,7 @@
  * re-warn assertions must REJECT the control while accepting the real subject.
  * A guard that has never failed is a guard nobody has tested.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import * as recorder from '../degradation/fallback-observations';
 
 const primary = vi.hoisted(() => ({ call: vi.fn() }));
@@ -51,7 +51,7 @@ function makeWarnOnceControl() {
 
 describe('sidecar fallback accounting', () => {
   let warn: ReturnType<typeof vi.spyOn>;
-  let observation: ReturnType<typeof vi.spyOn>;
+  let observation: MockInstance<typeof recorder.observeFallback>;
 
   beforeEach(() => {
     observation = vi.spyOn(recorder, 'observeFallback').mockReturnValue(true);

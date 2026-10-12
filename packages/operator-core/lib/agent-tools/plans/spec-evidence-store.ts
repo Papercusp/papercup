@@ -27,12 +27,14 @@ import { resolvePlanScope } from './source';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
+  createCommittedTreeDiagnostics,
   defaultBlobBatchReader,
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
   repoFileSetFingerprint,
   resolveMeasurementCommit,
   type CommittedTreeDeps,
+  type CommittedTreeDiagnostics,
 } from './committed-tree-reader';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
@@ -2100,6 +2102,7 @@ function parseProvisionalScorecardProof(issueId: string, value: unknown): Provis
 
 export interface ListSpecEvidenceDiagnostics {
   phaseMs: Record<string, number>;
+  committedTree?: CommittedTreeDiagnostics;
   bindings: {
     selectedRows: number;
     rowsWithRecipe: number;
@@ -2930,6 +2933,9 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const diagnostics = options.diagnostics;
+  const committedTree = diagnostics
+    ? (diagnostics.committedTree ??= createCommittedTreeDiagnostics())
+    : undefined;
   const totalStartedAt = diagnostics ? Date.now() : 0;
   const recordPhase = (name: string, startedAt: number) => {
     if (diagnostics) diagnostics.phaseMs[name] = Math.max(0, Date.now() - startedAt);
@@ -3308,6 +3314,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           let detailed: DetailedRepoEvidenceMeasurement;
           if (measuredAtCommit) {
             detailed = await measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit, {
+              ...(committedTree ? { deps: { diagnostics: committedTree } } : {}),
               ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
             });
           } else if (snapshot && (fixtureRoot === measurementRoot || !hasRepoFixturePaths(recipe) || fixtureSnapshot)) {
@@ -3340,7 +3347,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   ...await listCommittedGlobMatches(fixtureRoot, fixtureCommit, recipe.fixtureGlobs ?? [],
                     { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH }),
                 ])].sort();
-                const fixture = await fingerprintRepoFileSetAtCommit(fixtureRoot, fixtureCommit, committedFixturePaths);
+                const fixture = await fingerprintRepoFileSetAtCommit(fixtureRoot, fixtureCommit, committedFixturePaths,
+                  committedTree ? { diagnostics: committedTree } : {});
                 fixtureFingerprint = fixture.fingerprint;
                 fixtureFiles = fixture.files;
               } else {
