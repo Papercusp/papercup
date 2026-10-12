@@ -31,6 +31,10 @@ export async function evmChain() {
   let number = 1n;
   const logs: Array<{ address: Address; data: Hex; topics: Hex[]; blockNumber: bigint }> = [];
   const block = () => createBlock({ header: { number, timestamp: time, gasLimit: 60_000_000n, baseFeePerGas: 1n } }, { common });
+  const transactions = new Map<Hex, { from: Address; to: Address | null; input: Hex; value: bigint; chainId: number }>();
+  const receipts = new Map<Hex, { status: string; blockNumber: bigint; blockHash: Hex; transactionHash: Hex; logs: Array<{ address: Address; data: Hex; topics: Hex[] }> }>();
+  const blocks = new Map<bigint, { hash: Hex; timestamp: bigint }>();
+  let lastTransactionHash: Hex | null = null;
   const error = (abi: Abi, data: Hex) => {
     try { return decodeErrorResult({ abi, data }).errorName; } catch { return data; }
   };
@@ -38,12 +42,19 @@ export async function evmChain() {
     ++time; ++number;
     const account = await vm.stateManager.getAccount(createAddressFromString(accounts[sender]));
     const tx = createLegacyTx({ nonce: account!.nonce, gasLimit: 50_000_000n, gasPrice: 10n, data, ...(to ? { to } : {}) }, { common }).sign(keys[sender]);
-    const result = await runTx(vm, { tx, block: block() });
+    const executedBlock = block();
+    const result = await runTx(vm, { tx, block: executedBlock });
+    const transactionHash = bytesToHex(tx.hash()) as Hex, blockHash = bytesToHex(executedBlock.hash()) as Hex;
+    lastTransactionHash = transactionHash;
+    transactions.set(transactionHash, { from: accounts[sender]!, to: to ?? null, input: data, value: 0n, chainId: 1 });
+    blocks.set(number, { hash: blockHash, timestamp: time });
+    receipts.set(transactionHash, { status: result.execResult.exceptionError ? 'reverted' : 'success', blockNumber: number, blockHash, transactionHash,
+      logs: (result.execResult.logs ?? []).map(([address,topics,data]) => ({ address: bytesToHex(address) as Address, data: bytesToHex(data) as Hex, topics: topics.map(topic => bytesToHex(topic) as Hex) })) });
     const output = bytesToHex(result.execResult.returnValue) as Hex;
     if (result.execResult.exceptionError) throw new Error('EVM reverted: ' + error(abi, output) + ' (' + result.execResult.exceptionError.error + ')');
     for (const [address, topics, data] of result.execResult.logs ?? []) logs.push({ address: bytesToHex(address) as Address,
       data: bytesToHex(data) as Hex, topics: topics.map(topic => bytesToHex(topic) as Hex), blockNumber: number });
-    return { result, output };
+    return { result, output, transactionHash };
   }
   async function deploy(name: EquityContractName, args: unknown[] = []): Promise<Contract> {
     const artifact = artifacts.contracts[name];
@@ -85,7 +96,15 @@ export async function evmChain() {
         } catch { return []; } // unrelated events use a different ABI; amounts still read from storage
       });
   }
-  return { vm, accounts, raw, deploy, send, callAs, read, advance, now, blockNumber, getContractEvents };
+  const getTransaction = async ({ hash }: { hash: Hex }) => { const tx = transactions.get(hash); if (!tx) throw new Error('Unknown fixture transaction'); return tx; };
+  const getTransactionReceipt = async ({ hash }: { hash: Hex }) => { const receipt = receipts.get(hash); if (!receipt) throw new Error('Unknown fixture receipt'); return receipt; };
+  const getBlock = async ({ blockNumber }: { blockNumber: bigint }) => {
+    const saved = blocks.get(blockNumber); if (saved) return saved;
+    if (blockNumber === number) return { hash: bytesToHex(block().hash()) as Hex, timestamp: time };
+    throw new Error('Unknown fixture block');
+  };
+  return { vm, accounts, raw, deploy, send, callAs, read, advance, now, blockNumber, getContractEvents,
+    getTransaction, getTransactionReceipt, getBlock, lastTransactionHash: () => lastTransactionHash };
 }
 type Chain = Awaited<ReturnType<typeof evmChain>>;
 

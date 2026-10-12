@@ -86,8 +86,12 @@ export async function inspectEquity(reader: EquityChainReader, input: { chainId:
   const addresses = { PapercuspEquity: address(input.equity), EquityGovernor: address(input.governor), EquityTimelock: address(input.timelock) };
   const code = await Promise.all(Object.values(addresses).map(addr => reader.getCode({ address: addr, blockNumber })));
   if (code.some(v => !v || v === '0x')) throw new Error('One or more equity contracts are not deployed');
-  // inspectEquity reads the v1 trio only (V2 inspection is P-011); narrow to the keys `addresses` actually has.
-  const read = (contract: keyof typeof addresses, functionName: string, args?: unknown[]) => reader.readContract({ address: addresses[contract], abi: equityArtifacts.contracts[contract].abi, functionName, args, blockNumber });
+  // ERC-5267 reports the deployed token version; never infer it from the local artifact.
+  const domain = await reader.readContract({ address: addresses.PapercuspEquity, abi: equityArtifacts.contracts.PapercuspEquity.abi, functionName: 'eip712Domain', blockNumber }) as readonly unknown[];
+  const version = String(domain[2]);
+  if (version !== '1' && version !== '2') throw new Error('Unsupported equity deployment version');
+  const abiNames = { PapercuspEquity: version === '2' ? 'PapercuspEquityV2' : 'PapercuspEquity', EquityGovernor: version === '2' ? 'EquityGovernorV2' : 'EquityGovernor', EquityTimelock: 'EquityTimelock' } as const;
+  const read = (contract: keyof typeof addresses, functionName: string, args?: unknown[]) => reader.readContract({ address: addresses[contract], abi: equityArtifacts.contracts[abiNames[contract]].abi, functionName, args, blockNumber });
   const [issuerCommitment, legalRegisterURI, genesisActivated, supply, reserved, cap, authority, boundEquity, boundLock, boundGovernor, delay] = await Promise.all([
     read('PapercuspEquity', 'issuerCommitment'), read('PapercuspEquity', 'legalRegisterURI'), read('PapercuspEquity', 'genesisActivated'),
     read('PapercuspEquity', 'totalSupply'), read('PapercuspEquity', 'reservedSupply'), read('PapercuspEquity', 'supplyCap'), read('PapercuspEquity', 'authority'),
@@ -102,7 +106,7 @@ export async function inspectEquity(reader: EquityChainReader, input: { chainId:
     const id = await read('PapercuspEquity', 'memberId', [wallet]);
     holder = { wallet, id: String(id), balance: String(await read('PapercuspEquity', 'balanceOf', [wallet])), register: id === 0n ? null : await read('PapercuspEquity', 'holders', [id]) };
   }
-  return { chainId, blockNumber: String(blockNumber), addresses, issuer: { commitment: issuerCommitment, legalRegisterURI, issuerAttested: genesisActivated === true,
+  return { chainId, version, blockNumber: String(blockNumber), addresses, issuer: { commitment: issuerCommitment, legalRegisterURI, issuerAttested: genesisActivated === true,
     legalEffectiveness: 'requires-verification-against-issuer-documents', publicTrading: 'not-established' },
     issuedShares: String(supply), reservedShares: String(reserved), supplyCap: String(cap), supplyInvariant: BigInt(String(supply)) + BigInt(String(reserved)) <= BigInt(String(cap)),
     governanceBound, timelockDelaySeconds: String(delay), ...(holder ? { holder } : {}),
