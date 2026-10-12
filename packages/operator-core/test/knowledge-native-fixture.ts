@@ -93,7 +93,7 @@ async function main() {
   try {
     const owner = 'su-private-knowledge-reader';
     const stalledOwner = 'su-private-knowledge-stalled-reader';
-    const reports = [];
+    const reports: Awaited<ReturnType<typeof publishReport>>[] = [];
     const knowledge = [];
     for (const token of ['zephyrquartz', 'cobaltquartz', 'amberquartz', 'jadequartz']) {
       // Each owner-private positive control belongs to the reader whose native
@@ -159,11 +159,34 @@ async function main() {
       title: 'Warm corpus control', bodyMd: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.' },
     { authorOwnerId: 'su-private-knowledge-warmup', harnessSlug: workspace });
     await indexReport(sql, warmReport, null);
+    // Calibrate the readiness oracle independently of corpus selection. Retain
+    // both source hits and selection drops before the expensive native journey,
+    // so a missing Report cannot be mistaken for a publication or privacy fault.
+    const warmQuery = 'warmquartz diagnostic snapshot recovery evidence';
+    const warmSource = createReportSearchSource({}, { harnessSlugs: [workspace], automatic: true });
+    const warmUnique = await warmSource.lexical!({ sql, workspaceId: workspace,
+      scopeFilter: null, limit: 20, query: 'warmquartz' });
+    const warmBroad = await warmSource.lexical!({ sql, workspaceId: workspace,
+      scopeFilter: null, limit: 20, query: warmQuery });
+    writeFileSync(join(evidenceDir, 'warm-lexical-source-control.json'), JSON.stringify({
+      query: warmQuery, reportId: warmReport.reportId, unique: warmUnique, broad: warmBroad,
+    }));
+    assert.deepEqual(warmUnique.map(hit => hit.row.source_id), [warmReport.reportId],
+      'workspace warm-up Report must be query-ready; see warm-lexical-source-control.json');
+    assert.ok(warmBroad.some(hit => hit.row.source_id === warmReport.reportId),
+      'workspace warm-up Report must reach broad source search; see warm-lexical-source-control.json');
+    const { recallCorpusContext } = await import('../lib/memory/corpus-recall-io');
+    const warmCorpus = await recallCorpusContext({ workspaceId: workspace, harnessSlugs: [workspace],
+      queryText: warmQuery, excludeOwnerId: 'su-private-source-selection-control' });
+    writeFileSync(join(evidenceDir, 'warm-corpus-control.json'), JSON.stringify({
+      query: warmQuery, reportId: warmReport.reportId, corpus: warmCorpus,
+    }));
     const sourceBlock = await buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
-      userId: null, queryContext: 'warmquartz diagnostic snapshot recovery evidence',
+      userId: null, queryContext: warmQuery,
       session: { sessionId: 'su-private-source-control', port: 'turn-start', client: 'codex' } });
     writeFileSync(join(evidenceDir, 'source-control.json'), JSON.stringify({ payload: sourceBlock }));
-    assert.ok(sourceBlock?.includes(warmReport.reportId), 'source memory builder failed known corpus control; see source-control.json');
+    assert.ok(sourceBlock?.includes(warmReport.reportId),
+      'source memory builder failed known corpus control; see source-control.json and warm-corpus-control.json');
     const knowledgeBlock = await buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
       userId: null, queryContext: 'zephyrquartz diagnostic snapshot recovery evidence',
       session: { sessionId: 'su-private-knowledge-source-control', port: 'turn-start', client: 'codex' } });
