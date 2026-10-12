@@ -21,7 +21,7 @@ export async function startDaoHrWalletBindingFixture() {
     if (!address || typeof address === 'string') throw new Error('Wallet fixture has no loopback address');
     return { url: 'http://127.0.0.1:' + address.port,
       async stop() {
-        server.closeAllConnections();
+        if ('closeAllConnections' in server) server.closeAllConnections();
         await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
         raw.close();
       } };
