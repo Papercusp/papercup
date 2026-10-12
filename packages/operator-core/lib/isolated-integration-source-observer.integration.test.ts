@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
 import { withIsolatedIntegrationSourceObserver } from '../test/isolated-integration-proof';
 import { FALLBACK_FLUSH_DELAY_MS, flushFallbackObservations } from './degradation/fallback-observations';
@@ -15,7 +15,12 @@ it('owns delayed parent source-reader fallback observations in a private migrate
     // Exercise the exact rejected-reader reporter, including its ordinary
     // delayed flush; a flush-time override alone would not own this timer.
     process.env.PAPERCUSP_WORKSPACE_ID = workspace;
-    noteSidecarFallback('committed-tree-reader', new Error('parent-source-observer-test'), undefined, 'rejected');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      noteSidecarFallback('committed-tree-reader', new Error('parent-source-observer-test'), undefined, 'rejected');
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(
+        '[committed-tree-reader] spawner-sidecar rejected; local execution avoided: parent-source-observer-test'));
+    } finally { warning.mockRestore(); }
     const deadline = Date.now() + FALLBACK_FLUSH_DELAY_MS + 5_000;
     let rows: Array<{ reason: string; eligible: number; applied: number }> = [];
     while (Date.now() < deadline) {
