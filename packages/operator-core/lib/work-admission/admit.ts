@@ -576,7 +576,7 @@ function capabilityRefusal(err: unknown): WriteBackRefusal | null {
 /**
  * Writes a plain-text note back to the source of an admitted work item, through the source
  * resolver's capability. The caller passes only the internal work item id; the external
- * coordinates come from the durable admission row (slack-flagship.ts pattern). Every write is
+ * coordinates come from the durable admission row, so a caller can never redirect a write. Every write is
  * ledgered with the provider's update id (write-back-ledger.ts) for echo suppression.
  */
 export async function writeBackAdmission(

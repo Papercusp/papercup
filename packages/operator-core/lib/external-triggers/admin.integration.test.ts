@@ -8,7 +8,6 @@ import {
   createExternalTriggerBinding,
   createExternalTriggerSource,
   detachExternalTriggerBinding,
-  ensureExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
   migrateExternalTriggerPlanBindingToOperation,
@@ -894,16 +893,6 @@ describe('P-020 — goal-targeted bindings through the create door', () => {
         eventPattern: 'ext:slack:mention',
       }),
     ).rejects.toThrow('external_trigger_unknown_goal:goal-that-does-not-exist');
-  });
-
-  it('ensure door stays plan-only: a goal target is refused as ensure-unsupported', async () => {
-    await expect(
-      ensureExternalTriggerBinding(sql, WS, {
-        sourceId: goalSourceId,
-        goalId: GOAL,
-        eventPattern: 'ext:slack:mention',
-      }),
-    ).rejects.toThrow('external_trigger_goal_binding_ensure_unsupported');
   });
 });
 

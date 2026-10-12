@@ -87,7 +87,7 @@ beforeEach(() => {
     },
   }));
 
-  // Same key shape as external-triggers/slack.ts storeSlackSocketCredentials.
+  // The key shape the retired in-app Slack socket path stored under plugin config.
   writeConfig('slack-socket', {
     default_bot_token: BOT,
     default_app_token: APP,

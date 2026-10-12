@@ -1085,7 +1085,7 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     });
 
     it('expected-holder transfer releases only the prior holder touch-set', async () => {
-      const transferPath = 'packages/operator-core/lib/external-triggers/slack-socket-manager.ts';
+      const transferPath = 'packages/operator-core/lib/external-triggers/source-store.ts';
       await seedFeature('F-transfer-locks', { takenBy: 'former-holder' });
       await db.sql`
         UPDATE harness_shared.harness_features_consolidated

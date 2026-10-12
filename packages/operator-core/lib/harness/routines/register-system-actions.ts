@@ -275,9 +275,6 @@ import './blueprint-operation-action';
 import './goal-start-action';
 import './external-trigger-dispatch-action';
 import './facebook-personal-vault-poll-action';
-// enterprise-data-sources-2026-10-01 P-016 / D-026: Slack organization connector cadence
-// (membership sync + paced backfill); inert while papercusp-slack-org-connector is dark.
-import './slack-org-sync-action';
 // GitHub Issues, Gmail and Google Calendar have no poll action of their own: they are provider
 // plugins synced by connector-sync (generalized-integrations-google-migration-cupboard-workflows-
 // 2026-10-05 P-010 / D-015, P-008 / D-017, P-009 / D-021).

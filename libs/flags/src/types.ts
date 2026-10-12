@@ -109,16 +109,6 @@ export const FLAGS = {
   // and unflagged; with this OFF the hosted billing runtime refuses an sk_live_/rk_live_
   // key and reports `live_mode_not_allowed`, so OFF withholds ONLY real charging.
   HOSTED_BILLING_LIVE_MODE: "papercusp-hosted-billing-live-mode",
-  // enterprise-data-sources-2026-10-01 P-016: the Slack ORGANIZATION connector
-  // (the customer's own internal Slack app as the credential model — connect,
-  // channel-membership sync into permission lists, paced history backfill).
-  // Default ON since 2026-10-06 (slack-messages-to-bug-reports-2026-10-05 P-001):
-  // the plan's GATE, a legal read of Slack's 2025 API terms for the
-  // customer-internal-app model, is on record (enterprise-data-sources-2026-10-01
-  // D-029) and the owner approved switching it on (directive #1417). Flip OFF via
-  // /admin/features to make every entry point in data-sources/slack-org-connector.ts
-  // refuse before any Slack call.
-  SLACK_ORG_CONNECTOR: "papercusp-slack-org-connector",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived

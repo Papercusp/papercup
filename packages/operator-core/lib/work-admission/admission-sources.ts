@@ -18,8 +18,8 @@
  *   - covering keys (`coveredBy`). A message whose thread is already admitted resolves to the
  *     thread's admission rather than minting a second work item. The resolver DECLARES the keys,
  *     and the verb looks them all up in one query, so idempotency lives in one place.
- *   - field authority, and an optional write-back. Write-back follows slack-flagship.ts: the
- *     public verb carries only an internal id, and the resolver resolves the external
+ *   - field authority, and an optional write-back. In a write-back the public verb carries
+ *     only an internal id, and the resolver resolves the external
  *     coordinates and credential server-side from the durable admission, so a caller can never
  *     redirect a write.
  *

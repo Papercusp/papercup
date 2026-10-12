@@ -32,7 +32,6 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
-import { slackSocketCredentialRef } from '../external-triggers/slack-credential-ref';
 import { DEFAULT_SOURCE_TOKEN_HARNESS, upsertOwnedExternalTriggerSource } from '../external-triggers/source-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
 import { saveProviderCredentials, syncProviderCredentialSource } from '../integrations/provider-credentials';
@@ -357,13 +356,17 @@ describe('provider socket ingress (P-003, D-009)', () => {
   });
 });
 
-/** A source of the fixture kind connected by the in-app Slack path, not by a pasted credential. */
+/**
+ * A source of the fixture kind whose credential is not a pasted provider
+ * credential. The ref has the shape the retired in-app Slack socket path wrote
+ * (`slack-socket:<field>`); the ingress manager must leave such a source alone.
+ */
 async function connectInApp(ownerUserId: string): Promise<string> {
   const row = await upsertOwnedExternalTriggerSource(sql, {
     workspaceId: WS,
     kind: KIND,
     ownerUserId,
-    credentialRef: slackSocketCredentialRef('bot_token'),
+    credentialRef: 'slack-socket:bot_token',
     status: 'connected',
     createdBy: ownerUserId,
   });

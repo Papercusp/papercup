@@ -369,10 +369,6 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Polls the owner-authorized Facebook Graph surface and emits replay-safe trigger/vault deliveries',
   },
-  'system:slack-org-sync': {
-    spend: 'none',
-    why: 'Syncs Slack channel membership into permission lists and writes paced backfill pages as chat messages; no agent or model call',
-  },
   'system:connector-sync': {
     spend: 'none',
     why: 'Drives every registered provider source through leased backfill/incremental sync pages and admits records into the local delivery ledger; no agent or model call',

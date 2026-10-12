@@ -90,11 +90,10 @@ const EXCLUDED_TOKENS: Record<string, string> = {
   github: 'platform source-hosting identity, not an integration provider',
 };
 
-type CensusGroup = 'slack' | 'social' | 'facebook-vault' | 'google-workspace' | 'discord';
+type CensusGroup = 'social' | 'facebook-vault' | 'google-workspace' | 'discord';
 
 /** Where each group's migration is owned. */
 export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
-  slack: 'provider-adapters-to-packages-2026-10-11#P-008',
   social: 'provider-adapters-to-packages-2026-10-11',
   'facebook-vault': 'provider-adapters-to-packages-2026-10-11',
   'google-workspace': 'provider-adapters-to-packages-2026-10-11',
@@ -112,20 +111,8 @@ interface CensusEntry {
 const p = (path: string, group: CensusGroup): CensusEntry => ({ path, group, detectedBy: 'path' });
 
 export const CENSUS: readonly CensusEntry[] = [
-  // Slack: cupboard-distributable-integrations-2026-10-10#P-008 deleted what the slack and
-  // bug-triage packages replace (SlackSetupCard, the slack:* agent tools, slack-asana-filing,
-  // slack-bug-classification; D-019). What remains carries the report-bug gesture system, the
-  // in-app socket path (incl. the /admin/triggers/slack/{manifest,connect} routes this doc-claim
-  // judges) and the Slack organization data source, all owned by the follow-up item (D-019 ruling 3).
-  p('packages/operator-core/lib/data-sources/slack-org-connector.ts', 'slack'),
-  p('packages/operator-core/lib/data-sources/slack-realtime-search.ts', 'slack'),
-  p('packages/operator-core/lib/doc-claims/slack-external-trigger-setup.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-credential-ref.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-flagship.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-report-bug.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-socket-manager.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack.ts', 'slack'),
-  p('packages/operator-core/lib/harness/routines/slack-org-sync-action.ts', 'slack'),
+  // Slack has no entries: cupboard-distributable-integrations-2026-10-10 P-008, P-020 and P-021
+  // moved every Slack module into the slack and bug-triage packages (D-019, D-024..D-026).
 
   // Social platforms: nine platform adapters plus the app-side verbs and tools over them.
   p('packages/operator-core/lib/agent-tools/social/delete.ts', 'social'),
@@ -188,7 +175,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 55;
+export const CENSUS_HIGH_WATERMARK = 46;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
@@ -300,7 +287,7 @@ describe('provider-specific code census (shrink-only)', () => {
       'packages/operator-core/lib/external-triggers/slack.test.ts': 'export {};\n',
     });
     try {
-      const census = [p('packages/operator-core/lib/external-triggers/slack.ts', 'slack')];
+      const census = [p('packages/operator-core/lib/external-triggers/slack.ts', 'discord')];
       expect(unlistedProviderModules(root, census)).toEqual([
         'apps/operator/app/settings/integrations/DiscordBridgeCard.tsx',
       ]);
@@ -316,8 +303,8 @@ describe('provider-specific code census (shrink-only)', () => {
     });
     try {
       const census: CensusEntry[] = [
-        p('packages/operator-core/lib/external-triggers/slack.ts', 'slack'),
-        p('packages/operator-core/lib/external-triggers/chat-bridge.ts', 'slack'),
+        p('packages/operator-core/lib/external-triggers/slack.ts', 'discord'),
+        p('packages/operator-core/lib/external-triggers/chat-bridge.ts', 'discord'),
         {
           path: 'packages/operator-core/lib/integrations/builtin-connection-adapters.ts',
           group: 'facebook-vault',

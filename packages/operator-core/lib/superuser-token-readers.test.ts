@@ -33,8 +33,6 @@ const HAND_BUILT_TOKEN_PATH = [
 const ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts':
     'a sandbox DENY-list naming the real-home path to block, not a reader of the token',
-  'packages/operator-core/lib/doc-claims/slack-external-trigger-setup.ts':
-    'a doc-claim pinning the human-facing curl line in the setup docs, not a reader of the token',
 };
 
 export function handBuiltTokenPathHits(source: string, fileName: string): number[] {

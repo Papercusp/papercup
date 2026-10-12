@@ -8,7 +8,6 @@ import {
 } from './plan-run-payload';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA } from './slack-flagship';
 import { evaluatePlanStartReadiness } from '../agent-tools/plans/plan-input-validation';
 
 type JsonSchema = {
@@ -62,8 +61,16 @@ function sampleForPattern(pattern: string): string {
   }
   let sample = pattern.slice(0, cut).replace(/^\^/, '').replace(/\$$/, '');
   while (/\(([^()]*)\)/.test(sample)) sample = sample.replace(/\(([^()]*)\)/, (_m, inner: string) => inner.split('|')[0]!);
+  // Character classes: `[a-z0-9]` → its first character, dropped entirely under `*` or `?`
+  // (zero repetitions satisfy them); escapes → the escaped character, `\d` → a digit.
+  const expanded = sample
+    .replace(/\[(\^?)([^\]]+)\](\*|\+|\?)?/g, (_m, negated: string, cls: string, quantifier?: string) =>
+      quantifier === '*' || quantifier === '?' ? '' : negated ? 'a' : cls[0]!,
+    )
+    .replace(/\\d/g, '1')
+    .replace(/\\(.)/g, '$1');
   const matcher = new RegExp(pattern);
-  const found = [sample, '1', '1.5', 'sample-value', 'a'].find((candidate) => matcher.test(candidate));
+  const found = [sample, expanded, '1', '1.5', 'sample-value', 'a'].find((candidate) => matcher.test(candidate));
   if (found === undefined) throw new Error(`sampleForPattern cannot satisfy ${pattern}`);
   return found;
 }
@@ -240,17 +247,7 @@ describe('projected plan inputs satisfy every shipped trigger input schema', () 
     },
   );
 
-  it('slack: the redacted envelope is start-ready', () => {
-    const verdict = evaluatePlanStartReadiness(
-      { template: null, inputSchema: SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA },
-      redactTriggerArgsForPlanInputs(slackArgs()),
-    );
-    expect(verdict).toEqual({ ready: true, source: 'input-schema' });
-  });
-
   it('no shipped trigger schema still requires the private payload', () => {
-    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required).not.toContain('payload');
-    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.properties).not.toHaveProperty('payload');
     // A pack may still DESCRIBE payload (it documents the stored envelope that
     // triggers:read-payload returns); it may never REQUIRE it.
     const requiring = packTargets
@@ -277,28 +274,11 @@ describe('projected plan inputs satisfy every shipped trigger input schema', () 
   });
 
   /**
-   * CALIBRATION — proves the three assertions above can actually fail. A schema
+   * CALIBRATION — proves the assertions above can actually fail. A schema
    * identical to the shipped one except that it still requires `payload` must
    * REJECT the projection. Without this, a validator that passed everything
    * would make the whole block green and meaningless.
    */
-  it('CONTROL: a schema that still requires payload rejects the projection', () => {
-    const stale = {
-      ...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA,
-      properties: {
-        trigger: {
-          ...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger,
-          required: [...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required, 'payload'],
-        },
-      },
-    };
-    const verdict = evaluatePlanStartReadiness(
-      { template: null, inputSchema: stale },
-      redactTriggerArgsForPlanInputs(slackArgs()),
-    );
-    expect(verdict.ready).toBe(false);
-  });
-
   it('CONTROL: a pack target that still requires payload rejects the projection', () => {
     const target = packTargets.find((candidate) => candidate.label === 'email-draft-responder/draft-reply')!;
     const trigger = target.inputSchema.properties.trigger;
@@ -322,9 +302,10 @@ describe('projected plan inputs satisfy every shipped trigger input schema', () 
    * accepts anything.
    */
   it('CONTROL: the unredacted envelope is also start-ready under the shipped schema', () => {
+    const target = packTargets.find((candidate) => candidate.label === 'email-draft-responder/draft-reply')!;
     const verdict = evaluatePlanStartReadiness(
-      { template: null, inputSchema: SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA },
-      slackArgs(),
+      { template: null, inputSchema: target.inputSchema },
+      { ...target.args, ...target.bindingInput },
     );
     expect(verdict.ready).toBe(true);
   });
