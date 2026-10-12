@@ -54,6 +54,9 @@ import {
   TEST_REUSE_SKIP_LIST_ENV,
   formatTestReuseLine,
   judgedTreeProofFormat,
+  laneOfFromSplit,
+  laneOfTaskScript,
+  laneScopedCandidates,
   reuseCandidates,
   reuseRunnerIdentity,
   recordGateReuseDecision,
@@ -341,8 +344,29 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   }
 
   const prefix = pkg.dirRel === "" ? "" : `${pkg.dirRel}/`;
+  let candidates = reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: loaded.proofs.keys() });
+  const lane = laneOfTaskScript(script);
+  let laneNote = "";
+  if (lane !== null) {
+    try {
+      // Match the exact judged tree's selector, as affected-tests does. The lane task's package
+      // script names only one lane, while its proof table contains both lanes' files.
+      const laneSplit = await import(pathToFileURL(path.join(root, "libs/test-config/src/lane-split.ts")).href);
+      const laneOf = laneOfFromSplit(
+        laneSplit,
+        path.join(root, pkg.dirRel),
+        candidates.map((f) => f.slice(prefix.length)),
+      );
+      const scoped = laneScopedCandidates({ candidates, wsRel: pkg.dirRel, lane, laneOf });
+      candidates = scoped.candidates;
+      laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+    } catch (err) {
+      // A missing or unreadable lane selector cannot produce a truthful denominator or skip list.
+      return off(`lane-filter-unavailable(${token(err)})`);
+    }
+  }
   const { skip, summary } = selectReusablePasses({
-    candidates: reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: loaded.proofs.keys() }),
+    candidates,
     proofs: loaded.proofs,
     judgedSha: head,
     changedBetween: d.changedBetween(root),
@@ -398,7 +422,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
         label,
         summary,
         ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}` +
-          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`),
+          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`) + laneNote,
       ),
   );
   await record({ summary });

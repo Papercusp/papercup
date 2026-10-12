@@ -55,8 +55,25 @@ function fixture(scriptBody = 'vitest run --passWithNoTests') {
   writeJson(join(root, 'package.json'), { name: 'fixture-root', workspaces: ['packages/*'] });
   writeJson(join(root, 'packages/lane-ws/package.json'), {
     name: WS,
-    scripts: { [SCRIPT]: scriptBody, test: scriptBody, 'lint:tsc': 'tsc --noEmit' },
+    scripts: {
+      [SCRIPT]: scriptBody,
+      'test:lane-pure': scriptBody,
+      test: scriptBody,
+      'lint:tsc': 'tsc --noEmit',
+    },
   });
+  laneSplitFixture();
+}
+
+function laneSplitFixture() {
+  const file = join(root, 'libs/test-config/src/lane-split.ts');
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, `
+export function isUnitTestFile(file) { return file.endsWith('.test.ts'); }
+export function classifyLanes(_root, files) {
+  return { stateful: files.filter((file) => !file.includes('pure')) };
+}
+`);
 }
 
 /** The injection seams, typed from the module's own declaration (fakes are partial on purpose). */
@@ -184,6 +201,32 @@ describe('resolveWorkspacePackage', () => {
 });
 
 describe('armTargetedTaskReuse', () => {
+  it.each([
+    ['test:lane-pure', 'pure', 1],
+    ['test:lane-stateful', 'stateful', 2],
+  ] as const)('limits %s reuse observations to the selected lane', async (script, lane, expected) => {
+    fixture();
+    const files = [
+      'packages/lane-ws/pure.test.ts',
+      'packages/lane-ws/stateful-a.test.ts',
+      'packages/lane-ws/stateful-b.test.ts',
+    ];
+    const proofs = new Map(files.map((file) => [file, proof(HEAD, [file])]));
+    const armed = await armTargetedTaskReuse({
+      root,
+      workspace: WS,
+      script,
+      expectedSha: HEAD,
+      env: baseEnv(),
+      deps: deps({ loadProofs: async () => ({ proofs, rows: proofs.size }) }),
+    });
+
+    expect(armed.reused).toBe(expected);
+    expect(armed.lines.join('\n')).toContain(`candidates=${expected}`);
+    expect(armed.lines.join('\n')).toContain(`lane=${lane} otherLane=${files.length - expected}`);
+    armed.finish();
+  });
+
   it('skips the file whose proof is valid at the repair head, runs the input-changed one, and arms recording', async () => {
     fixture();
     const armed = await armTargetedTaskReuse({
@@ -202,7 +245,7 @@ describe('armTargetedTaskReuse', () => {
     expect(armed.env.PC_EXECUTED_SOURCE_MAP_NO_PERSIST).toBeUndefined();
     expect(armed.lines).toHaveLength(1);
     expect(armed.lines[0]).toMatch(
-      /^TARGETED_TEST_PASS_REUSE ws=@fixture\/lane-ws::test:lane-stateful candidates=2 reused=1 .*inputChanged=1 .* scope=targeted-gate rows=2 sha=aaaaaaaaaaaa$/,
+      /^TARGETED_TEST_PASS_REUSE ws=@fixture\/lane-ws::test:lane-stateful candidates=2 reused=1 .*inputChanged=1 .* scope=targeted-gate rows=2 sha=aaaaaaaaaaaa lane=stateful otherLane=0$/,
     );
     expect(ended).toBe(1);
 
@@ -247,7 +290,7 @@ describe('armTargetedTaskReuse', () => {
     });
     expect(armed.reused).toBe(2);
     expect(armed.lines[0]).toMatch(/ otherRunner=0 /);
-    expect(armed.lines[0]).toMatch(/ proofFormat=proof-v2\(legacy\)$/);
+    expect(armed.lines[0]).toMatch(/ proofFormat=proof-v2\(legacy\) lane=stateful otherLane=0$/);
     const list = parseReuseSkipList(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
     expect(list.runnerIdentity).toBe(LEGACY_RUNNER);
     // The judged tree's own consumer computes ITS identity, so it accepts the list.
@@ -272,10 +315,16 @@ describe('armTargetedTaskReuse', () => {
     const armed = await armTargetedTaskReuse({
       root,
       workspace: WS,
-      script: SCRIPT,
+      script: 'test:lane-pure',
       expectedSha: HEAD,
       env: baseEnv(),
-      deps: deps(),
+      deps: deps({ loadProofs: async () => ({
+        proofs: new Map([
+          ['packages/lane-ws/pure-a.test.ts', proof(HEAD, ['packages/lane-ws/pure-a.test.ts'])],
+          ['packages/lane-ws/pure-b.test.ts', proof(OLD, ['packages/lane-ws/pure-b.test.ts', 'packages/lane-ws/src/b.ts'])],
+        ]),
+        rows: 2,
+      }) }),
     });
     expect(armed.reused).toBe(1);
     expect(armed.lines.join('\n')).not.toMatch(/script-cannot-run-zero-files/);
