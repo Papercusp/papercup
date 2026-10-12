@@ -109,24 +109,24 @@ describe('stored historical pre-suite recovery', () => {
   let archiveDir: string;
   beforeEach(() => { archiveDir = mkdtempSync(join(tmpdir(), 'qualification-recovery-')); });
   afterEach(() => { rmSync(archiveDir, { recursive: true, force: true }); });
-  const fixture = () => {
+  const fixture = (candidate = 'candidate-1') => {
     const current = settleQualificationTransaction(beginQualificationTransaction(null, {
-      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+      attemptId: 'attempt-1', candidate, requiredAncestorSha: candidate, nowMs: 100,
     }).transaction, {
-      attemptId: 'attempt-1', runId: 'run-1', candidate: 'candidate-1', reason: 'error', green: null, nowMs: 200,
+      attemptId: 'attempt-1', runId: 'run-1', candidate, reason: 'error', green: null, nowMs: 200,
     }).transaction;
     const log = [
       '[green-checkpoint] FAILED before checkpoint lock: dependency-generation.sh exited 77:',
       '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT',
       `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
-        candidate: 'candidate-1', runId: 'run-1', reason: 'error', green: null,
+        candidate, runId: 'run-1', reason: 'error', green: null,
         advanced: false, crashed: true, recorded: true,
       })}`,
     ].join('\n');
     const logPath = join(archiveDir, 'run.log');
     writeFileSync(logPath, log);
     return { current, input: {
-      attemptId: 'attempt-1', runId: 'run-1', candidate: 'candidate-1', logPath,
+      attemptId: 'attempt-1', runId: 'run-1', candidate, logPath,
       logSha256: createHash('sha256').update(log).digest('hex'), nowMs: 300,
     } };
   };
@@ -142,33 +142,38 @@ describe('stored historical pre-suite recovery', () => {
         predecessor: current, logSha256: input.logSha256,
       }),
     }), expect.anything(), { required: true });
-    const update = statements.find(statement => statement.text.includes('UPDATE'))!;
+    const update = statements.find(statement => statement.text.includes('UPDATE harness_shared.routines'))!;
     expect(update.text).toContain("metadata->'repair_queue'");
     expect(update.values).toContain(JSON.stringify(queue));
   });
   it('preserves and restamps the exact untested repair queue', async () => {
-    const { current, input } = fixture();
+    const { current, input } = fixture('repair-1');
     const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['x.test.ts'], nowMs: 150 });
-    const queue = markFrozenRepairAdmitted(red, { repairHead: 'candidate-1', nowMs: 175 });
+    const queue = markFrozenRepairAdmitted(red, {
+      atMs: 175, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
     const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
     const result = await recoverStoredQualificationHistoricalPreSuiteError(target, input);
     expect(result).toMatchObject({ status: 'updated', repairQueueReconciliation: { status: 'preserved' } });
-    expect(statements.find(statement => statement.text.includes('UPDATE'))!.text).toContain('{repair_queue,qualificationAttemptId}');
+    expect(statements.find(statement => statement.text.includes('UPDATE harness_shared.routines'))!.text).toContain('{repair_queue,qualificationAttemptId}');
   });
   it('refuses a changed archive or row identity without writing', async () => {
     const { current, input } = fixture();
     const { statements } = transactionHarness({ qualificationTransaction: { ...current, runId: 'other-run' } });
     expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
     expect((await recoverStoredQualificationHistoricalPreSuiteError(target, { ...input, logSha256: 'a'.repeat(64) })).status).toBe('conflict');
-    expect(statements.some(statement => statement.text.includes('UPDATE'))).toBe(false);
+    expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
   it('fails closed on an active fixer queue or CAS miss', async () => {
     const { current, input } = fixture();
-    const queue = markFrozenRepairFixerDispatched(safeQueue(), { spawnId: 'live-fixer', nowMs: 150 });
+    const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['x.test.ts'], nowMs: 125 });
+    const queue = markFrozenRepairFixerDispatched(red, { spawnId: 'live-fixer', nowMs: 150 });
     const blocked = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
     expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
-    expect(blocked.statements.some(statement => statement.text.includes('UPDATE'))).toBe(false);
+    expect(blocked.statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     transactionHarness({ qualificationTransaction: current, repair_queue: safeQueue() }, { casMatches: false });
     expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input)).status).toBe('conflict');
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();

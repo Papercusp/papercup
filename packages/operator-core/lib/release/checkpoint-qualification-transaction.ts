@@ -1499,7 +1499,7 @@ export function recoverQualificationHistoricalPreSuiteError(
   const marker = lines.indexOf(markerLines[0]);
   if (prelock < 0 || prelock >= marker ||
       !lines[prelock].includes('dependency-generation.sh') ||
-      !dependencyGenerationInfraCode(null, lines.slice(0, marker).join('\n'))) return conflict();
+      !dependencyGenerationInfraCode(null, lines.slice(prelock, marker).join('\n'))) return conflict();
   if (lines.some(line => /checkpointing candidate|full suite output|TEST_FILE_RESULT|phase[=:]suite|suite (?:started|round)|running (?:affected|full) (?:test|suite)/i.test(line))) {
     return conflict();
   }
