@@ -1,6 +1,8 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -15,6 +17,45 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
 }
 
 describe('private managed task preflight', () => {
+  it('refuses an owned socket that cannot serve the private manager before PostgreSQL allocation', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'private-task-unusable-'));
+    mkdirSync(join(directory, 'systemd'));
+    // A real socket and native systemd client exercise the refusal boundary.
+    // Ownership and pathname existence alone do not establish a manager route.
+    const server = createServer(socket => socket.destroy());
+    await new Promise<void>((resolveListen, reject) => {
+      server.once('error', reject);
+      server.listen(join(directory, 'systemd', 'private'), resolveListen);
+    });
+    const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)'], {
+      cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: directory,
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/unused-desktop-bus',
+        PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const closed = once(child, 'close');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+    try {
+      const [status, signal] = await closed;
+      const diagnostic = JSON.stringify({ status, signal, stdout, stderr });
+      expect(status, diagnostic).toBe(1);
+      expect(signal, diagnostic).toBeNull();
+      expect(stderr, diagnostic).toContain('private runtime scope probe exited');
+      expect(stdout).not.toContain('booting throwaway PG');
+      expect(stdout).not.toContain('managed task preflight passed');
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+      await new Promise<void>(done => server.close(() => done()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(['missing', 'regular-file'])('refuses a %s manager socket before PostgreSQL allocation', kind => {
     const directory = mkdtempSync(join(tmpdir(), 'private-task-preflight-'));
     if (kind === 'regular-file') {
