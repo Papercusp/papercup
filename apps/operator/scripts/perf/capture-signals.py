@@ -701,22 +701,30 @@ def cgroup_cpu(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
 
 
 def _read_io_stat(dirpath):
-    """Sum a cgroup's ``io.stat`` counters across devices; None if unreadable.
+    """Read a cgroup's ``io.stat`` counters by device; None if unreadable.
 
     The kernel lists only devices the cgroup has touched, so an EMPTY file is a
     real zero, while a missing or unreadable one returns None (no measurement).
+    Keep device keys: collapsing them here makes a root-NVMe partition impossible
+    to compare with the whole-disk backing device during an attribution sample.
     """
-    totals = {"rbytes": 0, "wbytes": 0, "rios": 0, "wios": 0}
+    devices = {}
     try:
         with open(os.path.join(dirpath, "io.stat")) as fh:
             for line in fh:
-                for field in line.split()[1:]:
+                parts = line.split()
+                if not parts:
+                    continue
+                devno = parts[0]
+                counters = {"rbytes": 0, "wbytes": 0, "rios": 0, "wios": 0}
+                for field in parts[1:]:
                     key, _, value = field.partition("=")
-                    if key in totals and value.isdigit():
-                        totals[key] += int(value)
+                    if key in counters and value.isdigit():
+                        counters[key] = int(value)
+                devices[devno] = counters
     except Exception:
         return None
-    return totals
+    return devices
 
 
 def _read_pressure(path):
@@ -744,12 +752,15 @@ def cgroup_io(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
 
     Host ``/proc/pressure/io`` says the box is IO-stalled but not WHO is writing.
     ``io.stat`` is cumulative per cgroup (inclusive of descendants), so a short
-    delta names the cgroups moving bytes during the stall, and each row carries
-    that cgroup's own ``io.pressure`` (its tasks' stall share). Forensic only: it
-    adds no threshold and does not claim the top writer caused the stall. Writers
-    outside any readable cgroup (kernel flushers, journal threads) do not appear
-    here — ``dstate_tasks()`` is the complementary view. A counter that went
-    backwards (cgroup recreated) is dropped, never reported as a delta.
+    per-device delta names cgroups moving bytes on each device during the stall,
+    and each row carries that cgroup's own ``io.pressure`` (its tasks' stall
+    share). Devices that appear or disappear between endpoints are reported as
+    baseline changes and are never treated as zero-to-counter deltas. Forensic
+    only: this adds no threshold and does not claim the top writer caused the
+    stall. Writers outside any readable cgroup (kernel flushers, journal threads)
+    do not appear here — ``dstate_tasks()`` is the complementary view. A counter
+    that went backwards (cgroup/device recreated) is dropped, never reported as a
+    delta.
     """
     root = root or os.environ.get("PAPERCUSP_PERF_CGROUP_ROOT", "/sys/fs/cgroup")
     deadline = monotonic_fn() + budget_sec
@@ -779,28 +790,105 @@ def cgroup_io(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
     second, second_scanned, second_partial = collect()
 
     rows = []
+    device_summary = {}
+    def summary_for(devno):
+        return device_summary.setdefault(devno, {
+            "devno": devno, "commonCgroups": 0, "changedCgroups": 0,
+            "newBaselines": 0, "missingBaselines": 0, "resetCgroups": 0,
+            "readBytesDeltaInclusive": 0, "writeBytesDeltaInclusive": 0,
+            "readIosDeltaInclusive": 0, "writeIosDeltaInclusive": 0,
+        })
+
+    new_cgroup_paths = sorted(set(second) - set(first))
+    missing_cgroup_paths = sorted(set(first) - set(second))
+    new_cgroup_baselines = [
+        {"path": os.path.relpath(path, root), "devices": sorted(second[path])}
+        for path in new_cgroup_paths
+    ]
+    missing_cgroup_baselines = [
+        {"path": os.path.relpath(path, root), "devices": sorted(first[path])}
+        for path in missing_cgroup_paths
+    ]
+    for path in new_cgroup_paths:
+        for devno in second[path]:
+            summary_for(devno)["newBaselines"] += 1
+    for path in missing_cgroup_paths:
+        for devno in first[path]:
+            summary_for(devno)["missingBaselines"] += 1
+
     if elapsed > 0:
         for dirpath, before in first.items():
             after = second.get(dirpath)
             if after is None:
                 continue
-            delta = {key: after.get(key, 0) - before.get(key, 0) for key in before}
-            if any(value < 0 for value in delta.values()) or not any(delta.values()):
+            before_devices = set(before)
+            after_devices = set(after)
+            common_devices = before_devices & after_devices
+            new_devices = sorted(after_devices - before_devices)
+            missing_devices = sorted(before_devices - after_devices)
+            totals = {"rbytes": 0, "wbytes": 0, "rios": 0, "wios": 0}
+            device_rows = []
+            reset_devices = []
+            for devno in sorted(common_devices):
+                before_counters = before[devno]
+                after_counters = after[devno]
+                delta = {key: after_counters.get(key, 0) - before_counters.get(key, 0)
+                         for key in ("rbytes", "wbytes", "rios", "wios")}
+                summary = summary_for(devno)
+                summary["commonCgroups"] += 1
+                if any(value < 0 for value in delta.values()):
+                    summary["resetCgroups"] += 1
+                    reset_devices.append(devno)
+                    continue
+                for key, value in delta.items():
+                    totals[key] += value
+                if any(delta.values()):
+                    summary["changedCgroups"] += 1
+                    summary["readBytesDeltaInclusive"] += delta["rbytes"]
+                    summary["writeBytesDeltaInclusive"] += delta["wbytes"]
+                    summary["readIosDeltaInclusive"] += delta["rios"]
+                    summary["writeIosDeltaInclusive"] += delta["wios"]
+                    device_rows.append({
+                        "devno": devno,
+                        "readBytesDelta": delta["rbytes"],
+                        "writeBytesDelta": delta["wbytes"],
+                        "readIosDelta": delta["rios"],
+                        "writeIosDelta": delta["wios"],
+                        "readMBps": round(delta["rbytes"] / elapsed / 1e6, 2),
+                        "writeMBps": round(delta["wbytes"] / elapsed / 1e6, 2),
+                        "readIops": round(delta["rios"] / elapsed, 1),
+                        "writeIops": round(delta["wios"] / elapsed, 1),
+                    })
+            for devno in new_devices:
+                summary_for(devno)["newBaselines"] += 1
+            for devno in missing_devices:
+                summary_for(devno)["missingBaselines"] += 1
+            if not any(totals.values()) and not new_devices and not missing_devices:
                 continue
             relative = os.path.relpath(dirpath, root)
             rows.append({
                 "path": "/" if relative == "." else "/" + relative,
-                "writeMBps": round(delta["wbytes"] / elapsed / 1e6, 2),
-                "readMBps": round(delta["rbytes"] / elapsed / 1e6, 2),
-                "writeIops": round(delta["wios"] / elapsed, 1),
-                "readIops": round(delta["rios"] / elapsed, 1),
+                "writeMBps": round(totals["wbytes"] / elapsed / 1e6, 2),
+                "readMBps": round(totals["rbytes"] / elapsed / 1e6, 2),
+                "writeIops": round(totals["wios"] / elapsed, 1),
+                "readIops": round(totals["rios"] / elapsed, 1),
                 "ioPressure": _read_pressure(os.path.join(dirpath, "io.pressure")),
+                "devices": device_rows,
+                "newDeviceBaselines": new_devices,
+                "missingDeviceBaselines": missing_devices,
+                "counterResetDevices": reset_devices,
             })
 
     rows.sort(key=lambda row: (-(row["writeMBps"] + row["readMBps"]), row["path"]))
+    summary_rows = sorted(device_summary.values(), key=lambda row: row["devno"])
     return {
-        "accounting": "cgroup-v2-inclusive-descendants",
+        "accounting": "cgroup-v2-inclusive-descendants-per-device",
         "top": rows[:top_n],
+        "deviceSummary": summary_rows,
+        "newCgroupBaselines": new_cgroup_baselines[:top_n],
+        "newCgroupCount": len(new_cgroup_paths),
+        "missingCgroupBaselines": missing_cgroup_baselines[:top_n],
+        "missingCgroupCount": len(missing_cgroup_paths),
         "scannedCgroups": max(first_scanned, second_scanned),
         "candidateCgroups": len(rows),
         "maxScanned": max_scanned,

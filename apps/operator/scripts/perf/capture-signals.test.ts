@@ -82,6 +82,60 @@ describe("capture-signals.py IO-stall attribution", () => {
     expect(out.top[1]).toMatchObject({ writeMBps: 1, ioPressure: null });
   });
 
+  it("cgroup_io preserves per-device deltas and reports new or missing baselines", () => {
+    const out = runPy([
+      "put('cg/common', 'io.stat', '259:3 rbytes=100 wbytes=200 rios=1 wios=2\\n259:1 rbytes=1000 wbytes=2000 rios=10 wios=20\\n259:9 rbytes=50 wbytes=60 rios=5 wios=6\\n')",
+      "put('cg/new-cgroup', 'io.stat', '259:8 rbytes=10 wbytes=20 rios=1 wios=2\\n')",
+      "put('cg/gone-cgroup', 'io.stat', '259:7 rbytes=10 wbytes=20 rios=1 wios=2\\n')",
+      "clock = [0.0]",
+      "def sleep(_s):",
+      "    clock[0] += 2.0",
+      "    put('cg/common', 'io.stat', '259:3 rbytes=150 wbytes=600 rios=2 wios=6\\n259:1 rbytes=3000 wbytes=5000 rios=13 wios=25\\n259:4 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
+      "    put('cg/new-cgroup', 'io.stat', '259:8 rbytes=100 wbytes=200 rios=3 wios=4\\n259:5 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
+      "    os.remove(os.path.join(root, 'cg/gone-cgroup', 'io.stat'))",
+      "r = cs.cgroup_io(root=os.path.join(root, 'cg'), monotonic_fn=lambda: clock[0], sleep_fn=sleep)",
+      "print(json.dumps(r))",
+    ].join("\n")) as {
+      top: Array<Record<string, any>>;
+      deviceSummary: Array<Record<string, unknown>>;
+      newCgroupBaselines: Array<Record<string, unknown>>;
+      newCgroupCount: number;
+      missingCgroupBaselines: Array<Record<string, unknown>>;
+      missingCgroupCount: number;
+    };
+
+    const common = out.top.find((row) => row.path === "/common");
+    expect(common?.devices).toEqual([
+      {
+        devno: "259:1", readBytesDelta: 2000, writeBytesDelta: 3000,
+        readIosDelta: 3, writeIosDelta: 5, readMBps: 0, writeMBps: 0,
+        readIops: 1.5, writeIops: 2.5,
+      },
+      {
+        devno: "259:3", readBytesDelta: 50, writeBytesDelta: 400,
+        readIosDelta: 1, writeIosDelta: 4, readMBps: 0, writeMBps: 0,
+        readIops: 0.5, writeIops: 2,
+      },
+    ]);
+    expect(common).toMatchObject({
+      newDeviceBaselines: ["259:4"],
+      missingDeviceBaselines: ["259:9"],
+      counterResetDevices: [],
+    });
+    expect(out.newCgroupCount).toBe(1);
+    expect(out.newCgroupBaselines).toEqual([{ path: "new-cgroup", devices: ["259:5", "259:8"] }]);
+    expect(out.missingCgroupCount).toBe(1);
+    expect(out.missingCgroupBaselines).toEqual([{ path: "gone-cgroup", devices: ["259:7"] }]);
+    expect(out.deviceSummary).toEqual(expect.arrayContaining([
+      expect.objectContaining({ devno: "259:1", changedCgroups: 1, writeBytesDeltaInclusive: 3000 }),
+      expect.objectContaining({ devno: "259:3", changedCgroups: 1, writeBytesDeltaInclusive: 400 }),
+      expect.objectContaining({ devno: "259:4", newBaselines: 1, writeBytesDeltaInclusive: 0 }),
+      expect.objectContaining({ devno: "259:5", newBaselines: 2, writeBytesDeltaInclusive: 0 }),
+      expect.objectContaining({ devno: "259:7", missingBaselines: 1 }),
+      expect.objectContaining({ devno: "259:9", missingBaselines: 1 }),
+    ]));
+  });
+
   it("dstate_tasks counts D-state threads by command, wait channel and cgroup", () => {
     const out = runPy([
       "def task(pid, tid, comm, state, wchan, cg):",
