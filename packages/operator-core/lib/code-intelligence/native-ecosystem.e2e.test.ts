@@ -1,15 +1,41 @@
 /** Required native P010 BAR: real CLI → current operator → compiler report. */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
 const planningPlan = process.env.NATIVE_PLANNING_PLAN;
+
+describe('native P018 private operator CLI incident claim and resume', () => {
+  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
+    const root = resolve(import.meta.dirname, '../../../..');
+    const result = await new Promise<{ code: number | null; output: string }>((done, reject) => {
+      const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+        join(import.meta.dirname, '__fixtures__/incident-api-client.ts'),
+        join(homedir(), '.papercusp/vendor/repomix'), join(homedir(), '.papercusp/vendor/lsp')], {
+        cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output = (output + data).slice(-30_000); });
+      const timer = setTimeout(() => child.kill('SIGTERM'), 180_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('close', code => { clearTimeout(timer); done({ code, output }); });
+    });
+    expect(result.code, result.output).toBe(0);
+    const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
+    expect(line, result.output).toBeDefined();
+    expect(JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length))).toMatchObject({
+      transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
+      cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
+    });
+  }, 200_000);
+});
 
 describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph planning advice', () => {
   it('orders scoped producer/consumer references and reports overlap without changing live assignments or file claims', () => {
