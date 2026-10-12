@@ -9,6 +9,7 @@ import { configureSearchDefaults, resetSearchDefaults, runHybridSearch, searchDe
   type PgHandle, type SearchSource } from '@papercusp/search';
 import { installSearchDefaults } from '../configure-search-defaults';
 import { stampEmbedderMode } from '../embedder-mode-registry';
+import { mergeExactAndBm25 } from '../lexical/rank';
 import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
@@ -47,6 +48,42 @@ import {
 function obs(rank: number | null, engine: 'bm25' | 'legacy', latencyMs = 10, hits = 10): ArmObservation {
   return { rank, engine, latencyMs, hits, semanticCandidates: 1 };
 }
+
+it('keeps the D038 exact rank-three target through final hybrid fusion, with a real semantic list', async () => {
+  // D038 pair16: exact rank3, BM25 absent, semantic absent. The old interleave
+  // made lexical rank6; final lexical/vector RRF then excluded it from top10.
+  const previousPolicy = searchDefaultsHost();
+  resetSearchDefaults();
+  type R = { id: string; rank: number; fusionRank?: number };
+  const exact: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `exact-${i}`, rank: 1 - i / 100 }));
+  exact[2]!.id = 'target';
+  const bm25: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `bm25-${i}`, rank: 100 - i }));
+  const semantic: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `vector-${i}`, rank: 0.9 - i / 100 }));
+  const listing = (rows: R[], carryOrdinal = true) => rows.map(r => ({
+    key: `work_item:${r.id}`, score: r.rank,
+    ...(carryOrdinal && r.fusionRank !== undefined ? { fusionRank: r.fusionRank } : {}),
+    row: { source: 'work_item', source_id: r.id, excerpt: '', highlight: '', score: r.rank, rankers: [] },
+  }));
+  const search = async (rows: R[], carryOrdinal = true) => runHybridSearch([{
+    name: 'work_item', lexical: async () => listing(rows, carryOrdinal),
+    embedding: async () => listing(semantic),
+  }], { caller: 'bench:bm25-hybrid-recall', sql: {} as PgHandle,
+    query: 'is a real bug and not just user error I', workspaceId: 'test', scopeFilter: null,
+    limit: 10, mode: 'hybrid', embedder: async () => [1, 0], queryVector: [1, 0] });
+  try {
+    const legacy = await search(exact);
+    const merged = mergeExactAndBm25(exact, bm25, r => r.id, 30);
+    const broken = await search(merged, false);
+    const repaired = await search(merged);
+    expect(rankOf(legacy.results, 'work_item', 'target')).toBe(5);
+    expect(rankOf(broken.results, 'work_item', 'target')).toBeNull();
+    expect(rankOf(repaired.results, 'work_item', 'target')).toBe(8);
+    expect(repaired.legs.semantic.candidates).toBe(30);
+    expect(repaired.results.find(r => r.source_id === 'target')?.rankers).toEqual(['lexical']);
+  } finally {
+    if (previousPolicy) configureSearchDefaults(previousPolicy); else resetSearchDefaults();
+  }
+});
 
 it('keeps the registered embedding space in both arms while computing each query once', async () => {
   const previousPolicy = searchDefaultsHost();
