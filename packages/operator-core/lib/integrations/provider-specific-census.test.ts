@@ -90,7 +90,7 @@ const EXCLUDED_TOKENS: Record<string, string> = {
   github: 'platform source-hosting identity, not an integration provider',
 };
 
-type CensusGroup = 'slack' | 'social' | 'facebook-vault' | 'google-workspace' | 'discord' | 'asana';
+type CensusGroup = 'slack' | 'social' | 'facebook-vault' | 'google-workspace' | 'discord';
 
 /** Where each group's migration is owned. */
 export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
@@ -99,7 +99,6 @@ export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
   'facebook-vault': 'provider-adapters-to-packages-2026-10-11',
   'google-workspace': 'provider-adapters-to-packages-2026-10-11',
   discord: 'provider-adapters-to-packages-2026-10-11',
-  asana: 'provider-adapters-to-packages-2026-10-11',
 };
 
 interface CensusEntry {
@@ -186,13 +185,10 @@ export const CENSUS: readonly CensusEntry[] = [
   p('apps/operator/app/_components/DiscordChannelLink.tsx', 'discord'),
   p('packages/operator-core/lib/endpoint-route/routes/harness/discord.ts', 'discord'),
   p('packages/operator-core/lib/integrations/discord-webhook-types.ts', 'discord'),
-
-  // Asana OpenAPI type declarations kept beside the app-side provider tests.
-  p('packages/operator-core/lib/providers/asana/asana-openapi.d.ts', 'asana'),
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 56;
+export const CENSUS_HIGH_WATERMARK = 55;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

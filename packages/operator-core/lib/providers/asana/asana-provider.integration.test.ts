@@ -10,7 +10,7 @@
  * API answers a token-less read with 412 + a fresh sync token, replays every event after a token,
  * and 412s a token it dropped; stories record completion, section moves and comments; a section
  * move does not bump `modified_at`. Every recorded object and response is typed against Asana's
- * OpenAPI document (asana-openapi.d.ts).
+ * OpenAPI document (libs/papercusp/plugins/asana/openapi/asana-openapi.d.ts).
  *
  * R-5 is the core claim: across real-driver passes — a backfill crawl, then Events-token
  * incrementals with a task retitled and completed, a task moved between sections, a comment, and a
@@ -44,7 +44,7 @@ import {
 } from '../../work-admission/record-source';
 import { runConnectorSync, type ConnectorSyncDeps, type ConnectorSourceOutcome } from '../connector-runtime';
 import { setAdmissionRuleAndBackfill, ticketRulePreset, type TicketRulePreset } from '../../work-admission/admission-rules';
-import type { components } from './asana-openapi';
+import type { components } from '../../../../../libs/papercusp/plugins/asana/openapi/asana-openapi';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
