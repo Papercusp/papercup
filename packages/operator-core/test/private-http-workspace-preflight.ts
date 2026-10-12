@@ -3,13 +3,151 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
+import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
+
+/** Additional pins on the existing operator-api-preflight.json receipt. This
+ * is preparation evidence, not proof that a host loaded or served the bundle.
+ * The selected source/dependency/graph receipt must come from the independent
+ * preparation phase; an in-process snapshot cannot certify its own selection.
+ */
+export interface CommittedReaderClosure {
+  sourceCommit: string;
+  sha256: string;
+  metafileSha256: string;
+  testPaths: string[];
+  helperPaths: string[];
+  configPaths: string[];
+  executedImports: string[];
+  dependencyFiles: VerifierSourceFile[];
+  externalResolutions: Record<string, string>;
+  copiedSources: string[];
+  artifacts: { path: string; sha256: string; sourcePath?: string }[];
+  schema: Record<string, string>;
+  environment: Record<string, string>;
+  omitted: string[];
+  opaque: string[];
+}
+
+/** Qualify the selected committed preparation before creating a sidecar/host.
+ * Source files reuse the independent full archive census. Dependencies remain
+ * a separate full materialized census, including bytes and symlink identities;
+ * a lockfile is never substituted for the files Node will resolve. Unknown
+ * executed imports (including an unobserved subprocess graph) must be recorded
+ * as opaque and refuse this required closure.
+ */
+export function qualifyCommittedReaderSource(o: {
+  root: string; bundle: string; receiptPath: string; sourceReceiptPath: string;
+  selectedCommit: string; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
+}) {
+  const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+  const inside = (root: string, path: string) => {
+    const rel = relative(realpathSync(root), realpathSync(path));
+    return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+  };
+  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.ok(!inside(o.root, o.receiptPath), 'Closure receipt must be independent of the source archive');
+  const closure: CommittedReaderClosure = JSON.parse(readFileSync(o.receiptPath, 'utf8'));
+  assert.equal(closure.sourceCommit, o.selectedCommit, 'Closure differs from selected committed source');
+  const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
+  assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from selected committed source');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
+    'dependencyFiles', 'artifacts', 'omitted', 'opaque'] as const)
+    assert.ok(Array.isArray(closure[key]), `Required closure dimension missing: ${key}`);
+  for (const key of ['schema', 'environment', 'externalResolutions'] as const)
+    assert.ok(closure[key] && typeof closure[key] === 'object' && !Array.isArray(closure[key]),
+      `Required closure dimension missing: ${key}`);
+  assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
+  assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'artifacts'] as const)
+    assert.ok(closure[key].length, `Required closure dimension empty: ${key}`);
+  const sourceFiles = new Map(source.files.map(file => [file.path, file]));
+  const sourcePath = (path: string) => {
+    assert.ok(path && !isAbsolute(path) && !path.split('/').some(part => !part || part === '.' || part === '..')
+      && !path.includes('\\'), `Invalid closure source path: ${path}`);
+    assert.ok(sourceFiles.has(path), `Required source is outside selected archive: ${path}`);
+    assert.ok(inside(o.root, join(o.root, path)), `Required source resolves outside selected archive: ${path}`);
+  };
+  for (const input of source.testedInputs) {
+    sourcePath(input.path);
+    assert.equal(sourceFiles.get(input.path)!.sha256, input.sha256, `Tested input differs: ${input.path}`);
+  }
+  for (const path of [...closure.testPaths, ...closure.helperPaths, ...closure.configPaths,
+    ...closure.executedImports, ...closure.copiedSources]) sourcePath(path);
+  for (const path of closure.testPaths)
+    assert.ok(source.testedInputs.some(input => input.path === path), `Test is absent from selected tested inputs: ${path}`);
+  const dependencies = verifierSourceFiles(join(o.root, 'node_modules'));
+  assert.deepEqual(dependencies, closure.dependencyFiles, 'Materialized dependency census differs');
+  const dependencyFiles = new Set(dependencies.map(file => `node_modules/${file.path}`));
+  const graphBytes = readFileSync(`${o.bundle}.meta.json`);
+  assert.equal(digest(graphBytes), closure.metafileSha256, 'Prepared build graph changed');
+  const graph = JSON.parse(String(graphBytes));
+  assert.ok(graph.inputs && Object.keys(graph.inputs).length && graph.outputs && Object.keys(graph.outputs).length,
+    'Complete prepared build graph is required');
+  const externals = new Set<string>();
+  const graphImports = new Set<string>();
+  const graphPath = (path: string) => {
+    assert.ok(!isAbsolute(path) && !path.split('/').includes('..'), `Build input escapes selected root: ${path}`);
+    if (path.startsWith('node_modules/')) assert.ok(dependencyFiles.has(path), `Unpinned dependency input: ${path}`);
+    else { sourcePath(path); graphImports.add(path); }
+  };
+  for (const [path, input] of Object.entries(graph.inputs) as [string, { imports?: { path: string; external?: boolean }[] }][]) {
+    graphPath(path);
+    assert.ok(Array.isArray(input.imports), `Build imports are unknown: ${path}`);
+    for (const edge of input.imports!) {
+      if (edge.external) { if (!isBuiltin(edge.path)) externals.add(edge.path); }
+      else graphPath(edge.path);
+    }
+  }
+  for (const output of Object.values(graph.outputs) as { imports?: { path: string; external?: boolean }[] }[]) {
+    assert.ok(Array.isArray(output.imports), 'Build output imports are unknown');
+    for (const edge of output.imports!) if (edge.external && !isBuiltin(edge.path)) externals.add(edge.path);
+  }
+  for (const path of graphImports)
+    assert.ok(closure.executedImports.includes(path), `Build source is absent from observed import closure: ${path}`);
+  assert.deepEqual(Object.keys(closure.externalResolutions).sort(), [...externals].sort(), 'External resolution census differs');
+  const fromBundle = createRequire(o.bundle);
+  for (const specifier of externals) {
+    const actual = realpathSync(fromBundle.resolve(specifier));
+    const expected = closure.externalResolutions[specifier];
+    assert.ok(dependencyFiles.has(expected), `External lacks dependency pin: ${specifier}`);
+    assert.equal(actual, realpathSync(join(o.root, expected)), `External resolution differs: ${specifier}`);
+  }
+  const artifactPaths = new Set<string>();
+  for (const artifact of closure.artifacts) {
+    assert.match(artifact.sha256, /^[a-f0-9]{64}$/, 'Artifact digest is required');
+    assert.ok(!artifactPaths.has(artifact.path), 'Duplicate artifact pin');
+    artifactPaths.add(artifact.path);
+    assert.ok(isAbsolute(artifact.path) && inside(dirname(o.bundle), artifact.path), 'Artifact escapes private preparation');
+    assert.equal(digest(readFileSync(artifact.path)), artifact.sha256, `Prepared artifact changed: ${artifact.path}`);
+  }
+  assert.ok(artifactPaths.has(o.bundle) && artifactPaths.has(`${o.bundle}.meta.json`), 'Bundle and graph artifact pins are required');
+  for (const path of closure.copiedSources) {
+    const copies = closure.artifacts.filter(artifact => artifact.sourcePath === path);
+    assert.ok(copies.length, `Copied source lacks retained artifact mapping: ${path}`);
+    for (const copy of copies)
+      assert.equal(copy.sha256, digest(readFileSync(join(o.root, path))), `Copied artifact differs from selected source: ${path}`);
+  }
+  assert.equal(digest(readFileSync(o.bundle)), closure.sha256, 'Prepared bundle changed');
+  assert.ok(Object.keys(closure.schema).length && Object.keys(closure.environment).length,
+    'Required private schema and environment pins are missing');
+  assert.deepEqual(o.schema, closure.schema, 'Applied required private schema differs');
+  for (const [key, expected] of Object.entries(closure.environment)) {
+    assert.match(expected, /^[a-f0-9]{64}$/, `Environment digest missing: ${key}`);
+    assert.ok(o.environment[key] !== undefined, `Required private environment missing: ${key}`);
+    assert.equal(digest(o.environment[key]!), expected, `Required private environment differs: ${key}`);
+  }
+  return { sourceCommit: source.sourceCommit, sha256: closure.sha256, metafileSha256: closure.metafileSha256,
+    checked: ['source', 'tested-inputs', 'build-imports', 'observed-imports', 'dependencies', 'externals',
+      'config', 'copied-sources', 'artifacts', 'required-private-schema', 'required-environment'],
+    omitted: closure.omitted, opaque: closure.opaque, hostStarted: false, httpStarted: false };
+}
 
 /** Complete, typed private Health seed; nullable data remains per-panel typed. */
 export function createPrivateHealthSnapshot(workspaceId: string, foreign: boolean, evaluatedAt: number): SystemHealth {
