@@ -124,9 +124,13 @@ describe('Reports delivery guidance', () => {
     expect(publishTool.description).toContain('returned same-origin path directly as its Markdown target');
     expect(publishTool.description).toContain('absolute HTTP(S) URL only when a verified GUI origin is available');
     expect(publishTool.description).toContain('never guess or ask the owner for an origin solely to format the link');
-    expect(publishTool.guidance?.chaining).toContain('returned same-origin path directly in Papercusp/Tauri');
+    // Each rule is stated ONCE across description + chaining (the tool is at its prompt-weight
+    // cap), so pin the combined delivery text: a rule dropped from both still fails here.
+    const delivery = `${publishTool.description}\n${publishTool.guidance?.chaining ?? ''}`;
+    expect(delivery).toContain('returned same-origin path directly');
     expect(publishTool.guidance?.chaining).toContain('/reports?sel=<report_id>');
-    expect(publishTool.guidance?.chaining).toContain('never guess or ask the owner for an origin solely to format the link');
+    expect(publishTool.guidance?.chaining).toContain('never cite a bare id');
+    expect(delivery).toContain('never guess or ask the owner for an origin solely to format the link');
   });
 });
 

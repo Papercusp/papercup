@@ -217,6 +217,23 @@ export const accountsRemoveTool = defineTool({
   },
 });
 
+/** What accounts:status's default summary view leaves out, and how to get it back. */
+export const ACCOUNT_STATUS_SUMMARY_OMITS = {
+  fields: ['rate.history7d', 'credentialRef'],
+  recover: "accounts:status { account: '<id>' } or { detail: 'full' }; credentialRef is also on accounts:list",
+} as const;
+
+/** PURE — the summary row: every field except the raw utilization history and the credential ref. */
+export function toAccountStatusSummaryRow<T extends object>(row: T): Omit<T, 'credentialRef'> {
+  // `T extends object`, not a weak `{ rate?; credentialRef? }` constraint: a row carrying
+  // neither field is still a row, and a weak-type constraint rejects it at the call site.
+  const { credentialRef: _credentialRef, ...rest } = row as T & { credentialRef?: unknown };
+  const rate = (rest as { rate?: unknown }).rate;
+  if (!rate || typeof rate !== 'object' || !('history7d' in rate)) return rest as Omit<T, 'credentialRef'>;
+  const { history7d: _history7d, ...rateRest } = rate as Record<string, unknown>;
+  return { ...rest, rate: rateRest } as Omit<T, 'credentialRef'>;
+}
+
 export const accountsStatusTool = defineTool({
   name: 'accounts:status',
   description:
@@ -238,7 +255,14 @@ export const accountsStatusTool = defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ workspace: wsArg }),
+  args: z.object({
+    workspace: wsArg,
+    account: z.string().min(1).optional().describe('Return only this account id (implies detail:"full").'),
+    detail: z
+      .enum(['summary', 'full'])
+      .optional()
+      .describe('summary (default without `account`) omits rate.history7d and credentialRef; full keeps them.'),
+  }),
   result: z
     .object({
       ok: z.boolean().optional(),
@@ -261,8 +285,23 @@ export const accountsStatusTool = defineTool({
     const { accounts, billing } = joinGatewayBilling(rows, stats);
     // P-002: the rows are INTERLEAVED across providers, so a reader diagnosing one provider
     // otherwise counts another's walls as evidence about theirs. Roll up per provider, from
-    // these same rows, so that inference cannot be made.
-    return ok({ accounts, poolVerdict: poolVerdictByProvider(rows, now), billing });
+    // these same rows, so that inference cannot be made. The rollup always covers the WHOLE
+    // pool, even when `account` narrows the row list.
+    const poolVerdict = poolVerdictByProvider(rows, now);
+    const selected = args.account ? accounts.filter((row) => row.id === args.account) : accounts;
+    const detail = args.detail ?? (args.account ? 'full' : 'summary');
+    if (detail === 'full') return ok({ accounts: selected, poolVerdict, billing });
+    // oversized-tool-results-reduction-2026-10-12 P-005: the pui TUI polls this every ~5s and
+    // reads none of rate.history7d (~23 KB of a 47 KB pool read, measured 2026-10-12) — the
+    // burn verdict already summarises it server-side. Omit it (and credentialRef, which
+    // accounts:list carries) unless a caller asks for one account or detail:'full'.
+    return ok({
+      accounts: selected.map(toAccountStatusSummaryRow),
+      poolVerdict,
+      billing,
+      detail: 'summary',
+      omitted: ACCOUNT_STATUS_SUMMARY_OMITS,
+    });
   },
 });
 
