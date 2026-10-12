@@ -239,6 +239,24 @@ registerDegradationMechanism({
   description: 'Scoped superuser workspace resolutions supplied explicitly or verified from the session, rather than guessed from the active registry. Deliberate unscoped administration is excluded.',
 });
 registerDegradationMechanism({
+  mechanism: 'swarm-authority-route', scopeKeyed: true,
+  description: 'Eligible plan claim, work-item claim and replica operations completed on the elected local or remote authority rather than an advisory fail-open grant; identity-only probes are excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-activation-probe',
+  description: 'Harness activation decisions supported by verified pending-write and presence probes rather than eagerly booting after an unreadable probe; empty sweeps are excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'sync-relay-config',
+  description: 'Sync relay configuration reads that completed, including deliberately empty configurations, rather than accepting unavailable relay-key storage.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'authority-peer-addresses',
+  description: 'Explicit peer-address environment maps parsed successfully rather than disabling remote addressing after invalid JSON; absent configuration and cached reads are excluded.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
   mechanism: 'routine-capability-read', scopeKeyed: true,
   description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',
   // Boot grants and memoized derivations can yield only one decision per process.
