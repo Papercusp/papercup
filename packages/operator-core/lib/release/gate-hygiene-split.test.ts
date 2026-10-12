@@ -184,10 +184,19 @@ describe("gate-hygiene-split", () => {
       expect(got.remedy).toMatch(/^npm run gen:/);
     });
 
-    it("admits the registered budget/fixture checks", () => {
+    it("admits the registered budget check", () => {
       expect(classifyGateFailure("lint:tool-prompts", ctx).klass).toBe("hygiene");
+    });
+
+    it("a RETIRED hygiene script fails closed to product (WI-6554700010009165)", () => {
+      // `lint:migration-fixture-drift:check` was deleted with its registry entry. Pinned so
+      // that re-adding the npm script WITHOUT a deliberate registry decision holds the gate
+      // instead of being waved through as hygiene by a stale entry.
+      expect(EXPLICIT_HYGIENE_GATE_SCRIPTS).not.toHaveProperty(
+        "lint:migration-fixture-drift:check",
+      );
       expect(classifyGateFailure("lint:migration-fixture-drift:check", ctx).klass).toBe(
-        "hygiene",
+        "product",
       );
     });
 

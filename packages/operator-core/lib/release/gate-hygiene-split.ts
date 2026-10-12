@@ -70,7 +70,6 @@
 export type HygieneCategory =
   | "generated-artifact-stale"
   | "budget-exceeded"
-  | "fixture-drift"
   | "detector-coverage-drift";
 
 export type GateFailureClass = "product" | "hygiene";
@@ -98,13 +97,15 @@ export const EXPLICIT_HYGIENE_GATE_SCRIPTS: Record<string, ExplicitHygieneEntry>
       "`main`. Historically this is the single most common way a tool-description edit " +
       "froze the fleet gate hours after the edit landed.",
   },
-  "lint:migration-fixture-drift:check": {
-    category: "fixture-drift",
-    remedy: "npm run lint:migration-fixture-drift:check",
-    why:
-      "A test fixture has fallen behind the migrations it mirrors. The remedy is to " +
-      "regenerate the fixture; the check makes no claim about production behaviour.",
-  },
+  // `lint:migration-fixture-drift:check` (category `fixture-drift`) USED TO SIT HERE and is
+  // RETIRED with its npm script (WI-6554700010009165). No gate leg ever ran it, so this entry
+  // classified a failure that could not occur. Wiring it instead was measured and rejected:
+  // `findFixtureGaps` flags every inline fixture that lacks a new column, deliberate partial
+  // stubs included, so 11 of the last 120 migrations would have fired on non-defects. The
+  // detector lives on as the advisory PostToolUse nudge, which runs
+  // scripts/check-migration-fixture-drift.mjs by path. An unregistered entry fails closed to
+  // `product`, so re-adding the script without an entry here holds the gate rather than
+  // waving it through.
 };
 
 /** ## The one admitted exception to "a test file is never hygiene" (WI-41765, D-010)
