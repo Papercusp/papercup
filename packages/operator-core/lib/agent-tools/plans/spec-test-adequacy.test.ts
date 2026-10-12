@@ -3773,6 +3773,42 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 });
 
 describe('rerunRecipe is submittable to its own evaluator', () => {
+  it('pins original same-kind binding ids when a later binding reuses the evidence ref', () => {
+    const sharedRef = 'packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts';
+    const selectedTest = evidence({ id: 37383, evidenceKind: 'test', evidenceRef: sharedRef });
+    const selectedMutation = evidence({
+      id: 37384,
+      evidenceKind: 'mutation',
+      evidenceRef: 'test-run:mutation-probe:21069197',
+    });
+    const laterTest = evidence({ id: 37827, evidenceKind: 'test', evidenceRef: sharedRef });
+    const selected = [selectedTest, selectedMutation];
+    const current: EvidenceCurrentInput[] = selected.map((row) => ({
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+      ...row.fingerprints,
+    }));
+
+    const original = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: selected,
+      current,
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+    });
+    const recipe = original.scorecardDraft.rerunRecipe;
+    const args = evaluatorArgsSchema.parse(recipe.args);
+    const availableLater = [...selected, laterTest];
+
+    expect(args.evidenceRefs).toContain(sharedRef);
+    expect(availableLater.filter((row) => args.evidenceRefs?.includes(row.evidenceRef)).map((row) => row.id))
+      .toEqual([37383, 37384, 37827]);
+    expect(args.bindingIds).toEqual([37383, 37384]);
+    expect(recipe.selection.bindingIds).toEqual([37383, 37384]);
+    expect(availableLater.filter((row) => args.bindingIds?.includes(row.id!)).map((row) => row.id))
+      .toEqual([37383, 37384]);
+  });
+
   it.each(['emitted', 'persisted'] as const)(
     '%s recipe preserves the full evidence population when current fingerprints are partial',
     (surface) => {
