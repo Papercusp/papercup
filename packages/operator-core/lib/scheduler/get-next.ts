@@ -44,6 +44,7 @@
  * remain unreachable).
  */
 import type postgres from 'postgres';
+import { performance } from 'node:perf_hooks';
 import { ITEM_CLASS_SQL_TEXT } from '../scout/ideation-origin';
 import {
   type ClaimSpec,
@@ -2128,6 +2129,17 @@ export interface IssueClaimabilityReading {
   admitted: IssueClaimAdmittedComposition;
 }
 
+/** Individually timed stages inside work_items:claimable's snapshot read. */
+export type IssueClaimabilityReadStage =
+  | 'transaction-isolation'
+  | 'statement-timeout'
+  | 'candidate-materialization'
+  | 'lane-scope-population'
+  | 'claim-exclusion-breakdown'
+  | 'claimable-rows'
+  | 'excluded-sample'
+  | 'admitted-composition';
+
 /**
  * Read the FULL claimability picture — {@link aggregateIssueClaimExclusions}'s counts,
  * {@link listIssueClaimableRows}' survivor rows, and optionally
@@ -2185,10 +2197,24 @@ export async function readIssueClaimability(
     sampleLimit?: number;
     /** Per-statement cap for the snapshot txn, ms (default 15000). */
     statementTimeoutMs?: number;
+    /** Optional best-effort per-stage timings for diagnosing slow claimability reads. */
+    onStageTiming?: (stage: IssueClaimabilityReadStage, elapsedMs: number) => void;
   },
 ): Promise<IssueClaimabilityReading> {
   const sql = opts.client ?? getOrgPg().sql;
   const stmtMs = Math.max(100, Math.trunc(readOpts.statementTimeoutMs ?? 15_000));
+  const timed = async <T>(stage: IssueClaimabilityReadStage, operation: () => Promise<T>): Promise<T> => {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      try {
+        readOpts.onStageTiming?.(stage, Math.max(0, Math.round(performance.now() - startedAt)));
+      } catch {
+        // Diagnostics must never change claimability or transaction semantics.
+      }
+    }
+  };
   const shared = {
     harness: opts.harness,
     workspaceId: opts.workspaceId,
@@ -2217,8 +2243,8 @@ export async function readIssueClaimability(
     // view of the real tables); READ ONLY was defense-in-depth against an accidental write to
     // a REAL table, which this function still never performs (every write below targets only
     // the session-local temp table created below).
-    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-    await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
+    await timed('transaction-isolation', () => tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'));
+    await timed('statement-timeout', () => tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`));
     const client = tx as unknown as OrgSql;
 
     // EI-18802055183255275: materialize the candidate set — the spec `view.filter` is
@@ -2282,7 +2308,9 @@ export async function readIssueClaimability(
       claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     });
     const precomputedTable = 'claim_candidate_snapshot';
-    await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
+    await timed('candidate-materialization', () =>
+      client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`,
+    );
 
     // WI-525554: the two counts the lane pushdown above would otherwise destroy, measured over the
     // FULL candidate population (observations included). This reuses the SAME
@@ -2309,14 +2337,17 @@ export async function readIssueClaimability(
     });
     // Both expressions are byte-identical to aggregateIssueClaimExclusions' own `matched` and
     // `observation_lane` columns — keep them that way if either definition moves.
-    const [laneScopeRow] = (await client`
-      SELECT
-        count(*) FILTER (WHERE spec_match)::int                                        AS matched,
-        count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int  AS observation_lane
-      FROM (${laneScopeSub}) lane_scope
-    `) as Array<{ matched: number; observation_lane: number }>;
+    const [laneScopeRow] = (await timed(
+      'lane-scope-population',
+      () => client`
+        SELECT
+          count(*) FILTER (WHERE spec_match)::int                                        AS matched,
+          count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int  AS observation_lane
+        FROM (${laneScopeSub}) lane_scope
+      `,
+    )) as Array<{ matched: number; observation_lane: number }>;
 
-    const breakdown = await aggregateIssueClaimExclusions(filter, {
+    const breakdown = await timed('claim-exclusion-breakdown', () => aggregateIssueClaimExclusions(filter, {
       ...shared,
       client,
       precomputedTable,
@@ -2324,19 +2355,25 @@ export async function readIssueClaimability(
         matchedByFilter: laneScopeRow?.matched ?? 0,
         observationLane: laneScopeRow?.observation_lane ?? 0,
       },
-    });
+    }));
     const rows = readOpts.breakdownOnly
       ? []
-      : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit);
+      : await timed('claimable-rows', () =>
+          listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit),
+        );
     const sample = readOpts.sampleLimit
-      ? await sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit)
+      ? await timed('excluded-sample', () =>
+          sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit!),
+        )
       : undefined;
     // WI-6673: composition of the ADMITTED set, in the SAME snapshot as the count it
     // describes. Unconditional — it is not an opt-in extra, because the whole failure
     // mode is a caller quoting the count WITHOUT having thought to ask for composition.
     // EI-18802055183255275: this used to be a genuine "fourth serial full scan" cost (see
     // the COST NOTE this replaced) — now it is a cheap scan of the materialized table above.
-    const admitted = await aggregateAdmittedComposition(filter, { ...shared, client, precomputedTable });
+    const admitted = await timed('admitted-composition', () =>
+      aggregateAdmittedComposition(filter, { ...shared, client, precomputedTable }),
+    );
 
     return { breakdown, rows, admitted, ...(sample ? { sample } : {}) };
   })) as IssueClaimabilityReading;

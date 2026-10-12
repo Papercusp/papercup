@@ -64,6 +64,7 @@ const candM = vi.mocked(listFleetClaimSpecCandidates);
 const pauseM = vi.mocked(readFleetPauseState);
 const laneM = vi.mocked(planItemLaneBlockReason);
 const membershipM = vi.mocked(latestFleetMembership);
+const logM = vi.fn();
 
 const tool = (await import('./claimable')).default;
 
@@ -111,7 +112,7 @@ const ROWS = [
 ];
 
 const run = async (args: unknown) => {
-  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1' } as never)) as {
+  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1', log: logM } as never)) as {
     content: { text: string }[];
   };
   return JSON.parse(res.content[0]!.text);
@@ -171,6 +172,7 @@ let admittedValue: Record<string, unknown> = HEALTHY_ADMITTED;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  logM.mockClear();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   sampleValue = EMPTY_SAMPLE;
   admittedValue = HEALTHY_ADMITTED;
@@ -178,12 +180,20 @@ beforeEach(() => {
   breakdownValue = BREAKDOWN;
   // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
   // real readIssueClaimability does, so the handler's payload assembly is what's under test.
-  readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: { breakdownOnly?: boolean; sampleLimit?: number }) => ({
-    breakdown: breakdownValue,
-    rows: readOpts.breakdownOnly ? [] : rowsValue,
-    admitted: admittedValue,
-    ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
-  })) as never);
+  readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: {
+    breakdownOnly?: boolean;
+    sampleLimit?: number;
+    onStageTiming?: (stage: string, elapsedMs: number) => void;
+  }) => {
+    readOpts.onStageTiming?.('candidate-materialization', 12);
+    readOpts.onStageTiming?.('claimable-rows', 3);
+    return {
+      breakdown: breakdownValue,
+      rows: readOpts.breakdownOnly ? [] : rowsValue,
+      admitted: admittedValue,
+      ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
+    };
+  }) as never);
   recordM.mockResolvedValue({
     source: 'default',
     spec: {
@@ -203,6 +213,28 @@ beforeEach(() => {
 });
 
 describe('work_items:claimable handler', () => {
+  it('logs SQL read stages and bounded plan-lane guard timings without changing the result', async () => {
+    laneM.mockResolvedValue(null);
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(out.claimable.map((row: { id: string }) => row.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
+    expect(logM).toHaveBeenCalledWith('info', '[work_items:claimable:timing]', expect.objectContaining({
+      outcome: 'ok',
+      readStageMs: expect.objectContaining({
+        'candidate-materialization': 12,
+        'claimable-rows': 3,
+      }),
+      planLaneGuard: expect.objectContaining({
+        rowsScanned: ROWS.length,
+        planLinkedRowsChecked: 1,
+        blockedPlanRows: 0,
+      }),
+    }));
+    expect((logM.mock.calls[0]![2] as { planLaneGuard: { elapsedMs: number; slowestPlanGuardMs: number } }).planLaneGuard.elapsedMs)
+      .toBeGreaterThanOrEqual(0);
+  });
+
   it('resolves member harnesses to their Hive home and discloses both scopes', async () => {
     hiveMocks.potHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
 

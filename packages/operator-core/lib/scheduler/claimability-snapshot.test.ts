@@ -102,6 +102,45 @@ function makePool(opts: { failAtQuery?: number } = {}) {
 const OPTS = { harness: 'papercup', assignee: 'probe' };
 
 describe('readIssueClaimability — one snapshot for every claimability read (WI-5947)', () => {
+  it('reports bounded timings for each SQL read stage, including the stage that fails', async () => {
+    const pg = makePool({ failAtQuery: 1 });
+    const timings: Array<[string, number]> = [];
+
+    await expect(readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
+      limit: 20,
+      onStageTiming: (stage, elapsedMs) => timings.push([stage, elapsedMs]),
+    })).rejects.toThrow('snapshot read failed');
+
+    expect(timings).toEqual([
+      ['transaction-isolation', expect.any(Number)],
+      ['statement-timeout', expect.any(Number)],
+      ['candidate-materialization', expect.any(Number)],
+    ]);
+    expect(timings.every(([, elapsedMs]) => elapsedMs >= 0 && Number.isFinite(elapsedMs))).toBe(true);
+  });
+
+  it('reports each reached query stage on a successful snapshot read', async () => {
+    const pg = makePool();
+    const stages: string[] = [];
+
+    await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
+      limit: 20,
+      sampleLimit: 5,
+      onStageTiming: (stage) => stages.push(stage),
+    });
+
+    expect(stages).toEqual([
+      'transaction-isolation',
+      'statement-timeout',
+      'candidate-materialization',
+      'lane-scope-population',
+      'claim-exclusion-breakdown',
+      'claimable-rows',
+      'excluded-sample',
+      'admitted-composition',
+    ]);
+  });
+
   it('issues exactly ONE transaction, and runs the counts + rows + sample inside it', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {

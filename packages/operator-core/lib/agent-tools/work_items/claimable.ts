@@ -31,7 +31,8 @@ import { z } from 'zod';
 import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { readIssueClaimability } from '../../scheduler/get-next';
+import { performance } from 'node:perf_hooks';
+import { readIssueClaimability, type IssueClaimabilityReadStage } from '../../scheduler/get-next';
 import { formatLowSeverityShare } from '../../scheduler/admitted-composition-format';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { filingGraceSec } from '../../work-items';
@@ -474,11 +475,35 @@ export default defineTool({
     // reached a caller and was read as a claim-path defect. A read failure THROWS here
     // rather than degrading to a partial or zeroed reading: "could not measure" must not
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
-    const { breakdown, rows: claimableRows, sample: excludedSample, admitted } = await readIssueClaimability(
-      filter,
-      { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
-      { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
-    );
+    const readStartedAt = performance.now();
+    const readStageMs: Partial<Record<IssueClaimabilityReadStage, number>> = {};
+    let reading;
+    try {
+      reading = await readIssueClaimability(
+        filter,
+        { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
+        {
+          limit,
+          breakdownOnly: args.breakdownOnly,
+          sampleLimit: args.sampleExcluded,
+          onStageTiming: (stage, elapsedMs) => {
+            readStageMs[stage] = elapsedMs;
+          },
+        },
+      );
+    } catch (error) {
+      try {
+        ctx.log('warn', '[work_items:claimable:timing]', {
+          outcome: 'error',
+          readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
+          readStageMs,
+        });
+      } catch {
+        // Diagnostic logging must not alter claimability failure behavior.
+      }
+      throw error;
+    }
+    const { breakdown, rows: claimableRows, sample: excludedSample, admitted } = reading;
 
     // EI-21834285144372521: `readIssueClaimability`'s SQL floors (ALL_ISSUE_CLAIM_FLOORS_PASS)
     // have no notion of a plan's PROSE owner-gate ("owner-gated" / "hard-deferred" / … in an
@@ -501,17 +526,30 @@ export default defineTool({
     // lane". Omitted per-row when null, so an ordinary block reads exactly as it does today.
     const ownerGateExcluded: Array<{ id: string; plan: string; reason: string; staleBlockedHint?: string }> = [];
     const claimable: typeof claimableRows = [];
+    const planLaneGuardStartedAt = performance.now();
+    let planLinkedRowsChecked = 0;
+    let blockedPlanRows = 0;
+    let slowestPlanGuardMs = 0;
+    let slowestPlanGuardRowId: string | undefined;
     for (const row of claimableRows) {
       if (!row.plan) {
         claimable.push(row);
         continue;
       }
+      planLinkedRowsChecked += 1;
       // Fails OPEN like every sibling guard in plan-item-lane-guard.ts: a lookup error here
       // must never turn a real claimable row into a false exclusion.
+      const rowGuardStartedAt = performance.now();
       const block = await planItemLaneBlockReason({ id: row.id, harness, family: 'issue', payload: null }).catch(
         () => null,
       );
+      const rowGuardElapsedMs = Math.max(0, Math.round(performance.now() - rowGuardStartedAt));
+      if (rowGuardElapsedMs > slowestPlanGuardMs) {
+        slowestPlanGuardMs = rowGuardElapsedMs;
+        slowestPlanGuardRowId = row.id;
+      }
       if (block) {
+        blockedPlanRows += 1;
         ownerGateExcluded.push({
           id: row.id,
           plan: row.plan,
@@ -521,6 +559,23 @@ export default defineTool({
       } else {
         claimable.push(row);
       }
+    }
+    try {
+      ctx.log('info', '[work_items:claimable:timing]', {
+        outcome: 'ok',
+        readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
+        readStageMs,
+        planLaneGuard: {
+          elapsedMs: Math.max(0, Math.round(performance.now() - planLaneGuardStartedAt)),
+          rowsScanned: claimableRows.length,
+          planLinkedRowsChecked,
+          blockedPlanRows,
+          slowestPlanGuardMs,
+          ...(slowestPlanGuardRowId ? { slowestPlanGuardRowId } : {}),
+        },
+      });
+    } catch {
+      // Diagnostic logging must never change claimability output.
     }
     // Exact when the whole matched population fit in this page (claimable.length < limit, or
     // the SQL count already equalled the page); a monotonic UNDER-correction (never negative,
