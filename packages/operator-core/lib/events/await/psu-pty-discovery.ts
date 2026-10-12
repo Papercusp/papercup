@@ -353,21 +353,38 @@ export async function readHostEventTailAsync(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
   maxBytes: number = RESPAWN_SCAN_TAIL_BYTES,
+  opts: { requireComplete?: boolean } = {},
 ): Promise<PtyHostEvent[]> {
   let text: string;
   try {
     const fh = await fsp.open(join(dir, `${sanitizeKey(ownerId)}.events.jsonl`), 'r');
     try {
       const { size } = await fh.stat();
+      if (opts.requireComplete && size > maxBytes) throw new Error('Host event ledger exceeds complete-read bound');
       const start = Math.max(0, size - maxBytes);
       const buf = Buffer.alloc(size - start);
-      await fh.read(buf, 0, buf.length, start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      if (opts.requireComplete && bytesRead !== buf.length) throw new Error('Host event ledger read was incomplete');
       text = buf.toString('utf8');
     } finally {
       await fh.close();
     }
-  } catch {
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
+  }
+  if (opts.requireComplete) {
+    // Health recovery needs a complete readable census; the legacy best-effort
+    // reader deliberately drops malformed/partially appended rows.
+    if (text && !text.endsWith('\n')) throw new Error('Host event ledger has an incomplete final row');
+    for (const line of text.split('\n').filter((line) => line.trim())) {
+      const row: unknown = JSON.parse(line);
+      if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Invalid host event ledger row');
+      const event = row as PtyHostEvent;
+      if (typeof event.kind !== 'string' || typeof event.ts !== 'string' || !Number.isFinite(Date.parse(event.ts))) {
+        throw new Error('Invalid host event kind or timestamp');
+      }
+    }
   }
   return parseHostEventTail(text);
 }
