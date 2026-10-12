@@ -984,6 +984,7 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
 
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
+  const evidencePlane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
   const lineage = classifySpecEvidenceLineage(row);
   // An authored reference can outlive the run it described. A dirty run cannot
   // substantiate a claim about the committed HEAD, so omit that stale clause.
@@ -1032,6 +1033,7 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
     details.fixtureFree !== undefined ? `fixtureFree=${details.fixtureFree}` : null,
     details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
     details.testLayer !== undefined ? `testLayer=${JSON.stringify(details.testLayer)}` : null,
+    typeof evidencePlane === 'string' ? `evidencePlane=${JSON.stringify(evidencePlane)}` : null,
     details.pathReachable !== undefined ? `pathReachable=${details.pathReachable}` : null,
     details.oracleIndependent !== undefined ? `oracleIndependent=${details.oracleIndependent}` : null,
     details.collected !== undefined ? `collected=${details.collected}` : null,
@@ -2908,10 +2910,25 @@ export function evaluateSpecTestAdequacy(input: {
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
   const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
+  const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
+    const planeMatchesMissingRequirement = normalizedPlane !== null && missingPlanes.includes(normalizedPlane);
+    const evidenceKindCanSatisfyPlane = ['manual', 'operational', 'independent-verification'].includes(row.evidenceKind);
+    const isNotCurrent = !currentEvidence.includes(row);
+    return (
+      (planeMatchesMissingRequirement && isNotCurrent) ||
+      (evidenceKindCanSatisfyPlane && (normalizedPlane === null || !requiredPlanes.includes(normalizedPlane)))
+    );
+  });
   const planeRating: CorrectLayerEvidencePart | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
-    ? plainCorrectLayerPart(
+    ? boundCorrectLayerPart(
         'fail',
-        `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
+        `Required evidence plane(s) are absent from current bindings for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}. ` +
+          (planeBlockerRows.length > 0
+            ? 'Non-current or plane-mismatched manual/operational binding(s) are listed below for inspection.'
+            : 'No current binding declares one of the required planes.'),
+        planeBlockerRows,
         'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
       )
     : boundCorrectLayerPart(
@@ -3348,7 +3365,10 @@ export function evaluateSpecTestAdequacy(input: {
       ...evidence.filter((row) => detailsOf(row).falsifiable === false),
       ...mutationInCohortNotExecutable,
     ],
-    'correct-layer': evidence.filter((row) => detailsOf(row).pathReachable === false),
+    'correct-layer': [
+      ...evidence.filter((row) => detailsOf(row).pathReachable === false),
+      ...planeBlockerRows,
+    ],
     'oracle-independence': evidence.filter((row) => detailsOf(row).oracleIndependent === false),
     'execution-integrity': explicitBadExecution
       ? explicitBadExecutionRows
