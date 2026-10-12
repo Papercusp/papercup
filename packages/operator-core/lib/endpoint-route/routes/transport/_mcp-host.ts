@@ -73,6 +73,7 @@ import {
 import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { applyScopedSuperuserTransportBoundary } from './scoped-superuser-transport-boundary';
 import {
   dynamicSlashListings,
   resolveSlashToolForPrompt,
@@ -99,6 +100,7 @@ import {
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { observeFallback } from '../../../degradation/fallback-observations';
 import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
@@ -153,7 +155,6 @@ import {
 // hard-failure-only efficiency telemetry.
 import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
-import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { isAppKeyShaped } from '../../../connected-apps/key';
 import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
@@ -691,142 +692,6 @@ async function maybeRunWithDeltaProxy(input: {
 }
 
 /**
- * scoped-superuser-workspace-clamp exemption (EI-1810). A `crossWorkspace: true`
- * tool normally bypasses the per-workspace tx (getOrgPg admin handle) so an
- * UNSCOPED superuser session can call it — which is exactly why the clamp denies
- * such tools from a SCOPED superuser session (they could read across workspaces).
- * These specific tools are the exception: they are crossWorkspace ONLY to support
- * the unscoped path, but when called from a SCOPED session they confine themselves
- * to the caller's OWN workspace (resolve ctx.principal.workspaceId) and are
- * read-only — so a scoped session calling them never reads another workspace.
- *
- * The exemption lives HERE, in the gate, not as a self-asserted per-tool flag: a
- * tool author must not be able to bypass workspace isolation by setting a boolean on
- * their own def — each entry is reviewed as part of this security boundary.
- *
- *   - autonomy:decide — a pure advisory gate (capability intel:read, never mutates)
- *     that resolves the caller's workspace and reads only THAT workspace's autonomy
- *     policy. The Overwatch role runs workspace-scoped and its prompt mandates this
- *     tool, so the clamp made it deterministically unusable for the role (EI-1810).
- *   - memory:* (search/list/remember/update/forget) — the memory store is partitioned
- *     by USER-ID / HARNESS-SLUG, NOT by workspace (the handler reads getMemoryBackend,
- *     never ctx.tx). A scoped session calling these touches only its OWN user's /
- *     harness's memory — it never reads or writes another WORKSPACE's tenant data, so
- *     the clamp's threat model (cross-workspace tenant-data access) simply does not
- *     apply. They are crossWorkspace:true only so an UNSCOPED ('*') psu gets the admin
- *     handle (EI-2378); denying them from a scoped session would break legitimate
- *     same-user memory recall/writes for no isolation benefit. (Reads AND writes are
- *     listed: a write lands in the caller's own user/harness memory, crossing no
- *     workspace boundary — the "read-only" note above is autonomy:decide-specific.)
- */
-const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
-  'autonomy:decide',
-  // EI-1934: the WRITE sibling of autonomy:decide — SAME self-confining profile
-  // (resolves ws from the caller's principal / activeWorkspaceId(), and records the
-  // disposition row ONLY to that ws — record_disposition.ts:92-93,114-115).
-  // crossWorkspace:true only so an UNSCOPED psu gets the admin handle; from a SCOPED
-  // Queen session it crosses no workspace boundary, so the clamp must not deny it —
-  // otherwise the Queen's decision-ledger audit is unusable from its normal scoped seat
-  // (EI-1810's exemption must cover the whole autonomy:* decide+record family, not just decide).
-  'autonomy:record_disposition',
-  'memory:search',
-  'memory:list',
-  'memory:remember',
-  'memory:update',
-  'memory:forget',
-  // EI-247550: memory:get resolves ids across the backend, but its handler returns shared rows
-  // only when the scope belongs to this workspace (and, with the clamp on, this session's Hive).
-  // Other users' rows and out-of-scope ids remain indistinguishable from missing ids.
-  'memory:get',
-  // search:* prose recall (session-search-scope-2026-07-05 live-smoke finding) —
-  // read-only; crossWorkspace ONLY so an unscoped psu gets the admin handle for
-  // the non-workspace-scoped operator_turns table (P-062 Phase 4). From a SCOPED
-  // session the engine confines every source by the ctx workspaceId it is handed
-  // (runFullTextSearch/runHybridSearch `workspaceId:` — each SearchSource's SQL
-  // filters on it); operator_turns is host-global operator history, not another
-  // workspace's tenant data. Denying these made prose recall (and the EI-6984
-  // work_item dedup check) deterministically unusable for every workspace-scoped
-  // psu session — the same failure shape as autonomy:decide (EI-1810).
-  'search:fulltext',
-  'search:semantic',
-  // sessions:* (session-search-scope-2026-07-05 P-005/P-006) — read-only session
-  // recall. session_turns confines to (workspace_id = $ws OR 'default') — the
-  // 'default' rows are THIS HOST's local transcript files (claude/omp/codex
-  // JSONL), which carry no workspace identity and are not tenant data (same
-  // class as memory:*, partitioned by owner not workspace). The flagship flow —
-  // `sessions:search { session:'self' }` compaction recovery — runs from
-  // workspace-scoped psu sessions, exactly the caller the clamp would deny.
-  'sessions:search',
-  'sessions:read',
-  'sessions:list',
-  'sessions:timeline',
-  // sessions:digest (EI-10888, added AFTER this allowlist's original P-005/P-006 pass —
-  // EI-13175: it was never backported here, so a workspace-scoped psu session got
-  // `workspace_forbidden` on a tool it never asked to span workspaces with). Same
-  // self-confining profile as its sessions:* siblings above: its query filters
-  // `WHERE (workspace_id = ctx.workspaceId OR workspace_id = 'default')` (digest.ts) —
-  // it never reads another workspace's tenant data from a scoped caller.
-  'sessions:digest',
-  // pot_git:secrets_exemptions (WI-6641) — the RUNTIME, no-restart recovery lever
-  // for a secrets-guard false positive (WI-5591). Its table is keyed BY workspace
-  // (PK (workspace_id, path)) and every read/write filters on it, so a scoped call
-  // is well-defined; crossWorkspace:true is here only so an UNSCOPED psu gets the
-  // getOrgPg admin handle — the memory:*/autonomy:record_disposition profile. The
-  // handler now REFUSES an explicit `workspaceId` naming another workspace, so a
-  // scoped caller cannot cross out (self-confinement, secrets_exemptions.ts).
-  //
-  // Why this one matters more than the count suggests: a false positive FREEZES
-  // ALL git egress for the hive until it is cleared (the guard baseline never
-  // advances past a refused range, so the same blob is re-refused forever), and
-  // the refusal message instructs the reader to run exactly this tool. Every
-  // ordinary agent that trips the guard is workspace-scoped, so the documented
-  // remedy was unreachable by precisely the population that needs it — the
-  // EI-1810 failure shape, and a plausible reason the class kept recurring (this
-  // was at least its third occurrence; it froze the publish plane ~8h on
-  // 2026-07-28 while the fix had to be applied by hand with psql).
-  'pot_git:secrets_exemptions',
-]);
-
-/** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
- *  it SELF-CONFINES to the caller's own workspace (EI-1810). Self-confinement is
- *  the whole criterion; read-only is NOT required and never was — memory:remember /
- *  :update / :forget and autonomy:record_disposition are writes, and they qualify
- *  because they resolve their scope from the caller's principal and cannot be
- *  pointed at another workspace. A tool that accepts a caller-supplied workspace
- *  target does NOT qualify until it refuses a foreign one (cf. WI-6641).
- *  P-019: the runtime clamp:set_safe_tools dial can NARROW this allowlist (tighten-only) — a tool in
- *  the operator's safeToolsRemove set is treated as NOT safe (the clamp then denies it from a scoped
- *  session). It can only REMOVE entries, never add, so it can only tighten the cross-workspace gate. */
-function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
-  return SCOPED_SAFE_CROSSWORKSPACE.has(toolName) && !authSafeToolsRemoveSet().has(toolName);
-}
-
-/**
- * GLOBAL-config superuser admin tools exempt from the clamp's crossWorkspace denial.
- *
- * RATIONALE (security review — scoped-superuser-clamp follow-up). The clamp's threat
- * model is a scoped superuser reading another workspace's tenant DATA (a `crossWorkspace`
- * tool runs on the getOrgPg admin handle, which bypasses per-workspace RLS). The
- * `flags:*` family is categorically different: it is the ONE GLOBAL feature-flag store —
- * there is no per-workspace flag data, so confining it to a workspace protects no tenant
- * data. And denying it creates a CIRCULAR LOCKOUT: `flags:set` is the very control that
- * GOVERNS the clamp — a scoped superuser otherwise cannot disable the clamp (or flip any
- * global flag) without it, locking the operator out of its own controls. A superuser is
- * already god-mode at dispatch (`isSuperuser` bypasses role gates); managing GLOBAL config
- * is squarely within that authority. So the flag-admin family is reachable even from a
- * scoped superuser session. This widens NO per-workspace DATA reach — only the
- * global-config meta-controls. (Reviewed in the gate, not a self-asserted per-tool flag,
- * per the SCOPED_SAFE_CROSSWORKSPACE convention above.)
- */
-const SUPERUSER_GLOBAL_FLAG_ADMIN: ReadonlySet<string> = new Set(['flags:get', 'flags:set', 'flags:list']);
-
-/** Whether a tool is a GLOBAL-config superuser meta-control (the flag system) that a
- *  scoped superuser may reach despite the clamp — no tenant-data reach (see above). */
-function isSuperuserGlobalFlagAdmin(toolName: string): boolean {
-  return SUPERUSER_GLOBAL_FLAG_ADMIN.has(toolName);
-}
-
-/**
  * EI-22068944239934723: LAUNCH-shaped tools whose cross-hive `harness_forbidden` refusal
  * should also name the sanctioned route.
  *
@@ -1229,45 +1094,9 @@ async function applyScopedSuperuserTransportClamp(
   const toolName = tool.name ?? '<unnamed tool>';
   let args = inputArgs;
   let effectiveHarnessSlug = spawnCtx.harnessSlug;
-  const scopedSuperuserClamp =
-    spawnCtx.isSuperuser === true &&
-    spawnCtx.workspaceId !== '*' &&
-    (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
-
-  if (spawnCtx.profile === 'power' && tool.profile === 'engineer') {
-    return {
-      ok: false,
-      result: {
-        isError: true,
-        content: [
-          {
-            type: 'text' as const,
-            text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
-          },
-        ],
-      },
-    };
-  }
-
-  if (
-    scopedSuperuserClamp &&
-    tool.crossWorkspace === true &&
-    !isScopedSafeCrossWorkspaceTool(toolName) &&
-    !isSuperuserGlobalFlagAdmin(toolName)
-  ) {
-    return {
-      ok: false,
-      result: {
-        isError: true,
-        content: [
-          {
-            type: 'text' as const,
-            text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnCtx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
-          },
-        ],
-      },
-    };
-  }
+  const boundary = await applyScopedSuperuserTransportBoundary(tool, spawnCtx, { readForAllTools: true });
+  if (!boundary.ok) return { ok: false, result: boundary.result };
+  const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
 
   if (scopedSuperuserClamp) {
     const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
@@ -1995,9 +1824,17 @@ export async function tryBuildSpawnContext(
           workspaceId = active;
           workspaceResolution = 'registry-fallback';
         } else {
+          observeFallback('mcp-workspace-resolution', { eligible: 1, applied: 0, reason: 'workspace-unresolved' });
           return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
         }
       }
+    }
+    // Deliberate cross-workspace administration is not a failed scoped resolution.
+    if (workspaceId && workspaceId !== '*' && url.searchParams.get('all_workspaces') !== '1') {
+      observeFallback('mcp-workspace-resolution', { eligible: 1,
+        applied: workspaceResolution === 'registry-fallback' ? 0 : 1,
+        reason: workspaceResolution === 'registry-fallback' ? 'registry-fallback' : 'applied' },
+      { workspaceId });
     }
     // P-006 (fleet-friction-remediation): every transport call now inherits a
     // missing harness through the same canonical chain used by scheduler:get_next.
@@ -2489,6 +2326,7 @@ import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
 async function dispatchWithSynthesizedTx<T>(
   tool: {
     name?: string;
+    agentRoles?: readonly string[];
     crossWorkspace?: boolean;
     needsWorkspaceTx?: boolean;
     /** Legacy compatibility metadata; transaction-free is now the default. */
@@ -2499,6 +2337,18 @@ async function dispatchWithSynthesizedTx<T>(
   baseCtx: UnifiedToolContext,
   run: (ctx: UnifiedToolContext) => Promise<T>,
 ): Promise<T> {
+  // Role denial is independent of the synthesized principal. Run the same
+  // allowlist condition as dispatch-stack before opening a workspace transaction
+  // so an out-of-role call cannot wait on DB acquisition before its known denial.
+  if (
+    tool.agentRoles &&
+    baseCtx.role &&
+    !baseCtx.gateBypass?.role &&
+    !tool.agentRoles.includes(baseCtx.role)
+  ) {
+    return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run({ ...baseCtx, tx: undefined }));
+  }
+
   // P-062 — crossWorkspace tools span workspaces: hand them the admin
   // (rolbypassrls) handle, never a workspace-scoped harness_app tx. Checked
   // before needsTx so it also covers the superuser/'*' discovery case
@@ -4144,53 +3994,13 @@ export function registerMcpHost(server: McpServer): void {
         // context is the original ambient scope, while dispatch gets the
         // verified read target.
         let effectiveHarnessSlug = spawnRes.ctx.harnessSlug;
-        // Profile gate: power-profile callers cannot invoke Group A tools
-        // even if they know the name. Mirrors the tools/list filter so
-        // direct-name calls can't bypass the listing restriction.
-        if (spawnRes.ctx.profile === 'power' && projected.profile === 'engineer') {
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text' as const,
-                text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
-              },
-            ],
-          };
-        }
-        // scoped-superuser-workspace-clamp (P-006/P-007), flag-gated. A SCOPED
-        // superuser session (concrete workspaceId, not '*') is confined to its
-        // workspace: (a) a crossWorkspace tool — which bypasses the workspace tx
-        // (getOrgPg) and spans workspaces by design (see the P-062 admin-ctx
-        // branch below) — is DENIED, UNLESS it is on the scoped-safe allowlist
-        // (self-confines to the caller's own workspace + read-only; EI-1810);
-        // (b) its per-call `workspace` arg is overwritten with the clamped
-        // workspace (mirrors the power-user clamp). Only an UNSCOPED ('*')
-        // superuser may span. Flag OFF → no-op.
-        const scopedSuperuserClamp =
-          spawnRes.ctx.isSuperuser === true &&
-          spawnRes.ctx.workspaceId !== '*' &&
-          (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
-        if (
-          scopedSuperuserClamp &&
-          projected.crossWorkspace === true &&
-          !isScopedSafeCrossWorkspaceTool(toolName) &&
-          // GLOBAL-config superuser meta-controls (flags:*) are exempt — they touch no
-          // per-workspace tenant data, and denying flags:set circularly locks the
-          // operator out of the very control that governs this clamp. See
-          // SUPERUSER_GLOBAL_FLAG_ADMIN above for the security review.
-          !isSuperuserGlobalFlagAdmin(toolName)
-        ) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text' as const,
-                text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
-              },
-            ],
-          };
-        }
+        const boundary = await applyScopedSuperuserTransportBoundary(
+          { name: toolName, crossWorkspace: projected.crossWorkspace, profile: projected.profile },
+          spawnRes.ctx,
+          { readForAllTools: true },
+        );
+        if (!boundary.ok) return boundary.result;
+        const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
         // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
         // may NOT use the harness:'all'/'*' GLOBAL escape — resolvePlanScope maps it
         // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Re-resolve only
@@ -5397,7 +5207,7 @@ export function registerMcpHost(server: McpServer): void {
                 runId: dispatchSpawnCtx.runId ?? null,
                 mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                 outputRef: doorMeta.spillUri ?? null,
-                outputSize: doorMeta.spillUri && doorMeta.spillPending !== true ? originalBytes : null,
+                outputSize: doorMeta.spillUri ? originalBytes : null,
                 // WI-40720 gap 3: this branch was `toolName === 'code:run'`, so a recipes:run or
                 // orchestrate:run call could spill real bytes and record NO telemetry for them —
                 // the rollout gates then graded a default-on orchestration suite on code:run
@@ -5406,7 +5216,7 @@ export function registerMcpHost(server: McpServer): void {
                   ? {
                       metadataJson: {
                         returnedContextBytes: measureResultContextBytes(result),
-                        spilledBytes: doorMeta.spillUri && doorMeta.spillPending !== true ? originalBytes : 0,
+                        spilledBytes: doorMeta.spillUri ? originalBytes : 0,
                         // BOTH spill addresses, because a later capability:read may name
                         // either one — the scratch FILE path (args_json.file_path) or the
                         // papercusp:// URI (args_json.uri). Stamping both is what makes
@@ -5424,7 +5234,8 @@ export function registerMcpHost(server: McpServer): void {
                         // on the healthy path is indistinguishable from one never measured,
                         // which is how a rollback trigger silently reads as "no breaches".
                         spillFailed: doorMeta.spillFailed === true,
-                        spillPending: doorMeta.spillPending === true,
+                        // The outer guard only enters after pending spills have settled.
+                        spillPending: false,
                         spillError: doorMeta.spillError ?? null,
                         spillErrorCode: doorMeta.spillErrorCode ?? null,
                         resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
