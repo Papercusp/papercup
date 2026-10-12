@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/agent-mcp';
-const io=vi.hoisted(()=>({actor:vi.fn(),templates:vi.fn(),get:vi.fn(),prepare:vi.fn(),start:vi.fn(),complete:vi.fn(),origin:vi.fn(),onboarding:vi.fn(),identity:vi.fn(),hire:vi.fn(),accept:vi.fn(),admit:vi.fn(),wallet:vi.fn(),execution:vi.fn(),engagement:vi.fn(),fire:vi.fn(),resign:vi.fn(),amend:vi.fn(),end:vi.fn(),amended:vi.fn()}));
+const io=vi.hoisted(()=>({actor:vi.fn(),templates:vi.fn(),get:vi.fn(),prepare:vi.fn(),start:vi.fn(),reconcile:vi.fn(),complete:vi.fn(),origin:vi.fn(),onboarding:vi.fn(),identity:vi.fn(),hire:vi.fn(),accept:vi.fn(),admit:vi.fn(),wallet:vi.fn(),execution:vi.fn(),engagement:vi.fn(),fire:vi.fn(),resign:vi.fn(),amend:vi.fn(),end:vi.fn(),amended:vi.fn()}));
 vi.mock('../../../workspace-registry',()=>({activeWorkspaceId:()=> 'workspace'}));
 vi.mock('../../../dao-hr/contract-templates',async original=>({...await original<typeof import('../../../dao-hr/contract-templates')>(),listContractTemplates:io.templates}));
 vi.mock('../../../dao-hr/hiring',async original=>({...await original<typeof import('../../../dao-hr/hiring')>(),resolveHiringActor:io.actor}));
-vi.mock('../../../dao-hr/contracts-esign',async original=>({...await original<typeof import('../../../dao-hr/contracts-esign')>(),getContractExecution:io.get,prepareContractExecution:io.prepare,startContractSigning:io.start,completeContractSigning:io.complete}));
+vi.mock('../../../dao-hr/contracts-esign',async original=>({...await original<typeof import('../../../dao-hr/contracts-esign')>(),getContractExecution:io.get,prepareContractExecution:io.prepare,startContractSigning:io.start,reconcileContractSigning:io.reconcile,completeContractSigning:io.complete}));
 vi.mock('../../cors',()=>({requireAllowedOriginOr403:io.origin}));
 vi.mock('../../../federated-pot-scope',()=>({resolveFederatedPotScope:async()=> 'dao'}));
 vi.mock('../../../hive-policy-store',()=>({getHivePolicy:async()=>({policy:{}})}));
@@ -44,6 +44,17 @@ describe('Contract execution HTTP boundary',()=>{
     io.get.mockResolvedValue({contract_id:'contract',state:'signed',can_bind:false,document_hash:'hash',completed_at:'date',signing_links:[],templates:[],source_pdf:[1,2],sealed_pdf:[3,4],signers:[{email:'private@example.test'}]});
     const data=await(await routes[0]!.handler(new Request('http://local?offer=offer'),ctx)).json();
     expect(data.execution).toEqual({contractId:'contract',state:'signed',bindingEligible:false,documentHash:'hash',completedAt:'date',signingLinks:[],templates:[]});
+  });
+  it('reconciles only an envelope lookup with a server-resolved admin and no supplied completion proof',async()=>{
+    io.reconcile.mockResolvedValue({contract_id:'contract',state:'signing'});
+    expect((await routes[1]!.handler(request({action:'reconcile',offerId:'offer',envelopeId:' envelope '}),ctx)).status).toBe(200);
+    expect(io.reconcile).toHaveBeenCalledWith({workspaceId:'workspace',daoSlug:'dao',action:'reconcile',offerId:'offer',envelopeId:'envelope',actorPersonId:'PER-admin'});
+    for(const input of [{action:'reconcile',offerId:'offer',envelopeId:''},{action:'reconcile',offerId:'offer',envelopeId:'envelope',state:'signed'},{action:'reconcile',offerId:'offer',envelopeId:'envelope',signers:[]}])
+      expect((await routes[1]!.handler(request(input),ctx)).status).toBe(400);
+    expect(io.reconcile).toHaveBeenCalledOnce();expect(io.start).not.toHaveBeenCalled();
+    io.actor.mockRejectedValue(new HiringError('not_admin','HR admin required'));
+    expect((await routes[1]!.handler(request({action:'reconcile',offerId:'offer',envelopeId:'envelope'}),ctx)).status).toBe(403);
+    expect(io.reconcile).toHaveBeenCalledOnce();
   });
   it('downloads only available artifacts with private cache headers',async()=>{
     io.get.mockResolvedValue({source_pdf:new TextEncoder().encode('%PDF-fixture'),sealed_pdf:null,audit_certificate:null});

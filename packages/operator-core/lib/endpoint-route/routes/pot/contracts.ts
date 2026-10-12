@@ -3,7 +3,7 @@ import { z, ZodError } from 'zod';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { ContractTemplateError, listContractTemplates } from '../../../dao-hr/contract-templates';
 import { HiringError, resolveHiringActor } from '../../../dao-hr/hiring';
-import { completeContractSigning, ContractSigningError, getContractExecution, prepareContractExecution, startContractSigning } from '../../../dao-hr/contracts-esign';
+import { completeContractSigning, ContractSigningError, getContractExecution, prepareContractExecution, reconcileContractSigning, startContractSigning } from '../../../dao-hr/contracts-esign';
 import { DocumensoError } from '../../../dao-hr/documenso';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { resolveFederatedPotScope } from '../../../federated-pot-scope';
@@ -15,6 +15,7 @@ import { completeEngagementAmendment, completeEngagementEnd, EngagementError, pr
 const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('prepare'),offerId:z.string().min(1),companyPersonId:z.string().min(1),startDate:z.string(),templates:z.array(z.object({templateKey:z.string().min(1),version:z.number().int().positive()}).strict()).min(2).max(4)}).strict(),
   z.object({action:z.literal('start'),offerId:z.string().min(1)}).strict(),
+  z.object({action:z.literal('reconcile'),offerId:z.string().min(1),envelopeId:z.string().trim().min(1).max(200)}).strict(),
 ]);
 function failure(error:unknown){
   if(error instanceof ZodError)return Response.json({ok:false,error:'invalid_input',message:'Contract fields are missing or invalid.'},{status:400});
@@ -41,7 +42,7 @@ const post=defineTool({method:'POST',path:'/pot/:id/contracts',auth:'loopback',a
   const refusal=requireAllowedOriginOr403(req);if(refusal)return refusal;
   try{
     const key={workspaceId:activeWorkspaceId(),daoSlug:ctx.params.id!},actorPersonId=await resolveHiringActor(key),action=actions.parse(await req.json().catch(()=>null));
-    const row=action.action==='prepare'?await prepareContractExecution({...key,...action,actorPersonId}):await startContractSigning({...key,...action,actorPersonId});
+    const row=action.action==='prepare'?await prepareContractExecution({...key,...action,actorPersonId}):action.action==='reconcile'?await reconcileContractSigning({...key,...action,actorPersonId}):await startContractSigning({...key,...action,actorPersonId});
     return Response.json({ok:true,contractId:row.contract_id,state:row.state});
   }catch(error){return failure(error);}
 }});

@@ -1,8 +1,12 @@
 /** P006: extend the registry and offer lifecycle with immutable signing proof.
  * A signed contract is conditional; only verified hire execution can bind it. */
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import type { Sql } from 'postgres';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
 import { PERSON_DATATYPE, getCanonicalEntity } from '../relationship-graph/resolver';
@@ -27,6 +31,12 @@ export interface ContractExecution {
 const db = (deps: Deps) => deps.sql ?? getOrgPg().sql;
 const sha256 = (bytes: Uint8Array) => '0x' + createHash('sha256').update(bytes).digest('hex');
 const connection = (tx: unknown) => tx as Sql;
+// Resolve from the package export so host bundling cannot move the asset path.
+const require=createRequire(import.meta.url);
+let contractFont:Buffer|undefined;
+function contractFontBytes(){
+  return contractFont??=readFileSync(join(dirname(require.resolve('@papercusp/operator-core/package.json')),'lib/dao-hr/fonts/NotoSans-Regular.ttf'));
+}
 async function admin(sql: Sql, key: DaoKey, id: string) {
   const person = await getCanonicalEntity(sql, key.workspaceId, PERSON_DATATYPE, id);
   if (!person || !await isDaoHrAdmin({ ...key, personId: person.id }, { sql })) throw new ContractSigningError('not_admin', 'A DAO HR admin must manage contracts.');
@@ -45,10 +55,15 @@ export function offerMergeValues(offer: HiringOffer, extra: { issuerTitle: strin
     vesting_months: String(offer.terms.equity.vestingDays/30), cliff_months: String(offer.terms.equity.cliffDays/30),
     start_rule: offer.terms.equity.startRule, hire_proposal_ref: extra.contractId, tax_jurisdiction: offer.terms.jurisdiction };
 }
-/** Maintained PDF writer; wrapping and pagination preserve every registered clause.
- * Unsupported font characters are refused instead of silently changing legal text. */
+/** Noto Sans is bundled under OFL; no host-installed font or network is needed.
+ * Missing glyphs are refused instead of silently changing names or legal text. */
 export async function contractPdf(documents: string[]) {
-  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica);
+  const pdf = await PDFDocument.create();pdf.registerFontkit(fontkit);
+  const font=await pdf.embedFont(contractFontBytes(),{subset:true}),glyphs=new Set(font.getCharacterSet());
+  for(const document of documents)for(const character of document){
+    if(!/\s/u.test(character)&&!glyphs.has(character.codePointAt(0)!))
+      throw new ContractSigningError('invalid_input','The contract font does not support character U+'+character.codePointAt(0)!.toString(16).toUpperCase()+'. Select a template using supported text.');
+  }
   for (const document of documents) {
     let page = pdf.addPage([595,842]), y = 790;
     for (const paragraph of document.replace(/\r\n?/g,'\n').split('\n')) {
@@ -142,15 +157,41 @@ export async function startContractSigning(input: DaoKey & { offerId:string;acto
   });
   return getContractExecution(input,deps);
 }
-/** Only this authenticated provider event path can write the signed stage. */
+/** An HR admin supplies the envelope found by its immutable contract reference.
+ * Provider identity/document checks precede the compare-and-set; no new envelope
+ * is created, and a competing recovery cannot replace the selected envelope. */
+export async function reconcileContractSigning(input:DaoKey&{offerId:string;actorPersonId:string;envelopeId:string},deps:Deps={}) {
+  const sql=db(deps);await admin(sql,input,input.actorPersonId);
+  if(!input.envelopeId.trim()||input.envelopeId.length>200)throw new ContractSigningError('invalid_input','A Documenso envelope ID is required.');
+  const row=await getContractExecution(input,deps);
+  if(row.envelope_id===input.envelopeId&&['signing','signed','binding'].includes(row.state))return row;
+  if(row.state!=='dispatching'||(row.envelope_id&&row.envelope_id!==input.envelopeId))throw new ContractSigningError('invalid_transition','Only an unresolved signing dispatch can be reconciled.');
+  const adapter=deps.adapter??DocumensoAdapter.configured();
+  const status=await adapter.reconcile({contractId:row.contract_id,envelopeId:input.envelopeId,signers:row.signers,pdf:row.source_pdf});
+  const changed=await sql`UPDATE harness_shared.dao_hr_contracts SET envelope_id=${input.envelopeId}
+    WHERE contract_id=${row.contract_id} AND state='dispatching' AND (envelope_id IS NULL OR envelope_id=${input.envelopeId}) RETURNING contract_id`;
+  if(!changed.length)throw new ContractSigningError('invalid_transition','Another signing reconciliation completed first.');
+  if(status==='COMPLETED') {
+    // Authenticated provider reads recover even when its webhook arrived before
+    // the lost create response was reconciled. No client-supplied signed state.
+    const event={event:'DOCUMENT_COMPLETED' as const,createdAt:new Date().toISOString(),payload:{envelopeId:input.envelopeId,externalId:row.contract_id,status:'COMPLETED' as const}};
+    const proof=await adapter.completed(event,{contractId:row.contract_id,envelopeId:input.envelopeId,signers:row.signers});
+    return persistContractCompletion(sql,{...row,envelope_id:input.envelopeId},proof,'provider-read');
+  }
+  return startContractSigning(input,{...deps,adapter});
+}
+/** Authenticated provider events share the same completion verifier as recovery. */
 export async function completeContractSigning(secret:string|null,raw:unknown,deps:Deps={}) {
   const adapter=deps.adapter??DocumensoAdapter.configured(),event=adapter.verifyWebhook(secret,raw),sql=db(deps);
   const [row]=await sql<ContractExecution[]>`SELECT * FROM harness_shared.dao_hr_contracts WHERE envelope_id=${event.payload.envelopeId} AND contract_id=${event.payload.externalId}`;
   if(!row) throw new ContractSigningError('contract_missing','The signing event has no contract.');
   if(['signed','binding','lapsed'].includes(row.state)) return row;
   const proof=await adapter.completed(event,{contractId:row.contract_id,envelopeId:row.envelope_id!,signers:row.signers});
+  return persistContractCompletion(sql,row,proof,'webhook');
+}
+async function persistContractCompletion(sql:Sql,row:ContractExecution,proof:Awaited<ReturnType<DocumensoAdapter['completed']>>,source:'webhook'|'provider-read') {
   await sql.begin(async tx=>{
-    const changed=await tx`UPDATE harness_shared.dao_hr_contracts SET state='signed',sealed_pdf=${Buffer.from(proof.document)},audit_certificate=${Buffer.from(proof.certificate)},document_hash=${sha256(proof.document)},completion_proof=${connection(tx).json({event:proof.event,signers:proof.signers})},completed_at=${proof.completedAt}
+    const changed=await tx`UPDATE harness_shared.dao_hr_contracts SET state='signed',sealed_pdf=${Buffer.from(proof.document)},audit_certificate=${Buffer.from(proof.certificate)},document_hash=${sha256(proof.document)},completion_proof=${connection(tx).json({event:proof.event,signers:proof.signers,source})},completed_at=${proof.completedAt}
       WHERE contract_id=${row.contract_id} AND state IN ('dispatching','signing') RETURNING contract_id`;
     if(changed.length){
       const key={workspaceId:row.workspace_id,daoSlug:row.dao_slug};
@@ -158,5 +199,5 @@ export async function completeContractSigning(secret:string|null,raw:unknown,dep
       await history(connection(tx),key,row.offer_id,'signed',row.signers[1].personId);
     }
   });
-  return getContractExecution({workspaceId:row.workspace_id,daoSlug:row.dao_slug,offerId:row.offer_id},deps);
+  return getContractExecution({workspaceId:row.workspace_id,daoSlug:row.dao_slug,offerId:row.offer_id},{sql});
 }
