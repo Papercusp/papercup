@@ -3,8 +3,9 @@
  *
  * Loads the real `libs/papercusp/plugins/asana` package and drives its adapter through a fake
  * `host.fetch` that answers Asana's REST API. Every fixture and recorded response is typed against
- * Asana's own OpenAPI document (the pinned subset in asana-openapi.subset.json, generated into
- * asana-openapi.d.ts by scripts/gen-asana-openapi-subset.mjs), and every `opt_fields` path the
+ * Asana's own OpenAPI document (the pinned subset in libs/papercusp/plugins/asana/openapi/
+ * asana-openapi.subset.json, generated into asana-openapi.d.ts beside it by
+ * scripts/gen-asana-openapi-subset.mjs), and every `opt_fields` path the
  * provider requests is checked to resolve in that document, so a field Asana does not serve fails
  * here rather than silently reading as undefined in production.
  *
@@ -27,8 +28,8 @@ import type {
   ProviderSyncRequest,
 } from '@papercusp/plugin-sdk';
 import { TICKET_STATUS_CATEGORIES, ticketTransitionBetween } from '../../data-sources/ticket-vocabulary';
-import type { components } from './asana-openapi';
-import openapi from './asana-openapi.subset.json';
+import type { components } from '../../../../../libs/papercusp/plugins/asana/openapi/asana-openapi';
+import openapi from '../../../../../libs/papercusp/plugins/asana/openapi/asana-openapi.subset.json';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const requireCjs = createRequire(import.meta.url);
