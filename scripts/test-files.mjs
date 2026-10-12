@@ -2388,6 +2388,12 @@ export function resolveTestChildLauncher({
   return { launcher, ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit: ownedScope };
 }
 
+async function probeTestChildScopeSupport(options) {
+  await loadGovernedExecutionModule();
+  const { probeTransientScopeSupport } = await import('../packages/operator-core/lib/systemd-scope.ts');
+  return probeTransientScopeSupport(options);
+}
+
 /** Share outcome retention across the asynchronous Vitest and synchronous Node:test routes. */
 export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild) {
   let childResult;
@@ -2520,6 +2526,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
     systemdRunPath = SYSTEMD_RUN_PATH,
     setsidPath = SETSID_PATH,
+    probeScopeSupportImpl = probeTestChildScopeSupport,
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
     stopScopeImpl = stopTestScope,
@@ -2555,7 +2562,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
   //      the last-resort owner if this process is killed.
   // Holding it is fail-safe either way: pc-heavy bounds the deferral by
   // PC_HEAVY_PSI_FINALIZATION_MAX_SEC, so a stuck marker cannot pin a slot.
-  const runChild = (admissionContext, governedEnv, { inherited = false } = {}) => new Promise((resolveRun) => {
+  const runPayload = (admissionContext, governedEnv, { inherited = false } = {}, scopeSupport = null) => new Promise((resolveRun) => {
     const startedAt = Date.now();
     const childEnv = startupTraceEnv(governedEnv ?? env);
     // EI-21903376339103215: snapshot BEFORE spawning so the close handler below can diff against
@@ -2567,7 +2574,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
       command,
       args,
       env: childEnv,
-      systemdRunPath,
+      systemdRunPath: scopeSupport?.ok === false ? null : systemdRunPath,
       setsidPath,
       runtimeMaxSec: testScopeRuntimeMaxSec(watchdogMaxMs, killGraceMs),
     });
@@ -2797,6 +2804,18 @@ export function runCapturedTestProcess(command, args, options = {}) {
       });
     });
   });
+  const runChild = (admissionContext, governedEnv, context = {}) => {
+    const childEnv = startupTraceEnv(governedEnv ?? env);
+    const planned = resolveTestChildLauncher({ command, args, env: childEnv, systemdRunPath, setsidPath });
+    if (planned.launcher !== 'systemd-run') return runPayload(admissionContext, governedEnv, context);
+    // Bus metadata is only a hint: a stale transport can still reject scope
+    // creation. Probe true under the same env before launching any test payload,
+    // so an actual assertion failure is never retried as a launcher failure.
+    return Promise.resolve(probeScopeSupportImpl({ env: childEnv, systemdRunPath })).then(support => {
+      onProgress(`TEST_FILE_SCOPE_PREFLIGHT ${JSON.stringify(support)}`);
+      return runPayload(admissionContext, governedEnv, context, support);
+    });
+  };
   // A repeated invocation of the same file is a NEW resident process and must
   // not reuse a completed receipt. Keep the human-readable command in the
   // identity while adding a per-call nonce for durable idempotency.

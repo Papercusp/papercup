@@ -178,6 +178,48 @@ describe('selectRelatedTests — every rail fails toward running MORE tests', ()
     expect(r.reason).toBe('no-changed-paths-in-scope');
   });
 
+  it('runs everything for mixed external source and local test changes', () => {
+    const external = '/repo/scripts/shared.ts';
+    const fs = vfs({
+      [external]: 'export const shared = 1;',
+      [`${ROOT}/changed.test.ts`]: 'expect(1).toBe(1);',
+      [`${ROOT}/uses-shared.test.ts`]: `import '../scripts/shared';`,
+      [`${ROOT}/unrelated.test.ts`]: 'expect(1).toBe(1);',
+    });
+    // The external import resolves: omission cannot be blamed on a graph hole.
+    const index = buildIndex({ rootDir: ROOT, fs });
+    expect(index.unresolved.size).toBe(0);
+    const localOnly = selectRelatedTests({
+      rootDir: ROOT, changedPaths: [`${ROOT}/changed.test.ts`], fs, index,
+    });
+    expect(localOnly.selected).toEqual([`${ROOT}/changed.test.ts`]);
+
+    const mixed = selectRelatedTests({
+      rootDir: ROOT, changedPaths: [external, `${ROOT}/changed.test.ts`], fs, index,
+    });
+    expect(mixed.mode).toBe('full');
+    expect(mixed.reason).toBe('changed-paths-outside-scope');
+    expect(mixed.total).toBe(3);
+    expect(mixed.executedMap.applied).toBe(false);
+  });
+
+  it('does not narrow mixed workspace changes through unindexed package imports', () => {
+    const fs = vfs({
+      [`${ROOT}/local.ts`]: 'export const local = 1;',
+      [`${ROOT}/uses-local.test.ts`]: `import './local';`,
+      [`${ROOT}/uses-package.test.ts`]: `import '@papercusp/shared';`,
+      [`${ROOT}/unrelated.test.ts`]: 'expect(1).toBe(1);',
+    });
+    const mixed = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [`${ROOT}/local.ts`, '/repo/shared/source.ts'],
+      fs,
+    });
+    expect(mixed.mode).toBe('full');
+    expect(mixed.reason).toBe('changed-paths-outside-scope');
+    expect(mixed.total).toBe(3);
+  });
+
   it('runs everything when an in-scope change reaches NO test (a graph gap, not proof of no coverage)', () => {
     const fs = vfs({
       [`${ROOT}/lonely.ts`]: 'export const l = 1;',

@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
 import { createTextCollector } from './child-output';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildIsolatedScopeArgv,
   buildTaskScopeArgv,
@@ -18,6 +20,7 @@ import {
   TASK_DEADLINE_EPOCH_MS_ENV,
   taskDeadlineEnv,
   userManagerBusReachable,
+  probeTransientScopeSupport,
 } from './systemd-scope';
 import {
   isDirectSystemdScopeEnvRunnerInvocation,
@@ -59,6 +62,55 @@ describe('userManagerBusReachable — can `systemd-run --user` reach a user mana
 
   it('defers a non-stat-able session address (abstract socket) to systemd rather than refusing it', () => {
     expect(userManagerBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'unix:abstract=/tmp/dbus-XYZ' }, fs())).toBe(true);
+  });
+});
+
+describe('harmless bounded scope preflight (EI-25807722383059921)', () => {
+  it('probes under the supplied env and reports a disconnected transport before any workload is selected', async () => {
+    const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+    const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
+    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/disconnected/bus' };
+    const pending = probeTransientScopeSupport({ spawnFn, env, platform: 'linux', systemdRunPath: '/usr/bin/systemd-run' });
+    expect(spawnFn).toHaveBeenCalledWith('/usr/bin/systemd-run', expect.arrayContaining([
+      '--scope', '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
+    ]), { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.write('Failed to start transient scope unit: Transport endpoint is not connected');
+    child.emit('exit', 1);
+    await expect(pending).resolves.toEqual({ ok: false,
+      reason: 'systemd-run probe exited 1: Failed to start transient scope unit: Transport endpoint is not connected' });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('kills only the owned probe on its deadline and never waits indefinitely', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+      const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn,
+        platform: 'linux', timeoutMs: 100 });
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'systemd-run probe timed out' });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('reports a missing launcher without claiming successful confinement', async () => {
+    const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+    const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn, platform: 'linux' });
+    child.emit('error', new Error('spawn ENOENT'));
+    await expect(pending).resolves.toEqual({ ok: false, reason: 'systemd-run unavailable: spawn ENOENT' });
+  });
+
+  it('accepts a successful scope and cancels its deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+      const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn,
+        platform: 'linux', timeoutMs: 100 });
+      child.emit('exit', 0);
+      await expect(pending).resolves.toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 });
 

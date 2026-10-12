@@ -28,7 +28,7 @@ import { redactSensitiveText } from '../sensitive-text';
 import {
   buildTaskScopeArgvWithTransport,
   SCOPE_LAUNCH_FAILURE_RE,
-  SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+  probeTransientScopeSupport,
   taskDeadlineEnv,
 } from '../systemd-scope';
 import {
@@ -168,52 +168,7 @@ let scopeProbe: Promise<{ ok: boolean; reason?: string }> | null = null;
  * probe answers it before any real work is at stake.
  */
 export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: boolean; reason?: string }> {
-  if (scopeProbe) return scopeProbe;
-  scopeProbe = new Promise((resolve) => {
-    if (process.platform !== 'linux') {
-      resolve({ ok: false, reason: `platform ${process.platform} has no cgroup scopes` });
-      return;
-    }
-    let settled = false;
-    const done = (v: { ok: boolean; reason?: string }): void => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    try {
-      const child = spawnFn(
-        'systemd-run',
-        ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'],
-        { stdio: ['ignore', 'ignore', 'pipe'] },
-      );
-      let stderr = '';
-      child.stderr?.on('data', (d: Buffer) => {
-        stderr += String(d);
-      });
-      const timer = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
-        done({ ok: false, reason: 'systemd-run probe timed out' });
-      }, 10_000);
-      timer.unref?.();
-      child.on('error', (e) => {
-        clearTimeout(timer);
-        done({ ok: false, reason: `systemd-run unavailable: ${e.message}` });
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        if (code === 0) done({ ok: true });
-        else done({ ok: false, reason: `systemd-run probe exited ${code}: ${stderr.trim().slice(0, 200)}` });
-      });
-    } catch (e) {
-      done({ ok: false, reason: `systemd-run spawn threw: ${(e as Error).message}` });
-    }
-  });
-  return scopeProbe;
+  return scopeProbe ??= probeTransientScopeSupport({ spawnFn });
 }
 
 /** Test seam — forget the cached probe. */

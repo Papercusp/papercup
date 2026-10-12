@@ -1258,10 +1258,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         setsidPath: '/usr/bin/setsid',
         spawnImpl,
         stopScopeImpl,
+        probeScopeSupportImpl: async () => ({ ok: true }),
         onProgress,
         governedProcessImpl: (_governedOptions: unknown, run: Function) =>
           run(undefined, undefined, { inherited: true }),
       });
+      await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
       const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
       const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
 
@@ -1452,6 +1454,53 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       rmSync(dir, { recursive: true, force: true });
     }
     expect(userBusReachable(options.env)).toBe(false);
+  });
+
+  it.each(['disconnected transport', 'probe timeout', 'missing launcher'])(
+    'checks a harmless scope before the test payload and uses setsid after %s (EI-25807722383059921)', async reason => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 4347, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const env = { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/stale/bus' };
+      const probeScopeSupportImpl = vi.fn(async () => ({ ok: false, reason }));
+      const spawnImpl = vi.fn(() => child);
+      const progress: string[] = [];
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        files: ['a.test.ts'], env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+        probeScopeSupportImpl, spawnImpl, onProgress: (line: string) => progress.push(line),
+        governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+      });
+      await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+      child.emit('close', 0, null);
+      await expect(pending).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
+      expect(probeScopeSupportImpl).toHaveBeenCalledWith(expect.objectContaining({ env, systemdRunPath: '/usr/bin/systemd-run' }));
+      expect(spawnImpl).toHaveBeenCalledWith('/usr/bin/setsid', ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+        expect.objectContaining({ env }));
+      expect(progress).toContainEqual(expect.stringContaining('TEST_FILE_SCOPE_PREFLIGHT'));
+      expect(progress).toContainEqual(expect.stringContaining(reason));
+    },
+  );
+
+  it('keeps a failed payload verdict after a successful harmless scope probe without retrying it (EI-25807722383059921)', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4348, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus' };
+    const probeScopeSupportImpl = vi.fn(async () => ({ ok: true }));
+    const spawnImpl = vi.fn(() => child);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+      probeScopeSupportImpl, spawnImpl, stopScopeImpl: () => ({ tasks: 0 }), onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+    });
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+    child.stderr.write('AssertionError: Failed to start transient scope is fixture text\n');
+    child.emit('close', 1, null);
+    await expect(pending).resolves.toMatchObject({ status: 1, timedOut: false,
+      stderr: expect.stringContaining('AssertionError') });
+    expect(probeScopeSupportImpl).toHaveBeenCalledTimes(1);
+    expect(spawnImpl.mock.calls[0]?.[0]).toBe('/usr/bin/systemd-run');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to setsid --wait when the child env cannot reach a user bus', async () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +38,54 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
   '--collect',
   '--property=CollectMode=inactive-or-failed',
 ] as const;
+
+/** Exercise a harmless payload before trusting a bus/socket availability hint.
+ * Callers own caching: the test router probes against each admitted child's env,
+ * while managedSpawn retains its existing process-lifetime cache.
+ */
+export function probeTransientScopeSupport({
+  spawnFn = spawn,
+  systemdRunPath = 'systemd-run',
+  env = process.env,
+  platform = process.platform,
+  timeoutMs = 10_000,
+}: {
+  spawnFn?: typeof spawn;
+  systemdRunPath?: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  timeoutMs?: number;
+} = {}): Promise<{ ok: boolean; reason?: string }> {
+  if (platform !== 'linux') return Promise.resolve({ ok: false, reason: `platform ${platform} has no cgroup scopes` });
+  return new Promise(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (result: { ok: boolean; reason?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    try {
+      const child = spawnFn(systemdRunPath, [
+        '--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+        '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
+      ], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-512); });
+      timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        done({ ok: false, reason: 'systemd-run probe timed out' });
+      }, timeoutMs);
+      timer.unref?.();
+      child.once('error', error => done({ ok: false, reason: `systemd-run unavailable: ${error.message}` }));
+      child.once('exit', code => done(code === 0 ? { ok: true }
+        : { ok: false, reason: `systemd-run probe exited ${code}: ${stderr.trim().slice(0, 200)}` }));
+    } catch (error) {
+      done({ ok: false, reason: `systemd-run spawn threw: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  });
+}
 
 /**
  * Can a `systemd-run --user` client started with `env` reach a USER manager at all?
