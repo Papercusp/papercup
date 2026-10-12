@@ -45,6 +45,7 @@ const admissionMocks = vi.hoisted(() => ({
   // template fragment composition in a fake sql tag.
   claimFloorsWhereSql: vi.fn(),
   reservedPlanLaneExclusionSql: vi.fn(),
+  stopTheLineExclusionSql: vi.fn(),
   releaseCooldownSec: vi.fn(),
   compileFilter: vi.fn(),
   // WI-5561: diagnoseFleetScopeIssueFloorMiss's own seam-level dependency — the
@@ -79,6 +80,10 @@ vi.mock('../work-items', () => ({
   // kind-set constant from '../work-items' — mirror it here rather than re-declaring it, so
   // this mock can never silently drift from the real ISSUE_FAMILY_KINDS.
   ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
+}));
+vi.mock('../work-items-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work-items-admission')>()),
+  stopTheLineExclusionSql: admissionMocks.stopTheLineExclusionSql,
 }));
 // EI-22180177490969530: the two SQL-composing seams stay mocked (see above), but the PURE
 // registry projection is passed through from the real module so this file's fixtures can be
@@ -214,6 +219,7 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
 
   beforeEach(() => {
     for (const mock of Object.values(admissionMocks)) mock.mockReset();
+    admissionMocks.stopTheLineExclusionSql.mockReturnValue('STOP_THE_LINE_FLOOR');
   });
 
   it('explicit null omits the reading leader from the feature-family cooldown floor', async () => {
@@ -252,6 +258,11 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
       claimable: 1,
       excluded: { claimFloors: 3, reservedPlanLane: 2, stopTheLine: 0 },
     });
+
+    expect(admissionMocks.stopTheLineExclusionSql).toHaveBeenCalledWith(
+      admissionMocks.sql,
+      'feature-consolidated',
+    );
   });
 
   it('passes the scope fleet and structural fleet authorization to the shared floor', async () => {
