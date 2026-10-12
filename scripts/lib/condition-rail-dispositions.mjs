@@ -128,7 +128,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|fallback': NA_FALLBACK_WAKE,
-  'log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
   ),
@@ -139,7 +138,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/memory/bench/wi-6512-known-item-replay-cli.ts': NA_CLI,
   'log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts': migrate('P-015'),
   'log-only-fallback|packages/operator-core/lib/pot/watchdog.ts': migrate('P-015'),
-  'log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts': migrate('P-011'),
   'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
   'log-only-fallback|scripts/check-optional-seam-strands.mjs': NA_LINT,
@@ -184,9 +182,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/fleet/spawner-sidecar-orphan-watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-key-migration.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-tunables.ts': NA_WATCHDOG_TOOLING,
-  'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog.ts': na(
-    'the improvements watchdog is itself a filing engine: it files deduplicated, owned EI work items through issues-engineer, so its findings already reach an owner',
-  ),
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts': migrate('P-014'),
