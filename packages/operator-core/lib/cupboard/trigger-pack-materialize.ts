@@ -170,6 +170,51 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * The key a pack binding filter uses to reference an installer input. A filter value
+ * written as `{ "$input": "<name>" }` stands for that input's value, so a pack can scope
+ * its binding by what the installer picked, e.g. `{ "channelId": { "in": { "$input": "channels" } } }`.
+ * Materialize resolves every reference before storing the binding, so the binding engine
+ * only ever evaluates a concrete filter, and a changed input re-shapes the binding.
+ */
+export const TRIGGER_PACK_INPUT_REF_KEY = '$input';
+
+function inputRefName(value: unknown): string | null {
+  const record = asRecord(value);
+  const keys = Object.keys(record);
+  if (keys.length !== 1 || keys[0] !== TRIGGER_PACK_INPUT_REF_KEY) return null;
+  const name = record[TRIGGER_PACK_INPUT_REF_KEY];
+  return typeof name === 'string' && name.length > 0 ? name : null;
+}
+
+/**
+ * Replace every `{ "$input": name }` in a pack binding filter with the installer's value for
+ * `name`. A reference to an input with no value is reported in `missing` and left in place;
+ * preflight turns that into an `inputs-invalid` unmet, so such a binding is never created.
+ */
+export function resolveTriggerPackFilterInputs(
+  filter: unknown,
+  inputs: Record<string, unknown>,
+): { filter: Record<string, unknown>; missing: string[] } {
+  const missing = new Set<string>();
+  const visit = (value: unknown): unknown => {
+    const name = inputRefName(value);
+    if (name !== null) {
+      if (inputs[name] === undefined) {
+        missing.add(name);
+        return value;
+      }
+      return inputs[name];
+    }
+    if (Array.isArray(value)) return value.map(visit);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, visit(entry)]));
+    }
+    return value;
+  };
+  return { filter: asRecord(visit(asRecord(filter))), missing: [...missing] };
+}
+
 function resourcesFrom(value: unknown): TriggerPackResources {
   const raw = asRecord(value);
   return {
@@ -438,14 +483,21 @@ async function preflight(
 
   const inputs = { ...(input.inputs ?? {}) };
   const inputCheck = checkAgainstJsonSchema(pack.inputs, inputs);
-  const inputsUnmet: TriggerPackUnmet | null = inputCheck.ok
-    ? null
-    : {
-        bindingId: 'inputs',
-        reason: 'inputs-invalid',
-        requirement: { kind: 'inputs', errors: inputCheck.errors },
-        candidates: [],
-      };
+  const inputErrors = inputCheck.ok ? [] : [...inputCheck.errors];
+  for (const binding of pack.bindings) {
+    for (const name of resolveTriggerPackFilterInputs(binding.filter, inputs).missing) {
+      inputErrors.push(`binding '${binding.id}' filter references input '${name}', which has no value`);
+    }
+  }
+  const inputsUnmet: TriggerPackUnmet | null =
+    inputErrors.length === 0
+      ? null
+      : {
+          bindingId: 'inputs',
+          reason: 'inputs-invalid',
+          requirement: { kind: 'inputs', errors: inputErrors },
+          candidates: [],
+        };
 
   return { ordered, upstreamOf, plans, resolved, datatypes, sourceMappings, inputs, inputsUnmet, priorResources };
 }
@@ -631,7 +683,7 @@ export async function materializeTriggerPack(
         planHarnessSlug: input.harnessSlug,
         planSlug: planned.planSlug,
         eventPattern: binding.source.datatype ? `ext:${resolved.sourceKind}:${pattern.slice('ext:*:'.length)}` : pattern,
-        eventFilter: asRecord(binding.filter),
+        eventFilter: resolveTriggerPackFilterInputs(binding.filter, plan.inputs).filter,
         datatypeId: binding.source.datatype ?? null,
         planInput: plan.inputs,
       };
@@ -653,7 +705,7 @@ export async function materializeTriggerPack(
         planHarnessSlug: input.harnessSlug,
         planSlug: planned.planSlug,
         eventPattern: TRIGGER_PACK_EDGE_EVENT_KEY,
-        eventFilter: { ...asRecord(binding.filter), upstreamBindingId },
+        eventFilter: { ...resolveTriggerPackFilterInputs(binding.filter, plan.inputs).filter, upstreamBindingId },
         datatypeId: TRIGGER_RUN_COMPLETION_DATATYPE,
         planInput: plan.inputs,
       };
