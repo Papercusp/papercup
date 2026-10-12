@@ -17,6 +17,7 @@ export interface RailMigrationCase {
 }
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-010'];
+
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [{
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
@@ -68,6 +69,309 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [{
   },
 }];
 
+RAIL_MIGRATION_CASES.push({
+  id: 'gate-stall-fixer-succession-and-readable-end', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackGateStall|1'],
+  run: async () => {
+    const { vi, expect } = await import('vitest');
+    const producer = await import('../harness/routines/release-actions');
+    const org = await import('@papercusp/db-org');
+    const attention = await import('../attention-notify');
+    const now = Date.now();
+    let queue: unknown = { schemaVersion: 3, phase: 'awaiting-fixer', candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40), repairHead: 'c'.repeat(40), worktreePath: '/coverage',
+      qualificationAttemptId: null, affectedTestProofGroup: null, attempts: 0,
+      openedAtMs: now - producer.FIXER_SUCCESSION_STALL_MS * 2,
+      updatedAtMs: now - producer.FIXER_SUCCESSION_STALL_MS - 1000,
+      fixerSpawnId: null, failingTests: ['coverage.test.ts'] };
+    const gh = { lastGreenAt: now, consecutiveReds: 1 };
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    const sql = Object.assign(async () => [], { unsafe: async (query: string) =>
+      query.includes('SELECT') && query.includes("metadata->'gate_health'")
+        ? [{ gh, lf: null, rq: queue }] : Object.assign([], { count: 1 }) });
+    const notify = vi.spyOn(attention, 'notifyAttentionOnce').mockResolvedValue({ recordId: 1, deduped: false } as never);
+    const db = vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const opts = { alarm: {
+        broadcast: async ({ conditionKey }: { conditionKey?: string }) => {
+          open.add(conditionKey!); openedKeys.push(conditionKey!); return true;
+        },
+        resolve: async ({ conditionKey }: { conditionKey: string }) => {
+          if (!open.delete(conditionKey)) return false;
+          resolvedKeys.push(conditionKey); return true;
+        },
+      } };
+      const ctx = { installSlug: 'coverage', workspaceId: 'coverage' };
+      await producer.trackGateStall(ctx, 'repair-in-progress', undefined, undefined, undefined, undefined, undefined, undefined, opts);
+      expect(notify).toHaveBeenCalledOnce();
+      expect(openedKeys).toEqual(['alarm:release-fixer-succession:coverage']);
+      queue = { schemaVersion: 3, phase: 'awaiting-fixer' };
+      await producer.trackGateStall(ctx, 'repair-in-progress', undefined, undefined, undefined, undefined, undefined, undefined, opts);
+      expect(resolvedKeys).toEqual([]);
+      queue = null;
+      await producer.trackGateStall(ctx, 'repair-in-progress', undefined, undefined, undefined, undefined, undefined, undefined, opts);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { log.mockRestore(); db.mockRestore(); notify.mockRestore(); }
+  },
+}, {
+  id: 'gate-stall-main-ladder-and-green-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackGateStall|2'],
+  run: async () => {
+    const { vi, expect } = await import('vitest');
+    const producer = await import('../harness/routines/release-actions');
+    const org = await import('@papercusp/db-org');
+    const attention = await import('../attention-notify');
+    const severe = await import('../severe-event-broadcast');
+    const { releaseCheckpointConfig } = await import('../release-checkpoint-config');
+    let gh: Record<string, unknown> = { consecutiveReds: releaseCheckpointConfig().stallReds - 1,
+      stallAlerted: false, lastGreenAt: Date.now() };
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    const sql = Object.assign(async () => [], { unsafe: async (query: string, params: unknown[] = []) => {
+      if (query.includes('SELECT') && query.includes('AS gh')) return [{ gh, lf: null, rq: null }];
+      if (query.includes('AS headline_health')) return [{ headline_health: gh }];
+      if (query.includes('UPDATE harness_shared.routines') && typeof params[1] === 'string') {
+        const body = JSON.parse(params[1]) as { gate_health?: Record<string, unknown> };
+        if (body.gate_health) gh = body.gate_health;
+      }
+      return Object.assign([], { count: 1 });
+    } });
+    const mocks = [
+      vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(attention, 'notifyAttentionOnce').mockResolvedValue({ recordId: 1, deduped: false } as never),
+      vi.spyOn(severe, 'broadcastSevereEvent').mockImplementation(async ({ conditionKey }) => {
+        open.add(conditionKey!); openedKeys.push(conditionKey!); return true;
+      }),
+      vi.spyOn(severe, 'broadcastSevereEventResolved').mockImplementation(async ({ conditionKey }) => {
+        if (!open.delete(conditionKey)) return false;
+        resolvedKeys.push(conditionKey); return true;
+      }),
+      vi.spyOn(console, 'log').mockImplementation(() => {}),
+    ];
+    try {
+      const opts = { alarm: { resolve: async () => false } };
+      const ctx = { installSlug: 'coverage', workspaceId: 'coverage' };
+      await producer.trackGateStall(ctx, 'not-green', undefined, ['coverage.test.ts'], undefined, undefined, undefined, undefined, opts);
+      expect(attention.notifyAttentionOnce).toHaveBeenCalledOnce();
+      expect(openedKeys).toEqual(['gate-red-streak:coverage']);
+      expect(gh.stallAlerted).toBe(true);
+      await producer.trackGateStall(ctx, 'advanced', undefined, [], undefined, undefined, undefined, undefined, opts);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+  },
+}, {
+  id: 'green-stall-verdict-rate-owner-and-measured-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/release/green-stall-watchdog.ts|checkGreenStall|1'],
+  run: async () => {
+    const { vi, expect } = await import('vitest');
+    const producer = await import('../release/green-stall-watchdog');
+    const org = await import('@papercusp/db-org');
+    const attention = await import('../attention-notify');
+    const severe = await import('../severe-event-broadcast');
+    const routing = await import('../harness/routines/hive-release-env');
+    const launch = await import('../release-checkpoint-launch');
+    const engine = await import('../release/routine-engine-liveness');
+    const now = Date.now();
+    const row = { install_slug: 'coverage', workspace_id: 'coverage', last_fired_ms: now,
+      last_verdict_ms: now - 60_000, gh: { lastGreenAt: now, watchdogAlerted: false,
+        consecutiveReds: 1, verdictRateAlarmed: false } };
+    let verdictWindow: Array<{ fires: number; verdicts: number; last_verdict_ms: number }> =
+      [{ fires: 6, verdicts: 1, last_verdict_ms: now }];
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    const query = async (text: string) => {
+      if (text.includes('SELECT r.install_slug')) return [row];
+      if (text.includes('AS fires')) return verdictWindow;
+      if (text.includes('UPDATE harness_shared.routines') && text.includes('"verdictRateAlarmed":true')) row.gh.verdictRateAlarmed = true;
+      if (text.includes('UPDATE harness_shared.routines') && text.includes('"verdictRateAlarmed":false')) row.gh.verdictRateAlarmed = false;
+      if (text.includes('UPDATE harness_shared.routines') && text.includes('"watchdogAlerted":true')) row.gh.watchdogAlerted = true;
+      if (text.includes('UPDATE harness_shared.routines') && text.includes('"watchdogAlerted":false')) row.gh.watchdogAlerted = false;
+      return Object.assign([], { count: text.includes('UPDATE harness_shared.routines') ||
+        (text.includes('UPDATE harness_shared.harness_escalations') && open.has('green-stall:coverage')) ? 1 : 0 });
+    };
+    const sql = Object.assign((strings: TemplateStringsArray) => query(strings.join('?')), { unsafe: query });
+    const mocks = [
+      vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(attention, 'notifyAttentionOnce').mockResolvedValue({ recordId: 1, deduped: false } as never),
+      vi.spyOn(routing, 'resolveCheckpointRouting').mockResolvedValue({ root: '/coverage', extraEnv: {}, clearEnv: [] } as never),
+      vi.spyOn(launch, 'isCheckpointRunLockHeldCheap').mockReturnValue({ held: false } as never),
+      vi.spyOn(launch, 'readCheckpointRunPhaseCheap').mockReturnValue(null),
+      vi.spyOn(engine, 'readRoutineEngineLiveness').mockResolvedValue({ stale: false } as never),
+      vi.spyOn(severe, 'broadcastSevereEvent').mockImplementation(async ({ conditionKey }) => {
+        open.add(conditionKey!); openedKeys.push(conditionKey!); return true;
+      }),
+      vi.spyOn(severe, 'broadcastSevereEventResolved').mockImplementation(async ({ conditionKey }) => {
+        if (!open.delete(conditionKey)) return false;
+        resolvedKeys.push(conditionKey); return true;
+      }),
+      vi.spyOn(console, 'warn').mockImplementation(() => {}),
+    ];
+    try {
+      expect((await producer.checkGreenStall(sql as never)).alarmed).toEqual(['coverage']);
+      expect(attention.notifyAttentionOnce).toHaveBeenCalledOnce();
+      expect(openedKeys).toEqual(['alarm:release-verdict-rate:coverage']);
+      verdictWindow = [];
+      await producer.checkGreenStall(sql as never);
+      expect(row.gh.verdictRateAlarmed).toBe(true);
+      expect(resolvedKeys).toEqual([]);
+      verdictWindow = [{ fires: 6, verdicts: 6, last_verdict_ms: now }];
+      expect((await producer.checkGreenStall(sql as never)).recovered).toEqual(['coverage']);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'release-fixer-dispatch-promoted-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|dispatchReleaseFixer|1'],
+  run: async () => {
+    const { vi, expect } = await import('vitest');
+    const producer = await import('../harness/routines/release-actions');
+    const org = await import('@papercusp/db-org');
+    const scope = await import('../work-scope-policy');
+    const blueprint = await import('../blueprint/launch-blueprint');
+    const dev = await import('../dev-data');
+    const { buildCandidateSnapshot } = await import('../release/candidate-snapshot');
+    const candidate = 'a'.repeat(40), failures = ['coverage::red.test.ts'];
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: failures }, Date.now());
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const alarm = {
+      broadcast: async (e: { conditionKey?: string }) => { open.add(e.conditionKey!); openedKeys.push(e.conditionKey!); return true; },
+      resolve: async (e: { conditionKey: string }) => { if (!open.delete(e.conditionKey)) return false; resolvedKeys.push(e.conditionKey); return true; },
+      notify: async () => {},
+    };
+    const sql = Object.assign(async () => Object.assign([], { count: 1 }), { unsafe: async (text: string) =>
+      text.includes('SELECT') ? [{ lf: null, ftm: 'true', cs: snapshot }]
+        : Object.assign([{ written: true }], { count: 1 }) });
+    const mocks = [
+      vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(scope, 'gateWorkScope').mockResolvedValue({ allowed: true } as never),
+      vi.spyOn(blueprint, 'fireLaunchBlueprintForEvent').mockResolvedValue(null),
+      vi.spyOn(dev, 'testFlakeRollup').mockResolvedValue({ entries: [] } as never),
+      vi.spyOn(console, 'log').mockImplementation(() => {}),
+      vi.spyOn(console, 'warn').mockImplementation(() => {}),
+    ];
+    try {
+      const ctx = { installSlug: 'coverage', workspaceId: 'coverage' };
+      await producer.dispatchReleaseFixer(ctx, candidate, failures, undefined, undefined,
+        { alarm, checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }) });
+      expect(openedKeys).toEqual(['alarm:release-fixer-dispatch:coverage']);
+      await producer.dispatchReleaseFixer(ctx, candidate, failures, undefined, undefined,
+        { alarm, checkCandidate: async () => ({ candidateExists: false, candidatePromoted: false }) });
+      expect(resolvedKeys).toEqual([]);
+      await producer.dispatchReleaseFixer(ctx, candidate, failures, undefined, undefined,
+        { alarm, checkCandidate: async () => ({ candidateExists: true, candidatePromoted: true }) });
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+  },
+}, {
+  id: 'idle-repair-owner-escalation-readable-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/release/idle-repair-queue-actuator.ts|escalateOwner|1'],
+  run: async () => {
+    const { vi, expect } = await import('vitest');
+    const producer = await import('../release/idle-repair-queue-actuator');
+    const actions = await import('../harness/routines/release-actions');
+    const ownership = await import('../coord/gate-ownership');
+    const queue = { schemaVersion: 1, phase: 'awaiting-fixer', candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40), repairHead: 'c'.repeat(40), affectedTestProofGroup: 'coverage', attempts: 0,
+      openedAtMs: 1, updatedAtMs: 1, fixerSpawnId: null, failingTests: ['red.test.ts'], signature: [] } as const;
+    let episode: import('../release/idle-repair-queue-actuator').IdleQueueEpisode | null = null;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const alarm = {
+      broadcast: async (e: { conditionKey?: string }) => { open.add(e.conditionKey!); openedKeys.push(e.conditionKey!); return true; },
+      resolve: async (e: { conditionKey: string }) => { if (!open.delete(e.conditionKey)) return false; resolvedKeys.push(e.conditionKey); return true; },
+      notify: async () => {},
+    };
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('SELECT workspace_id')) return [{ workspace_id: 'coverage' }];
+      if (text.includes('RETURNING escalation')) return [{ escalation: episode }];
+      if (text.includes('INSERT INTO harness_shared.harness_escalations')) {
+        const encoded = values.find((value) => typeof value === 'string' && value.includes('"rungs"'));
+        if (encoded) episode = JSON.parse(String(encoded));
+      }
+      return Object.assign([], { count: 1 });
+    }) as unknown as import('postgres').Sql;
+    const read = vi.spyOn(actions, 'readFrozenCandidateRepairQueueState').mockResolvedValue({ status: 'value', queue } as never);
+    const mocks = [read, vi.spyOn(actions, 'dispatchReleaseFixer').mockResolvedValue(null),
+      vi.spyOn(ownership, 'readGateOwnership').mockResolvedValue(null as never),
+      vi.spyOn(console, 'warn').mockImplementation(() => {})];
+    try {
+      const opts = { installSlug: 'coverage', workspaceId: 'coverage', nowMs: () => 10 * 60 * 60_000, alarm };
+      await producer.checkIdleRepairQueue(sql, opts);
+      expect(openedKeys).toEqual(['alarm:idle-repair-queue:coverage']);
+      const before = structuredClone(episode);
+      read.mockResolvedValue({ status: 'unknown', queue: null } as never);
+      await producer.checkIdleRepairQueue(sql, opts);
+      expect(resolvedKeys).toEqual([]); expect(episode).toEqual(before);
+      read.mockResolvedValue({ status: 'absent', queue: null } as never);
+      await producer.checkIdleRepairQueue(sql, opts);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'checkpoint-prebuild-read-failure-and-primary-read', item: 'P-008', route: 'observation', mechanism: 'release-state-read',
+  rowIds: ['log-only-fallback|apps/operator/lib/release/green-checkpoint.ts|beginCheckpointPreflight|1'],
+  run: async () => {
+    const { beginCheckpointPreflight } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    const { releaseConfig } = await import('../../../../apps/operator/lib/release/release-config');
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { vi, expect } = await import('vitest');
+    const root = mkdtempSync(join(tmpdir(), 'condition-rail-preflight-'));
+    const cfg = { ...releaseConfig(), checkpointLogDir: root };
+    const candidate = execFileSync('git', ['-C', cfg.integrationRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const input = 'a'.repeat(64);
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const observeFallback = (_mechanism: string, row: typeof observations[number]) => { observations.push(row); return true; };
+    const exec: Parameters<typeof beginCheckpointPreflight>[2] = async (_cmd, args) => ({ code: 0, stderr: '',
+      stdout: args.includes('--fingerprint-ref') ? `DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${candidate} input=${input}`
+        : `DEPENDENCY_GENERATION_RESULT schema=1 identity=coverage token=coverage input=${input} reused=false` });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const base = { target: { workspaceId: 'coverage', installSlug: 'coverage' }, observeFallback, env: {},
+        generationPresent: () => true, liveToken: () => 'coverage', log: () => {} };
+      const failed = await beginCheckpointPreflight(cfg, candidate, exec, { ...base, awaitState: async () => { throw new Error('state unavailable'); } });
+      expect(failed.kind).toBe('ready');
+      if (failed.kind === 'ready') { expect(failed.prewarmedDependencyGeneration.reused).toBe(false); failed.lock.release(); }
+      const recovered = await beginCheckpointPreflight(cfg, candidate, exec, { ...base, awaitState: async () => ({
+        schema: 1, status: 'ready', key: `${candidate}:${input}`, candidate, inputFingerprint: input,
+        attemptId: 'coverage', queuedAtMs: 1, startedAtMs: 2, updatedAtMs: 3, completedAtMs: 3,
+        producerPid: 4, childPid: 5, identity: 'coverage', token: 'coverage', reused: true,
+      }) });
+      if (recovered.kind === 'ready') { expect(recovered.prewarmedDependencyGeneration.reused).toBe(true); recovered.lock.release(); }
+      expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([[0, 'prebuild-state-unavailable'], [1, 'applied']]);
+      return { route: 'observation', mechanism: 'release-state-read', observations };
+    } finally { error.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  },
+}, {
+  id: 'inconclusive-verdict-partial-delivery-and-complete-pair', item: 'P-008', route: 'observation', mechanism: 'release-verdict-event',
+  rowIds: ['log-only-fallback|apps/operator/lib/release/green-checkpoint.ts|emitInconclusiveVerdict|1'],
+  run: async () => {
+    const { emitInconclusiveVerdict } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    const { vi, expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const observeFallback = (_mechanism: string, row: typeof observations[number]) => { observations.push(row); return true; };
+    const result = { advanced: false, candidate: 'deadbeef', from: null, green: null, reason: 'error' } as const;
+    const emitted: string[] = [];
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await emitInconclusiveVerdict(result, 'coverage', { observeFallback, emit: async ({ key }) => {
+        emitted.push(key); if (key.endsWith(':coverage')) throw new Error('second event failed');
+      } });
+      expect(observations.map(({ applied }) => applied)).toEqual([0]);
+      await emitInconclusiveVerdict(result, 'coverage', { observeFallback, emit: async ({ key }) => { emitted.push(key); } });
+      expect(emitted).toEqual(['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:coverage',
+        'green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:coverage']);
+      expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([[0, 'inconclusive-emit-failed'], [1, 'applied']]);
+      return { route: 'observation', mechanism: 'release-verdict-event', observations };
+    } finally { error.mockRestore(); }
+  },
+});
+
 for (const updater of ['manifest', 'rollback'] as const) {
   RAIL_MIGRATION_CASES.push({
     id: `update-${updater}-metadata-failure-and-primary-read`, item: 'P-008', route: 'observation', mechanism: 'release-state-read',
@@ -111,6 +415,100 @@ for (const updater of ['manifest', 'rollback'] as const) {
     },
   });
 }
+
+RAIL_MIGRATION_CASES.push({
+  id: 'checkpoint-owner-red-dedup-and-green-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts|escalate|1'],
+  run: async () => {
+    const { realCheckpointDeps } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    const { releaseConfig } = await import('../../../../apps/operator/lib/release/release-config');
+    const escalation = await import('../agent-tools/coordination/escalations');
+    const attention = await import('../attention-notify');
+    const severe = await import('../severe-event-broadcast');
+    const alarm = await import('../alarm-attention');
+    const { vi, expect } = await import('vitest');
+    const openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rows: Awaited<ReturnType<typeof escalation.listEscalations>> = [];
+    const mocks = [
+      vi.spyOn(escalation, 'listEscalations').mockImplementation(async () => rows),
+      vi.spyOn(escalation, 'openEscalation').mockImplementation(async (_identity, input) => {
+        rows.push({ ...input, msg_id: 'coverage', source: 'green-checkpoint' } as unknown as typeof rows[number]);
+        return undefined as never;
+      }),
+      vi.spyOn(escalation, 'resolveEscalation').mockImplementation(async () => undefined as never),
+      vi.spyOn(attention, 'notifyAttention').mockImplementation(async () => undefined as never),
+      vi.spyOn(severe, 'broadcastSevereEvent').mockImplementation(async (e) => { openedKeys.push(e.conditionKey!); return true; }),
+      vi.spyOn(alarm, 'resolveAlarm').mockImplementation(async (key) => { resolvedKeys.push(key); return true; }),
+    ];
+    try {
+      const deps = realCheckpointDeps(releaseConfig());
+      await deps.escalate?.('red fixture', 'red fixture body');
+      await deps.escalate?.('still red fixture', 'red fixture body');
+      expect(openedKeys).toHaveLength(2);
+      expect(attention.notifyAttention).toHaveBeenCalledTimes(1);
+      await deps.clearEscalation?.();
+      return { route: 'condition', openedKeys: [...new Set(openedKeys)], resolvedKeys };
+    } finally { for (const mock of mocks) mock.mockRestore(); }
+  },
+}, {
+  id: 'checkpoint-self-watchdog-owner-failure-and-measured-verdict-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts|onFire|1'],
+  run: async () => {
+    const { onFire, resolveCheckpointSelfWatchdog } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    const { expect } = await import('vitest');
+    const openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { broadcast: async (e: { conditionKey?: string }) => { openedKeys.push(e.conditionKey!); return true; },
+      resolve: async (e: { conditionKey: string }) => { resolvedKeys.push(e.conditionKey); return true; },
+      notify: async () => { throw new Error('owner delivery unavailable'); } };
+    const result = { advanced: false, candidate: 'deadbeef', from: null, green: null, reason: 'error' } as const;
+    await onFire(result, 'coverage', deps);
+    await resolveCheckpointSelfWatchdog(result, 'coverage', deps);
+    await resolveCheckpointSelfWatchdog({ ...result, green: true, reason: 'up-to-date' }, 'coverage', deps);
+    expect(resolvedKeys).toEqual([]);
+    await resolveCheckpointSelfWatchdog({ ...result, green: false, reason: 'not-green' }, 'coverage', deps);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'chronic-release-flake-cooldown-unknown-read-and-quiet-recovery', item: 'P-008', route: 'condition',
+  rowIds: ['owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackFlakeHistory|1'],
+  run: async () => {
+    const { trackFlakeHistory } = await import('../harness/routines/release-actions');
+    const { releaseCheckpointConfig } = await import('../release-checkpoint-config');
+    const { expect } = await import('vitest');
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], notifications: string[] = [];
+    let now = 1_000, unavailable = false;
+    let history: Record<string, { flakes?: number; lastFlakeAt?: number; notifiedAt?: number }> = {};
+    const sql = Object.assign(async () => [], { unsafe: async (text: string, values: unknown[]) => {
+      if (unavailable) throw new Error('history unavailable');
+      if (text.includes('SELECT')) return [{ fh: structuredClone(history) }];
+      history = JSON.parse(String(values[1])).flake_history; return [];
+    } }) as unknown as import('postgres').Sql;
+    const open = new Set<string>();
+    const deps = { sql, nowMs: () => now, alarm: {
+      broadcast: async (e: { conditionKey?: string }) => { open.add(e.conditionKey!); openedKeys.push(e.conditionKey!); return true; },
+      resolve: async (e: { conditionKey: string }) => {
+        if (!open.delete(e.conditionKey)) return false; resolvedKeys.push(e.conditionKey); return true;
+      }, notify: async (e: { title: string }) => { notifications.push(e.title); },
+    } };
+    const ctx = { installSlug: 'coverage', workspaceId: 'coverage' };
+    for (let i = 0; i < releaseCheckpointConfig().chronicFlakeCount + 1; i++) {
+      await trackFlakeHistory(ctx, undefined, ['workspace::test.ts'], deps);
+    }
+    expect(notifications).toHaveLength(1);
+    expect(openedKeys).toHaveLength(2); // condition refresh survives owner cooldown
+    await trackFlakeHistory(ctx, undefined, [], deps);
+    expect(resolvedKeys).toEqual([]); // one clean tick does not establish recovery
+    now += releaseCheckpointConfig().flakeNotifyCooldownMs;
+    unavailable = true;
+    await expect(trackFlakeHistory(ctx, undefined, [], deps)).rejects.toThrow('history unavailable');
+    expect(resolvedKeys).toEqual([]);
+    unavailable = false; await trackFlakeHistory(ctx, undefined, [], deps);
+    expect(history['workspace::test.ts'].flakes).toBe(releaseCheckpointConfig().chronicFlakeCount + 1);
+    return { route: 'condition', openedKeys: [...new Set(openedKeys)], resolvedKeys };
+  },
+});
 
 RAIL_MIGRATION_CASES.push({
   id: 'loop-standdown-read-failure-and-complete-read', item: 'P-008', route: 'observation', mechanism: 'release-state-read',

@@ -1756,11 +1756,9 @@ interface ClassifiedToolErrorRow {
   /** SQL alias `class`; one of ToolErrorClass. */
   class: ToolErrorClass;
   /**
-   * Normalized error-shape fingerprint (P-003): SQL-computed for the `structural`
-   * class only (first 6 alpha tokens of the digit/punct-stripped message), null
-   * otherwise. Appended to the structural dedup key so two genuinely DIFFERENT
-   * deterministic failure modes under the same tool don't collapse onto one key
-   * (the 2026-06-17 embed-429-masked-by-EI-630 class of bug).
+   * Full normalized-message digest (P-003/P-012): SQL-computed for fingerprinted
+   * classes, null otherwise. Appended to the dedup key so distinct failure modes
+   * under the same tool do not collapse onto one key.
    */
   fingerprint?: string | null;
   /** Failures of this class for this tool in the window. */
@@ -2232,12 +2230,12 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND ${dispatchWrapperExclusionPredicate(sql)}
        GROUP BY tool_name
     ),
-    -- P-003 + P-012 fingerprint: the normalized error-shape skeleton (first 6 alpha
-    -- tokens of the digit/punct-stripped message), computed by the GENERATED CASE from
+    -- P-003 + P-012 fingerprint: an MD5 digest of the full digit/punct-stripped
+    -- normalized message, computed by the GENERATED CASE from
     -- FINGERPRINTED_TOOL_ERROR_CLASSES (tool-error-classifier.ts). structural + caller +
     -- transient are fingerprinted, so distinct same-class modes under one tool split into
     -- separate keys instead of masking each other; rate-limit stays coarse (one capacity
-    -- concern). toolErrorFingerprint() mirrors this exact arithmetic in TS for the
+    -- concern). toolErrorFingerprint() mirrors this exact digest in TS for the
     -- key-migration backfill — parity proven by the integration test.
     tagged AS (
       SELECT tool_name, class, error_message, invoked_at,

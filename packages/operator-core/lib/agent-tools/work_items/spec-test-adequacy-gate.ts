@@ -6,6 +6,7 @@ import {
   type EvidenceCurrentInput,
 } from '../plans/spec-evidence-store';
 import { listSpecClauses, type SpecClauseRevision } from '../plans/spec-clauses-store';
+import { resolveEvaluatorClassRef } from '../plans/evaluate-spec-test-adequacy';
 import {
   enforcedClausesOf,
   ENFORCEABLE_LIFECYCLE_STATUSES,
@@ -34,7 +35,7 @@ import {
 } from '../plans/source-bar-test-requirements';
 
 export interface SpecAdequacyCompletionAttestation {
-  classRef: PlanClassRubricRef;
+  classRef?: PlanClassRubricRef;
   /**
    * Exact immutable proof identities to grade. Historical bindings remain in the
    * ledger, but a caller can exclude superseded run-specific refs just as
@@ -505,7 +506,7 @@ function evaluatorUnknownFailureReason(label: string, result: SpecTestAdequacyRe
 export const SPEC_ADEQUACY_ATTESTATION_GUIDANCE =
   'pass a TOP-LEVEL `specAdequacy` argument to work_items:complete — a SIBLING of ' +
   '`completion`, never nested inside it (`completion.specAdequacy` is rejected). ' +
-  '`classRef` is the ONLY required key, and on its own it is SUFFICIENT once the evidence is ' +
+  '`specAdequacy:{}` derives the persisted subject plan class; an explicit `classRef` must match. Ad-hoc scopes require explicit class attestation. Once evidence is ' +
   'ready — the gate resolves the governing clauses, the bound evidence and every fingerprint ' +
   'dimension itself. Do NOT hand-author fingerprints: `current` and `evidenceRefs` are optional ' +
   'and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ' +
@@ -605,6 +606,28 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
+  const classes = new Map<string, PlanClassRubricRef>();
+  if (input.attestation) {
+    const subjectHarness = stamp?.harnessSlug ?? input.workItem.harness?.trim();
+    if (!subjectHarness) return withReport({ ok: false, applicable: true, retryable: true, checked: [], reason: 'plan_class_unresolved: the subject harness is unavailable' });
+    for (const planSlug of enforcedPlanSlugs) {
+      const resolution = await resolveEvaluatorClassRef(planSlug, subjectHarness, {
+        classRef: input.attestation.classRef,
+        workItemIds: [input.workItem.id],
+      });
+      if (!resolution.ok || (input.attestation.classRef !== undefined && input.attestation.classRef !== resolution.classRef)) {
+        return withReport({ ok: false, applicable: true, retryable: true, checked: [],
+          reason: !resolution.ok ? resolution.message : `plan_class_mismatch: '${planSlug}' requires ${resolution.classRef}, not ${input.attestation.classRef}` });
+      }
+      classes.set(planSlug, resolution.classRef);
+    }
+  }
+  const classFor = (clause: SpecClauseRevision): PlanClassRubricRef => {
+    const value = classes.get(clause.planSlug);
+    if (!value) throw new Error(`plan_class_unresolved: ${clause.planSlug}`);
+    return value;
+  };
+
   // `task` is the canonical non-code kind (research was folded into it). A plan may
   // still carry projected clauses for a task deliverable, but executable L3/L4 proof
   // is not a meaningful completion obligation for that item. Resolve the contract first
@@ -619,7 +642,7 @@ export async function specTestAdequacyCompletionGate(
     // execution record and leave every other kind-sensitive gate exempt.
     const sourceChanges = executableSourceChanges;
     const submitsExecutableProof = input.attestation && clauses.some((clause) =>
-      requiredProofFloor(clause, input.attestation!.classRef) !== 'none',
+      requiredProofFloor(clause, classFor(clause)) !== 'none',
     );
     if (sourceChanges.length > 0 || submitsExecutableProof) {
       return withReport({
@@ -689,13 +712,13 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
-  const relevant = clauses.filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) !== 'none');
+  const relevant = clauses.filter((clause) => requiredProofFloor(clause, classFor(clause)) !== 'none');
   // WI-10002055: the complement of `relevant` is the excused set. Computed once so every
   // exit below can name it — including the MIXED case, where some clauses are enforced and
   // others excused in the same completion and the excused ones would otherwise vanish
   // behind a populated `checked`.
   const exempted = clauses
-    .filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) === 'none')
+    .filter((clause) => requiredProofFloor(clause, classFor(clause)) === 'none')
     .map((clause) => exemptionLabel(clause, 'proof floor none — non-automated with no required test layer'));
   if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [], exempted });
   // ⚠ The evidence read is scoped by the SAME namespaces as the enforced clause set, and
@@ -752,7 +775,7 @@ export async function specTestAdequacyCompletionGate(
     const result = evaluateSpecTestAdequacy({
       clause,
       evidence,
-      classRef: input.attestation.classRef,
+      classRef: classFor(clause),
       harness: harnessSlug,
       workItemKind: input.workItem.kind,
       sourceBarTestRequirements,

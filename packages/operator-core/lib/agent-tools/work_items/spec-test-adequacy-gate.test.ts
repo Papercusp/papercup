@@ -8,6 +8,9 @@ import {
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
 } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+type ClassResolver = typeof import('../plans/evaluate-spec-test-adequacy').resolveEvaluatorClassRef;
+const classResolver = vi.hoisted(() => vi.fn<ClassResolver>(async () => ({ ok: true, classRef: 'plan-class-feature-ship', source: 'active-acceptance-rubric' })));
+vi.mock('../plans/evaluate-spec-test-adequacy', () => ({ resolveEvaluatorClassRef: classResolver }));
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
 type ListedEvidence = Awaited<ReturnType<NonNullable<GateDeps['listEvidence']>>>[number];
@@ -274,6 +277,40 @@ function passingDeps() {
 }
 
 describe('specTestAdequacyCompletionGate', () => {
+  it('derives an omitted completion class and preserves its proof requirements', async () => {
+    const deps = passingDeps();
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(classResolver).toHaveBeenCalledWith('reconnect-plan', 'papercusp', { classRef: undefined, workItemIds: ['WI-101'] });
+    expect(result.checked).toContain('SPEC-003-01@1');
+  });
+
+  it('refuses a contradictory explicit completion class before reading proof', async () => {
+    const deps = passingDeps();
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation: { classRef: 'plan-class-investigation' } }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('plan_class_mismatch') });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('refuses an omitted completion class when the subject class is unavailable', async () => {
+    const deps = passingDeps();
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    classResolver.mockResolvedValueOnce({ ok: false, code: 'plan_class_unresolved', message: 'plan_class_unresolved: no persisted class', wouldBlock: ['plan_class_unresolved'] });
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(result).toMatchObject({ ok: false, reason: 'plan_class_unresolved: no persisted class', checked: [] });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('retains the persisted bugfix proof floor when completion class is omitted', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([listedEvidence()]);
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    classResolver.mockResolvedValueOnce({ ok: true, classRef: 'plan-class-bugfix', source: 'active-acceptance-rubric' });
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('risk-floor') });
+    expect(deps.listEvidence).toHaveBeenCalled();
+  });
   it('is non-applicable for a legacy work item with no plan provenance', async () => {
     const deps = passingDeps();
     const result = await specTestAdequacyCompletionGate(

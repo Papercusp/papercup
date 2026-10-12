@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   asCommittedRunOf,
   bindingSchema,
@@ -92,6 +93,61 @@ const measuredBinding = {
     testPaths: ['test/reconnect.test.ts'],
   },
 };
+
+describe('plans:bind-spec-evidence instrument declaration schema', () => {
+  it('publishes the instrument forms required for operational and manual evidence', () => {
+    const published = z.toJSONSchema(tool.args as never);
+    const propertySchemas = (value: unknown, property: string): unknown[] => {
+      if (Array.isArray(value)) return value.flatMap((child) => propertySchemas(child, property));
+      if (value === null || typeof value !== 'object') return [];
+      const node = value as Record<string, unknown>;
+      const properties = node.properties;
+      const found =
+        properties !== null &&
+        typeof properties === 'object' &&
+        Object.prototype.hasOwnProperty.call(properties, property)
+          ? [(properties as Record<string, unknown>)[property]]
+          : [];
+      return [
+        ...found,
+        ...Object.entries(node)
+          .filter(([key]) => key !== 'description')
+          .flatMap(([, child]) => propertySchemas(child, property)),
+      ];
+    };
+    const [instrumentSchema] = propertySchemas(published, 'instrument');
+    expect(instrumentSchema).toBeDefined();
+    for (const field of ['path', 'testPath', 'none', 'reason']) {
+      expect(propertySchemas(instrumentSchema, field)).not.toHaveLength(0);
+    }
+
+    const base = {
+      harness: 'papercusp',
+      binding: {
+        workItemId: 'WI-1',
+        specId: 'SPEC-001-01',
+        evidenceKind: 'operational',
+        evidenceRef: 'docs/evidence/measurement.json',
+        sourceFingerprint: 'opaque-evidence-fingerprint',
+      },
+    };
+    expect(
+      tool.args.safeParse({
+        ...base,
+        binding: {
+          ...base.binding,
+          details: { instrument: { path: 'scripts/measure.mjs', testPath: 'scripts/measure.test.ts' } },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      tool.args.safeParse({
+        ...base,
+        binding: { ...base.binding, details: { instrument: { none: true, reason: 'The result was read directly from the operator UI.' } } },
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe('plans:bind-spec-evidence repo-files measurement contract', () => {
   it('accepts a workspace-registered sibling harness slug without accepting an arbitrary root path', () => {

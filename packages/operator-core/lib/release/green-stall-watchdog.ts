@@ -2268,6 +2268,16 @@ export async function checkGreenStall(
                    AND COALESCE((metadata->'gate_health'->>'verdictRateAlarmed')::boolean, false) = false`;
               if (flip.count === 1) {
                 if (!out.alarmed.includes(row.install_slug)) out.alarmed.push(row.install_slug);
+                try {
+                  await broadcastSevereEvent({
+                    conditionKey: `alarm:release-verdict-rate:${row.install_slug}`,
+                    summary: `Release gate verdict rate degraded on ${row.install_slug} (${rate.reason})`,
+                    body: rate.detail ?? 'Repair the verdict path; this observation does not diagnose failing code.',
+                    oneShot: true,
+                  });
+                } catch (error) {
+                  console.warn(`[green-stall-watchdog] verdict-rate condition broadcast failed: ${String(error)}`);
+                }
                 const { notifyAttentionOnce } = await import('../attention-notify');
                 await notifyAttentionOnce({
                   kind: 'intervention',
@@ -2304,6 +2314,10 @@ export async function checkGreenStall(
                  WHERE install_slug = ${row.install_slug}
                    AND target_role = 'system:green-checkpoint'`;
               if (!out.recovered.includes(row.install_slug)) out.recovered.push(row.install_slug);
+              await broadcastSevereEventResolved({
+                conditionKey: `alarm:release-verdict-rate:${row.install_slug}`,
+                summary: `Release gate verdict rate recovered on ${row.install_slug}`,
+              });
             }
           } catch (e) {
             // Fail-soft like every other limb: a broken rate read must not take the sweep down.

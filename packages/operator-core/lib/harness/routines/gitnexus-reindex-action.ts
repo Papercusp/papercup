@@ -85,6 +85,7 @@ import {
   openSync,
   closeSync,
   readSync,
+  promises as fs,
 } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
@@ -2332,6 +2333,122 @@ export function pruneAnalyzeLogs(dir: string, keep: number = GITNEXUS_ANALYZE_LO
   }
 }
 
+/** Failed analyzes write shards before the vendor's successful-run prune. */
+export async function pruneStrandedParseCaches(
+  root: string,
+  opts: {
+    dryRun?: boolean;
+    nowMs?: number;
+    writerLiveness?: () => WriterLiveness;
+  } = {},
+): Promise<{ status: 'complete' | 'spared' | 'not-measured'; candidates: string[]; removed: string[]; candidateBytes: number; reason?: string }> {
+  const result = { status: 'complete' as const, candidates: [] as string[], removed: [] as string[], candidateBytes: 0 };
+  const storage = path.join(root, '.gitnexus');
+  const cutoff = (opts.nowMs ?? Date.now()) - 24 * 60 * 60 * 1000;
+  const keyPattern = /^[a-f0-9]{64}$/;
+  const liveness = opts.writerLiveness ?? (() => {
+    const writer = detectLiveAnalyzeWriter(root);
+    return findRoutineAnalyzePids(root, GITNEXUS_REPO_NAME).length ? 'live' : writer.verdict;
+  });
+  try {
+    const writer = liveness();
+    if (writer !== 'orphaned') return { ...result, status: 'spared', reason: `analyze writer ${writer}` };
+    if (!(await fs.lstat(storage)).isDirectory()) throw new Error('index root is not a plain directory');
+
+    // Union both persisted cache indexes and EVERY branch's metadata. A missing or
+    // unreadable authority is uncertainty, never permission to evict its chunks.
+    const readProtected = async (): Promise<{ keys: Set<string>; fingerprint: string }> => {
+      const keys = new Set<string>();
+      const contents: string[] = [];
+      const readKeys = async (file: string, field: string): Promise<void> => {
+        if (!(await fs.lstat(file)).isFile()) throw new Error(`not a plain metadata file: ${file}`);
+        const raw = await fs.readFile(file, 'utf8');
+        const value = JSON.parse(raw)[field];
+        if (!Array.isArray(value) || !value.every((k: unknown) => typeof k === 'string' && keyPattern.test(k))) {
+          throw new Error(`unmeasured cache keys: ${file}`);
+        }
+        value.forEach((k: string) => keys.add(k));
+        contents.push(`${file}\n${raw}`);
+      };
+      for (const store of ['parse-cache', 'parsedfile-cache']) {
+        if (!(await fs.lstat(path.join(storage, store))).isDirectory()) throw new Error(`not a plain cache root: ${store}`);
+        await readKeys(path.join(storage, store, 'index.json'), 'keys');
+      }
+      const metaDirs = [storage];
+      const branches = path.join(storage, 'branches');
+      let slugs: string[] = [];
+      try {
+        if (!(await fs.lstat(branches)).isDirectory()) throw new Error('branches root is not a plain directory');
+        slugs = (await fs.readdir(branches)).sort();
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      for (const name of slugs) {
+        const dir = path.join(branches, name);
+        if (!(await fs.lstat(dir)).isDirectory()) throw new Error(`unmeasured branch: ${name}`);
+        metaDirs.push(dir);
+      }
+      for (const dir of metaDirs) {
+        const canonical = path.join(dir, 'gitnexus.json');
+        await readKeys(existsSync(canonical) ? canonical : path.join(dir, 'meta.json'), 'cacheKeys');
+      }
+      return { keys, fingerprint: contents.join('\n') };
+    };
+    const protectedSet = await readProtected();
+    const candidates: Array<{ file: string; signature: string; bytes: number }> = [];
+    const inspect = async (file: string): Promise<{ signature: string; bytes: number } | null> => {
+      const st = await fs.lstat(file);
+      const files = st.isDirectory() ? (await fs.readdir(file)).sort().map((name) => path.join(file, name)) : [file];
+      let newest = st.mtimeMs;
+      let bytes = 0;
+      const signature = [`${st.mtimeMs}:${st.size}`];
+      for (const child of files) {
+        const s = await fs.lstat(child);
+        if (!s.isFile()) return null; // symlink, nested tree, or unfamiliar cache format
+        newest = Math.max(newest, s.mtimeMs);
+        bytes += s.blocks * 512;
+        signature.push(`${child}:${s.mtimeMs}:${s.size}`);
+      }
+      return newest < cutoff ? { signature: signature.join('\n'), bytes } : null;
+    };
+    for (const store of ['parse-cache', 'parsedfile-cache']) {
+      const dir = path.join(storage, store);
+      for (const name of await fs.readdir(dir)) {
+        const key = store === 'parse-cache' && name.endsWith('.json') ? name.slice(0, -5) : name;
+        if (!keyPattern.test(key) || protectedSet.keys.has(key)) continue;
+        const file = path.join(dir, name);
+        const st = await fs.lstat(file);
+        if (store === 'parse-cache' ? !st.isFile() : !st.isDirectory()) continue;
+        const measured = await inspect(file);
+        if (measured) candidates.push({ file, ...measured });
+      }
+    }
+    if (liveness() !== 'orphaned') return { ...result, status: 'spared', reason: 'analyze writer changed during census' };
+    if ((await readProtected()).fingerprint !== protectedSet.fingerprint) {
+      return { ...result, status: 'spared', reason: 'cache authority changed during census' };
+    }
+    for (const candidate of candidates) {
+      const current = await inspect(candidate.file);
+      if (current?.signature !== candidate.signature) continue; // a deep writer refreshed it
+      result.candidates.push(candidate.file);
+      result.candidateBytes += current.bytes;
+      if (!opts.dryRun) {
+        await fs.rm(candidate.file, { recursive: true });
+        result.removed.push(candidate.file);
+      }
+    }
+    return result;
+  } catch (e) {
+    return { ...result, status: 'not-measured', reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function cleanStrandedParseCaches(root: string): Promise<void> {
+  const r = await pruneStrandedParseCaches(root);
+  if (r.status === 'not-measured') console.warn(`[gitnexus-reindex] parse-cache retention unmeasured: ${r.reason}`);
+  if (r.removed.length) console.log(`[gitnexus-reindex] reclaimed ${r.candidateBytes} allocated bytes from ${r.removed.length} old unreferenced parse-cache shards`);
+}
+
 /** The last `maxBytes` of an analyze log; null when it cannot be read (e.g. a pre-P-012 run had none). */
 export function readAnalyzeLogTail(logPath: string, maxBytes = 16 * 1024): string | null {
   let fd: number | null = null;
@@ -3070,6 +3187,7 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   // but leaving an orphan shadow or WAL in place makes every read-only GitNexus
   // query fail until some future tick happens to elect a full rebuild.
   const residue = cleanCrashResidue(root);
+  await cleanStrandedParseCaches(root);
   if (residue.cleaned) {
     const why =
       residue.kind === 'orphan-shadow'
@@ -3212,6 +3330,10 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
   // refresh immediately instead of waiting an hour for the next cadence.
   if (ranClean) await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
   const success = analyzeTickSucceeded(r, canary);
+  // Failure must not bypass retention: shards are written before embeddings and
+  // before the successful-run cache save. The same liveness gates protect adopted
+  // runs and a manual writer that outlives this routine's child.
+  if (!ranClean) await cleanStrandedParseCaches(root);
 
   // Read the incomplete-index marker on the FAILURE path only: on a success it is expected
   // to be absent, and on a failure it is the fact that separates a one-off from a wedged

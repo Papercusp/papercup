@@ -2088,7 +2088,13 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
   });
 
-  it('end to end: the composed Stop command posts journal:record-turn as a codex turn', async () => {
+  it.each([
+    { delivery: 'synchronous success', synchronous: true, outcome: 'success' },
+    { delivery: 'detached success', synchronous: false, outcome: 'success' },
+    { delivery: 'detached blocked response', synchronous: false, outcome: 'blocked' },
+    { delivery: 'detached HTTP failure', synchronous: false, outcome: 'failure' },
+    { delivery: 'detached connection refusal', synchronous: false, outcome: 'refused' },
+  ])('end to end: the composed Stop command preserves a codex turn with $delivery', async ({ synchronous, outcome }) => {
     await installRealJournalHook();
     writeFileSync(join(fakeHome, '.papercusp', 'superuser-token'), 'test-token\n');
     const { writeSuCodexHome } = await loadMod();
@@ -2098,18 +2104,27 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     expect(entry, 'journal entry composed').toBeTruthy();
 
     const bodies: string[] = [];
+    let releaseResponse: (() => void) | undefined;
+    let responseReleased = false;
     const server = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
         bodies.push(body);
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }));
+        const reply = () => {
+          responseReleased = true;
+          res.statusCode = outcome === 'failure' ? 503 : 200;
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }));
+        };
+        if (outcome === 'blocked') releaseResponse = reply;
+        else reply();
       });
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
+    if (outcome === 'refused') await new Promise<void>((done) => server.close(() => done()));
 
     // A deterministic process shape: hook → fake `codex` → fake psu-launcher.mjs,
     // which pc_nested_cli.py classifies as the managed incarnation whatever runs
@@ -2126,12 +2141,13 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
       ...process.env,
       HOME: fakeHome,
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
-      PAPERCUSP_JOURNAL_SYNC: '1',
       HOOK_CMD: entry.hooks[0].command,
       FAKE_CODEX_BODY: codexBody,
     };
     delete env.PAPERCUSP_SID;
     delete env.PAPERCUSP_AGENT;
+    if (synchronous) env.PAPERCUSP_JOURNAL_SYNC = '1';
+    else delete env.PAPERCUSP_JOURNAL_SYNC;
     const transcript = join(fixtures, 'rollout.jsonl');
     writeFileSync(transcript, '{}\n');
     // The codex-cli 0.160 `stop.command.input` shape (required fields).
@@ -2146,18 +2162,40 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
       permission_mode: 'default',
       last_assistant_message: null,
     };
-    try {
-      const result = await new Promise<{ code: number | null; stdout: string }>((done, fail) => {
-        const child = spawn('bash', ['-c', 'exec -a node bash "$0"', launcher], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-        let stdout = '';
-        child.stdout.on('data', (c) => (stdout += c));
-        child.on('error', fail);
-        child.on('close', (code) => done({ code, stdout }));
-        child.stdin.end(JSON.stringify(payload));
+    const child = spawn('bash', ['-c', 'exec -a node bash "$0"', launcher], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let closed: { code: number | null; stdout: string; stderr: string } | undefined;
+    const completion = new Promise<NonNullable<typeof closed>>((done, fail) => {
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (c) => (stdout += c));
+      child.stderr.on('data', (c) => (stderr += c));
+      child.on('error', fail);
+      child.on('close', (code) => {
+        closed = { code, stdout, stderr };
+        done(closed);
       });
+      child.stdin.end(JSON.stringify(payload));
+    });
+    try {
+      if (outcome === 'blocked') {
+        await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
+        // The request actually reached the server, but its response stays held.
+        // A synchronous POST or an inherited output pipe cannot satisfy this.
+        await vi.waitFor(() => expect(closed).toBeDefined(), { timeout: 2_000 });
+        expect(responseReleased).toBe(false);
+        releaseResponse!();
+      }
+      const result = await completion;
       expect(result.code).toBe(0);
       // Codex parses Stop stdout as a decision; the journal must never emit one.
       expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+      if (outcome === 'refused') {
+        expect(bodies).toHaveLength(0);
+        return;
+      }
+      // Detached success/error delivery may arrive after the hook has exited.
+      await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
       expect(bodies).toHaveLength(1);
       const rpc = JSON.parse(bodies[0]);
       expect(rpc.params.name).toBe('journal:record-turn');
@@ -2169,7 +2207,13 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
         transcript_path: transcript,
       });
     } finally {
-      await new Promise<void>((done) => server.close(() => done()));
+      if (!responseReleased) releaseResponse?.();
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await completion;
+      if (server.listening) {
+        server.closeAllConnections();
+        await new Promise<void>((done) => server.close(() => done()));
+      }
     }
   });
 });

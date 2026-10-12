@@ -3144,6 +3144,10 @@ export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any,
  * so a handoff written by an older host keeps the old behaviour (no kickoff).
  */
 export function handoffFirstTurnText(handoff: any): string | null;
+/** Restore session configuration without inheriting the initial launch's receipt.
+ * Its placeholder/token belong to that caller operation, which has already
+ * settled and may have been collected before a later host-code adoption. */
+export function applyHostHandoffEnv(env: any, childEnv?: {}): void;
 /**
  * Keep carry adoption explicit even when Codex has not assigned its native id
  * yet. The successor pty host resolves that late id from exact kickoff proof.

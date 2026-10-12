@@ -132,6 +132,14 @@ export function authorizationFailureHint(input: {
     ? `this principal lacks ${input.missingCapability} for ${input.toolName}`
     : `role "${input.deniedRole ?? input.ctx.role}" is not on ${input.toolName}'s allowlist` +
       (input.allowedRoles?.length ? ` (allowed: ${input.allowedRoles.join(', ')})` : '');
+  if (input.toolName === 'capability:git' && input.missingCapability === 'capability:git') {
+    return (
+      `This is a judge-scoped MCP session; ${lacks}. ` +
+      '`capability:git` is intentionally withheld from judge sessions. For historical file evidence at a pinned commit, ' +
+      'use `capability:git-evidence` with `op: "readFileAtCommit"`, the full commit SHA, and a repository-relative path. ' +
+      'For Git operations that reader does not cover, use a separate authorized su/operator session through the papercusp-su MCP server.'
+    );
+  }
   return (
     `This is a judge-scoped MCP session; ${lacks}. ` +
     '`tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. ' +

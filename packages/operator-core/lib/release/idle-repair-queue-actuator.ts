@@ -418,7 +418,8 @@ const IDLE_ACTUATOR_IDENTITY = {
  */
 export async function checkIdleRepairQueue(
   sql: Sql,
-  opts: { installSlug?: string; workspaceId?: string; nowMs?: () => number } = {},
+  opts: { installSlug?: string; workspaceId?: string; nowMs?: () => number;
+    alarm?: import('../alarm-attention').AlarmAttentionDeps } = {},
 ): Promise<IdleQueuePassResult | null> {
   const installSlug = opts.installSlug ?? 'papercusp';
   const { recordWatchdogPassOutcome } = await import('./watchdog-health');
@@ -446,11 +447,14 @@ export async function checkIdleRepairQueue(
     const storedEpisode = claim.episode;
 
     let queue: FrozenCandidateRepairQueue | null = null;
+    let queueMeasured = false;
     const result = await runIdleQueueActuatorPass({
       installSlug,
       nowMs: opts.nowMs ?? Date.now,
       readSnapshot: async () => {
         const read = await readFrozenCandidateRepairQueueState({ workspaceId, installSlug });
+        queueMeasured = read.status === 'value' || read.status === 'absent';
+        if (!queueMeasured) throw new Error('repair queue is unreadable; preserve the idle episode');
         queue = read.status === 'value' ? read.queue : null;
         if (!queue) return null;
         const fixerAlive = queue.fixerSpawnId
@@ -505,17 +509,27 @@ export async function checkIdleRepairQueue(
       },
       escalateOwner: async (msg) => {
         const { notifyAttention } = await import('../attention-notify');
-        await notifyAttention({
+        const broadcastSevereEvent = opts.alarm?.broadcast ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+        await broadcastSevereEvent({
+          conditionKey: `alarm:idle-repair-queue:${installSlug}`, summary: msg.summary, body: msg.body, oneShot: true,
+        });
+        const input = {
           kind: 'intervention',
           title: msg.summary,
           body: msg.body,
           importance: 'urgent',
           workspaceId,
           data: { installSlug, phase: IDLE_REPAIR_QUEUE_PHASE },
-        });
+        } as const;
+        if (opts.alarm?.notify) await opts.alarm.notify({ title: input.title, body: input.body });
+        else await notifyAttention(input);
         return { ok: true, detail: 'urgent intervention raised on the owner attention surface' };
       },
     });
+    if (queueMeasured && result.decision === 'not-idle') {
+      const { resolveAlarm } = await import('../alarm-attention');
+      await resolveAlarm(`alarm:idle-repair-queue:${installSlug}`, 'idle-repair-queue', opts.alarm);
+    }
     if (result.acted.length > 0) {
       console.warn(
         `[idle-repair-queue-actuator] ${installSlug}: ` +

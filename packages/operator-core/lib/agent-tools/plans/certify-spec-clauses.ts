@@ -41,7 +41,9 @@ const argsSchema = z.object({
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   includeDraft: z.boolean().optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
+  limit: z.number().int().min(1).max(1000).optional().describe(
+    'Maximum evidence rows to load for the filtered plan/spec/work-item/evidence scope, not the number of selected clauses. The default is 1000. If loaded rows reach this ceiling, evaluation refuses with evidence_selection_hit_limit and no verdict because the cohort may be truncated; omit this argument or set it above the expected evidence rows (up to 1000), or narrow the selectors.',
+  ),
   dryRun: z.boolean().optional().describe('Grade and report which clauses WOULD be filed, without filing any card.'),
   acknowledgeExisting: z.boolean().optional().describe('Explicitly acknowledge existing independent cards when filing another current-evidence card.'),
 });
@@ -118,7 +120,7 @@ async function findBuildStrandedPendingCard(
 export default defineTool({
   name: 'plans:certify-spec-clauses',
   description:
-    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
   guidance: {
     when: 'Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.',
     notWhen:

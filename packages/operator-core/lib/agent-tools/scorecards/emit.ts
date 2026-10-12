@@ -3794,10 +3794,10 @@ export default defineTool({
           hostStartedAt: z.string().nullable(),
           bootHeadSha: z.string().nullable(),
           scoutCodeHash: z.string().nullable(),
-          staleHost: z.boolean(),
+          staleHost: z.boolean().nullable(),
         })
         .optional(),
-      staleHost: z.boolean().optional(),
+      staleHost: z.boolean().nullable().optional(),
       deployedSha: z.string().nullable().optional(),
       code: z.string().optional(),
       canonicalRatings: z.record(z.string(), z.unknown()).optional(),

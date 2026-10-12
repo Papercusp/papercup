@@ -126,6 +126,17 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('derives omitted classRef from the persisted subject class without waiving proof', async () => {
+    listAcceptanceRubrics.mockResolvedValue([{ rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never]);
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([]);
+    const args = { harness: 'papercusp', slug: 'plan-a', detail: 'full' };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const result = await call(args);
+    expect(result).toMatchObject({ ok: true, classRef: 'plan-class-bugfix', classRefSource: 'active-acceptance-rubric' });
+    expect(result.rows[0].requiredProofFloor).toBe('l4');
+    expect(result.rows[0].wouldBlock.length).toBeGreaterThan(0);
+  });
   it('evaluates an exact ad-hoc work-item clause without a plan acceptance rubric', async () => {
     listAcceptanceRubrics.mockResolvedValue([]);
     listRetiredAcceptanceRubrics.mockResolvedValue([]);

@@ -125,27 +125,53 @@ const ADEQUACY_DETAIL_KEYS = new Set([
   'causalPairIds',
   'provisionalProofBase',
 ]);
-const bindingDetailsSchema = z.record(z.string(), z.unknown()).superRefine((details, ctx) => {
-  for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: [key],
-      message:
-        `adequacy metadata must be nested under details.adequacy.${key}; ` +
-        `flat details.${key} is ignored by spec-test-adequacy`,
-    });
-  }
-  if (details.adequacy === undefined) return;
-  const parsed = adequacyBindingDetailsSchema.safeParse(details.adequacy);
-  if (parsed.success) return;
-  for (const issue of parsed.error.issues) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['adequacy', ...issue.path],
-      message: issue.message,
-    });
-  }
-});
+const instrumentDeclarationSchema = z
+  .object({
+    path: z
+      .string()
+      .optional()
+      .describe('Repository-relative path to the committed instrument that produced the evidence.'),
+    testPath: z
+      .string()
+      .optional()
+      .describe('Repository-relative path to a committed test that imports or exercises the instrument.'),
+    none: z.literal(true).optional().describe('Set true only when the observation used no program or script.'),
+    reason: z.string().optional().describe('Explain why no instrument was used when none is true.'),
+  })
+  .passthrough()
+  .describe(
+    'For operational/manual evidence, declare either { path, testPath } for the committed instrument and its committed test, or { none: true, reason } when no instrument was used.',
+  );
+const bindingDetailsSchema = z
+  .intersection(
+    z.record(z.string(), z.unknown()),
+    z
+      .object({
+        instrument: instrumentDeclarationSchema.optional(),
+      })
+      .passthrough(),
+  )
+  .superRefine((details, ctx) => {
+    for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message:
+          `adequacy metadata must be nested under details.adequacy.${key}; ` +
+          `flat details.${key} is ignored by spec-test-adequacy`,
+      });
+    }
+    if (details.adequacy === undefined) return;
+    const parsed = adequacyBindingDetailsSchema.safeParse(details.adequacy);
+    if (parsed.success) return;
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['adequacy', ...issue.path],
+        message: issue.message,
+      });
+    }
+  });
 const CAUSAL_PAIR_EVIDENCE_KINDS = new Set([
   'test',
   'coverage-census',

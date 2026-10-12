@@ -103,6 +103,7 @@ import type { AdmissionContext, ResourceDemand } from '../resource-governor/admi
 import { activeWorkspaceId } from '../workspace-registry';
 import { getBuildInfo } from '../build-info';
 import { getBundleStaleness, type BundleStaleness } from '../bundle-staleness';
+import { flushFallbackObservations } from '../degradation/fallback-observations';
 import { loadEmbedDeviceSetting, type EmbedDeviceSettingLoad } from './embed-device-setting';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
@@ -1690,6 +1691,9 @@ export function runEmbedSidecarServer(): void {
     void handle
       .close()
       .then(() => Promise.allSettled([shutdownLocalEmbedder(), shutdownLocalReranker()]))
+      // process.exit skips beforeExit, so short-lived sidecar processes must
+      // drain their best-effort fallback observations explicitly.
+      .then(() => flushFallbackObservations())
       .then(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

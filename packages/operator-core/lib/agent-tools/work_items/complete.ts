@@ -448,7 +448,8 @@ const specAdequacyCompletionSpec = z
   .object({
     classRef: z
       .enum(PLAN_CLASS_RUBRIC_REFS)
-      .describe('Existing plan-class standard that determines the required proof floor.'),
+      .optional()
+      .describe('Derived from each persisted subject plan class when omitted; explicit values must match. Ad-hoc scopes require an explicit class attestation.'),
     evidenceRefs: z
       .array(z.string().trim().min(1).max(2000))
       .min(1)

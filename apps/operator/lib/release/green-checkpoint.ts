@@ -1885,6 +1885,65 @@ export async function emitInconclusiveCheckpointVerdict(
   });
 }
 
+/** The CLI's fail-soft delivery seam; a partial pair is not successful delivery. */
+export async function emitInconclusiveVerdict(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: {
+    emit?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
+    observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
+  } = {},
+): Promise<void> {
+  const observeFallback = deps.observeFallback ??
+    (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).observeFallback;
+  try {
+    const emit = deps.emit ??
+      (await import("@papercusp/operator-core/lib/events/await/engine")).emitAwaitedEvent;
+    await emitInconclusiveCheckpointVerdict(result, pipeline, emit);
+    observeFallback("release-verdict-event", { eligible: 1, applied: 1, reason: "applied", scope: pipeline });
+  } catch (e) {
+    observeFallback("release-verdict-event", { eligible: 1, applied: 0, reason: "inconclusive-emit-failed", scope: pipeline });
+    console.error(
+      `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
+/** Owner delivery and the condition broadcast remain independent on watchdog kills. */
+export async function onFire(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: import("@papercusp/operator-core/lib/alarm-attention").AlarmAttentionDeps = {},
+): Promise<void> {
+  const conditionKey = `alarm:checkpoint-self-watchdog:${pipeline}`;
+  const title = "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)";
+  const body = result.summary ?? "self-watchdog fired with no summary";
+  try {
+    const broadcastSevereEvent = deps.broadcast ??
+      (await import("@papercusp/operator-core/lib/severe-event-broadcast")).broadcastSevereEvent;
+    await broadcastSevereEvent({ conditionKey, summary: title, body, oneShot: true });
+  } catch { /* best-effort — the kill proceeds regardless */ }
+  try {
+    if (deps.notify) await deps.notify({ title, body });
+    else {
+      const { notifyAttention } = await import("@papercusp/operator-core/lib/attention-notify");
+      await notifyAttention({ kind: "intervention", title, body, importance: "urgent",
+        data: { candidate: result.candidate, reason: result.reason, conditionKey } });
+    }
+  } catch { /* best-effort — the kill proceeds regardless */ }
+}
+
+/** A fresh code verdict of either colour proves the watchdog's no-verdict episode ended. */
+export async function resolveCheckpointSelfWatchdog(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: import("@papercusp/operator-core/lib/alarm-attention").AlarmAttentionDeps = {},
+): Promise<void> {
+  if (result.green == null || !["advanced", "advanced-prefix", "not-green"].includes(result.reason)) return;
+  const { resolveAlarm } = await import("@papercusp/operator-core/lib/alarm-attention");
+  await resolveAlarm(`alarm:checkpoint-self-watchdog:${pipeline}`, "checkpoint-self-watchdog", deps);
+}
+
 export interface CheckpointRunLock {
   acquired: boolean;
   lockDir: string;
@@ -16080,6 +16139,8 @@ export async function ensureCheckpointDependencyGeneration(
 }
 
 export interface CheckpointDependencyPrebuildDeps {
+  /** Host observer for the existing prebuild-state read; no new delivery path. */
+  observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
   /** Explicit null disables the state plane (old/manual launcher compatibility). */
   target?: DependencyPrebuildTarget | null;
   awaitState?: (
@@ -16343,6 +16404,11 @@ export async function beginCheckpointPreflight(
   }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
     null;
+  const observeFallback = dependencyPrebuildDeps.observeFallback ??
+    (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).observeFallback;
+  const stateReadEligible = Object.prototype.hasOwnProperty.call(dependencyPrebuildDeps, "target")
+    ? dependencyPrebuildDeps.target != null : gateVerdictTargetFromEnv() != null;
+  const readScope = `${pipelineName(cfg.integrationRoot)}:dependency-prebuild-state`;
   try {
     prewarmedDependencyGeneration =
       await selectPersistedCheckpointDependencyGeneration(
@@ -16351,7 +16417,13 @@ export async function beginCheckpointPreflight(
         exec,
         dependencyPrebuildDeps,
       );
+    if (stateReadEligible) observeFallback("release-state-read", {
+      eligible: 1, applied: 1, reason: "applied", scope: readScope,
+    });
   } catch (error) {
+    observeFallback("release-state-read", {
+      eligible: 1, applied: 0, reason: "prebuild-state-unavailable", scope: readScope,
+    });
     console.error(
       `${orchestratorStdoutTag()} dependency-prebuild state/identity lookup failed for ${candidate.slice(0, 12)}: ` +
         `${error instanceof Error ? error.message : String(error)}; joining fail-closed publisher fallback`,
@@ -21600,6 +21672,12 @@ export function realCheckpointDeps(
     // `source: 'green-checkpoint'` so the open/clear pair is idempotent across
     // the hourly tick. Fail-safe — the gate verdict never depends on this.
     async escalate(summary, body) {
+      // The legacy escalation store and its owner-notification dedup cannot hide the condition.
+      try {
+        const { broadcastSevereEvent } = await import("@papercusp/operator-core/lib/severe-event-broadcast");
+        await broadcastSevereEvent({ conditionKey: `alarm:checkpoint-release-red:${pipelineName(cfg.integrationRoot)}`,
+          summary, body, oneShot: true });
+      } catch { /* fail-safe — the gate verdict never depends on the broadcast */ }
       const { openEscalation, listEscalations } =
         await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       // WI-36238: opt this row OUT of the attention TTL sweep. Imported here
@@ -21671,6 +21749,8 @@ export function realCheckpointDeps(
       }
     },
     async clearEscalation() {
+      const { resolveAlarm } = await import("@papercusp/operator-core/lib/alarm-attention");
+      await resolveAlarm(`alarm:checkpoint-release-red:${pipelineName(cfg.integrationRoot)}`, "checkpoint-release-red");
       const { listEscalations, resolveEscalation } =
         await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       const open = await listEscalations({ status: "open" });
@@ -22213,21 +22293,6 @@ if (require.main === module) {
    * or red, so the emitter retires the global and pipeline-scoped green/red siblings. The
    * await engine's candidate and registration-group filters protect unrelated waits.
    */
-  const emitInconclusiveVerdict = async (
-    r: CheckpointResult,
-  ): Promise<void> => {
-    try {
-      const pipeline = pipelineName(cfg.integrationRoot);
-      const { emitAwaitedEvent } =
-        await import("@papercusp/operator-core/lib/events/await/engine");
-      await emitInconclusiveCheckpointVerdict(r, pipeline, emitAwaitedEvent);
-    } catch (e) {
-      console.error(
-        `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
-      );
-    }
-  };
-
   let stopQualificationProgress: (() => Promise<void>) | undefined;
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
   let verdictRecordedAtMs: number | null = null;
@@ -22255,7 +22320,7 @@ if (require.main === module) {
       writeHuman: (result) => writeStdioFlushed(process.stderr, `${JSON.stringify(result, null, 2)}\n`),
       writeMarker: (line) => writeStdioFlushed(process.stdout, `${line}\n`),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
-      emitInconclusive: emitInconclusiveVerdict,
+      emitInconclusive: (result) => emitInconclusiveVerdict(result, pipelineName(cfg.integrationRoot)),
       emitTerminalEvents: async (result, recorded) => {
         await flushTerminalEvents?.(result, recorded);
       },
@@ -22278,6 +22343,9 @@ if (require.main === module) {
         }
       },
     });
+    await resolveCheckpointSelfWatchdog(r, pipelineName(cfg.integrationRoot));
+    // This child exits immediately after the terminal seam; beforeExit cannot drain it.
+    await (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).flushFallbackObservations();
   };
 
   /**
@@ -22591,24 +22659,7 @@ if (require.main === module) {
             candidateSource !== "pinned" &&
             diagnostic !== "candidate-pinned"
           ) {
-            try {
-              const { notifyAttention } =
-                await import("@papercusp/operator-core/lib/attention-notify");
-              await notifyAttention({
-                kind: "intervention",
-                title:
-                  "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
-                body:
-                  inconclusive.summary ?? "self-watchdog fired with no summary",
-                importance: "urgent",
-                data: {
-                  candidate: inconclusive.candidate,
-                  reason: inconclusive.reason,
-                },
-              });
-            } catch {
-              /* best-effort — the kill proceeds regardless */
-            }
+            await onFire(inconclusive, pipelineName(cfg.integrationRoot));
           }
         },
       });

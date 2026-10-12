@@ -2051,7 +2051,7 @@ function appendRatingRerunProbes(
  *       grader evidence exposes the descriptor, linkage and ledger-only re-aim coverage.
  *  24 — technical compound modifiers do not turn negative-control observations into proof gaps.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 24;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 25;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2377,9 +2377,13 @@ export function evaluateSpecTestAdequacy(input: {
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
-  const probeDeclaresFixtureUse = /\bfixtures?\b/i.test(clause.falsifier?.probeMethod ?? '');
+  const clauseDeclaresFixtureUse = [
+    clause.behavior,
+    clause.falsifier?.observation,
+    clause.falsifier?.probeMethod,
+  ].some((text) => /\bfixtures?\b/i.test(text ?? ''));
   const fixtureUseRequired =
-    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || probeDeclaresFixtureUse;
+    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || clauseDeclaresFixtureUse;
   const executableFixtureFreeProof = exactEvidence.filter(
     (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
   );
@@ -2388,7 +2392,10 @@ export function evaluateSpecTestAdequacy(input: {
     (row) =>
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
       row.fingerprints.fixtureFingerprint === null &&
-      detailsOf(row).fixtureFree !== true,
+      (detailsOf(row).fixtureFree !== true || fixtureUseRequired),
+  );
+  const fixtureFreeAttestationConflictsWithUse = unresolvedFixtureProof.some(
+    (row) => detailsOf(row).fixtureFree === true,
   );
   const fixtureFreeConflicts = exactEvidence.filter(
     (row) =>
@@ -2416,14 +2423,17 @@ export function evaluateSpecTestAdequacy(input: {
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            (fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
-              ? 'A fixture is required or used; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for '
-              : 'A null fixtureFingerprint does not establish fixture-free proof; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for ') +
+            (fixtureFreeAttestationConflictsWithUse
+              ? 'The clause declares fixture use, so fixtureFree=true cannot replace fixture calibration evidence for '
+              : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
+                ? 'A fixture is required or used; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for '
+                : 'A null fixtureFingerprint does not establish fixture-free proof; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for ') +
               clauseIdentity(clause) + '.',
             unresolvedFixtureProof,
           ),
-          suggestion:
-            'For each executable binding, bind a measured fixture fingerprint and calibration proof or explicitly attest adequacy.fixtureFree=true; a missing fingerprint alone is insufficient.',
+          suggestion: fixtureFreeAttestationConflictsWithUse
+            ? 'Bind a measured fixture fingerprint and calibration proof; a fixture-free attestation cannot override fixture use declared by the clause.'
+            : 'For each executable binding, bind a measured fixture fingerprint and calibration proof or explicitly attest adequacy.fixtureFree=true; a missing fingerprint alone is insufficient.',
         }
       : fixtureApplicable
     ? booleanRating(fixtureProofEvidence, (d) => d.fixtureCalibrated, {

@@ -2438,6 +2438,7 @@ describe('work_items:complete (keyed-array)', () => {
     });
 
     it('publishes a strict single and per-item bulk attestation shape', () => {
+      expect(complete.args.safeParse({ id: 'WI-101', state: 'done', assumptions: 'none', completion: { summary: 'fixed' }, specAdequacy: {} }).success).toBe(true);
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
           id: 'WI-101',
@@ -7180,6 +7181,47 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       getFlag.mockImplementation(async (key: unknown) =>
         key === 'papercusp-terminal-criteria-enforcement' ? value : false,
       );
+
+    // SPEC-BQL-P-009-RECEIPT: exercise the close handler and its persistence
+    // boundary, including accepted/non-reviewed controls and the honest drop exit.
+    it.each([
+      ['pending reproduction', 'revision-requested', 'reproduction'],
+      ['receipt accepted', 'accepted', undefined],
+      ['not reviewed', undefined, undefined],
+    ] as const)('records the right authority for %s across terminal dispositions', async (_label, reviewStatus, revisionKind) => {
+      enforcement(true);
+      const payload = reviewStatus ? {
+        agentReview: { status: reviewStatus, revisionKind, submittedBy: 'su-filer', ledgerIdeaId: 'WI-1', round: 2 },
+      } : {};
+      const bug = { ...item, id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', payload };
+      getWorkItem.mockResolvedValue(bug);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => okState({ ...bug, state }));
+
+      for (const state of ['done', 'resolved', 'dropped']) {
+        setWorkItemStateWithAliasInfo.mockClear();
+        const r = await one({
+          id: 'WI-1', state,
+          completion: {
+            summary: state === 'dropped' ? 'Current-build attempt did not reproduce; retain the attempt.' : 'Validated intervention recorded.',
+            verifiedHow: 'scripted reproduction on the current build; persisted request/response inspected',
+            testResult: 'Observed the recorded terminal disposition and authority.',
+          },
+        });
+        const pendingSuccessfulClose = reviewStatus === 'revision-requested' && state !== 'dropped';
+        const authority = pendingSuccessfulClose ? 'proposed' : 'committed';
+        expect(r.ok).toBe(true);
+        expect(r.completionAuthority).toBe(authority);
+        expect(stateOpts().completionAuthority).toBe(authority);
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+        if (pendingSuccessfulClose) {
+          expect(r.countsTowardBurnDown).toBe(false);
+          expect(r.terminalCriteriaWarning).toContain('reproduction-receipt');
+          expect(r.authorityWarning).toContain("Authority landed 'proposed'");
+        } else {
+          expect(r.terminalCriteriaWarning ?? '').not.toContain('reproduction-receipt');
+        }
+      }
+    });
 
     it('ON (the shipped default): an unmet criterion downgrades the close to `proposed`', async () => {
       enforcement(true);

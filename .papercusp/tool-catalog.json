@@ -22650,7 +22650,7 @@
           "POST"
         ]
       },
-      "description": "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+      "description": "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
       "capabilities": [
         "coord:write"
       ],
@@ -23015,7 +23015,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
       "capabilities": [
         "plans:read"
       ],

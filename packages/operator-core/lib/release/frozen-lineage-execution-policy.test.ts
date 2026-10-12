@@ -773,6 +773,14 @@ describe('frozen lineage carry policy', () => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
 
+  it('allows a factual current-build SHA attribution without selecting it as the judged candidate', () => {
+    expect(
+      detectUnsafeFrozenCarryInstruction(
+        'Target SHA a906a9a29b1abaf67ce94abccd7ed263e64886a3 is loaded in the staging-operator current build',
+      ),
+    ).toBeNull();
+  });
+
   it('allows a plain worktree branch-status note without selecting that branch as the judged candidate', () => {
     expect(detectUnsafeFrozenCarryInstruction('Worktree remains on staging.')).toBeNull();
   });

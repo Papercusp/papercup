@@ -459,6 +459,21 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.argSchema).toContain('verified?:string(≤1200 (soft cap ≤300))');
   });
 
+  it('publishes the checkpoint root constraint in compact tool discovery', async () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('work_items:checkpoint')) ?? '';
+    const constraintPrefix = 'constraint:$ (With `items[]`, omit root-level `checkpoint`, `note`, `did`';
+
+    expect(compact).toContain(constraintPrefix);
+    expect(compact).toContain('`confirmShrink`');
+    expect(compact).toContain('remain defaults for entries');
+
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'work_items:checkpoint');
+    expect(hit?.argSchema).toContain(constraintPrefix);
+    expect(hit?.argSchema).toContain('remain defaults for entries');
+  });
+
   it('shows required behaviorClass in plans:set-specs compact discovery', async () => {
     expect(plansSetSpecs.name).toBe('plans:set-specs');
     const { schemaByTool } = buildCorpus();
@@ -1354,6 +1369,12 @@ describe('handler — graceful degrade + result shape', () => {
     expect(checkpoint?.argSchema).toContain('contentHash?');
     expect(checkpoint?.argSchema).toContain('unchanged?');
     expect(checkpoint?.argSchema).not.toContain('expectedHash');
+    expect(checkpoint?.argSchema).toContain('constraint:unchanged (');
+    expect(checkpoint?.argSchema).toContain('`contentHash` required');
+    expect(checkpoint?.argSchema).toContain('`checks`');
+    expect(checkpoint?.argSchema).toContain('`retireIds`');
+    expect(checkpoint?.argSchema).toContain('attestation_conflicting_args');
+    expect(checkpoint?.argSchema).toContain('`confirmRetire` cannot authorize a row mutation');
   });
 
   it('surfaces the checkpoint retireIds rowsMode constraint in compact discovery', async () => {

@@ -90,6 +90,10 @@ describe('secrets-guard rules', () => {
         path: 'packages/operator-core/lib/launch-cost/scan-launch-transcripts.test.ts',
         relative: '../../launch-cost/scan-launch-transcripts.test.ts',
       },
+      {
+        path: 'packages/operator-core/lib/dao-hr/onboarding.integration.test.ts',
+        relative: '../../dao-hr/onboarding.integration.test.ts',
+      },
     ];
     for (const file of files) {
       const content = readFileSync(join(__dirname, file.relative), 'utf8');

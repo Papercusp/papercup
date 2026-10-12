@@ -151,6 +151,18 @@ vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
   broadcastSevereEventResolved: (r: Record<string, unknown>) => broadcastSevereEventResolved(r),
 }));
 
+// Keep the real resolution/error boundary, injecting only its condition-store dependency.
+// The capturing SQL above implements unsafe(), not the tagged SQL used by that store.
+const resolveCondition = vi.fn(async (_input: { conditionKey: string; summary: string }) => true);
+vi.mock('../../alarm-attention', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../alarm-attention')>();
+  return {
+    ...actual,
+    resolveAlarm: (key: string, source: string, deps?: import('../../alarm-attention').AlarmAttentionDeps) =>
+      actual.resolveAlarm(key, source, { resolve: resolveCondition, ...deps }),
+  };
+});
+
 const findConditionKeyHolder = vi.fn(async (..._args: unknown[]): Promise<string | null> => null);
 vi.mock('../../coord/condition-bridge', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../coord/condition-bridge')>()),
@@ -216,6 +228,8 @@ beforeEach(() => {
   notifyAttentionOnce.mockClear();
   broadcastSevereEvent.mockClear();
   broadcastSevereEventResolved.mockClear();
+  resolveCondition.mockReset();
+  resolveCondition.mockResolvedValue(true);
   emitAwaitedEvent.mockClear();
   findConditionKeyHolder.mockReset();
   findConditionKeyHolder.mockResolvedValue(null);
@@ -1813,13 +1827,9 @@ describe('EI-21462211894072863: a verdict-less tick counts as WEDGED, never as a
     expect(String(ev.summary)).toMatch(/WEDGED/);
     expect(String(ev.summary)).toMatch(/NOT a red build/i);
     expect(String(ev.body)).toMatch(/DO NOT triage/i);
-    /**
-     * No conditionKey, deliberately. `gate-red-streak:<harness>` mints exactly one claimable
-     * work-item whose entire framing is "the reds are yours to fix"; opening it here would hand
-     * someone a broken-build ticket for a gate that never judged a build. This assertion is what
-     * would catch a well-meaning "make the wedge ownable too" change that reused the red key.
-     */
-    expect(ev.conditionKey).toBeUndefined();
+    // Apparatus repair owns its own condition; it must never mint the code-red item.
+    expect(ev.conditionKey).toBe('alarm:release-gate-no-verdict:test-slug');
+    expect(ev.conditionKey).not.toBe(gateRedStreakConditionKey('test-slug'));
   });
 
   it('does NOT escalate below the threshold, and only ONCE per episode', async () => {
@@ -1849,8 +1859,20 @@ describe('EI-21462211894072863: a verdict-less tick counts as WEDGED, never as a
       // MERGING write cannot silently resurrect a dead streak or its one-shot flag.
       expect(written!.consecutiveNoVerdict).toBe(0);
       expect(written!.noVerdictAlerted).toBe(false);
+      expect(resolveCondition).toHaveBeenCalledWith(expect.objectContaining({
+        conditionKey: 'alarm:release-gate-no-verdict:test-slug',
+      }));
     }
   });
+
+  it.each(['up-to-date', 'skipped-locked', 'error', 'disk-headroom', 'repair-in-progress'])(
+    'does not resolve the apparatus episode on %s without a measured verdict', async (status) => {
+      seededGh = { consecutiveNoVerdict: 7, noVerdictAlerted: true, lastGreenAt: Date.now() };
+      await trackGateStall(ctx, status);
+      expect(resolveCondition.mock.calls.map(([input]) => input.conditionKey))
+        .not.toContain('alarm:release-gate-no-verdict:test-slug');
+    },
+  );
 
   it('a moved release pin still wins — the wedge branch never runs', async () => {
     // `pinMoved` is hard evidence the pipeline is flowing, and it outranks every status.
@@ -2047,7 +2069,9 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(alert.body).toContain('do not start a parallel repair');
     // This is an ownership/succession alarm, never a code verdict or second owning item.
     expect(lastGateHealthWrite()).toBeNull();
-    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(broadcastSevereEvent).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:release-fixer-succession:test-slug',
+    }));
     expect(escalationWrites()).toHaveLength(0);
     const mark = fixerMarkWrite();
     expect(mark).toBeDefined();
@@ -2086,6 +2110,49 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     };
     await trackGateStall(ctx, 'repair-in-progress');
     expect(notifyAttentionOnce).not.toHaveBeenCalled();
+  });
+
+  it('preserves the succession condition and marks when liveness cannot be read', async () => {
+    seededGh = { stallAlertedAtFixerAgeMs: FIXER_SUCCESSION_STALL_MS, stallFixerSuccessionKey: 'prior-key' };
+    seededRepairQueue = awaitingFixer();
+    const original = fakeSql.unsafe;
+    const unsafe = vi.spyOn(fakeSql, 'unsafe').mockImplementation((query, params) =>
+      query.includes('sa.launcher_host') ? Promise.reject(new Error('liveness unavailable')) : original(query, params));
+    try {
+      await trackGateStall(ctx, 'repair-in-progress');
+      expect(resolveCondition).not.toHaveBeenCalled();
+      expect(broadcastSevereEvent).not.toHaveBeenCalled();
+      expect(notifyAttentionOnce).not.toHaveBeenCalled();
+      const mark = fixerMarkWrite()!;
+      expect(JSON.parse(String(mark.params[1]))).toBe(FIXER_SUCCESSION_STALL_MS);
+      expect(JSON.parse(String(mark.params[2]))).toBe('prior-key');
+    } finally { unsafe.mockRestore(); }
+  });
+
+  it('does not resolve a malformed queue as measured absence', async () => {
+    seededRepairQueue = { schemaVersion: 3, phase: 'awaiting-fixer' };
+    await trackGateStall(ctx, 'repair-in-progress');
+    expect(resolveCondition).not.toHaveBeenCalled();
+  });
+
+  it('resolves succession after a readable queue end', async () => {
+    seededRepairQueue = null;
+    await trackGateStall(ctx, 'repair-in-progress');
+    expect(resolveCondition).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:release-fixer-succession:test-slug',
+    }));
+  });
+
+  it('attempts owner notification even if the succession broadcast fails', async () => {
+    seededGh = { consecutiveReds: 1, lastGreenAt: Date.now() };
+    seededRepairQueue = awaitingFixer();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    broadcastSevereEvent.mockRejectedValueOnce(new Error('condition delivery unavailable'));
+    try {
+      await trackGateStall(ctx, 'repair-in-progress');
+      expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fixer-succession condition broadcast failed'));
+    } finally { warn.mockRestore(); }
   });
 
   it('⭐ a legacy blob (stallAlerted, no marks) does NOT re-alert for a stall already announced', async () => {

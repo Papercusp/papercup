@@ -147,6 +147,16 @@ describe('evaluateVerdictRateAlarm — the silent-window limb', () => {
 });
 
 describe('readVerdictRateWindow — the one bounded read', () => {
+  it.each([[], [{}], [{ fires: 0, verdicts: 0 }],
+    [{ fires: 'bad', verdicts: 0, last_verdict_ms: null }],
+    [{ fires: -1, verdicts: 0, last_verdict_ms: null }],
+    [{ fires: 1, verdicts: 0, last_verdict_ms: 'bad' }]])(
+    'rejects an incomplete aggregate instead of manufacturing a recovered window (%j)', async (rows) => {
+      const sql = vi.fn(async () => rows) as unknown as Parameters<typeof readVerdictRateWindow>[0];
+      await expect(readVerdictRateWindow(sql, { workspaceId: 'ws', installSlug: 'coverage' }))
+        .rejects.toThrow('measurement is incomplete');
+    },
+  );
   const fakeSqlReturning = (row: Record<string, unknown>) => {
     const fn = vi.fn(async () => [row]);
     return fn as unknown as Parameters<typeof readVerdictRateWindow>[0];

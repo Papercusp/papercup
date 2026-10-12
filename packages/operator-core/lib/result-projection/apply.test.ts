@@ -837,6 +837,32 @@ describe('applyResultProjection — array-root pick repair (EI-20720054720826414
     expect(footer).toContain('saved)');
   });
 
+  it('re-roots a keyed-array selector onto an array root when its row fields uniquely match', () => {
+    const source = [{ slug: 'papercusp', path: '/harness/papercusp', privateNoise: 'withheld' }];
+    const out = applyResultProjection(
+      textResult(JSON.stringify(source)),
+      spec({ pick: ['items[].slug', 'items[].path'] }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual([{ slug: 'papercusp', path: '/harness/papercusp' }]);
+    expect(footerOf(out)).toContain('items[].slug → [].slug');
+    expect(footerOf(out)).toContain('items[].path → [].path');
+    expect(footerOf(out)).toContain('array-root paths start at each row');
+  });
+
+  it('does not guess between a row field and a nested keyed-array field', () => {
+    const source = [{ slug: 'root', items: [{ slug: 'nested' }] }];
+    const out = applyResultProjection(
+      textResult(JSON.stringify(source)),
+      spec({ pick: ['items[].slug'] }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual(source);
+    expect(footerOf(out)).not.toContain('auto-adjusted');
+    expect(footerOf(out)).toContain('items[].slug → [].items[].slug | [].slug');
+    expect(footerOf(out)).toContain('more than one matches, so none was applied');
+  });
+
   it('a repaired selection is NOT degraded: the verdict stays a tail footer', () => {
     const out = applyResultProjection(textResult(ARRAY_BODY), spec({ pick: ['id'] }));
     const texts = textsOf(out);

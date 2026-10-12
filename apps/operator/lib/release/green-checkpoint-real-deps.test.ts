@@ -3519,6 +3519,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "module.exports = 'joined';\n",
     );
     writeFileSync(
+      join(integration, "node_modules", "fixture-dep", "package.json"),
+      JSON.stringify({ name: "fixture-dep", version: "1.0.0" }),
+    );
+    writeFileSync(
       join(integration, "package.json"),
       JSON.stringify({ name: "d081-joined-fixture", private: true }),
     );
@@ -3554,7 +3558,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       git("branch", "main", base);
       writeFileSync(
         join(integration, "package-lock.json"),
-        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/fixture-dep":{"version":"1.0.0"}}}\n',
       );
       writeFileSync(
         join(integration, "node_modules", "fixture-dep", "index.js"),
@@ -3573,6 +3577,14 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       });
       const lockDir = checkpointRunLockDir(logDir, integration);
       expect(existsSync(lockDir)).toBe(false);
+      // Check the real publisher's lock/tree contract before its expensive copy.
+      // A directory with only index.js is not an installed package: the audit
+      // requires package.json at the locked version.
+      const { auditTree } = await import("../../bin/release/dependency-lock-tree-audit.mjs");
+      const assertInstalledFixture = () => expect(auditTree({
+        treeRoot: integration, lockRoot: integration, lockfiles: ["package-lock.json"],
+      }).defects).toEqual([]);
+      assertInstalledFixture();
 
       // NEGATIVE: a live tree whose lockfiles drifted past the exact commit may
       // publish its OWN key, but it cannot conjure the candidate's selector and
@@ -3587,12 +3599,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       expect(existsSync(lockDir)).toBe(false);
       writeFileSync(
         join(integration, "package-lock.json"),
-        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/fixture-dep":{"version":"1.0.0"}}}\n',
       );
       writeFileSync(
         join(integration, "node_modules", "fixture-dep", "index.js"),
         "module.exports = 'joined-v3';\n",
       );
+      assertInstalledFixture();
 
       // NEGATIVE / ordering control: the publisher's real after-copy hook runs
       // while the selector is still unseen. If acquireCheckpointRunLock moves

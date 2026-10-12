@@ -706,8 +706,17 @@ export function pickRepairCandidates(body: unknown, path: string): string[] {
   };
 
   if (Array.isArray(body)) {
-    // The original array-root case: a bare key addresses an object root.
-    if (!path.startsWith('[')) push(`[].${path}`);
+    // An array root has no object-envelope prefix. Try preserving the caller's
+    // full path beneath each row, then also try stripping one keyed-array
+    // envelope borrowed from an object-root result (for example,
+    // `items[].slug` → `[].slug`). `proposePickRepairs` applies a rewrite only
+    // when exactly one candidate matches this body, so a real nested `items`
+    // path stays ambiguous if the row also has its own `slug`.
+    if (!path.startsWith('[')) {
+      push(`[].${path}`);
+      const tail = pickPathTail(path);
+      if (tail !== path) push(`[].${tail}`);
+    }
     return out.slice(0, MAX_REPAIR_CANDIDATES);
   }
   if (!isPlainObject(body)) return out;
@@ -1044,7 +1053,7 @@ export function applyResultProjection<T extends ProjectableResult>(
                 `${Array.isArray(json.parsed) ? 'array-root' : 'keyed-envelope'} body: ` +
                 [...repairs].map(([from, to]) => `${from} → ${to}`).join(', ') +
                 (Array.isArray(json.parsed)
-                  ? ` — a bare key addresses an object root; use \`[].key\` on an array. `
+                  ? ` — array-root paths start at each row; use \`[].key\` or \`[].nested.key\`. `
                   : ` — the projection ROOT differs per tool, so a path correct for one tool can ` +
                     `address a key this body does not use. `) +
                 `The adjusted selection is applied below.`,

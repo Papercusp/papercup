@@ -333,6 +333,35 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts factual current-build SHA attribution in a structured check claim', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpointWithPrior.mockImplementation(
+      async (_ref: unknown, stored: string | null | undefined) => ({ stored: stored ?? null, priorLength: 0 }),
+    );
+
+    const result = await one({
+      id: 'WI-7',
+      checks: [
+        {
+          claim: 'Target SHA a906a9a29b1abaf67ce94abccd7ed263e64886a3 is loaded in the staging-operator current build',
+          ok: false,
+          contested: 'Historical reproduction input; this unit test makes no current-runtime claim.',
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+  });
+
   it('allows descriptive frozen-candidate staleness comparisons against staging', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
@@ -526,7 +555,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
   it('teaches the single-item attestation exclusion in the published schema', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
-      properties?: { unchanged?: { description?: string } };
+      properties?: {
+        unchanged?: { description?: string; 'x-papercusp-call-constraint'?: string };
+      };
     };
     const guidance = json.properties?.unchanged?.description ?? '';
     for (const field of ['contentHash', 'checkpoint', 'did', 'left', 'insight', 'next', 'clear', 'append', 'checks', 'dependsOn']) {
@@ -534,6 +565,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     }
     expect(guidance).toContain('attestation_conflicting_args');
     expect(guidance).toContain('omit `unchanged` when writing a new body');
+
+    const constraint = json.properties?.unchanged?.['x-papercusp-call-constraint'] ?? '';
+    for (const token of [
+      '`contentHash` required',
+      '`checkpoint`',
+      '`clear:true`',
+      '`append:true`',
+      '`checks`',
+      '`retireIds`',
+      '`dependsOn`',
+      'attestation_conflicting_args',
+      '`confirmRetire` cannot authorize a row mutation',
+    ]) {
+      expect(constraint).toContain(token);
+    }
   });
 
   it('accepts a current read-only executable probe and refuses drift before persistence', () => {

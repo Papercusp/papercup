@@ -44,6 +44,8 @@
  *   - rate-limit — an EXTERNAL provider rate-limit / quota (OpenAI embed TPM
  *     429). Capacity, not a code bug → infra/owner, never the auto-implement lane.
  */
+import { createHash } from 'node:crypto';
+
 export type ToolErrorClass = 'structural' | 'transient' | 'caller' | 'rate-limit';
 
 /** The default class when no rule matches. */
@@ -364,14 +366,15 @@ export function toolErrorClassSqlCase<T>(sql: SqlTag<T>): T {
 }
 
 /**
- * Pure: the normalized error-shape FINGERPRINT — the first 6 alpha tokens of the
- * digit-stripped, punctuation-collapsed, lowercased message, joined with `-`.
- * Returns null when the message has no alpha content.
+ * Pure: an MD5 digest of the full normalized message skeleton (lowercased,
+ * digit-stripped, punctuation-collapsed). The former first-six-token key let
+ * repeated boilerplate prefixes hide distinct failures whose paths or causes
+ * appeared later in the message. Returns null when the message has no alpha content.
  *
  * MIRROR of `toolErrorFingerprintSqlCase`'s SQL expression — the two MUST agree
- * (proven row-by-row by the integration test). This TS form lets the key-
- * migration routine recompute a fingerprint from an EI's stored sample without
- * a round-trip to PG.
+ * (proven row-by-row by the integration test). PostgreSQL's built-in md5 keeps
+ * parity independent of optional extensions. This TS form lets the key-migration
+ * routine recompute a fingerprint from an EI's stored sample.
  */
 export function toolErrorFingerprint(message: string | null | undefined): string | null {
   const skeleton = (message ?? '')
@@ -380,8 +383,7 @@ export function toolErrorFingerprint(message: string | null | undefined): string
     .replace(/[^a-z]+/g, ' ')
     .trim();
   if (!skeleton) return null;
-  const fp = skeleton.split(' ').filter(Boolean).slice(0, 6).join('-');
-  return fp || null;
+  return `md5-${createHash('md5').update(skeleton, 'utf8').digest('hex')}`;
 }
 
 /**
@@ -395,9 +397,9 @@ export function toolErrorFingerprint(message: string | null | undefined): string
 export function toolErrorFingerprintSqlCase<T>(sql: SqlTag<T>): T {
   const classes = [...FINGERPRINTED_TOOL_ERROR_CLASSES];
   return sql`CASE WHEN class = ANY(${classes}::text[]) THEN
-    nullif(array_to_string((string_to_array(
-      trim(regexp_replace(regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'), '[^a-z]+', ' ', 'g')),
-    ' '))[1:6], '-'), '')
+    nullif('md5-' || md5(trim(regexp_replace(
+      regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'),
+      '[^a-z]+', ' ', 'g'))), 'md5-' || md5(''))
   ELSE NULL END`;
 }
 

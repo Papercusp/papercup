@@ -5034,6 +5034,30 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(new Set(store.occurrences.map((occurrence) => occurrence.canonicalId))).toEqual(new Set(['EI-S1']));
   });
 
+  it('keeps same-prefix lock failures separate while exact repeats still coalesce (EI-25714783883986261)', async () => {
+    const store = signatureStore();
+    const firstMessage = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
+    const secondMessage = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.';
+    const failure = (message: string) => ({
+      toolName: 'locks:acquire', errorCode: 'mcp_proxy_upstream_error', status: '502',
+      schemaRevision: '', fieldPath: '', runtimeVersion: '', message,
+    });
+
+    const first = await store.capture('su-a', '', failure(firstMessage));
+    const second = await store.capture('su-a', '', failure(secondMessage));
+    const repeatedFirst = await store.capture('su-a', '', failure(firstMessage));
+
+    expect(first).toMatchObject({ created: true });
+    expect(second).toMatchObject({ created: true });
+    expect(repeatedFirst).toMatchObject({ created: false, reason: 'coalesced', issue: { id: first?.issue?.id } });
+    expect(store.rows).toHaveLength(2);
+    expect(new Set(store.rows.map((row) => store.payloadOf(row).watchdogKey)).size).toBe(2);
+    expect(store.payloadOf(store.rows[0]).repeatCount).toBe(2);
+    expect(store.payloadOf(store.rows[1])).not.toHaveProperty('repeatCount');
+  });
+
   it('uses the exact message key when any class dimension is missing', async () => {
     const store = signatureStore();
     const firstMessage = 'invalid_args: first body value was rejected';

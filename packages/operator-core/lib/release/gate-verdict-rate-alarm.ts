@@ -83,6 +83,16 @@ export async function readVerdictRateWindow(
                AND kind = 'green_checkpoint'
                AND status = ANY(${VERDICT_BEARING_STATUSES as string[]})) AS last_verdict_ms`;
   const row = rows[0];
+  const countMeasured = (value: unknown): boolean =>
+    (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) &&
+    Number.isSafeInteger(Number(value)) && Number(value) >= 0;
+  if (!row || !countMeasured(row.fires) || !countMeasured(row.verdicts) ||
+      row.last_verdict_ms === undefined ||
+      (row.last_verdict_ms !== null && !countMeasured(row.last_verdict_ms))) {
+    // Aggregate SQL returns a complete row even for an empty population. Missing or
+    // malformed results are unknown measurements, never zero fires and recovery.
+    throw new Error('verdict-rate window measurement is incomplete');
+  }
   const n = (v: string | number | null | undefined): number => {
     const x = v == null ? NaN : Number(v);
     return Number.isFinite(x) ? x : 0;

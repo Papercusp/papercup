@@ -414,6 +414,24 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('returns and persists unknown host parity when the comparison inputs are unavailable', async () => {
+    const generation = {
+      deployedSha: 'release-sha',
+      hostStartedAt: null,
+      bootHeadSha: null,
+      scoutCodeHash: null,
+      staleHost: null,
+    };
+    readRunningGenerationM.mockResolvedValue(generation);
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(r).toMatchObject({ ok: true, created: true, gradedGeneration: generation, staleHost: null });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { gradedGeneration: generation } },
+    });
+  });
+
   it('surfaces the running generation on a successful emit', async () => {
     const generation = {
       deployedSha: 'current-sha',

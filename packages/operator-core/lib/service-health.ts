@@ -28,7 +28,14 @@ import {
   PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
   PG_READ_TXN_DEFAULT_TIMEOUT_MS,
 } from './pg-read-query';
-import { bm25Health, measureBm25Latency, type Bm25Health, type Bm25Latency } from './search/lexical/rank';
+import {
+  BM25_LATENCY_CANARY_QUERIES,
+  bm25Health,
+  measureBm25Latency,
+  percentileMs,
+  type Bm25Health,
+  type Bm25Latency,
+} from './search/lexical/rank';
 
 export interface EndpointSpec {
   name: string;
@@ -2372,14 +2379,22 @@ export function __resetBm25LatencyForTests(): void {
 /** Map a BM25 health verdict onto a probe result (pure, so the mapping is unit-tested). */
 export function evaluateBm25Health(health: Bm25Health, latencyMs: number): ProbeResult {
   const name = PORTLESS_PROBE_NAMES.bm25Lexical;
+  const latency = health.latency;
+  const p95CanaryIndex = latency && latency.samplesMs.length === BM25_LATENCY_CANARY_QUERIES.length
+    ? latency.samplesMs.indexOf(percentileMs(latency.samplesMs, 95))
+    : -1;
+  const p95Canary = p95CanaryIndex >= 0 ? BM25_LATENCY_CANARY_QUERIES[p95CanaryIndex] : undefined;
+  const p95Attribution = p95Canary && latency
+    ? ` (p95 canary ${JSON.stringify(p95Canary)}: ${latency.samplesMs[p95CanaryIndex]!.toFixed(1)}ms at ${new Date(latency.measuredAt).toISOString()})`
+    : '';
   if (health.status === 'off') {
     return { name, up: true, status: null, latencyMs, present: false, note: 'BM25_LEXICAL_RANKING is off: lexical search uses ts_rank by configuration' };
   }
   if (health.status === 'degraded') {
-    return { name, up: false, status: null, latencyMs, note: `BM25 degraded, lexical search is falling back to ts_rank: ${health.reason ?? 'unknown reason'}` };
+    return { name, up: false, status: null, latencyMs, note: `BM25 degraded, lexical search is falling back to ts_rank: ${health.reason ?? 'unknown reason'}${p95Attribution}` };
   }
-  const p95 = health.latency ? `, work-item p95 ${health.latency.p95Ms.toFixed(1)}ms of ${health.latency.budgetMs}ms` : '';
-  return { name, up: true, status: null, latencyMs, note: `BM25 ok: ${health.presentIndexes.length} index(es) present${p95}` };
+  const p95 = latency ? `, work-item p95 ${latency.p95Ms.toFixed(1)}ms of ${latency.budgetMs}ms` : '';
+  return { name, up: true, status: null, latencyMs, note: `BM25 ok: ${health.presentIndexes.length} index(es) present${p95}${p95Attribution}` };
 }
 
 /**

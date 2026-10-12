@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
+import { _resetForTests } from '@papercusp/db-org';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
+import { flushFallbackObservations } from '../degradation/fallback-observations';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
@@ -27,6 +29,10 @@ describe('registered subject evidence with the real local scorer', () => {
     // shared-sidecar URLs and caller-selected profiles retain their settings.
     if (process.env.PAPERCUSP_EMBED_SIDECAR === '1' &&
         !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
+      // This test changes the product DB URL so its spawned sidecar cannot
+      // escape into the live/native database. Retire any process-wide pools
+      // created during module setup before changing that target.
+      await _resetForTests();
       // No explicit URL does not imply a private scorer: the spawner otherwise
       // adopts a sibling from the tenant's home or its inherited fixed port.
       // Reuse its maintained tenant boundary so this run executes source code.
@@ -56,18 +62,30 @@ describe('registered subject evidence with the real local scorer', () => {
         await stopEmbedSidecar();
       } finally {
         try {
-          await privateDb?.drop();
+          // Fallback observations are deferred on a timer. Flush them while
+          // their private DB still exists, then clear its pools before restoring
+          // the process environment so no later flush rebinds or targets a
+          // dropped test database.
+          await flushFallbackObservations();
         } finally {
-          for (const [key, value] of savedDatabaseEnv) {
-            if (value === undefined) delete process.env[key];
-            else process.env[key] = value;
+          try {
+            await _resetForTests();
+          } finally {
+            try {
+              await privateDb?.drop();
+            } finally {
+              for (const [key, value] of savedDatabaseEnv) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+              }
+              if (savedHome === undefined) delete process.env.PAPERCUSP_HOME;
+              else process.env.PAPERCUSP_HOME = savedHome;
+              if (savedPort === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+              else process.env.PAPERCUSP_EMBED_SIDECAR_PORT = savedPort;
+              if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
+              rmSync(privateHome, { recursive: true, force: true });
+            }
           }
-          if (savedHome === undefined) delete process.env.PAPERCUSP_HOME;
-          else process.env.PAPERCUSP_HOME = savedHome;
-          if (savedPort === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
-          else process.env.PAPERCUSP_EMBED_SIDECAR_PORT = savedPort;
-          if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
-          rmSync(privateHome, { recursive: true, force: true });
         }
       }
     }

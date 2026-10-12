@@ -786,11 +786,12 @@ describe('classifier rule table integrity', () => {
 });
 
 describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
-  it('takes the first 6 alpha tokens, digit-stripped + punctuation-collapsed, joined with -', () => {
+  it('hashes the full digit-stripped, punctuation-collapsed message skeleton', () => {
+    const fingerprint = toolErrorFingerprint('invalid_args: note: Too big: expected string to have <=400 characters');
+    expect(fingerprint).toMatch(/^md5-[a-f0-9]{32}$/);
+    expect(toolErrorFingerprint('column "initiative" does not exist')).toMatch(/^md5-[a-f0-9]{32}$/);
     expect(toolErrorFingerprint('invalid_args: note: Too big: expected string to have <=400 characters'))
-      .toBe('invalid-args-note-too-big-expected');
-    expect(toolErrorFingerprint('column "initiative" does not exist'))
-      .toBe('column-initiative-does-not-exist');
+      .toBe(fingerprint);
   });
 
   it('returns null when the message has no alpha content', () => {
@@ -805,6 +806,21 @@ describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
     expect(a).not.toBe(b);
     // …and the keys they produce differ, so they stop masking each other:
     expect(toolErrorSignalKey('plans:new', 'caller', a)).not.toBe(toolErrorSignalKey('plans:new', 'caller', b));
+  });
+
+  it('separates failures with a shared first-six-token boilerplate prefix (EI-25714783883986261)', () => {
+    const first = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
+    const second = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.';
+    const oldPrefix = (message: string) => message.toLowerCase()
+      .replace(/[0-9]+/g, '').replace(/[^a-z]+/g, ' ').trim().split(' ').slice(0, 6).join('-');
+
+    expect(oldPrefix(first)).toBe('p-cargo-ci-binding-test-file');
+    expect(oldPrefix(second)).toBe(oldPrefix(first));
+    expect(toolErrorFingerprint(first)).not.toBe(toolErrorFingerprint(second));
+    expect(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(first)))
+      .not.toBe(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(second)));
   });
 });
 

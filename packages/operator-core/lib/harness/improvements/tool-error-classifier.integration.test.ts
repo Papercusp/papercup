@@ -118,6 +118,26 @@ describe('generated SQL fingerprint ↔ toolErrorFingerprint parity (P-012)', ()
     expect(disagreements).toEqual([]);
   });
 
+  it('keeps distinct lock failures with a shared boilerplate prefix on separate keys', async () => {
+    const sql = db.adminSql;
+    const messages = [
+      'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+        'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.',
+      'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+        'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.',
+    ];
+    const rows = await sql<{ ord: number; fingerprint: string | null }[]>`
+      SELECT input.ord, ${toolErrorFingerprintSqlCase(sql)} AS fingerprint
+        FROM (VALUES
+          (1, 'transient'::text, ${messages[0]}::text),
+          (2, 'transient'::text, ${messages[1]}::text)
+        ) AS input(ord, class, error_message)
+       ORDER BY input.ord`;
+
+    expect(rows.map((row) => row.fingerprint)).toEqual(messages.map(toolErrorFingerprint));
+    expect(rows[0]?.fingerprint).not.toBe(rows[1]?.fingerprint);
+  });
+
   it('rate-limit rows are NEVER fingerprinted in SQL (kept coarse)', async () => {
     const sql = db.adminSql;
     const rows = await sql<{ fingerprint: string | null }[]>`
@@ -161,10 +181,10 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     expect(Array.isArray(signals)).toBe(true);
     const keys = signals.map((s) => s.key);
     // the two caller modes split into distinct fingerprinted keys (P-012)…
-    expect(keys).toContain('plans:new:caller:invalid-args-note-too-big-expected');
-    expect(keys).toContain('plans:new:caller:invalid-args-status-invalid-option-expected');
-    expect(keys).toContain('tools:invoke:caller:invalid-input-invalid-args-unrecognized-key');
-    expect(keys).toContain('tools:invoke:caller:role-not-allowed-role-judge-cannot');
+    const expectedFingerprintedKeys = seed.slice(0, 4).map((sample) =>
+      `${sample.tool}:${classifyToolError(sample.code, sample.status, sample.msg)}:${toolErrorFingerprint(sample.msg)}`);
+    for (const expected of expectedFingerprintedKeys) expect(keys).toContain(expected);
+    expect(new Set(expectedFingerprintedKeys).size).toBe(4);
     // …and the timeout is a fingerprinted transient key.
     expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
   });

@@ -49,6 +49,28 @@ describe('evaluateBm25Health', () => {
     expect(r.up).toBe(true);
     expect(r.note).toContain('2 index(es)');
     expect(r.note).toContain('p95 12.3ms');
+    expect(r.note).not.toContain('p95 canary');
+  });
+
+  it('attributes a degraded p95 to its fixed canary and measurement time', () => {
+    const samplesMs = [4, 1, 7, 2, 11, 3, 9, 6];
+    const measuredAt = 1_000_000;
+    const measured: Bm25Latency = {
+      corpusIndex: 'work_items_bm25',
+      samplesMs,
+      p50Ms: percentileMs(samplesMs, 50),
+      p95Ms: percentileMs(samplesMs, 95),
+      budgetMs: BM25_P95_BUDGET_MS,
+      measuredAt,
+    };
+    const r = evaluateBm25Health(health({
+      status: 'degraded',
+      reason: 'work-item p95 exceeds budget',
+      latency: measured,
+    }), 3);
+
+    expect(r.up).toBe(false);
+    expect(r.note).toContain('p95 canary "migration index": 11.0ms at 1970-01-01T00:16:40.000Z');
   });
 });
 

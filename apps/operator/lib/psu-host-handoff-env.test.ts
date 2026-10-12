@@ -14,9 +14,51 @@ import {
   nativeDeferralReachable,
   terminalRenderEnv,
   applyLauncherOperatorUrlEnv,
+  applyHostHandoffEnv,
   resolveOperatorTarget,
 } from '../scripts/psu-launcher.mjs';
-import { HOST_HANDOFF_ENV_KEYS, shutdownRefusalReason } from '../scripts/psu-pty-host.mjs';
+import {
+  HOST_HANDOFF_ENV_KEYS,
+  publishKickoffProofReceipt,
+  shutdownRefusalReason,
+  unreportedKickoffRefusalStrandsHost,
+} from '../scripts/psu-pty-host.mjs';
+
+describe('host adoption receipt custody (EI-25733617164988734)', () => {
+  it.each([false, true])('retires the original receipt even when carried by old handoff code (%s)', (carried) => {
+    const receipt = {
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/expired-original-launch/receipt.json',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'a'.repeat(48),
+    };
+    const env: Record<string, string> = { ...receipt, PAPERCUSP_SID: 'su-original' };
+    applyHostHandoffEnv(env, {
+      ...(carried ? receipt : {}),
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_ACCOUNT_ID: 'original-account',
+      PAPERCUSP_MODEL: 'original-model',
+      CODEX_HOME: '/original/isolated-home',
+    });
+    expect(env).toEqual({
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_ACCOUNT_ID: 'original-account',
+      PAPERCUSP_MODEL: 'original-model',
+      CODEX_HOME: '/original/isolated-home',
+    });
+    const refusal = publishKickoffProofReceipt({ persisted: false, reason: 'quota-blocked' }, env);
+    expect(refusal).toEqual({ published: false, reason: 'kickoff-proof-request-missing' });
+    expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: refusal })).toBe(false);
+  });
+
+  it('keeps a fresh launch receipt active until an adoption actually consumes the session', () => {
+    const fresh = {
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/expired-original-launch/receipt.json',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'a'.repeat(48),
+    };
+    const refusal = publishKickoffProofReceipt({ persisted: false, reason: 'quota-blocked' }, fresh);
+    expect(refusal.reason).toBe('kickoff-proof-receipt-publish-failed');
+    expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: refusal })).toBe(true);
+  });
+});
 
 describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
   const carryEnv = (env: Record<string, string>) => Object.fromEntries(

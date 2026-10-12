@@ -85,6 +85,8 @@ import {
   fleetOscFromEnv,
   findLiveHostFor,
   hostIdleMs,
+  KICKOFF_PROOF_PATH_ENV,
+  KICKOFF_PROOF_TOKEN_ENV,
   readHostHandoff,
   readHostHandoffForParentPid,
   reexecExitCodeFrom,
@@ -11285,6 +11287,15 @@ export function handoffFirstTurnText(handoff) {
   return typeof text === "string" && text.length > 0 ? text : null;
 }
 
+/** Restore session configuration without inheriting the initial launch's receipt.
+ * Its placeholder/token belong to that caller operation, which has already
+ * settled and may have been collected before a later host-code adoption. */
+export function applyHostHandoffEnv(env, childEnv = {}) {
+  for (const [key, value] of Object.entries(childEnv ?? {})) env[key] = value;
+  delete env[KICKOFF_PROOF_PATH_ENV];
+  delete env[KICKOFF_PROOF_TOKEN_ENV];
+}
+
 /**
  * Keep carry adoption explicit even when Codex has not assigned its native id
  * yet. The successor pty host resolves that late id from exact kickoff proof.
@@ -12417,7 +12428,7 @@ export function runWrapper(options) {
     // worse, drop the rotated --session-id and the --append-system-prompt-file
     // that IS the carry.
     args = hostHandoff.args;
-    for (const [k, v] of Object.entries(hostHandoff.childEnv ?? {})) env[k] = v;
+    applyHostHandoffEnv(env, hostHandoff.childEnv);
     // WI-2140943 lane 2 (2026-09-02): the handoff was written by the code the predecessor
     // has IN MEMORY — the old code, by definition — so never trust it to have carried every
     // key the fresh path sets. Re-derive the context-trimming trio where absent (an
