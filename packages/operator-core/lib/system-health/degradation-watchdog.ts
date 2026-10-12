@@ -169,6 +169,14 @@ registerDegradationMechanism({
   description: 'Improvement-watchdog lock, history and key-dedup reads that completed their primary operation rather than sweeping unlocked or using no-history/title-only defaults.',
 });
 registerDegradationMechanism({
+  mechanism: 'agent-launch-readiness', scopeKeyed: true,
+  description: 'Eligible role launches whose resolved working directory exists rather than selecting a workspace-directory fallback.',
+});
+registerDegradationMechanism({
+  mechanism: 'voice-spend-read',
+  description: 'Uncached voice spend requests with configured ElevenLabs credentials whose API read completed rather than falling back to local usage.',
+});
+registerDegradationMechanism({
   mechanism: 'workspace-routing-read', scopeKeyed: true,
   description: 'Workspace route, placement, recipient and issue-partition decisions that measured their primary inventory, presence files, recipient set or flag rather than selecting a fallback after a read failure.',
 });
