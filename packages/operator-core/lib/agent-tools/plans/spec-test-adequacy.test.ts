@@ -77,6 +77,26 @@ describe('shared adequacy-card binding evidence', () => {
       expect(draft.ratings[criterion].rating).toBe(result.ratings[criterion].rating);
     }
   });
+
+  it('identifies every binding when traceability evidence is capped', () => {
+    const rows = Array.from({ length: 7 }, (_, index) => evidence({
+      id: 301 + index,
+      evidenceRef: `surface:traceability-binding-${index}`,
+      testRunId: 301 + index,
+    }));
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: rows,
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.scorecardDraft.ratings.traceability.evidence).toContain(
+      '7 distinct immutable proof record(s)',
+    );
+    for (const row of rows) {
+      expect(result.scorecardDraft.ratings.traceability.evidence).toContain(`id=${row.id}`);
+    }
+  });
 });
 
 describe('supersession of measured passing case scopes', () => {
@@ -1487,6 +1507,91 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(unavailable.ratings['execution-integrity'].evidence).toContain(
       'execution_details, so canonical status, counts, and case identities cannot be verified',
     );
+  });
+
+  it('names the measured execution failure and recommends the matching repair', () => {
+    const skippedAndDirty = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        id: 18250,
+        evidenceKind: 'test',
+        testRunId: 20369821,
+        coverageEvidenceRef: null,
+        testRunExecution: {
+          status: 'pass',
+          passed: 1,
+          failed: 0,
+          skipped: 67,
+          collectionFailed: false,
+          testLayer: 'integration',
+          passedCaseTitles: [],
+        },
+        testRunProvenance: {
+          filePath: 'packages/operator-core/lib/harness/improvements/digest.test.ts',
+          commitSha: '22a41ff6e9',
+          worktreeDirty: true,
+        },
+        details: {
+          adequacy: {
+            collected: true,
+            skipped: false,
+            executed: true,
+            outcome: 'passed',
+          },
+        },
+      })],
+      classRef: 'plan-class-feature-ship',
+    });
+    const skippedRating = skippedAndDirty.ratings['execution-integrity'];
+    expect(skippedRating.rating).toBe('fail');
+    expect(skippedRating.evidence).toContain('binding 18250 / run 20369821');
+    expect(skippedRating.evidence).toContain('predicate=skipped>0 without complete measured case scope');
+    expect(skippedRating.evidence).toContain('skipped=67');
+    expect(skippedRating.evidence).toContain('passedCaseTitleCount=0');
+    expect(skippedRating.evidence).toContain('worktreeDirty=true');
+    expect(skippedRating.suggestion).toContain('remove -t');
+    expect(skippedRating.suggestion).toContain('clean worktree');
+    expect(skippedRating.suggestion).not.toContain('Ledger row required');
+
+    const collectionFailed = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceKind: 'test',
+        testRunId: 20369822,
+        coverageEvidenceRef: null,
+        testRunExecution: {
+          status: 'pass',
+          passed: 1,
+          failed: 0,
+          skipped: 0,
+          collectionFailed: true,
+          testLayer: 'integration',
+        },
+      })],
+      classRef: 'plan-class-feature-ship',
+    }).ratings['execution-integrity'];
+    expect(collectionFailed.suggestion).toContain('Fix test collection errors');
+    expect(collectionFailed.suggestion).not.toContain('Ledger row required');
+
+    const failedCase = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceKind: 'test',
+        testRunId: 20369823,
+        coverageEvidenceRef: null,
+        testRunExecution: {
+          status: 'fail',
+          passed: 0,
+          failed: 1,
+          skipped: 0,
+          collectionFailed: false,
+          testLayer: 'integration',
+        },
+      })],
+      classRef: 'plan-class-feature-ship',
+    }).ratings['execution-integrity'];
+    expect(failedCase.suggestion).toContain('Fix the failing test case(s)');
+    expect(failedCase.suggestion).not.toContain('Ledger row required');
   });
 
   it('uses canonical test-run status and counts instead of binder execution claims', () => {

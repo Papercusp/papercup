@@ -40,6 +40,28 @@ describe('disposable operator-api monitoring sources', () => {
       'paused-routine', 'measure-private-gate', 'sidecar-listen']) {
       expect(result.stdout).toContain('operator-api stage ' + stage + ' +');
     }
+    const timings = result.stdout.split('\n').filter(line => line.includes('operator-api stage ') && line.includes(' timing='))
+      .map(line => JSON.parse(line.slice(line.indexOf(' timing=') + ' timing='.length)));
+    expect(timings.length, 'The real child must retain emission and receive clocks').toBeGreaterThan(0);
+    for (const timing of timings) {
+      expect(timing.childPid).toBeGreaterThan(0);
+      expect(timing.childElapsedMs).toBeGreaterThanOrEqual(0);
+      expect(timing.childEventLoopDelayMaxMs).toBeGreaterThanOrEqual(0);
+      expect(timing.parentLoopLateMaxMs).toBeGreaterThanOrEqual(0);
+      expect(timing.deliveryDelayMs).toBeCloseTo(timing.parentReceivedAtMs - timing.childEmittedAtMs, 2);
+      expect(timing.profileSourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+    expect(new Set(timings.map(timing => timing.childPid)).size).toBe(1);
+    expect(new Set(timings.map(timing => timing.profileSourceSha256)).size).toBe(1);
+    for (const stage of ['harness-registry', 'embed-sidecar', 'db-org', 'device-monitoring',
+      'pipeline-health', 'why-chain', 'git-pipeline-stats']) {
+      const started = timings.find(timing => timing.stage === 'imports:' + stage && timing.phase === 'start' && !timing.heartbeat);
+      const finished = timings.find(timing => timing.stage === 'imports:' + stage && timing.phase === 'ready' && !timing.heartbeat);
+      expect(started, 'Missing actual import start: ' + stage).toBeDefined();
+      expect(finished, 'Missing actual import completion: ' + stage).toBeDefined();
+      expect(finished.operationDurationMs).toBeGreaterThanOrEqual(0);
+      expect(Math.abs(finished.operationDurationMs - (finished.childElapsedMs - started.childElapsedMs))).toBeLessThan(5);
+    }
     for (const source of ['routines', 'conflicts', 'day', 'week', 'recent',
       'deploy', 'fire-history', 'config-import', 'config-ready']) {
       expect(result.stdout).toContain('measure-private-gate:' + source + ':start');

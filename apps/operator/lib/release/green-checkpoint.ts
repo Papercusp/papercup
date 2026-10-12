@@ -2163,9 +2163,13 @@ export function buildTerminalFailureCheckpointResult(opts: {
   // root fs under git-sync's reserve). Both refuse BEFORE any test runs, so no code verdict was
   // rendered. Classify on the writer's exit-code contract (shared with the fix precheck), not prose.
   const depGenExit = /dependency-generation\.sh exited (\d+)/.exec(detail)?.[1];
-  const depGenInfra = depGenExit
-    ? dependencyGenerationInfraCode(Number(depGenExit), detail)
-    : null;
+  // The real command includes argv between the script path and `exited`, and a
+  // wrapper may remap its exit. The shared classifier also recognizes the
+  // publisher's typed marker, so do not gate that evidence on the short form.
+  const depGenInfra = dependencyGenerationInfraCode(
+    depGenExit ? Number(depGenExit) : null,
+    detail,
+  );
   if (depGenInfra === "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT") {
     return {
       advanced: false,

@@ -737,6 +737,27 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
 });
 
 describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes or code reds', () => {
+  it.each([
+    [77, 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'disk-headroom'],
+    [76, 'DEPENDENCY_GENERATION_LOCK_TIMEOUT', 'infra-inconclusive'],
+  ])('preserves the typed infra refusal through the real argument-bearing command (exit %s)', (exitCode, marker, reason) => {
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'node /repo/scripts/npm-install-safe.mjs --repo-root /repo/app --exec-under-lock -- ' +
+          'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo/app ' +
+          `--ensure-ref b3e519a1bfce --retain-as checkpoint-candidate exited ${exitCode}: ` +
+          `[dependency-generation] ${marker} avail=1 need=2`,
+      ),
+      runId: 'run-with-argv',
+    });
+
+    expect(result.reason).toBe(reason);
+    expect(result.green).toBeNull();
+    expect(result.crashed).toBeUndefined();
+    expect(result.summary).toContain('NO code verdict');
+  });
+
   it('exit 77 (headroom) is disk-headroom and exit 76 (lock timeout) is infra-inconclusive', () => {
     const headroom = buildTerminalFailureCheckpointResult({
       candidate: 'b3e519a1bfce',
