@@ -17,6 +17,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/request-compaction.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// This suite stubs PG for the compaction boundaries. Keep background fallback
+// telemetry at its own seam so its batched writer cannot use that partial stub.
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import { z } from 'zod';
 import { addressContinuationToOwner, truncateHint } from './request-compaction';
 /**
@@ -820,108 +823,42 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(detectRespawnStorm).not.toHaveBeenCalled();
   });
 
-  it('an active warm loop without a host prepares carry but refuses to promise a respawn', async () => {
+  it.each([
+    ['empty compaction request', {}],
+    ['focused compaction request', { focus: 'continue the fleet lane' }],
+    ['automatic continuation request', { autoContinue: true }],
+    ['explicit respawn request', { respawn: true, continueNote: 'resume the held lane' }],
+  ])('%s without a host preserves the active warm route', async (_label, args) => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
       active: true,
       carry: 'warm',
       harnessSlug: 'papercusp',
+      goal: 'Preserve the original WARM route and qualified admission HOLD',
     });
-    readActiveLoopFacts.mockResolvedValue({
-      active: true,
-      intervalSec: 135,
-      harnessSlug: 'papercusp',
-      goal: 'drain the active lane',
-      kickoff: 'CUSTOM KICKOFF — preserve this exact text',
-      customWakePrompt: true,
-      fireCount: 7,
-      carry: 'warm',
-      continuation: 'gated',
-      mode: 'monitor',
-      monitor: { authority: { kind: 'owner-turn' } },
-      armedAt: '2026-08-27T05:00:00.000Z',
-    });
-    const seeded = '## Did\nPrepared this active warm loop for a no-PTY deterministic compaction boundary.';
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: `${seeded}\n\n## Left\ncontinue the fleet lane`, priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockImplementation(async () => ({
-      note: setLoopCarryNoteWithPrior.mock.results[0]?.value
-        ? (await setLoopCarryNoteWithPrior.mock.results[0].value).stored
-        : null,
+    getLoopCarryNoteWithMeta.mockResolvedValue({
+      note: 'Existing source-custody checkpoint',
       updatedAtMs: Date.now(),
-    }));
+    });
 
-    const out = await call({ focus: 'continue the fleet lane' });
-    const b = body(out);
+    const out = await call(args);
 
     expect(out.isError).toBe(true);
-    expect(b).toMatchObject({
+    expect(body(out)).toMatchObject({
       ok: false,
       requested: false,
       respawn: false,
       error: 'no_live_pty_host',
-      carry: 'cold',
-      retuned: true,
-      carryNote: { verified: true },
-      loop: {
-        harness: 'papercusp',
-        intervalSec: 135,
-        goal: 'drain the active lane',
-        mode: 'monitor',
-        customWakePrompt: true,
-      },
+      carry: 'warm',
+      retuned: false,
     });
-    expect(b.note).toContain('This is preparation only, not a respawn');
-    expect(b.note).not.toContain('End this turn');
-    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledWith(
-      { harness: 'papercusp', ownerId: 'su-caller', workspaceId: undefined },
-      expect.stringContaining('continue the fleet lane'),
-      expect.objectContaining({ transform: expect.any(Function) }),
-    );
-    expect(materializeLoop).toHaveBeenCalledWith(
-      expect.objectContaining({
-        harnessSlug: 'papercusp',
-        ownerId: 'su-caller',
-        intervalSec: 135,
-        kickoff: 'CUSTOM KICKOFF — preserve this exact text',
-        customWakePrompt: true,
-        goal: 'drain the active lane',
-        carry: 'cold',
-        continuation: 'gated',
-        mode: 'monitor',
-        monitor: { authority: { kind: 'owner-turn' } },
-      }),
-    );
+    expect(body(out).note).toContain('keeps its warm carry policy');
+    expect(body(out).note).not.toContain('End this turn');
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
     expect(injectIntoHost).not.toHaveBeenCalled();
     expect(detectRespawnStorm).not.toHaveBeenCalled();
-  });
-
-  it('does not retune when the seed cannot be verified through the cold-wake reader', async () => {
-    findLiveHost.mockReturnValue(null);
-    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'seeded note', priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockResolvedValue({ note: null, updatedAtMs: null });
-
-    const out = await call({ focus: 'continue the fleet lane' });
-
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'verify-carry' });
-    expect(materializeLoop).not.toHaveBeenCalled();
-    expect(injectIntoHost).not.toHaveBeenCalled();
-  });
-
-  it('leaves the loop warm when the verified seed is followed by a failed retune', async () => {
-    findLiveHost.mockReturnValue(null);
-    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'verified seed', priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockResolvedValue({ note: 'verified seed', updatedAtMs: Date.now() });
-    materializeLoop.mockRejectedValue(new Error('database unavailable'));
-
-    const out = await call({ focus: 'continue the fleet lane' });
-
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'retune-loop' });
-    expect(body(out).note).toContain('loop remains warm');
-    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('no focus → the carry-brief/default preserve-set focus still yields a non-empty first prompt', async () => {
