@@ -27,6 +27,8 @@ import type {
 import { z } from 'zod';
 import { pairedRepositoryPowerPlan } from '@papercusp/bench-metrics';
 import { canonicalJson } from './canonical-json';
+// Value import; capability-ablations.ts imports this module for types only, so there is no runtime cycle.
+import { requireRunnableAblation } from '../capability-ablations';
 
 const pin = z.string().trim().min(1);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -38,6 +40,122 @@ const generationCap = z.object({
   maxTokens: z.number().int().positive().optional(),
   maxWallClockMs: z.number().int().positive(),
 }).strict();
+
+/**
+ * The product capabilities a controlled comparison can switch individually
+ * (modernization P-004; FrontierSWE v2 P-011 / D-018 defines the six shipped
+ * since June, plus planning and review). Each controlled arm states every one
+ * explicitly: an omitted capability would be an unmeasured confound.
+ */
+export const BENCHMARK_CAPABILITIES = [
+  'memory-recall', 'carry-respawn', 'fleet-leader', 'locks',
+  'consult-router', 'work-item-ledger', 'planning', 'review',
+] as const;
+export type BenchmarkCapability = typeof BENCHMARK_CAPABILITIES[number];
+const capabilityToggle = z.enum(['on', 'off']);
+const capabilityToggles = z.object(Object.fromEntries(
+  BENCHMARK_CAPABILITIES.map(capability => [capability, capabilityToggle]),
+) as Record<BenchmarkCapability, typeof capabilityToggle>).strict();
+
+/** stock-native-reference = the unmodified agent CLI; the others hold the solver fixed and vary coordination. */
+export const ARM_TOPOLOGIES = ['stock-native-reference', 'solo', 'independent', 'coordinated', 'ensemble'] as const;
+export type ArmTopology = typeof ARM_TOPOLOGIES[number];
+
+const armControl = z.object({
+  topology: z.enum(ARM_TOPOLOGIES),
+  /** Arms in one group are compared as the SAME solver: their frozen solver settings must be identical. */
+  solverGroup: pin,
+  /** Digest of the solver's own tool surface, excluding coordination tools a topology adds. */
+  solverToolsHash: digest,
+  capabilities: capabilityToggles,
+  /** A single-capability ablation: identical to `of` except `treatment` is switched off. */
+  ablation: z.object({ of: pin, treatment: z.enum(BENCHMARK_CAPABILITIES) }).strict().optional(),
+  ensemble: z.object({
+    candidates: z.number().int().min(2),
+    isolation: z.literal('independent'),
+    selector: z.object({
+      id: pin,
+      kind: z.enum(['judge-agent', 'visible-test-verifier']),
+      /** Selector spend counts against the arm's own cap. */
+      charged: z.literal(true),
+      onUnavailable: z.literal('first-candidate'),
+    }).strict(),
+  }).strict().optional(),
+}).strict();
+export type ArmControl = z.infer<typeof armControl>;
+
+type ProtocolArm = {
+  id: string; agent: string; model: string; effort: string; account: string;
+  generationBudget: unknown;
+  runtime: { sourceRevision: string; runtimeRevision: string; clientVersion: string; promptHashMode?: string };
+  control?: ArmControl;
+};
+
+/**
+ * The settings that define "the same solver". Prompt and full tool hashes are
+ * deliberately excluded: topologies legitimately add coordination prompts and
+ * tools, and `solverToolsHash` pins the solver's own tool surface instead.
+ */
+function frozenSolverSettings(arm: ProtocolArm) {
+  return canonicalJson({
+    agent: arm.agent, model: arm.model, effort: arm.effort, account: arm.account,
+    generationBudget: arm.generationBudget,
+    sourceRevision: arm.runtime.sourceRevision, runtimeRevision: arm.runtime.runtimeRevision,
+    clientVersion: arm.runtime.clientVersion, promptHashMode: arm.runtime.promptHashMode ?? 'exact-request-v1',
+    solverToolsHash: arm.control?.solverToolsHash,
+  });
+}
+
+/** Every issue that makes a set of controlled arms an unfair or misattributed comparison. */
+function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (string | number)[]; message: string }> {
+  const issues: Array<{ path: (string | number)[]; message: string }> = [];
+  const controlled = arms.filter(arm => arm.control);
+  if (controlled.length === 0) return issues;
+  if (controlled.length !== arms.length) {
+    issues.push({ path: ['arms'], message: 'Either every arm declares a control block or none does.' });
+    return issues;
+  }
+  const byId = new Map(arms.map(arm => [arm.id, arm]));
+  const groupSettings = new Map<string, string>();
+  arms.forEach((arm, index) => {
+    const control = arm.control!;
+    const path = ['arms', index, 'control'];
+    const settings = frozenSolverSettings(arm);
+    const peer = groupSettings.get(control.solverGroup);
+    if (peer === undefined) groupSettings.set(control.solverGroup, settings);
+    else if (peer !== settings) {
+      issues.push({ path, message: `Arms in solver group ${control.solverGroup} must freeze identical solver settings.` });
+    }
+    if ((control.topology === 'ensemble') !== (control.ensemble !== undefined)) {
+      issues.push({ path, message: 'An ensemble block is required exactly when the topology is ensemble.' });
+    }
+    if (control.topology === 'stock-native-reference') {
+      if (Object.values(control.capabilities).some(toggle => toggle !== 'off')) {
+        issues.push({ path, message: 'The stock-native reference runs with every product capability off.' });
+      }
+      if (control.ablation) issues.push({ path, message: 'The stock-native reference is not an ablation.' });
+    }
+    if (!control.ablation) return;
+    const base = byId.get(control.ablation.of);
+    if (!base || base === arm) {
+      issues.push({ path, message: 'An ablation must name another declared arm as its control.' });
+      return;
+    }
+    const baseControl = base.control!;
+    if (baseControl.ablation) issues.push({ path, message: 'An ablation must be paired with a full control, not another ablation.' });
+    if (baseControl.solverGroup !== control.solverGroup || baseControl.topology !== control.topology ||
+        canonicalJson(baseControl.ensemble ?? null) !== canonicalJson(control.ensemble ?? null)) {
+      issues.push({ path, message: 'An ablation must keep its control arm\'s solver group, topology and ensemble.' });
+    }
+    const differing = BENCHMARK_CAPABILITIES.filter(key => baseControl.capabilities[key] !== control.capabilities[key]);
+    const treatment = control.ablation.treatment;
+    if (differing.length !== 1 || differing[0] !== treatment ||
+        baseControl.capabilities[treatment] !== 'on' || control.capabilities[treatment] !== 'off') {
+      issues.push({ path, message: `An ablation must switch off exactly ${treatment} relative to its control.` });
+    }
+  });
+  return issues;
+}
 
 /** Current runs extend the existing prereg config; historical configs retain their original schema. */
 export const currentBenchmarkProtocolSchema = z.object({
@@ -57,6 +175,8 @@ export const currentBenchmarkProtocolSchema = z.object({
       // retain a separate full request hash and verified resource-path binding.
       promptHashMode: z.enum(['exact-request-v1', 'codex-native-template-v1']).optional(),
     }).strict(),
+    // Omission preserves uncontrolled protocols; when present on any arm it is required on all.
+    control: armControl.optional(),
   }).strict()).min(2),
   aggregateBudgetUsd: z.number().finite().positive(),
   maxInFlightUsd: z.number().finite().positive(),
@@ -106,6 +226,7 @@ export const currentBenchmarkProtocolSchema = z.object({
   if (!distinct(protocol.arms.map(arm => arm.id))) issue(['arms'], 'Arm ids must be unique.');
   const cap = canonicalJson(protocol.arms[0].generationBudget);
   if (protocol.arms.some(arm => canonicalJson(arm.generationBudget) !== cap)) issue(['arms'], 'Matched arms require equal generation caps.');
+  for (const { path, message } of armControlIssues(protocol.arms)) issue(path, message);
   if (protocol.maxInFlightUsd > protocol.aggregateBudgetUsd) issue(['maxInFlightUsd'], 'In-flight exposure cannot exceed the aggregate cap.');
   const modelRates = protocol.priceSchedule.rates.map(rate => rate.model);
   if (!distinct(modelRates) || protocol.arms.some(arm => !modelRates.includes(arm.model))) issue(['priceSchedule'], 'Every arm model needs one frozen price rate.');
@@ -182,11 +303,35 @@ export function currentProtocolPriceTable(protocol: CurrentBenchmarkProtocol,
   };
 }
 
+/**
+ * Refuse a solo / independent / coordinated / ensemble comparison whose arms
+ * are not the same frozen solver. Returns the shared solver group.
+ */
+export function requireSameSolverComparison(protocol: CurrentBenchmarkProtocol, armIds: ReadonlyArray<string>): string {
+  if (armIds.length < 2) throw new Error('A same-solver comparison needs at least two arms.');
+  const arms = armIds.map(id => {
+    const arm = protocol.arms.find(candidate => candidate.id === id);
+    if (!arm) throw new Error(`Comparison arm ${id} is not in the frozen protocol.`);
+    if (!arm.control) throw new Error(`Comparison arm ${id} declares no control block.`);
+    return arm;
+  });
+  const group = arms[0].control!.solverGroup;
+  if (arms.some(arm => arm.control!.solverGroup !== group)) {
+    throw new Error('Same-solver comparison arms must share one solver group.');
+  }
+  const settings = frozenSolverSettings(arms[0]);
+  const drifted = arms.find(arm => frozenSolverSettings(arm) !== settings);
+  if (drifted) throw new Error(`Comparison arm ${drifted.id} drifts from the frozen solver settings.`);
+  return group;
+}
+
 /** Refuse drift between the frozen protocol and the request that will actually launch. */
 export function requireCurrentBenchmarkAssignment(config: unknown, execution: {
   runId: string; armId: string; seed: number; taskId: string;
   agent: string; model: string; effort: string; account: string;
   budget: { maxUsd?: number; maxTokens?: number; maxWallClockMs?: number };
+  /** Required when the frozen arm declares a control block: the topology the runner will actually execute. */
+  topology?: ArmTopology;
 }): CurrentBenchmarkProtocol {
   const parsed = currentBenchmarkProtocolSchema.safeParse(config);
   if (!parsed.success) throw new Error(`Current benchmark requires a complete frozen protocol: ${parsed.error.message}`);
@@ -199,6 +344,14 @@ export function requireCurrentBenchmarkAssignment(config: unknown, execution: {
   if (arm.agent !== execution.agent || arm.model !== execution.model || arm.effort !== execution.effort || arm.account !== execution.account ||
       canonicalJson(arm.generationBudget) !== canonicalJson(execution.budget)) {
     throw new Error('Current benchmark launch controls or budget drift from the frozen protocol.');
+  }
+  if (arm.control) {
+    if (execution.topology !== arm.control.topology) {
+      throw new Error(`Current benchmark arm ${arm.id} is frozen as ${arm.control.topology}; the runner did not declare that topology.`);
+    }
+    const peers = protocol.arms.filter(candidate => candidate.control?.solverGroup === arm.control!.solverGroup);
+    if (peers.length > 1) requireSameSolverComparison(protocol, peers.map(peer => peer.id));
+    requireRunnableAblation(protocol, arm.id);
   }
   return protocol;
 }

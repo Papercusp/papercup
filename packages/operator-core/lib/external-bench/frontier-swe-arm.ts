@@ -15,7 +15,7 @@
  * (dedicated volume + ghcr + GB pulls + 4–20h/task; 5 tasks need B200/H100) — see FRONTIER-SWE-PILOT.md.
  */
 import type { CoordinationSpec, IsoBudget } from './coordination-topology';
-import type { AgentRunOutput, RunAgentInput, TopologyRowMeta, TopologyRunResult } from './run-topology';
+import type { AgentRunOutput, EnsembleSelector, RunAgentInput, TopologyRowMeta, TopologyRunResult } from './run-topology';
 import { runTopology } from './run-topology';
 import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { ProcExec } from './grader/swe-bench-pro';
@@ -69,6 +69,8 @@ export interface FrontierSweArmDeps {
   rowMeta: FrontierSweRowMetaInput;
   cap?: number;
   ensembleSize?: number;
+  /** Required for an ensemble (aggregate:'judge-best') spec; runTopology refuses without it. */
+  ensembleSelector?: EnsembleSelector;
   now?: () => number;
   onResult?: (r: TaskRunResult) => void | Promise<void>;
   /** Inject a fake docker exec in tests; live defaults to the seam's shell-free execFile binding. */
@@ -91,6 +93,7 @@ export function runFrontierSweArm(deps: FrontierSweArmDeps): Promise<TopologyRun
     runAgent: deps.runAgent,
     cap: deps.cap,
     ensembleSize: deps.ensembleSize,
+    ensembleSelector: deps.ensembleSelector,
     onResult: deps.onResult,
   });
 }

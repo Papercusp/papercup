@@ -81,6 +81,9 @@ function fakeAgent(overrides: Partial<AgentRunOutput> = {}) {
   return { run, calls };
 }
 
+/** The declared ensemble selector every judge-best run must carry. */
+const SELECTOR = { id: 'fixture-judge', kind: 'judge-agent' as const };
+
 test('distributed arm (dist-broadcast) — one worker per task, rows carry seam grade + summed usage', async () => {
   const spec = resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint);
   const { seam, cloned, graded, tornDown } = fakeSeam();
@@ -148,7 +151,7 @@ test('ensemble (ensemble-solve) — N solvers + judge; judge pick is the graded 
 
   const res = await runTopology<FakeHandle>({
     spec, backlog, seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
-    runId: 'r3', seed: 1, now: fakeClock(), runAgent: run, cap: 1, ensembleSize: 3,
+    runId: 'r3', seed: 1, now: fakeClock(), runAgent: run, cap: 1, ensembleSize: 3, ensembleSelector: SELECTOR,
   });
 
   assert.equal(res.rows.length, 1, 'ensemble = one ROW per task (the judged result)');
@@ -165,7 +168,8 @@ test('ensemble (ensemble-solve) — N solvers + judge; judge pick is the graded 
   const row = res.rows[0];
   assert.equal(row.resolved, true);
   // coordCalls summed across 3 solvers + 1 judge (4 agents × 2 = 8) — C4 evidence the ensemble ran.
-  assert.deepEqual(row.armMeta, { ensembleSize: 3, solvers: 3, candidates: 3, pickIndex: 1, coordCalls: 8 });
+  assert.deepEqual(row.armMeta, { ensembleSize: 3, solvers: 3, candidates: 3, pickIndex: 1, coordCalls: 8,
+    selector: { ...SELECTOR, via: 'judge', pickIndex: 1, candidateIndices: [0, 1, 2] } });
 });
 
 test('P-022 / D-010: the row carries every agent run\'s trace pointer, the graded solver first, then the others, then the judge', async () => {
@@ -177,7 +181,7 @@ test('P-022 / D-010: the row carries every agent run\'s trace pointer, the grade
     ({ ...(await run(input)), traceRef: `traces/${input.role}-${n++}.jsonl` });
   const res = await runTopology<FakeHandle>({
     spec, backlog: [task('instance_e__e-1')], seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
-    runId: 'r3t', seed: 1, now: fakeClock(), runAgent: tracing, cap: 1, ensembleSize: 3,
+    runId: 'r3t', seed: 1, now: fakeClock(), runAgent: tracing, cap: 1, ensembleSize: 3, ensembleSelector: SELECTOR,
   });
   // The judge picked solver index 1, so its trace leads.
   assert.deepEqual(res.rows[0].traceRefs, ['traces/solver-1.jsonl', 'traces/solver-0.jsonl', 'traces/solver-2.jsonl', 'traces/judge-3.jsonl']);
@@ -185,9 +189,80 @@ test('P-022 / D-010: the row carries every agent run\'s trace pointer, the grade
   // A runAgent that reports no pointer leaves the field absent (the bundle then reports the gap), never [] or invented.
   const plain = await runTopology<FakeHandle>({
     spec, backlog: [task('instance_e__e-2')], seam: fakeSeam().seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
-    runId: 'r3u', seed: 1, now: fakeClock(), runAgent: fakeAgent().run, cap: 1, ensembleSize: 3,
+    runId: 'r3u', seed: 1, now: fakeClock(), runAgent: fakeAgent().run, cap: 1, ensembleSize: 3, ensembleSelector: SELECTOR,
   });
   assert.equal('traceRefs' in plain.rows[0], false);
+});
+
+test('BM-P-004-selector-control: an ensemble without a declared selector is refused before any spend', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('ensemble-solve').blueprint);
+  const { seam, cloned } = fakeSeam();
+  const { run, calls } = fakeAgent();
+  await assert.rejects(runTopology<FakeHandle>({
+    spec, backlog: [task('instance_e__e-1')], seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r3s', seed: 1, now: fakeClock(), runAgent: run, cap: 1, ensembleSize: 3,
+  }), /requires a declared ensembleSelector/);
+  assert.equal(calls.length, 0, 'no agent ran');
+  assert.equal(cloned.length, 0, 'no environment was prepared');
+});
+
+test('BM-P-004-selector-control: every graded pick carries a receipt naming how it was chosen', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('ensemble-solve').blueprint);
+  const runWith = async (judge: Partial<AgentRunOutput> | null, ensembleSize = 3, budget = { maxModelCalls: 100 }) => {
+    const { seam, graded } = fakeSeam();
+    const { run, calls } = fakeAgent();
+    const agent = async (input: RunAgentInput<FakeHandle>): Promise<AgentRunOutput> =>
+      input.role === 'judge' && judge ? { ...(await run(input)), ...judge } : run(input);
+    const res = await runTopology<FakeHandle>({
+      spec, backlog: [task('instance_e__e-1')], seam, budget, rowMeta: ROW_META,
+      runId: 'r3r', seed: 1, now: fakeClock(), runAgent: agent, cap: 1, ensembleSize, ensembleSelector: SELECTOR,
+    });
+    return { receipt: res.rows[0].armMeta?.selector, graded, judgeCalls: calls.filter((c) => c.role === 'judge').length };
+  };
+
+  const sole = await runWith(null, 1);
+  assert.deepEqual(sole.receipt, { ...SELECTOR, via: 'sole-candidate', pickIndex: 0, candidateIndices: [0] });
+  assert.equal(sole.judgeCalls, 0);
+
+  const stray = await runWith({ pickIndex: 7 });
+  assert.deepEqual(stray.receipt, { ...SELECTOR, via: 'declared-fallback', pickIndex: 0, candidateIndices: [0, 1, 2], reason: 'selector picked non-candidate 7' });
+  assert.equal(stray.graded[0].cid, 0, 'the declared first-candidate fallback is what got graded');
+
+  const failed = await runWith({ status: 'error', pickIndex: 2 });
+  assert.deepEqual(failed.receipt, { ...SELECTOR, via: 'declared-fallback', pickIndex: 0, candidateIndices: [0, 1, 2], reason: 'selector error' });
+
+  const silent = await runWith({ pickIndex: undefined });
+  assert.equal((silent.receipt as { reason?: string }).reason, 'selector returned no pick');
+
+  const broke = await runWith(null, 3, { maxModelCalls: 3 });
+  assert.deepEqual(broke.receipt, { ...SELECTOR, via: 'declared-fallback', pickIndex: 0, candidateIndices: [0, 1, 2], reason: 'budget exhausted before selection' });
+  assert.equal(broke.judgeCalls, 0);
+});
+
+test('BM-P-004-exercise-evidence: each row merges the capability evidence of every agent that ran for it', async () => {
+  const evidence = (capability: string, used: number) => ({ capability, available: true, delivered: 1, used });
+  const worker = resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint);
+  const reported = await runTopology<FakeHandle>({
+    spec: worker, backlog: [task('instance_a__a-1')], seam: fakeSeam().seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r4e', seed: 1, now: fakeClock(), runAgent: fakeAgent({ capabilityEvidence: [evidence('locks', 2)] }).run, cap: 1,
+  });
+  assert.deepEqual(reported.rows[0].armMeta, { coordCalls: 2, capabilityEvidence: [evidence('locks', 2)] });
+
+  const unreported = await runTopology<FakeHandle>({
+    spec: worker, backlog: [task('instance_a__a-1')], seam: fakeSeam().seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r4u', seed: 1, now: fakeClock(), runAgent: fakeAgent().run, cap: 1,
+  });
+  assert.deepEqual(unreported.rows[0].armMeta, { coordCalls: 2 }, 'nothing reported stays absent (unmeasured), never zero');
+
+  // Ensemble: solvers report, the selector does not → the merged counts are unknown, not the solvers' partial sum.
+  const ensemble = resolveCoordinationSpec(loadBuiltinBlueprint('ensemble-solve').blueprint);
+  const { run } = fakeAgent();
+  const partial = await runTopology<FakeHandle>({
+    spec: ensemble, backlog: [task('instance_e__e-1')], seam: fakeSeam().seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r4p', seed: 1, now: fakeClock(), cap: 1, ensembleSize: 2, ensembleSelector: SELECTOR,
+    runAgent: async (input) => input.role === 'solver' ? { ...(await run(input)), capabilityEvidence: [evidence('memory-recall', 1)] } : run(input),
+  });
+  assert.deepEqual(partial.rows[0].armMeta?.capabilityEvidence, [{ capability: 'memory-recall', available: true, delivered: null, used: null }]);
 });
 
 test('pair (pair) — driver + navigator on one clone, usage summed, one graded attempt', async () => {

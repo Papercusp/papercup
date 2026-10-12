@@ -9,8 +9,151 @@ import { canonicalJson } from './canonical-json';
 import { computePreregHash } from './prereg';
 import { rolloutIdFor } from './emit';
 import { fleetRunIdFor } from './fleet';
-import { currentBenchmarkProtocolSchema, planCurrentBenchmarkConfirmation, requireCurrentBenchmarkAssignment } from './schema';
-import { currentProtocolFixture } from './_protocol-test-fixture';
+import {
+  currentBenchmarkProtocolSchema, planCurrentBenchmarkConfirmation, requireCurrentBenchmarkAssignment,
+  requireSameSolverComparison, type CurrentBenchmarkProtocol,
+} from './schema';
+import { allCapabilities, controlledProtocolFixture, currentProtocolFixture } from './_protocol-test-fixture';
+
+type Protocol = CurrentBenchmarkProtocol;
+const armOf = (protocol: Protocol, id: string) => protocol.arms.find(arm => arm.id === id)!;
+const controlOf = (protocol: Protocol, id: string) => armOf(protocol, id).control!;
+const issuesOf = (protocol: unknown) => {
+  const parsed = currentBenchmarkProtocolSchema.safeParse(protocol);
+  return parsed.success ? [] : parsed.error.issues.map(issue => issue.message);
+};
+const launch = (protocol: Protocol, armId: string, topology?: string) => requireCurrentBenchmarkAssignment(protocol, {
+  runId: 'run-1', armId, taskId: 't1', seed: 1, agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
+  budget: { maxUsd: 3, maxWallClockMs: 100 }, topology: topology as never,
+});
+const SAME_SOLVER_TOPOLOGIES = ['solo', 'independent', 'coordinated', 'ensemble'] as const;
+
+describe('AUTO-BAR-R-4-P-004: controlled arms freeze one solver across every topology', () => {
+  it('accepts the stock-native reference, solo, independent, coordinated, an ablation and an ensemble together', () => {
+    const protocol = controlledProtocolFixture();
+    expect(issuesOf(protocol)).toEqual([]);
+    expect(requireSameSolverComparison(protocol, [...SAME_SOLVER_TOPOLOGIES])).toBe('fixture-solver');
+  });
+
+  it('keeps uncontrolled protocols readable but refuses a protocol where only some arms are controlled', () => {
+    expect(issuesOf(currentProtocolFixture())).toEqual([]);
+    const mixed = controlledProtocolFixture(); delete armOf(mixed, 'solo').control;
+    expect(issuesOf(mixed)).toContainEqual(expect.stringMatching(/every arm declares a control block/));
+  });
+
+  it('binds the launch to the frozen topology and refuses an undeclared or different one', () => {
+    const protocol = controlledProtocolFixture();
+    for (const topology of SAME_SOLVER_TOPOLOGIES) expect(launch(protocol, topology, topology)).toEqual(protocol);
+    expect(() => launch(protocol, 'solo')).toThrow(/frozen as solo/);
+    expect(() => launch(protocol, 'solo', 'coordinated')).toThrow(/frozen as solo/);
+    expect(launch(currentProtocolFixture(), 'papercusp')).toBeDefined();
+  });
+
+  it('lets topologies differ in coordination prompts and tools while the solver tool surface stays pinned', () => {
+    const protocol = controlledProtocolFixture();
+    armOf(protocol, 'coordinated').runtime.toolsHash = 'e'.repeat(64);
+    armOf(protocol, 'coordinated').runtime.promptHash = 'e'.repeat(64);
+    expect(issuesOf(protocol)).toEqual([]);
+  });
+
+  it('changes the frozen protocol hash when a capability toggle or topology changes', () => {
+    const base = controlledProtocolFixture(); const frozen = computePreregHash(base);
+    const toggled = structuredClone(base); controlOf(toggled, 'solo').capabilities.review = 'off';
+    const moved = structuredClone(base); controlOf(moved, 'independent').topology = 'solo';
+    expect(computePreregHash(toggled)).not.toBe(frozen);
+    expect(computePreregHash(moved)).not.toBe(frozen);
+  });
+});
+
+describe('BM-P-004-equal-solver: one mismatched solver field breaks the same-solver comparison', () => {
+  const mutations: Array<[string, (arm: Protocol['arms'][number]) => void]> = [
+    ['agent', arm => { arm.agent = 'claude'; }],
+    ['model', arm => { arm.model = 'other-model'; }],
+    ['effort', arm => { arm.effort = 'low'; }],
+    ['account', arm => { arm.account = 'pinned-account'; }],
+    ['generationBudget', arm => { arm.generationBudget.maxUsd = 4; }],
+    ['sourceRevision', arm => { arm.runtime.sourceRevision = 'other-source'; }],
+    ['runtimeRevision', arm => { arm.runtime.runtimeRevision = 'other-runtime'; }],
+    ['clientVersion', arm => { arm.runtime.clientVersion = 'other-client'; }],
+    ['promptHashMode', arm => { arm.runtime.promptHashMode = 'codex-native-template-v1'; }],
+    ['solverToolsHash', arm => { arm.control!.solverToolsHash = 'e'.repeat(64); }],
+  ];
+  const cases = SAME_SOLVER_TOPOLOGIES.flatMap(topology => mutations.map(([field, mutate]) => [topology, field, mutate] as const));
+
+  it.each(cases)('%s arm with a different %s is refused by the schema and by the comparison guard', (topology, _field, mutate) => {
+    const protocol = controlledProtocolFixture();
+    protocol.priceSchedule.rates.push({ model: 'other-model', inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 2 });
+    mutate(armOf(protocol, topology));
+    expect(issuesOf(protocol)).toContainEqual(expect.stringMatching(/solver group fixture-solver must freeze identical solver settings/));
+    expect(() => requireSameSolverComparison(protocol, [...SAME_SOLVER_TOPOLOGIES])).toThrow(/drifts from the frozen solver settings/);
+  });
+
+  it('refuses a comparison across solver groups, unknown arms, uncontrolled arms or a single arm', () => {
+    const regrouped = controlledProtocolFixture(); controlOf(regrouped, 'ensemble').solverGroup = 'other-solver';
+    expect(issuesOf(regrouped)).toEqual([]);
+    expect(() => requireSameSolverComparison(regrouped, [...SAME_SOLVER_TOPOLOGIES])).toThrow(/share one solver group/);
+    expect(() => requireSameSolverComparison(controlledProtocolFixture(), ['solo', 'missing'])).toThrow(/not in the frozen protocol/);
+    expect(() => requireSameSolverComparison(currentProtocolFixture(), ['papercusp', 'baseline'])).toThrow(/no control block/);
+    expect(() => requireSameSolverComparison(controlledProtocolFixture(), ['solo'])).toThrow(/at least two arms/);
+  });
+
+  it('refuses at launch when any solver-group peer of the launched arm drifts', () => {
+    const protocol = controlledProtocolFixture();
+    armOf(protocol, 'independent').runtime.clientVersion = 'drifted';
+    expect(() => launch(protocol, 'solo', 'solo')).toThrow(/complete frozen protocol/);
+  });
+});
+
+describe('BM-P-004-ablation: an ablation switches off exactly one capability of a full control', () => {
+  const defects: Array<[string, (protocol: Protocol) => void, RegExp]> = [
+    ['missing control arm', p => { controlOf(p, 'coordinated-no-locks').ablation!.of = 'missing'; }, /another declared arm/],
+    ['self-referencing ablation', p => { controlOf(p, 'coordinated-no-locks').ablation!.of = 'coordinated-no-locks'; }, /another declared arm/],
+    ['ablation of an ablation', p => {
+      const nested = structuredClone(armOf(p, 'coordinated-no-locks')); nested.id = 'nested';
+      nested.control!.capabilities['review'] = 'off';
+      nested.control!.ablation = { of: 'coordinated-no-locks', treatment: 'review' };
+      p.arms.push(nested);
+    }, /full control, not another ablation/],
+    ['different topology', p => { controlOf(p, 'coordinated-no-locks').ablation!.of = 'solo'; }, /solver group, topology and ensemble/],
+    ['different solver group', p => { controlOf(p, 'coordinated-no-locks').solverGroup = 'other-solver'; }, /solver group, topology and ensemble/],
+    ['two capabilities switched', p => { controlOf(p, 'coordinated-no-locks').capabilities['review'] = 'off'; }, /exactly locks/],
+    ['wrong treatment named', p => { controlOf(p, 'coordinated-no-locks').ablation!.treatment = 'review'; }, /exactly review/],
+    ['treatment already off in the control', p => {
+      controlOf(p, 'coordinated').capabilities.locks = 'off'; controlOf(p, 'coordinated-no-locks').capabilities.locks = 'on';
+    }, /exactly locks/],
+    ['nothing switched', p => { controlOf(p, 'coordinated-no-locks').capabilities.locks = 'on'; }, /exactly locks/],
+    ['stock reference with a capability on', p => { controlOf(p, 'stock').capabilities['memory-recall'] = 'on'; }, /every product capability off/],
+    ['stock reference declared as an ablation', p => { controlOf(p, 'stock').ablation = { of: 'solo', treatment: 'locks' }; }, /not an ablation/],
+    ['ensemble without its block', p => { delete controlOf(p, 'ensemble').ensemble; }, /exactly when the topology is ensemble/],
+    ['ensemble block on a solo arm', p => { controlOf(p, 'solo').ensemble = structuredClone(controlOf(p, 'ensemble').ensemble); }, /exactly when the topology is ensemble/],
+  ];
+
+  it.each(defects)('rejects %s', (_name, mutate, message) => {
+    const protocol = controlledProtocolFixture(); mutate(protocol);
+    expect(issuesOf(protocol)).toContainEqual(expect.stringMatching(message));
+  });
+
+  it.each([
+    ['an omitted capability', (p: Protocol) => { delete (controlOf(p, 'solo').capabilities as Record<string, unknown>)['review']; }],
+    ['an undeclared capability', (p: Protocol) => { (controlOf(p, 'solo').capabilities as Record<string, unknown>)['telepathy'] = 'on'; }],
+    ['a non-binary toggle', (p: Protocol) => { (controlOf(p, 'solo').capabilities as Record<string, unknown>)['locks'] = 'partial'; }],
+    ['a single-candidate ensemble', (p: Protocol) => { controlOf(p, 'ensemble').ensemble!.candidates = 1; }],
+    ['an uncharged selector', (p: Protocol) => { (controlOf(p, 'ensemble').ensemble!.selector as Record<string, unknown>).charged = false; }],
+  ])('rejects %s', (_name, mutate) => {
+    const protocol = controlledProtocolFixture(); mutate(protocol);
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+  });
+
+  it('accepts one valid single-capability ablation for each capability', () => {
+    for (const treatment of Object.keys(allCapabilities('on')) as Array<keyof ReturnType<typeof allCapabilities>>) {
+      const protocol = controlledProtocolFixture();
+      const ablation = controlOf(protocol, 'coordinated-no-locks');
+      ablation.capabilities = { ...allCapabilities('on'), [treatment]: 'off' };
+      ablation.ablation = { of: 'coordinated', treatment };
+      expect(issuesOf(protocol)).toEqual([]);
+    }
+  });
+});
 
 describe('current frozen benchmark protocol', () => {
   it('derives withheld power from exact repository counts, never pilot tasks or repeated seeds', () => {

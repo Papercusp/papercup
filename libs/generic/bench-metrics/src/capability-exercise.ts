@@ -56,32 +56,39 @@ const sumOrNull = (a: number | null, b: number | null): number | null => (a === 
 
 /**
  * Merge per-agent evidence into one per-capability record (e.g. every solver + the judge of one task).
- * A count is only known when EVERY contributor measured it (one unmeasured contributor ⇒ `null`, never a
- * partial sum read as complete). `available` is true when any contributor had it, else unknown if any
- * contributor did not measure it, else false.
+ * Pass ONE part per contributing agent. A count is only known when EVERY contributor measured it: a
+ * contributor that reported nothing (`null`/`undefined` part) or omitted a capability another contributor
+ * reported counts as unmeasured for it, so the total is `null`, never a partial sum read as complete.
+ * `available` is true when any contributor had it, else unknown if any contributor did not measure it,
+ * else false. A capability no contributor reported is absent from the result (unmeasured).
  */
 export function mergeCapabilityEvidence(
   parts: ReadonlyArray<ReadonlyArray<CapabilityExerciseEvidence> | null | undefined>,
 ): CapabilityExerciseEvidence[] {
-  const by = new Map<string, CapabilityExerciseEvidence>();
-  for (const list of parts) {
-    for (const e of list ?? []) {
-      const prev = by.get(e.capability);
-      if (!prev) {
-        by.set(e.capability, { ...e, ...(e.refs ? { refs: [...e.refs] } : {}) });
+  const capabilities = new Set<string>();
+  for (const list of parts) for (const e of list ?? []) capabilities.add(e.capability);
+  return [...capabilities].map((capability) => {
+    let available: boolean | null = false;
+    let delivered: number | null = 0;
+    let used: number | null = 0;
+    const refs: string[] = [];
+    for (const list of parts) {
+      const entries = (list ?? []).filter((e) => e.capability === capability);
+      if (entries.length === 0) {
+        delivered = null; used = null;
+        if (available !== true) available = null;
         continue;
       }
-      const available = prev.available === true || e.available === true ? true
-        : prev.available === null || e.available === null ? null : false;
-      const refs = [...(prev.refs ?? []), ...(e.refs ?? [])];
-      by.set(e.capability, {
-        capability: e.capability, available,
-        delivered: sumOrNull(prev.delivered, e.delivered), used: sumOrNull(prev.used, e.used),
-        ...(refs.length > 0 ? { refs } : {}),
-      });
+      for (const e of entries) {
+        available = available === true || e.available === true ? true
+          : available === null || e.available === null ? null : false;
+        delivered = sumOrNull(delivered, e.delivered);
+        used = sumOrNull(used, e.used);
+        refs.push(...(e.refs ?? []));
+      }
     }
-  }
-  return [...by.values()];
+    return { capability, available, delivered, used, ...(refs.length > 0 ? { refs } : {}) };
+  });
 }
 
 /** Return `armMeta` with the evidence attached (an empty list leaves `armMeta` unchanged). */
