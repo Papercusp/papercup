@@ -30,7 +30,7 @@ import {
   cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -334,13 +334,20 @@ if (existsSync(path.join(installedPlatform, 'package.json'))
     writeFileSync(`${tarball}.tmp`, bytes);
     renameSync(`${tarball}.tmp`, tarball);
   }
-  const unpacked = mkdtempSync(path.join(tmpdir(), 'bundle-psu-pty-'));
-  const extracted = spawnSync('tar', ['-xzf', tarball, '-C', unpacked]);
-  if (extracted.status !== 0) fail(`extracting ${tarball}: ${extracted.stderr}`);
-  platformDir = path.join(path.resolve(args.cache), `${PTY_PLATFORM}-${platformLock.version}`);
-  rmSync(platformDir, { recursive: true, force: true });
-  renameSync(path.join(unpacked, 'package'), platformDir);
-  rmSync(unpacked, { recursive: true, force: true });
+  // The cache may live on a separate volume from the system temporary directory.
+  // Extract beside the destination so publishing it with rename stays atomic.
+  const unpacked = mkdtempSync(path.join(path.dirname(tarball), 'bundle-psu-pty-'));
+  try {
+    const extracted = spawnSync('tar', ['-xzf', tarball, '-C', unpacked]);
+    if (extracted.status !== 0) {
+      throw new Error(`extracting ${tarball}: ${extracted.stderr}`);
+    }
+    platformDir = path.join(path.resolve(args.cache), `${PTY_PLATFORM}-${platformLock.version}`);
+    rmSync(platformDir, { recursive: true, force: true });
+    renameSync(path.join(unpacked, 'package'), platformDir);
+  } finally {
+    rmSync(unpacked, { recursive: true, force: true });
+  }
 }
 cpSync(platformDir, path.join(ptyDest, PTY_PLATFORM), { recursive: true, dereference: true });
 const platformPkg = readJson(path.join(platformDir, 'package.json'));
