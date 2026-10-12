@@ -120,6 +120,16 @@ export async function verifyPrivateHostHeaderTransport() {
 // /dist/js/lute/lute.min.js to that CDN root itself.
 const vditorAssets = dirname(createRequire(import.meta.url).resolve('vditor/package.json'));
 
+export interface PrivateConversationRow {
+  id: string; title: string; body: string;
+  source: 'threads' | 'deliberations' | 'agentchats' | 'messages';
+  selection: 'conversation' | 'thread' | 'chat' | 'cmsg'; list: string; detail: string;
+}
+export interface PrivateConversationsSeed { workspace: string; own: PrivateConversationRow[]; foreign: PrivateConversationRow[] }
+export interface PrivateCreateDockSeed {
+  workspace: string; harness: string; selectedSlug: string; neighborSlug: string; foreignSlug: string;
+}
+
 type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string; foreign?: string;
   portalSourceRoot: string;
@@ -129,6 +139,8 @@ type PortalRosterBrowserInput = {
   harnessSettings?: boolean;
   conversations?: boolean;
   createDock?: boolean;
+  conversationsSeed?: PrivateConversationsSeed;
+  createDockPlans?: PrivateCreateDockSeed;
   settingsHarnesses?: { selected: string; neighbor: string; foreign: string };
   prompts?: boolean;
   overview?: boolean;
@@ -2101,6 +2113,119 @@ async function runPrivateHarnessSettingsPage(page: Page, context: BrowserContext
     settingsBlueprintDefault: true, shellQueryPreserved: true };
 }
 
+async function runPrivateConversationsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const seed = input.conversationsSeed!;
+  const reads: Array<{ name: string; status: number; body: any; url: string }> = [];
+  const denials: Array<{ name: string; status: number; body: any }> = [];
+  const pending = new Set<Promise<void>>();
+  const writes: string[] = [];
+  let denyLists = true;
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/') && request.method() !== 'GET') writes.push(request.url()); });
+  page.on('response', response => {
+    const name = new URL(response.url()).searchParams.get('name');
+    if (!name?.startsWith('conversations.')) return;
+    const task = response.json().then(body => {
+      reads.push({ name, status: response.status(), body, url: response.url() });
+      writeFileSync(join(input.evidence, 'portal-conversations-reads.json'), JSON.stringify(reads, null, 2));
+    });
+    pending.add(task); void task.finally(() => pending.delete(task)).catch(() => {});
+  });
+  await context.route('**/api/zero-harness/rest-query*', async route => {
+    const name = new URL(route.request().url()).searchParams.get('name') ?? '';
+    if (!denyLists || !seed.own.some(row => row.list === name)) { await route.continue(); return; }
+    const upstream = await context.request.get(route.request().url(), { headers: { host: 'foreign-conversations.invalid' } });
+    const body = await upstream.json();
+    assert.equal(upstream.status(), 403); assert.equal(body.error?.code, 'host_not_allowed');
+    denials.push({ name, status: upstream.status(), body });
+    writeFileSync(join(input.evidence, 'portal-conversations-denials.json'), JSON.stringify(denials, null, 2));
+    await route.fulfill({ response: upstream });
+  });
+  url.searchParams.set('app', 'conversations'); url.searchParams.set('q', 'retained-shell-search');
+  await page.goto(url.href);
+  const rail = page.getByRole('region', { name: 'Conversation list', exact: true });
+  await rail.getByText("Couldn't load", { exact: true }).waitFor();
+  assert.equal(await rail.getByRole('button', { name: /^Open / }).count(), 0);
+  denyLists = false;
+  await rail.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
+  const search = rail.getByRole('textbox', { name: 'Search conversations', exact: true });
+  await search.waitFor();
+  for (const row of seed.own.filter(row => row.id.includes('-selected-'))) {
+    await search.fill(row.title); await page.waitForURL(value => value.searchParams.get('cq') === row.title);
+    const open = rail.getByRole('button', { name: 'Open ' + row.title, exact: true });
+    await open.waitFor(); await open.focus(); await page.keyboard.press('Enter');
+    await page.waitForURL(value => value.searchParams.get(row.selection) === row.id && value.searchParams.get('conv') === row.source);
+    const body = page.locator('.pc-advconv__main').getByText(row.body, { exact: true });
+    await body.waitFor();
+    await page.reload(); await body.waitFor();
+    const params = new URL(page.url()).searchParams;
+    assert.equal(params.get(row.selection), row.id); assert.equal(params.get('cq'), row.title);
+    assert.equal(params.get('ws'), seed.workspace); assert.equal(params.get('q'), 'retained-shell-search');
+    assert.ok(!(await page.locator('body').innerText()).includes(seed.foreign.find(value => value.source === row.source)!.title));
+  }
+  await search.fill('');
+  const neighbor = seed.own.find(row => row.id.includes('-neighbor-') && row.source === 'threads')!;
+  await search.fill(neighbor.title); await rail.getByRole('button', { name: 'Open ' + neighbor.title, exact: true }).click();
+  await page.locator('.pc-advconv__main').getByText(neighbor.body, { exact: true }).waitFor();
+  await Promise.all([...pending]);
+  for (const row of seed.own.filter(row => row.id.includes('-selected-'))) {
+    assert.ok(reads.some(read => read.name === row.list && read.status === 200));
+    assert.ok(reads.some(read => read.name === row.detail && read.status === 200 && JSON.stringify(read.body).includes(row.body)));
+    assert.ok(denials.some(read => read.name === row.list));
+  }
+  assert.deepEqual(writes, [], 'Reading the aggregate must not send conversation mutations');
+  return { workspace: seed.workspace, authMethod: 'private-loopback-conversations-with-cookie',
+    fourStoreSelection: true, filterReload: true, keyboardSelection: true, initialDenialRecovery: true,
+    neighborDistinct: true, foreignExcluded: true, noProductWrites: true };
+}
+
+async function runPrivateCreateDockPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const seed = input.createDockPlans!;
+  url.searchParams.set('app', 'create'); url.searchParams.set('slug', seed.harness);
+  url.searchParams.set('scope', 'self'); url.searchParams.set('view', 'plans');
+  url.searchParams.set('plan', seed.selectedSlug); url.searchParams.delete('q');
+  const reads: Array<{ url: string; status: number; body: any }> = [];
+  const pending = new Set<Promise<void>>();
+  page.on('response', response => {
+    if (!response.url().includes('/api/') || !/plans|dock-layouts|dockLayouts/.test(response.url())) return;
+    const task = response.json().then(body => {
+      reads.push({ url: response.url(), status: response.status(), body });
+      writeFileSync(join(input.evidence, 'portal-create-dock-reads.json'), JSON.stringify(reads, null, 2));
+    });
+    pending.add(task); void task.finally(() => pending.delete(task)).catch(() => {});
+  });
+  await page.goto(url.href);
+  const dock = page.locator('.pc-adv-create__dock');
+  const main = dock.locator('.pc-plans__main');
+  await main.getByText(seed.selectedSlug + '-body', { exact: true }).waitFor();
+  const neighbor = dock.locator('.pc-plans__list').getByText(seed.neighborSlug, { exact: true }).first();
+  await neighbor.click(); await main.getByText(seed.neighborSlug + '-body', { exact: true }).waitFor();
+  await page.waitForURL(value => value.searchParams.get('plan') === seed.neighborSlug);
+  // Exercise the real splitter and its debounced HTTP persistence, rather
+  // than saving a fixture layout directly through the API.
+  const sash = dock.locator('.dv-split-view-container.dv-horizontal > .dv-sash-container > .dv-sash').first();
+  const box = await sash.boundingBox(); assert.ok(box, 'Create must expose its resizable sidebar splitter');
+  const saved = page.waitForResponse(response => new URL(response.url()).pathname === '/api/dock-layouts/adv-create2'
+    && response.request().method() === 'PUT');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + 65, box.y + box.height / 2, { steps: 5 }); await page.mouse.up();
+  const save = await saved; assert.equal(save.status(), 200);
+  const savedRow = await save.json();
+  const endpoint = new URL('/api/dock-layouts/adv-create2', input.base); endpoint.searchParams.set('ws', seed.workspace);
+  const persisted = await context.request.get(endpoint.href); assert.equal(persisted.status(), 200);
+  const persistedRow = await persisted.json();
+  assert.ok(savedRow.layoutJson, 'the canonical save receipt must contain its logical layout');
+  assert.deepEqual(persistedRow.layoutJson, savedRow.layoutJson);
+  await page.reload(); await main.getByText(seed.neighborSlug + '-body', { exact: true }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('plan'), seed.neighborSlug);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), seed.workspace);
+  assert.ok(!(await dock.innerText()).includes(seed.foreignSlug));
+  await Promise.all([...pending]);
+  assert.ok(reads.some(read => read.status === 200 && read.url.includes('dockLayouts.byName')));
+  writeFileSync(join(input.evidence, 'portal-create-dock-persistence.json'), JSON.stringify({ savedRow, persistedRow }, null, 2));
+  return { workspace: seed.workspace, authMethod: 'private-loopback-create-dock-with-cookie',
+    actualPlanSelection: true, neighborDistinct: true, selectedPlanReload: true, splitterPersisted: true, foreignExcluded: true };
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
@@ -2119,7 +2244,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
     + (input.brainstorm ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/harness/harness.css'), 'utf8')
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '')
-    + (input.harnesses || input.git ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
+    + (input.harnesses || input.git || input.conversations || input.createDock ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
   const sourceIdentity = { portal, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: portal, encoding: 'utf8' }).trim(),
@@ -2188,6 +2313,14 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     if (input.settingsHarnesses) {
       const receipt = await runPrivateHarnessSettingsPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'Actual Settings controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
+    if (input.conversationsSeed || input.createDockPlans) {
+      const receipt = input.conversationsSeed ? await runPrivateConversationsPage(page, context, input, url)
+        : await runPrivateCreateDockPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'Actual aggregate/Create controls must remain browser-safe');
       const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
       writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
       return retained;

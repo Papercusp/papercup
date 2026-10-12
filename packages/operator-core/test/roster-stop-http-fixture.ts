@@ -365,6 +365,81 @@ async function coordCanary(health: unknown) {
     const gitSeed = process.env.ROSTER_GIT_BROWSER_PROOF === '1'
       ? await seedPrivateGit(workspace, evidence, portalSourceRoot!) : undefined;
     if (gitSeed) await preflightPrivateGit(gitSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
+    let conversationsSeed: import('./portal-roster-browser-fixture').PrivateConversationsSeed | undefined;
+    if (process.env.ROSTER_CONVERSATIONS_BROWSER_PROOF === '1') {
+      const stem = `private-conversations-${process.pid}`;
+      const definitions = [
+        ['threads', 'conversation', 'questionsList', 'questionDetail'],
+        ['deliberations', 'thread', 'deliberationList', 'deliberationDetail'],
+        ['agentchats', 'chat', 'agentChatList', 'agentChatDetail'],
+        ['messages', 'cmsg', 'agentMessageList', 'agentMessageDetail'],
+      ] as const;
+      const own: import('./portal-roster-browser-fixture').PrivateConversationRow[] = [];
+      const foreignRows: import('./portal-roster-browser-fixture').PrivateConversationRow[] = [];
+      for (const label of ['selected', 'neighbor', 'foreign'] as const) for (const [source, selection, list, detail] of definitions) {
+        const scope = label === 'foreign' ? foreignWorkspace : workspace;
+        const row = { id: `${stem}-${label}-${source}`, title: `${stem}-${label}-${source}`,
+          body: `${stem}-${label}-${source}-body`, source, selection,
+          list: 'conversations.' + list, detail: 'conversations.' + detail };
+        const actor = 'su-aabbccdd-private-conversations';
+        if (source === 'threads') await sql`INSERT INTO harness_shared.coord_conversations
+          (workspace_id, id, kind, scope, asker_id, title, body)
+          VALUES (${scope}, ${row.id}, 'question', 'operator', ${actor}, ${row.title}, ${row.body})`;
+        if (source === 'deliberations') {
+          await sql`INSERT INTO harness_shared.coord_threads
+            (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, post_count, last_post_at)
+            VALUES (${scope}, ${row.id}, 'conversation', ${stem + '-' + label + '-threads'}, ${row.title}, ${actor}, 1, now())`;
+          await sql`INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body)
+            VALUES (${scope}, ${row.id}, ${actor}, ${row.body})`;
+        }
+        if (source === 'agentchats') await sql`INSERT INTO harness_shared.agent_chats_consolidated
+          (workspace_id, harness_slug, id, role, title, transcript, created_at, updated_at, archived_at)
+          VALUES (${scope}, 'papercusp', ${row.id}, 'worker', ${row.title},
+            ${JSON.stringify([{ role: 'assistant', content: row.body }])}::jsonb, ${Date.now()}, ${Date.now()}, ${Date.now()})`;
+        if (source === 'messages') await sql`INSERT INTO harness_shared.coord_event_log
+          (workspace_id, surface, msg_id, body) VALUES (${scope}, 'messages', ${row.id},
+            ${JSON.stringify({ kind: 'message', from: actor, from_label: actor, to: ['su-eeff0011-private'],
+              summary: row.title, body: row.body, expects: 'none' })}::jsonb)`;
+        (label === 'foreign' ? foreignRows : own).push(row);
+      }
+      conversationsSeed = { workspace, own, foreign: foreignRows };
+      writeFileSync(join(evidence, 'portal-conversations-seed.json'), JSON.stringify(conversationsSeed, null, 2));
+      const reads = [];
+      for (const row of own.filter(row => row.id.includes('-selected-'))) {
+        const get = async (name: string, args: Record<string, unknown>) => {
+          const url = new URL('/api/zero-harness/rest-query', base);
+          url.searchParams.set('name', name); url.searchParams.set('args', JSON.stringify(args)); url.searchParams.set('ws', workspace);
+          const response = await fetch(url, { headers: { cookie: cookie(ownSession.token) }, signal: AbortSignal.timeout(25_000) });
+          const body = await response.json() as { rows?: unknown[] };
+          reads.push({ name, args, status: response.status, body });
+          writeFileSync(join(evidence, 'portal-conversations-preflight.json'), JSON.stringify(reads, null, 2));
+          assert.equal(response.status, 200, name); assert.ok(Array.isArray(body.rows), name + ' requires rows');
+          return body.rows;
+        };
+        const population = JSON.stringify(await get(row.list, { limit: 100 }));
+        for (const expected of own.filter(value => value.source === row.source)) assert.ok(population.includes(expected.title));
+        for (const excluded of foreignRows) assert.ok(!population.includes(excluded.title), 'foreign list exclusion: ' + excluded.id);
+        assert.ok(JSON.stringify(await get(row.detail, { id: row.id })).includes(row.body), 'exact detail before Chrome: ' + row.id);
+        const foreignRow = foreignRows.find(value => value.source === row.source)!;
+        assert.deepEqual(await get(row.detail, { id: foreignRow.id }), [], 'foreign detail exclusion: ' + row.detail);
+      }
+      console.log('ROSTER_STOP_HTTP_PHASE conversations-api-preflight-ready');
+    }
+    let createDockPlans: import('./portal-roster-browser-fixture').PrivateCreateDockSeed | undefined;
+    if (process.env.ROSTER_CREATE_DOCK_BROWSER_PROOF === '1') {
+      const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
+      const harness = operatorHomeHarnessSlug();
+      const stem = `private-create-dock-${process.pid}`;
+      createDockPlans = { workspace, harness, selectedSlug: stem + '-selected', neighborSlug: stem + '-neighbor', foreignSlug: stem + '-foreign' };
+      for (const [scope, slug] of [[workspace, createDockPlans.selectedSlug], [workspace, createDockPlans.neighborSlug],
+        [foreignWorkspace, createDockPlans.foreignSlug]]) {
+        const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: draft\n---\n\n## Now\n${slug}-body\n`;
+        await sql`INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, title, status, content, content_hash)
+          VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'draft', ${content}, ${createHash('sha256').update(content).digest('hex')})`;
+      }
+      writeFileSync(join(evidence, 'portal-create-dock-seed.json'), JSON.stringify(createDockPlans, null, 2));
+    }
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -492,6 +567,8 @@ async function coordCanary(health: unknown) {
       ...(workflowsSeed ? { workflows: true, workflowsSeed } : {}),
       ...(statsSeed ? { stats: true, statsSeed } : {}),
       ...(gitSeed ? { git: true, gitSeed } : {}),
+      ...(conversationsSeed ? { conversations: true, conversationsSeed } : {}),
+      ...(createDockPlans ? { createDock: true, createDockPlans } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(settingsHarnesses ? { harnessSettings: true, settingsHarnesses } : {}),
