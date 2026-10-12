@@ -36,6 +36,7 @@ import workItemsCreate from '../work_items/create';
 import workItemsGet from '../work_items/get';
 import workItemsRelease from '../work_items/release';
 import workItemsCheckpoint from '../work_items/checkpoint';
+import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
@@ -1119,6 +1120,19 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       claimHold: true,
       claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' },
     }).success).toBe(true);
+  });
+
+  it('publishes conditional work_items:set_blocker requirements in tools:find', async () => {
+    expect(workItemsSetBlocker.name).toBe('work_items:set_blocker');
+    const result = await callHandler({ query: 'work_items:set_blocker', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'work_items:set_blocker')?.argSchema;
+    expect(compact).toContain(
+      'constraint:$ (For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema.',
+    );
+    expect(compact).toContain(
+      'For items:[...], each entry that sets a blocker also requires kind and ref.',
+    );
+    expect(workItemsSetBlocker.args.safeParse({ id: 'WI-1', kind: 'event' }).success).toBe(false);
   });
 
   it('keeps nested descriptions when a block fits the budget', () => {
