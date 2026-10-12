@@ -510,17 +510,17 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           line.includes('SharedFunctionInfo workFor'),
         );
         const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-        const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
-        const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
-        const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
-        const noCompilerInliningPhaseMedianUsefulSamples = median(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
+        const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noCompilerInliningPhaseMedianUsefulSamples = median(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
             eager.recoveryCapture.profile.samples <= maxSamples &&
             eager.recoveryPhaseSweep.every(capture => capture.profile.samples <= maxSamples) &&
             eager.delayed.cleanup.sampleCount <= maxSamples,
-          primaryFixtureVisible: eager.primary.profile.usefulSamples >= 1,
-          recoveredHotFrames: eager.recoveryCapture.profile.usefulSamples >= 3,
+          primaryFixtureVisible: (eager.primary.profile.workWindow?.definite?.usefulSamples ?? 0) >= 1,
+          recoveredHotFrames: (eager.recoveryCapture.profile.workWindow?.definite?.usefulSamples ?? 0) >= 3,
           repeatedRecoveryCoverage: eager.recoveryPhaseSweep.length === 10 && eagerPhaseMedianUsefulSamples >= 3,
           discardedWithoutSerialization:
             !eager.disabledRevocation.serialized &&
@@ -752,30 +752,27 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
               definiteHotWindowPaths: recoveryInspectorHotWindow?.samplePathCounts ?? [],
             }
           : null;
+        const inspectorHotWindowCpuHotFrameSamples = recoveryInspectorInlineAttribution?.definiteHotWindowCpuHotFrameSamples ?? 0;
+        const eagerHotWindowCpuHotFrameSamples = recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples;
+        const hasPairedHotWindowSampleCoverage =
+          (recoveryInspectorInlineAttribution?.definiteHotWindowSamples ?? 0) >= 3 &&
+          recoveryInlineAttribution.definiteHotWindowSamples >= 3;
         const inlineStackDiagnostic = {
           cpuHotFrameInlinedIntoWorkFor: cpuHotFrameInlinedIntoWorkFor,
           relevantCompilerTraceLines: inlineTraceLines.slice(0, 20),
           eagerPrimary: primaryInlineAttribution,
           eagerAfterProfilerRecreation: recoveryInlineAttribution,
           inspectorSameWindowControl: recoveryInspectorInlineAttribution,
-          pairedControlConclusion: recoveryInspectorInlineAttribution &&
-            recoveryInspectorInlineAttribution.definiteHotWindowSamples >= 3 &&
-            recoveryInlineAttribution.definiteHotWindowSamples >= 3
-            ? recoveryInspectorInlineAttribution.definiteHotWindowCpuHotFrameSamples > recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples
-              ? 'Inspector names cpuHotFrame in the same measured windows where the eager profile does not; sample timing is observed and the discrepancy is specific to the eager profiler code-map/symbolization path.'
-              : 'The two profiles do not show a material same-window cpuHotFrame attribution difference; the earlier miss is not isolated to the eager profiler code map.'
-            : 'The same-window Inspector control did not produce enough definite hot-window samples to distinguish code-map replay from sample timing.',
-          interpretation: !cpuHotFrameInlinedIntoWorkFor
-            ? recoveryInlineAttribution.definiteHotWindowSamples > 0 && recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples === 0
-              ? recoveryInspectorInlineAttribution &&
-                recoveryInspectorInlineAttribution.definiteHotWindowSamples >= 3 &&
-                recoveryInspectorInlineAttribution.definiteHotWindowCpuHotFrameSamples === 0
-                ? 'Both the recreated eager profile and the same-window Inspector control sampled measured cpuHotFrame windows without naming cpuHotFrame; the missing frame is not specific to profiler recreation and does not establish inline-stack replay loss.'
-                : 'The matching compiler-trace control did not inline cpuHotFrame into workFor, but the paired Inspector control lacks enough same-window samples to distinguish shared sampling attribution from profiler recreation.'
-              : 'The matching compiler-trace control did not inline cpuHotFrame into workFor; without definite in-hot-frame samples, the profile cannot distinguish inline metadata from sample timing.'
-            : primaryInlineAttribution.workForAndCpuHotFrameSamples > 0 && recoveryInlineAttribution.workForAndCpuHotFrameSamples === 0
-              ? 'The live-code profile exposed cpuHotFrame under workFor while the recreated-profiler profile did not; this is consistent with, but does not alone prove, missing replayed inline-stack metadata.'
-              : 'Compiler and profile evidence did not distinguish inline-stack replay loss from another sample-attribution path.',
+          pairedControlConclusion: hasPairedHotWindowSampleCoverage
+            ? inspectorHotWindowCpuHotFrameSamples > eagerHotWindowCpuHotFrameSamples
+              ? `Inspector names cpuHotFrame in ${inspectorHotWindowCpuHotFrameSamples} definite hot-window samples versus ${eagerHotWindowCpuHotFrameSamples} for eager; this is a measured eager-attribution deficit, but does not isolate code-map replay from symbolization.`
+              : inspectorHotWindowCpuHotFrameSamples === eagerHotWindowCpuHotFrameSamples
+                ? `Both profiles name cpuHotFrame in ${eagerHotWindowCpuHotFrameSamples} definite hot-window samples; this run shows no same-window attribution deficit.`
+                : `Eager names cpuHotFrame in ${eagerHotWindowCpuHotFrameSamples} definite hot-window samples versus ${inspectorHotWindowCpuHotFrameSamples} for Inspector; this run shows no eager-attribution deficit.`
+            : 'The paired profiles did not both produce at least three definite hot-window samples, so they cannot distinguish attribution paths.',
+          interpretation: hasPairedHotWindowSampleCoverage
+            ? `${cpuHotFrameInlinedIntoWorkFor ? 'The compiler trace reports cpuHotFrame inlining into workFor.' : 'The compiler trace does not show cpuHotFrame inlining into workFor.'} Paired definite-window counts were eager=${eagerHotWindowCpuHotFrameSamples} and Inspector=${inspectorHotWindowCpuHotFrameSamples}; the difference is measured but does not identify its mechanism.`
+            : 'The paired profiles lack enough definite hot-window samples to distinguish attribution paths or interpret the compiler-trace comparison.',
         };
         console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({
           inspector: summarizeStrategy(inspector),
@@ -783,7 +780,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           noTurboInlining: summarizeStrategy(eagerNoTurboInlining),
           noMaglevInlining: summarizeStrategy(eagerNoMaglevInlining),
           noCompilerInlining: summarizeStrategy(eagerNoCompilerInlining),
-          phaseSweepMedianUsefulSamples: {
+          phaseSweepMedianDefiniteWorkWindowUsefulSamples: {
             requiredPerCapture: 3,
             default: eagerPhaseMedianUsefulSamples,
             noTurboInlining: noTurboInliningPhaseMedianUsefulSamples,
@@ -798,7 +795,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         expect(eager.primary.profile.samples).toBeLessThanOrEqual(maxSamples);
         // Prove the fixture is visible in V8-emitted sample stacks before
         // interpreting a post-disposal miss as lifecycle recovery failure.
-        expect(eager.primary.profile.usefulSamples).toBeGreaterThanOrEqual(1);
+        expect(eager.primary.profile.workWindow?.definite.usefulSamples ?? 0).toBeGreaterThanOrEqual(1);
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
         expect(recoveryInspectorInlineAttribution?.definiteHotWindowSamples).toBeGreaterThanOrEqual(3);
         const recoverySampleChains = eager.recoveryCapture.profile.sampleChains ?? [];
