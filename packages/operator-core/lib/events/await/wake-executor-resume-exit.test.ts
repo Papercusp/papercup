@@ -627,7 +627,11 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', homes);
       let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
       let observedContext: unknown;
-      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 2 }));
+      // The detector reads the rollout and decides; here the first exit finds a
+      // one-turn streak and the second finds the threshold-crossing streak.
+      const quarantine = vi
+        .fn(async () => ({ poisoned: true, turns: 2 }))
+        .mockResolvedValueOnce({ poisoned: false, turns: 1 });
       const { deps } = await exitedClaudeResumeDeps({
         getSessionLifecycle: async () => null,
         ensureCodexHomeForWake: (async () => ({ ok: true, repaired: false })) as never,
@@ -656,25 +660,23 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       });
 
       expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
-      // A usage-limit failure is not overflow evidence: no quarantine attempt.
-      onExitWired!({
-        exitCode: 0,
-        signal: null,
-        stdoutTail: '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit. usage_limit_exceeded"}}',
-        stderrTail: '',
-      });
+      // The real exit shape (captured 2026-10-12 12:22Z): the turn overflowed, Codex then ran a
+      // remote compact task, and THAT failed on the usage wall, so the exit tail names only the
+      // compact failure. The rollout is still consulted; a short streak is not quarantined.
+      const compactFailure =
+        '{"type":"turn.failed","error":{"message":"Error running remote compact task: You’ve hit your usage limit. usage_limit_exceeded"}}';
+      onExitWired!({ exitCode: 0, signal: null, stdoutTail: compactFailure, stderrTail: '' });
+      await vi.waitFor(() => expect(quarantine).toHaveBeenCalledTimes(1));
       await vi.waitFor(() => expect(observedContext).toBeDefined());
-      expect(quarantine).not.toHaveBeenCalled();
       expect(observedContext).not.toMatchObject({ poisoned: true });
 
-      const overflow =
-        '{"type":"turn.failed","error":{"message":"Your input exceeds the context window of this model. context_length_exceeded"}}';
-      onExitWired!({ exitCode: 0, signal: null, stdoutTail: overflow, stderrTail: '' });
+      observedContext = undefined;
+      onExitWired!({ exitCode: 0, signal: null, stdoutTail: compactFailure, stderrTail: '' });
       await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
-      expect(quarantine).toHaveBeenCalledTimes(1);
-      expect(quarantine).toHaveBeenCalledWith(
+      expect(quarantine).toHaveBeenCalledTimes(2);
+      expect(quarantine).toHaveBeenLastCalledWith(
         expect.objectContaining({ agent: 'codex', transcriptPath: rolloutPath, sessionId: nativeId }),
-        overflow,
+        compactFailure,
       );
       expect(observedContext).toMatchObject({
         transcriptPath: rolloutPath,

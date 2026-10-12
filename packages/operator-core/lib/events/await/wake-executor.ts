@@ -207,7 +207,7 @@ import {
   quarantineRepeatedClaudeToolReferenceFailures,
   quarantineRepeatedCodexContextOverflow,
 } from './poisoned-resume-session';
-import { findCodexRolloutPath, isCodexContextOverflowError } from './codex-rollout-overflow';
+import { findCodexRolloutPath } from './codex-rollout-overflow';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
@@ -5035,12 +5035,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
                 } catch (error) {
                   console.warn(`[wake-executor] tool-reference poison detector failed: ${(error as Error)?.message ?? error}`);
                 }
-              } else if (
-                resumeAgent === 'codex' && codexHome && codexSessionId && isCodexContextOverflowError(errorText)
-              ) {
+              } else if (resumeAgent === 'codex' && codexHome && codexSessionId) {
                 // WI-6554700010008894: a Codex thread that no longer fits its model window
                 // fails every resume the same way; quarantine it once the persisted rollout
                 // shows a sustained streak, instead of re-firing the wake forever.
+                // The ROLLOUT is the evidence, not this exit's text: after the overflowing
+                // turn Codex runs a remote compact task, and when that fails (e.g. on the
+                // account usage wall) the exit tail reports only the compact failure. Gating
+                // on the exit text missed every real occurrence (measured 2026-10-12 12:22Z).
+                // A healthy thread's newest terminal is a completed turn, so the analyzer
+                // returns a zero streak and nothing is quarantined.
                 try {
                   const rolloutPath = findCodexRolloutPath(codexHome, codexSessionId);
                   const quarantine = await quarantineCodexOverflowSession(

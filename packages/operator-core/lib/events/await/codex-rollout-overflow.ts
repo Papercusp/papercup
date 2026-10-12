@@ -31,11 +31,6 @@ const OVERFLOW_RE = /context_length_exceeded|exceeds the context window/i;
 const USAGE_LIMIT_RE = /usage_limit_exceeded|hit your usage limit/i;
 const CODEX_SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** True when provider/CLI error text reports that the input exceeded the model window. */
-export function isCodexContextOverflowError(text: string | null | undefined): boolean {
-  return typeof text === 'string' && OVERFLOW_RE.test(text);
-}
-
 export interface CodexRolloutOverflowAnalysis {
   /** Most recent turns that ended in a context-window overflow, usage-limit turns skipped. */
   trailingContextOverflowTurns: number;

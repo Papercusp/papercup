@@ -7,7 +7,6 @@ import {
   analyzeCodexRolloutText,
   CODEX_CONTEXT_OVERFLOW_POISON_TURNS,
   findCodexRolloutPath,
-  isCodexContextOverflowError,
 } from './codex-rollout-overflow';
 
 // Captured from a real over-window thread (su-codex-homes/session-33944, rollout
@@ -105,14 +104,5 @@ describe('findCodexRolloutPath', () => {
   it('returns null for a non-uuid id or a home without sessions', () => {
     expect(findCodexRolloutPath(tempRoot(), sid)).toBeNull();
     expect(findCodexRolloutPath(tempRoot(), '../etc')).toBeNull();
-  });
-});
-
-describe('isCodexContextOverflowError', () => {
-  it('matches the provider code and the human message, not other failures', () => {
-    expect(isCodexContextOverflowError(lines[18])).toBe(true);
-    expect(isCodexContextOverflowError('Your input exceeds the context window of this model.')).toBe(true);
-    expect(isCodexContextOverflowError(lines[23])).toBe(false);
-    expect(isCodexContextOverflowError(null)).toBe(false);
   });
 });
