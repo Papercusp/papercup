@@ -1468,6 +1468,28 @@ describe('launchAcceptanceGrader', () => {
 });
 
 describe('classifyAcceptanceGraderTerminalFailure', () => {
+  it('does not treat a transient Codex capacity screen as a terminal audit failure', async () => {
+    const raw = '\u001b[31m⚠ Selected model is at capacity. Please try a different model.\u001b[0m\r\n';
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    await expect(detectAcceptanceGraderTerminalFailure('codex.log', {
+      readLogTail: () => raw,
+      allowInferenceGatewayError: true,
+      allowGatewayErrorWithoutFooter: true,
+      maxRechecks: 0,
+      detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+
+  it('does not retire a judge discussing or working after an old capacity screen', () => {
+    const options = { allowInferenceGatewayError: true, allowGatewayErrorWithoutFooter: true };
+    expect(classifyAcceptanceGraderTerminalFailure(
+      'The report says Selected model is at capacity. Please try a different model.', options,
+    )).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(
+      '⚠ Selected model is at capacity. Please try a different model.\n• Called scorecards:get', options,
+    )).toBeNull();
+  });
+
   it('matches the exact terminal model-limit response through terminal control bytes', () => {
     const raw =
       "\u001b[31mYou've reached your Fable 5 limit.\u001b[0m\r\n" +
