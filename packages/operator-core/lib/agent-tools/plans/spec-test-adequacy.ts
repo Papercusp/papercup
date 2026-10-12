@@ -2802,7 +2802,11 @@ export function evaluateSpecTestAdequacy(input: {
   const requiredPlanes = [...new Set(clause.requiredEvidence
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry === 'live' || entry === 'deployed'))];
-  const presentPlanes = new Set(currentEvidence.flatMap((row) => {
+  const planeBindings = currentEvidence.filter((row) => {
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    return typeof plane === 'string' && requiredPlanes.includes(plane.trim().toLowerCase());
+  });
+  const presentPlanes = new Set(planeBindings.flatMap((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
@@ -2813,9 +2817,10 @@ export function evaluateSpecTestAdequacy(input: {
         `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
         'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
       )
-    : plainCorrectLayerPart(
+    : boundCorrectLayerPart(
         'pass',
         `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
+        planeBindings,
       );
   const parts = [
     layerRating,
