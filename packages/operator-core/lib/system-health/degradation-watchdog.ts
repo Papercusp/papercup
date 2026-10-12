@@ -162,6 +162,11 @@ registerDegradationMechanism({
   thresholds: { minEligible: 1 },
 });
 registerDegradationMechanism({
+  mechanism: 'release-verdict-event', scopeKeyed: true,
+  description: 'Terminal inconclusive verdict pairs delivered through the existing awaited-event engine rather than left to timeout.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
   mechanism: 'bm25-scan-score',
   description: 'Eligible lexical ranking calls whose index-scan score was verified rather than replaced by a standalone distance rerun.',
 });

@@ -47,7 +47,6 @@ const NA_WATCHDOG_TOOLING = na(
 export const DISPOSITIONS = Object.freeze({
   // ── owner-only-alarm ──────────────────────────────────────────────────────────────────────
   'owner-only-alarm|apps/operator/bin/host-bootstrap.ts': migrate('P-009'),
-  'owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/agent-tools/operator/notify_owner.ts': na(
     'the notify_owner tool relays an agent-authored message to the owner; it reports no system condition',
   ),
@@ -107,7 +106,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|apps/operator/bin/host-bootstrap.ts': migrate('P-012'),
   'log-only-fallback|apps/operator/bin/llm-test.ts': NA_CLI,
   'log-only-fallback|libs/papercusp/packages/cli/src/snapshot-cli.ts': NA_CLI,
-  'log-only-fallback|apps/operator/lib/release/green-checkpoint.ts': migrate('P-008'),
   'log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts': migrate('P-013'),
   'log-only-fallback|apps/operator/scripts/onboard-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/psu-launcher.mjs': NA_CLI,
