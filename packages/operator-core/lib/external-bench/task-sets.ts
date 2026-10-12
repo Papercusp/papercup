@@ -37,6 +37,7 @@ import { SWE_BENCH_PRO_V1_PIN } from './swe-bench-pro-pin';
 import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
 import { gdpvalPilotSubset, gdpvalTaskToBenchTask, loadGdpvalTasks } from './gdpval/dataset';
 import { isSwarmBenchTaskSet, swarmbenchScenarios, swarmScenarioToBenchTask } from './swarmbench-backlog';
+import { FRONTIER_SWE_V1_TASK_SET_IDS, FRONTIER_SWE_V2_TASK_SET_IDS, frontierSweTaskSetVersion } from './frontier-swe-version';
 
 /** A SWE-bench Pro task row as persisted in the pilot JSONL. */
 interface TaskRow {
@@ -808,28 +809,9 @@ export function frontierSwePilotSubset(rows: FrontierSweTaskRow[]): FrontierSweT
   return out;
 }
 
-/** The v1 (HISTORY) FrontierSWE task-set ids — loaded from {@link frontierSweTaskSetPath}. */
-export const FRONTIER_SWE_V1_TASK_SET_IDS = [
-  'frontier-swe-pilot',
-  'frontier-swe',
-  'frontier-swe-cpu',
-  'frontier-swe-custom',
-] as const;
-
-/** The v2 FrontierSWE task-set ids — loaded from {@link frontierSweV2TaskSetPath}; never mixed with v1 (R-1). */
-export const FRONTIER_SWE_V2_TASK_SET_IDS = [
-  'frontier-swe-v2-pilot',
-  'frontier-swe-v2',
-  'frontier-swe-v2-cpu',
-  'frontier-swe-v2-custom',
-] as const;
-
-/** Which corpus version a FrontierSWE task-set id loads, or null when it is not a FrontierSWE set. */
-export function frontierSweTaskSetVersion(taskSetId: string): 'v1' | 'v2' | null {
-  if ((FRONTIER_SWE_V2_TASK_SET_IDS as readonly string[]).includes(taskSetId)) return 'v2';
-  if ((FRONTIER_SWE_V1_TASK_SET_IDS as readonly string[]).includes(taskSetId)) return 'v1';
-  return null;
-}
+// The FrontierSWE task-set ids + version classifier live in the browser-safe ./frontier-swe-version (the
+// Evaluation surface's version badge reads the same source, P-016); re-exported here for server callers.
+export { FRONTIER_SWE_V1_TASK_SET_IDS, FRONTIER_SWE_V2_TASK_SET_IDS, frontierSweTaskSetVersion } from './frontier-swe-version';
 
 /**
  * Load a FrontierSWE task set → BenchTask[]. Each id reads exactly ONE corpus version (R-1), and the reader
