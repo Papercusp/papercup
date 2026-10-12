@@ -93,9 +93,17 @@ export async function prepareContractExecution(input: DaoKey & { offerId: string
     const entity = await getIssuingEntity(input,{ sql:conn });
     const [role] = await tx<Array<{ title:string }>>`SELECT title FROM harness_shared.dao_hr_roles WHERE workspace_id=${input.workspaceId} AND dao_slug=${input.daoSlug} AND role_id=${offer.roleId}`;
     const contractId = randomUUID(), values = offerMergeValues(offer,{ issuerTitle:entity?.registeredTitle ?? 'Non-binding sample issuer',roleTitle:role!.title,startDate:input.startDate,contractId });
+    if (offer.amendsOfferId) {
+      const parent = await getContractExecution({...input,offerId:offer.amendsOfferId},{sql:conn}) as ContractExecution & {admitted_at:string|null;offboarding_proof:unknown;hire_proposal_ref:string|null};
+      if (!parent.admitted_at || parent.offboarding_proof) throw new ContractSigningError('invalid_transition','Amend only an active admitted engagement.');
+      values.amends_contract_ref = parent.contract_id;
+      values.hire_proposal_ref = parent.hire_proposal_ref!;
+    }
     const generated = [], refs = [], kinds = new Set<string>();
     for (const ref of input.templates) {
       const status = await getTemplateVersionStatus({ ...input,...ref },{ sql:conn });
+      if (offer.amendsOfferId && !status.version.mergeFields.includes('amends_contract_ref'))
+        throw new ContractSigningError('invalid_input','An amendment template must identify the original contract.');
       if (status.template.engagementType !== offer.terms.engagementType || status.template.jurisdiction !== offer.terms.jurisdiction || kinds.has(status.template.documentKind)) throw new ContractSigningError('invalid_input','Template engagement, jurisdiction and document kinds must match the approved offer.');
       kinds.add(status.template.documentKind);
       const selected = Object.fromEntries(status.version.mergeFields.map(field => [field,values[field]]));
