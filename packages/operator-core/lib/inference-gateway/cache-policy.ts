@@ -56,6 +56,18 @@ export const ANTHROPIC_EXTENDED_TTL = '1h';
  */
 export const PSU_CACHE_BOUNDARY = '<!--PSU_CACHE_BOUNDARY-->';
 
+/**
+ * Whether prompt composers emit {@link PSU_CACHE_BOUNDARY}. `PAPERCUSP_CACHE_SPLIT_BOUNDARY=0`
+ * yields a prompt byte-identical to the pre-boundary layout (the reversible cutover switch).
+ * One read shared by role-launch-spec (seam before the launch context) and su-persona-render
+ * (seam before the per-session overlays — token-efficiency-prompts-cache-and-behavior-2026-10-11
+ * P-006: without it, a launch with no launch context had NO boundary, so the per-session
+ * provenance/precedence tail made the whole ~131 KB playbook block unique per session).
+ */
+export function cacheSplitBoundaryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
+}
+
 export interface AnthropicCacheStats {
   /** The body object was mutated (caller must re-serialize). */
   changed: boolean;
@@ -566,6 +578,26 @@ export const RELOCATED_TAIL_CLOSE = '\n</system-reminder>';
 /** Default OFF: a quality-unproven authority-semantics change gated on a bounded experiment.
  *  `PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL=1` arms it. One read shared by the gateway and the
  *  cache-proxy (both call `rewriteAnthropicCacheBody`), so the two planes cannot disagree. */
+/**
+ * The gateway's per-request relocation decision (token-efficiency-prompts-cache-and-behavior-2026-10-11
+ * P-015): `PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL=1`/`=0` forces it per host; otherwise the
+ * registered flag (read via the injected, TTL-cached `readFlag`) decides. A failed flag read keeps
+ * the previous, unrelocated layout.
+ */
+export async function resolveRelocateSystemTail(
+  readFlag: () => Promise<boolean>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const forced = env.PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL;
+  if (forced === '1') return true;
+  if (forced === '0') return false;
+  try {
+    return (await readFlag()) === true;
+  } catch {
+    return false;
+  }
+}
+
 export function relocateSystemTailEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL === '1';
 }

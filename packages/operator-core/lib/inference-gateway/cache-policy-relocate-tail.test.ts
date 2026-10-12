@@ -17,8 +17,27 @@ import {
   RELOCATED_TAIL_OPEN,
   relocateSystemTailEnabled,
   relocateSystemTailToFirstUserTurn,
+  resolveRelocateSystemTail,
   rewriteAnthropicCacheBody,
 } from './cache-policy';
+
+// token-efficiency-prompts-cache-and-behavior-2026-10-11 P-015 / R-3: the gateway's decision is
+// the registered flag, with the per-host env var as a forcing override.
+describe('resolveRelocateSystemTail — registered flag + env override', () => {
+  const flag = (v: boolean) => async () => v;
+  it('follows the flag when no env override is set', async () => {
+    expect(await resolveRelocateSystemTail(flag(true), {})).toBe(true);
+    expect(await resolveRelocateSystemTail(flag(false), {})).toBe(false);
+  });
+  it('lets the env var force it on or off regardless of the flag', async () => {
+    expect(await resolveRelocateSystemTail(flag(false), { PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL: '1' })).toBe(true);
+    expect(await resolveRelocateSystemTail(flag(true), { PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL: '0' })).toBe(false);
+  });
+  it('keeps the previous layout when the flag read fails', async () => {
+    const boom = async (): Promise<boolean> => { throw new Error('flag store down'); };
+    expect(await resolveRelocateSystemTail(boom, {})).toBe(false);
+  });
+});
 
 type Body = Record<string, any>;
 const eph = (ttl?: string) => (ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' });

@@ -34,6 +34,7 @@ import {
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
+import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import {
   replayAgentSpecification,
   specificationPrompt,
@@ -194,6 +195,17 @@ export async function applySuPromptOverlays(opts: {
   instructionRuntime: InstructionRuntimeContext;
 }): Promise<{ promptText: string; instructionLint: InstructionLintReport }> {
   let promptText = opts.basePromptText;
+
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-006: everything appended below is
+  // PER-SESSION (codex launch context, launcher provenance, mode section, and the precedence
+  // trace that carries this owner's id + observedAt). The gateway can only cache the stable
+  // playbook across sessions if PSU_CACHE_BOUNDARY sits in front of that tail. role-launch-spec
+  // emits it only when a launch context exists, so most launches had none and every start
+  // rewrote the whole playbook block (measured 2026-10-12: 413 distinct last-system-block hashes
+  // across 450 starts). Emit it here unless the base already carries one.
+  if (cacheSplitBoundaryEnabled() && !promptText.includes(PSU_CACHE_BOUNDARY)) {
+    promptText = `${promptText.replace(/\n+$/, '')}\n\n${PSU_CACHE_BOUNDARY}\n`;
+  }
 
   if (opts.agent === 'codex' && opts.launchContextText) {
     const budgetModule = await import('./model-context-budget.mjs');

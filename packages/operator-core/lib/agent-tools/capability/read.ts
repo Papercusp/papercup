@@ -17,6 +17,13 @@ import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './ba
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import {
+  QUERY_DEFAULT_CONTEXT,
+  QUERY_DEFAULT_MAX_MATCHES,
+  QUERY_MAX_CONTEXT,
+  QUERY_MAX_MATCHES,
+  querySavedResult,
+} from './read-query';
 import { redactSensitiveText } from '../../sensitive-text';
 import {
   SCRATCH_REFERENCE_MAGIC,
@@ -200,8 +207,16 @@ const readPathArgs = {
   uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
 };
 
+const QUERY_EXCLUSIVITY =
+  'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
+/** Present on every non-query branch so a stray `query` is rejected instead of silently stripped. */
+const notQuery = {
+  query: z.never().optional().describe(`Only valid for a saved-result query. ${QUERY_EXCLUSIVITY}`),
+};
+
 const lineWindowArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
   offset: z.number().int().nonnegative().optional().describe(
     `1-based line to start from. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
   ),
@@ -228,6 +243,7 @@ const lineWindowArgs = z.object({
 
 const byteWindowArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -251,6 +267,7 @@ const byteWindowArgs = z.object({
 
 const contentIndexArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -267,6 +284,7 @@ const contentIndexArgs = z.object({
 
 const evidenceClassArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -286,7 +304,30 @@ const evidenceClassArgs = z.object({
  * The `z.never().optional()` fields emit the `not` constraints that make each
  * anyOf branch reject the other window modes.
  */
-const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs]);
+/**
+ * Saved-result query (token-efficiency-prompts-cache-and-behavior-2026-10-11 P-005): search the
+ * whole retained body of a spill (or any readable file) for lines containing every term, instead
+ * of paging base64. Same authorization/expiry gate as every other mode.
+ */
+const queryArgs = z.object({
+  ...readPathArgs,
+  query: z.string().trim().min(1).max(200).describe(
+    `Search the whole saved result for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. One-line JSON spills are searched pretty-printed. ${QUERY_EXCLUSIVITY}`,
+  ),
+  query_context: z.number().int().nonnegative().max(QUERY_MAX_CONTEXT).optional().describe(`Context lines around each match (default ${QUERY_DEFAULT_CONTEXT}).`),
+  query_max_matches: z.number().int().positive().max(QUERY_MAX_MATCHES).optional().describe(`Max matches returned (default ${QUERY_DEFAULT_MAX_MATCHES}); matchCount still counts all.`),
+  query_from_line: z.number().int().positive().optional().describe('Resume from this line of the searched view (use next_cursor).'),
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.never().optional().describe(`Not valid for a query. ${QUERY_EXCLUSIVITY}`),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs, queryArgs]);
 
 /**
  * The handler has two intentional response paths: human-readable MCP text and a
@@ -764,6 +805,35 @@ export default defineTool({
         return err(e.code, e.message);
       }
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    if (typeof args.query === 'string') {
+      const q = args as z.infer<typeof queryArgs>;
+      if (args.content_indexes || args.evidence_class || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined || args.raw !== undefined) {
+        return err('mixed_window_modes', 'query cannot be combined with line, byte, content or evidence selection.');
+      }
+      const result = querySavedResult(bytes, {
+        query: q.query,
+        context: q.query_context,
+        maxMatches: q.query_max_matches,
+        fromLine: q.query_from_line,
+        bodyOffset: reference?.bodyOffsetInPayload,
+      });
+      const cursorPath = args.uri ?? args.file_path ?? abs;
+      return { content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: true,
+        file_path: abs,
+        query: q.query,
+        ...result,
+        ...(reference ? { reference: { sha256: reference.sha256, expiresAt: reference.expiresAt, byteCount: reference.byteCount } } : {}),
+        next_cursor: result.nextFromLine === null ? null : {
+          tool: 'capability:read',
+          args: { [args.uri ? 'uri' : 'file_path']: cursorPath, query: q.query, query_from_line: result.nextFromLine },
+        },
+        note: result.matchCount === 0
+          ? `No line in the searched ${result.view} view (${result.coverage.searchedLines} lines from line ${result.coverage.fromLine}, ${result.coverage.payloadBytes} bytes) contains every term. That is a complete negative for THIS retained body${result.coverage.upstreamPartialMarkers > 0 ? `, but the body itself carries ${result.coverage.upstreamPartialMarkers} upstream truncation marker(s) — the original tool output was partial` : ''}.`
+          : undefined,
+      }) }] };
     }
 
     if (args.evidence_class) {

@@ -2245,6 +2245,15 @@ export const FLAGS = {
   // an attended :3170 verify, so leader/owner should give this one a further look). OFF ⇒ the
   // flat priority+aging queue (the reversible fallback).
   GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-015 (finishes WI-10005042, cache plan
+  // D-079): the gateway moves the per-session system TAIL (the part after PSU_CACHE_BOUNDARY:
+  // launch brief, provenance, mode section, instruction precedence) out of the system block to just
+  // after messages[0] block 0, wrapped as a system-authority <system-reminder>. Without it the
+  // per-session tail sits in FRONT of the ~110-138 KB CLAUDE.md block, so that cohort-identical
+  // block is re-written to cache on every su start. Stateless per request (R1); enforcement of
+  // modes/precedence stays in code. DEFAULT ON. OFF ⇒ the previous layout, byte-identical (the
+  // rollback). Env PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL=1/0 still forces it on/off per host.
+  GATEWAY_RELOCATE_SYSTEM_TAIL: "papercusp-gateway-relocate-system-tail",
   // codex-gateway-oauth-proxy-2026-07-04 (WI-2198): gates the codex
   // ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
   // codex-cli account's native Responses request to chatgpt.com/backend-api/codex with

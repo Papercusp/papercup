@@ -166,7 +166,7 @@ import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
 import { promptsDir } from './prompt-assembly';
-import { PSU_CACHE_BOUNDARY } from './inference-gateway/cache-policy';
+import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
 import { resolveProjectDir } from './spawn-config';
@@ -1697,7 +1697,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // a prompt byte-identical to today (clean reversible cutover). A flag mismatch across the
   // launcher vs the forward point is harmless either way: an unsplit sentinel is an inert comment,
   // and a missing sentinel just means the split no-ops.
-  const emitBoundary = process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
+  const emitBoundary = cacheSplitBoundaryEnabled();
   const promptText = launchCtx
     ? suPersonaText.replace(/\n+$/, '') +
       '\n\n' +
