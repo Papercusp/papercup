@@ -275,6 +275,8 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  });',
             '  const isMapFrame = name => /^map_[0-9]+$/.test(name);',
             '  const mapFrameNames = [...new Set(sampleFrames.flat().filter(isMapFrame))];',
+            '  const nodeFunctionCounts = new Map();',
+            '  for (const node of nodes) { const name = node.callFrame?.functionName || "(empty)"; nodeFunctionCounts.set(name, (nodeFunctionCounts.get(name) ?? 0) + 1); }',
             '  const hotSamples = sampleFrames.filter(frames => frames.includes("cpuHotFrame")).length;',
             '  const mapSamples = sampleFrames.filter(frames => frames.some(isMapFrame)).length;',
             '  const usefulSamples = sampleFrames.filter(frames => frames.includes("cpuHotFrame") || frames.some(isMapFrame)).length;',
@@ -319,7 +321,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '    possible: summarizeWindows(hotFrameWindows, "possibleStartUs", "possibleEndUs"),',
             '    definite: summarizeWindows(hotFrameWindows, "definiteStartUs", "definiteEndUs"),',
             '  } : null;',
-            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, mapFrameNames: mapFrameNames.slice(0, 8), usefulSamples, timeDeltaCount: timeDeltasUs.length, sampleOffsetCount: sampleOffsetsUs.length, sampleOffsetStartUs: sampleOffsetsUs[0] ?? null, sampleOffsetEndUs: sampleOffsetsUs.at(-1) ?? null, timeDeltaSumUs, timeDeltaMinUs: sortedTimeDeltasUs[0] ?? null, timeDeltaMedianUs: sortedTimeDeltasUs[Math.floor(sortedTimeDeltasUs.length / 2)] ?? null, timeDeltaMaxUs: sortedTimeDeltasUs.at(-1) ?? null, profileDuration, workWindow: workWindow ? { ...workWindow, ...timedWork } : null, hotFrameWindows: timedHotFrameWindows, sampleLeafCounts: rankCounts(leafCounts), sampleFrameCounts: rankCounts(frameCounts), samplePathCounts: rankCounts(pathCounts).slice(0, 8), ...(sampleChains ? { sampleChains } : {}), bytes: Buffer.byteLength(JSON.stringify(profile)) };',
+            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, mapFrameNames: mapFrameNames.slice(0, 8), nodeFunctionCounts: rankCounts(nodeFunctionCounts).slice(0, 16), usefulSamples, timeDeltaCount: timeDeltasUs.length, sampleOffsetCount: sampleOffsetsUs.length, sampleOffsetStartUs: sampleOffsetsUs[0] ?? null, sampleOffsetEndUs: sampleOffsetsUs.at(-1) ?? null, timeDeltaSumUs, timeDeltaMinUs: sortedTimeDeltasUs[0] ?? null, timeDeltaMedianUs: sortedTimeDeltasUs[Math.floor(sortedTimeDeltasUs.length / 2)] ?? null, timeDeltaMaxUs: sortedTimeDeltasUs.at(-1) ?? null, profileDuration, workWindow: workWindow ? { ...workWindow, ...timedWork } : null, hotFrameWindows: timedHotFrameWindows, sampleLeafCounts: rankCounts(leafCounts), sampleFrameCounts: rankCounts(frameCounts), samplePathCounts: rankCounts(pathCounts).slice(0, 8), ...(sampleChains ? { sampleChains } : {}), bytes: Buffer.byteLength(JSON.stringify(profile)) };',
             '}',
             'async function captureInspector(durationMs) {',
             '  const rotate = setInterval(() => { void recorder.update(true, true); }, 40);',
@@ -379,15 +381,6 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'await delay(50);',
             'const primary = await measure(() => strategy === "inspector" ? captureInspector(1000) : captureEager(1000, false, 0, null, false));',
             'const disabledRevocation = strategy === "inspector" ? await revokeInspector(false, true) : await revokeEager();',
-            'let eagerProfileStartCallWindow = null;',
-            'const recoveryWarmup = await measure(() => {',
-            '  if (strategy === "inspector") return recorder.update(true, true);',
-            '  eager.create();',
-            '  const startedNs = process.hrtime.bigint();',
-            '  const profileId = eager.start(maxSamples);',
-            '  eagerProfileStartCallWindow = { startedNs, returnedNs: process.hrtime.bigint() };',
-            '  return profileId;',
-            '});',
             'let recoveryInspectorControl = null;',
             'if (strategy === "eager" && includeRecoverySampleChains) {',
             '  const session = new InspectorSession();',
@@ -399,6 +392,16 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  await post("Profiler.start");',
             '  recoveryInspectorControl = { session, post, startCallWindow: { startedNs, returnedNs: process.hrtime.bigint() } };',
             '}',
+            '// Initialize the paired control before the capped eager capture so Inspector setup cannot consume its sample budget before work starts.',
+            'let eagerProfileStartCallWindow = null;',
+            'const recoveryWarmup = await measure(() => {',
+            '  if (strategy === "inspector") return recorder.update(true, true);',
+            '  eager.create();',
+            '  const startedNs = process.hrtime.bigint();',
+            '  const profileId = eager.start(maxSamples);',
+            '  eagerProfileStartCallWindow = { startedNs, returnedNs: process.hrtime.bigint() };',
+            '  return profileId;',
+            '});',
             'const recoveryCapture = await measure(() => strategy === "inspector" ? captureInspector(350) : captureEager(350, true, 0, eagerProfileStartCallWindow, includeRecoverySampleChains, recoveryInspectorControl));',
             'const recoveryPhaseOffsetsMs = [0, 2, 4, 6, 8, 8, 6, 4, 2, 0];',
             'const recoveryPhaseSweep = [];',
@@ -406,7 +409,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  for (const workStartOffsetMs of recoveryPhaseOffsetsMs) {',
             '    const measured = await measure(() => captureEager(350, false, workStartOffsetMs));',
             '    const profile = measured.value.profile;',
-            '    recoveryPhaseSweep.push({ workStartOffsetMs, profile: { samples: profile.samples, nodes: profile.nodes, hotSamples: profile.hotSamples, mapSamples: profile.mapSamples, mapFrameNames: profile.mapFrameNames, usefulSamples: profile.usefulSamples, timeDeltaCount: profile.timeDeltaCount, sampleOffsetCount: profile.sampleOffsetCount, timeDeltaSumUs: profile.timeDeltaSumUs, timeDeltaMinUs: profile.timeDeltaMinUs, timeDeltaMedianUs: profile.timeDeltaMedianUs, timeDeltaMaxUs: profile.timeDeltaMaxUs, profileDuration: profile.profileDuration, workWindow: profile.workWindow, sampleFrameCounts: profile.sampleFrameCounts.slice(0, 8), samplePathCounts: profile.samplePathCounts.slice(0, 4), bytes: profile.bytes }, workload: measured.value.workload, durationMs: measured.durationMs, workerGapMaxMs: measured.workerGapMaxMs });',
+            '    recoveryPhaseSweep.push({ workStartOffsetMs, profile: { samples: profile.samples, nodes: profile.nodes, hotSamples: profile.hotSamples, mapSamples: profile.mapSamples, mapFrameNames: profile.mapFrameNames, nodeFunctionCounts: profile.nodeFunctionCounts, usefulSamples: profile.usefulSamples, timeDeltaCount: profile.timeDeltaCount, sampleOffsetCount: profile.sampleOffsetCount, timeDeltaSumUs: profile.timeDeltaSumUs, timeDeltaMinUs: profile.timeDeltaMinUs, timeDeltaMedianUs: profile.timeDeltaMedianUs, timeDeltaMaxUs: profile.timeDeltaMaxUs, profileDuration: profile.profileDuration, workWindow: profile.workWindow, sampleFrameCounts: profile.sampleFrameCounts.slice(0, 8), samplePathCounts: profile.samplePathCounts.slice(0, 4), bytes: profile.bytes }, workload: measured.value.workload, durationMs: measured.durationMs, workerGapMaxMs: measured.workerGapMaxMs });',
             '  }',
             '}',
             'const unsafeRevocation = strategy === "inspector" ? await revokeInspector(true, false) : await revokeEager();',
@@ -509,7 +512,12 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           line.includes('into') &&
           line.includes('SharedFunctionInfo workFor'),
         );
-        const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+        const median = (xs: number[]) => {
+          const sorted = [...xs].sort((a, b) => a - b);
+          const middle = Math.floor(sorted.length / 2);
+          return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+        };
+        const requiredPhaseMedianUsefulSamples = 3;
         const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
@@ -521,7 +529,15 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             eager.delayed.cleanup.sampleCount <= maxSamples,
           primaryFixtureVisible: (eager.primary.profile.workWindow?.definite?.usefulSamples ?? 0) >= 1,
           recoveredHotFrames: (eager.recoveryCapture.profile.workWindow?.definite?.usefulSamples ?? 0) >= 3,
-          repeatedRecoveryCoverage: eager.recoveryPhaseSweep.length === 10 && eagerPhaseMedianUsefulSamples >= 3,
+          repeatedRecoveryCoverage:
+            eager.recoveryPhaseSweep.length === 10 &&
+            eagerNoTurboInlining.recoveryPhaseSweep.length === 10 &&
+            eagerNoMaglevInlining.recoveryPhaseSweep.length === 10 &&
+            eagerNoCompilerInlining.recoveryPhaseSweep.length === 10 &&
+            eagerPhaseMedianUsefulSamples >= requiredPhaseMedianUsefulSamples &&
+            noTurboInliningPhaseMedianUsefulSamples >= requiredPhaseMedianUsefulSamples &&
+            noMaglevInliningPhaseMedianUsefulSamples >= requiredPhaseMedianUsefulSamples &&
+            noCompilerInliningPhaseMedianUsefulSamples >= requiredPhaseMedianUsefulSamples,
           discardedWithoutSerialization:
             !eager.disabledRevocation.serialized &&
             !eager.unsafeRevocation.serialized &&
@@ -547,6 +563,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         type TimedProfile = {
           samples: number;
           nodes: number;
+          nodeFunctionCounts: Array<[string, number]>;
           hotSamples: number;
           mapSamples: number;
           usefulSamples: number;
@@ -622,6 +639,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           const summarizeProfile = (timedProfile: TimedProfile, hotFrameWindowsUs?: TimedWindow[]) => ({
             samples: timedProfile.samples,
             nodes: timedProfile.nodes,
+            nodeFunctionCounts: timedProfile.nodeFunctionCounts,
             hotSamples: timedProfile.hotSamples,
             mapSamples: timedProfile.mapSamples,
             usefulSamples: timedProfile.usefulSamples,
@@ -781,7 +799,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           noMaglevInlining: summarizeStrategy(eagerNoMaglevInlining),
           noCompilerInlining: summarizeStrategy(eagerNoCompilerInlining),
           phaseSweepMedianDefiniteWorkWindowUsefulSamples: {
-            requiredPerCapture: 3,
+            requiredPhaseMedianUsefulSamples,
             default: eagerPhaseMedianUsefulSamples,
             noTurboInlining: noTurboInliningPhaseMedianUsefulSamples,
             noMaglevInlining: noMaglevInliningPhaseMedianUsefulSamples,
@@ -798,6 +816,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         expect(eager.primary.profile.workWindow?.definite.usefulSamples ?? 0).toBeGreaterThanOrEqual(1);
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
         expect(recoveryInspectorInlineAttribution?.definiteHotWindowSamples).toBeGreaterThanOrEqual(3);
+        expect(eager.recoveryCapture.profile.workWindow?.definite.samples ?? 0).toBeGreaterThanOrEqual(3);
         const recoverySampleChains = eager.recoveryCapture.profile.sampleChains ?? [];
         expect(recoverySampleChains).toHaveLength(eager.recoveryCapture.profile.samples);
         for (const [index, sample] of recoverySampleChains.entries()) {
@@ -825,6 +844,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         expect(eager.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
         expect(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
         expect(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
         for (const capture of [
           ...eager.recoveryPhaseSweep,
           ...eagerNoTurboInlining.recoveryPhaseSweep,
