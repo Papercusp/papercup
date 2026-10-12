@@ -522,6 +522,89 @@ const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scop
   },
 }));
 
+const workspaceRoutingCases: RailMigrationCase[] = [{
+  id: 'remote-seat-original-scope-offer-failures-primary-empty-and-context-exclusion',
+  item: 'P-013', route: 'observation', mechanism: 'workspace-routing-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/agent-tools/plans/remote-seat-inventory.ts|resolveRemoteSeatInventory|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const empty = { potShared: false, donorCount: 0, totalSeats: 0 };
+    let mode: 'scope-failure' | 'offer-failure' | 'none' | 'many' | 'primary' = 'scope-failure';
+    let rows: Array<{ potSlug: string | null; publisherGithubUserId: number; record: { kind: string; seat: { count: number; hostLabel?: string } } }> = [];
+    const resolveScope = async (workspaceId: string) => {
+      expect(workspaceId).toBe('fixture');
+      if (mode === 'scope-failure') throw new Error('scope unavailable');
+      return { kind: mode === 'none' || mode === 'many' ? mode : 'one', homeSlug: 'home' };
+    };
+    const listOffers = async (workspaceId: string, home: string, filter: unknown) => {
+      expect([workspaceId, home, filter]).toEqual(['fixture', 'home', { kind: 'seat', status: 'open' }]);
+      if (mode === 'offer-failure') throw new Error('offer store unavailable');
+      return rows;
+    };
+    const resolve = execute(original('packages/operator-core/lib/agent-tools/plans/remote-seat-inventory.ts', 'export async function resolveRemoteSeatInventory', 'function'), {
+      EMPTY_SUMMARY: empty, resolveWorkspaceHiveScope: resolveScope, listOffersDefault: listOffers,
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('workspace-routing-read'); expect(row.scope).toBe('remote-seat-inventory');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    }, 'resolveRemoteSeatInventory') as (workspaceId: string | null, deps?: object) => Promise<object>;
+    expect(await resolve('fixture')).toEqual(empty);
+    mode = 'offer-failure'; expect(await resolve('fixture', { resolveScope, listOffers })).toEqual(empty);
+    for (const unshared of ['none', 'many'] as const) {
+      mode = unshared; expect(await resolve('fixture')).toEqual(empty);
+    }
+    mode = 'primary';
+    expect(await resolve('fixture')).toEqual({ potShared: true, donorCount: 0, totalSeats: 0, donorLabels: undefined });
+    rows = [
+      { potSlug: 'pot', publisherGithubUserId: 1, record: { kind: 'seat', seat: { count: 2, hostLabel: ' donor ' } } },
+      { potSlug: null, publisherGithubUserId: 2, record: { kind: 'seat', seat: { count: 20 } } },
+    ];
+    expect(await resolve('fixture')).toEqual({ potShared: true, donorCount: 1, totalSeats: 2, donorLabels: ['donor'] });
+    expect(await resolve(null)).toEqual(empty);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'remote-seat-read-failed'], [0, 'remote-seat-read-failed'],
+      [1, 'applied'], [1, 'applied'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'workspace-routing-read', observations };
+  },
+}, {
+  id: 'issue-partition-original-throttled-failures-primary-off-and-workspace-capture',
+  item: 'P-013', route: 'observation', mechanism: 'workspace-routing-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/issues-engineer.ts|refreshIssuesPerWorkspace|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<ScoutReadObservation & { workspaceId: string }> = [];
+    const cache = new Map<string, { on: boolean; readAtMs: number }>();
+    let workspaceId = 'first', fail = true, enabled = true;
+    const refresh = execute(original('packages/operator-core/lib/issues-engineer.ts', 'async function refreshIssuesPerWorkspace', 'function'), {
+      activeWorkspaceId: () => workspaceId, FLAGS: { ISSUES_PER_WORKSPACE: 'partition' }, systemDistinctId: () => 'host',
+      getFlag: async (flag: string, identity: string) => {
+        expect([flag, identity]).toEqual(['partition', 'host']);
+        workspaceId = 'second';
+        if (fail) throw new Error('flag store unavailable');
+        return enabled;
+      },
+      issuesPerWorkspaceCache: cache, _lastIssuesPerWorkspaceErrorLoggedAtMs: Date.now(),
+      ISSUES_PER_WORKSPACE_FLAG_ERROR_LOG_THROTTLE_MS: 300_000,
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('workspace-routing-read'); expect(row.scope).toBe('issue-partition-flag');
+        observations.push({ ...row, workspaceId: options.workspaceId }); return true;
+      },
+    }, 'refreshIssuesPerWorkspace') as () => Promise<void>;
+    await refresh(); await refresh();
+    expect(cache.get('first')?.on).toBe(false); expect(cache.get('second')?.on).toBe(false);
+    workspaceId = 'first'; fail = false; await refresh();
+    expect(cache.get('first')?.on).toBe(true);
+    enabled = false; await refresh(); expect(cache.get('second')?.on).toBe(false);
+    expect(observations.map(row => [row.workspaceId, row.applied, row.reason])).toEqual([
+      ['first', 0, 'issue-partition-read-failed'], ['second', 0, 'issue-partition-read-failed'],
+      ['first', 1, 'applied'], ['second', 1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'workspace-routing-read', observations };
+  },
+}];
+
 const workItemCallerCases: RailMigrationCase[] = [{
   id: 'grading-standdown-original-failed-read-empty-primary-and-owner-suppression',
   item: 'P-013', route: 'observation', mechanism: 'grading-standdown-read',
@@ -647,7 +730,7 @@ const workItemCallerCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...coordinationReadCases, ...remainingSyncCases, {
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

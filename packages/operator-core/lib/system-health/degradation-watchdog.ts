@@ -165,6 +165,10 @@ registerDegradationMechanism({
   description: 'Inbox and outbox reads whose primary paged query completed rather than retrying the full-read fallback after a paging error.',
 });
 registerDegradationMechanism({
+  mechanism: 'workspace-routing-read', scopeKeyed: true,
+  description: 'Workspace route and issue-partition decisions that measured their primary inventory or flag rather than choosing a local-only or shared-partition default after a read failure.',
+});
+registerDegradationMechanism({
   mechanism: 'work-item-lock-reclaim',
   scopeKeyed: true,
   description: 'Eligible targeted lock releases and their claim-transfer or stale-sweep callers whose cleanup completed rather than leaving locks to expire by lease.',
