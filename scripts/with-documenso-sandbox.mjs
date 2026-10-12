@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:net';
 
 const PG_IMAGE = 'postgres@sha256:5a65324fe84dc41709ff914e90b07f3e2f577073ed27bf917d4873aca0c9ec51';
 const MAIL_IMAGE = 'maildev/maildev@sha256:180ef51f65eefebb0e7122d8308813c1fd7bff164bc440ce5a3c2feee167a810';
@@ -68,7 +69,7 @@ export async function runSandbox({ image, command }) {
   const network = 'daohr-documenso-' + suffix;
   const database = network + '-pg', mail = network + '-mail', app = network + '-app';
   const containers = [];
-  let directory, networkCreated = false, child, stopped = false;
+  let directory, networkCreated = false, child, stopped = false, killTimer;
   const secret = () => randomBytes(32).toString('hex');
   function docker(args, environment = {}) {
     const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 30_000,
@@ -81,9 +82,11 @@ export async function runSandbox({ image, command }) {
     return result.stdout.trim();
   }
   function start(name, args, environment = {}) {
+    // docker run can create the container and then fail during port/mount setup.
+    // Record the owned name before dispatch so cleanup covers partial allocation.
+    containers.push(name);
     docker(['run', '-d', '--name', name, '--label', 'papercusp.test.owner=' + network,
       '--network', network, ...args], environment);
-    containers.push(name);
   }
   async function cleanup() {
     for (const name of [...containers].reverse()) {
@@ -96,6 +99,10 @@ export async function runSandbox({ image, command }) {
     stopped = true;
     if (child) {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already ended */ }
+      killTimer = setTimeout(() => {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already ended */ }
+      }, 5000);
+      killTimer.unref();
     }
   }
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
@@ -133,16 +140,16 @@ export async function runSandbox({ image, command }) {
       if (attempt >= 30) throw new Error('Sandbox Postgres did not become ready');
       await new Promise(done => setTimeout(done, 1000));
     }
-    // Reserve the published endpoint with a created container before computing
-    // its URL. Docker picks its port at start, so start then discover/recreate
-    // would lose the reservation: use the inspected HostPort after create.
-    docker(['create', '--name', app, '--label', 'papercusp.test.owner=' + network,
-      '--network', network, '-p', '127.0.0.1::3000', image]);
-    containers.push(app);
-    docker(['start', app]);
-    const port = loopbackPort(docker(['port', app, '3000/tcp']));
-    // Keep that host port across the fully configured replacement container.
-    docker(['rm', '-f', '-v', app]); containers.pop();
+    // Select a free port without starting an unconfigured provider. Docker's
+    // bind remains authoritative: a competing bind makes start fail and cleanup
+    // runs, rather than treating an unrelated process as our provider.
+    const port = await new Promise((done, reject) => {
+      const server = createServer(); server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const selected = server.address().port;
+        server.close(error => error ? reject(error) : done(selected));
+      });
+    });
     const appUrl = 'http://127.0.0.1:' + port;
     const environment = sandboxEnvironment({ appUrl, databasePassword, signingPassword,
       secret: secret(), encryptionKey: secret(), secondaryKey: secret() });
@@ -162,6 +169,7 @@ export async function runSandbox({ image, command }) {
     const runtime = { kind: 'documenso-sandbox', image, appUrl, mailUrl, container: app,
       network, isolatedDatabase: true, externalMail: false, testCertificate: true };
     console.error('[documenso-sandbox] ' + JSON.stringify(runtime));
+    if (stopped) return 130;
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,
       env: { ...process.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
         DOCUMENSO_TEST_RUNTIME: JSON.stringify(runtime) } });
@@ -169,6 +177,7 @@ export async function runSandbox({ image, command }) {
       child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
     });
   } finally {
+    clearTimeout(killTimer);
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
     await cleanup();
   }
