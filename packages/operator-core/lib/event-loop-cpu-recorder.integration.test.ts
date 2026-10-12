@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -142,7 +142,12 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         );
         expect(existsSync(addonPath)).toBe(true);
 
-        const run = async (strategy: 'inspector' | 'eager', v8Flags: string[] = [], includeRecoverySampleChains = false) => {
+        const run = async (
+          strategy: 'inspector' | 'eager',
+          v8Flags: string[] = [],
+          includeRecoverySampleChains = false,
+          includeV8TierTraces = false,
+        ) => {
           const workerSource =
             "const { parentPort } = require('node:worker_threads'); " +
             "let waiting = false; " +
@@ -151,6 +156,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'tick();';
           const childScript = [
             "import { createRequire } from 'node:module';",
+            "import { writeSync } from 'node:fs';",
             "import { Session as InspectorSession } from 'node:inspector';",
             "import { performance } from 'node:perf_hooks';",
             "import { setTimeout as delay } from 'node:timers/promises';",
@@ -159,6 +165,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'const strategy = ' + JSON.stringify(strategy) + ';',
             'const maxSamples = ' + maxSamples + ';',
             'const includeRecoverySampleChains = ' + includeRecoverySampleChains + ';',
+            'const includeV8TierTraces = ' + includeV8TierTraces + ';',
             'const addonPath = ' + JSON.stringify(addonPath) + ';',
             'const require = createRequire(import.meta.url);',
             "const eager = strategy === 'eager' ? require(addonPath) : null;",
@@ -344,8 +351,13 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  if (workStartOffsetMs > 0) await delay(workStartOffsetMs);',
             '  const beforeWork = { hotFrameCalls, churnedFunctions };',
             '  const workStartNs = process.hrtime.bigint();',
-            '  if (includeSampleChains) { captureHotFrameWindows = true; hotFrameWindowsNs = []; }',
+            '  if (includeSampleChains) {',
+            '    captureHotFrameWindows = true;',
+            '    hotFrameWindowsNs = [];',
+            '    if (includeV8TierTraces) writeSync(1, "@@recovery-work-trace-start@@\\n");',
+            '  }',
             '  await workFor(durationMs);',
+            '  if (includeSampleChains && includeV8TierTraces) writeSync(1, "@@recovery-work-trace-end@@\\n");',
             '  if (includeSampleChains) captureHotFrameWindows = false;',
             '  const workEndNs = process.hrtime.bigint();',
             '  let inspectorControlCapture = null;',
@@ -379,7 +391,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'const startup = await measure(() => strategy === "inspector" ? recorder.update(true, true) : eager.create());',
             'for (const fn of retained) fn(1);',
             'await delay(50);',
+            'if (includeV8TierTraces) writeSync(1, "@@primary-trace-start@@\\n");',
             'const primary = await measure(() => strategy === "inspector" ? captureInspector(1000) : captureEager(1000, false, 0, null, false));',
+            'if (includeV8TierTraces) writeSync(1, "@@primary-trace-end@@\\n");',
             'const disabledRevocation = strategy === "inspector" ? await revokeInspector(false, true) : await revokeEager();',
             'let recoveryInspectorControl = null;',
             'if (strategy === "eager" && includeRecoverySampleChains) {',
@@ -393,6 +407,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  recoveryInspectorControl = { session, post, startCallWindow: { startedNs, returnedNs: process.hrtime.bigint() } };',
             '}',
             '// Initialize the paired control before the capped eager capture so Inspector setup cannot consume its sample budget before work starts.',
+            'if (includeV8TierTraces) writeSync(1, "@@recovery-lifecycle-trace-start@@\\n");',
             'let eagerProfileStartCallWindow = null;',
             'const recoveryWarmup = await measure(() => {',
             '  if (strategy === "inspector") return recorder.update(true, true);',
@@ -403,6 +418,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  return profileId;',
             '});',
             'const recoveryCapture = await measure(() => strategy === "inspector" ? captureInspector(350) : captureEager(350, true, 0, eagerProfileStartCallWindow, includeRecoverySampleChains, recoveryInspectorControl));',
+            'if (includeV8TierTraces) writeSync(1, "@@recovery-lifecycle-trace-end@@\\n");',
             'const recoveryPhaseOffsetsMs = [0, 2, 4, 6, 8, 8, 6, 4, 2, 0];',
             'const recoveryPhaseSweep = [];',
             'if (strategy === "eager") {',
@@ -433,6 +449,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '};',
             'const result = {',
             '  strategy,',
+            '  v8Flags: process.execArgv.filter(flag => flag.startsWith("--trace-") || flag.startsWith("--no-turbo-inlining")),',
             '  startup: { durationMs: startup.durationMs, workerGapMaxMs: startup.workerGapMaxMs },',
             '  primary: { ...primary.value, durationMs: primary.durationMs, workerGapMaxMs: primary.workerGapMaxMs },',
             '  disabledRevocation,',
@@ -448,15 +465,105 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'if (strategy === "inspector") recorder.stop();',
             'if (strategy === "eager") eager.dispose();',
             'await worker.terminate();',
-            'process.stdout.write(JSON.stringify(result));',
+            'if (includeV8TierTraces) writeSync(3, JSON.stringify(result));',
+            'else process.stdout.write(JSON.stringify(result));',
           ].join('\n');
 
-          const { stdout } = await exec(
-            process.execPath,
-            [...v8Flags, '--expose-gc', '--import', 'tsx', '--input-type=module', '-e', childScript],
-            { timeout: 90_000, maxBuffer: 128 * 1024 },
-          );
-          return JSON.parse(stdout);
+          const childArgs = [...v8Flags, '--expose-gc', '--import', 'tsx', '--input-type=module', '-e', childScript];
+          let stdout: string;
+          let traceLines: Record<'primary' | 'recoveryLifecycle' | 'recoveryWork', Array<{ line: string; count: number }>> | undefined;
+          if (includeV8TierTraces) {
+            const captured = await new Promise<{
+              json: string;
+              traceLines: Record<'primary' | 'recoveryLifecycle' | 'recoveryWork', Array<{ line: string; count: number }>>;
+            }>((resolve, reject) => {
+              const child = spawn(process.execPath, childArgs, { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+              let json = '';
+              let pendingLine = '';
+              let stderrTail = '';
+              const traceCountsByWindow = {
+                primary: new Map<string, number>(),
+                recoveryLifecycle: new Map<string, number>(),
+                recoveryWork: new Map<string, number>(),
+              };
+              let activeTraceWindow: keyof typeof traceCountsByWindow | null = null;
+              let settled = false;
+              const relevantNames = /cpuHotFrame|workFor/;
+              const relevantEvents = /marking|compiling|completed|optimizing|bailout|deopt|inlin/i;
+              const onLine = (line: string) => {
+                if (line === '@@primary-trace-start@@') { activeTraceWindow = 'primary'; return; }
+                if (line === '@@primary-trace-end@@') { activeTraceWindow = null; return; }
+                if (line === '@@recovery-lifecycle-trace-start@@') { activeTraceWindow = 'recoveryLifecycle'; return; }
+                if (line === '@@recovery-lifecycle-trace-end@@') { activeTraceWindow = null; return; }
+                if (line === '@@recovery-work-trace-start@@') { activeTraceWindow = 'recoveryWork'; return; }
+                if (line === '@@recovery-work-trace-end@@') { activeTraceWindow = 'recoveryLifecycle'; return; }
+                if (activeTraceWindow !== null && relevantNames.test(line) && relevantEvents.test(line)) {
+                  const boundedLine = line
+                    .replace(/0x[0-9a-f]+/gi, '<addr>')
+                    .replace(/opt id \d+/g, 'opt id <n>')
+                    .replace(/bytecode offset \d+/g, 'bytecode offset <n>')
+                    .replace(/deopt exit \d+/g, 'deopt exit <n>')
+                    .replace(/FP to SP delta \d+/g, 'FP to SP delta <n>')
+                    .slice(0, 500);
+                  const counts = traceCountsByWindow[activeTraceWindow];
+                  const existing = counts.get(boundedLine);
+                  if (existing !== undefined) counts.set(boundedLine, existing + 1);
+                  else if (counts.size < 24) counts.set(boundedLine, 1);
+                }
+              };
+              child.stdout?.on('data', chunk => {
+                pendingLine += chunk.toString();
+                const lines = pendingLine.split(/\r?\n/);
+                pendingLine = lines.pop() ?? '';
+                for (const line of lines) onLine(line);
+              });
+              child.stdio[2]?.on('data', chunk => { stderrTail = (stderrTail + chunk.toString()).slice(-8_000); });
+              child.stdio[3]?.on('data', chunk => { json += chunk.toString(); });
+              const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                child.kill('SIGKILL');
+                reject(new Error(`V8 trace child exceeded 90 seconds${stderrTail ? `: ${stderrTail}` : ''}`));
+              }, 90_000);
+              timer.unref();
+              child.once('error', error => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+              });
+              child.once('close', (code, signal) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (pendingLine) onLine(pendingLine);
+                if (code !== 0) {
+                  reject(new Error(`V8 trace child exited code=${code} signal=${signal}${stderrTail ? `: ${stderrTail}` : ''}`));
+                  return;
+                }
+                const summarizeCounts = (counts: Map<string, number>) =>
+                  [...counts].map(([line, count]) => ({ line, count }));
+                resolve({
+                  json,
+                  traceLines: {
+                    primary: summarizeCounts(traceCountsByWindow.primary),
+                    recoveryLifecycle: summarizeCounts(traceCountsByWindow.recoveryLifecycle),
+                    recoveryWork: summarizeCounts(traceCountsByWindow.recoveryWork),
+                  },
+                });
+              });
+            });
+            stdout = captured.json;
+            traceLines = captured.traceLines;
+          } else {
+            const result = await exec(process.execPath, childArgs, { timeout: 90_000, maxBuffer: 128 * 1024 });
+            stdout = result.stdout;
+          }
+          const result = JSON.parse(stdout);
+          if (includeV8TierTraces) {
+            result.v8TierTraceLines = traceLines ?? [];
+          }
+          return result;
         };
 
         const inspector = await run('inspector');
@@ -522,6 +629,59 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const noCompilerInliningPhaseMedianUsefulSamples = median(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const summarizeTierTrace = (result: typeof eager) => {
+          const window = result.recoveryCapture.profile.workWindow;
+          const definiteSamples = (result.recoveryCapture.profile.sampleChains ?? [])
+            .filter(sample => {
+              const offsetUs = sample.sampleOffsetUs;
+              return offsetUs !== null && window !== undefined &&
+                offsetUs >= window.definiteStartUs && offsetUs <= window.definiteEndUs;
+            });
+          const frameCounts = new Map<string, number>();
+          const pathCounts = new Map<string, number>();
+          for (const sample of definiteSamples) {
+            const frames = sample.chain.map(frame => frame.callFrame.functionName || '(empty)');
+            for (const frame of new Set(frames)) frameCounts.set(frame, (frameCounts.get(frame) ?? 0) + 1);
+            const path = frames.slice(0, 6).join(' <- ');
+            pathCounts.set(path, (pathCounts.get(path) ?? 0) + 1);
+          }
+          const usefulExamples = definiteSamples
+            .filter(sample => sample.chain.some(frame =>
+              frame.callFrame.functionName === 'cpuHotFrame' || /^map_[0-9]+$/.test(frame.callFrame.functionName ?? ''),
+            ))
+            .slice(0, 6)
+            .map(sample => ({ sampleOffsetUs: sample.sampleOffsetUs,
+              frames: sample.chain.slice(0, 7).map(frame => frame.callFrame.functionName || '(empty)') }));
+          return {
+            flags: result.v8Flags,
+            traceLines: result.v8TierTraceLines,
+            recoveryPhaseMedianUsefulSamples: median(
+              result.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0),
+            ),
+            definiteWorkWindow: {
+              sampleCount: definiteSamples.length,
+              frameCounts: [...frameCounts].sort((a, b) => b[1] - a[1]).slice(0, 10),
+              pathCounts: [...pathCounts].sort((a, b) => b[1] - a[1]).slice(0, 6),
+              usefulExamples,
+            },
+          };
+        };
+        let comparativeTierTrace: Record<string, unknown> | null = null;
+        if (process.env.PAPERCUSP_CAPTURE_V8_TIER_TRACE === '1') {
+          const traceFlags = ['--trace-opt', '--trace-deopt', '--trace-turbo-inlining', '--trace-maglev-inlining'];
+          const tracedDefault = await run('eager', traceFlags, true, true);
+          const tracedNoTurboInlining = await run(
+            'eager',
+            ['--no-turbo-inlining', ...traceFlags],
+            true,
+            true,
+          );
+          comparativeTierTrace = {
+            default: summarizeTierTrace(tracedDefault),
+            noTurboInlining: summarizeTierTrace(tracedNoTurboInlining),
+            interpretation: 'Trace lines are grouped by their observed primary, recovery-lifecycle, or exact recovery-work output window; V8 trace lines do not carry timestamps here. Recovery-work events overlap the measured work interval. Sample offsets are relative to each profile start. Opaque optimization-status integers and missing frame names do not establish that a frame was inlined.',
+          };
+        }
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
             eager.recoveryCapture.profile.samples <= maxSamples &&
@@ -671,7 +831,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
               definiteEndUs: Math.max(...hotFrameWindowsUs.map(window => window.definiteEndUs)),
               possibleEndUs: Math.max(...hotFrameWindowsUs.map(window => window.possibleEndUs)),
             } : null,
-            ...(timedProfile.sampleChains ? { sampleChains: timedProfile.sampleChains } : {}),
+            ...(timedProfile.sampleChains ? { sampleChainsCaptured: timedProfile.sampleChains.length } : {}),
           });
           return {
             workStartOffsetMs: capture.workStartOffsetMs ?? null,
@@ -808,6 +968,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           inlineStackDiagnostic,
           gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
         }));
+        if (comparativeTierTrace) {
+          console.info('P-003 comparative V8 tier trace:', JSON.stringify(comparativeTierTrace));
+        }
 
         expect(eager.primary.serialized).toBe(true);
         expect(eager.primary.profile.samples).toBeLessThanOrEqual(maxSamples);
@@ -882,6 +1045,6 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         await rm(tempDir, { recursive: true, force: true });
       }
     },
-    120_000,
+    process.env.PAPERCUSP_CAPTURE_V8_TIER_TRACE === '1' ? 240_000 : 120_000,
   );
 });
