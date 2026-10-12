@@ -2197,15 +2197,42 @@ PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/port-lock
 # of the initial pick (below) so EI-18734124566158657's bind-time retry (further
 # down, after the sidecar actually attempts to bind) can call the SAME walk-
 # forward+lock logic instead of re-deriving it — one procedure, two call sites.
+# ss is a fast candidate filter, not a bind verdict. A failed socket query or
+# a bound non-listening socket can look free there. Measure the actual loopback
+# binds before accepting a pair; only EADDRINUSE is a walk-forward collision.
+verify_reserved_port_pair() {
+  timeout --kill-after=1s 6s node - "$DEV_PORT" "$PTY_PORT" <<'NODE'
+  const { createServer } = require('node:net');
+  Promise.all(process.argv.slice(2).map(value => new Promise(resolve => {
+    const port = Number(value), server = createServer();
+    const failed = error => resolve({ port, errorCode: error.code ?? 'UNKNOWN' });
+    server.once('error', failed);
+    try { server.listen(port, '127.0.0.1', () => server.close(() => resolve({ port }))); }
+    catch (error) { failed(error); }
+  }))).then(results => {
+    const failures = results.filter(result => result.errorCode);
+    if (failures.length) {
+      process.stderr.write('VERIFY_TAURI_PORT_BIND_PROBE ' + JSON.stringify(failures) + '\n');
+      // Reserve 3 for a measured collision; Node startup failures commonly exit 1.
+      process.exitCode = failures.some(result => result.errorCode !== 'EADDRINUSE') ? 2 : 3;
+    }
+  });
+NODE
+}
+
 pick_and_lock_ports() {
-  local attempts=0
+  local attempts=0 probe_status
   while :; do
     DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
     PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
     if [ "$DEV_PORT" != "$PTY_PORT" ] \
       && fed_acquire_port_lock "$DEV_PORT" "$PORT_LOCK_DIR" \
       && fed_acquire_port_lock "$PTY_PORT" "$PORT_LOCK_DIR"; then
-      return 0
+      if verify_reserved_port_pair; then return 0; else probe_status=$?; fi
+      if [ "$probe_status" -ne 3 ]; then
+        echo "FATAL: verifier port bind probe was unmeasured or invalid (exit=$probe_status); refusing preparation" >&2
+        exit "$probe_status"
+      fi
     fi
     fed_release_port_locks
     PORT_BASE=$((DEV_PORT + 1))
@@ -2679,6 +2706,58 @@ retain_assertion_artifacts() {
   done
 }
 
+# Preserve each boot attempt before killing its processes or changing its ports.
+# A later socket read cannot identify the listener that caused an earlier bind
+# failure, and WORK is disposable even when the harness result is pinned.
+retain_boot_attempt_evidence() {
+  [ "${BOOT_ATTEMPTS:-0}" -gt 0 ] || return 0
+  local evidence_dir="${VH_RUN_DIR:-$WORK}/phases/boot/operator-startup/attempt-$BOOT_ATTEMPTS"
+  mkdir -p -- "$evidence_dir" || return 1
+  [ ! -f "$LOG" ] || cp -- "$LOG" "$evidence_dir/tauri.log" || return 1
+  # Keep the first observation: teardown must not overwrite failure-time evidence
+  # after the listener has exited. Never retain raw ss output, cmdlines or env.
+  [ ! -f "$evidence_dir/listeners.json" ] || return 0
+  node - "$evidence_dir/listeners.json" "$DEV_PORT" "$PTY_PORT" <<'NODE'
+  const { execFileSync } = require('node:child_process');
+  const { readFileSync, readlinkSync, writeFileSync } = require('node:fs');
+  const { basename } = require('node:path');
+  const ports = process.argv.slice(3).map(Number);
+  const observations = ports.map(port => {
+    try {
+      const query = flags => execFileSync('ss', [flags, `sport = :${port}`], {
+        encoding: 'utf8', timeout: 3000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const output = query('-tlnH');
+      let attributed = '', holderStatus = 'not-needed', holderErrorCode = null;
+      if (output.trim()) {
+        try { attributed = query('-tlnpH'); holderStatus = 'measured'; }
+        catch (error) { holderStatus = 'unknown'; holderErrorCode = error.code ?? error.status ?? 'UNKNOWN'; }
+      }
+      const listeners = output.trim().split('\n').filter(Boolean).map(line => {
+        const localAddress = line.trim().split(/\s+/)[3];
+        const attributedLine = attributed.split('\n').find(candidate => candidate.trim().split(/\s+/)[3] === localAddress) ?? '';
+        const holders = [...attributedLine.matchAll(/pid=(\d+),fd=(\d+)/g)].map(match => {
+          const pid = Number(match[1]);
+          const holder = { pid, fd: Number(match[2]), executable: null, startTimeTicks: null };
+          try {
+            holder.executable = basename(readlinkSync(`/proc/${pid}/exe`));
+            const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+            holder.startTimeTicks = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+          } catch { /* The listener may exit or be inaccessible during capture. */ }
+          return holder;
+        });
+        return { localAddress, holders };
+      });
+      return { port, status: listeners.length ? 'listening' : 'free', listeners, holderStatus, holderErrorCode };
+    } catch (error) {
+      // A failed socket query is unmeasured, never evidence of a free port.
+      return { port, status: 'unknown', errorCode: error.code ?? null, exitStatus: error.status ?? null };
+    }
+  });
+  writeFileSync(process.argv[2], JSON.stringify({ observedAt: new Date().toISOString(), observations }) + '\n');
+NODE
+}
+
 teardown() {
   local ec=$?
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
@@ -2686,6 +2765,11 @@ teardown() {
   # before the first side effect so the EXIT path cannot run twice.
   trap - EXIT INT TERM HUP
   local artifacts_retained=1
+  if ! retain_boot_attempt_evidence; then
+    artifacts_retained=0
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: boot attempt evidence retention failed; preserving source and work logs at $WORK"
+  fi
   if ! retain_assertion_artifacts; then
     artifacts_retained=0
     [ "$ec" -ne 0 ] || ec=1
@@ -3627,6 +3711,7 @@ while :; do
     PORT_LOST=1
   fi
 
+  retain_boot_attempt_evidence || boot_failure_diag "could not retain boot attempt evidence before retry"
   if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
     [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
     if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -3681,9 +3766,8 @@ while :; do
   echo "FATAL: our operator sidecar could not bind :$DEV_PORT (EADDRINUSE) — another instance owns it," >&2
   echo "       so this webview is loading a PEER's operator, not our tree. Refusing to verify, after" >&2
   echo "       $BOOT_ATTEMPTS attempt(s) across freshly-picked ports. Box contention right now:" >&2
-  echo "       $(contention_summary) — a large count here (not \"another instance owns it\") is" >&2
-  echo "       almost certainly the real cause (EI-18805100008031244); gc-verify-instances reaps" >&2
-  echo "       stale ones hourly, but a burst of concurrent live runs will still race for a while." >&2
+  echo "       $(contention_summary). Listener identities and attempt logs are retained under" >&2
+  echo "       ${VH_RUN_DIR:-$WORK}/phases/boot/operator-startup; counts alone do not establish the cause." >&2
   echo "       Tail:" >&2
   grep -aE "EADDRINUSE|pty-ws" "$LOG" | head -5 >&2
   exit 1

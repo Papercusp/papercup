@@ -66,6 +66,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       writeFileSync(resolve(source, 'apps/operator/junit-e2e.xml'), '<testsuite failures="0"/>');
     }
     const retention = src.match(/retain_assertion_artifacts\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    const bootRetention = src.match(/retain_boot_attempt_evidence\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const cleanup = src.match(/cleanup_operator_source_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const teardown = src.match(/teardown\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const result = spawnSync('bash', ['-c', [
@@ -78,7 +79,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
       options.copyFails ? 'cp() { return 1; }' : '',
-      retention, cleanup, teardown, `(exit ${exitCode}); teardown`,
+      retention, bootRetention, cleanup, teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
       encoding: 'utf8', timeout: 10_000,
       env: { ...process.env, TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
