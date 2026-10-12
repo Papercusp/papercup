@@ -270,6 +270,7 @@ export default defineTool({
       .optional()
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'The recursive execution doors `tools.code.run` and `tools.orchestrate.run` are deliberately excluded from this facade; keep the sequence in this outer script. ' +
           'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
           'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
@@ -2513,6 +2514,13 @@ export function buildFacadeHelp(
 
   const present = [...referencedNs].filter((ns) => known.has(ns));
   const missing = [...referencedNs].filter((ns) => !known.has(ns));
+  const recursiveExecutionRefs = [...new Set(unknownRefs.map((ref) => {
+    const withoutToolsPrefix = ref.startsWith('tools.') ? ref.slice('tools.'.length) : ref;
+    const canonical = withoutToolsPrefix.includes(':')
+      ? withoutToolsPrefix
+      : withoutToolsPrefix.replace(/^([^.]+)\./, '$1:');
+    return ORCHESTRATION_RECURSION_EXCLUSIONS.has(canonical) ? canonical : null;
+  }).filter((ref): ref is string => ref !== null))];
   // EI-23783922587988483: render FULL signatures only for the verbs closest to the ones the script
   // actually typed. Rendering the whole namespace measured 67,864 chars for one bad `work_items`
   // ref — it overflows the per-result cap and spills, costing more context than the failed call.
@@ -2582,7 +2590,11 @@ export function buildFacadeHelp(
 
   const note =
     'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
-    'your allowed facade; fix the tools.ns.verb name/args and re-run. ' +
+    'your allowed facade; inspect the signatures and any exclusion reason below before re-running. ' +
+    (recursiveExecutionRefs.length
+      ? `Recursive execution entrypoints ${recursiveExecutionRefs.map((ref) => `${ref} (tools.${ref.replace(':', '.')})`).join(', ')} ` +
+        'are deliberately excluded from this facade to prevent nested orchestration. Keep the sequence in this outer script. '
+      : '') +
     (signatures
       ? partiallyRendered.length
         ? 'Typed signatures for the verbs CLOSEST to the ones you named are in `signatures` — not ' +
