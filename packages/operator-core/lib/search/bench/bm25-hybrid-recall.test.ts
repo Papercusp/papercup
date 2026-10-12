@@ -63,7 +63,7 @@ it('keeps the registered embedding space in both arms while computing each query
       expect(p.qVec).toBe('[1,0]');
       return [{ key: 'work_item:vector-target', score: 0.99, row: {
         source: 'work_item', source_id: 'vector-target', scope: 'harness:test',
-        excerpt: 'the target is found only by the vector leg', score: 0.99,
+        excerpt: 'the target is found only by the vector leg', highlight: '', score: 0.99, rankers: [],
       } }];
     },
   };
@@ -75,12 +75,12 @@ it('keeps the registered embedding space in both arms while computing each query
     const broken = await runHybridSearch([source], { ...context,
       embedder: async () => cachedVector, queryVector: cachedVector });
     expect(broken.results).toEqual([]);
-    expect(broken.legs.semantic.sourceCalls[0]?.rows).toBe(0);
+    expect(broken.legs.semantic.sourceCalls?.[0]?.rows).toBe(0);
     for (const _arm of ['legacy', 'bm25']) {
       const prepared = await queries.forSearch(context.query);
       const result = await runHybridSearch([source], { ...context, ...prepared });
       expect(result.results.map(r => r.source_id)).toEqual(['vector-target']);
-      expect(result.legs.semantic.sourceCalls[0]?.rows).toBe(1);
+      expect(result.legs.semantic.sourceCalls?.[0]?.rows).toBe(1);
     }
     expect(embedder).toHaveBeenCalledTimes(1);
   } finally {
