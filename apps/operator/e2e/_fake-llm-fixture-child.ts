@@ -23,7 +23,8 @@ try {
     const project = { slug: harnessSlug, path: process.cwd(), ...(hive ? { harness_kind: 'hive', self_repo: true } : {}) };
     const payload = { ...reg, projects: [...reg.projects.filter(p => p.slug !== harnessSlug), project] };
     await sql.unsafe('INSERT INTO harness_shared.harness_registry (workspace_id, payload, updated_at) VALUES ($1, $2::jsonb, $3) ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at', [workspaceId, JSON.stringify(payload), Date.now()]);
-    const rows = await sql.unsafe('SELECT payload FROM harness_shared.harness_registry WHERE workspace_id = $1', [workspaceId]);
+    type RegistryProject = { slug: string; path: string; harness_kind?: string };
+    const rows = await sql.unsafe<Array<{ payload: { projects?: RegistryProject[] } | null }>>('SELECT payload FROM harness_shared.harness_registry WHERE workspace_id = $1', [workspaceId]);
     if (!rows[0]?.payload?.projects?.some(p => p.slug === harnessSlug && p.path === process.cwd() && (!hive || p.harness_kind === 'hive'))) throw new Error('Chat fixture registry write was not retained');
   } else if (operation === 'plan' && harnessSlug && planSlug) {
     console.error('plan-fixture stage=migration:start');
