@@ -44,6 +44,7 @@ import type { Interval } from './intervals';
 import { bootstrapMeanCI } from './intervals';
 import { aggregateArm, type AggregateOpts } from './aggregate';
 import { isScored } from './cost';
+import { admitCapabilityLift, type CapabilityLiftAdmission } from './capability-exercise';
 
 /** The default control arm every capability is attributed OVER (the empty / bare-model profile). */
 export const DEFAULT_CONTROL_ARM: ArmId = 'vanilla';
@@ -110,6 +111,14 @@ export interface CapabilityArmAttribution {
   /** Per-arm coverage over the comparison universe (C6) — the audit table's attempted/produced/infra counts. */
   controlCoverage: ArmCoverage;
   capabilityCoverage: ArmCoverage;
+  /**
+   * C4 admission (BM-P-004-exercise-evidence): one verdict per capability this arm CLAIMS (declared via
+   * {@link CapabilityAttributionOpts.capabilityExercise}). Empty = the arm declared no claimed capability.
+   */
+  liftAdmissions: CapabilityLiftAdmission[];
+  /** TRUE only when the arm declared ≥1 claimed capability and EVERY admission passed. A lift with
+   *  liftAdmitted=false may be reported as a measured delta but never attributed to a capability. */
+  liftAdmitted: boolean;
 }
 
 /** The per-suite attribution report: every non-control arm's lift over the control. */
@@ -136,6 +145,12 @@ export interface CapabilityAttributionOpts extends AggregateOpts {
   /** C1 fair headline (default TRUE): score both arms on the union-N, infra/absent = false. Set FALSE for
    *  the exclude-infra secondary view (each arm over only its own scored tasks). */
   sameDenominator?: boolean;
+  /**
+   * The capability (or capabilities, for a bundle arm) each arm CLAIMS, keyed by arm id. Each claim is
+   * admitted only on observed delivery + use in the treatment and measured absence in the control
+   * ({@link admitCapabilityLift}). An arm absent from this map claims nothing ⇒ `liftAdmitted:false`.
+   */
+  capabilityExercise?: Readonly<Partial<Record<ArmId, string | readonly string[]>>>;
 }
 
 /** Per-(task) accumulated stats for ONE arm, over ALL its rows (infra rows included). */
@@ -313,6 +328,11 @@ export function buildCapabilityAttribution(
       armCostPerAttempt <= controlCostPerAttempt &&
       (armV.value > controlV.value || armCostPerAttempt < controlCostPerAttempt);
 
+    const claimed = opts.capabilityExercise?.[arm];
+    const claimedList = claimed === undefined ? [] : typeof claimed === 'string' ? [claimed] : [...claimed];
+    const liftAdmissions = claimedList.map((capability) =>
+      admitCapabilityLift(rows, { capability, treatmentArm: arm, controlArm: control }));
+
     capabilities.push({
       capability: arm,
       control,
@@ -333,12 +353,20 @@ export function buildCapabilityAttribution(
       tasksCompared: unlockedTasks.length + regressedTasks.length + neutralTasks.length,
       controlCoverage: coverageFor(controlStats, universe),
       capabilityCoverage: coverageFor(armStats, universe),
+      liftAdmissions,
+      liftAdmitted: liftAdmissions.length > 0 && liftAdmissions.every((a) => a.admitted),
     });
   }
 
-  return { suite, runId, control, metric, sameDenominator, capabilities, missingMeasurements,
-    caveats: missingMeasurements.length === 0 ? ATTRIBUTION_CAVEATS
-      : [...ATTRIBUTION_CAVEATS, `${missingMeasurements.length} missing grader measurements: affected comparisons are inconclusive pending regrade.`] };
+  const caveats = missingMeasurements.length === 0 ? [...ATTRIBUTION_CAVEATS]
+    : [...ATTRIBUTION_CAVEATS, `${missingMeasurements.length} missing grader measurements: affected comparisons are inconclusive pending regrade.`];
+  if (opts.capabilityExercise) {
+    const withheld = capabilities.filter((c) => !c.liftAdmitted).map((c) => c.capability);
+    if (withheld.length > 0) {
+      caveats.push(`Capability lift NOT admitted for ${withheld.join(', ')}: delivery/use evidence is missing, unexercised, or the control leaked — report the delta as measured, never as that capability's effect.`);
+    }
+  }
+  return { suite, runId, control, metric, sameDenominator, capabilities, missingMeasurements, caveats };
 }
 
 /** The mandatory honest-framing lines that ride every attribution report (D-008/D-011 + fairness C1/C3/C6). */
