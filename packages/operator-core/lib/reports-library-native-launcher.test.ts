@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,41 @@ vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
 import { nativeChildEnvironment, nativeTestDatabaseEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
 import { verifierSourceFiles } from './verifier-source';
+
+describe('DAO native wrapper scope preflight', () => {
+  it.each([0, 37])('runs the maintained scope suite before any native allocation (scope exit %s)', async (scopeExit) => {
+    const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const root = mkdtempSync(join(tmpdir(), 'dao-wrapper-preflight-'));
+    try {
+      const order = join(root, 'order');
+      for (const directory of ['scripts/fixtures', 'libs/generic/verification-harness/bin', 'papercusp-desktop/bin/lib', 'bin'])
+        mkdirSync(join(root, directory), { recursive: true });
+      writeFileSync(join(root, 'scripts/tauri-surface-verify-dao-workbench.sh'),
+        readFileSync(new URL('../../../scripts/tauri-surface-verify-dao-workbench.sh', import.meta.url)));
+      writeFileSync(join(root, 'libs/generic/verification-harness/bin/vh.sh'),
+        'vh_phase() { :; }\nvh_init() { :; }\nvh_begin() { :; }\nvh_bracket_trap() { :; }\n');
+      writeFileSync(join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'exit 0\n');
+      const executable = (path: string, body: string) => { writeFileSync(path, '#!/bin/sh\n' + body); chmodSync(path, 0o755); };
+      executable(join(root, 'bin/node'), 'printf "postgresql://unused@localhost:1/ledger"\n');
+      executable(join(root, 'bin/npm'), 'printf "%s\\n" "$*" >> "$DAO_TEST_ORDER"\nexit "$DAO_SCOPE_PREFLIGHT_EXIT"\n');
+      executable(join(root, 'bin/rig'), 'printf "native-rig\\n" >> "$DAO_TEST_ORDER"\n');
+      let actualExit = 0;
+      try {
+        execFileSync('bash', [join(root, 'scripts/tauri-surface-verify-dao-workbench.sh')], {
+          cwd: root, stdio: 'pipe', env: { ...process.env, PATH: join(root, 'bin') + ':' + process.env.PATH,
+            DAO_TEST_ORDER: order, DAO_SCOPE_PREFLIGHT_EXIT: String(scopeExit),
+            PAPERCUSP_TEST_RUN_WORKSPACE: 'scope-preflight-test', PAPERCUSP_REPO_DIR: root,
+            TAURI_SURFACE_VERIFY_SUITE_VERIFIER: join(root, 'bin/rig') },
+        });
+      } catch (error) { actualExit = (error as { status: number }).status; }
+      expect(actualExit).toBe(scopeExit);
+      expect(readFileSync(order, 'utf8').trim().split('\n')).toEqual([
+        'run test:file -- packages/operator-core/lib/dao-workbench-scope.integration.test.ts',
+        ...(scopeExit === 0 ? ['native-rig', 'native-rig'] : []),
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('Reports native launcher at the Vitest temp-directory boundary', () => {
   it('loads the production launcher and compatibility source API through the actual Node TS runtime', async () => {

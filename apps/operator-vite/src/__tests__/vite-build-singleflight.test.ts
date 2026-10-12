@@ -85,7 +85,7 @@ const START_DEADLINE_MS = 30_000;
 // holder cannot run forever. It must outlast the start deadline plus a waiter's
 // own startup, or a slow waiter finds the lock already free and races.
 const HOLD_SECS = 90;
-// Timeout for the cases that start two builds back to back with the default lock.
+// Timeout for cases that start multiple build processes and verify the default lock.
 const DEFAULT_LOCK_TEST_TIMEOUT_MS = 120_000;
 
 async function waitForFile(path: string): Promise<void> {
@@ -206,45 +206,60 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
 
   it('a second one-shot build WAITS for the first, then runs — never races or refuses', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
-    const first = launch({ VITE_BUILD_CMD: 'sleep 1.5 && echo first-done' });
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
+    const first = launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild });
     const firstRes = collect(first);
-    await sleep(200); // let it acquire the lock
+    let secondRes: ReturnType<typeof collect> | undefined;
+    try {
+      await waitForFile(started);
+      const second = launch({ VITE_BUILD_CMD: 'echo second-done' });
+      secondRes = collect(second);
 
-    const second = launch({ VITE_BUILD_CMD: 'echo second-done' });
-    const secondRes = collect(second);
-
-    // The second invocation must not have exited (refused) immediately —
-    // it should still be blocked waiting on the first's lock.
-    await sleep(200);
-    expect(second.exitCode).toBeNull();
+      // The second invocation must remain pending while the known-ready holder owns the lock.
+      await sleep(200);
+      expect(second.exitCode).toBeNull();
+    } finally {
+      writeFileSync(release, 'release');
+    }
 
     expect(await firstRes.exited).toBe(0);
-    expect(firstRes.stdout()).toContain('first-done');
-
-    expect(await secondRes.exited).toBe(0);
-    expect(secondRes.stdout()).toContain('second-done');
-  }, 15_000);
+    expect(secondRes).toBeDefined();
+    expect(await secondRes!.exited).toBe(0);
+    expect(secondRes!.stdout()).toContain('second-done');
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('captures a requested snapshot before releasing the lock to the next build', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
     const first = launch({
       VITE_BUILD_SNAPSHOT_DIR: join(tmp, 'snapshot'),
+      TEST_STARTED: started,
+      TEST_RELEASE: release,
       VITE_BUILD_CMD:
-        'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo FIRST > "$PAPERCUSP_VITE_OUT_DIR/index.html"; sleep 1; exit 0',
+        'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo FIRST > "$PAPERCUSP_VITE_OUT_DIR/index.html"; ' +
+        'touch "$TEST_STARTED"; while [ ! -e "$TEST_RELEASE" ]; do sleep 0.05; done; exit 0',
     });
     const firstRes = collect(first);
-    await sleep(200); // let the first build acquire the lock
-
-    const second = launch({
-      VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo SECOND > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
-    });
-    const secondRes = collect(second);
+    let secondRes: ReturnType<typeof collect> | undefined;
+    try {
+      await waitForFile(started);
+      const second = launch({
+        VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo SECOND > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
+      });
+      secondRes = collect(second);
+      await sleep(200); // Give the second process time to queue before releasing the holder.
+    } finally {
+      writeFileSync(release, 'release');
+    }
 
     expect(await firstRes.exited).toBe(0);
-    expect(await secondRes.exited).toBe(0);
+    expect(secondRes).toBeDefined();
+    expect(await secondRes!.exited).toBe(0);
     expect(readFileSync(join(tmp, 'snapshot', 'index.html'), 'utf8').trim()).toBe('FIRST');
     expect(distIndex()).toBe('SECOND');
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('a fresh lock is acquired uncontested and the command exit status propagates', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
@@ -278,31 +293,41 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
 
   it('a waiter that TIMES OUT reports the holder pid and does not hang', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
-    const holder = launch({ VITE_BUILD_CMD: 'sleep 30' });
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const holder = launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild });
     const holderRes = collect(holder);
-    await sleep(200); // let it acquire the lock
+    try {
+      await waitForFile(started);
+      const waiter = launch({ VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1' });
+      const { stderr, exited } = collect(waiter);
+      expect(await exited).toBe(1);
+      expect(stderr()).toContain('TIMED OUT');
+      expect(stderr()).toContain('EI-9836');
 
-    const waiter = launch({ VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1' });
-    const { stderr, exited } = collect(waiter);
-    expect(await exited).toBe(1);
-    expect(stderr()).toContain('TIMED OUT');
-    expect(stderr()).toContain('EI-9836');
-
-    // The holder is untouched by the waiter's timeout — still running.
-    expect(holder.exitCode).toBeNull();
-    process.kill(holder.pid!, 'SIGKILL');
-    await holderRes.exited;
-  }, 15_000);
+      // The holder is untouched by the waiter's timeout — still running.
+      expect(holder.exitCode).toBeNull();
+    } finally {
+      writeFileSync(release, 'release');
+    }
+    expect(await holderRes.exited).toBe(0);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   // EI-24961470606265468: an unattended build sets ONE knob for every lock wait in
   // its chain. Here it alone sets the wait (1s), and an explicit
   // VITE_BUILD_WAIT_SECS still beats a large umbrella value.
   it('the unattended lock-wait knob sets the wait, and the specific knob still wins', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
-    const holder = launch({ VITE_BUILD_CMD: 'sleep 30' });
-    const holderRes = collect(holder);
-    await sleep(200);
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const holderRes = collect(launch({
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
     try {
+      // Do not race the waiter against holder startup. Once this marker exists,
+      // the holder has acquired the build lock and entered its command.
+      await waitForFile(started);
+
       const umbrellaOnly = collect(launch({
         VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '',
         PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '1',
@@ -317,10 +342,10 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
       expect(await specificWins.exited).toBe(1);
       expect(specificWins.stderr()).toContain('TIMED OUT after 1s');
     } finally {
-      process.kill(holder.pid!, 'SIGKILL');
-      await holderRes.exited;
+      writeFileSync(release, 'release');
     }
-  }, 15_000);
+    expect(await holderRes.exited).toBe(0);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 });
 
 describe('vite-build-singleflight — Node heap contract (EI-22614955223428270)', () => {

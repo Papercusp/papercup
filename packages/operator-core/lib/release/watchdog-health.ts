@@ -64,6 +64,7 @@
  * witness, and there is no lower rung available without inventing a second store.
  */
 import type { Sql } from 'postgres';
+import { observeFallback as defaultObserveFallback } from '../degradation/fallback-observations';
 
 /**
  * The `harness_shared.routines.metadata` key these markers live under.
@@ -129,7 +130,18 @@ export async function recordWatchdogPassOutcome(
   pass: WatchdogPassName,
   scope: WatchdogPassScope,
   error?: unknown,
+  deps: { observeFallback?: typeof defaultObserveFallback } = {},
 ): Promise<number> {
+  const { observeFallback = defaultObserveFallback } = deps;
+  // Measure the pass itself, including healthy ticks. The metadata marker remains
+  // a diagnostic; the shared watchdog now owns rate detection and recovery.
+  try {
+    observeFallback('release-watchdog-pass', {
+      scope: `${scope.installSlug ?? 'all'}:${scope.routineName}:${pass}`,
+      eligible: 1, applied: error === undefined ? 1 : 0,
+      reason: error === undefined ? 'completed' : 'pass-failed',
+    });
+  } catch { /* Observation must never replace the pass's return value. */ }
   try {
     return error === undefined
       ? await clearWatchdogPassFailure(sql, pass, scope)

@@ -219,6 +219,38 @@ describe('execProcess lazy receipt (real child processes)', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
+  it.each(['stdout', 'stderr'] as const)('caps %s at maxBuffer and terminates the child', async (stream) => {
+    const { execution } = receiptSpies();
+    const begin = vi.fn(async () => execution);
+    const write = stream === 'stdout' ? 'process.stdout.write("abcdef")' : 'process.stderr.write("abcdef")';
+    const result = await execProcess({
+      command: process.execPath,
+      args: ['-e', write + '; setInterval(() => {}, 1000);'],
+      timeoutMs: 5_000,
+      maxBuffer: 3,
+    }, { beginExecution: begin, killGraceMs: 250 });
+
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(result.code).toBe(-1);
+    expect(result.maxBufferExceeded).toBe(stream);
+    expect(Buffer.byteLength(stream === 'stdout' ? result.stdout : result.stderr)).toBe(3);
+  });
+
+  it('uses only the supplied environment when inheritEnv is false', async () => {
+    const { execution } = receiptSpies();
+    const begin = vi.fn(async () => execution);
+    const result = await execProcess({
+      command: process.execPath,
+      args: ['-e', "process.stdout.write(JSON.stringify({ path: process.env.PATH ?? null, marker: process.env.PC_EXECFILE_ENV ?? null }))"],
+      env: { PC_EXECFILE_ENV: 'child-only' },
+      inheritEnv: false,
+      timeoutMs: 5_000,
+    }, { beginExecution: begin });
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ path: null, marker: 'child-only' });
+  });
+
   it('a fast verified read-only dev-deploy batch also avoids eager admission', async () => {
     const { execution, finish, cancel } = receiptSpies();
     const begin = vi.fn(async () => execution);

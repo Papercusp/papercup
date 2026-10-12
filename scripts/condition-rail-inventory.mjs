@@ -10,15 +10,39 @@
  *                                                        # or any disposition key is stale (D-006)
  *   node scripts/condition-rail-inventory.mjs --acceptance # require every seed migration on-rail
  *                                                        # AND bound to an executable case
+ *   npx tsx scripts/condition-rail-inventory.mjs --lint   # shrink-only site-ID baseline
  *
  * The scanner lives in scripts/lib/condition-rail-inventory.mjs; dispositions in
  * scripts/lib/condition-rail-dispositions.mjs.
  */
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { readFileSync } from 'node:fs';
-import { inventoryTree, CLASSES, acceptanceProblems } from './lib/condition-rail-inventory.mjs';
+import { execFileSync } from 'node:child_process';
+import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
+import { inventoryTree, CLASSES, acceptanceProblems, lintProblems, baselineCeiling } from './lib/condition-rail-inventory.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
+const BASELINE = 'scripts/condition-rail-baseline.json';
+
+/** Every committed removal constrains the ceiling; committing a grown file cannot bless it. */
+export async function readCommittedBaseline(manifest, baseline) {
+  return runGovernedTestProcess({ owner: 'lint-condition-rail-baseline', namespace: 'lint-condition-rail',
+    timeoutMs: 30_000, demand: { cpuWeight: 1, memoryBytes: 64 * 1024 * 1024, fileDescriptors: 8 } },
+  (_context, env) => {
+  const options = { cwd: ROOT, encoding: 'utf8', env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'] };
+  const revisions = execFileSync('git', ['log', '--format=%H', 'HEAD', '--', BASELINE],
+    options).trim().split('\n').filter(Boolean);
+  const history = revisions.map((revision) => JSON.parse(execFileSync('git', ['show', `${revision}:${BASELINE}`], options)));
+  // The first edition binds the P-001 seed plus P-017's logged census corrections.
+  // Later editions cannot widen that set, regardless of new amendment prose.
+  const initial = history.at(-1) ?? { rowIds: [
+    ...manifest.rows.filter((row) => row.disposition === 'migrate').map((row) => row.id),
+    ...(baseline.amendments ?? []).filter((entry) => entry.change?.disposition === 'migrate').map((entry) => entry.rowId),
+  ] };
+  return baselineCeiling(initial, history);
+  });
+}
 
 export function runInventory() {
   return inventoryTree(ROOT);
@@ -27,7 +51,14 @@ export function runInventory() {
 async function main() {
   const res = runInventory();
   const args = process.argv.slice(2);
-  if (args.includes('--json')) {
+  if (args.includes('--lint')) {
+    const manifest = JSON.parse(readFileSync(new URL('../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url), 'utf8'));
+    const baseline = JSON.parse(readFileSync(new URL(`../${BASELINE}`, import.meta.url), 'utf8'));
+    const problems = lintProblems(res, baseline, await readCommittedBaseline(manifest, baseline), manifest);
+    console.log(`condition-rail lint: ${res.rows.length} bypass site(s), ${problems.length} problem(s)`);
+    for (const problem of problems) console.error(problem);
+    if (problems.length) process.exitCode = 1;
+  } else if (args.includes('--json')) {
     process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
   } else {
     const onRail = res.sites.length - res.rows.length;

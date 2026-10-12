@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import type { IncomingMessage } from 'node:http';
 import { withTimeout } from '../../../../libs/testing-shell/src/llm/runner';
 import {
   HostedProviderDelegationManager,
@@ -7,6 +8,22 @@ import {
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationSqlRunner,
 } from '../workspace-host/hosted-provider-delegation';
+
+/** Mirror the hosted socket authority at an explicitly private fixture ingress. */
+export function publicManualHostedUpgradeHeaders(
+  request: Pick<IncomingMessage, 'url' | 'headers'>, publicOrigin: string,
+): IncomingMessage['headers'] {
+  const origin = new URL(publicOrigin);
+  if (!['http:', 'https:'].includes(origin.protocol)
+    || !['localhost', '127.0.0.1'].includes(origin.hostname)
+    || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
+    throw new Error('hosted_fixture_upgrade_origin_not_loopback');
+  // This is only the fixture's connector ingress. HTTP cookie/origin checks,
+  // foreign authorities and every other upgrade retain their original headers.
+  if (request.url?.split('?')[0] !== '/api/hosted/connectors/socket'
+    || request.headers.host !== origin.host) return request.headers;
+  return { ...request.headers, host: 'app.papercusp.com' };
+}
 
 /** Persist the active phase before starting work that may never settle. */
 export function publicManualHostedPhaseRecorder(persist: (phase: {

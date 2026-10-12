@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   deriveSignatureFromSummary,
   evaluateLivenessAlarm,
   isEvaluatedLivenessSignature,
   resolveEvidenceFor,
   unobservableLivenessSignatures,
+  runLivenessAlarmTick,
+  _resetLivenessAlarmDebounce,
+  type AlarmDeps,
 } from './liveness-alarm';
+import { getBuildInfo } from '../build-info';
+import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 import {
   AGENT_STRANDED_ALARM_THRESHOLD,
   AGENT_WEDGED_ALARM_THRESHOLD,
@@ -65,6 +70,74 @@ function health(panelOver: Partial<HealthPanel<CoordinationHealth | null>>): Sys
 }
 
 const keys = (h: SystemHealth) => evaluateLivenessAlarm(h, null).map((s) => s.key);
+
+describe('agent-strand alarm observation provenance', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  function journey(snapshot: SystemHealth) {
+    const records: EscalationRecord[] = [];
+    const deps: AlarmDeps = {
+      readLast: () => snapshot,
+      readSharedHealth: async () => snapshot,
+      readAutoloopFireRows: async () => [],
+      now: () => 1_000_100,
+      escalate: async (input) => {
+        records.push({
+          msg_id: `agent-strand-${records.length}`,
+          from: 'system:infra-liveness-alarm',
+          severity: input.severity,
+          summary: input.summary,
+          body: input.body,
+          resolved: null,
+          ...input.meta,
+        } as EscalationRecord);
+      },
+      listOpen: async () => records.filter((record) => !record.resolved),
+      resolve: async () => {},
+      page: async () => {},
+      pageResolved: async () => {},
+    };
+    return { deps, records };
+  }
+
+  it('pins the emitting artifact and exact threshold observation without changing dedup identity', async () => {
+    const snapshot = health({ data: coordination(strand(AGENT_WEDGED_ALARM_THRESHOLD, 0)) });
+    const { deps, records } = journey(snapshot);
+    const result = await runLivenessAlarmTick('ws', deps);
+    expect(result.fired.map((signal) => signal.key)).toEqual(['agents-wedged']);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      livenessSignature: 'agents-wedged', dedupKind: 'infra-liveness', subjectSignature: 'agents-wedged',
+      agentStrandObservation: {
+        observedAtMs: 1_000_100, snapshotAtMs: 1_000_000,
+        runtime: { ...getBuildInfo(), pid: process.pid },
+        wedged: AGENT_WEDGED_ALARM_THRESHOLD,
+        wedgedByClass: snapshot.panels.coordination.data!.agentStrand!.wedgedByClass,
+        stranded: 0,
+        thresholds: { wedged: AGENT_WEDGED_ALARM_THRESHOLD, stranded: AGENT_STRANDED_ALARM_THRESHOLD },
+      },
+    });
+    _resetLivenessAlarmDebounce(); // A different worker has no local cooldown.
+    const repeated = await runLivenessAlarmTick('ws', { ...deps, now: () => 1_000_200 });
+    expect(repeated.fired).toEqual([]);
+    expect(records).toHaveLength(1);
+  });
+
+  it('writes no alarm below threshold and preserves an unreadable wedged leg as unknown', async () => {
+    const below = journey(health({ data: coordination(strand(AGENT_WEDGED_ALARM_THRESHOLD - 1, 0)) }));
+    expect((await runLivenessAlarmTick('ws', below.deps)).fired).toEqual([]);
+    expect(below.records).toEqual([]);
+    const unreadable = journey(health({ data: coordination({
+      ...strand(50, AGENT_STRANDED_ALARM_THRESHOLD), wedgedUnreadable: true,
+    }) }));
+    expect((await runLivenessAlarmTick('ws', unreadable.deps)).fired.map((signal) => signal.key))
+      .toEqual(['agents-stranded']);
+    expect(unreadable.records).toHaveLength(1);
+    expect(unreadable.records[0]).toMatchObject({
+      agentStrandObservation: { wedged: null, wedgedByClass: null, stranded: AGENT_STRANDED_ALARM_THRESHOLD },
+    });
+  });
+});
 
 describe('agents-wedged / agents-stranded alarm', () => {
   it('fires agents-wedged as a blocker AT the threshold, naming the classes', () => {

@@ -104,7 +104,9 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     getWorkItem.mockImplementation(() => new Promise(() => {}));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const pending = get.handler({ id: 'WI-timeout' } as never, ctx as never) as Promise<Out>;
+    const pending = get.handler({ id: 'WI-timeout' } as never, ctx as never) as Promise<
+      Out & { data: { read: Record<string, unknown> } }
+    >;
     await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
 
     const out = await pending;
@@ -117,7 +119,39 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
+    expect(out.data.read.baseReadDiagnostics).toEqual([
+      expect.objectContaining({
+        id: 'WI-timeout',
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      }),
+    ]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-timeout exceeded'));
+
+    warnSpy.mockRestore();
+  });
+
+  it('reports per-ID pending base-read status when a projected batch read never settles', async () => {
+    const ids = ['WI-projected-timeout-1', 'WI-projected-timeout-2'];
+    getWorkItemsByIds.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler(
+      { ids, detail: true, threadLimit: 0 } as never,
+      { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
+    ) as Promise<Out & { data: { read: Record<string, unknown> } }>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results).toHaveLength(ids.length);
+    expect(out.data.results.every((row) => row.availability === 'unavailable')).toBe(true);
+    expect(out.data.read.baseReadDiagnostics).toEqual(expect.arrayContaining(
+      ids.map((id) => expect.objectContaining({
+        id,
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      })),
+    ));
 
     warnSpy.mockRestore();
   });

@@ -144,6 +144,22 @@ describe('check-declared-deps-extracted detector (EI-18666853411437489)', () => 
     mkdirSync(join(root, 'apps', 'not-a-workspace'), { recursive: true });
     expect(resolveWorkspaceDirs(root)).toEqual(['apps/operator', 'apps/operator-vite']);
   });
+
+  it('does not diagnose or repair dependencies of a negatively excluded workspace', async () => {
+    const root = fixture({
+      workspaces: ['apps/*', '!apps/*-checkpoint'],
+      packages: {
+        'apps/operator': { dependencies: { present: '^1' } },
+        'apps/drill-checkpoint': { dependencies: { 'excluded-missing': '^1' } },
+      },
+      extracted: { '': ['present'] },
+    });
+    expect(resolveWorkspaceDirs(root)).toEqual(['apps/operator']);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    const runNpm = vi.fn(() => 1);
+    expect(await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm })).toBe(0);
+    expect(runNpm).not.toHaveBeenCalled();
+  });
 });
 
 describe('retry absorbs a filesystem-sync race but not a real miss (WI-5769 retry8)', () => {

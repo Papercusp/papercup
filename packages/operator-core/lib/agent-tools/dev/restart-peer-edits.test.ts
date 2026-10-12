@@ -3,8 +3,12 @@
  * the tree a unit boots from. Pure selection + an injected-deps reader: no lock plane, no
  * git, no systemd.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { LiveLockHolding } from '../locks/live-lock-paths';
+
+const { execFileViaSidecarMock } = vi.hoisted(() => ({ execFileViaSidecarMock: vi.fn() }));
+vi.mock('../../fleet/git-via-sidecar', () => ({ execFileViaSidecar: execFileViaSidecarMock }));
+
 import {
   peerInFlightEditsNote,
   readPeerInFlightEdits,
@@ -84,6 +88,22 @@ describe('selectPeerInFlightEdits', () => {
 });
 
 describe('readPeerInFlightEdits', () => {
+  it('resolves the git root through execFileViaSidecar with the unit directory and timeout', async () => {
+    execFileViaSidecarMock.mockResolvedValueOnce({ stdout: TREE + '\n', stderr: '' });
+    const workingDirectory = TREE + '/apps/operator';
+    const out = await readPeerInFlightEdits(workingDirectory, 'su-me', {
+      readHoldings: async () => [],
+    });
+
+    expect(out).toMatchObject({ checked: true, tree: TREE, total: 0 });
+    expect(execFileViaSidecarMock).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], {
+      timeoutMs: 3000,
+      subsystem: 'restart-peer-edits',
+      cwd: workingDirectory,
+      env: process.env,
+    });
+  });
+
   it('resolves the git root from the unit WorkingDirectory and reports checked:true', async () => {
     const seen: string[] = [];
     const out = await readPeerInFlightEdits(`${TREE}/apps/operator`, 'su-me', {

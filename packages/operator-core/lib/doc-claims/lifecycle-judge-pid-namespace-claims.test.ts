@@ -48,6 +48,10 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(text).toContain('live.unaccountedCount');
     expect(text).toContain('live.unaccountedPidCount');
     expect(text).toContain('live.unaccountedGroups.length');
+    expect(text).toContain('live.unaccountedCount ?? live.unaccounted');
+    expect(text).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
+    expect(text).toContain('The complete `live.unaccountedGroups` array is still required');
+    expect(text).toContain('leave absence unknown and never coerce it to `[]`');
     expect(text).toContain('readlink /proc/self/ns/pid');
     expect(text).toContain('visible numeric /proc PID count');
     expect(text).toMatch(/[\x60]?\$\$[\x60]? in the same call/);
@@ -72,5 +76,18 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(judge).toContain('Recursively enumerate the complete, readable Papercusp slice subtree under `/sys/fs/cgroup` by exact unit name');
     expect(judge).toMatch(/peer `pc-\*\.scope` elsewhere in the same subtree is populated/);
     expect(judge).toContain('Never use stored `cgroupPath`, `/proc` absence, the detector reason, or empty filtered output');
+  });
+
+  it('accepts legacy numeric count names without treating a missing group array as empty', () => {
+    const text = source();
+    const judge = readFileSync(JUDGE_INSIGHT, 'utf8');
+    for (const sourceText of [text, judge]) {
+      expect(sourceText).toContain('live.unaccountedCount ?? live.unaccounted');
+      expect(sourceText).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
+    }
+    expect(text).toContain('leave absence unknown and never coerce it to `[]`');
+    expect(judge).toContain('If the older response has the numeric aliases but omits the group array, leave the verdict unknown');
+    expect(judge).toContain('Never normalize the absent array to `[]`');
+    expect(judge).toContain('!Array.isArray(groups)');
   });
 });

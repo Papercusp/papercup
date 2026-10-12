@@ -29,6 +29,10 @@ if [ -z "$PAPERCUSP_TEST_RUN_WORKSPACE" ]; then
   echo 'DAO native acceptance requires an explicit caller workspace for its shared test ledger' >&2
   exit 2
 fi
+# Validate the scope oracle through the real reader on the maintained baseline
+# fixture before spending a native build on an invalid negative-control premise.
+echo "DAO_NATIVE_PREFLIGHT stage=scope elapsedSec=$SECONDS"
+npm run test:file -- packages/operator-core/lib/dao-workbench-scope.integration.test.ts
 FIXTURE_DIR="$(mktemp -d /tmp/dao-workbench-identity.XXXXXX)"
 trap 'rm -rf -- "$FIXTURE_DIR"' EXIT
 vh_bracket_trap

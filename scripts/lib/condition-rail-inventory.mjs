@@ -533,7 +533,9 @@ export function migrationCoverageProblems(manifest, cases, completedItems, regis
 
 /** Final structural acceptance: every immutable migrate row needs rail placement AND a case. */
 export function acceptanceProblems(manifest, live, cases, registeredMechanisms) {
-  const items = [...new Set(manifest.rows.filter((row) => row.disposition === 'migrate').map((row) => row.item))];
+  const amended = new Map((manifest.amendments ?? []).map((entry) => [entry.rowId, entry.change]));
+  const effectiveRows = manifest.rows.map((row) => ({ ...row, ...amended.get(row.id) }));
+  const items = [...new Set(effectiveRows.filter((row) => row.disposition === 'migrate').map((row) => row.item))];
   return [
     ...(live.unreadable > 0 ? [`${live.unreadable} unreadable source file(s)`] : []),
     ...(live.undispositioned > 0 ? [`${live.undispositioned} undispositioned site(s)`] : []),
@@ -541,4 +543,59 @@ export function acceptanceProblems(manifest, live, cases, registeredMechanisms) 
     ...manifestProblems(manifest, live, { requireAllMigrated: true }),
     ...migrationCoverageProblems(manifest, cases, items, registeredMechanisms),
   ];
+}
+
+/**
+ * The lint ratchet admits only existing bypass IDs. Dispositions alone cannot waive new
+ * sites: exclusions need a reasoned amendment, and removed baseline IDs cannot return.
+ * @param {any} live
+ * @param {{ rowIds: string[], amendments?: any[] }} baseline
+ * @param {{ rowIds: string[], amendments?: any[] }} committedBaseline
+ * @param {any} manifest
+ */
+export function lintProblems(live, baseline, committedBaseline, manifest) {
+  const problems = [];
+  const known = new Set(baseline.rowIds);
+  const prior = new Set(committedBaseline.rowIds);
+  if (known.size !== baseline.rowIds.length) problems.push('duplicate baseline row ID');
+  for (const id of known) if (!prior.has(id)) problems.push(`${id}: baseline grew`);
+  const exclusions = new Map(manifest.rows.filter((row) => row.disposition === 'not-applicable')
+    .map((row) => [row.id, row.reason]));
+  const amendments = new Map();
+  for (const entry of [...(manifest.amendments ?? []), ...(baseline.amendments ?? [])]) {
+    if (!entry.rowId || !entry.author?.trim() || (entry.reason?.trim().length ?? 0) < 20) {
+      problems.push(`invalid lint amendment: ${entry.rowId ?? '<missing row ID>'}`);
+      continue;
+    }
+    if (amendments.has(entry.rowId)) problems.push(`duplicate lint amendment: ${entry.rowId}`);
+    amendments.set(entry.rowId, entry);
+    if (entry.change?.disposition === 'not-applicable') exclusions.set(entry.rowId, entry.change.reason ?? entry.reason);
+  }
+  for (const row of live.rows) {
+    const disposition = row.disposition;
+    if (disposition?.disposition === 'not-applicable') {
+      if (exclusions.get(row.id)?.trim() !== disposition.reason?.trim()) {
+        problems.push(`${row.id}: not-applicable disposition lacks matching amendment-log reason`);
+      }
+    } else if (!known.has(row.id)) problems.push(`${row.id}: new rail bypass`);
+  }
+  const liveBypasses = new Set(live.rows.map((row) => row.id));
+  for (const id of known) if (!liveBypasses.has(id)) problems.push(`${id}: obsolete baseline entry; remove it`);
+  if (live.unreadable > 0) problems.push(`${live.unreadable} unreadable source file(s)`);
+  if (live.undispositioned > 0) problems.push(`${live.undispositioned} undispositioned site(s)`);
+  for (const key of live.staleDispositions) problems.push(`stale disposition: ${key}`);
+  return problems;
+}
+
+/** A committed removal is permanent, including across intervening metadata-only commits.
+ * @param {{ rowIds: string[] }} initial
+ * @param {{ rowIds: string[] }[]} history
+ */
+export function baselineCeiling(initial, history) {
+  let allowed = new Set(initial.rowIds);
+  for (const prior of history) {
+    const ids = new Set(prior.rowIds);
+    allowed = new Set([...allowed].filter((id) => ids.has(id)));
+  }
+  return { rowIds: [...allowed] };
 }

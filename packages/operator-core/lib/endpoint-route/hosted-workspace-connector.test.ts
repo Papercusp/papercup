@@ -175,6 +175,26 @@ describe('connector liveness (P-001, psu-cloud-connector-liveness-multi-signin-2
   });
 });
 
+describe('hosted WebSocket hostname admission', () => {
+  it('distinguishes a valid registered bearer on loopback from an invalid bearer on an allowed host', async () => {
+    const gateway = new HostedWorkspaceConnectorGateway(new MemoryStore(), () => new Date(), entropy());
+    const credential = await gateway.register((await gateway.enroll(binding)).ticket);
+    expect(await gateway.authenticate(credential!.bearer)).toMatchObject({ hostId: binding.hostId });
+    const upgrade = (host: string, bearer = credential!.bearer) =>
+      new Request(`https://${host}/api/hosted/connectors/socket`, {
+        headers: { authorization: `Bearer ${bearer}` },
+      });
+    for (const host of ['localhost:14502', '127.0.0.1:14503', 'foreign.workspaces.papercusp.com']) {
+      expect(await authenticateHostedConnectorSocket(gateway, upgrade(host))).toBeNull();
+    }
+    for (const host of ['app.papercusp.com', 'alpha.workspaces.papercusp.com']) {
+      expect(await authenticateHostedConnectorSocket(gateway, upgrade(host))).toMatchObject({ role: 'connector' });
+      expect(await authenticateHostedConnectorSocket(gateway, upgrade(host, `hc_${'Z'.repeat(43)}`))).toBeNull();
+    }
+    expect(await gateway.authenticate(credential!.bearer)).toMatchObject({ hostId: binding.hostId });
+  });
+});
+
 describe('hosted browser WebSocket upgrade ticket rejection', () => {
   it('fails a syntactically valid but unknown ticket closed as unauthorized', async () => {
     const clock = { now: new Date('2026-08-28T00:00:00Z') };

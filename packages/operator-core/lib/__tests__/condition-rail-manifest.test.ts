@@ -51,4 +51,18 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
     expect(acceptanceProblems(fixture, { ...migrated, unreadable: 1 }, [testCase], []).join()).toMatch(/unreadable/);
     expect(acceptanceProblems(fixture, { ...migrated, staleDispositions: ['dead'] }, [testCase], []).join()).toMatch(/stale disposition/);
   });
+
+  it('requires coverage for a reviewed amendment moving a migration to a different item', () => {
+    const amended = { rows: [row], amendments: [{
+      rowId: row.id, change: { disposition: 'migrate', item: 'P-014' },
+      reason: 'Independent review assigns this detector to its actual migration lane',
+      author: 'su-author', reviewerRef: 'thread-post:124',
+    }] };
+    const migrated = { sites: [{ id: row.id, onRail: true }], rows: [],
+      unreadable: 0, undispositioned: 0, staleDispositions: [] };
+    expect(acceptanceProblems(amended, migrated, [], []).join()).toMatch(/has no case/);
+    const testCase = { id: 'detector', item: 'P-014', route: row.route,
+      rowIds: [row.id], run: () => ({}) };
+    expect(acceptanceProblems(amended, migrated, [testCase], [])).toEqual([]);
+  });
 });

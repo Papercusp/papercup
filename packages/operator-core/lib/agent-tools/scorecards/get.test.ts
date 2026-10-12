@@ -216,7 +216,7 @@ describe('scorecards:get evidence-first projection', () => {
     }
   });
 
-  it('keeps nested tools:invoke evidence paging truthful at the final result door', async () => {
+  it('keeps nested tools:invoke evidence paging truthful under default compact MCP materialization', async () => {
     const evidence = 'e'.repeat(4_331);
     const card = {
       ...scorecard,
@@ -228,11 +228,18 @@ describe('scorecards:get evidence-first projection', () => {
     if (!projected) throw new Error('scorecards:get should be registered');
 
     const args = { issueId: card.issueId, criterionKey: 'fixture-calibration', evidenceOffset: 0 };
+    // MCP defaults to compact, but this object-rooted scorecards payload is
+    // intentionally materialized as JSON (there is no top-level array for the
+    // compact selector). Exercise that implicit route rather than forcing JSON.
+    const compactContext: UnifiedToolContext = {
+      ...makeDispatchContext(),
+      requestedFormat: undefined,
+    };
     const dispatched = await dispatchProjectedTool(
       projected,
       'scorecards:get',
       args,
-      makeDispatchContext(),
+      compactContext,
       {},
     );
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
@@ -248,6 +255,8 @@ describe('scorecards:get evidence-first projection', () => {
       content: Array<{ type: 'text'; text: string }>;
       _meta?: Record<string, unknown>;
     };
+    expect(nested.content[0]?.text).not.toMatch(/^format: toon\n/);
+    expect(() => JSON.parse(nested.content[0]!.text)).not.toThrow();
     const invoked = await invokeTool.handler(
       { name: 'scorecards:get', args },
       { dispatchTool: async () => nested },

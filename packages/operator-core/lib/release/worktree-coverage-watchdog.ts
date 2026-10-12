@@ -100,6 +100,7 @@ export interface WorktreeCoverageDeps {
    *  tests; default shells out via execFile. */
   runGit?: (args: string[], cwd: string) => Promise<string>;
   log?: (message: string) => void;
+  attention?: import('../alarm-attention').AlarmAttentionDeps;
 }
 
 function runGitLocal(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
@@ -226,21 +227,28 @@ export async function checkWorktreeCoverage(
 ): Promise<WorktreeCoverageCheckResult> {
   const log = deps.log ?? ((m: string) => console.log(m));
   try {
-    const worktrees = await listWorktreesWithDirtyState(canonicalPath, deps);
+    let scanComplete = true;
+    const runGit = deps.runGit ?? defaultRunGit;
+    const worktrees = await listWorktreesWithDirtyState(canonicalPath, { ...deps,
+      runGit: async (args, cwd) => {
+        try { return await runGit(args, cwd); }
+        catch (e) { scanComplete = false; throw e; }
+      },
+    });
     const uncovered = findUncoveredDirtyWorktrees(worktrees, canonicalPath);
+    const conditionKey = `alarm:worktree-coverage:${encodeURIComponent(normalizeCheckoutPath(canonicalPath))}`;
     if (uncovered.length > 0) {
       const detail = uncovered.map((w) => `${w.path} (${w.dirtyFileCount} dirty)`).join('; ');
-      // A log line, not a notifyAttention() push/SSE alert: this is a "someone should
-      // look eventually" signal (drift that accumulates over hours), not an urgent page —
-      // notifyAttention's own doc reserves its 'needs-human' kind for ≥high-importance
-      // items, which this genuinely isn't. The operator log + this function's return
-      // value (a caller — an admin diagnostic route, a future scheduled digest — can
-      // surface it more visibly) are the right-weight channel for a cheap, infrequent
-      // sweep like this one.
+      const broadcastSevereEvent = deps.attention?.broadcast
+        ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({ conditionKey, summary: 'Uncovered worktree edits', body: detail });
       log(
         `[worktree-coverage-watchdog] ${uncovered.length} worktree(s) carry uncommitted edits ` +
           `no known routine/exclusion covers — likely stranded work (WI-3449 class): ${detail}`,
       );
+    } else if (scanComplete) {
+      const { resolveAlarm } = await import('../alarm-attention');
+      await resolveAlarm(conditionKey, 'worktree-coverage-watchdog', deps.attention);
     }
     return { uncovered };
   } catch (e) {
@@ -661,11 +669,21 @@ export async function checkGitSyncCoverage(
     const { coveredPaths, staleCoverage } = resolveGitSyncCoverage(activeSlugs, projects, existing);
 
     const root = dirname(normalizeCheckoutPath(canonicalPath));
-    const checkouts = await listSiblingCheckoutsWithDirtyState(root, deps);
+    let scanComplete = true;
+    const rawRunGit = deps.runGit ?? defaultRunGit;
+    const runGit = async (args: string[], cwd: string): Promise<string> => {
+      try { return await rawRunGit(args, cwd); }
+      catch (e) {
+        // Non-repositories and missing history are expected. A failed status
+        // read of a real checkout is an incomplete measurement.
+        if (args[0] !== 'log' && !isNotARepoError(e)) scanComplete = false;
+        throw e;
+      }
+    };
+    const checkouts = await listSiblingCheckoutsWithDirtyState(root, { ...deps, runGit });
 
     let linkedWorktreePaths: string[] = [];
     try {
-      const runGit = deps.runGit ?? defaultRunGit;
       linkedWorktreePaths = parseWorktreeListPorcelain(
         await runGit(['worktree', 'list', '--porcelain'], canonicalPath),
       );
@@ -723,6 +741,17 @@ export async function checkGitSyncCoverage(
           `to a path that no longer exists — coverage that sweeps nothing: ` +
           staleCoverage.map((s) => `${s.installSlug} -> ${s.path}`).join('; '),
       );
+    }
+    const conditionKey = `alarm:git-sync-coverage:${encodeURIComponent(normalizeCheckoutPath(canonicalPath))}`;
+    if (uncovered.length > 0 || staleCoverage.length > 0) {
+      const broadcastSevereEvent = deps.attention?.broadcast
+        ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({ conditionKey, summary: 'Git-sync coverage leaves work stranded',
+        body: [...uncovered.map((c) => `${c.path}: ${c.dirtyFileCount} dirty files`),
+          ...staleCoverage.map((s) => `${s.installSlug}: missing ${s.path}`)].join('; ') });
+    } else if (scanComplete) {
+      const { resolveAlarm } = await import('../alarm-attention');
+      await resolveAlarm(conditionKey, 'worktree-coverage-watchdog', deps.attention);
     }
     return { uncovered, staleCoverage, coverageResolved: true };
   } catch (e) {

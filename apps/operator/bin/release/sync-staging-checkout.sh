@@ -1057,16 +1057,10 @@ else
   exit "$STAGING_SYNC_SHARED_RC"
 fi
 
-# EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
-# up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`
-# (or a previous sync tick) cycled it moments ago, already serving fresh-enough
-# code. Restarting again here would just double the ~10-13s connection-refused
-# outage window for zero freshness benefit (the checkout we just fast-forwarded
-# stays on disk and is picked up by whichever restart — ours next tick, or
-# anyone else's dev:restart — actually fires next). Best-effort: any probe
-# failure (no systemd, no live MainPID, etc.) falls through to the normal
-# restart, matching probeServiceStart's own fail-soft contract
-# (systemd-service-probe.ts) that this mirrors for a bash caller.
+# EI-13221 / EI-25704983282782441: coalesce a recent peer restart only when
+# the running process reports the generation we just published. Process age
+# alone says nothing about loaded code: a young process can still hold the
+# previous generation. Missing identity falls through to the required restart.
 RECENT_RESTART_GRACE_SEC="${PAPERCUSP_STAGING_SYNC_RESTART_GRACE_SEC:-45}"
 main_pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)"
 seconds_since_start=""
@@ -1074,8 +1068,12 @@ if [ -n "$main_pid" ] && [ "$main_pid" -gt 0 ] 2>/dev/null; then
   seconds_since_start="$(ps -o etimes= -p "$main_pid" 2>/dev/null | tr -d ' ')"
 fi
 if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTART_GRACE_SEC" ] 2>/dev/null; then
-  log "skipping restart — $UNIT's MainPID ($main_pid) already started ${seconds_since_start}s ago (< ${RECENT_RESTART_GRACE_SEC}s grace) — a peer restart likely already landed; the fast-forwarded checkout will be picked up by that or the next tick"
-  exit 0
+  recent_health_sha="$(staging_health_source_sha || true)"
+  if health_sha_matches_target "$recent_health_sha" "$target"; then
+    log "skipping restart — $UNIT's recent MainPID ($main_pid, ${seconds_since_start}s old) reports target source ${target:0:10}; peer restart verified"
+    exit 0
+  fi
+  log "recent MainPID ($main_pid, ${seconds_since_start}s old) reports ${recent_health_sha:-no valid source SHA}, not target ${target:0:10} — restart still required"
 fi
 
 # EI-22102474093310851: WAIT for the git-sync barrier instead of one-shotting it.

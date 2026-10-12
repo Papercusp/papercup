@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -295,6 +297,77 @@ describe('armTargetedTaskReuse', () => {
     armed.finish();
   });
 
+  it('reuses plain Vitest passes while changed and unproven files still run', async () => {
+    fixture('vitest run');
+    for (const file of ['a.test.ts', 'b.test.ts', 'c.test.ts']) writeFileSync(join(root, 'packages/lane-ws', file), '');
+    const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), deps: deps() });
+    expect(armed.reused).toBe(1);
+    expect(armed.args).toEqual([]);
+    const list = JSON.parse(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
+    expect(list.files).toEqual(['a.test.ts']);
+    expect(armed.lines.join('\n')).toMatch(/inputChanged=1/);
+    armed.finish();
+  });
+
+  it('supplies the zero-file flag only when the complete disk population is reused', async () => {
+    fixture('vitest run');
+    writeFileSync(join(root, 'packages/lane-ws/a.test.ts'), '');
+    const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), deps: deps({
+      loadProofs: async () => ({ proofs: new Map([['packages/lane-ws/a.test.ts', proof(HEAD, ['packages/lane-ws/a.test.ts'])]]), rows: 1 }),
+    }) });
+    expect(armed.reused).toBe(1);
+    expect(armed.args).toEqual(['--passWithNoTests']);
+    armed.finish();
+  });
+
+  it('the real Vitest consumer skips an unchanged pass and executes changed and unproven files', async () => {
+    fixture('vitest run');
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+    const wsRoot = join(root, 'packages/lane-ws');
+    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    mkdirSync(join(wsRoot, 'src'));
+    const skipConsumer = join(repoRoot, 'libs/test-config/src/test-pass-reuse-skip.ts');
+    writeFileSync(join(wsRoot, 'vitest.config.mts'),
+      `import { resolveReuseSkipExclude } from ${JSON.stringify(skipConsumer)};\n` +
+      `export default { test: { include: ['*.test.ts'], exclude: resolveReuseSkipExclude(), maxWorkers: 1 } };\n`);
+    for (const name of ['a', 'b']) {
+      writeFileSync(join(wsRoot, `src/${name}.ts`), 'export const value = true;\n');
+      writeFileSync(join(wsRoot, `${name}.test.ts`),
+        `import { it, expect } from 'vitest'; import { value } from './src/${name}';\n` +
+        `it('${name}', () => expect(value).toBe(true));\n`);
+    }
+    const run = (env: Record<string, string | undefined>, args: string[] = []) => {
+      const result = spawnSync(join(repoRoot, 'node_modules/.bin/vitest'), ['run', '--reporter=json', ...args], {
+        cwd: wsRoot, env, encoding: 'utf8', timeout: 30_000,
+      });
+      expect(result.error, result.stderr).toBeUndefined();
+      return { status: result.status, report: JSON.parse(result.stdout) };
+    };
+    const env = { ...process.env, ...baseEnv(), PC_TEST_LANE: undefined, PC_TEST_REUSE_SKIP_LIST: undefined,
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: undefined, PC_EXECUTED_SOURCE_MAP_RESULT: undefined,
+      PC_EXECUTED_SOURCE_MAP_OUT: undefined, PC_TEST_FILTER_LIST: undefined };
+    const first = run(env);
+    expect(first.status).toBe(0);
+    expect(first.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['a.test.ts', 'b.test.ts']);
+    writeFileSync(join(wsRoot, 'src/b.ts'), 'export const value = false;\n');
+    writeFileSync(join(wsRoot, 'c.test.ts'), "import { it, expect } from 'vitest'; it('c', () => expect(true).toBe(true));\n");
+    const identity = `proof-v3 ${process.version} ${process.platform} ${process.arch}`;
+    const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env,
+      deps: deps({ runnerIdentity: () => identity, loadProofs: async () => ({ rows: 2, proofs: new Map(
+        ['a', 'b'].map(name => [`packages/lane-ws/${name}.test.ts`, {
+          ...proof(OLD, [`packages/lane-ws/${name}.test.ts`, `packages/lane-ws/src/${name}.ts`]), runnerIdentity: identity,
+        }]),
+      ) }) }) });
+    try {
+      expect(armed.reused).toBe(1);
+      const second = run(armed.env, armed.args);
+      expect(second.status).toBe(1);
+      expect(second.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['b.test.ts', 'c.test.ts']);
+      expect(second.report.numFailedTests).toBe(1);
+      expect(second.report.numPassedTests).toBe(1);
+    } finally { armed.finish(); }
+  }, 30_000);
+
   it('reports what the recorder did after the task ran', async () => {
     fixture();
     const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), deps: deps() });
@@ -360,7 +433,7 @@ describe('armTargetedTaskReuse', () => {
       ['the checkout is not the expected sha', fixture, {}, {}, /reason=head-mismatch\(aaaaaaaaaaaa!=cccccccccccc\)/],
       ['the checkout is dirty', fixture, { git: (_r: string, a: string[]) => (a[0] === 'rev-parse' ? HEAD : ' M x.ts\n') }, {}, /reason=dirty-checkout\(1\)/],
       ['git status cannot be read', fixture, { git: (_r: string, a: string[]) => (a[0] === 'rev-parse' ? HEAD : null) }, {}, /reason=checkout-status-unknown/],
-      ['the script cannot run zero files', () => fixture('vitest run'), {}, {}, /reason=script-cannot-run-zero-files/],
+      ['the script cannot receive Vitest args', () => fixture('node --test'), {}, {}, /reason=script-cannot-run-zero-files/],
       ['reuse is disabled by env', fixture, {}, { AFFECTED_TEST_REUSE: '0' }, /reason=disabled-by-env/],
       ['the database is unreachable', fixture, { connect: async () => { throw new Error('ECONNREFUSED 5432'); } }, {}, /reason=pg-unavailable\(ECONNREFUSED_5432\)/],
       ['the proof read fails', fixture, { loadProofs: async () => { throw new Error('relation missing'); } }, {}, /reason=proofs-unavailable\(relation_missing\)/],

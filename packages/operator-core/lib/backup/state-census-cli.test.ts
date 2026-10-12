@@ -182,13 +182,14 @@ describe('unit census executable exit contract', () => {
       writeFileSync(source, 'fixture tail bytes');
       await archiveReapTail('task-123', source, directory, new Date('2026-10-11T12:00:00.000Z'));
       const orphan = 'reap-archive/2026-10-11/unproven.tail.log';
+      const mergedRootPrefix = '.papercusp/';
       writeFileSync(join(directory, '.papercusp', orphan), 'unproven fixture');
 
       const report = await runRootCensus({ checkpointLogDir: join(directory, 'checkpoint-history') });
       const inventoryNames = report.inventory.map(entry => entry.name);
-      expect(inventoryNames).toContain('reap-archive/2026-10-11/task-123.tail.log');
-      expect(inventoryNames).toContain('reap-archive/2026-10-11/task-123.tail.log.receipt.json');
-      expect(report.residue.some(entry => entry.name === orphan)).toBe(true);
+      expect(inventoryNames).toContain(`${mergedRootPrefix}reap-archive/2026-10-11/task-123.tail.log`);
+      expect(inventoryNames).toContain(`${mergedRootPrefix}reap-archive/2026-10-11/task-123.tail.log.receipt.json`);
+      expect(report.residue.some(entry => entry.name === `${mergedRootPrefix}${orphan}`)).toBe(true);
     } finally {
       rmSync(join(directory, '.papercusp', 'reap-archive'), { recursive: true, force: true });
     }

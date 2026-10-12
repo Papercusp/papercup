@@ -1748,6 +1748,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // calls alive long enough to return their structured result instead of
   // turning a healthy long read into an opaque ptool -32001 at 30s.
   ['lsp:query', 100_000],
+  // EI-25679450978085524: code:tools renders full facade signatures without
+  // a shorter handler deadline, so MCP can wait up to its 55s request cap.
+  // Keep direct and tools:invoke-wrapped reads beyond that cap instead of
+  // letting ptool's ordinary 30s cutoff hide the signature response.
+  ['code:tools', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['documents:read', PTOOL_CONTENT_SUMMARY_TIMEOUT_MS],
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],

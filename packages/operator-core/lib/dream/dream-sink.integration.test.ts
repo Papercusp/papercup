@@ -15,6 +15,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
+import { IDEA_ORIGIN_PAYLOAD_KEY } from '../scout/ideation-origin';
 import {
   beginDreamRun,
   beginDreamRunCall,
@@ -73,7 +74,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
       } catch (captureError) {
         database = { captureError: String(captureError) };
       }
-      console.error('DREAM_REPLAY_FAILURE', JSON.stringify({
+      const diagnostic = JSON.stringify({
         phase,
         testFile: fileURLToPath(import.meta.url),
         testSha256,
@@ -86,8 +87,8 @@ describe('accepted dream sink (real PG — P-004)', () => {
         after,
         assertionMessage: error instanceof Error ? error.message : String(error),
         assertionStack: error instanceof Error ? error.stack : undefined,
-      }));
-      throw error;
+      });
+      throw new Error('DREAM_REPLAY_FAILURE ' + diagnostic, { cause: error });
     }
   }
 
@@ -108,6 +109,30 @@ describe('accepted dream sink (real PG — P-004)', () => {
     await db?.cleanup();
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
   });
+
+  async function seedCapabilityInput(
+    f: Awaited<ReturnType<typeof createDreamCapabilityFixture>>,
+    runId: string,
+  ) {
+    const key = { workspaceId: WS, runId };
+    await beginDreamRun(db.adminSql, {
+      ...key, cycleId: 'capability-pg-cycle', potSlug: HARNESS, mode: 'manual', capability: f.header,
+    });
+    await recordDreamRunSelection(db.adminSql, { ...key, capability: f.sampling });
+    for (const call of f.provenance.calls) {
+      await beginDreamRunCall(db.adminSql, {
+        ...key, call: { callId: call.callId, phase: call.phase, model: call.model, reservedUsd: call.reservedUsd },
+      });
+      await settleDreamRunCall(db.adminSql, { ...key, callId: call.callId, usage: call.usage });
+    }
+    await recordDreamRunReview(db.adminSql, {
+      ...key, outcome: { verdict: 'insight', insight: f.insight }, review: { ...f.review },
+    });
+    return {
+      kind: 'capability' as const, sql: db.adminSql, workspaceId: WS, dreamRunId: runId,
+      rootPath: f.root, manifest: f.manifest, sources: f.sources,
+    };
+  }
 
   it('persists dream provenance, accepts an ordinary grade, and refreshes the routed work-item outcome', async () => {
     const result = await sinkDreamInsight({
@@ -164,6 +189,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
        WHERE issue_id = ${result.workItemId}`;
     expect(issue).toMatchObject({ scope: `harness:${HARNESS}`, state: 'open' });
     expect(issue.payload).toMatchObject({
+      [IDEA_ORIGIN_PAYLOAD_KEY]: 'dream',
       improvementKind: 'feature',
       sourceRole: 'system',
       filedByRole: 'dream',
@@ -235,35 +261,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
     const f = await createDreamCapabilityFixture(WS, HARNESS);
     try {
       const key = { workspaceId: WS, runId: 'DR-CAPABILITY-PG' };
-      await beginDreamRun(db.adminSql, {
-        ...key,
-        cycleId: 'capability-pg-cycle',
-        potSlug: HARNESS,
-        mode: 'manual',
-        capability: f.header,
-      });
-      await recordDreamRunSelection(db.adminSql, { ...key, capability: f.sampling });
-      for (const call of f.provenance.calls) {
-        await beginDreamRunCall(db.adminSql, {
-          ...key,
-          call: { callId: call.callId, phase: call.phase, model: call.model, reservedUsd: call.reservedUsd },
-        });
-        await settleDreamRunCall(db.adminSql, { ...key, callId: call.callId, usage: call.usage });
-      }
-      await recordDreamRunReview(db.adminSql, {
-        ...key,
-        outcome: { verdict: 'insight', insight: f.insight },
-        review: { ...f.review },
-      });
-      const input = {
-        kind: 'capability' as const,
-        sql: db.adminSql,
-        workspaceId: WS,
-        dreamRunId: key.runId,
-        rootPath: f.root,
-        manifest: f.manifest,
-        sources: f.sources,
-      };
+      const input = await seedCapabilityInput(f, key.runId);
       const capture = vi.fn(captureImprovement);
       const route = vi.fn(recordRoutedIdea).mockRejectedValueOnce(new Error('crash after capture'));
       const deps = { capture, recordRoutedIdea: route, now: Date.now };
@@ -272,6 +270,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
       const [original] = await db.adminSql`SELECT issue_id, payload FROM harness_shared.engineer_issues
         WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = 'dream:DR-CAPABILITY-PG'`;
       expect(original).toBeDefined();
+      expect(original!.payload[IDEA_ORIGIN_PAYLOAD_KEY]).toBe('dream');
       await db.adminSql`UPDATE harness_shared.engineer_issues SET state = 'resolved', terminal_owner = 'dream-test',
         terminal_completion_ref = 'terminal identity replay fixture', updated_at = now() WHERE issue_id = ${original!.issue_id}`;
       // The real local-close trigger adds the completion-event intent before
@@ -312,6 +311,56 @@ describe('accepted dream sink (real PG — P-004)', () => {
       expect(routed[0]!.addressesPatternRefs).toEqual(
         [f.selection.a, f.selection.b].map((e) => e.packet.unit.id + '@' + e.contentVersion),
       );
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a legacy terminal payload missing origin through concurrent and repeated capability replay', async () => {
+    const f = await createDreamCapabilityFixture(WS, HARNESS);
+    try {
+      const runId = 'DR-CAPABILITY-LEGACY-PG';
+      const input = await seedCapabilityInput(f, runId);
+      const capture = vi.fn(captureImprovement);
+      const route = vi.fn(recordRoutedIdea).mockRejectedValueOnce(new Error('legacy crash after capture'));
+      const deps = { capture, recordRoutedIdea: route, now: Date.now };
+      await expect(sinkDreamInsight(input, deps)).rejects.toThrow('legacy crash after capture');
+      const [original] = await db.adminSql`SELECT issue_id, payload FROM harness_shared.engineer_issues
+        WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = ${'dream:' + runId}`;
+      expect(original!.payload[IDEA_ORIGIN_PAYLOAD_KEY]).toBe('dream');
+      // Model an artifact captured by the historical writer before it stamped origin.
+      await db.adminSql`UPDATE harness_shared.engineer_issues
+        SET payload = payload - ${IDEA_ORIGIN_PAYLOAD_KEY} WHERE issue_id = ${original!.issue_id}`;
+      const [legacy] = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
+        WHERE issue_id = ${original!.issue_id}`;
+      expect(legacy!.payload).not.toHaveProperty(IDEA_ORIGIN_PAYLOAD_KEY);
+      await db.adminSql`UPDATE harness_shared.engineer_issues SET state = 'resolved', terminal_owner = 'dream-test',
+        terminal_completion_ref = 'legacy terminal replay fixture', updated_at = now()
+        WHERE issue_id = ${original!.issue_id}`;
+      const [terminal] = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
+        WHERE issue_id = ${original!.issue_id}`;
+      await assertReplayPayload('post-close-before-replay', legacy!.payload, terminal!.payload, () => {
+        expect(terminal!.payload).toEqual({
+          ...legacy!.payload, _completionEventIntentId: expect.stringMatching(/\S/),
+        });
+      });
+      const replay = await Promise.all([sinkDreamInsight(input, deps), sinkDreamInsight(input, deps)]);
+      for (const value of replay)
+        expect(value).toMatchObject({ sunk: true, workItemId: original!.issue_id, created: false });
+      expect(await sinkDreamInsight(input, deps)).toMatchObject({
+        sunk: true, workItemId: original!.issue_id, created: false,
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+      const artifacts = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
+        WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = ${'dream:' + runId}`;
+      expect(artifacts).toHaveLength(1);
+      await assertReplayPayload('post-replay', terminal!.payload, artifacts[0]!.payload, () => {
+        expect(artifacts[0]!.payload).toEqual(terminal!.payload);
+      });
+      const routed = (await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'dream' }))
+        .filter((r) => r.ideaId === 'dream:' + runId);
+      expect(routed).toHaveLength(1);
+      expect(routed[0]!.routedRef).toBe('wi:' + original!.issue_id);
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }

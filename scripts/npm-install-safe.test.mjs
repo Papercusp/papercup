@@ -798,7 +798,8 @@ test("cacheVerifyArgs preserves an explicit npm cache path", () => {
 test("verificationScopeForNpmArgs maps npm workspace names and paths without widening to unselected workspaces", () => {
   const repoRoot = "/repo";
   const manifests = new Map([
-    ["/repo/package.json", { workspaces: ["apps/*"] }],
+    ["/repo/package.json", { workspaces: ["apps/*", "!apps/*-checkpoint"] }],
+    ["/repo/apps/drill-checkpoint/package.json", { name: "@papercusp/drill-checkpoint" }],
     ["/repo/apps/web/package.json", { name: "@papercusp/web" }],
     [
       "/repo/apps/operator-vite/package.json",
@@ -813,11 +814,16 @@ test("verificationScopeForNpmArgs maps npm workspace names and paths without wid
     readJson: (path) => manifests.get(path),
     existsSync: (path) => path === "/repo/apps" || manifests.has(path),
     readDir: () => [
+      { name: "drill-checkpoint", isDir: true },
       { name: "web", isDir: true },
       { name: "operator-vite", isDir: true },
       { name: "operator-docs", isDir: true },
     ],
   };
+
+  assert.throws(() => verificationScopeForNpmArgs({
+    repoRoot, npmArgs: ["install", "--workspace=@papercusp/drill-checkpoint"], deps,
+  }), /workspace selector did not resolve/);
 
   assert.deepEqual(
     verificationScopeForNpmArgs({
@@ -999,6 +1005,54 @@ test("publishDependencyGeneration invokes the shared atomic publisher after inst
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+for (const outcome of ["repaired", "unchanged", "failed"]) {
+  test(`workspace-scoped verification detects locked topology drift outside its selection (${outcome})`, async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-lock-topology-"));
+    const put = (path, value) => {
+      const full = join(repoRoot, path);
+      mkdirSync(join(full, ".."), { recursive: true });
+      writeFileSync(full, JSON.stringify(value));
+    };
+    put("package.json", { workspaces: ["apps/selected", "apps/other"] });
+    put("apps/selected/package.json", { name: "selected" });
+    put("apps/other/package.json", { name: "other", dependencies: { types: "1.0.0" } });
+    put("apps/other/node_modules/types/package.json", { name: "types", version: "1.0.0", dependencies: { undici: "7.0.0" } });
+    // Node can resolve the correct version here, but the root lock pins it at
+    // types/node_modules/undici, as in the measured undici-types incident.
+    put("apps/other/node_modules/undici/package.json", { name: "undici", version: "7.0.0" });
+    mkdirSync(join(repoRoot, "node_modules"));
+    put("package-lock.json", {
+      lockfileVersion: 3,
+      packages: {
+        "": {},
+        "apps/selected": { name: "selected" },
+        "apps/other": { name: "other", dependencies: { types: "1.0.0" } },
+        "apps/other/node_modules/types": { version: "1.0.0" },
+        "apps/other/node_modules/types/node_modules/undici": { version: "7.0.0" },
+      },
+    });
+    const calls = [];
+    try {
+      const result = await verifyDepsExtracted({
+        repoRoot,
+        npmArgs: ["install", "--workspace=selected"],
+        probeSpecifiers: [],
+        deps: { sleep: async () => {} },
+        runNpm: (args) => {
+          calls.push(args);
+          if (outcome === "repaired")
+            put("apps/other/node_modules/types/node_modules/undici/package.json", { name: "undici", version: "7.0.0" });
+          return outcome === "failed" ? 2 : 0;
+        },
+      });
+      assert.deepEqual(calls, [["install", "--legacy-peer-deps"]]);
+      assert.equal(result, outcome === "repaired" ? 0 : 1);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 test("publishDependencyGeneration preserves an explicit emergency skip", async () => {
   let called = false;

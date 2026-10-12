@@ -321,6 +321,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'nested tools:invoke wrapper preserves the expected loop:checkpoint CAS refusal in JSON error_message; classify the stale-state refusal as caller-side too',
   },
   {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: "acceptance_bar_amendment_revision_conflict: subject plan 'verification-system-improvements-2026-10-10' expected 118, live 119",
+    expectedClass: 'caller',
+    note: 'rubrics:amend refuses an approval bound to a stale subject-plan revision; refresh the preview and approval instead of filing the expected compare-and-swap as a structural bug (EI-25679727768588706)',
+  },
+  {
     n: 14, errorCode: 'handler_error', status: 'error',
     message: '{"ok":false,"requested":false,"error":"flush-required","tripwires":[{"kind":"missing-checkpoint","subject":"WI-10004595"}]}',
     expectedClass: 'caller',

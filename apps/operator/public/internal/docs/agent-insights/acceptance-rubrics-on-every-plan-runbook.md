@@ -8,7 +8,7 @@ Runbook for shipping a plan through code-truth audit, acceptance-drain lifecycle
 A plan is not ready to ship merely because its implementation tasks are terminal. The completion path has two independent evidence families, in this order:
 
 1. the implementer audits every plan item against the actual source tree;
-2. the implementer authors and vets a post-implementation acceptance rubric;
+2. the implementer amends the activation-seeded acceptance bars to as-built reality and vets them;
 3. a non-implementer grades the finished work;
 4. the rubric author reads that grading and records an explicit `accept` or `reject` verdict;
 5. `plans:set-plan-status { status:'shipped' }` re-verifies the evidence and closes the plan.
@@ -76,9 +76,11 @@ plans:audit {
 
 Only resolving `code` and `test` citations verify implementation. Their repo-relative paths must resolve; optional line and symbol anchors must be valid. A PG-canonical doc citation needs `ref` and `reason`; `none` needs `reason`. An `implemented` verdict requires a resolving code or test citation. Each item stores its audited SHA, timestamp, and text hash. At ship time the gate rechecks only status, text, citation resolution, and cited bytes. If it reports `audit_coverage_stale`, re-audit only the named items.
 
-## 3. Author and vet the acceptance rubric
+## 3. Amend and vet the acceptance rubric
 
-After the audit is clean, author the as-built definition of done:
+Acceptance bars are seeded at plan activation: `plans:audit { phase:'activation' }` projects each `requirement` block in the plan into the `acceptance-<plan-slug>` rubric and its `AUTO-BAR-R-<n>-P-<NNN>` clauses, before `plans:start`. Those bars state what the plan promised. After the audit is clean, amend them to as-built reality with `rubrics:amend` (below): tighten a METHOD, add a falsifier, or record a deliberate departure, so the bar graded at completion describes the code that shipped. Amend the seeded rubric; do not propose a second one beside it.
+
+A plan with no seeded bar (it has no `requirement` blocks, for example a pure investigation) authors its rubric with `rubrics:propose`:
 
 ```text
 rubrics:propose {

@@ -24,9 +24,7 @@
  * submodule inside it) count. A lock recorded against another checkout is not loaded by
  * this unit, and that is also what keeps clean deploy checkouts (release, staging) empty.
  */
-import { execFile } from 'node:child_process';
 import { isAbsolute, relative, sep } from 'node:path';
-import { promisify } from 'node:util';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../locks/live-lock-paths';
 
 /** How many files the result lists by name; `total` always carries the full count. */
@@ -108,9 +106,12 @@ export interface PeerInFlightEditsDeps {
 }
 
 const defaultResolveTreeRoot = async (workingDirectory: string): Promise<string | null> => {
-  const { stdout } = await promisify(execFile)('git', ['rev-parse', '--show-toplevel'], {
+  const { execFileViaSidecar } = await import('../../fleet/git-via-sidecar');
+  const { stdout } = await execFileViaSidecar('git', ['rev-parse', '--show-toplevel'], {
+    timeoutMs: 3000,
+    subsystem: 'restart-peer-edits',
     cwd: workingDirectory,
-    timeout: 3000,
+    env: process.env,
   });
   const root = String(stdout).trim();
   return root && isAbsolute(root) ? root : null;

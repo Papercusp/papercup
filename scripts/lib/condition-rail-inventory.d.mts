@@ -162,6 +162,32 @@ export function manifestProblems(manifest: any, live: any, options?: {
 export function migrationCoverageProblems(manifest: any, cases: any, completedItems: any, registeredMechanisms: any): string[];
 /** Final structural acceptance: every immutable migrate row needs rail placement AND a case. */
 export function acceptanceProblems(manifest: any, live: any, cases: any, registeredMechanisms: any): any[];
+/**
+ * The lint ratchet admits only existing bypass IDs. Dispositions alone cannot waive new
+ * sites: exclusions need a reasoned amendment, and removed baseline IDs cannot return.
+ * @param {any} live
+ * @param {{ rowIds: string[], amendments?: any[] }} baseline
+ * @param {{ rowIds: string[], amendments?: any[] }} committedBaseline
+ * @param {any} manifest
+ */
+export function lintProblems(live: any, baseline: {
+    rowIds: string[];
+    amendments?: any[];
+}, committedBaseline: {
+    rowIds: string[];
+    amendments?: any[];
+}, manifest: any): string[];
+/** A committed removal is permanent, including across intervening metadata-only commits.
+ * @param {{ rowIds: string[] }} initial
+ * @param {{ rowIds: string[] }[]} history
+ */
+export function baselineCeiling(initial: {
+    rowIds: string[];
+}, history: {
+    rowIds: string[];
+}[]): {
+    rowIds: string[];
+};
 export const CLASSES: readonly string[];
 /** Callee names whose CALL puts the enclosing function on the condition rail. */
 export const RAIL_FUNCTIONS: readonly string[];

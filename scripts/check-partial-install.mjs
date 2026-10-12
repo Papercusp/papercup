@@ -55,37 +55,17 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Expand the root package.json `workspaces` globs to concrete workspace directories.
- * Only the `dir/*` shape occurs in this repo; anything else is treated as a literal
- * path. A pattern entry that resolves to no package.json is skipped rather than
- * guessed at — this guard reports corruption, so it must not invent members.
+ * Share the link guard's npm-compatible glob and exclusion semantics. A pattern
+ * entry that resolves to no package.json is skipped rather than guessed at.
  */
 export function expandWorkspaceDirs(patterns, root) {
-  const dirs = [];
-  for (const pattern of patterns ?? []) {
-    if (pattern.endsWith('/*')) {
-      const base = pattern.slice(0, -2);
-      if (!existsSync(join(root, base))) continue;
-      let entries;
-      try {
-        entries = readdirSync(join(root, base));
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (entry.startsWith('.')) continue;
-        const dir = join(base, entry);
-        if (existsSync(join(root, dir, 'package.json'))) dirs.push(dir);
-      }
-    } else if (existsSync(join(root, pattern, 'package.json'))) {
-      dirs.push(pattern);
-    }
-  }
-  return dirs.sort();
+  return expandWorkspaces(patterns, root).sort();
 }
 
 /**

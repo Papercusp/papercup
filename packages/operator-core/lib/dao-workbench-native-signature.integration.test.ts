@@ -1,9 +1,12 @@
 /** Read the actual native ballot through the production governance store. */
 import { readFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
+import { InvalidInputError } from '@papercusp/tooldef';
+import { insertHiveIfAbsent } from './hive-store';
 import { readPlanAdmissionGovernanceSnapshot } from './agent-tools/plans/plan-admission-governance-store';
-import { getPlanRow } from './agent-tools/plans/source';
+import { getPlanRow, resolvePlanScope } from './agent-tools/plans/source';
 
 const isolated = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
 let sql: Sql;
@@ -39,9 +42,25 @@ describe.skipIf(!isolated)('Native DAO persisted signed governance', () => {
     console.log('DAO_NATIVE_INTEGRATION_WORKSPACE=' + workspaceId);
   });
 
-  it('does not expose the native proposal or authenticated ballot through a different workspace', async () => {
+  it('refuses an unbound foreign workspace before reading the native proposal', async () => {
     const response = JSON.parse(readFileSync(evidence + '/proposal-response.json', 'utf8'));
-    const foreignWorkspace = workspaceId + '-foreign';
+    const foreignWorkspace = workspaceId + '-unbound-foreign';
+    const read = getPlanRow(JSON.parse(response.body).slug, { workspaceId: foreignWorkspace, harnessSlug: 'workbench-native' });
+    await expect(read).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(read).rejects.toThrow(`does not belong to one in workspace '${foreignWorkspace}'`);
+    const snapshot = await readPlanAdmissionGovernanceSnapshot({ workspaceId: foreignWorkspace, potHomeSlug: 'workbench-native' }, sql);
+    expect(snapshot.events).toEqual([]);
+  });
+
+  it('does not expose the native proposal or authenticated ballot through a registered foreign Hive', async () => {
+    const response = JSON.parse(readFileSync(evidence + '/proposal-response.json', 'utf8'));
+    const foreignWorkspace = workspaceId + '-bound-foreign';
+    const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+    const foreignHive = await insertHiveIfAbsent({ workspaceId: foreignWorkspace, homeSlug: 'workbench-native',
+      pubkeyBase64: publicKey, keychainId: 'synthetic-foreign:' + foreignWorkspace, title: 'Foreign isolated DAO' }, sql);
+    expect(foreignHive.created).toBe(true);
+    expect(await resolvePlanScope({ workspaceId: foreignWorkspace, harnessSlug: 'workbench-native' }))
+      .toEqual({ workspaceId: foreignWorkspace, harnessSlug: 'workbench-native' });
     expect(await getPlanRow(JSON.parse(response.body).slug, { workspaceId: foreignWorkspace, harnessSlug: 'workbench-native' })).toBeNull();
     const snapshot = await readPlanAdmissionGovernanceSnapshot({ workspaceId: foreignWorkspace, potHomeSlug: 'workbench-native' }, sql);
     expect(snapshot.events).toEqual([]);

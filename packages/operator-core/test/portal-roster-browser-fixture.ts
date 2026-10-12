@@ -21,6 +21,8 @@ import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calen
 import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learning-fixture';
 import { observeWorkflowDenialCycle, runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
 import { runPrivateStatsPage, type PrivateStatsSeed } from './portal-stats-fixture';
+import { runPrivateGitPage, type PrivateGitSeed } from './portal-git-fixture';
+import { defaultAdvGitLayout } from '../lib/dock-layouts';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -135,6 +137,7 @@ type PortalRosterBrowserInput = {
   stats?: boolean;
   git?: boolean;
   statsSeed?: PrivateStatsSeed;
+  gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
@@ -177,14 +180,16 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
   const entry = input.git ? `
     import * as React from 'react';
+    import * as Tooltip from '@radix-ui/react-tooltip';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
     import { SyncProvider } from '@papercusp/sync';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
-    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
-        React.createElement(AdvHarnessPanelPage, { panel: 'git' }))) });
+    const routeTree = createRootRoute({ component: () => React.createElement(Tooltip.Provider,
+      { delayDuration: 150, skipDelayDuration: 300 }, React.createElement(NuqsAdapter, null,
+        React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+          React.createElement(AdvHarnessPanelPage, { panel: 'git' })))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.stats ? `
@@ -460,7 +465,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const retainBrowserCss = Boolean(input.brainstorm || input.calendar || input.workflows || input.stats || input.git);
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
-    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
+    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom'),
+      // The generated entry resolves from Portal, while CommitDetail resolves
+      // from the shared tree. Their provider must share the same Radix context.
+      ...(input.git ? { '@radix-ui/react-tooltip': dirname(dirname(
+        createRequire(join(operatorRoot, 'package.json')).resolve('@radix-ui/react-tooltip'))) } : {}) },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
     loader: { '.css': retainBrowserCss ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
@@ -561,12 +570,19 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
   assert.ok(!options.workflowsRead || input.workflows, 'Workflows read preflight requires Workflows');
+  assert.ok(!options.gitRead || input.git, 'Git read preflight requires the Git workspace');
   const built = await buildPortalRosterBrowser(input);
+  if (options.gitRead) {
+    const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
+      path.includes('/node_modules/@radix-ui/react-tooltip/')).map(path =>
+      path.split('/node_modules/@radix-ui/react-tooltip/')[0]));
+    assert.equal(tooltipPackages.size, 1, 'Git provider and consumer must use one Radix tooltip package');
+  }
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const writes: Array<{ surface: string; body: any }> = [];
   const reads: Array<{ name: string | null; args: any }> = [];
@@ -576,6 +592,11 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const workflowAt = Date.now() + 3_600_000;
   const workflowSubjects = [input.selected, input.neighbor];
   // These are explicit component fixtures, never provider or private API proof.
+  const gitCommit = { sha: 'a'.repeat(40), author: 'preflight-author', email: 'preflight@example.invalid',
+    ts: 1_700_000_000, parents: [], refs: [], subject: 'preflight selected commit', body: '',
+    patch: 'diff --git a/selected.txt b/selected.txt\nindex 1111111..2222222 100644\n--- a/selected.txt\n+++ b/selected.txt\n@@ -1 +1 @@\n-before\n+after\n' };
+  const gitLayout = { workspaceId: 'preflight-workspace', layoutName: `adv-git2:${input.selected}`,
+    schemaVersion: 1, layoutJson: defaultAdvGitLayout(input.selected), updatedTs: 1, createdTs: 1 };
   const prRows: PrRowData[] = [
     { remote: 'github.com/preflight/selected', number: 101, title: 'preflight-selected-open', author_login: 'fixture-viewer',
       author_github_id: 101, html_url: 'https://example.invalid/pr/101', state: 'open', review_decision: 'none',
@@ -646,6 +667,16 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       if (denied && options.workflowsDeniedResponseDelayMs) {
         setTimeout(() => { if (!response.destroyed) response.end(body); }, options.workflowsDeniedResponseDelayMs);
       } else response.end(body);
+    } else if (options.gitRead && pathname === '/api/zero-harness/rest-query') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ rows: requestUrl.searchParams.get('name') === 'dockLayouts.byName' ? [gitLayout] : [] }));
+    } else if (options.gitRead && pathname.startsWith('/api/dock-layouts/')) {
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(gitLayout));
+    } else if (options.gitRead && pathname.startsWith(`/api/harness/${input.selected}/git/`)) {
+      // CommitDetail uses the production sibling-loopback origin helper.
+      response.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      response.end(JSON.stringify(pathname.endsWith('/log') ? { commits: [gitCommit] }
+        : pathname.endsWith('/worktrees') ? { worktrees: [] } : gitCommit));
     } else if ((options.prsRead || options.insightsRead) && request.method !== 'GET') {
       prWrites.push(pathname); response.writeHead(405); response.end();
     } else if (options.insightsRead && pathname.startsWith('/api/harness/') && pathname.endsWith('/insights')) {
@@ -736,6 +767,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   });
   const errors: string[] = [];
   const failedRequests: string[] = [];
+  const gitDetailReads: Array<{ url: string; status: number; allowOrigin: string | undefined }> = [];
   let page: Page | undefined;
   try {
     await new Promise<void>((done, reject) => {
@@ -749,9 +781,20 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     // failures, rather than treating background flag-bootstrap requests as
     // module failures. The private workflow exercises its real API separately.
     page.on('console', message => {
-      if (message.type() === 'error' && message.text().startsWith('[MarkdownPreview]')) errors.push(message.text());
+      const gitTransportError = options.gitRead && (/cross-origin|cors|access-control-allow-origin/i.test(message.text())
+        || message.location().url.includes('/git/'));
+      if (message.type() === 'error' && (message.text().startsWith('[MarkdownPreview]') || gitTransportError)) errors.push(message.text());
     });
-    page.on('response', response => { if (response.status() >= 400) failedRequests.push(`HTTP ${response.status()} ${response.url()}`); });
+    page.on('requestfailed', request => {
+      if (options.gitRead) failedRequests.push(`${request.failure()?.errorText} ${request.url()}`);
+    });
+    page.on('response', response => {
+      if (response.status() >= 400) failedRequests.push(`HTTP ${response.status()} ${response.url()}`);
+      if (options.gitRead && new URL(response.url()).pathname.includes('/git/show/')) {
+        gitDetailReads.push({ url: response.url(), status: response.status(),
+          allowOrigin: response.headers()['access-control-allow-origin'] });
+      }
+    });
     // History-backed query state needs a real origin; about:blank cannot run
     // replaceState even when the component itself initialized correctly.
     const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
@@ -759,11 +802,21 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (options.brainstormHydration || options.prsRead || options.insightsRead) url.searchParams.set('slug', input.selected);
     if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
     if (input.stats) { url.searchParams.set('app', 'stats'); url.searchParams.set('slug', input.selected); }
+    if (options.gitRead) {
+      url.searchParams.set('app', 'git'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('commit', gitCommit.sha); url.searchParams.set('ws', 'preflight-workspace');
+    }
     if (options.prsRead || options.insightsRead) {
       url.searchParams.set('app', options.insightsRead ? 'insights' : 'prs'); url.searchParams.set('q', 'preflight-search');
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
+    if (options.gitRead) {
+      await page.waitForFunction(() => document.querySelector('.pc-adv-git')
+        || document.body.textContent?.includes('Something went wrong!'));
+      assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
+        'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
+    }
     try { await (input.git ? page.locator('.pc-adv-git')
       : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
       : input.workflows ? page.getByTestId('workflows-control-deck')
@@ -944,7 +997,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (input.git) {
       // Module initialization only. The empty selector state does not establish
       // private API, dock hydration, commit selection or diff acceptance.
-      assert.equal(await page.locator('.pc-adv-git__empty').count(), 1);
+      if (!options.gitRead) assert.equal(await page.locator('.pc-adv-git__empty').count(), 1);
       assert.ok(built.css.includes('.pc-adv-dock'), 'Git mount must retain its real dock stylesheet');
     }
     if (input.workflows) {
@@ -982,7 +1035,22 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(await page.locator('.pc-sched-cal .fc').count(), 1);
       assert.equal(await page.locator('.pc-routines').count(), 1);
     } else if (input.git) {
-      assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
+      if (options.gitRead) {
+        const detail = page.getByLabel('Commit diff');
+        await detail.getByText(gitCommit.subject, { exact: true }).waitFor();
+        assert.ok(await detail.locator('.h-git-file-head').count() > 0);
+        await page.reload();
+        await page.getByLabel('Commit diff').getByText(gitCommit.subject, { exact: true }).waitFor();
+        assert.ok(gitDetailReads.length >= 2, 'Selected commit and reload must read their actual sibling-origin endpoint');
+        assert.ok(gitDetailReads.every(read => new URL(read.url).hostname === 'localhost'
+          && read.status === 200 && read.allowOrigin === '*'), 'Git show fixture must preserve the production cross-origin transport');
+        const close = page.getByRole('button', { name: 'Close commit detail', exact: true });
+        await close.focus(); await page.keyboard.press('Enter');
+        await page.waitForFunction(() => !new URL(location.href).searchParams.has('commit'));
+        assert.deepEqual(errors, []);
+      } else {
+        assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
+      }
     } else if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
       assert.match(await page.locator('body').innerText(), /Select a /);
     }
@@ -1002,12 +1070,14 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         coldRetry: true, warmRetry: true, tokenRetry: true, subjectPreserved: true,
         neighborDistinct: true, noOutwardWrites: true, providerUsed: false } : {}),
       ...(options.workflowsRead ? { workflowsRead: true, staleNextRunWithheld: true, keyboardRetry: true,
-        occurrenceRequests: workflowsTimeline.filter(r => r.name === 'plans.scheduledOccurrences') } : {}) };
+        occurrenceRequests: workflowsTimeline.filter(r => r.name === 'plans.scheduledOccurrences') } : {}),
+      ...(options.gitRead ? { selectedCommitDiff: true, commitReload: true, keyboardClose: true } : {}) };
   } catch (error) {
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
-      await retainPortalBrowserFailure(page, evidence, error, errors);
+      await retainPortalBrowserFailure(page, evidence,
+        options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
       console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);
     }
     throw error;
@@ -1257,7 +1327,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
     + (input.brainstorm ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/harness/harness.css'), 'utf8')
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '')
-    + (input.harnesses ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
+    + (input.harnesses || input.git ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
   const sourceIdentity = { portal, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: portal, encoding: 'utf8' }).trim(),
@@ -1320,6 +1390,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.gitSeed) {
+      const receipt = await runPrivateGitPage(page, context, input.gitSeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual Git dock, graph and detail must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.statsSeed) {
       const receipt = await runPrivateStatsPage(page, context, input.statsSeed, url, evidence);
       assert.deepEqual(pageErrors, [], 'actual Stats controls must stay browser-safe');

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { parseAsString, useQueryState } from 'nuqs';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
+import ContractSigningViews from './ContractSigningViews';
 
 const cadences = ['hourly','weekly','biweekly','monthly','annual','per-milestone'];
 const states: Record<string, string> = { offered: 'Awaiting internal approval', approved: 'Approved for contract', 'contract-generated': 'Awaiting signatures', signed: 'Signed; awaiting hire vote', 'hire-proposed': 'Hire vote open', hired: 'Hired', rejected: 'Rejected', lapsed: 'Lapsed' };
@@ -122,6 +123,8 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
       </> : null}
       <h4>Offer history</h4><ol>{data.history.filter(h => h.subjectKind === 'offer' && h.subjectId === offer.offerId).slice().reverse().map(h =>
         <li key={h.id}>{h.state} · {name(h.actorPersonId)} · <time>{h.at}</time></li>)}</ol>
+      {offer.state === 'offered' ? <p>Internal approval is required before contract generation.</p> :
+        <ContractSigningViews key={offer.offerId} daoSlug={daoSlug} offer={offer} people={data.people} onChanged={() => void load()} />}
     </article> : offerId ? <p>The selected offer is unavailable in this DAO.</p> : null}
   </section>;
 }

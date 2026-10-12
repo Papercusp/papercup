@@ -44,6 +44,7 @@ import { promisify } from 'node:util';
 // pass's `finally` — see recordWatchdogPassOutcome's own note on why the tail of the try is the
 // wrong place (these passes have early `return out` paths).
 import { recordWatchdogPassOutcome } from './watchdog-health';
+import { observeFallback as defaultObserveFallback } from '../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
@@ -1565,20 +1566,32 @@ export async function wakeAbandonedCheckpointAwaits(
  * and returns an empty partial snapshot: evaluateGreenStall deliberately fails
  * open unless it can prove both a live lock and the exact `delivering` phase.
  */
-async function readCheckpointRunState(
+export async function readCheckpointRunState(
   installSlug: string,
   workspaceId: string,
+  deps: { route?: typeof resolveCheckpointRouting; readLock?: typeof isCheckpointRunLockHeldCheap;
+    readPhase?: typeof readCheckpointRunPhaseCheap; observeFallback?: typeof defaultObserveFallback } = {},
 ): Promise<Pick<GreenStallSnapshot, 'checkpointRunActive' | 'checkpointRunPhase'>> {
+  const observeFallback = deps.observeFallback ?? defaultObserveFallback;
   try {
-    const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
-    if (routing.skip) return {};
+    const routing = await (deps.route ?? resolveCheckpointRouting)({ installSlug, workspaceId }, integrationRoot());
+    if (routing.skip) {
+      observeFallback('release-state-read', { eligible: 1, applied: 0,
+        reason: 'routing-skipped', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
+      return {};
+    }
 
     const root = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
     const checkpointLogDir = routing.extraEnv.PAPERCUSP_CHECKPOINT_LOG_DIR;
-    const lock = isCheckpointRunLockHeldCheap(root, undefined, undefined, undefined, checkpointLogDir);
-    const phase = readCheckpointRunPhaseCheap(root, checkpointLogDir)?.phase ?? null;
+    const lock = (deps.readLock ?? isCheckpointRunLockHeldCheap)(root, undefined, undefined, undefined, checkpointLogDir);
+    const phase = (deps.readPhase ?? readCheckpointRunPhaseCheap)(root, checkpointLogDir)?.phase ?? null;
+    observeFallback('release-state-read', { eligible: 1,
+      applied: lock.held && phase == null ? 0 : 1, reason: lock.held && phase == null ? 'phase-unavailable' : 'applied',
+      scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
     return { checkpointRunActive: lock.held, checkpointRunPhase: phase };
   } catch (error) {
+    observeFallback('release-state-read', { eligible: 1, applied: 0,
+      reason: 'run-state-unavailable', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
     // The alert must remain useful when registry/routing state is temporarily
     // unreadable. Unknown is not "no run": it simply cannot suppress a stall.
     console.warn(

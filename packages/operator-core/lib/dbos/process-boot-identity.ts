@@ -8,9 +8,10 @@
  * checkout HEAD after the process had already been running.
  *
  * The wall-clock boot instant comes from `process.uptime()` rather than module
- * evaluation time. The commit lookup starts at module evaluation and is
- * memoized for the process lifetime, preserving the earliest stable bootstrap
- * seam while remaining fail-soft when the host is not a git checkout.
+ * evaluation time. The loaded-code pin is captured at module evaluation; its
+ * Git expansion starts on first consumption and is memoized. Importing the
+ * packaged boot graph therefore does not fork, and a delayed watchdog cannot
+ * borrow a newer checkout HEAD as the identity of the already-loaded code.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -23,10 +24,9 @@ export type GitRead = (args: string[]) => Promise<string>;
 let pexec: ((...args: any[]) => Promise<any>) | undefined;
 
 /**
- * Local fork, used ONLY for the boot sample. That read runs while the DBOS bootstrap
- * module graph evaluates: the process is still small (fork cost scales with the
- * parent's RSS) and no spawner sidecar exists yet. Routing it through the sidecar would
- * spawn one as a module-load side effect and delay the earliest-seam sample.
+ * Local fork, used ONLY to expand the captured boot pin on first consumption.
+ * A spawner sidecar may not exist at that bootstrap seam, and starting one just
+ * to resolve the pin would introduce a second startup dependency.
  */
 const gitReadLocal: GitRead = async (args) => {
   const { stdout } = await (pexec ??= promisify(execFile) as any)('git', args, { timeout: 5_000 });
@@ -224,7 +224,7 @@ export interface ProcessBootIdentity {
   bootCommit: Promise<string | null>;
 }
 
-/** Capture the two process-identity values together at one eager seam. */
+/** Capture the boot instant and loaded pin eagerly; resolve the pin on consumption. */
 export function captureProcessBootIdentity(opts: {
   nowMs?: number;
   uptimeSec?: number;
@@ -234,24 +234,30 @@ export function captureProcessBootIdentity(opts: {
 } = {}): ProcessBootIdentity {
   const nowMs = opts.nowMs ?? Date.now();
   const uptimeSec = opts.uptimeSec ?? process.uptime();
+  // Capture this before deferring any work. Reading getBuildInfo() on first
+  // consumption could sample a different identity after the checkout advances.
+  const loadedSha = opts.resolveCommit
+    ? null
+    : opts.loadedSha !== undefined ? opts.loadedSha : getBuildInfo().sha;
+  // An explicitly supplied resolver keeps its existing eager contract. The
+  // default module singleton must not start a subprocess during import.
+  let bootCommit = opts.resolveCommit?.();
   return {
     bootTimeMs: nowMs - Math.floor(uptimeSec * 1000),
     // Reuse the identity /api/health reports. A fresh process can load an older
     // last-known-good bundle; sampling checkout HEAD would label it as current.
     // Expand the loaded pin to the full Git identity without borrowing HEAD.
-    // The boot sample still forks locally on purpose; see gitReadLocal.
-    bootCommit: (opts.resolveCommit ?? (() => {
-      const loadedSha = opts.loadedSha !== undefined ? opts.loadedSha : getBuildInfo().sha;
-      return resolveCurrentHeadCommit(async () => {
+    get bootCommit() {
+      return bootCommit ??= resolveCurrentHeadCommit(async () => {
         if (!loadedSha || !/^[a-f0-9]{7,40}$/i.test(loadedSha)) return '';
         return (opts.readGit ?? gitReadLocal)(['rev-parse', '--verify', `${loadedSha}^{commit}`]);
       });
-    }))(),
+    },
   };
 }
 
-// Start this read as soon as the DBOS bootstrap module graph evaluates. Do not
-// move it behind the lazy watchdog import: that recreates EI-20338401938272036.
+// Capture the loaded pin at the DBOS bootstrap seam, before the lazy watchdog
+// imports. Only Git expansion is deferred; neither the pin nor boot time drifts.
 const PROCESS_BOOT_IDENTITY = captureProcessBootIdentity();
 
 export function processBootTimeMs(): number {

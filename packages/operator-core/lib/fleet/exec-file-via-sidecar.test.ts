@@ -15,6 +15,7 @@ import {
   resetSidecarFallbackStatsForTest,
   type ExecFileLikeError,
 } from './git-via-sidecar';
+import type { ExecParams, ExecResult } from './sidecar-exec-process';
 
 const opts = { timeoutMs: 1234, rpcTimeoutMs: 5678, subsystem: 'test-subsystem', cwd: '/tmp', maxBuffer: 99 };
 
@@ -99,5 +100,72 @@ describe('execFileViaSidecar', () => {
     expect(res).toEqual({ stdout: 'x', stderr: 'y' });
     expect(viaSidecar).not.toHaveBeenCalled();
     expect(getSidecarFallbackStats().total).toBe(0);
+  });
+
+  it('uses governed local execProcess and preserves timeout, cwd, env, maxBuffer, and rejection fields', async () => {
+    let next: ExecResult = { code: 0, stdout: 'local-out', stderr: '' };
+    const executeProcess = vi.fn(async (_params: ExecParams): Promise<ExecResult> => next);
+    const env = { PATH: '/bin', LANG: 'C' };
+    const localOpts = { timeoutMs: 2222, subsystem: 'local-governed-test', cwd: '/tmp/repo', env, maxBuffer: 128 };
+    const res = await execFileViaSidecar('git', ['rev-parse', 'HEAD'], localOpts, {
+      sidecarEnabled: () => false,
+      executeProcess,
+    });
+
+    expect(res).toEqual({ stdout: 'local-out', stderr: '' });
+    expect(executeProcess).toHaveBeenLastCalledWith({
+      command: 'git',
+      args: ['rev-parse', 'HEAD'],
+      timeoutMs: 2222,
+      cwd: '/tmp/repo',
+      env,
+      inheritEnv: false,
+      maxBuffer: 128,
+    });
+
+    next = { code: 7, stdout: 'partial', stderr: 'git failed' };
+    const err = (await execFileViaSidecar('git', ['show', 'bad-ref'], localOpts, {
+      sidecarEnabled: () => false,
+      executeProcess,
+    }).catch((e: unknown) => e)) as ExecFileLikeError;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe(7);
+    expect(err.stdout).toBe('partial');
+    expect(err.stderr).toBe('git failed');
+    expect(err.message).toContain('git failed');
+  });
+
+  it('uses execFile default maxBuffer and inherited env when no overrides are supplied', async () => {
+    const executeProcess = vi.fn(async (_params: ExecParams): Promise<ExecResult> => ({ code: 0, stdout: 'ok', stderr: '' }));
+    await execFileViaSidecar('git', ['rev-parse', 'HEAD'], { timeoutMs: 321, subsystem: 'default-local-test' }, {
+      sidecarEnabled: () => false,
+      executeProcess,
+    });
+    expect(executeProcess).toHaveBeenCalledWith({
+      command: 'git',
+      args: ['rev-parse', 'HEAD'],
+      timeoutMs: 321,
+      inheritEnv: true,
+      maxBuffer: 1024 * 1024,
+    });
+  });
+
+  it('maps a local maxBuffer overflow to the execFile rejection code and signal', async () => {
+    const executeProcess = vi.fn(async (_params: ExecParams): Promise<ExecResult> => ({
+      code: -1,
+      stdout: 'abc',
+      stderr: '',
+      maxBufferExceeded: 'stdout' as const,
+    }));
+    const err = (await execFileViaSidecar('git', ['show', 'large'], { timeoutMs: 321, subsystem: 'max-buffer-test' }, {
+      sidecarEnabled: () => false,
+      executeProcess,
+    }).catch((e: unknown) => e)) as ExecFileLikeError;
+    expect(err.code).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    expect(err.stdout).toBe('abc');
+    expect(err.stderr).toBe('');
+    expect(err.killed).toBe(true);
+    expect(err.signal).toBe('SIGTERM');
+    expect(err.message).toBe('stdout maxBuffer length exceeded');
   });
 });

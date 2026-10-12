@@ -27,6 +27,16 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Git workspace renders selected commit detail with its root providers before private allocation', async () => {
+    const portalSourceRoot = preparePortalBrowserSource([
+      '--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT,
+    ]);
+    expect(await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot,
+      selected: 'git-preflight-selected', neighbor: 'git-preflight-neighbor', git: true },
+    { gitRead: true })).toMatchObject({ selectedCommitDiff: true, commitReload: true, keyboardClose: true });
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal Git workspace initializes in the browser before private allocation', async () => {
     const portalSourceRoot = preparePortalBrowserSource([
       '--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT,

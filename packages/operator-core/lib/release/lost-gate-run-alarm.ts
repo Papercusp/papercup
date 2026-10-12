@@ -26,6 +26,7 @@
  */
 import type { Sql } from 'postgres';
 import type { SevereEventRoute } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
   parseCheckpointQualificationTransaction,
@@ -202,6 +203,8 @@ export interface LostRunSweepDeps {
   readHolder?: (installSlug: string) => Promise<string | null>;
   readOwnerFleetSlug?: (sql: Sql, workspaceId: string, ownerId: string) => Promise<string | null>;
   broadcast?: (ev: import('../severe-event-broadcast').SevereEventBroadcast) => Promise<boolean>;
+  /** Existing condition/owner delivery seams, including measured recovery. */
+  attention?: AlarmAttentionDeps;
   notifyOwner?: (opts: { workspaceId: string; title: string; body: string; data: Record<string, unknown> }) => Promise<void>;
 }
 
@@ -244,9 +247,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
              metadata->'gate_health'->'qualificationProgressAlarm'->>'key' AS progress_alarmed_key,
              metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} AS qualification
         FROM harness_shared.routines
-       WHERE target_role = 'system:green-checkpoint'
-         AND (jsonb_typeof(metadata->'gate_health'->'inFlightCandidate') = 'object'
-           OR jsonb_typeof(metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->'currentPhysicalRunner') = 'object')`;
+       WHERE target_role = 'system:green-checkpoint'`;
   } catch (e) {
     console.warn(`[lost-gate-run-alarm] row scan failed (will retry): ${e instanceof Error ? e.message : String(e)}`);
     return out;
@@ -264,10 +265,21 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     // so the old marker's dedup stamp cannot hide a successor's missing heartbeat.
     const transaction = parseCheckpointQualificationTransaction(row.qualification);
     const runner = transaction?.currentPhysicalRunner;
-    const liveness = runner ? await (deps.probeQualificationRunner ?? probeRunnerLiveness)(runner, nowMs) : 'unknown';
+    const liveness = runner ? await (deps.probeQualificationRunner
+      ? deps.probeQualificationRunner(runner) : probeRunnerLiveness(runner, nowMs)) : 'unknown';
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;
+    // Read routines even after their marker disappears: otherwise recovery is invisible.
+    // Malformed markers and unknown liveness are not evidence of recovery.
+    if (row.alarmed_key && (row.marker == null ||
+        (markerDecision.action === 'silent' && ['pid-alive', 'own-run'].includes(markerDecision.reason)))) {
+      await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+    }
+    if (row.progress_alarmed_key && (row.qualification == null || transaction?.phase === 'terminal' ||
+        (liveness === 'live' && qualification?.runnerHealth.state === 'progressing'))) {
+      await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
+    }
     const inspect = qualification?.runnerHealth.state === 'stalled' || qualification?.runnerHealth.state === 'dead';
     const progressKey = inspect && transaction && runner
       ? `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
@@ -345,7 +357,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       ...(routes.length > 1 ? { extraRoutes: routes.slice(1) } : {}),
     });
     if (routes.length === 0) {
-      const notifyOwner = deps.notifyOwner ?? defaultNotifyOwner;
+      const notifyOwner = deps.notifyOwner ?? ((input) => defaultNotifyOwner(input, {
+        ...deps.attention, broadcast: deps.attention?.broadcast ?? deps.broadcast,
+      }));
       await notifyOwner({
         workspaceId: row.workspace_id,
         title: summary,
@@ -388,7 +402,16 @@ async function defaultNotifyOwner(opts: {
   title: string;
   body: string;
   data: Record<string, unknown>;
-}): Promise<void> {
+}, deps: AlarmAttentionDeps = {}): Promise<void> {
+  const conditionKey = `${'attemptId' in opts.data ? 'green-checkpoint-run-progress' : 'green-checkpoint-lost-run'}:${opts.data.installSlug}`;
+  // The owner fallback is itself on the rail; owner-notification failures cannot suppress it.
+  const event = { conditionKey, summary: opts.title, body: opts.body, oneShot: true };
+  if (deps.broadcast) await deps.broadcast(event);
+  else {
+    const { broadcastSevereEvent } = await import('../severe-event-broadcast');
+    await broadcastSevereEvent(event);
+  }
+  if (deps.notify) { await deps.notify({ title: opts.title, body: opts.body }); return; }
   const { notifyAttention } = await import('../attention-notify');
   await notifyAttention({
     kind: 'intervention',

@@ -2,6 +2,11 @@
  * worktree-coverage-watchdog.test.ts — WI-3612 (EI-8820 follow-up).
  */
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
+}));
 import {
   findUncoveredDirtyWorktrees,
   parseWorktreeListPorcelain,

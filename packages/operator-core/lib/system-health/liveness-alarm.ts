@@ -81,6 +81,7 @@ import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { resolveSevereEventOwner } from '../severe-event-owner';
 import { currentLoopLag } from '../event-loop-lag-monitor';
+import { getBuildInfo } from '../build-info';
 import {
   readRoutineEngineLiveness as readSharedRoutineEngineLiveness,
   type RoutineEngineLiveness,
@@ -2417,6 +2418,20 @@ export async function runLivenessAlarmTick(
 
   const fired: AlarmSignal[] = [];
   const newBlockerSignals: AlarmSignal[] = [];
+  // Bind agent-strand alarms to the observation and the emitting artifact.
+  // This is evidence, not part of the stable cross-worker dedup identity.
+  const strandForSignals = healthForSignals.panels.coordination?.data?.agentStrand;
+  const agentStrandObservation = strandForSignals
+    ? {
+        observedAtMs: now,
+        snapshotAtMs: healthForSignals.evaluatedAt,
+        runtime: { ...getBuildInfo(), pid: process.pid },
+        wedged: strandForSignals.wedgedUnreadable ? null : strandForSignals.wedged,
+        wedgedByClass: strandForSignals.wedgedUnreadable ? null : { ...strandForSignals.wedgedByClass },
+        stranded: strandForSignals.strandedUnreadable ? null : strandForSignals.stranded,
+        thresholds: { wedged: AGENT_WEDGED_ALARM_THRESHOLD, stranded: AGENT_STRANDED_ALARM_THRESHOLD },
+      }
+    : null;
   const escalationInput = (s: AlarmSignal) => ({
     severity: s.severity,
     summary: `${SUMMARY_PREFIX}${s.summary}`,
@@ -2432,6 +2447,9 @@ export async function runLivenessAlarmTick(
       livenessSignature: s.key,
       dedupKind: 'infra-liveness',
       subjectSignature: s.key,
+      ...((s.key === 'agents-wedged' || s.key === 'agents-stranded') && agentStrandObservation
+        ? { agentStrandObservation }
+        : {}),
       ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
       // EI-10060: no registered/derivable owner for this signal — nobody is
       // durably on the hook for it beyond the ambient `to:['*']` broadcast

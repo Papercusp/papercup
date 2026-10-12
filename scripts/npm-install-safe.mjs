@@ -97,6 +97,7 @@ import {
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
 import { findBrokenBinLinks } from "./check-partial-install.mjs";
+import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -597,6 +598,20 @@ export async function verifyDepsExtracted({
     deps,
   });
   const inspect = async () => {
+    // A scoped reify can leave another workspace's old, resolvable hoisting in
+    // place after manifest-only resolution changed the root lock's topology.
+    // Publication copies the whole tree, so resolving declared dependencies is
+    // insufficient: use the publisher's exact-path detector before copying it.
+    const lockPath = existsSync(join(repoRoot, "npm-shrinkwrap.json"))
+      ? join(repoRoot, "npm-shrinkwrap.json")
+      : join(repoRoot, "package-lock.json");
+    const lockTreeDefects = existsSync(lockPath)
+      ? auditLockfile({
+          lock: JSON.parse(readFileSync(lockPath, "utf8")),
+          lockDir: "",
+          treeRoot: repoRoot,
+        }).defects
+      : [];
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,
@@ -624,6 +639,7 @@ export async function verifyDepsExtracted({
       unsatisfiedRanges.invalid.length > 0
     )
       return {
+        lockTreeDefects,
         missing: declared.missing,
         incomplete: packageLocal.incomplete,
         invalidVersions: packageVersions.invalid,
@@ -637,6 +653,7 @@ export async function verifyDepsExtracted({
       deps,
     });
     return {
+      lockTreeDefects,
       missing: [],
       incomplete: [],
       invalidVersions: [],
@@ -647,6 +664,7 @@ export async function verifyDepsExtracted({
   };
 
   const report = ({
+    lockTreeDefects,
     missing,
     incomplete,
     invalidVersions,
@@ -654,6 +672,8 @@ export async function verifyDepsExtracted({
     runtimeFailures,
     brokenBinLinks,
   }) => {
+    for (const defect of lockTreeDefects)
+      console.error(`NPM_INSTALL_SAFE lock-tree ${defect.kind}: ${defect.path} (${defect.detail})`);
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
       console.error(formatIncompleteWorkspacePackages(incomplete));
@@ -668,6 +688,7 @@ export async function verifyDepsExtracted({
   };
 
   const healthy = ({
+    lockTreeDefects,
     missing,
     incomplete,
     invalidVersions,
@@ -675,6 +696,7 @@ export async function verifyDepsExtracted({
     runtimeFailures,
     brokenBinLinks,
   }) =>
+    lockTreeDefects.length === 0 &&
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
@@ -734,7 +756,12 @@ export async function verifyDepsExtracted({
         .join("\n")}`,
     );
   }
-  const repairArgs = [...REPAIR_ARGS, ...repairWorkspaceArgs];
+  // The root lock owns every workspace's installed paths. A repair scoped to
+  // the originally selected workspace cannot repair drift elsewhere in it.
+  const repairArgs = [
+    ...REPAIR_ARGS,
+    ...(first.lockTreeDefects.length > 0 ? [] : repairWorkspaceArgs),
+  ];
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );

@@ -184,6 +184,54 @@ function stagingUnitGuardResult(
   }
 }
 
+describe('recent restart coalescing verifies the published generation', () => {
+  function runRecentGuard(ageSec: number, healthSha: string) {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('RECENT_RESTART_GRACE_SEC=');
+    const end = script.indexOf('# EI-22102474093310851:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const wrapper = [
+      'set -euo pipefail',
+      'source <(sed -n "/^health_sha_matches_target()/,/^}/p" "$SYNC_SCRIPT")',
+      'systemctl() { printf "2059726\\n"; }',
+      'ps() { printf "%s\\n" "$TEST_AGE_SEC"; }',
+      'staging_health_source_sha() { printf "%s\\n" "$TEST_HEALTH_SHA"; }',
+      'log() { printf "%s\\n" "$*"; }',
+      'UNIT=fixture-staging.service',
+      'target="$TEST_TARGET_SHA"',
+      script.slice(start, end),
+      'printf "RESTART_REQUIRED\\n"',
+    ].join('\n');
+    return spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, TEST_AGE_SEC: String(ageSec),
+        TEST_HEALTH_SHA: healthSha, TEST_TARGET_SHA: 'a'.repeat(40),
+        PAPERCUSP_STAGING_SYNC_RESTART_GRACE_SEC: '45' },
+    });
+  }
+
+  it('coalesces a young process that reports the exact target', () => {
+    const result = runRecentGuard(36, 'a'.repeat(10));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('peer restart verified');
+    expect(result.stdout).not.toContain('RESTART_REQUIRED');
+  });
+
+  it.each(['b'.repeat(10), ''])('requires restart for a young old or unknown generation: %s', healthSha => {
+    const result = runRecentGuard(36, healthSha);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RESTART_REQUIRED');
+    expect(result.stdout).not.toContain('peer restart verified');
+  });
+
+  it('preserves the grace boundary even for a matching generation', () => {
+    const result = runRecentGuard(45, 'a'.repeat(10));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RESTART_REQUIRED');
+  });
+});
+
 function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   const r = runFn(
     ['health_sha_matches_target'],

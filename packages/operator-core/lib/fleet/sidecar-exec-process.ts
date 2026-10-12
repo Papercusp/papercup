@@ -56,6 +56,10 @@ export interface ExecParams {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Include process.env in the child environment; defaults to true. */
+  inheritEnv?: boolean;
+  /** Per-stream byte cap for captured stdout/stderr. */
+  maxBuffer?: number;
   /** Safe, static callsite identity for transport-fault diagnostics. */
   callerLabel?: ProcessExecCallerLabel;
   /** Optional no-output deadline. Unlike `timeoutMs` (the absolute hard
@@ -92,6 +96,8 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** The captured stream that crossed maxBuffer, when a cap was supplied. */
+  maxBufferExceeded?: 'stdout' | 'stderr';
   /** Bytes the child wrote to `stdoutPath` (fd-handoff mode only), so the
    *  caller can cross-check the file it reads back against what git produced. */
   stdoutBytes?: number;
@@ -319,7 +325,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const child = spawn(params.command, params.args ?? [], {
         cwd: params.cwd,
         env: {
-          ...process.env,
+          ...(params.inheritEnv === false ? {} : process.env),
           ...(params.env ?? {}),
           ...execution.childEnv,
         },
@@ -338,6 +344,9 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const errDecoder = new StringDecoder('utf8');
       let stdout = '';
       let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let maxBufferExceeded: 'stdout' | 'stderr' | undefined;
       let settled = false;
       let commandExited = false;
       let terminating = false;
@@ -380,20 +389,48 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         if (settled) return;
         settled = true;
         stopGuards();
-        resolve({ code: terminating ? -1 : code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
+        resolve({
+          code: terminating ? -1 : code,
+          stdout: stdout + outDecoder.end(),
+          stderr: stderr + errDecoder.end(),
+          ...(maxBufferExceeded ? { maxBufferExceeded } : {}),
+        });
       };
       const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
       const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
-      const terminate = (reason: string): void => {
+      const terminate = (reason: string, includeDiagnostic = true): void => {
         if (settled || commandExited || terminating) return;
         terminating = true;
         clearTimers();
-        stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+        if (includeDiagnostic) {
+          stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+        }
         signalCommand('SIGTERM');
         killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? 10_000);
         killTimer.unref?.();
         // A kill signal is not an exit receipt. Only close (or a spawn error)
         // may settle this call and let the caller release repository locks.
+      };
+      const appendOutput = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+        const previousBytes = stream === 'stdout' ? stdoutBytes : stderrBytes;
+        const limit = params.maxBuffer;
+        const acceptedBytes = limit === undefined
+          ? chunk.length
+          : Math.max(0, Math.min(chunk.length, limit - previousBytes));
+        const accepted = acceptedBytes === chunk.length ? chunk : chunk.subarray(0, acceptedBytes);
+        if (stream === 'stdout') {
+          stdoutBytes += chunk.length;
+          stdout += outDecoder.write(accepted);
+        } else {
+          stderrBytes += chunk.length;
+          stderr += errDecoder.write(accepted);
+        }
+        if (limit !== undefined && previousBytes + chunk.length > limit && !maxBufferExceeded) {
+          maxBufferExceeded = stream;
+          // Keep child stderr as the rejected execFile-style stderr. The local
+          // adapter builds the maxBuffer error message from the typed marker.
+          terminate(stream + ' maxBuffer length exceeded', false);
+        }
       };
       const armIdleTimer = (): void => {
         if (idleTimeoutMs <= 0 || settled || terminating) return;
@@ -471,12 +508,12 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       });
       // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
       child.stdout?.on('data', (d: Buffer) => {
-        stdout += outDecoder.write(d);
+        appendOutput('stdout', d);
         reportOutput();
         armIdleTimer();
       });
       child.stderr?.on('data', (d: Buffer) => {
-        stderr += errDecoder.write(d);
+        appendOutput('stderr', d);
         reportOutput();
         armIdleTimer();
       });
@@ -492,7 +529,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       });
       child.on('close', async (code, signal) => {
-        if (signal) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
+        if (signal && !maxBufferExceeded) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {
           await waitForCommandExit();
           // Admission settlement can itself wait on IO. Remove kill timers

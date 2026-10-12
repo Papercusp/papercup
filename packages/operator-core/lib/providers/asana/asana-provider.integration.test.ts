@@ -907,12 +907,42 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
     expect(await admissionIdentity()).toEqual(originalIdentity);
+
+    // An identical provider revision is deduped before admission. A real edit
+    // must reach admission again and retain the same work item; failed sink
+    // delivery must not masquerade as success just because the old row survives.
+    const admissionDeliveries = () => sql<Array<{ dedupe_key: string; outcome: string }>>`
+      SELECT dedupe_key, outcome FROM harness_shared.trigger_deliveries
+      WHERE workspace_id = ${WS} AND source_id = ${sourceId}::uuid
+        AND sink_kind = 'data-source-admission' AND datatype_id = 'ticket'
+        AND payload->>'externalId' = ${fresh.gid!}
+      ORDER BY dedupe_key`;
+    const firstDeliveries = await admissionDeliveries();
+    expect(firstDeliveries).toEqual([{ dedupe_key: expect.any(String), outcome: 'delivered' }]);
+    fresh.name = 'Exported invoice drops the final line item after editing';
+    fresh.modified_at = '2026-10-02T09:03:00.000Z';
+    taskChanged(fresh);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
+    expect((await tickets(sourceId)).find((r) => r.payload.externalId === fresh.gid)?.payload.title).toBe(fresh.name);
+    expect(await admitted(sourceId)).toEqual(expected);
+    expect(await admissionIdentity()).toEqual(originalIdentity);
+    const editedDeliveries = await admissionDeliveries();
+    expect(editedDeliveries).toHaveLength(2);
+    expect(new Set(editedDeliveries.map((d) => d.dedupe_key)).size).toBe(2);
+    for (const delivery of editedDeliveries) expect(delivery.outcome).toBe('delivered');
+    taskChanged(fresh);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
+    expect(await admissionDeliveries()).toEqual(editedDeliveries);
+    expect(await admissionIdentity()).toEqual(originalIdentity);
     await sql`UPDATE harness_shared.data_sources SET cursor = '{}'::jsonb, status = 'connected'
       WHERE id = ${sourceId}::uuid AND workspace_id = ${WS}`;
     await due(sourceId);
     expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
     expect(await admissionIdentity()).toEqual(originalIdentity);
+    expect(await admissionDeliveries()).toEqual(editedDeliveries);
   });
 
   // Chat-originated filing (one ticket at the installation's destination,

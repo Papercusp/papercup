@@ -4,9 +4,8 @@
 // scripts/check-partial-install.mjs and regenerate.
 /**
  * Expand the root package.json `workspaces` globs to concrete workspace directories.
- * Only the `dir/*` shape occurs in this repo; anything else is treated as a literal
- * path. A pattern entry that resolves to no package.json is skipped rather than
- * guessed at — this guard reports corruption, so it must not invent members.
+ * Share the link guard's npm-compatible glob and exclusion semantics. A pattern
+ * entry that resolves to no package.json is skipped rather than guessed at.
  */
 export function expandWorkspaceDirs(patterns: any, root: any): any[];
 /**

@@ -15,6 +15,12 @@
  *        lib/release/watchdog-health.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+// Metadata SQL remains real; observation delivery belongs to the isolated
+// caller/condition coverage suite, not the operator DB outside this fixture.
+vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {

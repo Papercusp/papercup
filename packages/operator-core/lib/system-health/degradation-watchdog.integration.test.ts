@@ -38,6 +38,7 @@ import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 
 const WS = 'ws-degradation-watchdog-it';
 const H = 'papercusp';
@@ -150,6 +151,27 @@ beforeEach(async () => {
 });
 
 describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
+  it('P-004: shared full-suite/repair recorder, durable window and real bridge detect otherRunner collapse and settle recovery', async () => {
+    const task = '@fixture/operator-core::test:lane-stateful';
+    const key = degradationConditionKey(MECHANISM, task, 'otherRunner');
+    const writer = { observeFallback, flushFallbackObservations };
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 100, reused: 0, otherRunner: 100 } }, writer)).toBe(true);
+    expect((await runDegradationSweepOnce()).opened).toEqual([key]);
+    expect((await runDegradationSweepOnce()).opened).toEqual([]);
+    await tick();
+    const items = await holdersOf(key);
+    expect(items).toHaveLength(1);
+    expect(await alarmCount(key)).toBe(1);
+    // Both producers use the same task scope, so later successful primary decisions
+    // recover its existing episode rather than creating a separate round-specific key.
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 200, reused: 200 } }, writer)).toBe(true);
+    expect((await runDegradationSweepOnce()).resolved).toEqual([key]);
+    await tick();
+    expect(await holdersOf(key)).toEqual([]);
+    expect((await degradedItems()).map((row) => row.feature_id)).toEqual(items);
+    expect(ANY_FAMILY_TERMINAL_STATES).toContain((await degradedItems())[0].status);
+  }, 180_000);
+
   it('the seed mechanism is registered scope-keyed, so this test exercises the shipped registration', () => {
     expect(getDegradationMechanism(MECHANISM)).toMatchObject({ mechanism: MECHANISM, scopeKeyed: true });
   });
@@ -163,7 +185,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
 
     const s1 = await runDegradationSweepOnce();
     expect(s1.errors).toEqual([]);
-    expect(s1.evaluated).toEqual([{ mechanism: MECHANISM, scope: SCOPE, verdict: 'collapsed' }]);
+    expect(s1.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'collapsed' });
     expect(s1.opened).toEqual([key]);
 
     // Two more sweeps over the same collapsed window: the open key comes back from
@@ -201,7 +223,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     await observe(200, 200, 'applied');
     const s4 = await runDegradationSweepOnce();
     expect(s4.errors).toEqual([]);
-    expect(s4.evaluated).toEqual([{ mechanism: MECHANISM, scope: SCOPE, verdict: 'recovered' }]);
+    expect(s4.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'recovered' });
     expect(s4.resolved).toEqual([key]);
     expect(s4.opened).toEqual([]);
 
@@ -223,7 +245,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     await observe(19, 0, 'proofs-unavailable');
     const s = await runDegradationSweepOnce();
     expect(s.errors).toEqual([]);
-    expect(s.evaluated).toEqual([{ mechanism: MECHANISM, scope: SCOPE, verdict: 'insufficient' }]);
+    expect(s.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'insufficient' });
     expect(s.opened).toEqual([]);
     const t = await tick();
     expect(t.bridged.acquired).toEqual([]);

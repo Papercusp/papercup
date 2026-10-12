@@ -7,8 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * and `hostCodeStalenessFromLedgerSweep` each paid one for `git rev-parse HEAD`
  * through `resolveCurrentHeadCommit`.
  *
- * The boot sample is the deliberate exception: it runs while the DBOS bootstrap
- * module graph evaluates, before any sidecar exists, so it must stay a local fork.
+ * Expanding the captured boot pin is the deliberate exception: it must work
+ * before a spawner sidecar exists, while module import itself performs no fork.
  */
 const execFileViaSidecar = vi.fn();
 vi.mock('../fleet/git-via-sidecar', () => ({
@@ -27,9 +27,9 @@ const {
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 
-// Runs BEFORE any reset below, so it still sees the calls made at module evaluation.
+// Consume the eagerly captured module identity before any sidecar mock reset.
 describe('the boot sample stays a local fork', () => {
-  it('module evaluation sampled HEAD without touching the sidecar', async () => {
+  it('expands the module boot pin without touching the sidecar', async () => {
     await processBootCommitSha();
     expect(execFileViaSidecar).not.toHaveBeenCalled();
   });

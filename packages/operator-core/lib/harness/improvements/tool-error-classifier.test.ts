@@ -303,6 +303,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
+  it('classifies stale acceptance BAR amendment revision conflicts as caller state, not structural failure', () => {
+    const message =
+      "acceptance_bar_amendment_revision_conflict: subject plan 'verification-system-improvements-2026-10-10' expected 118, live 119";
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ ok: false, error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({ toolName: 'rubrics:amend', errorCode: 'handler_error', status: 'error', message }).class)
+      .toBe('caller');
+    // A real amend failure without the explicit CAS refusal remains structural.
+    expect(classifyToolError('handler_error', 'error', 'amendRubric failed to persist acceptance BAR contract'))
+      .toBe('structural');
+  });
+
   it('classifies explicit missing or non-directory capability:bash cwd values as caller input only', () => {
     expect(classifyToolError(
       'handler_error',

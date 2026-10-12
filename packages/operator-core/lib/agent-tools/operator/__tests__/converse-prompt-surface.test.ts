@@ -170,6 +170,24 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
 });
 
 describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
+  it.each(['owner', 'public'] as const)('greets without live state on the %s Papercup surface', async (hostTrust) => {
+    const { systemPromptText, userPromptText } = await buildOperatorPrompt(
+      {
+        messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message',
+        role: 'papercup', hostTrust, toolNames: [],
+      },
+      null,
+    );
+    // Exercise the assembled persona + converse rules with no fleet context or
+    // tools. Either layer restoring the mandatory status opener breaks this guard.
+    expect(userPromptText).not.toContain('FLEET-STATUS');
+    expect(systemPromptText).toContain('For a plain greeting, greet naturally.');
+    expect(systemPromptText).toContain('Missing access is not evidence that the workspace is empty.');
+    expect(systemPromptText).toMatch(/Mention unavailable access only when it blocks something the user asked you to do/);
+    expect(systemPromptText).not.toContain('Generic openers — forbidden in every context, every trigger.');
+    expect(systemPromptText).not.toContain('Open with substance — never with "what can I help with".');
+  });
+
   it('previews the real public Papercup FAQ policy rather than the scanner prompt', async () => {
     const result = await previewPrompt.handler({
       brain: 'converse', request: 'What is Papercusp?',

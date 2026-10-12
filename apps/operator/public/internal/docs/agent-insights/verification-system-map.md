@@ -1,7 +1,7 @@
 # Verification-system map: doors, layers, refusal codes, tables, tools, evidence kinds
 URL: /internal/docs/agent-insights/verification-system-map
 
-One map of everything that enforces a plan's requirement contract: the five doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test.
+One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test.
 
 A plan's **requirement contract** is the set of things it promises and how each promise is proven. This page maps every part of the system that enforces that contract, in one place: the doors that refuse, the order the layers run in, every refusal code those doors return, the tables behind them, the tools you call, and the kinds of evidence that count.
 
@@ -9,15 +9,16 @@ The refusal-code list below is checked against the code by `packages/operator-co
 
 ## The doors that enforce the requirement contract
 
-Five tools refuse when the contract is not met. Every other tool on this page prepares input for one of them.
+Six tools refuse when the contract is not met. Every other tool on this page prepares input for one of them.
 
-| door                                            | what it guards                                  | refuses when                                                                                                                                                                                                          |
-| ----------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plans:start`                                   | Turning plan items into work-items.             | The inputs, activation audit, spec quality, spec coverage or bar critique are not ready.                                                                                                                              |
-| `plans:bind-spec-evidence`                      | Recording evidence for a spec clause.           | The measuring instrument has no provenance, or a derived binding or mutation target is invalid.                                                                                                                       |
-| `plans:set-plan-status` with `status:'shipped'` | Shipping the plan.                              | Items are unfinished, code truth is unaudited, the acceptance-bar contract is incomplete, grading is missing or self-graded, the implementer has not accepted, or a live/deployed bar lacks independent verification. |
-| `plans:acceptance-disposition`                  | Deciding a plan stuck in `awaiting-acceptance`. | The disposition is not a typed kind with evidence and a reason.                                                                                                                                                       |
-| `plans:promote`                                 | Promoting plan content.                         | The plan still carries a retired VAL-\* assertion block.                                                                                                                                                              |
+| door                                                  | what it guards                                  | refuses when                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plans:start`                                         | Turning plan items into work-items.             | The inputs, activation audit, spec quality, spec coverage or bar critique are not ready.                                                                                                                                                                                  |
+| `plans:bind-spec-evidence`                            | Recording evidence for a spec clause.           | The measuring instrument has no provenance, a derived binding or mutation target is invalid, or an independent-verification row cites no valid implementer binding or re-observes a different source or environment.                                                      |
+| `plans:set-plan-status` with `status:'shipped'`       | Shipping the plan.                              | Items are unfinished, code truth is unaudited, the acceptance-bar contract is incomplete, grading is missing or self-graded, the implementer has not accepted, a live/deployed bar lacks independent verification, or the blind gap review is missing or undispositioned. |
+| `plans:set-status` (the item flip that drains a plan) | Moving a plan to `awaiting-acceptance`.         | No blind gap review counts for the plan's latest activation audit, or a review gap has neither a plan item nor an accepted-risk Decision. Returned as `acceptanceBlocked`; the item flip itself still lands.                                                              |
+| `plans:acceptance-disposition`                        | Deciding a plan stuck in `awaiting-acceptance`. | The disposition is not a typed kind with evidence and a reason.                                                                                                                                                                                                           |
+| `plans:promote`                                       | Promoting plan content.                         | The plan still carries a retired VAL-\* assertion block.                                                                                                                                                                                                                  |
 
 ## Layers, in the order they run
 
@@ -104,10 +105,21 @@ From `InstrumentRefusalCode` (`packages/operator-core/lib/agent-tools/plans/inst
 
 From `BindSpecEvidenceRefusalCode` (`packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts`):
 
-| code                       | meaning                                                        |
-| -------------------------- | -------------------------------------------------------------- |
-| `derived_binding_invalid`  | A binding derived from a test run is not valid for the clause. |
-| `mutation_target_rejected` | The mutation target named for the binding was rejected.        |
+| code                                          | meaning                                                                                                                                                                                                                                   |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `derived_binding_invalid`                     | A binding derived from a test run is not valid for the clause.                                                                                                                                                                            |
+| `mutation_target_rejected`                    | The mutation target named for the binding was rejected.                                                                                                                                                                                   |
+| `declared_configuration_fingerprint_missing`  | The clause's source bar declares a `productionConfiguration`, but the bound test run has no valid configuration snapshot (no run, a NULL `test_runs.configuration_snapshot`, or a snapshot whose fingerprint does not recompute) (P-011). |
+| `declared_configuration_fingerprint_mismatch` | The bound test run's configuration snapshot resolves a declared flag or env key differently from the bar's `productionConfiguration`; the refusal names the differing keys (P-011).                                                       |
+
+From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`), returned as the result `status` (P-008, D-005):
+
+| code                               | meaning                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| `verified_binding_required`        | An `independent-verification` binding cites no implementer binding (`verifiesBindingId`). |
+| `verified_binding_not_allowed`     | A binding of any other evidence kind carries `verifiesBindingId`.                         |
+| `verified_binding_not_found`       | The cited binding does not exist, or is itself an independent-verification row.           |
+| `independent_fingerprint_mismatch` | The re-observation's source or environment fingerprint differs from the cited binding's.  |
 
 ### `plans:set-plan-status`
 
@@ -208,6 +220,16 @@ From `AcceptanceDispositionRefusalCode` (`packages/operator-core/lib/agent-tools
 | `acceptance_disposition_reason_missing`   | The disposition has no reason.                   |
 | `acceptance_disposition_no_filing`        | No acceptance-drain filing exists for the plan.  |
 
+### `plans:set-status` (blind gap review)
+
+From `BlindReviewGateCode` (`packages/operator-core/lib/blind-review-gate.ts`). Returned as `acceptanceBlocked` when an item flip drains a plan, as the drain sweep's skip reason, and by `plans:set-plan-status` at ship. Not waivable by `force`.
+
+| code                               | meaning                                                                                                                                                                                               |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blind_review_missing`             | No blind gap review counts for the plan's latest activation audit: none was posted, or each poster read the plan's artifacts first, owns or implemented the plan, or shares an implementer's lineage. |
+| `blind_review_gap_undispositioned` | A counted review has a gap with neither a non-dropped plan item nor an existing Decision recorded as an accepted risk.                                                                                |
+| `blind_review_unavailable`         | The door could not read the plan, its activation audit, its reviews, the reviewer ledger or lineage, and refused rather than guess.                                                                   |
+
 ### `plans:promote`
 
 From `ValRetirementRefusalCode` (`packages/operator-core/lib/agent-tools/plans/val-retirement.ts`):
@@ -220,17 +242,18 @@ From `ValRetirementRefusalCode` (`packages/operator-core/lib/agent-tools/plans/v
 
 ## Tables
 
-| table                                          | holds                                                                                                                                 |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness_shared.harness_plans`                 | Plan content, status and decisions.                                                                                                   |
-| `harness_shared.plan_spec_clauses`             | One row per spec clause, with its current revision.                                                                                   |
-| `harness_shared.plan_spec_clause_revisions`    | Every clause revision: behavior, falsifier, required test layers, evidence plane, lifecycle, and the bar it was seeded from.          |
-| `harness_shared.spec_evidence_bindings`        | Evidence bound to a clause revision, with source and environment fingerprints.                                                        |
-| `harness_shared.work_item_spec_revision_edges` | Links between promoted work-items and the clause revisions they deliver.                                                              |
-| `harness_shared.plan_audits`                   | Activation and per-item code-truth audits, with cited blob SHAs.                                                                      |
-| `harness_shared.rubric_amend_receipts`         | Receipts for acceptance-rubric amendments.                                                                                            |
-| `harness_shared.work_items`                    | Work-items, scorecard cards, and acceptance-drain filings (a disposition is stored on the filing as `payload.acceptanceDisposition`). |
-| `harness_shared.harness_plan_assertions`       | Retired VAL-\* assertions. No non-test source reads or writes it.                                                                     |
+| table                                          | holds                                                                                                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness_shared.harness_plans`                 | Plan content, status and decisions.                                                                                                                        |
+| `harness_shared.plan_spec_clauses`             | One row per spec clause, with its current revision.                                                                                                        |
+| `harness_shared.plan_spec_clause_revisions`    | Every clause revision: behavior, falsifier, required test layers, evidence plane, lifecycle, and the bar it was seeded from.                               |
+| `harness_shared.spec_evidence_bindings`        | Evidence bound to a clause revision, with source and environment fingerprints.                                                                             |
+| `harness_shared.work_item_spec_revision_edges` | Links between promoted work-items and the clause revisions they deliver.                                                                                   |
+| `harness_shared.plan_audits`                   | Activation and per-item code-truth audits, with cited blob SHAs.                                                                                           |
+| `harness_shared.rubric_amend_receipts`         | Receipts for acceptance-rubric amendments.                                                                                                                 |
+| `harness_shared.work_items`                    | Work-items, scorecard cards, and acceptance-drain filings (a disposition is stored on the filing as `payload.acceptanceDisposition`).                      |
+| `harness_shared.harness_plan_assertions`       | Retired VAL-\* assertions. No non-test source reads or writes it.                                                                                          |
+| `harness_shared.plan_blind_reviews`            | Blind gap reviews (the gaps a reviewer who never read the plan found) and each gap's disposition to a plan item or an accepted-risk Decision. Append-only. |
 
 Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:*` tools.
 
@@ -250,6 +273,7 @@ Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:
 | `scorecards:emit`                                      | Attest vetting, grade a rubric, or record the implementer's acceptance verdict.                    |
 | `plans:set-plan-status`                                | Ship; on `acceptance_ungraded` or `self_graded_only` it recruits a non-implementer grader for you. |
 | `plans:acceptance-disposition`                         | Record a typed decision on a stale awaiting-acceptance plan.                                       |
+| `plans:blind-review`                                   | Get the blind brief (the owner's turns only), post a blind review's gaps, or disposition each gap. |
 
 ## Evidence kinds
 
@@ -270,3 +294,7 @@ Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:
 ## Keeping this page true
 
 Add a new contract refusal code to an exported typed union, and register the union in `CONTRACT_GATE_CODE_TYPES`. Then add the code to the table above and a test that asserts on it. The doc-claims test fails until all three exist. A door module that returns a refusal literal outside every registered union also fails that test, unless the literal is classified in `OPERATIONAL_DOOR_CODES` as an operational (not contract) refusal.
+
+## Retired VAL verification surfaces
+
+The legacy `harness-test-gate`, `harness-test-rollup` and `done-without-test-detect` modules have been removed. Inline VAL-\* assertions and the `harness_tests` join no longer decide completion. SUCCESSOR SIGNAL: spec-test-adequacy — `specTestAdequacyCompletionGate` in `packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts` enforces the requirement contract at `work_items:complete`. Plan-item provenance remains in `plan-item-provenance.ts`; cross-layer usage and stale acceptance are reported by `verification.health`. The surviving `agent-tools/plans/val-retirement.test.ts` suite checks that the removed surfaces remain absent, the old gate and collector are not registered, and the successor still runs at completion.

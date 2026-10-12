@@ -119,7 +119,10 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
          AND r.template = 'rubric'
          AND r.template_data ->> 'kind' = 'acceptance'
          AND r.template_data ->> 'subjectPlan' = ANY(${slugs}::text[])
-    ), current_fp AS (
+    ), current_fp AS MATERIALIZED (
+      -- The fingerprint is returned AND compared with the stored observation.
+      -- Inlining this CTE repeats every watermark subquery for both uses
+      -- (four plans measured 172-174ms vs 104-105ms with one evaluation).
       SELECT s.plan_slug, s.harness_slug, s.plan_status, s.matches,
              jsonb_build_object(
                'planVersion', s.version::text,

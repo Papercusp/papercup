@@ -2343,7 +2343,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
         criteria: current.criteria.map((criterion) => ({
           ...criterion,
           method: 'Execute the seeded acceptance fixture.',
-          check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+          // Later amendment cases require integration coverage without changing
+          // the check set, so seed both conventional test layers up front.
+          check: { kind: 'tests' as const, files: [
+            'packages/operator-core/lib/acceptance-bar-seed.test.ts',
+            'packages/operator-core/lib/rubrics.integration.test.ts',
+          ] },
           requiredTestLayers: ['unit'],
         })),
       };
@@ -2822,6 +2827,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   it.each(['layers', 'check', 'model', 'falsifier', 'plane'] as const)(
     'preserves reviewed scenarios and causal pairing only for verification-contract changes (%s)',
     async (change) => {
+      const alternateUnitCheck = 'packages/operator-core/lib/acceptance-bar-contract-completeness.test.ts';
       const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
       const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
       const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
@@ -2852,15 +2858,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const amendment = {
         rubricId: seeded.rubricSlug,
         actorId: 'amendment-actor',
-        reason: 'Require browser and integration proof without replacing the reviewed behavior.',
+        reason: 'Require unit and integration proof without replacing the reviewed behavior.',
         criteria: rubricBefore.criteria.map((criterion) =>
           criterion.barKey === before.sourceBar!.barKey
             ? {
                 ...criterion,
-                requiredTestLayers: ['browser', 'integration'],
-                method: `${criterion.method}\nInspect browser proof.`,
+                requiredTestLayers: ['unit', 'integration'],
+                method: `${criterion.method}\nInspect unit and integration proof.`,
                 ...(change === 'check'
-                  ? { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts'] } }
+                  ? { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] } }
                   : {}),
                 ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
                 ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
@@ -2876,19 +2882,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
       if (change === 'check') {
         // The check really moved the BAR hash; preservation is not a no-op read.
         expect(rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.check)
-          .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts'] });
+          .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] });
       }
       if (change === 'layers' || change === 'check') {
         expect(after).toMatchObject({
           ...authored,
           requiredEvidence: before.requiredEvidence,
-          requiredTestLayers: ['browser', 'e2e', 'integration'],
+          requiredTestLayers: ['e2e', 'integration', 'unit'],
         });
       } else {
         const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
         expect(after.behavior).toBe(criterion.model);
         expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
-        expect(after.requiredTestLayers).toEqual(['browser', 'integration']);
+        expect(after.requiredTestLayers).toEqual(['integration', 'unit']);
         expect(after.behaviorClass).not.toBe('lifecycle');
         if (change === 'plane') expect(after.requiredEvidence).toContain('live');
       }
@@ -2912,13 +2918,13 @@ describe('template_data persistence boundary — the set-template-data door', ()
             criterion.barKey === before.sourceBar!.barKey
               // A RECORDED layer: 'component' (used here before WI-10006536) is now refused at
               // the amendment door because no test run can ever record it.
-              ? { ...criterion, requiredTestLayers: ['browser'] }
+              ? { ...criterion, requiredTestLayers: ['unit'] }
               : criterion,
           ),
         };
         await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
         const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
-        expect(replaced.requiredTestLayers).toEqual(['browser', 'e2e']);
+        expect(replaced.requiredTestLayers).toEqual(['e2e', 'unit']);
         expect(replaced.behavior).toBe(before.behavior);
         expect(replaced.falsifier).toEqual(before.falsifier);
         expect(replaced.behaviorClass).toBe(before.behaviorClass);
@@ -3460,7 +3466,6 @@ describe('template_data persistence boundary — the set-template-data door', ()
       criteria: data.criteria.map((criterion) => ({
         ...criterion,
         method: 'Execute the current integration fixture.',
-        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
       })),
     };
     const projectionsBefore = await db.adminSql`SELECT r.source_rubric_revision FROM harness_shared.plan_spec_clauses c
@@ -4046,7 +4051,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
 
     const method = {
       method: 'Run the integration fixture and compare every output record.',
-      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      check: { kind: 'tests' as const, files: [
+        'packages/operator-core/lib/acceptance-bar-seed.test.ts',
+        'packages/operator-core/lib/rubrics.integration.test.ts',
+      ] },
     };
     const preview = await rubrics.previewAcceptanceBarAmendment({
       rubricId: seeded.rubricSlug,

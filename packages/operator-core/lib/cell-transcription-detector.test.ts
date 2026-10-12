@@ -20,6 +20,9 @@ import {
 } from './cell-transcription-detector';
 import { cellTranscriptionHintResolvingCommits, commitResolverRepo, gitResolvesToCommit } from './git-commit-resolver';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { registerBuiltinCells } from './cell-registrations';
 import { getCellUnchecked, __resetCellRegistryForTests } from './cell-registry';
 import { chunkHeaderText } from './agent-tools/coordination/tools/send-chunking';
@@ -339,11 +342,30 @@ describe('EI-24684014950807803 — a hex token that names no commit is not a sha
   });
 
   it('the git resolver answers true for a real commit, false for an agent short id, null outside a repo', async () => {
-    const head = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
-    expect(await gitResolvesToCommit(head, process.cwd())).toBe(true);
-    expect(await gitResolvesToCommit('c0b38c83', process.cwd())).toBe(false);
-    expect(await gitResolvesToCommit('not-hex', process.cwd())).toBe(false);
-    expect(await gitResolvesToCommit('abc1234', '/')).toBeNull();
+    // Bound the object population: the shared checkout's short-ID lookup can
+    // legitimately hit the resolver's deadline or collide with a real object.
+    const fixture = mkdtempSync(join(tmpdir(), 'commit-resolver-'));
+    const repo = join(fixture, 'repo');
+    const outside = join(fixture, 'outside');
+    mkdirSync(repo);
+    mkdirSync(outside);
+    const git = (args: string[]) => execFileSync('git', args, {
+      cwd: repo, encoding: 'utf8', timeout: 10_000,
+    }).trim();
+    try {
+      git(['init', '--quiet']);
+      git(['-c', 'user.name=Resolver Test', '-c', 'user.email=resolver@example.invalid',
+        '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
+        'commit', '--quiet', '--allow-empty', '-m', 'resolver fixture']);
+      const head = git(['rev-parse', '--short=8', 'HEAD']);
+      const absent = head.startsWith('c0b38c83') ? 'd0b38c83' : 'c0b38c83';
+      expect(await gitResolvesToCommit(head, repo)).toBe(true);
+      expect(await gitResolvesToCommit(absent, repo)).toBe(false);
+      expect(await gitResolvesToCommit('not-hex', repo)).toBe(false);
+      expect(await gitResolvesToCommit('abc1234', outside)).toBeNull();
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

@@ -14,6 +14,7 @@ import {
   type CaptureImprovementResult,
 } from '../harness/improvements/capture-core';
 import { recordRoutedIdea, type RecordRoutedIdeaInput } from '../scout/routed-ledger';
+import { IDEA_ORIGIN_PAYLOAD_KEY } from '../scout/ideation-origin';
 import { validateDreamFragments, type DreamInsight } from './dream-pass';
 import type { DreamReviewResult } from './dream-review';
 import type { DreamFragment } from './fragment-sampler';
@@ -175,6 +176,7 @@ export async function sinkDreamInsight(
     semanticBlockBand: 'soft',
     watchdogKey: ideaId,
     payloadExtra: {
+      [IDEA_ORIGIN_PAYLOAD_KEY]: 'dream',
       dream: {
         dreamRunId,
         cycleId,
@@ -327,6 +329,7 @@ async function sinkCapabilityDream(
         'Ordinary Blender triage applies. Review does not approve a plan or its implementation.',
       ].join('\n'),
       payloadExtra: {
+        [IDEA_ORIGIN_PAYLOAD_KEY]: 'dream',
         dream: {
           dreamRunId: run.runId,
           cycleId: run.cycleId,

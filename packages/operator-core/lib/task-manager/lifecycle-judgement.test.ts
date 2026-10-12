@@ -346,6 +346,10 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('An empty result is not proof by itself');
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
+    expect(summary).toContain('live.unaccountedCount ?? live.unaccounted');
+    expect(summary).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
+    expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
+    expect(summary).toContain('never coerce a missing group list to []');
     expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census');
     expect(summary).toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(summary).toContain('independently walk the complete, readable Papercusp cgroupfs subtree');
@@ -411,10 +415,10 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
     expect(brief).toContain('live.ownedTruncated=false');
-    expect(brief).toContain('live.unaccountedCount matching live.unaccountedGroups.length');
-    expect(brief).toContain('live.unaccountedPidCount matching the listed PIDs');
-    expect(brief).not.toContain('live.unaccounted matching');
-    expect(brief).not.toContain('live.unaccountedPids matching');
+    expect(brief).toContain('live.unaccountedCount ?? live.unaccounted matching live.unaccountedGroups.length');
+    expect(brief).toContain('live.unaccountedPidCount ?? live.unaccountedPids matching the sum of the listed group PIDs');
+    expect(brief).toContain('If live.unaccountedGroups is missing or is not an array, leave the result unknown');
+    expect(brief).toContain('never coerce a missing group list to []');
     expect(brief).toContain('usage_usec changed between its timestamps');
     expect(brief).toContain('unknown is not dead');
     expect(brief).toContain('cgroup.procs containing only 0 means at least one task is in the cgroup but hidden from that PID namespace');
@@ -707,7 +711,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v3:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v4:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });

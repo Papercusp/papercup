@@ -298,6 +298,16 @@ describe('findHollowPackages — degenerate inputs must not throw or invent find
 });
 
 describe('expandWorkspaceDirs', () => {
+  it('excludes checkpoint patterns while retaining real workspaces for corruption checks', () => {
+    const r = makeRoot();
+    for (const name of ['operator', 'drill-checkpoint']) {
+      const d = join(r, 'apps', name);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, 'package.json'), JSON.stringify({ name }));
+    }
+    expect(expandWorkspaceDirs(['apps/*', '!apps/*-checkpoint'], r)).toEqual(['apps/operator']);
+  });
+
   it('expands a dir/* glob to only those children that carry a package.json', () => {
     const r = makeRoot();
     for (const name of ['alpha', 'beta']) {

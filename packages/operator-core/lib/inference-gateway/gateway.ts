@@ -6721,6 +6721,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       type Intercept = {
         action: 'wait' | 'absorb' | 'downgrade' | 'effort-clamp';
         status: number;
+        /** Account that supplied this response; an absorb candidate may never acquire a slot. */
+        accountId: string;
         outHeaders: Record<string, string>;
         peeked: string;
         waitMs: number;
@@ -7387,6 +7389,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 if (status === 400 && !res.headersSent && effortClampFor(metadata.peekedBody ?? '')) {
                   interception.taken = {
                     status,
+                    accountId: metadata.accountId,
                     outHeaders,
                     peeked: metadata.peekedBody ?? '',
                     transient: false,
@@ -7416,6 +7419,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   });
                   const base: Omit<Intercept, 'action' | 'waitMs' | 'backoffMs'> = {
                     status,
+                    accountId: metadata.accountId,
                     outHeaders,
                     peeked: metadata.peekedBody ?? '',
                     transient: decision.transient,
@@ -7755,14 +7759,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // An absorb that gave up still routed and still owes its outcome
               // record; a downgrade-rung forward never recorded one.
               if (absorbGaveUp) {
-                recordRoute(affinityKey ?? wantOwner, active.accountId, model, {
+                // The re-acquire can select a different account without sending another
+                // upstream request. Attribute the retained response to its actual supplier.
+                stageSpan?.setServingAccount(taken.accountId);
+                recordRoute(affinityKey ?? wantOwner, taken.accountId, model, {
                   context1m: servedContext1m,
                   nativeSessionId,
                 });
                 recordOwnerOutcome(
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
-                  { account: active.accountId, status: taken.status },
+                  { account: taken.accountId, status: taken.status },
                 );
               }
               // EI-21921571654476580: this IS the gateway's final answer — wait,
@@ -7784,7 +7791,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 );
                 log(
                   'warn',
-                  `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${active.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,
+                  `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${taken.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,
                 );
               }
               res.writeHead(taken.status, taken.outHeaders);

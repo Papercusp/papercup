@@ -835,6 +835,18 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool timeoutForTool — code:tools signature reads outlive the MCP cap (EI-25679450978085524)', () => {
+  it.each([
+    ['direct', 'code:tools', {}],
+    ['tools:invoke', 'tools:invoke', { name: 'code:tools' }],
+  ] as const)('%s calls use the foreground budget', (_route, toolName, args) => {
+    const timeout = timeoutForTool(toolName, args);
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — rubrics:amend delivers its foreground receipt (EI-24943513849393693)', () => {
   it.each([
     ['direct', 'rubrics:amend', {}],

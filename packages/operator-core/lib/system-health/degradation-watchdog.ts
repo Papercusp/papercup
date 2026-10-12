@@ -138,8 +138,70 @@ registerDegradationMechanism({
     'A collapse means the gate is re-running work it should be reusing (run 762a13a6 reused 0 of ~7,689).',
   scopeKeyed: true,
 });
+registerDegradationMechanism({
+  mechanism: 'retrieval',
+  description: 'Searches whose authoritative leg verdict ran at full strength; each search contributes one eligible decision.',
+  // Preserve the existing alarm floor of half the searches degrading, with recovery
+  // hysteresis so a window at the alarm boundary cannot resolve its own episode.
+  thresholds: { minEligible: 20, collapseRate: 0.5, recoverRate: 0.75 },
+});
+registerDegradationMechanism({
+  mechanism: 'release-watchdog-pass', scopeKeyed: true,
+  description: 'Release watchdog passes that completed without a swallowed exception; each install, routine and pass has its own window.',
+  // One emitter runs every 15 minutes, below the 20-sample default in a one-hour
+  // window. Retain the default rates, with a floor that also works on one host.
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'coverage-snapshot-read', scopeKeyed: true,
+  description: 'Search coverage requests served by a successfully measured snapshot rather than a fail-open empty snapshot.',
+});
+registerDegradationMechanism({
+  mechanism: 'release-state-read', scopeKeyed: true,
+  description: 'Release guard reads that returned their primary snapshot rather than a fail-open empty or partial snapshot.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'bm25-scan-score',
+  description: 'Eligible lexical ranking calls whose index-scan score was verified rather than replaced by a standalone distance rerun.',
+});
+registerDegradationMechanism({
+  mechanism: 'query-embedder-acquisition',
+  description: 'Query embedder acquisitions that produced an embedder rather than leaving the caller on lexical-only search.',
+});
+registerDegradationMechanism({
+  mechanism: 'jev-worker-transport',
+  description: 'Jev requests whose exchange completed on the worker rather than the calling-thread transport.',
+});
+registerDegradationMechanism({
+  mechanism: 'backfill-batch', scopeKeyed: true,
+  description: 'Batch-eligible backfill rows served by batch inference rather than per-row retries after a failed or partial batch.',
+});
+registerDegradationMechanism({
+  mechanism: 'embed-device',
+  description: 'Requested GPU pipeline constructions that verified the primary device rather than accepting a sticky CPU demotion.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'embed-worker',
+  description: 'Local embed requests that completed on the worker rather than retrying inference on the calling thread.',
+});
 
 // ── Keys ───────────────────────────────────────────────────────────────────
+registerDegradationMechanism({
+  mechanism: 'rerank-device',
+  description: 'GPU cross-encoder constructions that verified the requested device rather than accepting CPU demotion.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'rerank-worker',
+  description: 'Cross-encoder requests completed on the worker rather than retrying inference on the calling thread.',
+});
+registerDegradationMechanism({
+  mechanism: 'embed-sidecar-respawn',
+  description: 'Embedding child readiness measured by READY handshakes and ready demand requests; unexpected crashes are degraded, deliberate idle exits are excluded.',
+  thresholds: { minEligible: 1 },
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both

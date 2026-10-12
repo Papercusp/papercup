@@ -27,9 +27,10 @@
  * The detector (`findMissingWorkspaceLinks`) is exported + unit-tested in
  * packages/operator-core/lib/__tests__/assert-workspace-links-guard.test.ts.
  */
-import { readFileSync, existsSync, globSync, lstatSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, globSync, lstatSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -98,14 +99,4 @@ function main() {
   process.exit(1);
 }
 
-const isMain = (() => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-})();
-if (isMain) main();
+if (isCliEntry(import.meta.url)) main();

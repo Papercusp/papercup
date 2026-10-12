@@ -686,6 +686,8 @@ export interface ExecFileLikeError extends Error {
   code: number | string | undefined;
   stdout: string;
   stderr: string;
+  killed?: boolean;
+  signal?: string | null;
 }
 
 export interface ExecFileViaSidecarOptions {
@@ -709,6 +711,8 @@ export interface ExecFileViaSidecarOptions {
 export interface ExecFileViaSidecarDeps {
   sidecarEnabled?: () => boolean;
   viaSidecar?: typeof runCommandViaSpawnerSidecar;
+  /** Test seam for the governed local execution path. */
+  executeProcess?: typeof import('./sidecar-exec-process').execProcess;
   local?: (
     command: string,
     args: string[],
@@ -716,16 +720,43 @@ export interface ExecFileViaSidecarDeps {
   ) => Promise<{ stdout: string; stderr?: string }>;
 }
 
+const DEFAULT_EXEC_FILE_MAX_BUFFER = 1024 * 1024;
+
 async function defaultLocalExecFile(
   command: string,
   args: string[],
   options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+  executeProcess?: typeof import('./sidecar-exec-process').execProcess,
 ): Promise<{ stdout: string; stderr: string }> {
-  // Lazy: keeps this module import-safe where node:child_process is stubbed.
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const { stdout, stderr } = await promisify(execFile)(command, args, { ...options, encoding: 'utf8' });
-  return { stdout: String(stdout), stderr: String(stderr) };
+  // Lazy: keeps the routing module import-safe where child_process is stubbed.
+  const { execProcess } = await import('./sidecar-exec-process');
+  const env = options.env === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(options.env).filter(([, value]) => value !== undefined)) as Record<string, string>;
+  const result = await (executeProcess ?? execProcess)({
+    command,
+    args,
+    timeoutMs: options.timeout,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(env !== undefined ? { env } : {}),
+    // execFile replaces the child env when env is supplied; otherwise it inherits.
+    inheritEnv: options.env === undefined,
+    maxBuffer: options.maxBuffer ?? DEFAULT_EXEC_FILE_MAX_BUFFER,
+  });
+  if (result.code === 0) return { stdout: result.stdout, stderr: result.stderr };
+
+  const message = result.maxBufferExceeded
+    ? result.maxBufferExceeded + ' maxBuffer length exceeded'
+    : 'Command failed: ' + command + ' ' + args.join(' ') + (result.stderr ? '\n' + result.stderr : '');
+  const error = new Error(message) as ExecFileLikeError;
+  error.code = result.maxBufferExceeded ? 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' : result.code;
+  error.stdout = result.stdout;
+  error.stderr = result.stderr;
+  if (result.maxBufferExceeded || result.code === -1) {
+    error.killed = true;
+    error.signal = result.stderr.match(/terminated by signal (SIG[A-Z0-9]+)/)?.[1] ?? 'SIGTERM';
+  }
+  throw error;
 }
 
 /**
@@ -780,7 +811,7 @@ export async function execFileViaSidecar(
       return { stdout: res.stdout, stderr: res.stderr };
     }
   }
-  const local = deps.local ?? defaultLocalExecFile;
+  const local = deps.local ?? ((cmd, argv, options) => defaultLocalExecFile(cmd, argv, options, deps.executeProcess));
   const { stdout, stderr } = await local(command, args, {
     timeout: opts.timeoutMs,
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),

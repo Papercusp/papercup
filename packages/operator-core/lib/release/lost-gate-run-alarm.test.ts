@@ -58,9 +58,7 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
     const text = strings.join('?');
     if (/^\s*SELECT install_slug/.test(text)) {
       return Promise.resolve(
-        row.marker || row.qualification
-          ? [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey, progress_alarmed_key: row.progressAlarmKey, qualification: row.qualification }]
-          : [],
+        [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey, progress_alarmed_key: row.progressAlarmKey, qualification: row.qualification }],
       );
     }
     if (text.includes('next_fire_at')) {
@@ -98,6 +96,7 @@ function deps(over: Partial<LostRunSweepDeps> = {}): LostRunSweepDeps & {
     claim: claimLostRunAlarm,
     readHolder: async () => 'su-holder',
     readOwnerFleetSlug: async () => 'gate-fleet',
+    attention: { resolve: async () => true },
     ...over,
     broadcast: (over.broadcast as ReturnType<typeof vi.fn>) ?? vi.fn(async () => true),
     notifyOwner: (over.notifyOwner as ReturnType<typeof vi.fn>) ?? vi.fn(async () => {}),
@@ -211,6 +210,31 @@ describe('sweepLostGateRuns (P-005 / R-5)', () => {
     const ev = d.broadcast.mock.calls[0][0];
     expect(ev.route).toBeUndefined();
     expect(d.notifyOwner).toHaveBeenCalledTimes(1);
+  });
+
+  it('the real owner fallback raises an actionable key and only measured recovery resolves it', async () => {
+    const { sql, row } = fakeRoutineRow(marker());
+    const broadcast = vi.fn(async (_event: { conditionKey?: string }) => true);
+    const resolve = vi.fn(async (_event: { conditionKey: string; summary: string }) => true);
+    const notify = vi.fn(async () => {});
+    const d: LostRunSweepDeps = { nowMs: NOW, selfPid: SELF_PID, pidAlive: () => false,
+      readHolder: async () => null, hostFleetSlug: null, broadcast,
+      attention: { broadcast, resolve, notify } };
+    await sweepLostGateRuns(sql, d);
+    expect(notify).toHaveBeenCalledOnce();
+    const key = 'green-checkpoint-lost-run:papercusp';
+    expect(broadcast.mock.calls.map(([event]) => event.conditionKey)).toEqual([key, key]);
+    const { actionableConditionFor } = await import('../coord/actionable-conditions');
+    expect(actionableConditionFor(key)).toMatchObject({ harnessFrom: 'suffix', severity: 'critical' });
+    await sweepLostGateRuns(sql, { ...d, pidAlive: () => null });
+    expect(resolve).not.toHaveBeenCalled();
+    const unreadable = (async () => { throw new Error('scan unavailable'); }) as unknown as Sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try { await sweepLostGateRuns(unreadable, d); } finally { warn.mockRestore(); }
+    expect(resolve).not.toHaveBeenCalled();
+    row.marker = null;
+    await sweepLostGateRuns(sql, d);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'lost-gate-run-alarm recovered' });
   });
 
   it('an unreadable holder never suppresses the alarm', async () => {

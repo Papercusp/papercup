@@ -1,0 +1,40 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
+import ContractSigningViews from './ContractSigningViews';
+const offer:HiringView['offers'][number]={workspaceId:'ws',daoSlug:'dao',offerId:'offer',roleId:'role',personId:'PER-candidate',authoredBy:'PER-author',approvalsRequired:1,approvedBy:['PER-reviewer'],state:'approved',preview:null,
+  terms:{engagementType:'employee',jurisdiction:'US-DE',employmentLike:false,pay:{amount:'5000',currency:'USD',cadence:'monthly'},equity:{shares:1000,vestingDays:1460,cliffDays:365,startRule:'hire_passed',policyVersion:2}}};
+const templates=[{templateKey:'employment',documentKind:'employment-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Employment agreement',latestVersion:3},{templateKey:'equity',documentKind:'equity-grant-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Equity agreement',latestVersion:2},
+  {templateKey:'wrong',documentKind:'employment-agreement',engagementType:'contractor',jurisdiction:'UK',title:'Unrelated agreement',latestVersion:1}];
+const fetcher=vi.fn(),changed=vi.fn();
+const show=()=>render(<ContractSigningViews daoSlug="dao" offer={offer} people={[{personId:'PER-candidate',displayName:'Candidate'},{personId:'PER-company',displayName:'Company signer'}]} onChanged={changed}/>);
+describe('Contract signing Workbench',()=>{
+  beforeEach(()=>{fetcher.mockReset().mockImplementation(async()=>Response.json({ok:true,templates,execution:null}));changed.mockReset();vi.stubGlobal('fetch',fetcher);});
+  afterEach(()=>{cleanup();vi.unstubAllGlobals();});
+  it('uses only matching registry versions and sends references, company person and date without editable offer terms',async()=>{
+    show();const form=await screen.findByRole('form',{name:'Generate contract'});
+    expect(screen.queryByText('Unrelated agreement · v1')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Company countersigner'),{target:{value:'PER-company'}});
+    fireEvent.change(screen.getByLabelText('Start date'),{target:{value:'2026-11-01'}});fireEvent.submit(form);
+    await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
+    const call=fetcher.mock.calls.find(c=>c[1]?.method==='POST')!;
+    expect(JSON.parse(call[1].body)).toEqual({action:'prepare',offerId:'offer',companyPersonId:'PER-company',startDate:'2026-11-01',templates:[{templateKey:'employment',version:3},{templateKey:'equity',version:2}]});
+  });
+  it('keeps signed samples non-binding and links both executed artifacts',async()=>{
+    fetcher.mockResolvedValue(Response.json({ok:true,templates,execution:{contractId:'contract',state:'signed',bindingEligible:false,documentHash:'0x'+ '11'.repeat(32),completedAt:'2026-10-11',signingLinks:null}}));
+    show();await screen.findByText('Contract stage: signed');
+    expect(screen.getByText(/Non-binding sample/)).toBeTruthy();expect(screen.queryByText('Binding contract; hire proposal executed.')).toBeNull();
+    expect((screen.getByRole('link',{name:'Download sealed contract'})as HTMLAnchorElement).getAttribute('href')).toBe('/api/pot/dao/contracts/offer/document?kind=sealed');
+    expect(screen.getByRole('link',{name:'Download signing audit certificate'})).toBeTruthy();
+  });
+  it('describes an eligible signed contract as conditional until execution',async()=>{
+    fetcher.mockResolvedValue(Response.json({ok:true,templates,execution:{contractId:'contract',state:'signed',bindingEligible:true,documentHash:null,completedAt:null,signingLinks:null}}));
+    show();await screen.findByText(/Conditional contract/);expect(screen.queryByText('Binding contract; hire proposal executed.')).toBeNull();
+  });
+  it('a malformed read reports an error instead of crashing or inventing an empty registry',async()=>{
+    fetcher.mockResolvedValue(Response.json({ok:true}));show();
+    const alert=await screen.findByRole('alert');expect(alert.textContent).toContain('Contract records could not be read.');
+    expect(screen.getByRole('button',{name:'Retry contract read'})).toBeTruthy();
+  });
+});

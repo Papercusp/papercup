@@ -71,13 +71,20 @@ But the build serving agent MCP calls did not emit them (measured 2026-10-05T17:
 
 The rename sits in staging unable to promote (the watchdog reported green-checkpoint RED, \~77h since last green). The serving build returns the **un-suffixed** `live.unaccounted` / `live.unaccountedPids`.
 
-**Read both spellings, and distinguish absent from unequal:**
+A 2026-10-11 read (EI-25675244707469584) measured `live.unaccounted=2` and `live.unaccountedPids=12`, with neither `live.unaccountedGroups` nor the `*Count` fields present. The current source in staging emits the suffixed totals and groups, so this is a source-to-runtime version skew. The legacy numeric fallback preserves only the totals; without the complete group array, a `gone` verdict must remain unknown.
+
+**Read both numeric spellings, and distinguish absent from unequal. The group array itself is required; its absence is not an empty census:**
 
 ```js
+const groups = live.unaccountedGroups;
 const groupCount = live.unaccountedCount ?? live.unaccounted;
 const pidCount   = live.unaccountedPidCount ?? live.unaccountedPids;
-if (groupCount == null || pidCount == null) return 'unknown'; // not a failed check
+if (groupCount == null || pidCount == null || !Array.isArray(groups)) return 'unknown';
+const listedPids = groups.reduce((count, group) => count + group.pids.length, 0);
+if (groupCount !== groups.length || pidCount !== listedPids) return 'unknown';
 ```
+
+If the older response has the numeric aliases but omits the group array, leave the verdict unknown. Never normalize the absent array to `[]`; doing that would misread missing data as a structurally empty census.
 
 `undefined === groups.length` is `false`, which silently downgrades a true `gone` to `unknown`. Worse, a falsy-guard spelling (`if (!live.unaccountedCount)`) lets a judge believe it verified self-consistency while comparing nothing — an unchecked check that reads as checked, which is exactly the hazard the deliberate `*Count` suffix was introduced to prevent, reintroduced one layer up by version skew. Filed as EI-25160373421434383.
 
