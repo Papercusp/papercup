@@ -2441,6 +2441,7 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
         "'",
       ].join('');
       const { code, out } = runProbeIO([
+        '--expect', 'survived',
         '--i-know-this-deletes', '--sandbox-root', sb,
         '--file', subject,
         '--mutate', 's/echo ok/echo OK/',
