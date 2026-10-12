@@ -2814,7 +2814,7 @@ export function evaluateSpecTestAdequacy(input: {
     .filter((entry) => entry === 'live' || entry === 'deployed'))];
   const planeBindings = currentEvidence.filter((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
-    return typeof plane === 'string' && requiredPlanes.includes(plane.trim().toLowerCase());
+    return typeof plane === 'string' && requiredPlanes.some((requiredPlane) => requiredPlane === plane.trim().toLowerCase());
   });
   const presentPlanes = new Set(planeBindings.flatMap((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
