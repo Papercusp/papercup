@@ -22,7 +22,8 @@ import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
-import { readRoutineLastFires, type LastFireSql } from './routine-last-fire';
+import { readRoutineLastFires, type LastFireSql, type RoutineLastFireReading } from './routine-last-fire';
+import { MAX_RUN_PLANS, PLAN_CLEANUP_SWEEP_REQUESTER, SWEEP_EXCLUDED_PLAN_STATUSES } from '../../plan-cleanup/start-run';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
 import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
@@ -359,6 +360,282 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     if (!(k in out) && isHealthRecordKey(k)) emit(k);
   }
   return Object.keys(out).length ? out : null;
+}
+
+const PLAN_CLEANUP_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const ROUTINE_PLAN_CLEANUP_FRESHNESS_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_PLAN_CLEANUP_FRESHNESS_STATEMENT_TIMEOUT_MS = 5_000;
+
+type PlanCleanupFreshnessRow = {
+  install_slug: string;
+  eligible_plan_count: number | string;
+  scanned_plan_count: number | string;
+  fresh_plan_count: number | string;
+  freshness_window_days: number | string;
+  freshness_max_plans: number | string;
+  oldest_last_scanned_at: Date | string | null;
+  newest_last_scanned_at: Date | string | null;
+  latest_run_id: string | null;
+  latest_run_phase: string | null;
+  latest_run_created_at: Date | string | null;
+  latest_run_updated_at: Date | string | null;
+  latest_run_seed_plan_count: number | string | null;
+  latest_run_requested_plan_count: number | string | null;
+  latest_run_accepted_plan_count: number | string | null;
+  latest_run_truncated_plan_count: number | string | null;
+};
+
+type PlanCleanupFreshnessReading = PlanCleanupFreshnessRow | { unavailable: string };
+type PlanCleanupFreshnessQueryRunner = (
+  query: (sql: LastFireSql) => Promise<PlanCleanupFreshnessRow[]>,
+) => Promise<PlanCleanupFreshnessRow[]>;
+
+function nonNegativeCount(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+function planCleanupMaxPlansFromConfig(config: Record<string, unknown> | null): number {
+  const raw = Number(config?.max_plans);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), MAX_RUN_PLANS) : MAX_RUN_PLANS;
+}
+
+function timestampIso(value: unknown): string | null {
+  const ms = value instanceof Date ? value.getTime() : epochMs(value);
+  return ms === null || !Number.isFinite(ms) ? null : new Date(ms).toISOString();
+}
+
+function timestampAgeMs(value: unknown, nowMs: number): number | null {
+  const ms = value instanceof Date ? value.getTime() : epochMs(value);
+  return ms === null || !Number.isFinite(ms) ? null : Math.max(0, nowMs - ms);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringField(record: Record<string, unknown> | null, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * A run row proves cleanup-run creation; the DBOS result proves what the scheduled action
+ * returned; and successful run seed refs prove which currently-eligible plans were scanned.
+ * Keep those three measurements separate so a recent routine timestamp cannot stand in for
+ * either a created run or end-to-end plan coverage.
+ */
+async function readPlanCleanupFreshness(
+  sql: LastFireSql,
+  workspaceId: string,
+  installScopes: ReadonlyArray<{ installSlug: string; maxPlans: number }>,
+  nowMs: number,
+  runQuery: PlanCleanupFreshnessQueryRunner,
+): Promise<Map<string, PlanCleanupFreshnessReading>> {
+  const scopes = [...new Map(installScopes.filter((scope) => scope.installSlug)
+    .map((scope) => [scope.installSlug, scope])).values()];
+  const slugs = scopes.map((scope) => scope.installSlug);
+  const maxPlans = scopes.map((scope) => scope.maxPlans);
+  const out = new Map<string, PlanCleanupFreshnessReading>();
+  if (slugs.length === 0) return out;
+
+  const query = (querySql: LastFireSql) => querySql<PlanCleanupFreshnessRow[]>`
+    WITH target_harnesses AS (
+      SELECT scope.harness_slug, scope.max_plans
+        FROM unnest(${slugs}::text[], ${maxPlans}::int[]) AS scope(harness_slug, max_plans)
+    ), eligible AS MATERIALIZED (
+      SELECT p.harness_slug, p.plan_slug
+        FROM harness_shared.harness_plans p
+        JOIN target_harnesses h ON h.harness_slug = p.harness_slug
+       WHERE p.workspace_id = ${workspaceId}
+         AND p.archived = false
+         AND COALESCE(p.status, '') <> ALL(${[...SWEEP_EXCLUDED_PLAN_STATUSES]}::text[])
+    ), eligible_counts AS (
+      SELECT h.harness_slug, count(e.plan_slug)::int AS eligible_plan_count
+        FROM target_harnesses h
+        LEFT JOIN eligible e ON e.harness_slug = h.harness_slug
+       GROUP BY h.harness_slug
+    ), rotation_windows AS (
+      SELECT c.harness_slug, c.eligible_plan_count, h.max_plans AS freshness_max_plans,
+             CASE WHEN eligible_plan_count = 0 THEN 0
+                  ELSE GREATEST(1, CEIL(c.eligible_plan_count::numeric / h.max_plans)::int) + 1
+              END AS freshness_window_days
+        FROM eligible_counts c
+        JOIN target_harnesses h ON h.harness_slug = c.harness_slug
+    ), last_scans AS (
+      SELECT r.harness_slug, refs.plan_slug, max(r.created_at) AS last_scanned_at
+        FROM harness_shared.attention_bulk_runs r
+        JOIN target_harnesses h ON h.harness_slug = r.harness_slug
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(r.seed_refs) = 'array' THEN r.seed_refs ELSE '[]'::jsonb END
+        ) AS refs(plan_slug)
+        JOIN eligible e ON e.harness_slug = r.harness_slug AND e.plan_slug = refs.plan_slug
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.run_kind = 'plan-cleanup'
+         AND r.phase IN ('review', 'running', 'complete')
+       GROUP BY r.harness_slug, refs.plan_slug
+    ), coverage_rows AS (
+      SELECT w.harness_slug, w.eligible_plan_count, w.freshness_window_days,
+             w.freshness_max_plans,
+             e.plan_slug, s.last_scanned_at
+        FROM rotation_windows w
+        LEFT JOIN eligible e ON e.harness_slug = w.harness_slug
+        LEFT JOIN last_scans s ON s.harness_slug = e.harness_slug AND s.plan_slug = e.plan_slug
+    ), coverage AS (
+      SELECT c.harness_slug,
+             max(c.eligible_plan_count)::int AS eligible_plan_count,
+             max(c.freshness_window_days)::int AS freshness_window_days,
+             max(c.freshness_max_plans)::int AS freshness_max_plans,
+             count(c.plan_slug) FILTER (WHERE c.last_scanned_at IS NOT NULL)::int AS scanned_plan_count,
+             count(c.plan_slug) FILTER (
+               WHERE c.last_scanned_at >= to_timestamp(${nowMs}::double precision / 1000.0)
+                 - c.freshness_window_days * interval '1 day'
+                 AND c.last_scanned_at <= to_timestamp(${nowMs}::double precision / 1000.0)
+             )::int AS fresh_plan_count,
+             min(c.last_scanned_at) FILTER (WHERE c.last_scanned_at IS NOT NULL) AS oldest_last_scanned_at,
+             max(c.last_scanned_at) FILTER (WHERE c.last_scanned_at IS NOT NULL) AS newest_last_scanned_at
+        FROM coverage_rows c
+       GROUP BY c.harness_slug
+    ), latest_scheduled_run AS (
+      SELECT DISTINCT ON (r.harness_slug)
+             r.harness_slug, r.run_id, r.phase, r.created_at, r.updated_at,
+             CASE WHEN jsonb_typeof(r.seed_refs) = 'array' THEN jsonb_array_length(r.seed_refs) ELSE 0 END
+               AS seed_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'requested') = 'number'
+                  THEN (r.filter_snapshot->>'requested')::int END AS requested_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'accepted') = 'number'
+                  THEN (r.filter_snapshot->>'accepted')::int END AS accepted_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'truncated') = 'number'
+                  THEN (r.filter_snapshot->>'truncated')::int END AS truncated_plan_count
+        FROM harness_shared.attention_bulk_runs r
+        JOIN target_harnesses h ON h.harness_slug = r.harness_slug
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.run_kind = 'plan-cleanup'
+         AND r.requested_by = ${PLAN_CLEANUP_SWEEP_REQUESTER}
+       ORDER BY r.harness_slug, r.created_at DESC, r.run_id DESC
+    )
+    SELECT c.harness_slug AS install_slug, c.eligible_plan_count, c.scanned_plan_count,
+           c.fresh_plan_count, c.freshness_window_days, c.freshness_max_plans,
+           c.oldest_last_scanned_at,
+           c.newest_last_scanned_at, r.run_id AS latest_run_id, r.phase AS latest_run_phase,
+           r.created_at AS latest_run_created_at, r.updated_at AS latest_run_updated_at,
+           r.seed_plan_count AS latest_run_seed_plan_count,
+           r.requested_plan_count AS latest_run_requested_plan_count,
+           r.accepted_plan_count AS latest_run_accepted_plan_count,
+           r.truncated_plan_count AS latest_run_truncated_plan_count
+      FROM coverage c
+      LEFT JOIN latest_scheduled_run r ON r.harness_slug = c.harness_slug
+     ORDER BY c.harness_slug`;
+
+  try {
+    const rows = await runQuery(query);
+    const bySlug = new Map(rows.map((row) => [row.install_slug, row]));
+    for (const slug of slugs) {
+      out.set(slug, bySlug.get(slug) ?? { unavailable: 'plan-cleanup freshness query returned no aggregate row' });
+    }
+  } catch (error) {
+    const reason = `plan-cleanup freshness lookup failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+    for (const slug of slugs) out.set(slug, { unavailable: reason });
+  }
+  return out;
+}
+
+function projectPlanCleanupFreshness(input: {
+  reading: PlanCleanupFreshnessReading;
+  lastFiredAt: Date | null;
+  lastFire: RoutineLastFireReading;
+  nowMs: number;
+}): Record<string, unknown> {
+  const { reading, lastFiredAt, lastFire, nowMs } = input;
+  const action = lastFire === null
+    ? { read_status: 'no_completed_result_in_8_day_window' }
+    : 'unavailable' in lastFire
+      ? { read_status: 'unavailable', reason: lastFire.unavailable }
+      : (() => {
+          const diagnostics = recordOf(lastFire.diagnostics);
+          return {
+            read_status: lastFire.diagnosticsTruncated ? 'truncated' : 'available',
+            completed_at: lastFire.completedAt,
+            workflow_id: lastFire.workflowId,
+            outcome: stringField(diagnostics, 'outcome'),
+            reason: stringField(diagnostics, 'reason'),
+            run_id: stringField(diagnostics, 'runId'),
+            phase: stringField(diagnostics, 'phase'),
+            error: lastFire.error,
+            soft_error: lastFire.softError,
+          };
+        })();
+  const execution = {
+    scheduled_claim_at: timestampIso(lastFiredAt),
+    action_result: action,
+  };
+  if ('unavailable' in reading) {
+    return {
+      read_status: 'unavailable',
+      observed_at: new Date(nowMs).toISOString(),
+      unavailable_reason: reading.unavailable,
+      execution,
+    };
+  }
+
+  const eligible = nonNegativeCount(reading.eligible_plan_count);
+  const scanned = Math.min(eligible, nonNegativeCount(reading.scanned_plan_count));
+  const fresh = Math.min(scanned, nonNegativeCount(reading.fresh_plan_count));
+  const stale = Math.max(0, scanned - fresh);
+  const neverScanned = Math.max(0, eligible - scanned);
+  const windowDays = eligible === 0 ? 0 : nonNegativeCount(reading.freshness_window_days);
+  const coverageStatus = eligible === 0
+    ? 'not-needed'
+    : neverScanned > 0
+      ? 'uncovered'
+      : stale > 0
+        ? 'stale'
+        : 'fresh';
+  const latestRun = reading.latest_run_id
+    ? {
+        run_id: reading.latest_run_id,
+        phase: reading.latest_run_phase,
+        created_at: timestampIso(reading.latest_run_created_at),
+        updated_at: timestampIso(reading.latest_run_updated_at),
+        age_ms: timestampAgeMs(reading.latest_run_created_at, nowMs),
+        seed_plan_count: nonNegativeCount(reading.latest_run_seed_plan_count),
+        requested_plan_count: reading.latest_run_requested_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_requested_plan_count),
+        accepted_plan_count: reading.latest_run_accepted_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_accepted_plan_count),
+        truncated_plan_count: reading.latest_run_truncated_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_truncated_plan_count),
+      }
+    : null;
+  const actionRunId = 'run_id' in action ? action.run_id : null;
+  return {
+    read_status: 'available',
+    observed_at: new Date(nowMs).toISOString(),
+    execution,
+    latest_scheduled_run: latestRun,
+    run_record_matches_action: actionRunId && latestRun
+      ? actionRunId === latestRun.run_id
+      : null,
+    coverage: {
+      source: 'current non-archived plans against successful plan-cleanup run seed_refs',
+      eligible_plan_count: eligible,
+      scanned_plan_count: scanned,
+      fresh_plan_count: fresh,
+      stale_plan_count: stale,
+      never_scanned_plan_count: neverScanned,
+      max_plans_per_run: nonNegativeCount(reading.freshness_max_plans),
+      freshness_basis: 'daily cadence; ceil(eligible plans / max plans per run) scan batches plus one missed-run grace day',
+      freshness_window_ms: windowDays * PLAN_CLEANUP_DAILY_INTERVAL_MS,
+      freshness_status: coverageStatus,
+      oldest_last_scanned_at: timestampIso(reading.oldest_last_scanned_at),
+      newest_last_scanned_at: timestampIso(reading.newest_last_scanned_at),
+    },
+  };
 }
 
 /**
@@ -1272,7 +1549,9 @@ export default defineTool({
       group: z.string().nullable().optional(),
       paused: z.unknown().nullable().optional(),
       acceptanceBacklog: z.unknown().nullable().optional(),
-      health: z.unknown().nullable().optional(),
+      health: z.unknown().nullable().optional().describe(
+        'Operational routine metadata. The name-pinned plan-cleanup-sweep row also carries plan_cleanup_freshness, separating scheduled action evidence, its latest persisted run, and current eligible-plan scan coverage.',
+      ),
       lastFire: z.unknown().nullable().optional(),
       plane: z.unknown().optional(),
     })
@@ -1489,6 +1768,8 @@ export default defineTool({
     const routineListPhases = {
       lastFireLookupMs: null as number | null,
       lastFireUnavailableCount: 0,
+      planCleanupFreshnessLookupMs: null as number | null,
+      planCleanupFreshnessUnavailableCount: 0,
       resourceQueueReadCount: 0,
       resourceQueueReadFailures: 0,
       resourceQueueReadMaxMs: 0,
@@ -1530,8 +1811,40 @@ export default defineTool({
         (value) => value !== null && typeof value === 'object' && 'unavailable' in value,
       ).length;
     }
+    // The scheduled-action result is not the run row, and the run's seed refs are not
+    // proof that current plans were covered. Add this bounded read only on the exact
+    // name-pinned routine, mirroring the conditional DBOS last-fire lookup above.
+    const planCleanupRows = name === 'plan-cleanup-sweep'
+      ? rows.filter((r) => r.target_role === 'system:plan-cleanup-sweep')
+      : [];
+    const planCleanupNowMs = Date.now();
+    const planCleanupFreshnessStartedAtMs = Date.now();
+    const planCleanupFreshness = planCleanupRows.length > 0
+      ? await readPlanCleanupFreshness(
+          sql as unknown as LastFireSql,
+          ws,
+          planCleanupRows.map((r) => ({
+            installSlug: r.install_slug,
+            maxPlans: planCleanupMaxPlansFromConfig(r.trigger_config),
+          })),
+          planCleanupNowMs,
+          (query) =>
+            boundedOrgTxn((tx) => query(tx as unknown as LastFireSql), {
+              acquireTimeoutMs: ROUTINE_PLAN_CLEANUP_FRESHNESS_ACQUIRE_TIMEOUT_MS,
+              statementTimeoutMs: ROUTINE_PLAN_CLEANUP_FRESHNESS_STATEMENT_TIMEOUT_MS,
+              lockTimeoutMs: ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS,
+              readOnly: true,
+            }),
+        )
+      : null;
+    if (planCleanupRows.length > 0) {
+      routineListPhases.planCleanupFreshnessLookupMs = Date.now() - planCleanupFreshnessStartedAtMs;
+      routineListPhases.planCleanupFreshnessUnavailableCount = [...(planCleanupFreshness?.values() ?? [])]
+        .filter((value) => 'unavailable' in value).length;
+    }
     const routines = await Promise.all(rows.map(async (r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
+      const lastFire = lastFires?.get(r.id) ?? null;
       let health: Record<string, unknown> | null;
       if (r.target_role === 'system:git-sync') {
         const ownerReconciliation = await reconcileGitSyncActivityOwner(
@@ -1569,6 +1882,19 @@ export default defineTool({
           freshness,
           originFreshness,
         );
+      } else if (r.target_role === 'system:plan-cleanup-sweep' && planCleanupFreshness) {
+        const reading = planCleanupFreshness.get(r.install_slug) ?? {
+          unavailable: 'plan-cleanup freshness read did not include this install',
+        };
+        health = {
+          ...(healthOf(r.metadata) ?? {}),
+          plan_cleanup_freshness: projectPlanCleanupFreshness({
+            reading,
+            lastFiredAt: r.last_fired_at,
+            lastFire,
+            nowMs: planCleanupNowMs,
+          }),
+        };
       } else {
         health = healthOf(r.metadata);
       }
@@ -1587,7 +1913,7 @@ export default defineTool({
           ? { acceptanceBacklog }
           : {}),
         health,
-        lastFire: lastFires?.get(r.id) ?? null,
+        lastFire,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs
       // may use the same routine name but have independent gates; stamping them with
@@ -1608,6 +1934,8 @@ export default defineTool({
         unit: 'ms',
         lastFireLookupMs: routineListPhases.lastFireLookupMs,
         lastFireUnavailableCount: routineListPhases.lastFireUnavailableCount,
+        planCleanupFreshnessLookupMs: routineListPhases.planCleanupFreshnessLookupMs,
+        planCleanupFreshnessUnavailableCount: routineListPhases.planCleanupFreshnessUnavailableCount,
         resourceQueueReadCount: routineListPhases.resourceQueueReadCount,
         resourceQueueReadFailures: routineListPhases.resourceQueueReadFailures,
         resourceQueueReadMaxMs: routineListPhases.resourceQueueReadMaxMs,

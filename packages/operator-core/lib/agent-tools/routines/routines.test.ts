@@ -192,6 +192,155 @@ beforeEach(() => {
 });
 
 describe('routines:list', () => {
+  it('projects scheduled action, run creation, and current plan scan coverage separately', async () => {
+    const now = Date.now();
+    const scheduledRow = {
+      id: 'cleanup-routine',
+      install_slug: 'papercusp',
+      name: 'plan-cleanup-sweep',
+      trigger_kind: 'cron',
+      trigger_config: { cron: '17 41 9 * * *', max_plans: 100 },
+      target_role: 'system:plan-cleanup-sweep',
+      active: true,
+      next_fire_at: new Date(now + 60_000),
+      last_fired_at: new Date(now - 2 * 60 * 60_000),
+      group_slug: null,
+      metadata: null,
+    };
+    sqlMock
+      .mockResolvedValueOnce([scheduledRow])
+      .mockResolvedValueOnce([{
+        routine_id: 'cleanup-routine',
+        workflow_uuid: 'workflow-cleanup',
+        output: JSON.stringify({ json: { diagnostics: {
+          outcome: 'started', runId: 'run-1', phase: 'running', requested: 250, accepted: 100, truncated: 150,
+        } } }),
+        error: null,
+        completed_at_epoch_ms: String(now - 60 * 60_000),
+      }])
+      .mockResolvedValueOnce([{
+        install_slug: 'papercusp',
+        eligible_plan_count: '250',
+        scanned_plan_count: '250',
+        fresh_plan_count: '245',
+        freshness_window_days: '4',
+        freshness_max_plans: '100',
+        oldest_last_scanned_at: new Date(now - 4 * 24 * 60 * 60_000),
+        newest_last_scanned_at: new Date(now - 2 * 24 * 60 * 60_000),
+        latest_run_id: 'run-1',
+        latest_run_phase: 'running',
+        latest_run_created_at: new Date(now - 2 * 60 * 60_000),
+        latest_run_updated_at: new Date(now - 60 * 60_000),
+        latest_run_seed_plan_count: '100',
+        latest_run_requested_plan_count: '250',
+        latest_run_accepted_plan_count: '100',
+        latest_run_truncated_plan_count: '150',
+      }]);
+
+    const result = body(await listTool.handler(
+      { installSlug: 'papercusp', name: 'plan-cleanup-sweep' } as never,
+      { role: 'su' } as never,
+    ));
+    const health = result.routines[0]?.health;
+    expect(health.plan_cleanup_freshness).toMatchObject({
+      read_status: 'available',
+      execution: {
+        scheduled_claim_at: scheduledRow.last_fired_at.toISOString(),
+        action_result: { read_status: 'available', outcome: 'started', run_id: 'run-1', phase: 'running' },
+      },
+      latest_scheduled_run: {
+        run_id: 'run-1',
+        phase: 'running',
+        seed_plan_count: 100,
+        requested_plan_count: 250,
+        accepted_plan_count: 100,
+        truncated_plan_count: 150,
+      },
+      run_record_matches_action: true,
+      coverage: {
+        eligible_plan_count: 250,
+        scanned_plan_count: 250,
+        fresh_plan_count: 245,
+        stale_plan_count: 5,
+        never_scanned_plan_count: 0,
+        max_plans_per_run: 100,
+        freshness_window_ms: 4 * 24 * 60 * 60_000,
+        freshness_status: 'stale',
+      },
+    });
+    const trimmed = listTool.shape!.trimmed!({ count: result.count, routines: result.routines }, { args: {} } as never) as {
+      routines: Array<{ health: { plan_cleanup_freshness: { coverage: { freshness_status: string } } } }>;
+    };
+    expect(trimmed.routines[0]?.health.plan_cleanup_freshness.coverage.freshness_status).toBe('stale');
+    expect(boundedOrgTxnMock).toHaveBeenCalledTimes(2);
+    expect(boundedOrgTxnMock.mock.calls[1]?.[1]).toMatchObject({
+      acquireTimeoutMs: 5_000,
+      statementTimeoutMs: 5_000,
+      lockTimeoutMs: 750,
+      readOnly: true,
+    });
+    const freshnessCall = sqlMock.mock.calls[2]!;
+    const freshnessQuery = (freshnessCall[0] as TemplateStringsArray).join(' ');
+    expect(freshnessQuery).toContain('harness_shared.harness_plans');
+    expect(freshnessQuery).toContain('harness_shared.attention_bulk_runs');
+    expect(freshnessQuery).toContain("r.phase IN ('review', 'running', 'complete')");
+    expect(freshnessQuery).toContain('CEIL(c.eligible_plan_count::numeric / h.max_plans)');
+    expect(freshnessQuery).toContain('r.requested_by =');
+    expect(freshnessCall.slice(1)).toContain('system:plan-cleanup-sweep');
+  });
+
+  it('surfaces plan-cleanup coverage read failure as unavailable, never as zero uncovered plans', async () => {
+    sqlMock
+      .mockResolvedValueOnce([{
+        id: 'cleanup-routine',
+        install_slug: 'papercusp',
+        name: 'plan-cleanup-sweep',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '17 41 9 * * *' },
+        target_role: 'system:plan-cleanup-sweep',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: new Date(),
+        group_slug: null,
+        metadata: null,
+      }])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('coverage statement timeout'));
+
+    const result = body(await listTool.handler(
+      { installSlug: 'papercusp', name: 'plan-cleanup-sweep' } as never,
+      { role: 'su' } as never,
+    ));
+    expect(result.routines[0]?.health?.plan_cleanup_freshness).toMatchObject({
+      read_status: 'unavailable',
+      unavailable_reason: expect.stringContaining('coverage statement timeout'),
+      execution: {
+        action_result: { read_status: 'no_completed_result_in_8_day_window' },
+      },
+    });
+    expect(result.routines[0]?.health?.plan_cleanup_freshness).not.toHaveProperty('coverage');
+  });
+
+  it('keeps the plan-cleanup history query off unpinned routine listings', async () => {
+    sqlMock.mockResolvedValueOnce([{
+      id: 'cleanup-routine',
+      install_slug: 'papercusp',
+      name: 'plan-cleanup-sweep',
+      trigger_kind: 'cron',
+      trigger_config: { cron: '17 41 9 * * *' },
+      target_role: 'system:plan-cleanup-sweep',
+      active: true,
+      next_fire_at: null,
+      last_fired_at: null,
+      group_slug: null,
+      metadata: null,
+    }]);
+
+    const result = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    expect(result.routines[0]?.health).toBeNull();
+  });
+
   it('bounds the conditional DBOS read and returns unavailable when that phase times out', async () => {
     sqlMock.mockResolvedValueOnce([{ ...gitSyncRoutineRow({}), install_slug: 'other-harness' }]);
     boundedOrgTxnMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
