@@ -38,7 +38,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { SHARED_TEST_PG_DURABILITY_OFF } from '../libs/test-config/src/pg-container.ts';
-import { browserCachePath } from './ensure-playwright-browsers.mjs';
+import { browserCachePath } from './lib/playwright-cache-path.mjs';
 import { defaultEvidenceRoot } from '../libs/generic/verification-harness/src/evidence-root.ts';
 import { processGroupLifetime } from '../packages/operator-core/lib/fleet/process-group-lifetime.ts';
 

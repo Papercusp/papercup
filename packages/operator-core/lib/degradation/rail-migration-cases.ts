@@ -27,18 +27,27 @@ const remainingSyncCases: RailMigrationCase[] = [{
   mechanism: 'merge-cursor-seed',
   rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot.ts|mergeOnePass|1'],
   run: async () => {
-    const { expect } = await import('vitest');
+    const { expect, vi } = await import('vitest');
+    const { createPgMergeCursorSeedCache, createMergeCursor } = await import('../sync/hyperbee/read-merge');
     const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
     const text = original('packages/operator-core/lib/sync/hyperbee/boot.ts', 'const eligibleSeeds =', 'if');
-    for (const scenario of ['primary', 'alternate', 'failed', 'positioned', 'disabled']) {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+    for (const scenario of ['primary', 'alternate', 'failed', 'positioned', 'disabled', 'invalidated']) {
+      const cache = createPgMergeCursorSeedCache({ holdMaxMs: 1000 });
+      if (scenario === 'invalidated') cache.invalidate();
+      const cursor = createMergeCursor();
+      for (const key of scenario === 'positioned' ? ['a', 'b', 'c'] : ['a']) cursor.positions.set(key, 1);
+      const store = { load: async (binding: string) => {
+        if (scenario === 'failed') throw new Error('cursor unavailable');
+        return new Map(scenario === 'alternate'
+          ? (binding === 'alternate' ? [['b', 2]] : [['c', 3]])
+          : [['b', 2], ['c', 3]]);
+      } };
       await execute(text, {
-        pgMergeCursorStore: scenario === 'disabled' ? null : {},
-        pgCursorSeedCache: { seed: async () => {
-          if (scenario === 'failed') throw new Error('cursor unavailable');
-          return new Set(scenario === 'alternate' ? ['b'] : []);
-        } },
-        markMergeStage() {}, logKeys: ['a', 'b', 'c'],
-        mergeCursor: { positions: new Map((scenario === 'positioned' ? ['a', 'b', 'c'] : ['a']).map((key) => [key, 1])) },
+        pgMergeCursorStore: scenario === 'disabled' ? null : store,
+        pgCursorSeedCache: cache,
+        markMergeStage() {}, logKeys: new Set(['a', 'b', 'c']), mergeCursor: cursor,
         currentApplyBinding: () => 'primary', memoryToggledApplyBinding: () => 'alternate',
         memoryFederationEnabledForPass: true, memoryReplayCursor: null, createMergeCursor: () => ({}),
         pinUnknownDurableState() {}, recordBootEvent() {},
@@ -48,6 +57,9 @@ const remainingSyncCases: RailMigrationCase[] = [{
         },
       });
     }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('durable cursor load failed (cursor unavailable); holding 2 log(s)'));
+    } finally { warn.mockRestore(); }
     expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
       [2, 2, 'applied'], [2, 1, 'alternate-binding'], [2, 0, 'cursor-read-failed'],
     ]);

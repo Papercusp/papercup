@@ -16,6 +16,7 @@ import {
   type CapabilityStructuralRelation,
   type CapabilityThirdRole,
 } from './capability-sampler';
+import { dreamCapabilityRun, validateDreamSampling } from './dream-run-provenance';
 
 const scope = { workspaceId: 'ws', potSlug: 'pot', repositoryId: 'repo' };
 const now = Date.parse('2026-09-07T10:00:00Z');
@@ -211,6 +212,40 @@ describe('graph-enriched sampler inputs', () => {
     }
     expect(selected.has('capability:disconnected')).toBe(true);
     expect(selection(s, { relations: [], thirdRoles: [], policy: { strategyWeights: [0, 1, 0] } }).selection.relation).toBeNull();
+  });
+});
+
+describe('persisted dream sampling compatibility', () => {
+  it('reads known v1 provenance while keeping new writes v2-only', async () => {
+    const current = selection(await snapshot([packet('a', 'memory'), packet('b', 'code')]));
+    const readRun = (sampling: typeof current) =>
+      dreamCapabilityRun({
+        outcome: {
+          capabilityRun: {
+            schemaVersion: 'dream-capability-run-v1',
+            manifestHash: 'a'.repeat(64),
+            manifestRevision: 'fixture-v1',
+            dreamerModel: 'dreamer',
+            reviewerModel: 'reviewer',
+            dreamPromptVersion: 'dream-v2',
+            reviewPromptVersion: 'review-v1',
+            sampling,
+            calls: [],
+            artifactId: null,
+          },
+        },
+      });
+    expect(readRun(current)?.sampling).toEqual(current);
+    expect(() => validateDreamSampling(current)).not.toThrow();
+
+    const historical = structuredClone(current);
+    (historical.log as { version: string }).version = 'domain-structural-v1';
+    expect(readRun(historical)?.sampling?.log.version).toBe('domain-structural-v1');
+    expect(() => validateDreamSampling(historical)).toThrow(/Invalid persisted sampling provenance/);
+
+    const unknown = structuredClone(historical);
+    (unknown.log as { version: string }).version = 'domain-structural-v0';
+    expect(() => readRun(unknown)).toThrow(/Invalid persisted sampling provenance/);
   });
 });
 afterEach(async () => {

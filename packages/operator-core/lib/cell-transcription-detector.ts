@@ -59,7 +59,7 @@ interface TranscriptionPattern {
   what: string;
   /** The value shape. MUST be global (`g`) — callers rely on lastIndex scanning. */
   value: RegExp;
-  /** Required state-claim context within CONTEXT_WINDOW chars of the value. */
+  /** Required state-claim context within CONTEXT_WINDOW chars and the value's sentence. */
   context: RegExp;
   /** The value is claimed to be a commit sha, so a commit resolver may veto it. */
   commitSha?: boolean;
@@ -82,9 +82,10 @@ export interface DetectOptions {
 
 /**
  * How far either side of a matched value we look for a state-claim context word.
- * Deliberately tight: a sha and the word "deployed" 400 chars apart are usually two
- * unrelated sentences, and widening this trades precision for recall in exactly the
- * direction EI-10949 warns against.
+ * Context must also be in the same sentence as the value: a nearby status word in
+ * the next sentence can describe a different value, as in a checkpoint hash followed
+ * by "Candidate/rollout limits unchanged." Deliberately tight: widening this trades
+ * precision for recall in exactly the direction EI-10949 warns against.
  */
 export const CONTEXT_WINDOW = 60;
 
@@ -186,6 +187,33 @@ const GENERATED_COORD_CHUNK_HEADER_LINE = /^⟦part \d+\/\d+ g:[0-9a-f]{8}(?: co
 
 function maskGeneratedCoordChunkHeaders(text: string): string {
   return text.replace(GENERATED_COORD_CHUNK_HEADER_LINE, (header) => ' '.repeat(header.length));
+}
+
+/**
+ * Keep nearby status prose attached to the value it describes. The character window
+ * alone crossed a sentence boundary on a work-item checkpoint hash followed by a
+ * separate "Candidate/rollout limits unchanged" sentence, producing a false gate
+ * candidate. Search only the intersection of the existing distance window and the
+ * sentence containing the value; a genuine claim before or after the value in that
+ * sentence remains detectable.
+ */
+function sameSentenceContextWindow(haystack: string, valueStart: number, valueLength: number): string {
+  const windowStart = Math.max(0, valueStart - CONTEXT_WINDOW);
+  const valueEnd = valueStart + valueLength;
+  const windowEnd = Math.min(haystack.length, valueEnd + CONTEXT_WINDOW);
+  const sentenceBoundary = /[.!?](?:["'”’)]*)\s+/g;
+
+  let sentenceStart = windowStart;
+  const before = haystack.slice(windowStart, valueStart);
+  let boundary: RegExpExecArray | null;
+  while ((boundary = sentenceBoundary.exec(before)) !== null) {
+    sentenceStart = windowStart + sentenceBoundary.lastIndex;
+  }
+
+  const after = haystack.slice(valueEnd, windowEnd);
+  const nextBoundary = /[.!?](?:["'”’)]*)\s+/.exec(after);
+  const sentenceEnd = nextBoundary ? valueEnd + nextBoundary.index : windowEnd;
+  return haystack.slice(sentenceStart, sentenceEnd);
 }
 
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
@@ -332,9 +360,7 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
         re.lastIndex += 1;
         continue;
       }
-      const start = Math.max(0, m.index - CONTEXT_WINDOW);
-      const end = Math.min(haystack.length, m.index + m[0].length + CONTEXT_WINDOW);
-      const window = haystack.slice(start, end);
+      const window = sameSentenceContextWindow(haystack, m.index, m[0].length);
       if (!p.context.test(window)) continue; // a citation, not a claim
 
       // A broad context window is intentional for ordinary pipeline prose, but it

@@ -4317,7 +4317,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (pgMergeCursorStore && pgCursorSeedCache) {
         markMergeStage('pg-cursor-seed');
         // Positioned logs reuse their cursor and make no new seeding decision.
-        const eligibleSeeds = logKeys.filter((key) => !mergeCursor.positions.has(key)).length;
+        const eligibleSeeds = pgCursorSeedCache.invalidated ? 0
+          : [...logKeys].filter((key) => !mergeCursor.positions.has(key)).length;
         try {
           const applyBinding = currentApplyBinding();
           const fallbackBinding = memoryToggledApplyBinding();

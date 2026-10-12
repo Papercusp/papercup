@@ -132,6 +132,25 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(detectCellTranscriptions('abc1234 was deployed').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not pair a work-item checkpoint hash with candidate context in the next sentence', async () => {
+    const text =
+      "Final canonical Next action heading corrected the initial replacement's oversized resume packet. " +
+      'Latest8710 checkpoint f90d28e7d85e and bounded nextAction readback verified; ' +
+      'use this instead of intermediate d90099a21e31. Candidate/rollout limits unchanged; ' +
+      'no test or source work replayed.';
+
+    // Isolate context matching from the git resolver. The recorded coord:send false hint
+    // named d90099a21e31 as a gate candidate even though its candidate prose starts after
+    // the sentence boundary; a same-sentence candidate remains a real transcription.
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => true);
+    expect(hint).toBeNull();
+    const positive = await cellTranscriptionHintResolvingCommits(
+      'green-checkpoint is judging candidate 9a4319b7',
+      async () => true,
+    );
+    expect(positive).toContain('9a4319b7');
+  });
+
   it('DOES fire when a source HEAD is explicitly described as deployed', () => {
     const hits = detectCellTranscriptions('current HEAD 2b95ba4eb7 is deployed to :3070');
     expect(hits).toHaveLength(1);
