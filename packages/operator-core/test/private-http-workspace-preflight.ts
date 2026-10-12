@@ -44,8 +44,10 @@ export interface CommittedReaderClosure {
  */
 export function qualifyCommittedReaderSource(o: {
   root: string; bundle: string; receiptPath: string; sourceReceiptPath: string;
-  selectedCommit: string; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
-}) {
+  selectedCommit: string;
+} & ({ preparationOnly: true } | {
+  preparationOnly?: false; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
+})) {
   const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
   const inside = (root: string, path: string) => {
     const rel = relative(realpathSync(root), realpathSync(path));
@@ -137,15 +139,19 @@ export function qualifyCommittedReaderSource(o: {
   assert.equal(digest(readFileSync(o.bundle)), closure.sha256, 'Prepared bundle changed');
   assert.ok(Object.keys(closure.schema).length && Object.keys(closure.environment).length,
     'Required private schema and environment pins are missing');
-  assert.deepEqual(o.schema, closure.schema, 'Applied required private schema differs');
   for (const [key, expected] of Object.entries(closure.environment)) {
     assert.match(expected, /^[a-f0-9]{64}$/, `Environment digest missing: ${key}`);
-    assert.ok(o.environment[key] !== undefined, `Required private environment missing: ${key}`);
-    assert.equal(digest(o.environment[key]!), expected, `Required private environment differs: ${key}`);
+    if (!o.preparationOnly) {
+      assert.ok(o.environment[key] !== undefined, `Required private environment missing: ${key}`);
+      assert.equal(digest(o.environment[key]!), expected, `Required private environment differs: ${key}`);
+    }
   }
+  if (!o.preparationOnly) assert.deepEqual(o.schema, closure.schema, 'Applied required private schema differs');
   return { sourceCommit: source.sourceCommit, sha256: closure.sha256, metafileSha256: closure.metafileSha256,
     checked: ['source', 'tested-inputs', 'build-imports', 'observed-imports', 'dependencies', 'externals',
-      'config', 'copied-sources', 'artifacts', 'required-private-schema', 'required-environment'],
+      'config', 'copied-sources', 'artifacts',
+      ...(!o.preparationOnly ? ['required-private-schema', 'required-environment'] : [])],
+    pending: o.preparationOnly ? ['actual-private-schema', 'actual-private-environment', 'loaded-host'] : ['loaded-host'],
     omitted: closure.omitted, opaque: closure.opaque, hostStarted: false, httpStarted: false };
 }
 
@@ -202,12 +208,26 @@ export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
 
 /** Compile the native API before allocating PG, retaining the exact artifact
  * that the private worker will run instead of reading the shared graph again. */
-export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string) {
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
+  committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
+}) {
   // Match the child runtime's fail-closed evidence prerequisite before paying
   // for compilation. A missing reporter sink must not become a late PG failure.
   assert.ok(!(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
     || process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) || process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim(),
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+  const selected = options?.committedReader;
+  if (selected) {
+    assert.match(selected.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+    assert.equal(readVerifierSourceReceiptSync(root, selected.sourceReceiptPath).sourceCommit,
+      selected.selectedCommit, 'Archive differs from selected committed source');
+    // Missing independent preparation must refuse before compilation/PG. Never
+    // synthesize a closure from this process's own source/dependency snapshot.
+    const closure: CommittedReaderClosure = JSON.parse(readFileSync(selected.receiptPath, 'utf8'));
+    assert.equal(closure.sourceCommit, selected.selectedCommit, 'Closure differs from selected committed source');
+    assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
+    assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
+  }
   const path = join(evidenceDir, 'hono-host.mjs');
   try {
     const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
@@ -218,9 +238,21 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     throw error;
   }
   const sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
-  const receipt = { path, sha256 };
-  writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), JSON.stringify(receipt));
-  return receipt;
+  let receipt: { path: string; sha256: string; selectedSource?: {
+    receiptPath: string; sha256: string; sourceCommit: string;
+  } } = { path, sha256 };
+  if (selected) {
+    const qualification = qualifyCommittedReaderSource({ root, bundle: path, ...selected, preparationOnly: true });
+    const sourceBytes = readFileSync(selected.sourceReceiptPath);
+    const sourcePath = join(evidenceDir, 'verifier-source.json');
+    writeFileSync(sourcePath, sourceBytes);
+    receipt = { ...JSON.parse(readFileSync(selected.receiptPath, 'utf8')), path, sha256, qualification,
+      selectedSource: { receiptPath: sourcePath, sha256: createHash('sha256').update(sourceBytes).digest('hex'),
+        sourceCommit: selected.selectedCommit } };
+  }
+  const receiptBytes = JSON.stringify(receipt);
+  writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
+  return { ...receipt, receiptSha256: createHash('sha256').update(receiptBytes).digest('hex') };
 }
 
 /** A worker may reuse only the artifact from its own original prepare phase. */
@@ -233,7 +265,37 @@ export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenc
   const path = join(dirname(evidenceDir), 'prepare', 'hono-host.mjs');
   assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), sha256,
     'Prepared private API changed after preflight');
+  const receipts = argv.filter(value => value.startsWith('--prepared-receipt-sha='));
+  if (receipts.length) {
+    assert.equal(receipts.length, 1, 'Pass exactly one prepared receipt digest');
+    const receiptSha256 = receipts[0].slice('--prepared-receipt-sha='.length);
+    assert.match(receiptSha256, /^[a-f0-9]{64}$/, 'Prepared receipt digest must be SHA256');
+    const receiptBytes = readFileSync(join(dirname(path), 'operator-api-preflight.json'));
+    assert.equal(createHash('sha256').update(receiptBytes).digest('hex'), receiptSha256,
+      'Prepared private receipt changed after preflight');
+    const receipt = JSON.parse(String(receiptBytes));
+    assert.equal(receipt.path, path, 'Prepared private receipt names another artifact');
+    assert.equal(receipt.sha256, sha256, 'Prepared private receipt names another digest');
+  }
   return path;
+}
+
+/** Selected source crosses the sanitized child boundary through the parent's
+ * pinned preparation receipt, never through an ambient selection default. */
+export function resolvePreparedCommittedReaderSource(argv: readonly string[], evidenceDir: string) {
+  assert.equal(argv.filter(value => value.startsWith('--prepared-receipt-sha=')).length, 1,
+    'Committed reader requires one pinned preparation receipt');
+  const bundle = resolvePreparedPrivateApiBundle(argv, evidenceDir);
+  assert.ok(bundle, 'Committed reader requires an independently prepared pinned API');
+  const receipt = JSON.parse(readFileSync(join(dirname(bundle), 'operator-api-preflight.json'), 'utf8'));
+  const source = receipt.selectedSource;
+  assert.ok(source && source.receiptPath === join(dirname(bundle), 'verifier-source.json'),
+    'Committed reader requires the retained independent selected source receipt');
+  assert.match(source.sourceCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.equal(source.sourceCommit, receipt.sourceCommit, 'Prepared source selection differs');
+  assert.equal(createHash('sha256').update(readFileSync(source.receiptPath)).digest('hex'), source.sha256,
+    'Retained selected source receipt changed after preflight');
+  return { sourceReceiptPath: source.receiptPath as string, selectedCommit: source.sourceCommit as string };
 }
 
 /** Isolated workers intentionally discard PAPERCUSP_* ambient settings.
