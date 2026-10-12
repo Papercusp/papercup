@@ -77,6 +77,7 @@ import {
   testsSkippedFrom,
   userBusReachable,
   vitestRunFailed,
+  vitestConfigLoaderPolicy,
   warnIfInstallInFlight,
   withoutOutputFileArg,
   DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
@@ -109,6 +110,33 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('keeps guarded config imports native for both collection and execution', () => {
+    const guarded = { NODE_OPTIONS: '--import=/checkout/scripts/lib/committed-source-loader.mjs' };
+    expect(vitestConfigLoaderPolicy(['-t', 'selected'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
+    expect(vitestConfigLoaderPolicy(['--configLoader=native', '-t', 'selected'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
+    expect(vitestConfigLoaderPolicy(['--configLoader', 'runner'], {}, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'runner'], vitestArgs: [] });
+    for (const loader of ['runner', 'bundle']) expect(() =>
+      vitestConfigLoaderPolicy(['--configLoader', loader], guarded, [])).toThrow('requires --configLoader native');
+    expect(vitestConfigLoaderPolicy([], {}, ['--import', '/checkout/scripts/lib/committed-source-loader.mjs'])
+      .configLoaderArgs).toEqual(['--configLoader', 'native']);
+    expect(vitestConfigLoaderPolicy([], {}, []).configLoaderArgs).toEqual([]);
+  });
+
+  it('loads the actual operator TS config through the native committed source boundary', () => {
+    const child = spawnSync(process.execPath, ['--import', './scripts/lib/committed-source-loader.mjs',
+      '--input-type=module', '-e', `
+        import { loadConfigFromFile } from 'vite';
+        const config = await loadConfigFromFile({ command:'serve', mode:'test' },
+          'apps/operator/vitest.config.ts', undefined, 'silent', undefined, 'native');
+        if (!config?.config?.test) throw new Error('Actual operator config did not load');
+        console.log('guarded-native-config-loaded');
+      `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('guarded-native-config-loaded');
+  });
   it('runs only the selected Node case through the common router selector', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'node-router-selector-'));
     try {

@@ -2912,6 +2912,26 @@ export function formatRouteError(detail) {
  * @param {string[]} [argv]
  * @param {{runCapturedTestProcessImpl?: typeof runCapturedTestProcess}} [options]
  */
+/** Vite's bundler/runner transforms config before Node can judge source bytes.
+ * Native config imports keep the committed-source loader on that boundary and
+ * avoid its intentional CommonJS refusal. Apply one choice to list AND run. */
+export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = process.execArgv) {
+  let selected = null;
+  const remaining = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--configLoader') selected = args[++i] ?? '';
+    else if (arg.startsWith('--configLoader=')) selected = arg.slice('--configLoader='.length);
+    else remaining.push(arg);
+  }
+  const guarded = `${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs');
+  if (guarded && selected !== null && selected !== 'native') {
+    throw new Error('committed-source config requires --configLoader native; transformed config loaders bypass its source boundary');
+  }
+  if (guarded) selected = 'native';
+  return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
@@ -2986,7 +3006,11 @@ export async function main(
     },
   });
   try {
-  const { dry, requireRan, files, vitestArgs } = parseCli(argv);
+  const { dry, requireRan, files, vitestArgs: requestedVitestArgs } = parseCli(argv);
+  let loaderPolicy;
+  try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
+  catch (error) { console.error(formatRouteError(error.message)); return 2; }
+  const { configLoaderArgs, vitestArgs } = loaderPolicy;
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
     return TEST_FILE_EXIT_NOT_MEASURED;
@@ -3194,7 +3218,7 @@ export async function main(
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
     // entirely so Vitest auto-discovers its defaults from the package cwd, exactly as its own
     // documented `npm test` (`vitest run`) does.
-    const configArgs = group.config ? ['--config', group.config] : [];
+    const configArgs = [...(group.config ? ['--config', group.config] : []), ...configLoaderArgs];
     console.log(`ROUTE cwd=${cwdLabel} config=${group.config ?? '(package default)'}`);
     for (const file of requested) console.log(`  requested ${file}`);
 

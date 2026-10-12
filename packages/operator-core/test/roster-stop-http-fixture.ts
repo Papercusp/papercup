@@ -275,6 +275,29 @@ async function coordCanary(health: unknown) {
       }
       writeFileSync(join(evidence, 'portal-insights-seed.json'), JSON.stringify(insightsHarnesses, null, 2));
     }
+    let settingsHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
+    if (process.env.ROSTER_HARNESS_SETTINGS_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const { saveProjectFiles } = await import('../lib/harness-project-files');
+      const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+      const blueprint = loadBlueprintFromFile(join(root, '.papercusp/blueprint.yaml')).blueprint;
+      const stem = `private-settings-${process.pid}`;
+      settingsHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
+      const projects = Object.entries(settingsHarnesses).map(([label, slug]) => {
+        const path = join(evidence, 'settings-harnesses', slug);
+        mkdirSync(join(path, '.papercusp'), { recursive: true });
+        writeFileSync(join(path, '.papercusp/blueprint.yaml'), JSON.stringify({ ...blueprint, extends: undefined,
+          id: slug, params: { 'parity.enabled': { type: 'boolean', label: 'Private setting', default: false } } }));
+        return { label, slug, path };
+      });
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        ...projects.filter(project => project.label !== 'foreign').map(({ slug, path }) => ({ slug, path }))] }), workspace);
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        ...projects.filter(project => project.label === 'foreign').map(({ slug, path }) => ({ slug, path }))] }), foreignWorkspace);
+      for (const project of projects) await saveProjectFiles(project.slug, { config: JSON.stringify({
+        parity: { enabled: project.label !== 'selected' }, marker: project.label }) });
+      writeFileSync(join(evidence, 'portal-settings-seed.json'), JSON.stringify(settingsHarnesses, null, 2));
+    }
     let brainstormHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
     if (process.env.ROSTER_BRAINSTORM_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
@@ -470,6 +493,7 @@ async function coordCanary(health: unknown) {
       ...(gitSeed ? { git: true, gitSeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
+      ...(settingsHarnesses ? { harnessSettings: true, settingsHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),
       ...(harnesses ? { harnesses } : {}),
       ...(docs ? { docs } : {}),

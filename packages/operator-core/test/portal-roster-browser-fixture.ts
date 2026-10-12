@@ -127,6 +127,7 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   harnessSettings?: boolean;
+  settingsHarnesses?: { selected: string; neighbor: string; foreign: string };
   prompts?: boolean;
   overview?: boolean;
   projectHistory?: boolean;
@@ -802,6 +803,16 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       reads.push({ name: 'dev.workspaces', args: null });
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ workspaces: [input.selected, input.neighbor].map(id => ({ id, name: id })) }));
+    } else if (input.harnessSettings && pathname.endsWith('/blueprint-params')) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ blueprintId: 'explicit-settings-component-fixture', params: {} }));
+    } else if (input.harnessSettings && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
+      reads.push({ name, args });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ rows: name === 'harnessProjectFiles.byHarness'
+        ? [{ harnessSlug: args.harnessSlug, config: '{}' }] : [] }));
     } else if (options.devRead && pathname === '/api/plugins/tools' && request.method === 'GET') {
       reads.push({ name: 'dev.tools', args: null });
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -1105,6 +1116,9 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       await page.getByRole('heading', { name: 'Settings — ' + input.neighbor, exact: true }).waitFor();
       assert.equal(new URL(page.url()).searchParams.get('slug'), input.neighbor);
       assert.equal(await page.getByRole('heading', { name: 'Settings — ' + input.selected, exact: true }).count(), 0);
+      for (const slug of [input.selected, input.neighbor]) assert.ok(reads.some(read =>
+        read.name === 'harnessProjectFiles.byHarness' && read.args.harnessSlug === slug),
+      'Settings mount requires a config read for each selected scope');
     }
     if (options.devRead) {
       const filter = () => page!.getByPlaceholder('Filter tools…', { exact: true });
@@ -1578,7 +1592,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     } else if (input.frames) {
       assert.equal(await page.locator('.pc-frames').count(), options.framesRead ? 0 : 1);
       if (options.framesRead) assert.equal(await page.getByRole('button', { name: 'Open Frames', exact: true }).count(), 1);
-    } else if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
+    } else if (!input.harnessSettings && !input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
       assert.match(await page.locator('body').innerText(), /Select a /);
     }
     if (input.brainstorm) {
@@ -1619,8 +1633,9 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
       reads, writes, errors, supportRequests, cupboardRequests, devInvocations, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead)) {
+    if (page && (input.harnessSettings || options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead || options.devRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
+      if (input.harnessSettings) writeFileSync(join(evidence, 'settings-mount-reads.json'), JSON.stringify({ reads, failedRequests }, null, 2));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
       console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);
@@ -1935,6 +1950,87 @@ async function runPrivateDevPage(page: Page, context: BrowserContext, input: Por
     scope: 'Actual Dev route and public diagnostic HTTP projection on disposable PG; workspaceIds is a query filter. Host guard is measured; cookie tenant authorization, hosted/provider proof and complete Dev tab coverage remain unverified' };
 }
 
+/** Actual config/spec workflow: no synthetic success or denial responses. */
+async function runPrivateHarnessSettingsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const { selected, neighbor, foreign } = input.settingsHarnesses!;
+  const endpoint = (slug: string) => new URL(`/api/harness/${slug}/spec?phase=staging`, input.base).href;
+  const readConfig = async (slug: string) => {
+    const response = await context.request.get(endpoint(slug));
+    assert.equal(response.status(), 200);
+    return JSON.parse((await response.json()).config);
+  };
+  const denials: Array<{ status: number; method: string; url: string }> = [];
+  let denyRead = true;
+  let denySave = true;
+  await context.route('**/api/harness/**', async route => {
+    const request = route.request();
+    const target = new URL(request.url());
+    if (!(denyRead && target.pathname === `/api/harness/${selected}/blueprint-params`)
+      && !(denySave && request.method() === 'PUT' && target.pathname === `/api/harness/${selected}/spec`)) {
+      await route.continue(); return;
+    }
+    const response = await context.request.fetch(request, { headers: { host: 'foreign-settings.invalid' } });
+    assert.equal(response.status(), 403, 'Settings denial must originate in the actual Host guard');
+    denials.push({ status: response.status(), method: request.method(), url: request.url() });
+    await route.fulfill({ response });
+  });
+  url.searchParams.set('app', 'settings'); url.searchParams.set('slug', selected);
+  url.searchParams.set('nextPot', neighbor);
+  const assertQuery = (slug: string) => {
+    const params = new URL(page.url()).searchParams;
+    assert.equal(params.get('slug'), slug); assert.equal(params.get('ws'), input.workspace);
+    assert.equal(params.get('q'), 'retained-shell-search');
+  };
+  await page.goto(url.href);
+  await page.getByRole('alert').filter({ hasText: 'Unable to load settings: HTTP 403' }).waitFor();
+  assert.equal(await page.getByRole('checkbox', { name: 'Private setting', exact: true }).count(), 0);
+  denyRead = false;
+  await page.getByRole('button', { name: 'Retry settings', exact: true }).focus(); await page.keyboard.press('Enter');
+  const setting = () => page.getByRole('checkbox', { name: 'Private setting', exact: true });
+  await setting().waitFor(); assert.equal(await setting().isChecked(), false);
+  const before = await readConfig(selected);
+  await setting().focus(); await page.keyboard.press('Space');
+  const save = () => page.getByRole('button', { name: 'Save', exact: true });
+  const denied = page.waitForResponse(response => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/harness/${selected}/spec`);
+  await save().focus(); await page.keyboard.press('Enter'); assert.equal((await denied).status(), 403);
+  await page.getByText('Save failed', { exact: true }).waitFor();
+  assert.deepEqual(await readConfig(selected), before, 'Denied save must leave the persisted config unchanged');
+  assert.equal(await setting().isChecked(), true, 'Denied save must preserve the edit for retry');
+  denySave = false;
+  const accepted = page.waitForResponse(response => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/harness/${selected}/spec`);
+  await save().click(); assert.equal((await accepted).status(), 200);
+  await page.getByText('Settings saved', { exact: true }).waitFor();
+  assert.deepEqual(await readConfig(selected), { ...before, parity: { enabled: true } });
+  assertQuery(selected); await page.reload(); await setting().waitFor();
+  assert.equal(await setting().isChecked(), true); assertQuery(selected);
+  await setting().click(); // An unsaved selected-pot edit must not cross the switch.
+  await page.getByTestId('settings-switch-pot').click();
+  await page.getByRole('heading', { name: 'Settings — ' + neighbor, exact: true }).waitFor();
+  await setting().waitFor(); assert.equal(await setting().isChecked(), true);
+  assert.equal(await save().isEnabled(), false); assertQuery(neighbor);
+  const neighborConfig = await readConfig(neighbor);
+  assert.equal(neighborConfig.marker, 'neighbor'); assert.equal(neighborConfig.parity.enabled, true);
+  const foreignRead = await context.request.get(endpoint(foreign));
+  assert.equal(foreignRead.status(), 404, 'Foreign-workspace registry target must be inaccessible');
+  const foreignWrite = await context.request.put(endpoint(foreign), { data: { config: '{}' } });
+  assert.equal(foreignWrite.status(), 404);
+  const { loadProjectFiles } = await import('../lib/harness-project-files');
+  const persisted = Object.fromEntries(await Promise.all([selected, neighbor, foreign].map(async slug =>
+    [slug, JSON.parse((await loadProjectFiles(slug)).config!)])));
+  assert.deepEqual(persisted[selected], { ...before, parity: { enabled: true } });
+  assert.deepEqual(persisted[neighbor], neighborConfig);
+  assert.deepEqual(persisted[foreign], { parity: { enabled: true }, marker: 'foreign' });
+  assert.ok(denials.some(denial => denial.method === 'GET') && denials.some(denial => denial.method === 'PUT'));
+  writeFileSync(join(input.evidence, 'portal-settings-persistence.json'), JSON.stringify({ selected, neighbor, foreign,
+    before, persisted, denials, foreignStatuses: [foreignRead.status(), foreignWrite.status()] }, null, 2));
+  return { authMethod: 'private-loopback-harness-settings-with-cookie', workspace: input.workspace,
+    schemaDeniedRecovery: true, saveDeniedRetry: true, keyboardSave: true, configPgAgreement: true,
+    reloadPersisted: true, unsavedScopeDiscarded: true, neighborIsolated: true, foreignExcluded: true,
+    settingsBlueprintDefault: true, shellQueryPreserved: true };
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
@@ -2018,6 +2114,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.settingsHarnesses) {
+      const receipt = await runPrivateHarnessSettingsPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'Actual Settings controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.cupboardSeed) {
       const receipt = await runPrivateCupboardPage(page, context, { ...input, cupboardSeed: input.cupboardSeed }, url);
       assert.deepEqual(pageErrors, [], 'actual Cupboard controls must stay browser-safe');
