@@ -1576,8 +1576,12 @@ export async function readCheckpointRunState(
   try {
     const routing = await (deps.route ?? resolveCheckpointRouting)({ installSlug, workspaceId }, integrationRoot());
     if (routing.skip) {
-      observeFallback('release-state-read', { eligible: 1, applied: 0,
-        reason: 'routing-skipped', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
+      // A non-gated hive legitimately skips this route and is not an eligible release-state read.
+      // Keep an explicitly misconfigured gated hive visible as a degraded read.
+      if (routing.skip.misconfigured) {
+        observeFallback('release-state-read', { eligible: 1, applied: 0,
+          reason: 'routing-misconfigured', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
+      }
       return {};
     }
 
