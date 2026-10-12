@@ -144,6 +144,44 @@ function plannedCopies(inputs: CommittedReaderPreparationInputs) {
   return copies;
 }
 
+/** Read-only validation of independently selected planned inputs. Returned
+ * bytes are copies; recheck keeps the original pins private and never builds
+ * or fills missing observations from this process's environment. */
+export function qualifyCommittedReaderPlannedInputs(root: string, selected: {
+  inputReceiptPath: string; sourceReceiptPath: string; selectedCommit: string;
+  inputReceiptSha256?: string; sourceReceiptSha256?: string;
+}) {
+  assert.ok(!inside(root, selected.inputReceiptPath),
+    'Input receipt must be independent of the source archive');
+  const sourceBytes = readFileSync(selected.sourceReceiptPath);
+  const inputBytes = readFileSync(selected.inputReceiptPath);
+  for (const [pin, bytes] of [[selected.sourceReceiptSha256, sourceBytes],
+    [selected.inputReceiptSha256, inputBytes]] as const) {
+    if (pin !== undefined) {
+      assert.match(pin, /^[a-f0-9]{64}$/, 'Planned receipt digest is required');
+      assert.equal(digestBytes(bytes), pin, 'Pinned planned receipt changed');
+    }
+  }
+  const inputs: CommittedReaderPreparationInputs = JSON.parse(String(inputBytes));
+  const copies = plannedCopies(inputs);
+  const validate = () => {
+    const qualified = qualifyCommittedReaderInputs(root, selected.sourceReceiptPath, selected.selectedCommit, inputs);
+    for (const source of copies.values()) qualified.sourcePath(source);
+    return qualified.source;
+  };
+  const unchanged = () => {
+    assert.deepEqual(readFileSync(selected.sourceReceiptPath), sourceBytes, 'Selected source receipt changed during preparation');
+    assert.deepEqual(readFileSync(selected.inputReceiptPath), inputBytes, 'Selected input receipt changed during preparation');
+  };
+  unchanged();
+  const source = validate();
+  unchanged();
+  return { source, inputs: structuredClone(inputs), copies: new Map(copies),
+    sourceBytes: Buffer.from(sourceBytes), inputBytes: Buffer.from(inputBytes),
+    sourceReceiptSha256: digestBytes(sourceBytes), inputReceiptSha256: digestBytes(inputBytes),
+    recheck: () => { unchanged(); validate(); unchanged(); } };
+}
+
 /** The digested input receipt stays separate from the producer's output claims. */
 function retainedProducedInputs(closure: CommittedReaderClosure, bundle: string) {
   const input = closure.inputReceipt;
@@ -407,21 +445,13 @@ export function produceCommittedReaderPrivateApiBundle(root: string, evidenceDir
   assertPrivatePreparationEvidence();
   assert.ok(!inside(root, evidenceDir) && !inside(root, selected.inputReceiptPath),
     'Preparation outputs and input receipt must be independent of the source archive');
-  const sourceBytes = readFileSync(selected.sourceReceiptPath);
-  const inputBytes = readFileSync(selected.inputReceiptPath);
-  const inputs: CommittedReaderPreparationInputs = JSON.parse(String(inputBytes));
-  const copies = plannedCopies(inputs);
-  const { sourcePath } = qualifyCommittedReaderInputs(root, selected.sourceReceiptPath, selected.selectedCommit, inputs);
-  for (const source of copies.values()) sourcePath(source);
+  const planned = qualifyCommittedReaderPlannedInputs(root, selected);
+  const { sourceBytes, inputBytes, inputs, copies } = planned;
   assert.deepEqual(verifierSourceFiles(evidenceDir), [], 'Producer requires a fresh allocated preparation directory');
-  const unchanged = () => {
-    assert.deepEqual(readFileSync(selected.sourceReceiptPath), sourceBytes, 'Selected source receipt changed during preparation');
-    assert.deepEqual(readFileSync(selected.inputReceiptPath), inputBytes, 'Selected input receipt changed during preparation');
-  };
+  const unchanged = planned.recheck;
   unchanged();
   const { path, sha256 } = buildPrivateOperatorApiBundle(root, evidenceDir);
   unchanged();
-  qualifyCommittedReaderInputs(root, selected.sourceReceiptPath, selected.selectedCommit, inputs);
   const artifactCensus = preparedArtifactCensus(evidenceDir);
   assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Produced symlink artifacts require independent qualification');
   const artifacts = artifactCensus.map(file => ({ path: join(evidenceDir, file.path), sha256: file.sha256,
