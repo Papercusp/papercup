@@ -94,13 +94,21 @@ export async function createHiringOffer(input: DaoKey & { roleId: string; person
   return sql.begin(async tx => {
     const connection = tx as unknown as Sql;
     const amends = input.amendsOfferId ? valid(text,input.amendsOfferId) : null;
+    let amendmentBase: OfferEquityTerms | undefined;
     if (amends) {
-      const [parent] = await tx<Array<{person_id:string;admitted_at:string|null;offboarding_proof:unknown}>>`
-        SELECT o.person_id,c.admitted_at,c.offboarding_proof FROM harness_shared.dao_hr_offers o
+      const [parent] = await tx<Array<{person_id:string;admitted_at:string|null;offboarding_proof:unknown;original_terms:HiringTerms;effective_terms:HiringTerms}>>`
+        SELECT o.person_id,c.admitted_at,c.offboarding_proof,o.terms AS original_terms,
+          COALESCE((SELECT a.terms FROM harness_shared.dao_hr_offers a
+            JOIN harness_shared.dao_hr_contracts ac USING (workspace_id,dao_slug,offer_id)
+            WHERE a.workspace_id=o.workspace_id AND a.dao_slug=o.dao_slug AND a.amends_offer_id=o.offer_id
+              AND ac.amendment_execution_proof IS NOT NULL
+            ORDER BY ac.amendment_execution_proof->>'executedAt' DESC,ac.contract_id DESC LIMIT 1),o.terms) AS effective_terms
+        FROM harness_shared.dao_hr_offers o
         JOIN harness_shared.dao_hr_contracts c USING (workspace_id,dao_slug,offer_id)
         WHERE o.workspace_id=${key.workspaceId} AND o.dao_slug=${key.daoSlug} AND o.offer_id=${amends} AND o.state='hired' FOR UPDATE OF c`;
       if (!parent?.admitted_at || parent.offboarding_proof || await person(connection,key.workspaceId,parent.person_id) !== candidate)
         throw new HiringError('invalid_transition','An amendment must reference this person\'s active admitted engagement.');
+      amendmentBase = {...parent.original_terms.equity,shares:parent.effective_terms.equity.shares};
     }
     const [role] = await tx<Array<{ title: string; level: string; manager_person_id: string | null; exclusive: boolean }>>`
       SELECT r.title,r.level,r.manager_person_id,r.exclusive FROM harness_shared.dao_hr_candidates c
@@ -109,7 +117,7 @@ export async function createHiringOffer(input: DaoKey & { roleId: string; person
     if (!role) throw new HiringError('candidate_missing', 'Add this candidate to the role before making an offer.');
     const policy = await getCurrentEquityPolicy(key, { sql: connection });
     const settings = policy?.settings ?? DEFAULT_EQUITY_POLICY;
-    const equity = resolveOfferTermsFrom(settings, policy?.version ?? null, { role: role.title, level: role.level, overrides: input.overrides });
+    const equity = resolveOfferTermsFrom(settings, policy?.version ?? null, { role: role.title, level: role.level, overrides: input.overrides, amendmentBase });
     const terms: HiringTerms = { engagementType, jurisdiction, pay, equity, employmentLike: looksLikeEmployment({ engagementType, pay, managerPersonId: role.manager_person_id, exclusive: role.exclusive }) };
     const offerId = randomUUID();
     const encodedTerms = connection.json({ ...terms, pay: { ...terms.pay }, equity: { ...terms.equity } });
