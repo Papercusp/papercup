@@ -105,6 +105,7 @@ describe('disk consumer census (real du, real PG)', () => {
       devices: [dev],
       measurePostgres: async () => null,
       measureDocker: async () => null,
+      statDevice: null, // keep the synthetic usedBytes; the real statfs would describe the host disk
       floorBytes: MIB,
       maxDepth: 3,
       now: () => now,

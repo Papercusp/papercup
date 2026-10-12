@@ -115,20 +115,51 @@ export async function resolveCensusDevices(paths: readonly string[] = watchedPat
     seen.add(majorMinor);
     const device = deviceMountRoot(mounts, majorMinor) ?? (await walkUpMountPoint(path, dev));
     try {
-      const st = await statfs(device);
-      const bsize = Number(st.bsize) || 0;
-      out.push({
-        device,
-        majorMinor,
-        sizeBytes: Number(st.blocks) * bsize,
-        usedBytes: (Number(st.blocks) - Number(st.bfree)) * bsize,
-        availBytes: Number(st.bavail) * bsize,
-      });
+      out.push({ device, majorMinor, ...(await statCensusDevice(device)) });
     } catch {
       continue;
     }
   }
   return out;
+}
+
+export type CensusDeviceUsage = Pick<CensusDevice, 'sizeBytes' | 'usedBytes' | 'availBytes'>;
+
+/** statfs numbers for one mount root (throws when the mount is unreadable). */
+export async function statCensusDevice(mountRoot: string): Promise<CensusDeviceUsage> {
+  const st = await statfs(mountRoot);
+  const bsize = Number(st.bsize) || 0;
+  return {
+    sizeBytes: Number(st.blocks) * bsize,
+    usedBytes: (Number(st.blocks) - Number(st.bfree)) * bsize,
+    availBytes: Number(st.bavail) * bsize,
+  };
+}
+
+/** Used bytes that moved by at least this much during a walk get a run note. */
+export const CENSUS_USAGE_DRIFT_NOTE_BYTES = 1024 ** 3;
+
+/**
+ * The device numbers to reconcile a walk against. `du` reads the tree over minutes while
+ * the filesystem keeps changing, so `used` is taken as the midpoint of the statfs samples
+ * just before and just after the walk; size and avail come from the latest sample. With
+ * no sample, the resolved numbers stand.
+ */
+export function reconcileWalkUsage(
+  resolved: CensusDevice,
+  before: CensusDeviceUsage | null,
+  after: CensusDeviceUsage | null,
+): { device: CensusDevice; note: string | null } {
+  const latest = after ?? before;
+  if (!latest) return { device: resolved, note: null };
+  const usedBytes = before && after ? Math.round((before.usedBytes + after.usedBytes) / 2) : latest.usedBytes;
+  const device = { ...resolved, sizeBytes: latest.sizeBytes, availBytes: latest.availBytes, usedBytes };
+  const drift = before && after ? after.usedBytes - before.usedBytes : 0;
+  const note =
+    Math.abs(drift) >= CENSUS_USAGE_DRIFT_NOTE_BYTES
+      ? `used moved ${drift > 0 ? '+' : '-'}${(Math.abs(drift) / 1024 ** 3).toFixed(1)} GiB during the walk; reconciled against the midpoint`
+      : null;
+  return { device, note };
 }
 
 /** Bound on the one `sudo -n true` probe per census pass. */
@@ -422,6 +453,8 @@ export interface CensusDeps {
   measureDocker?: () => Promise<ApiSizedStore | null>;
   /** sudo binary for a privileged walk, or null for unprivileged; probed once per pass. */
   resolveSudo?: () => Promise<string | null>;
+  /** statfs sampler used around each walk; null keeps the resolved device numbers (synthetic devices in tests). */
+  statDevice?: ((mountRoot: string) => Promise<CensusDeviceUsage>) | null;
   floorBytes?: number;
   maxDepth?: number;
   now?: () => Date;
@@ -473,15 +506,23 @@ export async function runDiskConsumerCensusOnce(
   const sudo = await (deps.resolveSudo ?? resolveCensusSudo)().catch(() => null);
   const runs: CensusRunResult[] = [];
   const failures: Array<{ device: string; error: string }> = [];
-  for (const device of devices) {
+  const statDevice = deps.statDevice === null ? null : (deps.statDevice ?? statCensusDevice);
+  for (const resolved of devices) {
     const startedAt = now();
     try {
-      const du = await (deps.runDu ?? runDuTree)(device.device, { floorBytes, maxDepth, sudo });
+      // Devices are resolved once per pass but walked one after another (a `/` walk takes
+      // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
+      // Re-sample statfs around this walk and reconcile against the midpoint.
+      const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
+      const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
+      const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
+      const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
       const { consumers, attributedBytes, unattributedBytes } = await buildDeviceConsumers(device, du, stores, floorBytes);
       const finishedAt = now();
       const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
       const notes = [
         du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
+        usageNote,
         du.timedOut ? 'du timed out; sizes are lower bounds' : null,
         du.error ? `du failed: ${du.error}` : null,
         du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,
@@ -514,7 +555,7 @@ export async function runDiskConsumerCensusOnce(
         durationMs: finishedAt.getTime() - startedAt.getTime(),
       });
     } catch (err) {
-      failures.push({ device: device.device, error: (err as Error)?.message ?? String(err) });
+      failures.push({ device: resolved.device, error: (err as Error)?.message ?? String(err) });
     }
   }
   const pruned = await pruneDiskCensus(sql, now());
