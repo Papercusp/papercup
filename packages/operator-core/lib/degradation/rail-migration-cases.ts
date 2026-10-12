@@ -21,7 +21,7 @@ import { original, execute, source } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 import { AGENT_ROUTING_MIGRATION_CASES } from './agent-routing-migration-cases';
 
-export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012'];
+export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012', 'P-013'];
 
 const scoutReadPath = 'packages/operator-core/lib/';
 type ScoutReadObservation = { eligible: number; applied: number; reason: string; scope?: string | null };
