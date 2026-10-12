@@ -101,6 +101,17 @@ describe('executed source qualification', () => {
     const unsafe = manifest(); unsafe.sourceHashes['../outside'] = sha;
     expect(sourceQualificationManifestSchema.safeParse(unsafe).success).toBe(false);
   });
+  it('rejects identity leaks in prospective manifest metadata without silently rewriting qualified bytes', () => {
+    const leaking = { ...manifest(), protocol: { diagnostics: [
+      '/home/' + ['fictional', 'bench', 'account'].join('-') + '/runs/diagnostic.json',
+    ] } };
+    const original = JSON.stringify(leaking);
+    expect(sourceQualificationManifestSchema.safeParse(leaking).success).toBe(false);
+    expect(JSON.stringify(leaking)).toBe(original);
+    expect(sourceQualificationManifestSchema.safeParse({ ...manifest(), protocol: {
+      diagnostics: ['$HOME/runs/diagnostic.json', 'docs/evidence/diagnostic.json'],
+    } }).success).toBe(true);
+  });
   it('refuses judged admission for a different or unknown space, small samples, missing sources, or an implicit database', () => {
     const expected = manifest();
     const options = { pairsPerSource: 60, sources: ['work_item', 'session_turn'], profile: expected.embeddingProfile, explicitDatabase: true };
