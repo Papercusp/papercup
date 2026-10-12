@@ -134,7 +134,7 @@ export async function portalBrowserSurfaceBuild(portalSourceRoot: string, option
   const portal = realpathSync(portalSourceRoot);
   const root = resolve(import.meta.dirname, '../../..');
   const source = join(portal, 'apps/host/src/operator-surface-build.mjs');
-  const { assertShimsResolvable, operatorSurfaceShims, operatorSurfaceImportMetaEnv } = await import(pathToFileURL(source).href);
+  const { assertShimsResolvable, operatorSurfaceShims, operatorSurfaceImportMetaEnv, operatorSurfaceAliases } = await import(pathToFileURL(source).href);
   const shims: Array<{ pattern: RegExp; replacement: string }> = assertShimsResolvable(operatorSurfaceShims(root, portal));
   // The static private ADV fixture mounts the operator's real TanStack router,
   // while the Portal host mounts Next. Keep the native router-compat modules
@@ -146,7 +146,15 @@ export async function portalBrowserSurfaceBuild(portalSourceRoot: string, option
   const plugin: Plugin = { name: 'maintained-portal-surface-boundary', setup(builder) {
     for (const shim of activeShims) builder.onResolve({ filter: shim.pattern }, () => ({ path: shim.replacement }));
   } };
-  return { plugin, define: { 'import.meta.env': JSON.stringify(operatorSurfaceImportMetaEnv()) }, source };
+  // Prefix aliases are part of the same maintained boundary as the shims.
+  // tsconfig paths preserve onResolve shim precedence and let esbuild resolve
+  // directory barrels (e.g. the real Dev IPC transport) without fixture stubs.
+  const paths: Record<string, string[]> = {};
+  for (const [prefix, replacement] of Object.entries(operatorSurfaceAliases(root) as Record<string, string>)) {
+    paths[prefix] = [replacement];
+    paths[prefix + '/*'] = [replacement + '/*'];
+  }
+  return { plugin, paths, define: { 'import.meta.env': JSON.stringify(operatorSurfaceImportMetaEnv()) }, source };
 }
 
 export function preparePrivateHttpWorkspaces() {
