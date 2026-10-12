@@ -1265,6 +1265,106 @@ describe('runLivenessAlarmTick — EI-19375157952766991: fresh re-verify before 
   });
 });
 
+describe('runLivenessAlarmTick — EI-25693557603206081: fresh git-sync recheck before alarm reconciliation', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  const now = 100 * 60_000;
+  const snapshotAt = now - 30_000;
+  const snapshot = (data: Record<string, unknown>) =>
+    mkHealth({ evaluatedAt: snapshotAt, panels: { deploy: { data } } });
+  const makeBaseDeps = () => ({
+    readLast: () => snapshot({
+      gitSyncMaxMissedIntervals: 4,
+      gitSyncMissedIntervalsInstallSlug: 'papercusp',
+      gitSyncMissedIntervalsByInstall: [{ installSlug: 'papercusp', missedIntervals: 4 }],
+    }),
+    computeHealth: async () => snapshot({
+      gitSyncMaxMissedIntervals: 4,
+      gitSyncMissedIntervalsInstallSlug: 'papercusp',
+      gitSyncMissedIntervalsByInstall: [{ installSlug: 'papercusp', missedIntervals: 4 }],
+    }),
+    listOpen: async () => [] as EscalationRecord[],
+    readAutoloopFireRows: async () => [],
+    readBeeCapacity: async () => ({ dispatchBudget: null, restartRecovering: false }),
+    now: () => now,
+    escalate: vi.fn(async () => {}),
+  });
+
+  it('uses the current candidate count instead of the cached count', async () => {
+    const deps = makeBaseDeps();
+    const readFreshGitSyncMissedIntervalsByInstall = vi.fn(async () => [
+      { installSlug: 'papercusp', missedIntervals: 7 },
+    ]);
+    const result = await runLivenessAlarmTick('ws', {
+      ...deps,
+      readFreshGitSyncMissedIntervalsByInstall,
+    });
+
+    expect(readFreshGitSyncMissedIntervalsByInstall).toHaveBeenCalledWith('ws', now);
+    expect(result.fired.map((signal) => signal.key)).toEqual(['git-sync-missed-intervals:papercusp']);
+    expect(result.fired[0].summary).toContain('missed 7 consecutive scheduler intervals');
+    expect(result.fired[0].summary).not.toContain('missed 4 consecutive scheduler intervals');
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringContaining('missed 7 consecutive scheduler intervals'),
+    }));
+  });
+
+  it('suppresses a cached candidate when the live read has no current candidates', async () => {
+    const deps = makeBaseDeps();
+    const result = await runLivenessAlarmTick('ws', {
+      ...deps,
+      readFreshGitSyncMissedIntervalsByInstall: async () => [],
+    });
+
+    expect(result.fired).toEqual([]);
+    expect(result.signals.map((signal) => signal.key)).not.toContain('git-sync-missed-intervals:papercusp');
+    expect(deps.escalate).not.toHaveBeenCalled();
+  });
+
+  it('fails open on a failed live read and discloses the snapshot time', async () => {
+    const deps = makeBaseDeps();
+    const result = await runLivenessAlarmTick('ws', {
+      ...deps,
+      readFreshGitSyncMissedIntervalsByInstall: async () => null,
+    });
+
+    expect(result.fired.map((signal) => signal.key)).toEqual(['git-sync-missed-intervals:papercusp']);
+    expect(result.fired[0].summary).toContain('Fire-time git-sync recheck was unavailable');
+    expect(result.fired[0].summary).toContain(new Date(snapshotAt).toISOString());
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringContaining('current candidate and count are unknown'),
+    }));
+  });
+
+  it('does not resolve an open starvation alert when the live recovery read fails', async () => {
+    const healthySnapshot = snapshot({
+      gitSyncMaxMissedIntervals: 0,
+      gitSyncMissedIntervalsByInstall: [],
+      gitSyncMissedIntervalsUnreadable: false,
+    });
+    const openRec = {
+      msg_id: 'git-sync-open',
+      severity: 'blocker',
+      summary: '[infra-liveness] git-sync on papercusp missed 4 intervals',
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: 'git-sync-missed-intervals:papercusp',
+    } as unknown as EscalationRecord;
+    const resolve = vi.fn(async () => undefined);
+    const deps = makeBaseDeps();
+    const result = await runLivenessAlarmTick('ws', {
+      ...deps,
+      readLast: () => healthySnapshot,
+      computeHealth: async () => healthySnapshot,
+      listOpen: async () => [openRec],
+      resolve,
+      readFreshGitSyncMissedIntervalsByInstall: async () => null,
+    });
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result.resolved).toEqual([]);
+  });
+});
+
 describe('runLivenessAlarmTick — EI-9939 flap-episode suppression', () => {
   beforeEach(() => _resetLivenessAlarmDebounce());
 
