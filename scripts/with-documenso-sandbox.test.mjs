@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, waitForSandboxPostgres } from './with-documenso-sandbox.mjs';
 
 test('sandbox refuses mutable image tags before any service allocation', () => {
   assert.throws(() => parseSandboxArgs(['--image=documenso/documenso:latest', '--', 'node', 'journey.mjs']), /pinned/);
@@ -48,6 +48,62 @@ test('allocation errors redact injected credentials', async () => {
     spawnChild: () => spawn(process.execPath, ['-e', 'process.stderr.write(process.env.PASSWORD);process.exitCode=7'],
       { env: { ...process.env, PASSWORD: NEVER_EMIT_MARKER } }),
   }), error => error.message.includes('[redacted]') && !error.message.includes(NEVER_EMIT_MARKER));
+});
+
+test('database startup failure retains state, readiness and sanitized logs before cleanup', async () => {
+  const secret = 'never-emit-me', calls = [];
+  await assert.rejects(waitForSandboxPostgres('owned-pg', {
+    secrets: [secret], delay: async () => assert.fail('an exited container cannot become ready'),
+    run: args => {
+      calls.push(args[0]);
+      if (args[0] === 'exec') return { status: 1, stderr: 'container is not running' };
+      if (args[0] === 'logs') return { status: 0, stderr: 'initdb: permission denied; password=' + secret };
+      return { status: 0, stdout: args[2] === '{{.State.Status}}' ? 'exited\n' :
+        JSON.stringify({ Status: 'exited', ExitCode: 1, Error: '', OOMKilled: false }) };
+    },
+  }), error => {
+    assert.match(error.message, /container is not running/);
+    assert.match(error.message, /permission denied/);
+    assert.match(error.message, /exitCode.*1/);
+    assert.match(error.message, /redacted/);
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+  assert.deepEqual(calls, ['exec', 'inspect', 'inspect', 'logs']);
+});
+
+test('database readiness waits for the final TCP server while the temporary Unix server accepts', async () => {
+  let tcpProbes = 0, delays = 0;
+  await waitForSandboxPostgres('owned-pg', {
+    delay: async () => { delays++; },
+    run: args => {
+      if (args[0] !== 'exec') return { status: 0, stdout: 'running' };
+      // A socket-only initialization server would immediately satisfy the old
+      // check. The final server begins accepting TCP on the second probe.
+      if (!args.includes('-h')) return { status: 0, stdout: 'socket accepting connections' };
+      assert.deepEqual(args, ['exec', 'owned-pg', 'pg_isready', '-h', '127.0.0.1', '-U', 'documenso', '-d', 'documenso']);
+      return { status: ++tcpProbes === 2 ? 0 : 2, stdout: '127.0.0.1:5432 - no response' };
+    },
+  });
+  assert.equal(tcpProbes, 2);
+  assert.equal(delays, 1);
+});
+
+test('running database readiness retries converge and exhaustion retains the final probe', async () => {
+  let probes = 0, delays = 0;
+  const run = args => args[0] === 'exec' ? { status: ++probes === 3 ? 0 : 1, stdout: 'rejecting connections' } :
+    { status: 0, stdout: 'running' };
+  await waitForSandboxPostgres('owned-pg', { run, delay: async () => { delays++; } });
+  assert.equal(probes, 3);
+  assert.equal(delays, 2);
+  probes = 0;
+  await assert.rejects(waitForSandboxPostgres('owned-pg', { run, attempts: 2, delay: async () => {} }),
+    /rejecting connections/);
+  assert.equal(probes, 2);
+});
+
+test('stopping a sandbox cancels database readiness without another Docker operation', async () => {
+  await waitForSandboxPostgres('owned-pg', { isStopped: () => true, run: () => assert.fail('already stopping') });
 });
 
 test('real provider starts with a private database and cleans every owned service after child failure',
