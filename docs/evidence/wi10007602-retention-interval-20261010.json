@@ -3659,5 +3659,388 @@
       "Compared with12:41 current-store pins, two pins changed v1-08e48 to v1-36f6, one older checkout pin disappeared, and three older generations are absent. Their authorized lifecycle and full protected-data preservation are not established by these metadata endpoints.",
       "The final custody read may seed the next comparison under native PID2728471; qualify its actual registered retention receipt and current capacity at a later endpoint rather than repeating no-delta samples."
     ]
+  },
+  "native20261012LateWindow": {
+    "schemaVersion": 1,
+    "verdict": "OPEN/UNKNOWN: current floors and registered completions pass; native PID/script and two protected pins changed, so this is not a qualified same-generation custody interval.",
+    "recordedAfter": "2026-10-12T20:32:40.332Z",
+    "previousArtifactSha256": "4abfb3f27ab43e84f1727a3824679ff008ec79b521e5bc0272ad8e837d2f7bc5",
+    "baseline": {
+      "artifactRef": "native20261012Window.finalNamedStoreCustody",
+      "taskId": "0mv5fv67j1wfuoqzosp",
+      "logPath": ".papercusp/scratch/bash-07bb8e3b-76e.log",
+      "logSha256": "ab777fc75ea2197f783f1054bd8402fdf77edbc8c6bc26792dd810e53883bbd2",
+      "at": "2026-10-12T16:00:42.323006+00:00",
+      "nativePid": 2728471,
+      "scriptSha256": "4d0b7312825e11f399bb53e86e350493f4925dde0dab134c10dddb243db0b2dd"
+    },
+    "capacity": {
+      "taskId": "0mv5pkr9310abty3oh2",
+      "logPath": ".papercusp/scratch/bash-1a6c19c3-c72.log",
+      "logSha256": "b95113e3ef9815e2fa385a23685c282d29ef38c27f63b8987d6ea2f43da24656",
+      "receipt": {
+        "at": "2026-10-12T20:32:40.332Z",
+        "unit": "papercusp-bg-host.service",
+        "manager": "user",
+        "nativePid": 1936094,
+        "policy": {
+          "freePctMin": 0.1,
+          "freeBytesMin": 107374182400,
+          "freeInodesPctMin": 0.05,
+          "criticalFreePctMin": 0.02,
+          "criticalFreeBytesMin": 2147483648,
+          "criticalFreeBytesCap": 68719476736
+        },
+        "snapshots": [
+          {
+            "path": "/",
+            "device": "66307",
+            "key": "dev-66307",
+            "totalBytes": 2013991550976,
+            "availableBytes": 137623486464,
+            "reservedBytes": 0,
+            "usableBytes": 137623486464,
+            "requiredBytes": 40279831019.520004,
+            "byteFloorMet": true,
+            "totalInodes": 124960768,
+            "freeInodes": 105012320,
+            "inodeFraction": 0.8403623127540317,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/mnt/data",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 495332642816,
+            "reservedBytes": 82678120448,
+            "usableBytes": 412654522368,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 755672939,
+            "inodeFraction": 0.9670724358867778,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/tmp/pcv",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 495332524032,
+            "reservedBytes": 82678120448,
+            "usableBytes": 412654403584,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 755672930,
+            "inodeFraction": 0.967072424369028,
+            "inodeFloorMet": true
+          }
+        ],
+        "scope": "One endpoint using current policy helper with native bg-host env after alarm recovery; no producer census, cleanup, custody or sustained-window claim."
+      }
+    },
+    "custody": {
+      "taskId": "0mv5pkr78c840c510ej",
+      "logPath": ".papercusp/scratch/bash-8e6aba1d-a8f.log",
+      "logSha256": "2caf0c1814df3f34d54b9c00664f7c71cde995c32067ad7f4fcf052194c4ebc2",
+      "at": "2026-10-12T20:32:32.424181+00:00",
+      "nativePid": 1936094,
+      "afterNativePid": 1936094,
+      "scriptSha256": "800d162497596aef95c4b3b9ae99647ef651e87d9d8eb47bc02438746059c37a",
+      "runtimeStableDuringRead": true,
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "device": 66304,
+          "generationCount": 12,
+          "pinCount": 14,
+          "currentPinTargetsPresent": true,
+          "errors": [],
+          "leases": [],
+          "quarantines": [],
+          "populationNamesStableDuringRead": true,
+          "publishLockPresent": false
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "device": 66304,
+          "generationCount": 2,
+          "pinCount": 4,
+          "currentPinTargetsPresent": true,
+          "errors": [],
+          "leases": [],
+          "quarantines": [],
+          "populationNamesStableDuringRead": true,
+          "publishLockPresent": false
+        }
+      ],
+      "rawReceiptRef": ".papercusp/scratch/bash-8e6aba1d-a8f.log"
+    },
+    "comparison": {
+      "sampledSpanMs": 16310101,
+      "sameNativePid": false,
+      "sameScriptSha256": false,
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "beforePinCount": 14,
+          "afterPinCount": 14,
+          "missingPins": [],
+          "changedPins": [
+            {
+              "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+              "fields": [
+                "identity"
+              ],
+              "beforeIdentity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
+              "afterIdentity": "v1-7193ed2b9950f32a30a85f213dca483ddf2f148a962b59e25591eff991c824df"
+            },
+            {
+              "name": "ref-781592e23b5e3691923d76db1200185fb72b5a8172af02bb78f6b2d9f8480310",
+              "fields": [
+                "identity"
+              ],
+              "beforeIdentity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
+              "afterIdentity": "v1-7193ed2b9950f32a30a85f213dca483ddf2f148a962b59e25591eff991c824df"
+            }
+          ],
+          "protectedGenerationChanges": [
+            {
+              "identity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
+              "kind": "missing-generation"
+            }
+          ],
+          "storeIdentityStable": true
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "beforePinCount": 4,
+          "afterPinCount": 4,
+          "missingPins": [],
+          "changedPins": [],
+          "protectedGenerationChanges": [],
+          "storeIdentityStable": true
+        }
+      ]
+    },
+    "registeredSteps": {
+      "source": "dbos.operation_outputs exact workflow_uuid/function_name read; output json receipt",
+      "rows": [
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T16:50:00.000Z",
+          "function_id": 2,
+          "function_name": "dependency-generation-retention",
+          "started_at_epoch_ms": "1791823850319",
+          "completed_at_epoch_ms": "1791823879850",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ]
+        },
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T17:50:00.000Z",
+          "function_id": 2,
+          "function_name": "dependency-generation-retention",
+          "started_at_epoch_ms": "1791827418250",
+          "completed_at_epoch_ms": "1791827426702",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ]
+        },
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T18:50:00.000Z",
+          "function_id": 2,
+          "function_name": "dependency-generation-retention",
+          "started_at_epoch_ms": "1791831133876",
+          "completed_at_epoch_ms": "1791831253016",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "[dependency-generation] deleted prune quarantine /mnt/data/papercusp-dependency-generations/.prune-v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1-1791831152-2524232\n",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ]
+        },
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T19:50:00.000Z",
+          "function_id": 2,
+          "function_name": "dependency-generation-retention",
+          "started_at_epoch_ms": "1791834610967",
+          "completed_at_epoch_ms": "1791834619902",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ]
+        }
+      ]
+    },
+    "assessor": {
+      "executed": false,
+      "reason": "Runtime/script and baseline-pin continuity differ; baseline metadata and byte snapshots are non-atomic, so do not splice them into the committed assessor endpoint contract or assert a stronger result."
+    },
+    "coverage": {
+      "population": [
+        "current root/data/tmp byte floor after live reservations",
+        "current inode floors",
+        "four exact registered dependency-retention completion receipts",
+        "current named-store pin target presence",
+        "same runtime and script across retained span",
+        "unchanged baseline protected-pin custody",
+        "continuous headroom between samples",
+        "candidate-specific demand",
+        "recorder and native journal recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "checked": [
+        "current root/data/tmp byte floor after live reservations",
+        "current inode floors",
+        "four exact registered dependency-retention completion receipts",
+        "current named-store pin target presence"
+      ],
+      "notChecked": [
+        "same runtime and script across retained span",
+        "unchanged baseline protected-pin custody",
+        "continuous headroom between samples",
+        "candidate-specific demand",
+        "recorder and native journal recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "notApplicable": [],
+      "residue": [
+        "WI-10007602: full R5 and final acceptance remain open."
+      ]
+    },
+    "scope": [
+      "One delayed endpoint and two named-store metadata populations; no cleanup, broad producer census or exclusive reclaim claim.",
+      "Raw hashed private receipts preserve machine custody identity; displayed home/host strings remain normalized.",
+      "The18:50 registered receipt names deletion of the old36f6 quarantine; this is not evidence of unauthorized loss or full payload preservation.",
+      "Current metadata can seed a later comparison under PID1936094 and script800d1624; a subsequent qualified receipt is still required."
+    ]
   }
 }
