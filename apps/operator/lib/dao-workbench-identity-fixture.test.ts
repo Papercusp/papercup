@@ -103,30 +103,35 @@ describe('native DAO viewport launch contract', () => {
   function verifier(exitCode = 0, importsExitCode = 0) {
     const dir = mkdtempSync(join(tmpdir(), 'dao-native-launch-'));
     const script = join(dir, 'verifier.sh'), log = join(dir, 'boots.log');
-    const imports = join(dir, 'imports.log');
+    const imports = join(dir, 'imports.log'), scope = join(dir, 'scope.log');
     const dependencyDonor = join(dir, 'dependency-donor');
     mkdirSync(join(dependencyDonor, 'node_modules', 'fixture'), { recursive: true });
     writeFileSync(join(dependencyDonor, 'node_modules', 'fixture', 'package.json'), '{"name":"fixture","version":"1.0.0"}');
     // This unit measures shell ordering and viewport arguments. The real module
-    // graph is preflighted by the maintained native journey; running that graph
+    // graph and real-PG scope are preflighted by the maintained native journey; running that graph
     // in every stubbed launch made this unit expire before its first boot.
     // Intercept only the exact import-check command; all other Node calls run.
     writeFileSync(join(dir, 'node'), '#!/usr/bin/env bash\nset -eu\n'
       + 'if [ "$#" -eq 4 ] && [ "$1" = --import ] && [ "$2" = tsx ] && [ "$3" = "$DAO_NATIVE_IMPORT_ENTRY" ] && [ "$4" = --check-imports ]; then\n'
       + '  printf "%s|%s\\n" "$3" "$4" >> "$DAO_NATIVE_IMPORT_LOG"\n  exit ' + importsExitCode + '\nfi\n'
       + 'exec "$DAO_NATIVE_REAL_NODE" "$@"\n', { mode: 0o700 });
+    writeFileSync(join(dir, 'npm'), '#!/usr/bin/env bash\nset -eu\n'
+      + 'if [ "$#" -ne 4 ] || [ "$1" != run ] || [ "$2" != test:file ] || [ "$3" != -- ] || [ "$4" != packages/operator-core/lib/dao-workbench-scope.integration.test.ts ]; then exit 91; fi\n'
+      + 'printf "%s\\n" "$*" >> "$DAO_NATIVE_SCOPE_LOG"\n', { mode: 0o700 });
     writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" "$PAPERCUSP_TEST_RUN_WORKSPACE" "$PAPERCUSP_TEST_RUN_HARNESS" "$PAPERCUSP_REPO_DIR" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
     cleanup = () => rmSync(dir, { recursive: true, force: true });
-    return { log, imports, dependencyDonor, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+    return { log, imports, scope, dependencyDonor, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
       PAPERCUSP_REPO_DIR: dependencyDonor,
       PATH: dir + ':' + process.env.PATH, DAO_NATIVE_REAL_NODE: process.execPath,
       DAO_NATIVE_IMPORT_ENTRY: join(root, 'scripts/tauri-surface-verify-dao-workbench.mts'), DAO_NATIVE_IMPORT_LOG: imports,
+      DAO_NATIVE_SCOPE_LOG: scope,
       DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT: join(dir, 'evidence'),
       PAPERCUSP_TEST_RUN_WORKSPACE: 'dao-native-ledger-fixture', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' } };
   }
   it('boots separate isolated desktop and narrow windows through the maintained verifier', async () => {
     const fixture = verifier();
     await launch(fixture.env);
+    expect(readFileSync(fixture.scope, 'utf8').trim()).toBe('run test:file -- packages/operator-core/lib/dao-workbench-scope.integration.test.ts');
     expect(readFileSync(fixture.imports, 'utf8').trim()).toBe(fixture.env.DAO_NATIVE_IMPORT_ENTRY + '|--check-imports');
     const boots = readFileSync(fixture.log, 'utf8').trim().split('\n');
     expect(boots).toHaveLength(2);
