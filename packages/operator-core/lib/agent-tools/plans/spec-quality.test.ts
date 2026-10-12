@@ -572,6 +572,34 @@ describe('evaluatePlanSpecQuality', () => {
     },
   );
 
+  it.each(['iPhone', 'iPad', 'iPod', 'iMac'])(
+    'accepts the public device product name %s in an observable contract',
+    (device) => {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercusp',
+        planItemIds: ['P-001'],
+        clauses: [clause({ behavior: `The ${device} app shows a refusal message.` })],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    },
+  );
+
+  it('still rejects implementation symbols after public device product names', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'On the iPhone, runSyncBatch evaluates the batch.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatch"');
+  });
+
   it('still rejects implementation symbols after public platform names', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
