@@ -3021,6 +3021,21 @@ for _seg in re.split(r'[;&|\n]', _scannable()):
         if _next == _es:
             break
         _es = _next
+    # WI-6554700010008482: a raw host PostgreSQL restart disconnects every
+    # PgBouncer backend and can abort an active green-checkpoint run. Keep this
+    # unconditional: the database is shared across harnesses, and a Bash call
+    # carries no maintenance authorization to verify.
+    if re.match(
+        r'systemctl\b(?:\s+--system)?\s+restart\s+postgresql\S*(?:\s|$)',
+        _es,
+        re.IGNORECASE,
+    ):
+        deny(
+            'host PostgreSQL restart guard (WI-6554700010008482): direct '
+            '`systemctl restart postgresql*` disconnects every shared database '
+            'client and can abort active gate runs. Use an authorized managed '
+            'maintenance path; do not restart host PostgreSQL from Bash.'
+        )
     if re.match(r'systemctl\b(?:\s+--user)?\s+(?:start\s+exit\.target|exit)\b(?:\s|$)', _es):
         deny(_EXIT_GUARD_DENY.format(op='systemctl --user exit'))
     if re.match(r'systemctl\b(?:\s+--user)?\s+(?:halt|poweroff)\b(?:\s|$)', _es):

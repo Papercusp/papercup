@@ -1317,6 +1317,30 @@ describe('wrapped/quoted command evasion (EI-19294800751120438)', () => {
   });
 });
 
+describe('host PostgreSQL restart guard (WI-6554700010008482)', () => {
+  it.each([
+    ['the incident command', 'systemctl restart postgresql@18-main.service'],
+    ['a sudo-prefixed restart', 'sudo systemctl restart postgresql@18-main.service'],
+    ['an explicit system-manager restart', 'systemctl --system restart postgresql.service'],
+    ['the wildcard form', 'systemctl restart postgresql*'],
+    ['a nested shell command', 'bash -c "systemctl restart postgresql@18-main.service"'],
+    ['an env-wrapped command', 'env FOO=bar systemctl restart postgresql@18-main.service'],
+  ])('denies %s without requiring an agent marker', (_label, command) => {
+    const reason = denyReason(runGate(bashCmd(command)));
+    expect(reason).toContain('host PostgreSQL restart guard');
+    expect(reason).toContain('WI-6554700010008482');
+  });
+
+  it.each([
+    ['a user service restart', 'systemctl --user restart papercup-staging-api.service'],
+    ['a different host service restart', 'systemctl restart redis.service'],
+    ['a PostgreSQL status read', 'systemctl status postgresql@18-main.service'],
+    ['quoted prose', 'echo "systemctl restart postgresql@18-main.service"'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
 /**
  * EI-13135 — systemd user-manager exit/kill guard.
  *
