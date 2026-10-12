@@ -858,9 +858,13 @@ describe('repo-backed server measurement', () => {
       git('commit', '-q', '-m', 'full fixture corpus');
       const committed = await measureRepoFilesEvidenceDetailedAtCommit(committedRoot, recipe, git('rev-parse', 'HEAD'));
       expect(committed.fixtureFingerprint).toBe(first.fixtureFingerprint);
-      expect(committed.files.filter(file => file.dimension === 'fixture'))
+      expect(committed.files.filter(file => file.dimension === 'fixture')
+        .map(({ path, sha256, dimension }) => ({ path, sha256, dimension })))
         .toEqual(first.pin.files.filter(file => file.dimension === 'fixture')
-          .map(({ path, sha256, gitBlob, dimension }) => ({ path, sha256, gitBlob, dimension })));
+          .map(({ path, sha256, dimension }) => ({ path, sha256, dimension })));
+      for (const file of committed.files.filter(file => file.dimension === 'fixture')) {
+        expect(file.gitBlob).toBe(git('hash-object', file.path));
+      }
     } finally { await rm(committedRoot, { recursive: true, force: true }); }
     // Fixture admission must not widen ordinary product-source admission.
     await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, {
