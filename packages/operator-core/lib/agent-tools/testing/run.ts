@@ -1791,7 +1791,7 @@ async function readFailureDetails(path: string, root: string): Promise<ReturnTyp
  * closing or flushing its report. Prefer that completed evidence over a false
  * timeout, but recover only when the marker and the structured report agree.
  */
-async function recoverCompletedRunAfterBudget(opts: {
+export async function recoverCompletedRunAfterBudget(opts: {
   output: string;
   dir: string;
   root: string;

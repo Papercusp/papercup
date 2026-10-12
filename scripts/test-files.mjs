@@ -3109,8 +3109,10 @@ export async function main(
       });
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
+      let nodeCounts = null;
       if (nodeLedger) {
-        const ledgerOutcome = await nodeLedger.record();
+        const ledgerOutcome = await nodeLedger.record({ testNamePattern: nameFilter?.pattern ?? null });
+        nodeCounts = ledgerOutcome.counts ?? null;
         console.log(`TEST_FILE_LEDGER runner=node:test rows=${ledgerOutcome.recorded}${ledgerOutcome.reason ? ` reason=${JSON.stringify(ledgerOutcome.reason)}` : ''}`);
         // Same TEST_FILE_ASSERTION_FAILURE contract as the Vitest route: mutation-probe scores a
         // run CAUGHT only on measured assertion failures (EI-24836213046334894).
@@ -3128,6 +3130,10 @@ export async function main(
       const groupFailed = result.governedAdmissionError
         ? false
         : Boolean(result.error) || result.status !== 0;
+      if (nameFilter && !groupFailed && !result.governedAdmissionError && nodeCounts === null) {
+        console.error(`TEST_FILE_NAME_FILTER_UNVERIFIED runner=node:test pattern=${JSON.stringify(nameFilter.pattern)}; no collector case counts, so this run is NOT MEASURED`);
+        return TEST_FILE_EXIT_NOT_MEASURED;
+      }
       if (groupFailed) {
         console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} runner=node:test executed=${result.error ? 0 : exact.length} status=failed`);
       }
@@ -3139,8 +3145,8 @@ export async function main(
         failed: groupFailed,
         launchError: Boolean(result.error),
         finalizationError: Boolean(result.governedFinalizationError),
-        testsExecuted: nameFilter ? testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`) : undefined,
-        testsSkipped: testsSkippedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`),
+        testsExecuted: nameFilter ? nodeCounts?.executed ?? null : undefined,
+        testsSkipped: nodeCounts?.skipped ?? testsSkippedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`),
         ...(result.governedAdmissionError
           ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
           : {}),

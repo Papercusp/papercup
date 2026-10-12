@@ -53,6 +53,7 @@ import {
   groupRoutes,
   isTestFilePath,
   listedFiles,
+  loadNodeTestLedger,
   main,
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
@@ -108,28 +109,36 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
-  it('runs only the selected Node case through the common router selector', () => {
+  it('runs only the selected Node case through the common router selector', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'node-router-selector-'));
     try {
       const file = join(dir, 'selector.test.mjs');
       const unwanted = join(dir, 'unwanted');
+      const { beginNodeTestLedger } = await loadNodeTestLedger();
+      const startLedger = () => beginNodeTestLedger({ repoRoot: dir,
+        readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
+        writeRows: async () => {} });
       writeFileSync(file, `import { test } from 'node:test';
         import { writeFileSync } from 'node:fs';
         test('selected (case)', () => {});
         test('unrelated case', () => { writeFileSync(${JSON.stringify(unwanted)}, 'ran'); throw new Error('must not run'); });`);
+      const selectedLedger = await startLedger();
       const args = buildNodeTestArgs([file], [
         '--reporter=json', '--outputFile', join(dir, 'vitest.json'),
         '-t', '^selected \\(case\\)$',
-      ]);
+      ], { reporterArgs: selectedLedger.reporterArgs });
       const run = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 10_000 });
       expect(run.status, run.stderr || run.stdout).toBe(0);
       expect(existsSync(unwanted)).toBe(false);
       expect(testsExecutedFrom(run.stdout)).toBe(1);
+      expect(await selectedLedger.record()).toMatchObject({ counts: { executed: 1 } });
 
-      const absent = spawnSync(process.execPath, buildNodeTestArgs([file], ['--testNamePattern=^absent$']),
+      const absentLedger = await startLedger();
+      const absent = spawnSync(process.execPath, buildNodeTestArgs([file], ['--testNamePattern=^absent$'],
+        { reporterArgs: absentLedger.reporterArgs }),
         { encoding: 'utf8', timeout: 10_000 });
       expect(absent.status, absent.stderr || absent.stdout).toBe(0);
-      expect(testsExecutedFrom(absent.stdout)).toBe(0);
+      expect(await absentLedger.record()).toMatchObject({ recorded: 0, counts: { executed: 0 } });
       expect(existsSync(unwanted)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
