@@ -243,14 +243,14 @@ RAIL_MIGRATION_CASES.push({
     let enabled = true;
     let projects = [{ slug: 'one' }, { slug: 'two' }];
     const policy = await import('../sync/hyperbee/substrate-active-set-policy');
+    const facts = await import('../sync/hyperbee/substrate-active-set-facts');
     const producer = execute(original('packages/operator-core/lib/sync/hyperbee/boot-all.ts', 'function resolveActivationDeferrals(', 'function'), {
       require: (path: string) => {
         if (path === '@papercusp/flags/server') return { getFlag: async () => enabled };
         if (path === '@papercusp/flags') return { FLAGS: { LAZY_SUBSTRATE_BOOT: 'lazy' } };
         if (path.endsWith('harness-registry')) return { loadHarnessRegistry: async () => { if (fail) throw new Error('registry unavailable'); return { projects }; } };
         if (path.endsWith('substrate-active-set-policy')) return policy;
-        if (path.endsWith('substrate-active-set-facts')) return { gatherActivationFacts: async (entries: object[]) =>
-          entries.map((entry) => ({ ...entry, pendingOutboxRows: 0, lastPresenceMs: null, pinned: false })) };
+        if (path.endsWith('substrate-active-set-facts')) return facts;
         throw new Error(`unexpected dependency ${path}`);
       },
       observeFallback: (mechanism: string, row: typeof observations[number]) => {
@@ -258,7 +258,7 @@ RAIL_MIGRATION_CASES.push({
       },
     }, 'resolveActivationDeferrals') as (pairs: object[], opts: object) => Promise<Set<string>>;
     const pairs = [{ wsId: 'fixture', slug: 'one' }, { wsId: 'fixture', slug: 'two' }];
-    const opts = { activationFactDeps: {} };
+    const opts = { activationFactDeps: { pendingOutboxCounts: async () => new Map(), lastPresenceMs: async () => new Map() } };
     expect((await producer(pairs, opts)).size).toBe(0);
     fail = false; projects = [{ slug: 'one' }];
     expect([...await producer(pairs, opts)]).toEqual(['fixture::one']);
