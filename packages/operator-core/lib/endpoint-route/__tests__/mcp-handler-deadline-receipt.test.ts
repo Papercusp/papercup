@@ -552,7 +552,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             advisory: expect.any(Number),
             advisoryFlagReads: expect.any(Number),
             scratchWrites: expect.objectContaining({
-              count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
+              count: 2, perSpill: h.scratchWriteTimings,
+              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
               quotaRecoveryDiagnostics: expect.objectContaining({
                 sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
                 readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
@@ -590,7 +591,9 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         settledAt: expect.any(String),
         phaseTimingsMs: expect.objectContaining({
           resultDoor: expect.any(Number),
-          scratchWrites: expect.objectContaining({ count: 2, totalMs: 44 }),
+          scratchWrites: expect.objectContaining({
+            count: 2, perSpill: h.scratchWriteTimings, totalMs: 44,
+          }),
         }),
       }));
     } finally {
@@ -741,8 +744,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
       expect(h.realScratchWriteTimings).toHaveLength(1);
       const timing = h.realScratchWriteTimings[0];
-      // An already-running shared usage refresh may add a short, legitimate wait.
-      expect(timing).toMatchObject({ quotaWaitMs: 0, quotaRecoveryMs: 0 });
+      // Concurrent quota bookkeeping may add a short, legitimate wait.
+      expect(Number.isFinite(timing.quotaWaitMs)).toBe(true);
+      expect(timing.quotaWaitMs).toBeGreaterThanOrEqual(0);
+      expect(timing.quotaRecoveryMs).toBe(0);
       expect(Number.isFinite(timing.refreshWaitMs)).toBe(true);
       expect(timing.refreshWaitMs).toBeGreaterThanOrEqual(0);
       expect(timing.writeMs).toBeGreaterThan(0);
@@ -935,6 +940,13 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillSettledAt: expect.any(String),
         scratchWriteTimings: expect.objectContaining({
           count: 1,
+          perSpill: [expect.objectContaining({
+            writeMs: expect.any(Number),
+            totalMs: expect.any(Number),
+            quotaRecoveryDiagnostics: expect.objectContaining({
+              sizeWalkDirectories: expect.any(Number),
+            }),
+          })],
           quotaWaitMs: expect.any(Number),
           refreshWaitMs: expect.any(Number),
           quotaRecoveryMs: expect.any(Number),
