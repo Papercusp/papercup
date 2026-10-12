@@ -625,7 +625,7 @@ describe('affected-runner Cargo selection (EI-21851033142703518)', () => {
 });
 
 describe('cargo disk admission (EI-21047688909295463)', () => {
-  it('refuses before spawning Cargo when the configured absolute disk floor is unmet', () => {
+  it('refuses before spawning the Cargo test command when the configured absolute disk floor is unmet', () => {
     const root = mkdtempSync(join(tmpdir(), 'cargo-admission-refusal-'));
     const markerFile = join(root, 'cargo-spawned');
     const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
@@ -634,7 +634,7 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
       mkdirSync(join(root, 'target'), { recursive: true });
       writeFileSync(join(root, 'cargo'), [
         '#!/usr/bin/env node',
-        "require('node:fs').writeFileSync(process.env.CARGO_CLI_MARKER_FILE, 'spawned');",
+        "if (process.argv[2] === 'test') require('node:fs').writeFileSync(process.env.CARGO_CLI_MARKER_FILE, 'spawned');",
       ].join('\n'), { mode: 0o755 });
 
       const result = spawnSync(process.execPath, [

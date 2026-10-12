@@ -15,6 +15,7 @@ import {
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
 } from '../../work-items';
+import { stopTheLineExplanation } from '../../work-items-admission';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -196,9 +197,16 @@ function zeroClaimableLaneVerdict(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, count]) => `${name}=${count}`)
     .join(', ');
+  const stopTheLineBlocksEveryMatch =
+    typeof excluded.stopTheLine === 'number' &&
+    excluded.stopTheLine > 0 &&
+    excluded.stopTheLine === matchedByFilter;
+  const stopTheLineRemedy = stopTheLineBlocksEveryMatch
+    ? ` ${stopTheLineExplanation(lane.spec.harness)} Use work_items:claim to claim otherwise-ready rows by ID, then retry plans:start; plans:start accepts rows already held by this caller.`
+    : '';
   return {
     reason: 'floor-gated',
-    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).`,
+    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).${stopTheLineRemedy}`,
   };
 }
 

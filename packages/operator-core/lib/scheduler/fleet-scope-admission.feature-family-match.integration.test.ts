@@ -32,6 +32,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { STOP_THE_LINE_RED_HOURS } from '../work-items-admission';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import type { FleetScopeContext } from './fleet-scope-admission';
 
@@ -57,18 +58,20 @@ async function seedItem(
     takenBy?: string | null;
     sourcePlanSlug?: string | null;
     payload?: Record<string, unknown> | null;
+    conditionKey?: string | null;
+    createdAgoMs?: number;
     harness?: string;
     workspaceId?: string;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts, payload)
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts, payload, condition_key)
     VALUES (
       ${opts.harness ?? H}, ${id}, ${opts.itemKind ?? 'feature'}, ${`title ${id}`},
       ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${opts.workspaceId ?? WS},
-      ${opts.sourcePlanSlug ?? null}, 0, 0,
-      ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null}
+      ${opts.sourcePlanSlug ?? null}, ${opts.createdAgoMs == null ? 0 : Date.now() - opts.createdAgoMs}, 0,
+      ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null}, ${opts.conditionKey ?? null}
     )`;
 }
 
@@ -197,7 +200,29 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(breakdown).toEqual({
       matchedByFilter: 1,
       claimable: 0,
-      excluded: { claimFloors: 1, reservedPlanLane: 1 },
+      excluded: { claimFloors: 1, reservedPlanLane: 1, stopTheLine: 0 },
+    });
+  });
+
+  it('names a stop-the-line-only exclusion in the feature-family breakdown', async () => {
+    await seedItem('WI-red-streak', {
+      itemKind: 'bug',
+      conditionKey: `gate-red-streak:${H}`,
+      createdAgoMs: (STOP_THE_LINE_RED_HOURS + 1) * 3_600_000,
+    });
+    await seedItem('F-plan-one', { sourcePlanSlug: PLAN });
+    await seedItem('F-plan-two', { sourcePlanSlug: PLAN });
+
+    const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(breakdown).toEqual({
+      matchedByFilter: 2,
+      claimable: 0,
+      excluded: { claimFloors: 2, reservedPlanLane: 0, stopTheLine: 2 },
     });
   });
 
@@ -215,7 +240,7 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     ] };
     const featureBreakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
     expect(featureBreakdown).toEqual({
-      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0 },
+      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0, stopTheLine: 0 },
     });
     const opts = {
       featureBreakdown,

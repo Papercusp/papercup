@@ -1793,8 +1793,8 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
 export interface FeatureFamilyClaimExclusionBreakdown {
   matchedByFilter: number;
   claimable: number;
-  /** reservedPlanLane is an overlapping subset of the unique claimFloors total. */
-  excluded: { claimFloors: number; reservedPlanLane: number };
+  /** Each named floor is an overlapping subset of the unique claimFloors total. */
+  excluded: { claimFloors: number; reservedPlanLane: number; stopTheLine?: number };
 }
 
 type FeatureFamilyDiagnosticArgs = {
@@ -1821,6 +1821,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     if (!filterNode) return null;
     const { sql } = getOrgPg();
     const { claimFloorsWhereSql, reservedPlanLaneExclusionSql } = await import('../work-items');
+    const { stopTheLineExclusionSql } = await import('../work-items-admission');
     const { compileFilter } = await import('./get-next');
     // Keep the diagnostic's shared floors identical to getNextWorkItem's feature claim:
     // a fleet-stamped plan lane is admissible to its owning fleet, and a spec that
@@ -1844,6 +1845,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       claimSpecReferencesGoal,
     });
     const filter = compileFilter(sql, filterNode);
+    const stopTheLine = stopTheLineExclusionSql(sql, 'feature-consolidated');
     const states = [...(args.states ?? spec.states ?? ['open'])];
     const candidate = sql`
       harness_slug = ${args.harness}
@@ -1855,10 +1857,16 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       claimSpecReferencesFleet,
       claimSpecReferencesGoal,
     });
-    const rows = await sql<{ matched: number; claimable: number; reserved_plan_lane: number }[]>`
+    const rows = await sql<{
+      matched: number;
+      claimable: number;
+      reserved_plan_lane: number;
+      stop_the_line: number;
+    }[]>`
       SELECT count(*) FILTER (WHERE ${filter})::int AS matched,
              count(*) FILTER (WHERE ${floors} AND ${filter})::int AS claimable,
-             count(*) FILTER (WHERE ${filter} AND NOT (${reservationEligible}))::int AS reserved_plan_lane
+             count(*) FILTER (WHERE ${filter} AND NOT (${reservationEligible}))::int AS reserved_plan_lane,
+             count(*) FILTER (WHERE ${filter} AND NOT (${stopTheLine}))::int AS stop_the_line
         FROM harness_shared.harness_features_consolidated
        WHERE ${candidate}`;
     const matchedByFilter = rows[0]?.matched ?? 0;
@@ -1869,6 +1877,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       excluded: {
         claimFloors: Math.max(0, matchedByFilter - claimable),
         reservedPlanLane: rows[0]?.reserved_plan_lane ?? 0,
+        stopTheLine: rows[0]?.stop_the_line ?? 0,
       },
     };
   } catch {

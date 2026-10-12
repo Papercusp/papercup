@@ -240,7 +240,7 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
     admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITHOUT_CALLER');
     admissionMocks.reservedPlanLaneExclusionSql.mockReturnValue('RESERVATION_FLOOR');
     admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
-    admissionMocks.sql.mockResolvedValue([{ matched: 4, claimable: 1, reserved_plan_lane: 2 }]);
+    admissionMocks.sql.mockResolvedValue([{ matched: 4, claimable: 1, reserved_plan_lane: 2, stop_the_line: 0 }]);
 
     await expect(diagnoseFleetScopeFeatureFamilyExclusions({
       scope: populationScope,
@@ -250,7 +250,7 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
     })).resolves.toEqual({
       matchedByFilter: 4,
       claimable: 1,
-      excluded: { claimFloors: 3, reservedPlanLane: 2 },
+      excluded: { claimFloors: 3, reservedPlanLane: 2, stopTheLine: 0 },
     });
   });
 

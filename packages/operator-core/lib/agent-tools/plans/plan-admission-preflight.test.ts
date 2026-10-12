@@ -49,6 +49,7 @@ import {
   preflightExactPlanAdmission,
 } from './plan-admission-preflight';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
+import { stopTheLineExplanation } from '../../work-items-admission';
 
 const item = (id: string, storedStatus: PlanItem['storedStatus'] = 'todo', blockedBy: string[] = []): PlanItem => ({
   id,
@@ -312,6 +313,41 @@ describe('evaluateExactPlanAdmission', () => {
     expect(verdict.message).toContain('claimFloors=2');
     expect(verdict.message).toContain('reservedPlanLane=2');
     expect(verdict.message).not.toContain('diagnostics do not expose');
+  });
+
+  it('explains an all-match stop-the-line block and gives the by-ID plan-start route', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issueReachable: false,
+        feature: 0,
+        featureMatchedByFilter: 3,
+        featureExcluded: { claimFloors: 3, reservedPlanLane: 0, stopTheLine: 3 },
+      }),
+    });
+
+    expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain('stopTheLine=3');
+    expect(verdict.message).toContain(stopTheLineExplanation('papercusp'));
+    expect(verdict.message).toContain('work_items:claim');
+    expect(verdict.message).toContain('claim otherwise-ready rows by ID');
+    expect(verdict.message).toContain('plans:start accepts rows already held by this caller');
+
+    const partial = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issueReachable: false,
+        feature: 0,
+        featureMatchedByFilter: 3,
+        featureExcluded: { claimFloors: 3, reservedPlanLane: 0, stopTheLine: 2 },
+      }),
+    });
+    expect(partial.message).toContain('stopTheLine=2');
+    expect(partial.message).not.toContain(stopTheLineExplanation('papercusp'));
   });
 
   it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {
