@@ -2,10 +2,11 @@
  * plans:get — full parsed structure for one plan.
  *
  * Per agent-plan-tracking-2026-05-20.md §4.1.
- * Returns frontmatter, ## Now, items (with both storedStatus AND
- * effectiveStatus), decisions, and (mode=full) the prose body. Resolves
- * both docs/plans/ and docs/plans/archive/ — archived doesn't make a plan
- * unreachable.
+ * Plans are PG-canonical (`harness_plans`); this reader resolves plan slugs
+ * from that store and never looks up a filesystem path. Returns frontmatter,
+ * ## Now, items (with both storedStatus AND effectiveStatus), decisions, and
+ * (mode=full) the prose body. Use plans:export for an on-demand Markdown copy;
+ * an on-disk mirror is optional and may be absent.
  *
  * Payload diet (token-usage-reduction-audit-2026-06-09 P-008): plans:get was
  * the #3 tool-result payload fleet-wide (mean 13.9KB/call). `full` no longer
@@ -87,8 +88,9 @@ const PLANS_GET_SOFT_TTL_MS = 45_000;
 // progress" on a checkbox-style roadmap plan had no read path at all — plans:set-status
 // only flips the structured `- **P-NNN** \`status\`` line format, and plans:set-content
 // needs the current version/contentHash from plans:get for its CAS, so a bee blind to
-// this tool risked clobbering a peer's plan edit or hand-copying an untracked docs/plans
-// mirror that lags PG. Read-only (capability: plans:read) — never grants a write path.
+// this tool risked clobbering a peer's plan edit or hand-copying an optional,
+// untracked apps/operator/docs/plans mirror that lags PG. Read-only (capability:
+// plans:read) — never grants a write path.
 // The evidence-only gym judge also needs the plan itself to evaluate accepted specs;
 // keep that role on the explicit allowlist rather than broadening the SU role set.
 // `release-fixer` is on this allowlist because its runbook's attribution procedure
@@ -108,7 +110,7 @@ const argsSchema = z
       .string()
       .min(1)
       .optional()
-      .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
+      .describe('Plan slug as returned by plans:list or plans:search. Plans are resolved from the PG-canonical store, not from a filename.'),
     slugs: z
       .array(z.string().min(1))
       .min(1)
@@ -200,7 +202,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.',
+        'Also return the EXACT raw Markdown content stored for the plan as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole content through plans:set-content (whose CAS hashes those exact bytes), and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.',
       ),
     // EI-21913230259449717: a caller reached for the generic `include` (the
     // shape other read tools use for a boolean opt-in) instead of this tool's
