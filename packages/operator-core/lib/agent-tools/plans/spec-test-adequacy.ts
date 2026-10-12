@@ -1114,7 +1114,11 @@ function scorecardBindingEvidence(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rows: SpecEvidenceForAdequacy[],
 ): { ratings: typeof ratings; table: string } {
-  const entries = [...new Map(rows.map((row) => [bindingDescription(row), row])).entries()]
+  // One immutable binding can reach this presentation layer through multiple
+  // evidence projections. Their rendered descriptions may differ, but they must
+  // still share one B label in the scorecard.
+  const entries = uniqueBindingRows(rows)
+    .map((row) => [bindingDescription(row), row] as const)
     .sort(([a], [b]) => a.localeCompare(b));
   const references = entries.map(([description, row], index) => ({
     description,
