@@ -531,6 +531,39 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     ).toEqual([]);
   });
 
+  it('resolves a three-digit WI suffix to one held long id and leaves ambiguous aliases unresolved', () => {
+    const held = [
+      {
+        id: 'WI-6554700010008548',
+        title: 'Held item',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+      },
+    ];
+    const fullId = { kind: 'work-item' as const, id: 'WI-6554700010008548' };
+
+    // The short token used to resolve as the unrelated literal WI-548. The
+    // carry lookup now follows the unique held item, and a simultaneous full
+    // reference deduplicates to that same authoritative id.
+    expect(detectCarryNoteRefs('resume WI-548', held)).toEqual([fullId]);
+    expect(detectCarryNoteRefs('resume WI-548 (WI-6554700010008548)', held)).toEqual([fullId]);
+
+    // A real short id remains resolvable when no held long id claims its suffix.
+    expect(detectCarryNoteRefs('inspect WI-548', [])).toEqual([
+      { kind: 'work-item', id: 'WI-548' },
+    ]);
+
+    // If two live held rows share the suffix, do not choose either one or
+    // hydrate a potentially unrelated literal row into a false TERMINAL claim.
+    expect(
+      detectCarryNoteRefs('resume WI-548', [
+        ...held,
+        { ...held[0]!, id: 'WI-7777700010008548' },
+      ]),
+    ).toEqual([]);
+  });
+
   it('P-002: hydrates the ids the note cites via the injected seam and renders them under the note', async () => {
     const brief = await buildCarryBrief(
       'su-abc',

@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -371,6 +372,29 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     for (const [, options] of exec.mock.calls) {
       expect(options.env).toHaveProperty('DATABASE_URL', undefined);
     }
+  });
+
+  it('uses the native file router when distinct tooling and integration paths share a real Git repository', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'admission-same-repo-'));
+    const toolingRoot = join(root, 'served-build');
+    mkdirSync(toolingRoot);
+    execFileSync('git', ['init', '--quiet', root]);
+    const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
+    try {
+      expect(resolveCanonicalIntegrationRoot(toolingRoot)).toBe(root);
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: root, toolingRoot, exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['lib/red.test.ts'] })).toMatchObject({
+        ran: true, results: [{ path: 'lib/red.test.ts', status: 'pass' }],
+      });
+      expect(exec.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+        join(toolingRoot, 'apps/operator/bin/release/setup-release-checkout.sh'),
+        '--integration', root,
+      ]));
+      expect(exec.mock.calls[1]?.[0]).toEqual(['node', 'scripts/test-files.mjs', 'lib/red.test.ts']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('refuses a foreign app without a real registered test command before materialization', async () => {

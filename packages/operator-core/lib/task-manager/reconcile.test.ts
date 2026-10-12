@@ -572,6 +572,8 @@ describe('summarizeReconcile', () => {
  */
 describe('reconcile — console windows are accounted by the window, not the ledger', () => {
   const CONSOLE = `${OUR_SLICE}/papercusp-agent.slice/papercusp-agent-session.slice/papercup-console-gnome-terminal-665488-1786388175428.scope`;
+  const OWNED_VTE =
+    OUR_SLICE + '/papercusp-agent.slice/papercusp-agent-session.slice/vte-spawn-0e0e-4a4a.scope';
 
   it('files a papercup-console scope as consoleWindow, never as unaccounted', () => {
     const r = reconcile([], [proc({ pid: 1, cgroupPath: CONSOLE }), proc({ pid: 2, cgroupPath: CONSOLE })], {
@@ -597,6 +599,42 @@ describe('reconcile — console windows are accounted by the window, not the led
     expect(r.consoleWindow).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(1);
     expect(summarizeReconcile(r)).toMatchObject({ unaccounted: 1, unaccountedPids: 1, consoleWindow: 0 });
+  });
+
+  it('files a live owned VTE window as consoleWindow', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 6, cgroupPath: OWNED_VTE, terminalWindowAlive: true })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.consoleWindow).toHaveLength(1);
+    expect(r.consoleWindow[0]).toMatchObject({ cgroupPath: OWNED_VTE, pids: [6] });
+  });
+
+  it('files a closed owned VTE window as abandonedWindow', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 7, cgroupPath: OWNED_VTE, terminalWindowAlive: false })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.abandonedWindow).toHaveLength(1);
+    expect(r.abandonedWindow[0]).toMatchObject({ cgroupPath: OWNED_VTE, pids: [7] });
+  });
+
+  it('keeps an owned VTE window unaccounted when terminal liveness is unknown', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 8, cgroupPath: OWNED_VTE, terminalWindowAlive: null })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(1);
+    expect(r.consoleWindow).toHaveLength(0);
+    expect(r.abandonedWindow).toHaveLength(0);
   });
 
   it('leaves a genuine in-slice escape in unaccounted', () => {

@@ -1127,10 +1127,30 @@ export function detectCarryNoteRefs(
 ): HydratableRef[] {
   const refs: HydratableRef[] = [];
   const seen = new Set<string>();
+  // A cold note can abbreviate a long workspace WI id to its final three
+  // digits (for example WI-6554700010008548 → WI-548). Resolving that token
+  // literally can hydrate an unrelated old WI-548 and turn its terminal state
+  // into a false instruction to abandon the held item. Build aliases only from
+  // this session's already-loaded held rows; require one unique suffix match,
+  // and leave collisions unresolved rather than making a status claim.
+  const heldWorkItemSuffixes = new Map<string, Set<string>>();
+  for (const held of heldItems) {
+    const match = /^WI-(\d{12,})$/i.exec(held.id);
+    if (!match) continue;
+    const alias = `WI-${match[1]!.slice(-3)}`;
+    const ids = heldWorkItemSuffixes.get(alias) ?? new Set<string>();
+    ids.add(held.id.toUpperCase());
+    heldWorkItemSuffixes.set(alias, ids);
+  }
   for (const match of noteText.matchAll(CARRY_NOTE_REF)) {
     const token = match[0];
     if (/^(?:WI|EI)-/i.test(token)) {
-      const id = token.toUpperCase();
+      let id = token.toUpperCase();
+      if (/^WI-\d{1,3}$/i.test(id)) {
+        const suffixMatches = heldWorkItemSuffixes.get(id);
+        if (suffixMatches?.size === 1) id = [...suffixMatches][0]!;
+        else if (suffixMatches && suffixMatches.size > 1) continue;
+      }
       const key = `work-item:${id}`;
       if (!seen.has(key)) {
         seen.add(key);

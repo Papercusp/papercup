@@ -284,6 +284,13 @@ describe('loop:status return guidance matches the emitted loop record', () => {
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();
+  probeWakeReachabilityMock.mockReset();
+  probeWakeReachabilityMock.mockResolvedValue({
+    reachable: true,
+    channel: 'inject',
+    durableWhileAlive: true,
+    summary: 'ok',
+  });
   getLoopCarryNoteWithMetaMock.mockReset();
   getLoopCarryNoteWithMetaMock.mockResolvedValue({ note: null, updatedAtMs: null });
   listWakeAwaitsMock.mockReset();
@@ -325,6 +332,21 @@ describe('loop:status rewake verdict (P-013)', () => {
     getLoopStatusMock.mockResolvedValue({ ...armed, lastWakeStatus: 'delivered', lastWakeError: null });
     const out = await run();
     expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
+  it('does not promise a re-wake when the live owner route probe finds no delivery channel', async () => {
+    getLoopStatusMock.mockResolvedValue({ ...armed, lastWakeStatus: 'delivered', lastWakeError: null });
+    probeWakeReachabilityMock.mockResolvedValue({
+      reachable: false,
+      channel: 'none',
+      durableWhileAlive: false,
+      summary: 'no owner wake route',
+    });
+
+    const out = await run();
+
+    expect(out.reachability).toMatchObject({ reachable: false, channel: 'none' });
+    expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'wake-unreachable' });
   });
 
   it('uses the wake dispatch timestamp when a loop-fire turn completes before delivery settlement', async () => {
@@ -395,6 +417,7 @@ describe('loop:status rewake verdict (P-013)', () => {
     const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
     expect(returns).toContain('rewakeGuaranteed');
     expect(returns).toContain('last-fire-parked');
+    expect(returns).toContain('wake-unreachable');
     expect(returns).toContain('lastFailedFireLoopTurnCompletedAt');
   });
 });

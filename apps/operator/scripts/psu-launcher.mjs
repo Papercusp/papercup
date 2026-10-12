@@ -15449,20 +15449,22 @@ async function pollArchiveRematerializeStatus(
  * resume, false when there genuinely is not (the caller must then refuse to
  * launch rather than hand the agent an id that cannot resolve).
  *
- * Only claude/codex have an id-addressable on-disk transcript; omp resumes by
- * thread name and is passed through unchanged. Injectable `home`/`rematerialize`
+ * Tracked OMP rows have an id-addressable transcript too; raw OMP thread names
+ * remain unverifiable here. Injectable `home`/`rematerialize`
  * for tests; never throws.
  */
 export async function ensureResumeTranscriptPresent(
   source,
   { home = homedir(), rematerialize = tryRematerializeFromArchive } = {},
 ) {
-  if (!source || (source.agent !== "claude" && source.agent !== "codex"))
+  if (!source || !["claude", "codex", "omp"].includes(source.agent) ||
+      (source.agent === "omp" && source.id == null))
     return true;
   if (sessionHasTranscript(source, { home })) return true;
   const restored = await rematerialize(
-    source.sessionId || source.ompThreadId,
+    source.agent === "omp" ? source.ompThreadId || source.sessionId : source.sessionId || source.ompThreadId,
     source.agent,
+    { sourceSession: source, home },
   );
   if (restored?.pending) return restored;
   return Boolean(restored) && sessionHasTranscript(source, { home });
@@ -16066,10 +16068,13 @@ async function launchResolvedResume(source, args, { tracked }) {
 // linked OMP thread id, or Codex rollout UUID under a tracked CODEX_HOME. If
 // none match, fall back to an unmatched session by the agent's native store id.
 // Either way, cd to the recorded cwd and run the agent there.
-async function resumeFlow(args = {}) {
+export async function resumeFlow(
+  args = {},
+  { apiImpl = api, launchResolvedResumeImpl = launchResolvedResume } = {},
+) {
   const originalRouting = consumeOriginalCodexRouting();
   if (originalRouting) {
-    const read = await api(`/api/adv/sessions/resumable?id=${originalRouting.advSessionId}`);
+    const read = await apiImpl(`/api/adv/sessions/resumable?id=${originalRouting.advSessionId}`);
     const source = read?.sessions?.find((row) => row.id === originalRouting.advSessionId);
     if (!source) throw new Error("original Codex routing refused: original row missing");
     assertOriginalCodexRouting(source, originalRouting, { launchArgs: args });
@@ -16085,7 +16090,7 @@ async function resumeFlow(args = {}) {
       kickoff: resumeKickoffText(args), originalRouting });
     return;
   }
-  const data = await api("/api/adv/sessions/resumable");
+  const data = await apiImpl("/api/adv/sessions/resumable");
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
 
   // Direct resume by id — skip the picker.
@@ -16095,37 +16100,14 @@ async function resumeFlow(args = {}) {
     //    id (OMP), or discovered rollout UUID in the tracked CODEX_HOME
     //    (Codex). Resuming by any handle finds the tracked row with NO false
     //    "not started by psu" warning.
-    const tracked = await resolveDirectTrackedResumeSession(sessions, args.resumeId);
+    const tracked = await resolveDirectTrackedResumeSession(sessions, args.resumeId, { apiImpl });
     if (tracked) {
-      // A tracked row alone doesn't prove resumability — a launch that died
-      // (or was closed) before its first persisted message has NO transcript,
-      // and the raw `--resume` would fail "No conversation found". But an
-      // ENDED session's transcript may simply be archived (archive-at-death
-      // deletes it from disk ~15s after end) — restore it and retry before
-      // declaring it unresumable.
-      if (!sessionHasTranscript(tracked)) {
-        const restored = await tryRematerializeFromArchive(
-          tracked.sessionId || tracked.ompThreadId,
-          tracked.agent,
-          { sourceSession: tracked },
-        );
-        if (restored?.pending) {
-          console.error(
-            `psu: session #${tracked.id} archive restore is still in progress; the operator timed out while ` +
-              `writing its transcript. Retry psu --resume=${args.resumeId} in a few seconds.`,
-          );
-          process.exit(1);
-        }
-        if (!restored || !sessionHasTranscript(tracked)) {
-          console.error(
-            `psu: session #${tracked.id} (${tracked.agent}${tracked.sessionId ? ` ${tracked.sessionId}` : ""}) ` +
-              `has no persisted transcript — it died or was closed before its first message (and the session ` +
-              `archive holds no copy), so there is no conversation to resume. Pick a different session with \`psu --resume\`.`,
-          );
-          process.exit(1);
-        }
-      }
-      await launchResolvedResume(tracked, args, { tracked: true });
+      // Select the operation before checking native disk availability. A port
+      // reads its exact selected incarnation through the server inspector;
+      // the row's newest transcript is irrelevant and may be empty after a
+      // carry-respawn. Native resume/fork still verifies and restores its own
+      // transcript in launchResolvedResume immediately before launch.
+      await launchResolvedResumeImpl(tracked, args, { tracked: true });
       return;
     }
 
@@ -16192,7 +16174,7 @@ async function resumeFlow(args = {}) {
     if (untracked.psuTracked) {
       const recovery = await recoverOutOfWindowTrackedSession(untracked);
       if (recovery.tracked) {
-        await launchResolvedResume(recovery.tracked, args, { tracked: true });
+        await launchResolvedResumeImpl(recovery.tracked, args, { tracked: true });
         return;
       }
       recoveryReasons = recovery.reasons;
@@ -16242,7 +16224,7 @@ async function resumeFlow(args = {}) {
     // Account re-pin applies here too (a raw resume can be routed through the
     // gateway), but raw sessions remain same-backend: V1 ports require tracked
     // workspace/source identity and server-side authority checks.
-    await launchResolvedResume(untracked, args, { tracked: false });
+    await launchResolvedResumeImpl(untracked, args, { tracked: false });
     return;
   }
 
@@ -16329,7 +16311,7 @@ async function resumeFlow(args = {}) {
   if (!sessionHasTranscript(picked)) {
     await tryRematerializeFromArchive(picked.sessionId, picked.agent, { sourceSession: picked });
   }
-  await launchResolvedResume(picked, args, { tracked: true });
+  await launchResolvedResumeImpl(picked, args, { tracked: true });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old

@@ -39,7 +39,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { TASK_ROOT_SLICE, deriveUserManagerRoot } from './types';
-import { classifyScope, isTerminalWindowScope } from './scope-class';
+import { classifyScope, isTerminalWindowScope, TERMINAL_SLICE } from './scope-class';
 import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
 import type { ScannedProcess } from './reconcile';
 import { mapWithConcurrency } from '../gym/concurrency';
@@ -310,8 +310,21 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     const cached = windowAliveByScope.get(absDir);
     if (cached !== undefined) return cached;
 
-    // A window scope's parent IS the terminal app slice.
-    const sliceAbs = absDir.slice(0, absDir.lastIndexOf('/'));
+    // Most VTE scopes are direct children of the terminal app slice. Some
+    // shells are nested in a Papercusp session slice; probe those against the
+    // manager's canonical GNOME Terminal slice instead of their VTE parent.
+    const parentSliceAbs = absDir.slice(0, absDir.lastIndexOf('/'));
+    const segments = cgroupPath.split('/').filter(Boolean);
+    const parentIsTerminalSlice = segments[segments.length - 2] === TERMINAL_SLICE;
+    const sliceAbs = parentIsTerminalSlice
+      ? parentSliceAbs
+      : userManagerRoot
+        ? absCgroupDir(userManagerRoot + '/app.slice/' + TERMINAL_SLICE, cgroupRoot)
+        : null;
+    if (!sliceAbs || !fs.isDir(sliceAbs)) {
+      windowAliveByScope.set(absDir, null);
+      return null;
+    }
     let appPids = appPidsBySlice.get(sliceAbs);
     if (!appPids) {
       appPids = readTerminalAppPids(sliceAbs, fs);
@@ -346,8 +359,9 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     // at runtime; duplicating it in a component is how the two drift apart, and a
     // pane that classifies for itself is a pane that can quietly invent a coverage
     // hole (EI-19325095302441792).
+    const terminalWindowState = probeWindow(absDir, cgroupPath);
     const { scope, exemptReason } = classifyScope(cgroupPath, owned, {
-      terminalWindowAlive: probeWindow(absDir, cgroupPath),
+      terminalWindowAlive: terminalWindowState,
     });
     const facts = readProcFacts(pid, bootId, uptimeSec, scanNowMs, fs);
     processes.push({
@@ -359,6 +373,9 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
       owned,
       scope,
       exemptReason,
+      ...(owned && terminalWindowState !== undefined
+        ? { terminalWindowAlive: terminalWindowState }
+        : {}),
     });
   };
 

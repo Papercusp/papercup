@@ -59,6 +59,12 @@ const defaultCompactionLimitForSpec = vi.fn(
   (..._a: Parameters<typeof import('../../agent-config-constants').defaultCompactionLimitForSpec>) => 100,
 );
 const listActiveAwaits = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const probeWakeReachability = vi.fn(async (..._a: unknown[]) => ({
+  reachable: true,
+  channel: 'inject',
+  durableWhileAlive: true,
+  summary: 'ok',
+}));
 const getModes = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const selfCompactionAvailability = vi.fn(
   (..._a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>) => ({
@@ -224,6 +230,9 @@ vi.mock('../../events/await/store', async (importOriginal) => ({
   listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) => listVerifiedWaitTakeoversForSubscribers(...a),
   listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
 }));
+vi.mock('../../events/await/wake-reachability', () => ({
+  probeWakeReachability: (...a: unknown[]) => probeWakeReachability(...a),
+}));
 vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
   readFrozenRepairMarker,
@@ -286,6 +295,12 @@ beforeEach(() => {
   currentContextTokensForOwner.mockResolvedValue(null);
   defaultCompactionLimitForSpec.mockReturnValue(100);
   listActiveAwaits.mockResolvedValue([]);
+  probeWakeReachability.mockResolvedValue({
+    reachable: true,
+    channel: 'inject',
+    durableWhileAlive: true,
+    summary: 'ok',
+  });
   getModes.mockResolvedValue([]);
   selfCompactionAvailability.mockReturnValue({ available: false });
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
@@ -2174,6 +2189,51 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.continuation.guidance).toContain('an armed loop EXISTS');
     expect(b.continuation.guidance).toContain('maxFires bound is exhausted');
     expect(b.continuation.guidance).not.toContain('no armed loop,');
+  });
+
+  it('runtime wiring: an active loop does not promise a wake when the owner route is unreachable', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      active: true,
+      carry: 'cold',
+      armedAt: '2026-08-25T04:00:00.000Z',
+      firesSinceArm: 0,
+      intervalSec: 60,
+      maxDurationSec: null,
+      maxFires: null,
+      nextFireAt: null,
+      goal: 'continue only when the next wake has a route',
+    });
+    probeWakeReachability.mockResolvedValue({
+      reachable: false,
+      channel: 'none',
+      durableWhileAlive: false,
+      summary: 'no owner wake route',
+    });
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 95, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(95);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([]);
+    selfCompactionAvailability.mockReturnValue({ available: false });
+    readFleetWindDownLoopEndAuthorization.mockResolvedValue(false);
+
+    const b = body(await call({ next: 'settle only when another wake is real' }));
+
+    expect(probeWakeReachability).toHaveBeenCalledWith('su-caller');
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: false,
+      nextWakeFresh: null,
+      activeLoopRewakeBlockedReason: 'wake-unreachable',
+    });
+    expect(b.continuation.guidance).toContain('no delivery route for a fresh turn');
+    expect(b.continuation.guidance).toContain('restore an owner wake route');
   });
 
   it('runtime wiring: reports the standing inbox wake separately from a qualifying deliberate await', async () => {

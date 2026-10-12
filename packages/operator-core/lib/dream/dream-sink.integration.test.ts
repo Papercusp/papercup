@@ -15,6 +15,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
+import { verifyCapabilityPacket } from './capability-packets';
+import { capabilityReviewEvidenceHash, verifyCapabilityReviewAdmission } from './capability-review';
 import { IDEA_ORIGIN_PAYLOAD_KEY } from '../scout/ideation-origin';
 import {
   beginDreamRun,
@@ -255,6 +257,45 @@ describe('accepted dream sink (real PG — P-004)', () => {
       human_grade: 4,
       outcome: 'won',
     });
+  });
+
+  it('admits the maintained capability fixture and refuses an obsolete extraction recipe', async () => {
+    const f = await createDreamCapabilityFixture(WS, HARNESS);
+    try {
+      const packetInput = (packet: (typeof f.packets)[number]) => ({
+        rootPath: f.root,
+        scope: f.scope,
+        unit: f.manifest.units.find(unit => unit.id === packet.unit.id)!,
+        manifestRevision: f.manifest.revision,
+      });
+      for (const packet of f.packets)
+        await expect(verifyCapabilityPacket(packet, packetInput(packet))).resolves.toEqual({ fresh: true });
+      const admission = {
+        candidate: f.candidate,
+        selection: f.selection,
+        review: f.review,
+        rootPath: f.root,
+        manifest: f.manifest,
+        sources: f.sources,
+        dreamerModel: f.header.dreamerModel,
+      };
+      await expect(verifyCapabilityReviewAdmission(admission)).resolves.toEqual({ admitted: true });
+
+      // Hold source bytes, the reviewed candidate and prior art constant: only
+      // the extraction recipe changes, so refusal must come from freshness.
+      f.selection.a.packet.extraction.recipeVersion = 'scanned-anchors-and-radius-v2';
+      expect(capabilityReviewEvidenceHash(f.selection)).toBe(f.review.evidenceHash);
+      await expect(verifyCapabilityPacket(f.selection.a.packet, packetInput(f.selection.a.packet))).resolves.toEqual({
+        fresh: false,
+        reason: 'Packet scope or manifest changed',
+      });
+      await expect(verifyCapabilityReviewAdmission(admission)).resolves.toEqual({
+        admitted: false,
+        reason: 'Reviewed source or prior art is stale, missing, or unavailable',
+      });
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
   });
 
   it('replays concurrent and crash-after-capture capability attempts even after the captured idea becomes terminal', async () => {

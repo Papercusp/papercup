@@ -4018,8 +4018,8 @@ export function tryRematerializeFromArchive(sessionId: string | null | undefined
  * resume, false when there genuinely is not (the caller must then refuse to
  * launch rather than hand the agent an id that cannot resolve).
  *
- * Only claude/codex have an id-addressable on-disk transcript; omp resumes by
- * thread name and is passed through unchanged. Injectable `home`/`rematerialize`
+ * Tracked OMP rows have an id-addressable transcript too; raw OMP thread names
+ * remain unverifiable here. Injectable `home`/`rematerialize`
  * for tests; never throws.
  */
 export function ensureResumeTranscriptPresent(source: any, { home, rematerialize }?: {
@@ -4158,6 +4158,10 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
     sessionPortApiImpl?: typeof sessionPortApi | undefined;
     launchFreshSuImpl?: typeof launchFreshSu | undefined;
     reportLaunchFailureImpl?: typeof reportSessionPortLaunchFailure | undefined;
+}): Promise<void>;
+export function resumeFlow(args?: {}, { apiImpl, launchResolvedResumeImpl }?: {
+    apiImpl?: typeof api | undefined;
+    launchResolvedResumeImpl?: typeof launchResolvedResume | undefined;
 }): Promise<void>;
 /** Require the signed role-scoped MCP config produced by bootstrap-role.
  * OMP's per-session config copies these exact bytes; passing an omitted field
@@ -4959,5 +4963,8 @@ declare function defaultListProcPids(): number[];
 declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchFreshSu(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
+}): Promise<void>;
+declare function launchResolvedResume(source: any, args: any, { tracked }: {
+    tracked: any;
 }): Promise<void>;
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";

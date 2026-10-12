@@ -750,7 +750,13 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     );
     const toolingRoot = opts.toolingRoot ?? opts.integrationRoot;
     const clearedEnv: NodeJS.ProcessEnv = Object.fromEntries((opts.clearEnv ?? []).map((key) => [key, undefined]));
-    if (toolingRoot !== opts.integrationRoot && !opts.testCommand?.length) {
+    // The current-build host can supply tooling from a linked worktree while
+    // integrationRoot names the canonical checkout holding the built commit.
+    // A different path is not a foreign app when both share the same repository.
+    const foreignTooling = toolingRoot !== opts.integrationRoot &&
+      path.resolve(resolveCanonicalIntegrationRoot(toolingRoot)) !==
+        path.resolve(resolveCanonicalIntegrationRoot(opts.integrationRoot));
+    if (foreignTooling && !opts.testCommand?.length) {
       return { ran: false, reason: 'runner-failed',
         detail: 'foreign admission pre-check has no registered test-suite command; refusing to infer one from operator tooling' };
     }

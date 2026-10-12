@@ -36244,7 +36244,9 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

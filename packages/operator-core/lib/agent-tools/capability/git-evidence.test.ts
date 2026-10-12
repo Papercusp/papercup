@@ -90,6 +90,30 @@ describe('capability:git-evidence', () => {
     expect(result).toMatchObject({ ok: true, op: 'readFileAtCommit', content: 'pinned contents\n' });
   });
 
+  it('reads repository-root-relative paths when the capability base is nested', async () => {
+    const root = repository();
+    const nestedBase = join(root, 'packages', 'operator-core');
+    const path = 'packages/operator-core/lib/plan-acceptance-gate.test.ts';
+    mkdirSync(join(nestedBase, 'lib'), { recursive: true });
+    writeFileSync(join(root, path), 'committed historical test source\n');
+    git(root, ['add', path]);
+    git(root, ['commit', '--quiet', '-m', 'add nested historical source']);
+    const commitSha = git(root, ['rev-parse', 'HEAD']);
+
+    const result = await runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha, path },
+      { repositoryDir: nestedBase, signal: never },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'readFileAtCommit',
+      commitSha,
+      path,
+      content: 'committed historical test source\n',
+    });
+  });
+
   it('follows the superproject commit’s pinned gitlink and exposes the resolved blob identity', async () => {
     const root = repository();
     const submodule = join(root, 'nested');

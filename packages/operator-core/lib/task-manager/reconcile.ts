@@ -22,7 +22,7 @@ import {
   type TaskRow,
   type TaskState,
 } from './types';
-import { isConsoleWindowScope, isVerifierScope } from './scope-class';
+import { isConsoleWindowScope, isTerminalWindowScope, isVerifierScope } from './scope-class';
 import type { ExemptReason, ProcessScope } from './scope-class';
 
 /** One process as the scanner observed it. */
@@ -45,6 +45,8 @@ export interface ScannedProcess {
    * structural rather than a list of process names.
    */
   scope: ProcessScope;
+  /** Window liveness for an owned VTE scope; unknown remains reportable residue. */
+  terminalWindowAlive?: boolean | null;
   /** Non-null exactly when `scope === 'exempt'`. */
   exemptReason: ExemptReason | null;
   /**
@@ -123,14 +125,14 @@ export interface ReconcileResult {
    */
   abandonedWindow: ResidueGroup[];
   /**
-   * A desktop terminal window WE opened for a human (`papercup-console-*.scope`).
+   * A human-owned desktop terminal window: a Papercup console scope, or a live VTE
+   * window nested in our slice with terminal-parent proof.
    *
-   * Its own class because it is structurally incapable of being anything else:
-   * `spawnConsole` hardcodes `taskScope: null`, so the scope can never acquire a
-   * ledger row, and `console-spawn.ts` is allowlisted from enrolment BY DESIGN
-   * ("the window is the unit of control"). Counted as `unaccounted` it produced a
-   * permanent alarm that could never clear no matter what anyone fixed — 7 scopes
-   * / 14 processes on this box, re-notified every 30 minutes (EI-20106565311448967).
+   * Papercup-created console scopes cannot acquire ledger rows because spawnConsole
+   * deliberately uses taskScope: null. A VTE scope inside our slice is included only
+   * when the scanner confirms its terminal parent is live; unknown stays unaccounted
+   * and a closed window goes to abandonedWindow. Counted as unaccounted, these
+   * human-owned open windows produced alarms that could not clear (EI-20106565311448967).
    *
    * REPORT-ONLY, and it is NOT persisted as residue: `unaccounted`'s contract is
    * "someone bypassed the chokepoint", and a console did the opposite — it took the
@@ -419,12 +421,18 @@ export function reconcile(
     if (claimedPids.has(p.pid)) continue;
     const scope = scopeUnitOf(p);
     if (scope && claimedScopes.has(scope)) continue;
+    const ownedTerminalWindow = p.owned && isTerminalWindowScope(p.cgroupPath);
     if (isVerifierScope(p.cgroupPath)) verifierScopeProcs.push(p);
-    else if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
-    // Before the `owned` test, because a console scope IS owned — that is exactly why
-    // it fell through to `unaccounted` and stuck there. Checked by scope NAME, which
-    // only our own builder mints; `scopeUnitOf` cannot see it (it resolves `pc-*` only).
-    else if (isConsoleWindowScope(p.cgroupPath)) consoleWindowProcs.push(p);
+    else if (
+      p.scope === 'abandoned-window' ||
+      (ownedTerminalWindow && p.terminalWindowAlive === false)
+    ) abandonedWindowProcs.push(p);
+    // Before the owned test: Papercup console scopes and verified live VTE scopes
+    // may be inside our slice without a pc-* ledger scope to claim them.
+    else if (
+      isConsoleWindowScope(p.cgroupPath) ||
+      (ownedTerminalWindow && p.terminalWindowAlive === true)
+    ) consoleWindowProcs.push(p);
     // EI-20185455308799001 — the enrolment race, given the same youth grace the ROW
     // paths above already get. A managed `pc-*` scope is minted BEFORE its
     // fire-and-forget enrolment insert commits, so a tick landing inside that window

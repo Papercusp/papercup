@@ -102,6 +102,34 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it('reads each plan input once when returning and comparing its fingerprint', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    let statement: { text: string; params: Parameters<typeof db.sql.unsafe>[1] } | undefined;
+    const sql = new Proxy(db.sql, {
+      apply(target, receiver, args) {
+        const strings = args[0] as TemplateStringsArray;
+        statement = {
+          text: strings.map((part, index) => part + (index < strings.length - 1 ? `$${index + 1}` : '')).join(''),
+          params: args.slice(1),
+        };
+        return Reflect.apply(target, receiver, args);
+      },
+    });
+    const observations = await readPlanClosureObservations({ workspaceId: WORKSPACE, planSlugs: [PLAN], sql });
+    expect(observations.get(PLAN)).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+    expect(statement).toBeDefined();
+
+    // Inspect actual PostgreSQL work, not elapsed time or the query's spelling.
+    // Inlining the fingerprint doubles this input scan because both the returned
+    // value and the freshness comparison expand the same watermark aggregate.
+    const [explained] = await db.sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${statement!.text}`, statement!.params);
+    type PlanNode = { 'Relation Name'?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const scanLoops = (node: PlanNode): number =>
+      (node['Relation Name'] === 'plan_items' ? node['Actual Loops'] : 0)
+      + (node.Plans ?? []).reduce((total, child) => total + scanLoops(child), 0);
+    expect(scanLoops(explained['QUERY PLAN'][0].Plan)).toBe(1);
+  });
+
   it('reads canonical supersession beside stale and absent acceptance verdicts', async () => {
     await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
     await db.sql`UPDATE harness_shared.harness_plans SET status = 'superseded', version = version + 1

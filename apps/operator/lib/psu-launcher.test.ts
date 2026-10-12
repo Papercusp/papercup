@@ -141,6 +141,7 @@ import {
   requireOmpRoleMcpJsonPath,
   forkSeedPaths,
   resolveDirectTrackedResumeSession,
+  resumeFlow,
   findUntrackedSession,
   findTrackedCodexHomeRollout,
   sessionOwnersRoot,
@@ -6321,7 +6322,7 @@ describe("psu-launcher arg parsing", () => {
     expect(fresh).toContain("await preflightCodexAutoPool(");
 
     const originalResume = section("async function resumeFlow(", null);
-    const guardedOriginal = originalResume.slice(0, originalResume.indexOf('const data = await api("/api/adv/sessions/resumable")'));
+    const guardedOriginal = originalResume.slice(0, originalResume.indexOf('const data = await apiImpl("/api/adv/sessions/resumable")'));
     expect(guardedOriginal).toContain("await preflightCodexAutoPool(");
     expect(guardedOriginal.indexOf("await launchResume(")).toBeGreaterThan(guardedOriginal.indexOf("await preflightCodexAutoPool("));
     expect(guardedOriginal).not.toContain("tryRematerializeFromArchive");
@@ -9633,6 +9634,74 @@ describe("direct numeric tracked-session recovery (EI-24966472541417677)", () =>
   });
 });
 
+describe("direct resume of an archived consult incarnation (EI-25730332883266828)", () => {
+  it.each(["claude", "codex", "omp"])(
+    "ports the selected %s archive even when the tracked row's newest transcript is missing",
+    async (agent) => {
+      const home = mkdtempSync(join(tmpdir(), "psu-archived-consult-"));
+      const earlier = "11111111-1111-4111-8111-111111111111";
+      const source = {
+        id: 35200, agent, cwd: "/repo/source", role: null,
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        ompThreadId: agent === "omp" ? "newest-thread" : null,
+        coordOwnerId: "su-original-source", workspaceId: "source-workspace",
+        configDir: home, codexHome: home,
+      };
+      const before = structuredClone(source);
+      const args = {
+        resumeId: String(source.id), picker: false, agent: "codex", model: "sol:high",
+        ownerId: "su-isolated-answer", launchedBy: "su-requester",
+        consultEvidenceSpan: { sessionId: earlier, turnIndices: [2, 4], contextTurns: 2 },
+      };
+      const apiImpl = vi.fn(async (path) => ({
+        sessions: path.includes("?id=") ? [source] : [],
+      }));
+      const sessionPortApiImpl = vi.fn()
+        .mockResolvedValueOnce({ inspection: {
+          source: { nativeSessionId: earlier, sha256: "a".repeat(64) },
+        } })
+        .mockResolvedValueOnce({ portId: "port-archive", token: "port-archive.token" });
+      const launchFreshSuImpl = vi.fn();
+      const launchResolvedResumeImpl = vi.fn(async (row, launchArgs, options) => {
+        expect(options).toEqual({ tracked: true });
+        const target = resolveResumeTarget(row, launchArgs);
+        expect(target.operation).toBe("port");
+        await launchSessionPort(row, target, {}, launchArgs, {
+          sessionPortApiImpl, launchFreshSuImpl,
+        });
+      });
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+      const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("latest native transcript rejected before port inspection");
+      });
+      // The old premature restore must fail deterministically, without making
+      // an operator request or touching an actual archived session.
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ ok: false }), { status: 404 }),
+      );
+      try {
+        if (agent !== "omp") expect(sessionHasTranscript(source, { home })).toBe(false);
+        await resumeFlow(args, { apiImpl, launchResolvedResumeImpl });
+        expect(apiImpl).toHaveBeenCalledWith("/api/adv/sessions/resumable?id=35200");
+        expect(exit).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(launchFreshSuImpl).toHaveBeenCalledOnce();
+        const inspect = JSON.parse(sessionPortApiImpl.mock.calls[0][1].body);
+        const prepare = JSON.parse(sessionPortApiImpl.mock.calls[1][1].body);
+        expect(inspect).toMatchObject({
+          sourceAdvSessionId: source.id, sourceNativeSessionId: earlier,
+          consultEvidenceSpan: args.consultEvidenceSpan, targetOwnerId: args.ownerId,
+        });
+        expect(prepare).toEqual({ ...inspect, expectedSourceHash: "a".repeat(64) });
+        expect(source).toEqual(before);
+      } finally {
+        fetchSpy.mockRestore(); exit.mockRestore(); stderr.mockRestore();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 describe("out-of-window tracked-session recovery (WI-10002877)", () => {
   const diskHit = {
     agent: "claude",
@@ -12077,7 +12146,7 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
     await expect(
       ensureResumeTranscriptPresent(source, { home, rematerialize }),
     ).resolves.toBe(true);
-    expect(rematerialize).toHaveBeenCalledWith(UUID, "claude");
+    expect(rematerialize).toHaveBeenCalledWith(UUID, "claude", { sourceSession: source, home });
   });
 
   it("REFUSES the launch when the transcript is gone AND the archive cannot restore it", async () => {
@@ -12092,6 +12161,28 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
         { home, rematerialize },
       ),
     ).resolves.toBe(false);
+  });
+
+  it("pins a native resume to the relocated archive root before checking restored bytes", async () => {
+    const source = { agent: "claude", sessionId: UUID, coordOwnerId: "su-relocated", configDir: join(home, "old") };
+    const restoredRoot = join(home, "restored");
+    const project = join(restoredRoot, "projects", "-d");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, home, operatorUrl: "http://operator", token: "test-token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        ok: true, written: 1, root: restoredRoot, sourceKind: "claude",
+      }), { status: 200 }),
+    });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+      expect(source.configDir).toBe(restoredRoot);
+      expect(source.coordOwnerId).toBe("su-relocated");
+      expect(source.sessionId).toBe(UUID);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("transcript restored from the session archive"));
+    } finally { stderr.mockRestore(); }
   });
 
   it("does NOT restore when the transcript is still on disk — the healthy resume pays no round-trip", async () => {
@@ -12120,6 +12211,23 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
       ),
     ).resolves.toBe(true);
     expect(rematerialize).not.toHaveBeenCalled();
+  });
+
+  it("refuses a tracked OMP ghost and restores its native thread before a native resume", async () => {
+    const source = { agent: "omp", id: 42, ompThreadId: "t-1", sessionId: "different-row-native" };
+    const missing = vi.fn(async () => null);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: missing })).resolves.toBe(false);
+    expect(missing).toHaveBeenCalledWith("t-1", "omp", { sourceSession: source, home });
+    const restore = vi.fn(async () => {
+      const dir = join(home, ".papercusp", "su-omp-homes", "session-42", "agent", "sessions", "project");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "2026-07-16T00-00-00_t-1.jsonl"), '{"type":"session","id":"t-1"}\n');
+      return { ok: true };
+    });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: restore })).resolves.toBe(true);
+    expect(restore).toHaveBeenCalledWith("t-1", "omp", { sourceSession: source, home });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: missing })).resolves.toBe(true);
+    expect(missing).toHaveBeenCalledOnce();
   });
 });
 
@@ -14572,7 +14680,8 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       'if (session.agent === "codex" && env.CODEX_HOME)',
     );
     const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(", codexBranch);
-    const hostRepair = src.indexOf("ensureCodexHome: () =>");
+    const hostRepair = src.search(/ensureCodexHome:\s*\([^)]*\)\s*=>/);
+    const hostHomeRepair = src.indexOf("ensureCodexHomeViaOperator(", hostRepair);
     const authGuard = body.indexOf(
       'if (accountEnv?.mode === "default")',
       homeRepair,
@@ -14586,7 +14695,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
     expect(codexBranch).toBeGreaterThan(-1);
     expect(homeRepair).toBeGreaterThan(codexBranch);
-    expect(hostRepair).toBeGreaterThan(homeRepair);
+    // The host callback is in runWrapper; homeRepair is relative to launchResume.
+    expect(hostRepair).toBeGreaterThan(-1);
+    expect(hostHomeRepair).toBeGreaterThan(hostRepair);
     expect(authGuard).toBeGreaterThan(homeRepair);
     expect(authRepair).toBeGreaterThan(authGuard);
     expect(route).toBeGreaterThan(authRepair);

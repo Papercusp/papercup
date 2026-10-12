@@ -130,10 +130,13 @@ export type LoopNextWakeVerdict =
   | { guaranteed: false; reason: 'no-active-loop' | ActiveLoopRewakeBlockedReason };
 
 /** Classify the same guard as loopGuaranteesNextWake, retaining WHY an active
- *  row is not a usable continuation guarantee for checkpoint guidance. */
+ *  row is not a usable continuation guarantee for checkpoint guidance. A measured
+ *  unreachable owner wake route also defeats the guarantee; an unknown route leaves
+ *  the loop-only verdict unchanged so callers can preserve that uncertainty separately. */
 export function classifyLoopNextWake(
   loop: LoopNextWakeInput,
   nowMs: number = Date.now(),
+  wakeReachable?: boolean | null,
 ): LoopNextWakeVerdict {
   if (!loop?.active) return { guaranteed: false, reason: 'no-active-loop' };
 
@@ -210,9 +213,19 @@ export function classifyLoopNextWake(
     return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
   }
 
+  // EI-25688167595676944: an active, otherwise healthy loop cannot guarantee another
+  // turn when the independent owner-route probe confirms that no wake channel exists.
+  // Keep unknown/null fail-soft: callers still expose that missing measurement rather
+  // than turning it into a false reachability claim.
+  if (wakeReachable === false) return { guaranteed: false, reason: 'wake-unreachable' };
+
   return { guaranteed: true, reason: null };
 }
 
-export function loopGuaranteesNextWake(loop: LoopNextWakeInput, nowMs: number = Date.now()): boolean {
-  return classifyLoopNextWake(loop, nowMs).guaranteed;
+export function loopGuaranteesNextWake(
+  loop: LoopNextWakeInput,
+  nowMs: number = Date.now(),
+  wakeReachable?: boolean | null,
+): boolean {
+  return classifyLoopNextWake(loop, nowMs, wakeReachable).guaranteed;
 }

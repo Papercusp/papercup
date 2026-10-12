@@ -110,6 +110,66 @@ describe('SPEC-P-004-C — only the governance executor creates a grant', () => 
   }, 120_000);
 });
 
+describe('P007 — a hire reserves the grant before candidate acceptance', () => {
+  it('one member proposal registers and commits; only the candidate acceptance enables claiming', async () => {
+    const e = await equityV2Evm(), t = e.equity, id = digest('signed-hire-document');
+    const start = e.now();
+    await e.govern([
+      { contract: t, name: 'registerHolder', args: [e.accounts[1], digest('candidate-identity')] },
+      { contract: t, name: 'commitGrant', args: [id, e.accounts[1], 10_000n, start, start, start + 100n * DAY] },
+    ]);
+    expect((await e.read(t, 'holders', [2n]) as readonly unknown[])[3]).toBe(false);
+    expect((await e.read(t, 'grants', [id]) as GrantRow)[0]).toBe(2n);
+    expect(await e.read(t, 'reservedSupply')).toBe(10_000n);
+    e.advance(10 * 86400);
+    await expect(e.send(t, 'claimGrant', [id], 1)).rejects.toThrow('Ineligible');
+    await expect(e.send(t, 'acceptTerms', [zeroHash], 1)).rejects.toThrow('Invalid');
+    await e.send(t, 'acceptTerms', [TERMS], 1);
+    await e.send(t, 'claimGrant', [id], 1);
+    expect(await e.read(t, 'balanceOf', [e.accounts[1]])).toBeGreaterThan(0n);
+  }, 120_000);
+
+  it('a legal eligibility freeze still refuses reservation even after terms acceptance', async () => {
+    const e = await equityV2Evm(), t = e.equity, id = digest('frozen-holder-grant');
+    await e.register(1);
+    await e.govern([{ contract: t, name: 'setEligibility', args: [2n, false] }]);
+    await expect(e.callAs(e.timelock.address, t, 'commitGrant', [id, e.accounts[1], 10_000n, 0n, 0n, 100n * DAY])).rejects.toThrow('Ineligible');
+    expect(await e.read(t, 'reservedSupply')).toBe(0n);
+    expect((await e.read(t, 'grants', [id]) as GrantRow)[0]).toBe(0n);
+  }, 120_000);
+});
+
+describe('P007 — hire-execution vesting start', () => {
+  it('starts at the execution block after a delayed vote and keeps exact cliff and vesting durations', async () => {
+    const e = await equityV2Evm(), t = e.equity, id = digest('execution-timed-grant');
+    await e.register(1);
+    const proposedAt = e.now();
+    const proposal = await e.propose([{ contract: t, name: 'commitGrant', args: [id, e.accounts[1], 10_000n, 0n, 30n * DAY, 100n * DAY] }], 'Hire with execution-time vesting');
+    e.advance(61);
+    await e.send(e.governor, 'castVote', [proposal.id, 1]);
+    e.advance(Number(await e.read(e.governor, 'votingPeriod')) + 1);
+    await e.send(e.governor, 'queue', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
+    e.advance(7 * 86400 + Number(await e.read(e.timelock, 'getMinDelay')) + 1);
+    await e.send(e.governor, 'execute', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
+    const grant = await e.read(t, 'grants', [id]) as GrantRow;
+    expect(BigInt(grant[3])).toBe(e.now());
+    expect(BigInt(grant[3])).toBeGreaterThan(proposedAt + 7n * DAY);
+    expect(BigInt(grant[4]) - BigInt(grant[3])).toBe(30n * DAY);
+    expect(BigInt(grant[5]) - BigInt(grant[3])).toBe(100n * DAY);
+    expect(await e.read(t, 'earnedGrant', [id])).toBe(0n);
+    e.advance(30 * 86400);
+    expect(await e.read(t, 'earnedGrant', [id])).toBe(3_000n);
+  }, 120_000);
+
+  it.each([[101n * DAY, 100n * DAY], [0n, 3651n * DAY], [0n, 0n]])('rejects invalid relative cliff/end %s/%s without a reserve', async (cliff, end) => {
+    const e = await equityV2Evm(), t = e.equity, id = digest('invalid-relative-grant');
+    await e.register(1);
+    await expect(e.callAs(e.timelock.address, t, 'commitGrant', [id, e.accounts[1], 10_000n, 0n, cliff, end])).rejects.toThrow('Invalid');
+    expect(await e.read(t, 'reservedSupply')).toBe(0n);
+    expect((await e.read(t, 'grants', [id]) as GrantRow)[0]).toBe(0n);
+  }, 120_000);
+});
+
 describe('SPEC-P-004-D — an admin raise above the per-grant limit is reverted', () => {
   it('a raise above the immutable maximum reverts even after the admin sets the limit to that maximum', async () => {
     const { e, t, g1, grant } = await hired();

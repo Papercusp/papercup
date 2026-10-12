@@ -303,6 +303,7 @@ async function runJudgeGitEvidenceInner(
       if (!isAbsolute(top.output.trim())) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'invalid_repository_root' });
       }
+      const repositoryRoot = top.output.trim();
 
       const commitSha = await resolveCommit(args.commitSha);
       if (!commitSha) {
@@ -310,7 +311,7 @@ async function runJudgeGitEvidenceInner(
       }
       let rootRealPath: string | null = null;
       try {
-        rootRealPath = await realpath(repositoryDir);
+        rootRealPath = await realpath(repositoryRoot);
       } catch (error) {
         // Unit tests may supply a virtual repository root through the injected runner.
         // Production always uses the filesystem-backed runner and must resolve the root.
@@ -319,7 +320,7 @@ async function runJudgeGitEvidenceInner(
       const existsInsideRoot = async (repo: string): Promise<boolean> => {
         if (!rootRealPath) return false;
         try {
-          const candidate = resolve(repositoryDir, repo);
+          const candidate = resolve(repositoryRoot, repo);
           const candidateRealPath = await realpath(candidate);
           const relativePath = relative(rootRealPath, candidateRealPath);
           if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return false;
@@ -339,7 +340,7 @@ async function runJudgeGitEvidenceInner(
       };
       let location: CommittedBlobLocation | null;
       try {
-        location = (await locateCommittedBlobs(repositoryDir, commitSha, [args.path], {
+        location = (await locateCommittedBlobs(repositoryRoot, commitSha, [args.path], {
           git: lookupGit,
           exists: existsInsideRoot,
         })).get(args.path) ?? null;
@@ -356,7 +357,7 @@ async function runJudgeGitEvidenceInner(
         throw new GitEvidenceReadFailure({ ok: false, reason: 'path_is_not_a_file' });
       }
 
-      const blobRepositoryDir = location.repo === '.' ? repositoryDir : resolve(repositoryDir, location.repo);
+      const blobRepositoryDir = location.repo === '.' ? repositoryRoot : resolve(repositoryRoot, location.repo);
       if (location.repo !== '.') {
         if (!rootRealPath) {
           throw new GitEvidenceReadFailure({ ok: false, reason: 'resolved_repository_unavailable' });

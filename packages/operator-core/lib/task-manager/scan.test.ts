@@ -350,6 +350,29 @@ describe('terminal window liveness, end to end through the scan', () => {
       selfPid: 999,
     });
 
+  it('probes an owned VTE scope against the actual terminal app slice', () => {
+    const ownedVteScope =
+      OURS + '/papercusp-agent.slice/papercusp-agent-session.slice/vte-spawn-0e0e-4a4a.scope';
+    const fs = box({
+      cgroups: {
+        [OURS]: [],
+        [TERM + '/gnome-terminal-server.service']: [SERVER],
+        [ownedVteScope]: [620],
+      },
+      cmdlines: { 620: 'bash --noprofile --rcfile /dev/fd/63 -i' },
+      ppids: { 620: SERVER },
+    });
+
+    const shell = scanProcesses({
+      fs,
+      foreignSignature: defaultForeignSignature(REPO),
+      selfPid: 999,
+    }).processes.find((p) => p.pid === 620)!;
+
+    expect(shell.scope).toBe('owned');
+    expect(shell.terminalWindowAlive).toBe(true);
+  });
+
   it('keeps an OPEN window exempt even though its shell is invisible to the signature', () => {
     // THE REGRESSION GUARD. The cheap-looking implementation — reuse the ppids the
     // scan already collected — cannot see pid 600 at all, because a bare `bash` does

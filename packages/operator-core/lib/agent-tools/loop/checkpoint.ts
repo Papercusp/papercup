@@ -2047,18 +2047,29 @@ export default defineTool({
         let activeLoopGoal: string | null = null;
         let activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null = null;
         try {
-          const [{ isRewakeGuaranteed, awaitGuaranteesRewake }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
-            [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
+          const [
+            { isRewakeGuaranteed, awaitGuaranteesRewake },
+            { listActiveAwaits, INBOX_WAKE_KEY_PREFIX },
+            { getModes },
+            { probeWakeReachability },
+          ] = await Promise.all(
+            [
+              import('../../turn-end-tracking'),
+              import('../../events/await/store'),
+              import('../../modes/store'),
+              import('../../events/await/wake-reachability'),
+            ],
           );
-          const [loop, awaits, modes] = await Promise.all([
+          const [loop, awaits, modes, reachability] = await Promise.all([
             getLoopStatus(ownerId).catch(() => null),
             listActiveAwaits(ownerId).catch(() => []),
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
+            probeWakeReachability(ownerId).catch(() => null),
           ]);
           activeLoopIntervalSec = loop?.active ? loop.intervalSec : null;
           activeLoopGoal = loop?.active ? loop.goal : null;
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
-          const loopWake = classifyLoopNextWake(loop);
+          const loopWake = classifyLoopNextWake(loop, Date.now(), reachability?.reachable);
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
