@@ -59,7 +59,13 @@
     "replyExecRecordIndex": 49,
     "outerExecCallId": "call_513c030c672c4c52b75d05bab6de1be9",
     "outerExecCallIdSha256": "85c7d94877b5c7d80cf3e1d16b5c61dde09cbe6dbaa75ac9d75a01fbb85087aa",
-    "limit": "The nested reply RPC fingerprint differs from this enclosing functions.exec call; exact physical nested call-to-server matching remains unknown."
+    "nestedPhysicalCalls": [
+      { "nativeRecordIndex": 51, "nativeEvent": "item_completed", "nativeItemType": "McpToolCall", "nativeItemId": "exec-f08431d9-5c7f-4154-8e2a-72283ba2a990", "nativeItemIdSha256": "0733d248b2a6e9e2ff1b798d892363c9b810ee753c85d6a0cd42644755954818", "tool": "consult:reply", "invocationId": 36869084, "postId": 1176064, "candidateAdvSessionId": 41540, "carrier": "meta:threadId", "binding": "bound", "serverFingerprintMatches": true, "nativeResultPostMatches": true },
+      { "nativeRecordIndex": 63, "nativeEvent": "item_completed", "nativeItemType": "McpToolCall", "nativeItemId": "exec-d91c2622-bd12-4181-8478-b18b9b3baa04", "nativeItemIdSha256": "057c06d4b2fa1d0d9c48ec6321a2a0c0ea758e23aaf19c6523cbdf6b57158ad4", "tool": "consult:close", "invocationId": 36869245, "postId": 1176065, "candidateAdvSessionId": 41540, "carrier": "meta:threadId", "binding": "bound", "serverFingerprintMatches": true, "nativeResultPostMatches": true }
+    ],
+    "physicalAttributionMethod": "Hash each nested item_completed McpToolCall item.id and compare with the exact tool_invocations row requestOrigin.nativeSession.callIdFingerprint; also match native thread, answering owner, candidate adv session, tool, conversation and returned post. The native transcript SHA is unchanged at this read.",
+    "replyLaunchAudit": { "invocationId": 36869084, "path": "metadata_json.kernel.enforce.serverAudit.identityLaunchRecord", "advSessionId": "41540", "xmin": "868901831", "selection": "caller-row", "preflightAuditMatches": true, "limit": "Exact reply dispatch selected the child's caller row. This observation does not attribute every call or prove full source-state isolation." },
+    "limit": "Exact nested reply and close attribution is verified for these two calls. The enclosing functions.exec has a separate ID; its different fingerprint is expected and does not invalidate the nested match. No physical attribution for every other call or filesystem effect follows."
   },
   "answer": {
     "postId": 1176064,
@@ -85,7 +91,44 @@
     "diagnosticCorrection": "The first query required harness_slug='papercusp' and returned only two reads; its reply positive control failed. Reply/close/lifecycle calls are recorded under harness_slug='*'. Removing only the harness restriction retained the workspace, owner and time bounds and recovered the reply positive control. The earlier restricted result is retained and grants no absence proof.",
     "limit": "This is a complete read of the stated recorded-owner/window subset, not the complete D-006 mutation taxonomy, source-owned port lineage, system-direct actor or wake census."
   },
-  "writerEvidence": ["packages/operator-core/lib/projected-tool-deps.ts:1230", "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1645", "packages/operator-core/lib/consult/native-consult.ts", "packages/operator-core/lib/plan-items/claims.ts:138"],
+  "boundedAttributionExtension": {
+    "window": { "startInclusive": "2026-10-12T12:04:14Z", "endExclusive": "2026-10-12T12:09:00Z" },
+    "portLineage": { "portId": "5d453d50-9c3f-47fa-9930-3a96e6b09533", "sourceAdvSessionId": 40295, "targetAdvSessionId": 41540, "status": "delivered", "sourceHashMatches": true, "renderedHashMatches": true, "targetOwnerMatches": true, "targetNativeMetadata": null, "limit": "Target native identity is corroborated by the native transcript and per-call binding; it is not inferred from the null session_ports metadata field." },
+    "systemPortAudit": {
+      "scope": "audit_log in the exact workspace/window, restricted to source:40295, the exact port/source-owner/source-work-item subjects or source/answerer actors; maxRows 50, untruncated, positive control passed",
+      "actor": "system:session-port",
+      "rows": [
+        { "id": "session-port-8528aa24-d951-44a3-8f20-7a35bdc36282", "tsMs": 1791806698861, "action": "session-port.inspected", "subject": "source:40295", "sourceAdvSessionId": 40295, "targetAdvSessionId": null },
+        { "id": "session-port-ccd48f45-fedd-43c6-a740-9d8ad67e89a4", "tsMs": 1791806699153, "action": "session-port.prepared", "subject": "5d453d50-9c3f-47fa-9930-3a96e6b09533", "sourceAdvSessionId": 40295, "targetAdvSessionId": null },
+        { "id": "session-port-747b9860-0c77-4d7a-90f7-3913fb4e404e", "tsMs": 1791806699872, "action": "session-port.pending", "subject": "5d453d50-9c3f-47fa-9930-3a96e6b09533", "sourceAdvSessionId": 40295, "targetAdvSessionId": 41540 },
+        { "id": "session-port-a5c61d97-c544-4ae4-a17e-8bcdd3a8b658", "tsMs": 1791806707124, "action": "session-port.delivered", "subject": "5d453d50-9c3f-47fa-9930-3a96e6b09533", "sourceAdvSessionId": 40295, "targetAdvSessionId": 41540, "cleanupOutcome": "deleted" }
+      ],
+      "limit": "These four observed system-direct port effects have explicit source/target lineage. audit_log is not an exhaustive canonical mutation ledger: work-item nonterminal transitions are not universally recorded, and plan_item_claims writes do not by themselves provide an append-only claim census."
+    },
+    "coordination": {
+      "scope": "Exact workspace/window coord_event_log rows whose writer/sender is source or child, or whose literal to array contains either owner; maxRows 20, untruncated, same-window positive control passed",
+      "rowIds": [24155889, 24155892, 24155897],
+      "sender": "su-5e8e73ff-07bb-4934-a5cd-96129a72cc80",
+      "recipients": ["su-e16e0da4-f858-4e10-9665-55116edbc36b"],
+      "sourceLiteralRecipientRows": 0,
+      "limit": "Observed rows notify the requester, not the source. This predicate does not resolve broadcast/selector audiences or prove complete wake coverage."
+    },
+    "ptyEvents": {
+      "scope": "psu_pty_host_events exact workspace, both owners and window, aggregated by owner/kind without a raw-row cap",
+      "completeKindSummary": true,
+      "sourceRowsInWindow": 0,
+      "answeringRowsInWindow": 72,
+      "answeringKinds": { "host-code-adoption-handoff-acceptance": 1, "codex-startup-process-target-selected": 2, "codex-startup-process-sample": 60, "backend-tui-start-observed": 1, "backend-session-frame-observed": 1, "respawn-report-attempt": 1, "respawn-binding-confirmed": 1, "launch-kickoff-marker-echo-confirmed": 1, "startup-turn-written": 1, "turn-delivered": 1, "codex-startup-process-trace-ended": 1, "host-teardown": 1 },
+      "localSourceLogSha256": "75a97da22387186ea5c51b1580d62ed8009f38c198e5709a11d350172a63cf52",
+      "localAnsweringLogSha256": "d4122fb8de777b207fa2c7dbb2f137be0b765fe82498b966203dee06af938e5d",
+      "sourceLastRecordedEventAtRead": "2026-10-12T06:57:15.762Z",
+      "localAnsweringKindSummaryMatches": true,
+      "limit": "The local source log and ingested ledger have no source-window observations, but host-event writes are fail-soft and local logs are bounded. Registry-not-ended source eligibility does not prove active liveness. Absence of recorded source wakes is not a universal no-wake verdict."
+    },
+    "queryFailure": { "status": "recorded-and-separated", "ref": "EI-23699176988264057", "reason": "One ancillary dev:pg_query call timed out and its code:run aggregate failed; it grants no absence proof. A guarded audit positive-control read and the explicit port-lineage read subsequently succeeded." },
+    "remainingUnknown": ["Complete canonical work-item and plan-only mutation/ABA census", "Locks, modes and loop state continuity", "Complete source wake/selector/system-action attribution", "Every physical native call and non-tool filesystem effect"]
+  },
+  "writerEvidence": ["packages/operator-core/lib/projected-tool-deps.ts:1230", "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1695", "packages/operator-core/lib/consult/native-consult.ts:54", "packages/operator-core/lib/plan-items/claims.ts:138", "packages/operator-core/lib/session-port/store.ts:475", "packages/operator-core/lib/session-port/telemetry.ts:117", "packages/operator-core/lib/work-item-lifecycle-history.ts", "apps/operator/scripts/psu-pty-host.mjs:2685", "packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts:370"],
   "evidenceRefs": [
     { "path": "/dev/shm/get-feedback-native-live-codex-self-20261012T1205.before.json", "sha256": "68510e7a17ba33c8352c3d8cbc710156ef5db5cb7a1c2fb9016b2dadf1e699f4" },
     { "path": "/dev/shm/get-feedback-native-live-codex-self-20261012T1205.accept.json", "sha256": "66047674b61527a574a36fca6c5a7a8fb7765555c2bd7a110806b693f58438a4" },
@@ -94,7 +137,7 @@
     { "path": "/dev/shm/get-feedback-native-live-codex-self-20261012T1210.actors.json", "sha256": "ebe67657bddb0b63b71df66570692894cb3c9b34cf515d286f5e2e21e904a621" },
     { "path": "/dev/shm/get-feedback-native-live-codex-self-20261012T1215.actor-complete.json", "sha256": "27e5f01c6c98a81d623dbecd53c21e9ade22b129b95bfbc454c45a0cdaedfa8e" }
   ],
-  "projectDecision": "Retain the captured plan-only claim endpoints and actor-bound window as bounded native-conversion evidence. Continue exact physical nested-call and D-006 system/wake attribution before isolation acceptance. No mandatory reporting-only reconciliation or new monitoring surface is introduced.",
-  "openAcceptance": ["Exact physical nested MCP call-to-server attribution", "Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
+  "projectDecision": "Retain the captured plan-only claim endpoints, exact nested reply/close physical binding and bounded actor/system-port/coordination/PTY observations as native-conversion evidence. Continue the remaining D-006 mutation/wake coverage before isolation acceptance. No mandatory reporting-only reconciliation or new monitoring surface is introduced.",
+  "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }
