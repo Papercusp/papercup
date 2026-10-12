@@ -435,14 +435,17 @@ async function coordCanary(health: unknown) {
       for (const [ids, included, excluded] of [[ [workspace], [devSeed.selectedMarker], [devSeed.neighborMarker, devSeed.foreignMarker] ],
         [ [devSeed.neighborWorkspace], [devSeed.neighborMarker], [devSeed.selectedMarker, devSeed.foreignMarker] ],
         [ null, [devSeed.selectedMarker, devSeed.neighborMarker, devSeed.foreignMarker], [] ]] as const) {
-        const response = await fetch(base + tool.expose.http.path + '?workspace=' + encodeURIComponent(workspace) + '&role=operator&run=private-dev&spawn=private-dev',
+        const response: Response = await fetch(base + tool.expose.http.path + '?workspace=' + encodeURIComponent(workspace) + '&role=operator&run=private-dev&spawn=private-dev',
           { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceIds: ids, limit: 100 }) });
         const body = await response.json() as any;
         observations.push({ workspaceIds: ids, status: response.status, body });
         writeFileSync(join(evidence, 'portal-dev-preflight.json'), JSON.stringify({ tool, seed: devSeed, observations }, null, 2));
         assert.equal(response.status, 200, 'real activity projection must accept the public diagnostic read');
-        assert.ok(Array.isArray(body.data?.entries), 'real activity response must contain entries');
-        const names = body.data.entries.map((row: any) => row.tool_name);
+        const text = body.content?.find((block: any) => block.type === 'text')?.text;
+        assert.equal(typeof text, 'string', 'real HTTP projection must contain its JSON content block');
+        const data = JSON.parse(text);
+        assert.ok(Array.isArray(data.entries), 'real activity response must contain entries');
+        const names = data.entries.map((row: any) => row.tool_name);
         for (const name of included) assert.ok(names.includes(name), 'activity preflight must include ' + name);
         for (const name of excluded) assert.equal(names.includes(name), false, 'activity preflight must exclude ' + name);
       }
