@@ -20,6 +20,7 @@
  * `unknown`, never as healthy.
  */
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
@@ -130,6 +131,7 @@ export default defineTool({
     // fetch which has no client-side timeout) could otherwise run unbounded
     // and blow this tool's own budget. Reuses the same interactive default.
     const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;
+    const correlationId = randomUUID();
     const queryAttempt = metadata ? createStageAttempt({ rowId: '', onEvent: () => {} }) : undefined;
     let retrievalOutcome: 'fulfilled' | 'rejected' = 'rejected';
     const searchResult = await (async () => {
@@ -141,6 +143,7 @@ export default defineTool({
             query: args.query,
             workspaceId: ctx.workspaceId ?? '',
             scopeFilter: args.harness_slug ?? null,
+            correlationId,
             // Stage B over-fetch: retrieve a larger pool than we return so the
             // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
             // back to `limit`, so the caller-visible page size is unchanged — and it
@@ -191,9 +194,11 @@ export default defineTool({
       .map(({ source, ranker, status, rows, durationMs }) => ({ source, ranker, status, rows, durationMs }));
     metadata?.({ searchSemanticRead: {
       schemaVersion: 'semantic-read-v1',
+      correlationId,
       unit: 'ms',
       timing: 'source-call-wall-time-including-acquisition; query-build-to-terminal-not-acquisition',
       sourceCalls,
+      legs: describeSearchLegs(legs),
       queryDiagnostics,
     } });
 
