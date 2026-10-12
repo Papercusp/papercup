@@ -1087,6 +1087,8 @@ export async function listLifecycleJudgementTasks(
 export interface TaskLifecycleProbeUpdate {
   taskId: string;
   probe: object;
+  /** Set only by the judge for residue confirmed by the current healthy reconcile scan. */
+  terminalResidue?: boolean;
 }
 
 /**
@@ -1100,7 +1102,11 @@ export async function mergeTaskLifecycleProbes(
 ): Promise<number> {
   if (updates.length === 0) return 0;
   const sql = sqlOf(inject);
-  const payload = updates.map((update) => ({ taskId: update.taskId, probe: update.probe }));
+  const payload = updates.map((update) => ({
+    taskId: update.taskId,
+    probe: update.probe,
+    terminalResidue: update.terminalResidue === true,
+  }));
   const rows = await sql`
     UPDATE harness_shared.task_ledger t
        SET detail = jsonb_set(
@@ -1111,11 +1117,19 @@ export async function mergeTaskLifecycleProbes(
            ),
            updated_at = now()
       FROM (
-        SELECT x->>'taskId' AS task_id, x->'probe' AS probe
+        SELECT x->>'taskId' AS task_id,
+               x->'probe' AS probe,
+               CASE WHEN x->>'terminalResidue' = 'true' THEN TRUE ELSE FALSE END AS terminal_residue
           FROM jsonb_array_elements(${JSON.stringify(payload)}::text::jsonb) AS x
       ) u
      WHERE t.task_id = u.task_id
-       AND t.ended_at IS NULL
+       AND (
+         t.ended_at IS NULL OR (
+           u.terminal_residue
+           AND t.ended_at IS NOT NULL
+           AND t.state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+         )
+       )
        AND jsonb_typeof(u.probe) = 'object'
     RETURNING t.task_id
   `;

@@ -195,7 +195,7 @@ describe('reconcileTick — happy path', () => {
     expect(out.degraded).toBe(false);
   });
 
-  it('strands a row the kernel no longer has', async () => {
+  it('keeps a scoped row unresolved when systemd confirms nothing', async () => {
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'bbb222' })],
       scan: () => scanResult([]),
@@ -210,8 +210,9 @@ describe('reconcileTick — happy path', () => {
       // stranding, not about this host's live systemd state.
       checkScopesReleased: async () => new Set<string>(),
     });
-    expect(out.strandedCount).toBe(1);
-    expect(store.stranded[0]!.taskId).toBe('bbb222');
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['bbb222']);
+    expect(store.stranded).toHaveLength(0);
   });
 
   // WI-10005782: the scan's foreign display filter drops a wake executor's
@@ -410,7 +411,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId: 'ttt111' })]);
   });
 
-  it('still strands when checkScopesReleased confirms nothing', async () => {
+  it('keeps the scope unresolved when checkScopesReleased cannot confirm release', async () => {
     const checkScopesReleased = vi.fn(async () => new Set<string>());
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'uuu222' })],
@@ -418,9 +419,63 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       fs: memFs({}),
       checkScopesReleased,
     });
-    expect(out.strandedCount).toBe(1);
+    expect(out.strandedCount).toBe(0);
     expect(out.endedUnobservedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['uuu222']);
+    expect(store.stranded).toHaveLength(0);
     expect(store.endedUnobserved).toHaveLength(0);
+  });
+
+  it('refreshes cgroup metrics for a scoped row whose missing identity is still active in systemd', async () => {
+    const scopeUnit = 'pc-active111.scope';
+    const cgroupPath = `${OURS}/${scopeUnit}`;
+    const terminal = {
+      capturedAt: '2026-10-12T00:00:00.000Z',
+      scopeUnit,
+      cgroupPath,
+      invocationId: null,
+      loadState: 'loaded',
+      activeState: 'active',
+      serviceResult: null,
+      execMainCode: null,
+      execMainStatus: null,
+      memoryMaxBytes: null,
+      peakMemoryBytes: null,
+      peakMemorySource: 'unknown' as const,
+    };
+    const out = await reconcileTick({
+      listLive: async () => [row({
+        taskId: 'active111',
+        scopeUnit,
+        cgroupPath,
+        pid: 123,
+        processIdentity: 'linux:old-identity:123',
+      })],
+      scan: () => scanResult([]),
+      fs: memFs({
+        [`/sys/fs/cgroup${cgroupPath}/memory.current`]: '4096',
+        [`/sys/fs/cgroup${cgroupPath}/memory.peak`]: '8192',
+        [`/sys/fs/cgroup${cgroupPath}/cpu.stat`]: 'usage_usec 9876\n',
+        [`/sys/fs/cgroup${cgroupPath}/pids.current`]: '3',
+        [`/sys/fs/cgroup${cgroupPath}/pids.events`]: 'max 4\n',
+      }),
+      inspectTaskUnitTerminals: async () => new Map([[scopeUnit, terminal]]),
+    });
+
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['active111']);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.touched).toEqual([expect.objectContaining({
+      taskId: 'active111',
+      metrics: {
+        lastMemoryBytes: 4096,
+        cpuUsec: 9876,
+        pidsCurrent: 3,
+        pidsEventsMax: 4,
+      },
+    })]);
+    expect(store.touched[0]).not.toHaveProperty('pid');
+    expect(store.touched[0]).not.toHaveProperty('processIdentity');
   });
 
   it('only queries candidate units — rows whose scope IS visible in the scan are never asked about', async () => {
@@ -589,7 +644,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       scan: () => scanResult([]),
       fs: memFs({}),
     });
-    expect(out.summary.stranded + out.summary.endedUnobserved).toBe(1);
+    expect(out.summary.stranded + out.summary.endedUnobserved + out.summary.unresolved).toBe(1);
   });
 });
 
@@ -632,7 +687,8 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
       checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
     expect(out.degraded).toBe(false);
-    expect(out.strandedCount).toBe(1);
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['fff667']);
   });
 
   it('STILL records positive confirmations on a degraded scan', async () => {

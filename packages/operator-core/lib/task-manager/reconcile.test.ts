@@ -466,20 +466,25 @@ describe('reconcile — endedUnobserved (D-018)', () => {
     expect(r.endedUnobserved[0]!.reason).toMatch(/systemd confirms scope pc-nnn444\.scope was released/);
   });
 
-  it('still strands when the scope is absent and NOT in releasedScopes (regression)', () => {
+  it('keeps a scoped row unresolved when systemd has not confirmed release', () => {
     const r = reconcile(
       [row({ taskId: 'ooo555', scopeUnit: 'pc-ooo555.scope' })],
       [],
       { now: NOW, releasedScopes: new Set(['pc-someone-else.scope']) },
     );
     expect(r.endedUnobserved).toHaveLength(0);
-    expect(r.stranded).toEqual([{ taskId: 'ooo555', reason: 'scope pc-ooo555.scope holds no processes' }]);
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unresolved).toEqual([{
+      taskId: 'ooo555',
+      reason: 'scope pc-ooo555.scope holds no processes — systemd has not confirmed scope pc-ooo555.scope was released',
+    }]);
   });
 
-  it('strands as before when releasedScopes is omitted entirely (additive, never a new way to lose an escape)', () => {
+  it('keeps a scoped row unresolved when the release probe is unavailable', () => {
     const r = reconcile([row({ taskId: 'ppp666', scopeUnit: 'pc-ppp666.scope' })], [], { now: NOW });
     expect(r.endedUnobserved).toHaveLength(0);
-    expect(r.stranded).toHaveLength(1);
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unresolved).toHaveLength(1);
   });
 
   it('a row with no scopeUnit at all always strands — releasedScopes cannot apply to it', () => {
@@ -495,7 +500,7 @@ describe('reconcile — endedUnobserved (D-018)', () => {
     expect(r.stranded[0]!.taskId).toBe('qqq777');
   });
 
-  it('summarizeReconcile counts endedUnobserved separately from stranded', () => {
+  it('summarizeReconcile counts unconfirmed scoped rows separately from terminal verdicts', () => {
     const r = reconcile(
       [
         row({ taskId: 'rrr888', scopeUnit: 'pc-rrr888.scope' }),
@@ -504,7 +509,7 @@ describe('reconcile — endedUnobserved (D-018)', () => {
       [],
       { now: NOW, releasedScopes: new Set(['pc-rrr888.scope']) },
     );
-    expect(summarizeReconcile(r)).toMatchObject({ stranded: 1, endedUnobserved: 1 });
+    expect(summarizeReconcile(r)).toMatchObject({ stranded: 0, unresolved: 1, endedUnobserved: 1 });
   });
 });
 

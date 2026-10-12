@@ -98,6 +98,8 @@ export interface OverdueVerdict {
 export interface ReconcileResult {
   alive: AliveVerdict[];
   stranded: StrandedVerdict[];
+  /** Scoped rows whose absence systemd has not confirmed as a release. */
+  unresolved: StrandedVerdict[];
   /**
    * Rows absent from the scan the SAME way `stranded` rows are, but for which
    * the caller independently confirmed (via `ReconcileOptions.releasedScopes`,
@@ -166,10 +168,10 @@ export interface ReconcileOptions {
    * This function stays PURE by construction (see the header) — it never asks
    * systemd itself. The caller (`reconcile-tick.ts`) queries it for exactly the
    * scope units that are about to strand and passes the confirmed-released
-   * subset here, which is what turns an otherwise-`stranded` verdict into
-   * `endedUnobserved` instead. Omitted or empty ⇒ every candidate strands, the
-   * pre-D-018 behavior — this option is additive, never a new way to LOSE a
-   * genuine escape.
+   * subset here, which is what turns an otherwise-unresolved scoped row into
+   * `endedUnobserved`. A scoped row absent from the process scan remains
+   * unresolved unless its unit is present in this set; missing/empty means no
+   * release was confirmed. Unscoped rows retain the stranded behavior.
    */
   releasedScopes?: ReadonlySet<string>;
   /**
@@ -195,14 +197,20 @@ function pushAbsent(
   releasedScopes: ReadonlySet<string> | undefined,
   stranded: StrandedVerdict[],
   endedUnobserved: EndedUnobservedVerdict[],
+  unresolved: StrandedVerdict[],
 ): void {
-  if (row.scopeUnit && releasedScopes?.has(row.scopeUnit)) {
+  if (!row.scopeUnit) {
+    stranded.push({ taskId: row.taskId, reason });
+  } else if (releasedScopes?.has(row.scopeUnit)) {
     endedUnobserved.push({
       taskId: row.taskId,
       reason: `${reason} — but systemd confirms scope ${row.scopeUnit} was released in good order (all its processes exited); the owning process most likely died before recording the exit`,
     });
   } else {
-    stranded.push({ taskId: row.taskId, reason });
+    unresolved.push({
+      taskId: row.taskId,
+      reason: `${reason} — systemd has not confirmed scope ${row.scopeUnit} was released`,
+    });
   }
 }
 
@@ -297,6 +305,7 @@ export function reconcile(
   const alive: AliveVerdict[] = [];
   const stranded: StrandedVerdict[] = [];
   const endedUnobserved: EndedUnobservedVerdict[] = [];
+  const unresolved: StrandedVerdict[] = [];
   const overdue: OverdueVerdict[] = [];
   const tooYoung: string[] = [];
   /** Scopes and pids claimed by a live ledger row — everything left over is residue. */
@@ -364,6 +373,7 @@ export function reconcile(
           opts.releasedScopes,
           stranded,
           endedUnobserved,
+          unresolved,
         );
       }
       continue;
@@ -399,6 +409,7 @@ export function reconcile(
         opts.releasedScopes,
         stranded,
         endedUnobserved,
+        unresolved,
       );
     }
   }
@@ -458,6 +469,7 @@ export function reconcile(
     alive,
     stranded,
     endedUnobserved,
+    unresolved,
     unaccounted: groupResidue(unaccountedProcs),
     abandonedWindow: groupResidue(abandonedWindowProcs),
     consoleWindow: groupResidue(consoleWindowProcs),
@@ -480,6 +492,7 @@ function pushOverdue(row: TaskRow, now: number, out: OverdueVerdict[]): void {
 export function summarizeReconcile(r: ReconcileResult): {
   alive: number;
   stranded: number;
+  unresolved: number;
   /** D-018: unobserved-but-systemd-confirmed-clean endings. Counted separately
    *  from `stranded` so the escape/anomaly count is never inflated by routine
    *  shutdowns nobody happened to observe. */
@@ -504,6 +517,7 @@ export function summarizeReconcile(r: ReconcileResult): {
   return {
     alive: r.alive.length,
     stranded: r.stranded.length,
+    unresolved: r.unresolved.length,
     endedUnobserved: r.endedUnobserved.length,
     unaccounted: r.unaccounted.length,
     unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),

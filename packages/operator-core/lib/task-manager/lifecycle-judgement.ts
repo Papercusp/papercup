@@ -120,7 +120,7 @@ export interface LifecycleEvaluation {
   candidates: LifecycleCandidate[];
   suppressedByKeep: string[];
   suppressedByVerdict: string[];
-  probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe }>;
+  probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe; terminalResidue?: boolean }>;
 }
 
 export interface LifecycleVerdictEnforcement {
@@ -183,7 +183,7 @@ export interface LifecycleJudgementDeps {
     verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>,
     context: LifecycleVerdictAuditContext,
   ): Promise<LifecycleVerdictEnforcement[]>;
-  persistProbes(updates: readonly { taskId: string; probe: ProcessLifecycleProbe }[]): Promise<number>;
+  persistProbes(updates: readonly { taskId: string; probe: ProcessLifecycleProbe; terminalResidue?: boolean }[]): Promise<number>;
   upsertCandidate(
     conditionKey: string,
     candidate: LifecycleCandidate,
@@ -415,7 +415,8 @@ export async function enforceLifecycleVerdicts(
       continue;
     }
 
-    if (row.state === 'unaccounted') {
+    const terminalResidue = kinds.includes('terminal-residue');
+    if (row.state === 'unaccounted' || terminalResidue) {
       if (!row.scopeUnit) {
         outcomes.push({
           taskId,
@@ -526,7 +527,7 @@ export function evaluateLifecycleCandidates(input: {
   const candidates: LifecycleCandidate[] = [];
   const suppressedByKeep: string[] = [];
   const suppressedByVerdict: string[] = [];
-  const probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe }> = [];
+  const probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe; terminalResidue?: boolean }> = [];
 
   for (const row of input.rows) {
     if (row.class === 'agent-session' || isAutoReapExempt(row)) continue;
@@ -583,14 +584,20 @@ export function evaluateLifecycleCandidates(input: {
       }
       nextProbe = {
         version: 1,
-        launcherEndedSinceMs: null,
-        logPath: null,
-        logMtimeMs: null,
+        launcherEndedSinceMs: terminalResidue ? (prior?.launcherEndedSinceMs ?? null) : null,
+        logPath: terminalResidue ? (prior?.logPath ?? null) : null,
+        logMtimeMs: terminalResidue ? (prior?.logMtimeMs ?? null) : null,
         cpuUsec: nextCpuUsec,
         cpuSampledAtMs,
         lastActivityAtMs,
       };
-      if (!sameProbe(prior, nextProbe)) probeUpdates.push({ taskId: row.taskId, probe: nextProbe });
+      if (!sameProbe(prior, nextProbe)) {
+        probeUpdates.push({
+          taskId: row.taskId,
+          probe: nextProbe,
+          ...(terminalResidue ? { terminalResidue: true } : {}),
+        });
+      }
     }
 
     if (row.state === 'pending' || row.state === 'running') {
@@ -704,10 +711,10 @@ export function evaluateLifecycleCandidates(input: {
       metrics: {
         cpuUsec: finiteNumber(row.cpuUsec),
         cpuActivity: cpuActivityEvidence(
-          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running'
+          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running' || terminalResidue
             ? finiteNumber(row.cpuUsec)
             : null,
-          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running'
+          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running' || terminalResidue
             ? currentCpuSampledAtMs
             : null,
           prior,

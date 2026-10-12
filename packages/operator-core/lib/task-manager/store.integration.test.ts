@@ -1366,9 +1366,10 @@ describe('process-lifecycle judgement ledger seam (P-009)', () => {
     expect(rows.map((task) => task.taskId).sort()).toEqual(['live-row', 'terminal-residue', 'unaccounted-row']);
   });
 
-  it('persists probe clocks additively and never mutates an ended row', async () => {
+  it('persists probes for live rows and explicitly confirmed terminal residue only', async () => {
     await insertAgentSessionTask({ taskId: 'live-probe', coordOwnerId: 'su-live' });
     await insertAgentSessionTask({ taskId: 'ended-probe', coordOwnerId: 'su-ended', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'ended-residue-probe', coordOwnerId: 'su-ended-residue', state: 'exited' });
     const probe = {
       version: 1,
       launcherEndedSinceMs: 123,
@@ -1382,18 +1383,23 @@ describe('process-lifecycle judgement ledger seam (P-009)', () => {
       store.mergeTaskLifecycleProbes([
         { taskId: 'live-probe', probe },
         { taskId: 'ended-probe', probe },
+        { taskId: 'ended-residue-probe', probe, terminalResidue: true },
       ]),
-    ).resolves.toBe(1);
+    ).resolves.toBe(2);
 
     const rows = await db.sql`
       SELECT task_id, detail FROM harness_shared.task_ledger
-       WHERE task_id IN ('live-probe', 'ended-probe') ORDER BY task_id
+       WHERE task_id IN ('live-probe', 'ended-probe', 'ended-residue-probe') ORDER BY task_id
     `;
     expect(rows[0]).toEqual({
       task_id: 'ended-probe',
       detail: { coordOwnerId: 'su-ended' },
     });
     expect(rows[1]).toEqual({
+      task_id: 'ended-residue-probe',
+      detail: { coordOwnerId: 'su-ended-residue', processLifecycleProbe: probe },
+    });
+    expect(rows[2]).toEqual({
       task_id: 'live-probe',
       detail: { coordOwnerId: 'su-live', processLifecycleProbe: probe },
     });

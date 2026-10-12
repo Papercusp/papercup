@@ -282,6 +282,42 @@ describe('evaluateLifecycleCandidates', () => {
     ]);
   });
 
+  it('reports CPU movement for confirmed terminal residue and marks only that probe for terminal persistence', () => {
+    const sampledAtMs = NOW - 120_000;
+    const prior: ProcessLifecycleProbe = {
+      version: 1,
+      launcherEndedSinceMs: null,
+      logPath: '/logs/terminal-cpu.log',
+      logMtimeMs: NOW - 300_000,
+      cpuUsec: 100,
+      cpuSampledAtMs: sampledAtMs,
+      lastActivityAtMs: sampledAtMs,
+    };
+    const taskId = 'terminal-cpu';
+    const result = evaluate({
+      rows: [row({
+        taskId,
+        state: 'stranded',
+        endedAt: new Date(NOW - 16 * 60_000).toISOString(),
+        lastSeenAt: new Date(NOW).toISOString(),
+        cpuUsec: 101,
+        detail: { processLifecycleProbe: prior },
+      })],
+      residue: [taskId],
+    });
+
+    expect(result.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'active',
+      previous: { cpuUsec: 100, sampledAtMs },
+      current: { cpuUsec: 101, sampledAtMs: NOW },
+    });
+    expect(result.probeUpdates).toEqual([{
+      taskId,
+      terminalResidue: true,
+      probe: { ...prior, cpuUsec: 101, cpuSampledAtMs: NOW, lastActivityAtMs: NOW },
+    }]);
+  });
+
   it('does not file a confirmed unaccounted scope during its first 15 minutes', () => {
     const young = row({
       taskId: 'young-unaccounted',

@@ -47,6 +47,8 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ramTmpRoot } from '@papercusp/orchestrator';
 import { readProcessIdentity } from '../process-identity';
 
+const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
+
 /** Normal SDK cleanup is in the worker; its SIGKILL leaves this durable receipt. */
 export async function cleanupEndedBrowserDirectory(row: TaskRow,
   readIdentity: typeof readProcessIdentity = readProcessIdentity): Promise<void> {
@@ -154,11 +156,10 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });
   const live = await listLive(deps.workspaceId);
 
-  // D-018: for a live row whose scope is NOT visible in this scan — i.e. about to
-  // strand — ask systemd whether that scope has actually been released before
-  // `reconcile` decides between `stranded` (escape/anomaly) and
-  // `endedUnobserved` (a routine end nobody happened to observe). Only query the
-  // candidates that need it, never every live row.
+  // D-018: for a live row whose scope is NOT visible in this scan, ask systemd
+  // whether it has actually been released. A scoped row stays unresolved unless
+  // systemd positively confirms release; active or unavailable is not evidence
+  // that its processes are gone. Only query candidate units, never every row.
   const seenScopes = new Set<string>();
   for (const p of scan.processes) {
     const unit = scopeUnitOf(p);
@@ -184,7 +185,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         [...terminalByUnit.entries()]
           .filter(([, terminal]) => {
             const state = terminal.activeState;
-            return Boolean(state && !['active', 'activating', 'reloading', 'deactivating'].includes(state));
+            return Boolean(state && !LIVE_SCOPE_ACTIVE_STATES.has(state));
           })
           .map(([unit]) => unit),
       );
@@ -248,27 +249,49 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     if (unit && !scopeDirByUnit.has(unit)) scopeDirByUnit.set(unit, p.cgroupPath);
   }
   const byTaskId = new Map(live.map((r) => [r.taskId, r]));
+  const activeScopeMetricUpdates = result.unresolved.flatMap((verdict) => {
+    const row = byTaskId.get(verdict.taskId);
+    const unit = row?.scopeUnit;
+    if (!unit) return [];
+    const snapshot = terminalByUnit.get(unit);
+    if (!snapshot || !snapshot.activeState || !LIVE_SCOPE_ACTIVE_STATES.has(snapshot.activeState) || !snapshot.cgroupPath) {
+      return [];
+    }
+    const sample = sampleCgroup(absCgroupDir(snapshot.cgroupPath), fs);
+    return [{
+      taskId: row.taskId,
+      metrics: {
+        lastMemoryBytes: sample.memoryBytes,
+        cpuUsec: sample.cpuUsec,
+        pidsCurrent: sample.pidsCurrent,
+        pidsEventsMax: sample.pidsEventsMax,
+      },
+    }];
+  });
 
   const touched = await touchAlive(
-    result.alive.map((a) => {
-      const row = byTaskId.get(a.taskId);
-      const dir = row?.scopeUnit ? scopeDirByUnit.get(row.scopeUnit) : undefined;
-      const sample = dir ? sampleCgroup(absCgroupDir(dir), fs) : null;
-      return {
-        taskId: a.taskId,
-        pid: a.pid,
-        processIdentity: a.processIdentity,
-        metrics: sample
-          ? {
-              lastMemoryBytes: sample.memoryBytes,
-              peakMemoryBytes: sample.peakMemoryBytes,
-              cpuUsec: sample.cpuUsec,
-              pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
-              pidsEventsMax: sample.pidsEventsMax,
-            }
-          : { pidsCurrent: a.pidsSeen },
-      };
-    }),
+    [
+      ...result.alive.map((a) => {
+        const row = byTaskId.get(a.taskId);
+        const dir = row?.scopeUnit ? scopeDirByUnit.get(row.scopeUnit) : undefined;
+        const sample = dir ? sampleCgroup(absCgroupDir(dir), fs) : null;
+        return {
+          taskId: a.taskId,
+          pid: a.pid,
+          processIdentity: a.processIdentity,
+          metrics: sample
+            ? {
+                lastMemoryBytes: sample.memoryBytes,
+                peakMemoryBytes: sample.peakMemoryBytes,
+                cpuUsec: sample.cpuUsec,
+                pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
+                pidsEventsMax: sample.pidsEventsMax,
+              }
+            : { pidsCurrent: a.pidsSeen },
+        };
+      }),
+      ...activeScopeMetricUpdates,
+    ],
   );
 
   // ── destructive writes only on a trustworthy scan ────────────────────────
