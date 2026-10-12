@@ -2456,7 +2456,9 @@ dependency_generation_copy_with_progress() (
   if [ "$reflink" = --rsync-checksum ]; then
     # Pinned independent snapshots keep their staging tree across interruption.
     # Checksums, rather than size/mtime, authorize reuse of a completed file.
-    rsync -aH --checksum --delete --partial --stats "$src/" "$dest/" &
+    # Optional filters exclude live caches before traversing them, preserving
+    # this helper's existing progress and cancellation contract.
+    rsync -aH --checksum --delete --partial --stats "${@:4}" "$src/" "$dest/" &
   elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
