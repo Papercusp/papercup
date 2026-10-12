@@ -403,6 +403,7 @@ function upstreamProjectionRecoveryInstruction(
     );
   }
   if (recoveryToolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
+  if (recoveryToolName === 'plans:start') return PLANS_START_RECEIPT_RECOVERY;
   const rawDispatch =
     `tools:invoke { name:'${recoveryToolName}', args:{ …original args, payloadTier:'full' } }`;
   const projectionRecovery =
@@ -737,6 +738,33 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
   'issueId',
   'previousIssueId',
 ] as const;
+
+// A failed admission does not roll back approval or promotion. Retain the
+// committed legs beside the refusal; the immutable spill holds full diagnostics.
+const PLANS_START_RECEIPT_PRESERVE_PATHS = [
+  'ok', 'counts.ok', 'counts.failed',
+  'results[].ok', 'results[].slug', 'results[].harnessSlug', 'results[].error',
+  'results[].autoApproved', 'results[].transitioned',
+  'results[].promotion.promoted', 'results[].promotion.skipped',
+  'results[].promotion.flagOff', 'results[].promotionError',
+  'results[].promotedBlock.changed', 'results[].promotedBlock.rows',
+  'results[].promotedBlockError',
+  'results[].admission.ready', 'results[].admission.reason',
+  'results[].admission.message', 'results[].admissionError',
+  'results[].claimSpecBinding.ok', 'results[].claimSpecBindingError',
+  'results[].message', 'results[].promotion.workItems[].workItemId',
+] as const;
+
+const PLANS_START_RECEIPT_RECOVERY =
+  'plans:start may have approved the plan and promoted items before returning a refusal. ' +
+  'Do NOT repeat plans:start to recover its receipt. Page the original response with capability:read; ' +
+  'fields already omitted upstream cannot be recovered from that copy. Read plans:get for each preserved ' +
+  'slug/harnessSlug and work_items:get for promoted workItemIds to inspect current state before follow-up.';
+
+function isPlansStartCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'plans:start' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'plans:start');
+}
 
 function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'work_items:complete' ||
@@ -1204,7 +1232,9 @@ function volatileScratchRecoveryForTool(
             'Do NOT repeat this non-idempotent emit; inspect completionReceipt if present.'
           : target === 'improvements:agent-review'
             ? 'The peer-review claim may have committed. Do NOT repeat improvements:agent-review; inspect the claim before follow-up.'
-            : undefined;
+            : target === 'plans:start'
+              ? PLANS_START_RECEIPT_RECOVERY
+              : undefined;
   return note
     ? { cursor: recovery.cursor, next: recovery.next + ' ' + note }
     : recovery;
@@ -1448,6 +1478,11 @@ function spillRecoveryNote(
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  if (isPlansStartCall(input)) {
+    return (input.upstreamProjection || innerTruncationMarkers.length > 0
+      ? 'The reference preserves only the emitted response; already-omitted fields cannot be recovered by paging. ' + referenceReader
+      : recoverable) + PLANS_START_RECEIPT_RECOVERY;
+  }
   if (isWorkItemsCompleteCall(input)) {
     return (
       (input.upstreamProjection || innerTruncationMarkers.length > 0
@@ -2034,6 +2069,33 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
           ...(input.aggregate ? { aggregate: input.aggregate } : {}),
         },
       },
+    } as T;
+  }
+  const startReceipt = isPlansStartCall(input.opts) ? workItemsBulkReceiptBody(input.result) : undefined;
+  if (startReceipt) {
+    const recovery: BoundedPayloadRecovery = reference
+      ? {
+          cursor: { kind: 'scratch-page', tool: 'capability:read', args: { file_path: reference.uri, byte_offset: 0, byte_limit: 3_072 } },
+          next: PLANS_START_RECEIPT_RECOVERY,
+        }
+      : {
+          cursor: { kind: 'unavailable', tool: 'plans:get', args: {}, reason: 'spill-write-failed' },
+          next: PLANS_START_RECEIPT_RECOVERY,
+        };
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(projectBoundedPayload(startReceipt, {
+        toolName: 'plans:start', tier: 'trimmed', forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
+        preservePaths: PLANS_START_RECEIPT_PRESERVE_PATHS,
+        recovery: preferVolatileScratchRecovery(volatileRecovery, recovery),
+      })) }],
+      _meta: { ...(input.result._meta ?? {}), resultDoor: {
+        truncated: true, structural: true, spillPath, spillUri,
+        spillFailed: spillPath == null, spillError, spillErrorCode,
+        originalChars: input.sourceBytes, reason: input.reason,
+      } },
     } as T;
   }
   const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
@@ -3099,7 +3161,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
             },
             next:
-              isWorkItemsCompleteCall(opts)
+              isPlansStartCall(opts)
+                ? PLANS_START_RECEIPT_RECOVERY
+                : isWorkItemsCompleteCall(opts)
                 ? WORK_ITEMS_COMPLETE_SPILL_RECOVERY +
                   (upstreamProjection
                     ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
@@ -3274,6 +3338,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(isWorkItemsReleaseCall(opts)
         ? WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS
         : []),
+      ...(isPlansStartCall(opts) ? PLANS_START_RECEIPT_PRESERVE_PATHS : []),
       ...(opts.preservePaths ?? []),
       // code:run's `summary` is the script's authored return value; `state` is
       // replay support added by the sandbox. The generic identity projector
