@@ -44,6 +44,10 @@ const EXACT_REPRO_CURRENT = CURRENT.replace(`slug: ${SLUG}`, `slug: ${EXACT_REPR
     '**State:** P-001 is done.\n\n**Next:** Continue with acceptance review.',
   )
   .replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
+const EXACT_REPRO_WITH_TERMINAL_P008 = EXACT_REPRO_CURRENT.replace(
+  '- **P-002** `done` Finished item.',
+  '- **P-002** `done` Finished item.\n- **P-008** `done` Finished item.',
+);
 
 const GROUPED_COMPLETION = CURRENT.replace(
   '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
@@ -721,6 +725,65 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
+  });
+
+  it('accepts committed closure authority as terminal completion evidence', () => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_CURRENT,
+      'P-002 closure authority is committed.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+    expect(result.newBody).toContain('P-002 closure authority is committed.');
+  });
+
+  it.each([
+    'P-002 closure authority is not committed.',
+    'P-002 closure authority will be committed.',
+    'P-002 committed the closure authority for a later review.',
+  ])('still rejects negated, future, or non-authoritative closure prose: %s', (state) => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_CURRENT,
+      state,
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-002', status: 'done' })],
+    });
+  });
+
+  it('accepts a short named foreign-plan reference to a terminal local id', () => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_WITH_TERMINAL_P008,
+      'Evaluation UI integration remains open behind modernization P-008.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('does not treat a same-plan name as a foreign-plan reference', () => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_WITH_TERMINAL_P008,
+      'Evaluation UI integration remains open behind deterministic P-008.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-008', status: 'done' })],
+    });
   });
 
   it.each([
