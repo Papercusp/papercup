@@ -776,10 +776,12 @@ export async function checkCodexRolloutPersistence(
     const newly: typeof stalled = [];
     for (const item of stalled) {
       try {
-        await (opts.rail?.broadcast ?? broadcastSevereEvent)({
+        const event = {
           conditionKey: codexRolloutConditionKey('persistence', item.workspaceId, item.snapshot.sessionId, item.snapshot.ownerId),
           summary: 'Codex rollout persistence stalled', body: escalationBody(item.snapshot, item.reason, now), oneShot: true,
-        });
+        };
+        if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
       } catch { /* The owner-notification leg is independent. */ }
       const phase = PHASE_PREFIX + item.snapshot.sessionId;
       let claimed: Array<{ phase: string }> = [];
@@ -816,10 +818,12 @@ export async function checkCodexRolloutPersistence(
     const newlyProviderFailed: ProviderFailureObservation[] = [];
     for (const item of providerFailures) {
       try {
-        await (opts.rail?.broadcast ?? broadcastSevereEvent)({
+        const event = {
           conditionKey: codexRolloutConditionKey('provider', item.workspaceId, item.snapshot.sessionId, item.snapshot.ownerId),
           summary: 'Codex provider failures repeated', body: providerEscalationBody(item, now), oneShot: true,
-        });
+        };
+        if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
       } catch { /* The owner-notification leg is independent. */ }
       const phase = PROVIDER_FAILURE_PHASE_PREFIX + item.snapshot.sessionId;
       let claimed: Array<{ phase: string }> = [];
