@@ -350,9 +350,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  if (inspectorControl) {',
             '    const { profile } = await inspectorControl.post("Profiler.stop");',
             '    const controlStart = inspectorControl.startCallWindow;',
-            '    const controlWorkWindow = { possibleStartUs: elapsedUs(controlStart.returnedNs, workStartNs), definiteStartUs: elapsedUs(controlStart.startedNs, workStartNs), definiteEndUs: elapsedUs(controlStart.returnedNs, workEndNs), possibleEndUs: elapsedUs(controlStart.startedNs, workEndNs) };',
-            '    const controlHotFrameWindowsUs = includeSampleChains ? hotFrameWindowsNs.map(([startedNs, endedNs]) => ({ possibleStartUs: elapsedUs(controlStart.returnedNs, startedNs), definiteStartUs: elapsedUs(controlStart.startedNs, startedNs), definiteEndUs: elapsedUs(controlStart.returnedNs, endedNs), possibleEndUs: elapsedUs(controlStart.startedNs, endedNs) })) : undefined;',
-            '    inspectorControlCapture = { profile: summarize(profile, controlWorkWindow, false, controlHotFrameWindowsUs), hotFrameWindowsUs: controlHotFrameWindowsUs };',
+            '    const controlWorkWindow = { possibleStartUs: elapsedUs(controlStart.startedNs, workStartNs), definiteStartUs: elapsedUs(controlStart.startedNs, workStartNs), definiteEndUs: elapsedUs(controlStart.startedNs, workEndNs), possibleEndUs: elapsedUs(controlStart.startedNs, workEndNs) };',
+            '    const controlHotFrameWindowsUs = includeSampleChains ? hotFrameWindowsNs.map(([startedNs, endedNs]) => ({ possibleStartUs: elapsedUs(controlStart.startedNs, startedNs), definiteStartUs: elapsedUs(controlStart.startedNs, startedNs), definiteEndUs: elapsedUs(controlStart.startedNs, endedNs), possibleEndUs: elapsedUs(controlStart.startedNs, endedNs) })) : undefined;',
+            '    inspectorControlCapture = { profile: summarize(profile, controlWorkWindow, false, controlHotFrameWindowsUs), hotFrameWindowsUs: controlHotFrameWindowsUs, startCallUs: elapsedUs(controlStart.startedNs, controlStart.returnedNs) };',
             '    inspectorControl.session.disconnect();',
             '  }',
             '  const workload = { hotFrameCalls: hotFrameCalls - beforeWork.hotFrameCalls, churnedFunctions: churnedFunctions - beforeWork.churnedFunctions };',
@@ -605,7 +605,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           timing?: { startCallUs: number; workDurationUs: number; stopCallUs: number };
           durationMs?: number;
           workerGapMaxMs: number;
-          inspectorControl?: { profile: TimedProfile; hotFrameWindowsUs?: TimedWindow[] };
+          inspectorControl?: { profile: TimedProfile; hotFrameWindowsUs?: TimedWindow[]; startCallUs: number };
           hotFrameWindowsUs?: TimedWindow[];
           profile: TimedProfile;
         };
@@ -663,10 +663,14 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             workerGapMaxMs: capture.workerGapMaxMs,
             profile: summarizeProfile(profile, capture.hotFrameWindowsUs),
             ...(capture.inspectorControl ? {
-              inspectorControl: summarizeProfile(
-                capture.inspectorControl.profile,
-                capture.inspectorControl.hotFrameWindowsUs,
-              ),
+              inspectorControl: {
+                profileTimeOrigin: 'Profiler.start call invocation',
+                startCallUs: capture.inspectorControl.startCallUs,
+                profile: summarizeProfile(
+                  capture.inspectorControl.profile,
+                  capture.inspectorControl.hotFrameWindowsUs,
+                ),
+              },
             } : {}),
           };
         };
