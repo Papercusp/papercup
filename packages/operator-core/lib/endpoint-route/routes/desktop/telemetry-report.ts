@@ -21,6 +21,18 @@ export function normalizeSyncTransportPayload(value: unknown): FallbackDecision 
   return { eligible: 1, applied: input.applied, reason: input.reason, scope: input.scope };
 }
 
+/** Shared local storage path for desktop and authenticated hosted diagnostics. */
+export function acceptSyncTransportObservation(body: unknown, recordFallback = observeFallback): Response {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return Response.json({ error: 'invalid transport observation' }, { status: 400 });
+  }
+  const input = body as Record<string, unknown>;
+  const decision = input.kind === 'fallback-observation' ? normalizeSyncTransportPayload(input.payload) : null;
+  if (!decision) return Response.json({ error: 'invalid transport observation' }, { status: 400 });
+  const accepted = recordFallback('browser-sync-transport', decision, { processTag: 'browser-sync-ingress' });
+  return Response.json({ ok: accepted }, { status: accepted ? 202 : 503 });
+}
+
 const REPORTS_KEY = 'telemetry_reports';
 const WIZARD_KEY = 'setup_wizard_state';
 
@@ -76,10 +88,7 @@ const post = defineTool({
     }
     const kind = typeof body.kind === 'string' ? body.kind : 'unknown';
     if (kind === 'fallback-observation') {
-      const decision = normalizeSyncTransportPayload(body.payload);
-      if (!decision) return Response.json({ error: 'invalid transport observation' }, { status: 400 });
-      const accepted = observeFallback('browser-sync-transport', decision, { processTag: 'browser-sync-ingress' });
-      return Response.json({ ok: accepted }, { status: accepted ? 202 : 503 });
+      return acceptSyncTransportObservation(body);
     }
     if (kind.length > 64) return Response.json({ error: 'kind too long' }, { status: 400 });
     const claimsRenderCrash = kind === 'crash' &&

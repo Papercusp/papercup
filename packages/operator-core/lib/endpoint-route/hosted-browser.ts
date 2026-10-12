@@ -66,10 +66,12 @@ import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
 import { createHostedTutorialProgressRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 import { createHostedTutorialAssistanceRoutes } from './routes/hosted-tutorial-assistance-runtime';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
+import { acceptSyncTransportObservation } from './routes/desktop/telemetry-report';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
 export const HOSTED_BROWSER_SSE_PATH = '/hosted/browser/sse' as const;
+export const HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH = '/hosted/browser/fallback-observation' as const;
 export const HOSTED_BROWSER_CONNECTION_PATH = '/hosted/browser/workspace-hosts/connection' as const;
 export const HOSTED_BROWSER_PROVISION_PATH = '/hosted/browser/workspace-hosts/provision' as const;
 export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/action' as const;
@@ -84,6 +86,7 @@ export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: HOSTED_BROWSER_REST_QUERY_PATH, access: 'authenticated' },
   { method: 'GET', path: HOSTED_BROWSER_SSE_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_CONNECTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_PROVISION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
@@ -119,6 +122,8 @@ const HOSTED_FIRST_WORKSPACE_AUTH = {
 type AnyRoute = RouteDefinition<any>;
 
 export interface HostedBrowserRouteDependencies {
+  /** Same strict recorder as desktop ingress; payloads cannot choose storage scope. */
+  readonly recordTransportFallback?: Parameters<typeof acceptSyncTransportObservation>[1];
   /** Injectable in route tests; production uses the canonical tenant wrapper. */
   readonly runTenant?: HostedTenantContextRunner;
   readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
@@ -543,6 +548,23 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const subscribeEvents = deps.subscribe ?? subscribe;
   const backfill = deps.backfillSince ?? backfillSince;
 
+  const fallbackObservation = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
+    auth: HOSTED_VIEW_AUTH,
+    cors: { origins: [origin] },
+    sampleRate: 0,
+    async handler(request, ctx) {
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const headerError = workspaceHeaderMismatch(request, selection.principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      return noStore(acceptSyncTransportObservation(await request.json().catch(() => null), deps.recordTransportFallback));
+    },
+  });
+
   const query = defineTool({
     method: 'GET',
     path: HOSTED_BROWSER_REST_QUERY_PATH,
@@ -790,7 +812,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance],
+    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

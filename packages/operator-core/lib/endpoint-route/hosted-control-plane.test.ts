@@ -7,7 +7,7 @@ import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_NOW_MS } from '.
 import { HOSTED_AUTH_CALLBACK_PATH, HOSTED_AUTH_FLOW_COOKIE } from './routes/hosted-auth';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult, HostedAuthFlowStore } from './routes/hosted-auth/flow';
 import { assembleHostedControlPlane } from './hosted-control-plane';
-import { createHostedBrowserRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_REST_QUERY_PATH } from './hosted-browser';
+import { createHostedBrowserRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_REST_QUERY_PATH, HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH } from './hosted-browser';
 import { HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST } from './hosted-profile';
 import { ALL_ROUTES } from './routes';
 
@@ -103,9 +103,10 @@ describe('assembleHostedControlPlane', () => {
     });
     let active = true;
     const runTenant = vi.fn(async (_context: VerifiedTenantServerContext) => null as never);
+    const recordTransportFallback = vi.fn(() => true);
     const browser = createHostedBrowserRoutes({
       publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE_ID,
-      dependencies: { runTenant },
+      dependencies: { runTenant, recordTransportFallback },
     });
     const plane = assembleHostedControlPlane({
       provider: createFakeHostedIdentityProvider(), publicOrigin: ORIGIN,
@@ -118,7 +119,7 @@ describe('assembleHostedControlPlane', () => {
       },
       membershipAuthority: {
         resolveActive: async () => active ? membership : null,
-        workspaceBelongsToOrganization: async () => false,
+        workspaceBelongsToOrganization: async () => true,
       },
       // A custom registry replaces the default; retain the health leaves that
       // the complete production allowlist requires.
@@ -149,8 +150,42 @@ describe('assembleHostedControlPlane', () => {
       expect((await plane.app.request(requestPath, { method, headers })).status).toBe(403);
     }
     expect(runTenant).toHaveBeenCalledTimes(1);
+
+    // Exercise the mounted production auth stack, rather than calling only the leaf.
+    const diagnosticsPath = `/api${HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH}`;
+    const transportBody = JSON.stringify({ kind: 'fallback-observation', payload: {
+      source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1,
+      applied: 0, reason: 'preferred-unavailable', scope: 'SSE',
+    } });
+    expect((await plane.app.request(diagnosticsPath, {
+      method: 'POST', headers: { origin: ORIGIN }, body: transportBody,
+    })).status).toBe(401);
+    expect((await plane.app.request(diagnosticsPath, {
+      method: 'POST', headers: { cookie, origin: ORIGIN }, body: transportBody,
+    })).status).toBe(403);
+    expect(recordTransportFallback).not.toHaveBeenCalled();
+    if (!sessionStore.current) throw new Error('test session must exist');
+    sessionStore.current = { ...sessionStore.current, workspaceId: 'tenant-a' };
+    expect((await plane.app.request(diagnosticsPath, {
+      method: 'POST', headers: { cookie, origin: ORIGIN, 'content-type': 'application/json' }, body: transportBody,
+    })).status).toBe(202);
+    expect(recordTransportFallback).toHaveBeenCalledExactlyOnceWith('browser-sync-transport', {
+      eligible: 1, applied: 0, reason: 'preferred-unavailable', scope: 'SSE',
+    }, { processTag: 'browser-sync-ingress' });
+    expect((await plane.app.request(diagnosticsPath, {
+      method: 'POST', headers: { cookie, origin: 'https://untrusted.example' }, body: transportBody,
+    })).status).toBe(403);
+    expect((await plane.app.request(diagnosticsPath, { method: 'GET', headers: { cookie } })).status).toBe(404);
+    expect((await plane.app.request('/api/desktop/telemetry-report', {
+      method: 'POST', headers: { cookie, origin: ORIGIN }, body: transportBody,
+    })).status).toBe(404);
+    expect(recordTransportFallback).toHaveBeenCalledTimes(1);
     active = false;
     expect((await plane.app.request(path, { headers: { cookie } })).status).toBe(403);
+    expect((await plane.app.request(diagnosticsPath, {
+      method: 'POST', headers: { cookie, origin: ORIGIN }, body: transportBody,
+    })).status).toBe(403);
+    expect(recordTransportFallback).toHaveBeenCalledTimes(1);
     expect(runTenant).toHaveBeenCalledTimes(1);
   });
 

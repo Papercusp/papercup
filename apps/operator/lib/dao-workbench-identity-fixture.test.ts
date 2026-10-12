@@ -89,6 +89,23 @@ describe('native DAO synthetic identity isolation', () => {
     expect(verifyEd25519(Buffer.from(JSON.stringify({ ...payload, device_label: 'altered' })), fixture.device.publicKey, signature)).toBe(false);
     expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), fixture.hive.publicKey, signature)).toBe(false);
   });
+  it('keeps consecutive fixture keys distinct despite the production keychain cache', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dao-keychain-cache-test-'));
+    let restore = () => {};
+    cleanup = () => { restore(); rmSync(dir, { recursive: true, force: true }); };
+    const first = JSON.parse(readFileSync(prepareIdentityFixture(join(dir, 'first')), 'utf8'));
+    const second = JSON.parse(readFileSync(prepareIdentityFixture(join(dir, 'second')), 'utf8'));
+    expect(second.keychainId).not.toBe(first.keychainId);
+    for (const fixture of [first, second]) {
+      restore = installIdentityFixture(fixture, { PAPERCUSP_VERIFY_TAURI_ISOLATED: '1' });
+      try {
+        const body = await createDeviceAttestationBody({ keychainId: fixture.keychainId, pubkeyBase64: fixture.device.publicKey,
+          deviceLabel: 'Repeated fixture', githubUserId: fixture.githubUserId, githubLogin: fixture.githubLogin });
+        const { signature_by_device, ...payload } = body;
+        expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), fixture.device.publicKey, Buffer.from(signature_by_device, 'base64'))).toBe(true);
+      } finally { restore(); restore = () => {}; }
+    }
+  });
 });
 
 describe('native DAO host identity target', () => {

@@ -7,6 +7,7 @@ import type { SyncEvent } from '../sync-sse';
 import type { HostedFirstWorkspace, HostedFirstWorkspaceResult } from '../auth/hosted/first-workspace';
 import {
   HOSTED_BROWSER_ACTION_PATH,
+  HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
   HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
@@ -57,6 +58,84 @@ function tenantRunner(calls: Array<{ selectedWorkspaceId?: string }>) {
 }
 
 describe('hosted browser route boundary', () => {
+  it('records only allowlisted transport outcomes through the shared local recorder', async () => {
+    const recordTransportFallback = vi.fn(() => true);
+    const browser = createHostedBrowserRoutes({
+      publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { recordTransportFallback },
+    });
+    expect(browser.allowlist).toContainEqual({
+      method: 'POST', path: HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH, access: 'authenticated',
+    });
+    const handler = routeHandler(browser.routes, HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH);
+    for (const applied of [0, 1]) {
+      const response = await handler(new Request(`${ORIGIN}/api${HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH}`, {
+        method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'fallback-observation', workspaceId: 'tenant-b', payload: {
+          source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1, applied,
+          reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+          message: NEVER_EMIT_MARKER, url: '/private', processTag: 'spoofed', sql: 'spoofed',
+        } }),
+      }), context());
+      expect(response.status).toBe(202);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(recordTransportFallback).toHaveBeenLastCalledWith('browser-sync-transport', {
+        eligible: 1, applied, reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+      }, { processTag: 'browser-sync-ingress' });
+    }
+    recordTransportFallback.mockReturnValue(false);
+    const response = await handler(new Request(`${ORIGIN}/api${HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH}`, {
+      method: 'POST', headers: { origin: ORIGIN },
+      body: JSON.stringify({ kind: 'fallback-observation', payload: {
+        source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1,
+        applied: 0, reason: 'preferred-unavailable', scope: 'WEBSOCKETS',
+      } }),
+    }), context());
+    expect(response.status).toBe(503);
+  });
+
+  it('refuses unauthenticated, cross-origin and foreign-workspace diagnostic writes before recording', async () => {
+    const recordTransportFallback = vi.fn(() => true);
+    const routes = createHostedBrowserRoutes({
+      publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { recordTransportFallback },
+    }).routes;
+    const handler = routeHandler(routes, HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH);
+    for (const [ctx, headers, status] of [
+      [{ ...context(), principal: undefined }, { origin: ORIGIN }, 401],
+      [context(createHostedPrincipal({ ...principal, selectedWorkspaceId: null })), { origin: ORIGIN }, 403],
+      [context(createHostedPrincipal({ ...principal, workspaceId: 'foreign' })), { origin: ORIGIN }, 403],
+      [context(), {}, 403],
+      [context(), { origin: 'https://untrusted.example' }, 403],
+      [context(), { origin: ORIGIN, 'x-papercusp-workspace': 'tenant-b' }, 403],
+    ] as const) {
+      const response = await handler(new Request(`${ORIGIN}/api${HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH}`, {
+        method: 'POST', headers, body: '{}',
+      }), ctx);
+      expect(response.status).toBe(status);
+    }
+    expect(recordTransportFallback).not.toHaveBeenCalled();
+  });
+
+  it('rejects crash reports, malformed JSON and arbitrary transport names on hosted diagnostics', async () => {
+    const recordTransportFallback = vi.fn(() => true);
+    const handler = routeHandler(createHostedBrowserRoutes({
+      publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { recordTransportFallback },
+    }).routes, HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH);
+    const payload = { source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1,
+      applied: 0, reason: 'preferred-unavailable', scope: 'SSE' };
+    for (const body of ['{', 'null', '[]', JSON.stringify({ kind: 'crash', payload }),
+      JSON.stringify({ kind: 'fallback-observation', payload: { ...payload, scope: NEVER_EMIT_MARKER } }),
+      JSON.stringify({ kind: 'fallback-observation', payload: { ...payload, eligible: 1000 } })]) {
+      const response = await handler(new Request(`${ORIGIN}/api${HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH}`, {
+        method: 'POST', headers: { origin: ORIGIN }, body,
+      }), context());
+      expect(response.status).toBe(400);
+    }
+    expect(recordTransportFallback).not.toHaveBeenCalled();
+  });
+
   it('reads the fixed control-plane source inside the selected tenant transaction', async () => {
     const tenantCalls: Array<{ selectedWorkspaceId?: string }> = [];
     const readControl = vi.fn(async (workspaceId: string, tx?: Sql) => {

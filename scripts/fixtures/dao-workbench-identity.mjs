@@ -25,8 +25,9 @@ export function prepareIdentityFixture(directory) {
     return { publicKey: key.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'),
       privateKeyDer: key.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64') };
   };
+  const runId = randomBytes(12).toString('hex');
   const actor = (githubUserId, githubLogin, email, keychainId) => ({ githubUserId, githubLogin,
-    email, keychainId, device: pair(), token: 'synthetic-workbench-' + randomBytes(24).toString('hex') });
+    email, keychainId: keychainId + '-' + runId, device: pair(), token: 'synthetic-workbench-' + randomBytes(24).toString('hex') });
   const actors = {
     admin: actor(90007527, 'native-workbench-member', 'admin@daohr.test', 'dao-native-fixture-device'),
     approver: actor(90007528, 'native-workbench-approver', 'approver@daohr.test', 'dao-native-fixture-approver'),

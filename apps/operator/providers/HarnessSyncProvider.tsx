@@ -64,12 +64,16 @@ const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 const HOSTED_QUERY_NAME_ALLOWLIST = ['workspaceHosts.control'] as const;
 
-/** Existing same-origin local diagnostics ingress; no telemetry ring or forwarding. */
+/** Same-origin diagnostics ingress; no telemetry ring or forwarding. */
 export function reportSyncTransportFallback(
   mechanism: 'browser-sync-transport',
   decision: Parameters<NonNullable<SyncProviderProps['observeFallback']>>[1],
 ): void {
-  void fetch('/api/desktop/telemetry-report', {
+  const transport = resolveBrowserApiTransport();
+  const endpoint = transport.mode === 'hosted'
+    ? `${transport.restEndpoint}/fallback-observation`
+    : '/api/desktop/telemetry-report';
+  void fetch(endpoint, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ kind: 'fallback-observation', payload: {
       source: 'sync-transport', mechanism,
