@@ -38,6 +38,7 @@ import {
 import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
 import {
   WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+  workspaceHostAgentAdmissionProbeSpecs,
   type WorkspaceHostAgentCredentialAdmissionEvidence,
   type WorkspaceHostAgentCredentialAdmissionInput,
 } from './agent-credential-admission';
@@ -92,17 +93,23 @@ function admissionEvidence(
   input: WorkspaceHostAgentCredentialAdmissionInput,
 ): WorkspaceHostAgentCredentialAdmissionEvidence {
   const observedAt = '2026-08-25T15:00:01.000Z';
-  const agentEvidence = (agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationEvidence => ({
-    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
-    agent,
-    ready: true,
-    verificationKind: 'authenticated-account',
-    endpoint: `https://probe.invalid/${agent}`,
-    exitStatus: 0,
-    observedAt,
-    proofDigest: `proof-${agent}`,
-    subjectDisclosure: 'digest',
-  });
+  const agentEvidence = (agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationEvidence => {
+    // Admission accepts receipts from its readiness-bearing probes, whose kinds and disclosure
+    // differ by agent. Reuse the shipped probe contract instead of copying a fixture allowlist.
+    const spec = workspaceHostAgentAdmissionProbeSpecs(agent)[0]!;
+    return {
+      contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+      agent,
+      ready: true,
+      verificationKind: spec.verificationKind,
+      endpoint: `https://probe.invalid/${agent}`,
+      exitStatus: 0,
+      observedAt,
+      ...(spec.subjectDisclosure === 'redacted' ? { subject: 'authenticated' } : {}),
+      proofDigest: `proof-${agent}`,
+      subjectDisclosure: spec.subjectDisclosure,
+    };
+  };
   const verification: WorkspaceHostAgentVerificationReport = {
     contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt,
@@ -331,6 +338,46 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
         },
       ),
     ).rejects.toThrow(/exact stored generation is not authenticated/);
+
+    const operations = await db.adminSql`
+      SELECT id FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operations).toHaveLength(0);
+    expect(adapter.calls).toEqual([]);
+    expect(onPlanned).not.toHaveBeenCalled();
+  });
+
+  it('rejects retired Claude authenticated-account evidence before creating an operation row', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `op_${randomBytes(4).toString('hex')}`;
+    const adapter = recordingAdapter();
+    const onPlanned = vi.fn();
+
+    await expect(
+      runWorkspaceHostInitialization(
+        { ...runInput(ws, hostId, adapter, operationId), onPlanned },
+        {
+          verifyAgentCredentialAdmission: async (input) => {
+            const evidence = admissionEvidence(input);
+            return {
+              ...evidence,
+              verification: {
+                ...evidence.verification,
+                agents: {
+                  ...evidence.verification.agents,
+                  claude: {
+                    ...evidence.verification.agents.claude!,
+                    verificationKind: 'authenticated-account',
+                  },
+                },
+              },
+            };
+          },
+        },
+      ),
+    ).rejects.toThrow(/invalid 'claude' verification/);
 
     const operations = await db.adminSql`
       SELECT id FROM harness_shared.workspace_host_operations
