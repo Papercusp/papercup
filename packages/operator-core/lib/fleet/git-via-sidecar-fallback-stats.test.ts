@@ -55,6 +55,17 @@ describe('sidecar fallback accounting', () => {
     expect(getSidecarFallbackStats()).toEqual({ total: 0, bySubsystem: {} });
   });
 
+  it('distinguishes rejected fallback attempts from actual local execution while retaining breaker accounting', () => {
+    for (let i = 0; i < 3; i++) {
+      noteSidecarFallback('committed-tree-reader', new Error('RPC request timeout:process:exec'), 1_000 + i, 'rejected');
+    }
+    const stats = getSidecarFallbackStats();
+    expect(stats.total).toBe(3);
+    expect(stats.bySubsystem['committed-tree-reader']).toMatchObject({ count: 3, rejected: 3 });
+    expect(String(warn.mock.calls[0]?.[0])).toContain('rejected; local execution avoided');
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain('fallback to local execution');
+  });
+
   it('counts every fallback, not just the first — the whole point of the change', () => {
     const t0 = 1_000_000;
     for (let i = 0; i < 25; i++) {

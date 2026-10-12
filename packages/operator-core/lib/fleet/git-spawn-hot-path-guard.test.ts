@@ -74,15 +74,15 @@ describe('hot-path git seams route through the spawner sidecar', () => {
       ).toBe(true);
     });
 
-    it(`${file} keeps a LOCAL fallback so a sidecar fault degrades perf, not correctness`, () => {
+    it(`${file} retains an explicit local route without fabricating Git results`, () => {
       const src = readFileSync(join(LIB, file), 'utf8');
-      // Each of these modules must still contain a direct spawn/execFile path:
-      // the sidecar is an optimisation, and a sidecar outage must never turn a
-      // git result into a wrong answer (an absent ref, an empty drift log).
+      // Keep deliberate disabled/cold execution available. Enabled blob-reader
+      // failures must reject before this path; committed-tree-reader-sidecar-route
+      // tests enforce that with timeout, infrastructure, and cold-read controls.
       expect(
         /spawn\(\s*['"]git['"]|execFile\(\s*['"]git['"]|pexec\(\s*['"]git['"]/.test(src),
         `${file} routes git through the sidecar but has no local fallback path. ` +
-          `A sidecar outage would then change RESULTS, not just latency.`,
+          `Preserve explicit disabled-mode execution and exact error/result identity.`,
       ).toBe(true);
     });
   }
@@ -198,7 +198,7 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
   {
     file: 'agent-tools/plans/committed-tree-reader.ts',
     symbol: 'defaultBlobBatchReader',
-    why: 'local binary cat-file fallback behind runGitStdinViaSpawnerSidecar; a sidecar fault may degrade performance but must not change blob contents',
+    why: 'binary cat-file only when the sidecar route is disabled; enabled timeout/infrastructure failures reject before local spawn, enforced by committed-tree-reader-sidecar-route.test.ts',
   },
   {
     file: 'git-pipeline-hives.ts',

@@ -178,11 +178,15 @@ export async function resolveMeasurementCommit(root: string, git: GitRunner = de
   }
 }
 
-/** Binary-safe `git cat-file --batch`: one process for every id. */
+/**
+ * Binary-safe `git cat-file --batch`: one process for every id. An enabled
+ * offload route must fail explicitly rather than fork from the operator on a
+ * sidecar timeout (EI-25372596942307171). The local route is disabled-mode only.
+ */
 export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds) => {
   const stdin = `${blobIds.join('\n')}\n`;
   if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
-    let sidecarResult: GitStdinRunResult | null = null;
+    let sidecarResult: GitStdinRunResult;
     try {
       sidecarResult = await runGitStdinViaSpawnerSidecar(
         ['cat-file', '--batch'],
@@ -192,20 +196,20 @@ export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds) 
         process.env,
       );
     } catch (error) {
-      noteSidecarFallback('committed-tree-reader', error);
+      noteSidecarFallback('committed-tree-reader', error, undefined, 'rejected');
+      throw error;
     }
-    if (sidecarResult && isSidecarInfrastructureFault(sidecarResult)) {
-      noteSidecarFallback('committed-tree-reader', new Error(sidecarResult.stderr));
-      sidecarResult = null;
+    if (isSidecarInfrastructureFault(sidecarResult)) {
+      const error = new Error(sidecarResult.stderr);
+      noteSidecarFallback('committed-tree-reader', error, undefined, 'rejected');
+      throw error;
     }
-    if (sidecarResult) {
-      if (sidecarResult.code !== 0) {
-        throw new Error(
-          `Command failed (exit ${sidecarResult.code}): git -C ${repoDir} cat-file --batch\n${sidecarResult.stderr}`,
-        );
-      }
-      return parseCatFileBatch(sidecarResult.stdout);
+    if (sidecarResult.code !== 0) {
+      throw new Error(
+        `Command failed (exit ${sidecarResult.code}): git -C ${repoDir} cat-file --batch\n${sidecarResult.stderr}`,
+      );
     }
+    return parseCatFileBatch(sidecarResult.stdout);
   }
 
   return new Promise((resolvePromise, reject) => {

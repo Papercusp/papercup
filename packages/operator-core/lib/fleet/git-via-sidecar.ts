@@ -214,6 +214,8 @@ export function gitSidecarEnabled(
  */
 export interface SidecarFallbackSubsystemStats {
   readonly count: number;
+  /** Counted failures that rejected the request instead of executing locally. */
+  readonly rejected?: number;
   readonly firstAtMs: number;
   readonly lastAtMs: number;
   readonly lastReason: string;
@@ -226,6 +228,7 @@ export interface SidecarFallbackStats {
 
 interface MutableFallbackEntry {
   count: number;
+  rejected?: number;
   firstAtMs: number;
   lastAtMs: number;
   lastReason: string;
@@ -403,14 +406,20 @@ function noteSidecarSuccess(): void {
 }
 
 /**
- * Record that `subsystem` fell back to a local spawn because the sidecar was
- * unavailable. Safe to call on every fallback — it is two Map operations and,
+ * Record that `subsystem` could not use the sidecar. The optional disposition
+ * distinguishes an explicit rejection from a local fallback without losing
+ * failure/breaker accounting. Safe on every failure — it is two Map operations and,
  * at most once a minute per subsystem, one `console.warn`. A REAL failure
  * (anything but the breaker's own {@link SidecarCircuitOpenError}) also feeds
  * the circuit breaker above.
  */
-export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
-  recordSidecarFallback(subsystem, e, nowMs, true);
+export function noteSidecarFallback(
+  subsystem: string,
+  e: unknown,
+  nowMs: number = Date.now(),
+  disposition: 'local' | 'rejected' = 'local',
+): void {
+  recordSidecarFallback(subsystem, e, nowMs, true, disposition);
 }
 
 /** Count a read-only batch deadline fallback without treating it as sidecar failure. */
@@ -423,6 +432,7 @@ function recordSidecarFallback(
   e: unknown,
   nowMs: number,
   tripBreaker: boolean,
+  disposition: 'local' | 'rejected' = 'local',
 ): void {
   const reason = e instanceof Error ? e.message : String(e);
   if (tripBreaker && !(e instanceof SidecarCircuitOpenError)) {
@@ -451,24 +461,27 @@ function recordSidecarFallback(
     });
   }
 
+  const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
+  if (disposition === 'rejected') entry.rejected = (entry.rejected ?? 0) + 1;
+
   const lastWarnAtMs = __sidecarFallbacks.lastWarnAtMs.get(subsystem);
   if (lastWarnAtMs !== undefined && nowMs - lastWarnAtMs < FALLBACK_WARN_INTERVAL_MS) return;
   __sidecarFallbacks.lastWarnAtMs.set(subsystem, nowMs);
 
-  const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
   const since =
-    entry.count > 1 ? ` (${entry.count} fallbacks since ${new Date(entry.firstAtMs).toISOString()})` : '';
+    entry.count > 1 ? ` (${entry.count} ${entry.rejected ? 'sidecar failures' : 'fallbacks'} since ${new Date(entry.firstAtMs).toISOString()})` : '';
   const breaker = getSidecarBreakerState(nowMs);
   const breakerNote =
     breaker.state === 'closed'
       ? ''
       : ` [circuit ${breaker.state}: ${breaker.shortCircuited} call(s) skipped the sidecar, trips=${breaker.trips}]`;
-  console.warn(`[${subsystem}] spawner-sidecar fallback to local execution${since}${breakerNote}: ${reason}`);
+  const outcome = disposition === 'rejected' ? 'rejected; local execution avoided' : 'fallback to local execution';
+  console.warn(`[${subsystem}] spawner-sidecar ${outcome}${since}${breakerNote}: ${reason}`);
 }
 
 /**
- * Every sidecar fallback recorded in this process. A non-zero, still-CLIMBING
- * count means git calls are currently paying the full fork cost.
+ * Every sidecar failure recorded in this process. `count - (rejected ?? 0)`
+ * identifies local fallbacks; rejected requests did not pay the local fork cost.
  */
 export function getSidecarFallbackStats(): SidecarFallbackStats {
   const bySubsystem: Record<string, SidecarFallbackSubsystemStats> = {};
@@ -883,8 +896,8 @@ let handoffSeq = 0;
  * output up with an ASYNC `fs.readFile` on the libuv threadpool. Byte fidelity
  * is then structural rather than promised.
  *
- * Rejects on any sidecar problem — callers fall back to a local spawn, so a
- * fault here degrades performance, never correctness.
+ * Rejects on any sidecar problem. Callers must preserve that failure or choose
+ * an explicitly safe local route; bulk operator readers cannot fork locally.
  */
 export async function runGitStdinViaSpawnerSidecar(
   args: string[],

@@ -10,7 +10,19 @@ const sidecar = vi.hoisted(() => ({
   enabledVar: vi.fn(),
   run: vi.fn(),
   fallback: vi.fn(),
+  localSpawn: vi.fn(),
 }));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...original,
+    spawn: (...args: Parameters<typeof original.spawn>) => {
+      sidecar.localSpawn(...args);
+      return original.spawn(...args);
+    },
+  };
+});
 
 vi.mock('../../fleet/git-via-sidecar', () => ({
   gitSidecarEnabled: (explicitVar?: string) => {
@@ -19,7 +31,7 @@ vi.mock('../../fleet/git-via-sidecar', () => ({
   },
   isSidecarInfrastructureFault: (result: { code: number; stderr: string }) =>
     result.code === -1 && result.stderr.startsWith('spawner sidecar '),
-  noteSidecarFallback: (subsystem: string, error: unknown) => sidecar.fallback(subsystem, error),
+  noteSidecarFallback: (...args: unknown[]) => sidecar.fallback(...args),
   runGitStdinViaSpawnerSidecar: (...args: unknown[]) => sidecar.run(...args),
 }));
 
@@ -57,6 +69,7 @@ beforeEach(() => {
   sidecar.enabledVar.mockReset();
   sidecar.run.mockReset();
   sidecar.fallback.mockReset();
+  sidecar.localSpawn.mockReset();
 
   repoDir = mkdtempSync(join(tmpdir(), 'committed-tree-sidecar-'));
   git('init', '-q', '-b', 'main');
@@ -88,25 +101,57 @@ describe('committed-tree blob reader sidecar routing', () => {
       process.env,
     );
     expect(sidecar.fallback).not.toHaveBeenCalled();
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
   });
 
-  it('keeps the local reader as a counted correctness fallback for sidecar failures', async () => {
+  it('rejects an RPC timeout with its original identity without spawning locally or blocking a loop turn', async () => {
     const blobId = git('rev-parse', `HEAD:${BLOB_PATH}`);
-    const sidecarError = new Error('spawner socket unavailable');
-    sidecar.run
-      .mockRejectedValueOnce(sidecarError)
-      .mockResolvedValueOnce({ code: -1, stdout: Buffer.alloc(0), stderr: 'spawner sidecar handoff failed' });
+    const sidecarError = new Error('RPC request timeout:process:exec');
+    let rejectRpc!: (error: Error) => void;
+    sidecar.run.mockImplementation(() => new Promise((_resolve, reject) => { rejectRpc = reject; }));
+    const result = defaultBlobBatchReader(repoDir, [blobId]).then(
+      () => ({ error: null }),
+      (error: unknown) => ({ error }),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
+    rejectRpc(sidecarError);
+    expect((await result).error).toBe(sidecarError);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
+    expect(sidecar.fallback).toHaveBeenCalledWith('committed-tree-reader', sidecarError, undefined, 'rejected');
+  });
 
-    const first = await defaultBlobBatchReader(repoDir, [blobId]);
-    expect(first.get(blobId)).toEqual(CONTENT);
-    expect(sidecar.fallback).toHaveBeenNthCalledWith(1, 'committed-tree-reader', sidecarError);
-
-    const second = await defaultBlobBatchReader(repoDir, [blobId]);
-    expect(second.get(blobId)).toEqual(CONTENT);
+  it('rejects sidecar infrastructure failure without replacing it with a local read', async () => {
+    const blobId = git('rev-parse', `HEAD:${BLOB_PATH}`);
+    sidecar.run.mockResolvedValue({ code: -1, stdout: Buffer.alloc(0), stderr: 'spawner sidecar handoff failed' });
+    await expect(defaultBlobBatchReader(repoDir, [blobId])).rejects.toThrow('spawner sidecar handoff failed');
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
     expect(sidecar.fallback).toHaveBeenNthCalledWith(
-      2,
+      1,
       'committed-tree-reader',
       expect.objectContaining({ message: 'spawner sidecar handoff failed' }),
+      undefined,
+      'rejected',
     );
+  });
+
+  it('preserves a real Git failure instead of retrying locally or reporting empty blobs', async () => {
+    sidecar.run.mockResolvedValue({ code: 128, stdout: Buffer.alloc(0), stderr: 'fatal: not a git repository' });
+    await expect(defaultBlobBatchReader(repoDir, ['a'.repeat(40)])).rejects.toThrow(
+      `Command failed (exit 128): git -C ${repoDir} cat-file --batch\nfatal: not a git repository`,
+    );
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
+    expect(sidecar.fallback).not.toHaveBeenCalled();
+  });
+
+  it('reads a cold binary blob locally only when the sidecar route is deliberately disabled', async () => {
+    sidecar.enabled = false;
+    const blobId = git('rev-parse', `HEAD:${BLOB_PATH}`);
+    const blobs = await defaultBlobBatchReader(repoDir, [blobId]);
+    expect(blobs.get(blobId)).toEqual(CONTENT);
+    expect(sidecar.run).not.toHaveBeenCalled();
+    expect(sidecar.localSpawn).toHaveBeenCalledTimes(1);
+    expect(sidecar.fallback).not.toHaveBeenCalled();
   });
 });
