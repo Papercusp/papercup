@@ -689,24 +689,30 @@ describe('testing:runs payload-tier shape', () => {
   // Plan mutation-probe-evidence-value-2026-10-11 R-1: the mutation descriptor is what
   // makes a probe row auditable, so a bounded row keeps it inline instead of listing it
   // in fieldsOmitted, and clips only the mutant diff body (flagged).
-  it('keeps execution_details.mutation inline on a bounded row and clips only the mutant diff', () => {
+  it.each([
+    ['baseline', 1, 0], ['mutant', 1, 0], ['mutant', 0, 1], ['consumption-control', 0, 1],
+  ])('keeps execution_details.mutation inline on a bounded %s row (%i passed/%i failed) and clips only the mutant diff', (leg, passed, failed) => {
     const mutation = {
       schemaVersion: 1,
       probeInvocationId: 'probe-7f3c',
-      leg: 'mutant',
+      leg,
       mode: 'copy-out',
       subjectPath: 'scripts/example-guard.sh',
-      mutationExpression: 's/^guard_on=1$/guard_on=0/',
+      mutateExpression: 's/^guard_on=1$/guard_on=0/',
+      againstCommit: null,
       subjectBeforeSha256: 'a'.repeat(64),
       subjectAfterSha256: 'b'.repeat(64),
       mutantDiff: `--- a\n+++ b\n${'-guard_on=1\n+guard_on=0\n'.repeat(100)}`,
+      mutantDiffTruncated: false,
+      testCommandSha256: 'd'.repeat(64),
       testFileSha256: 'c'.repeat(64),
     };
     const executionDetails = {
       schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',
-      workspaceId: null, harnessSlug: null, passed: 0, failed: 1, skipped: 0,
-      collectionFailed: false, testNamePattern: null, mutationPhase: 'mutant', commitSha: null,
-      worktreeDirty: false, failedCaseTitles: ['guard refuses when disabled'], mutation,
+      workspaceId: null, harnessSlug: null, passed, failed, skipped: 0,
+      collectionFailed: false, testNamePattern: null, mutationPhase: leg, commitSha: null,
+      worktreeDirty: false, failedCaseTitles: failed ? ['guard refuses when disabled'] : [],
+      passedCaseTitles: passed ? ['guard accepts the surviving source'] : [], mutation,
     };
     expect(JSON.stringify(executionDetails).length).toBeGreaterThan(1_400);
     const shaped = shapeTestingRuns({ runs: [{ id: 43, executionDetails }] }, 'trimmed') as {
@@ -714,8 +720,9 @@ describe('testing:runs payload-tier shape', () => {
     };
     const row = shaped.runs[0]!;
     const inline = row.executionDetails.mutation as Record<string, unknown>;
-    const { mutantDiff, ...identity } = mutation;
-    expect(inline).toMatchObject(identity);
+    const { mutantDiff } = mutation;
+    expect(inline).toMatchObject({ ...mutation, mutantDiff: mutantDiff.slice(0, MUTANT_DIFF_INLINE_CHARS),
+      mutantDiffTruncated: true });
     expect(inline.mutantDiff).toBe(mutantDiff.slice(0, MUTANT_DIFF_INLINE_CHARS));
     expect(inline.mutantDiffTruncated).toBe(true);
     expect(row.executionDetailsBounded.fieldsOmitted).not.toContain('mutation');
