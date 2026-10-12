@@ -1011,12 +1011,35 @@ const releaseRequestSweepCheck: PeriodicCheck = {
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
-    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
+    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest, settleReleaseRequestCondition } = await import('../work-items-release-request');
     const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
     const { notifyAttention } = await import('../attention-notify');
+    const { broadcastSevereEvent, broadcastSevereEventResolved } = await import('../severe-event-broadcast');
+    const { resolveAlarm } = await import('../alarm-attention');
+
+    const pending = await findDueReleaseRequests(sql, { nowMs: Date.now(), alarmPending: true });
+    for (const row of pending) {
+      const { request: req, conditionRequest: episode } = row;
+      if (!episode) continue;
+      const key = `alarm:release-request:${row.workspaceId}:${row.id}`;
+      const replaced = episode.by !== req.by || episode.holder !== req.holder || episode.deadlineAt !== req.deadlineAt;
+      const recovered = row.terminal || row.holderNow !== episode.holder || replaced
+        || hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt);
+      if (recovered) {
+        if (await resolveAlarm(key, 'release-request-sweep', { resolve: broadcastSevereEventResolved })) {
+          await settleReleaseRequestCondition(sql, row, true);
+        }
+      } else {
+        await broadcastSevereEvent({ conditionKey: key, oneShot: true, category: 'service-health',
+          summary: `Release request still unanswered — ${row.id}`,
+          body: `${req.by} requested ${req.holder} release ${row.id}; the expired request still has no measured response.`,
+        }).catch(() => false);
+        await settleReleaseRequestCondition(sql, row, false);
+      }
+    }
 
     const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
     for (const row of due) {
@@ -1148,6 +1171,12 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         ).catch(() => {});
         if (!released) console.warn(`[release-request-sweep] ${row.id}: reclaim fired but release itself failed (already free / raced)`);
       } else if (req.onSilence === 'escalate') {
+        await broadcastSevereEvent({
+          conditionKey: `alarm:release-request:${row.workspaceId}:${row.id}`,
+          oneShot: true, category: 'service-health',
+          summary: `Release request timed out — ${row.id}`,
+          body: noteBody,
+        }).catch(() => false);
         await notifyAttention({
           kind: 'intervention',
           title: `release request timed out — ${row.id}`,

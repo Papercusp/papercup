@@ -182,6 +182,18 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
     sourceCommit: string;
     submodules: any[];
 };
+/** Transport the independently verified archive receipt into native reporters.
+ * A successful parent preflight alone does not give a child source provenance.
+ * @param {{ root: string, receiptPath: string, env?: NodeJS.ProcessEnv }} options
+ */
+export function verifierSourceChildEnv({ root, receiptPath, env }: {
+    root: string;
+    receiptPath: string;
+    env?: NodeJS.ProcessEnv;
+}): {
+    VERIFY_TAURI_SOURCE_RECEIPT: string;
+    VERIFY_TAURI_SOURCE_REF: any;
+};
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.

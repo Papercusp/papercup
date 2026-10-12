@@ -4,9 +4,21 @@ Description=Kopia DAILY snapshot of the curated full home directory
 # (not Documentation= — systemd only accepts URIs there and warns on a bare slug)
 After=network-online.target
 RequiresMountsFor=/mnt/backup
+# WI-10006932: Persistent=true on the daily timer cannot retry a service that
+# started and then deferred on lock contention. Bound EX_TEMPFAIL retries to a
+# morning window: at most eight starts in eight hours.
+StartLimitIntervalSec=8h
+StartLimitBurst=8
 
 [Service]
 Type=oneshot
+# The guard's EX_TEMPFAIL (75) means this scheduled snapshot did not run. Treat
+# it as successful for OnFailure reporting while a retry is pending, then force
+# a retry after 30 minutes. Other nonzero exits remain failures and alert.
+SuccessExitStatus=75
+Restart=on-abnormal
+RestartForceExitStatus=75
+RestartSec=30min
 # Deliberately heavier de-prioritisation than kopia-snapshots.service (Nice=10,
 # best-effort/7). That unit runs about every 30 min; this one walks the WHOLE
 # home tree once a day and must yield to everything else while it does. The script

@@ -18,8 +18,10 @@ const SERVICE = resolve(__dirname, '..', 'systemd', 'kopia-home-snapshot.service
 const testIfInstalled = existsSync(SCRIPT) ? it : it.skip;
 
 describe('kopia-home-snapshot bounded execution contract', () => {
-  it('keeps the checked-in systemd unit bounded and installs exact-PID cleanup', () => {
+  it('keeps the unit bounded, retries lock deferrals, and installs exact-PID cleanup', () => {
     const unit = readFileSync(SERVICE, 'utf8');
+    const unitSection = unit.split('[Service]')[0] ?? '';
+    const serviceSection = unit.split('[Service]')[1] ?? '';
 
     expect(unit).toContain('MemoryAccounting=yes');
     expect(unit).toContain('MemoryHigh=8G');
@@ -27,6 +29,12 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     expect(unit).toContain('MemorySwapMax=0');
     expect(unit).toContain('TimeoutStopSec=30s');
     expect(unit).toContain('ExecStopPost=%h/.config/kopia/home-snapshot.sh --cleanup');
+    expect(unitSection).toContain('StartLimitIntervalSec=8h');
+    expect(unitSection).toContain('StartLimitBurst=8');
+    expect(serviceSection).toContain('SuccessExitStatus=75');
+    expect(serviceSection).toContain('Restart=on-abnormal');
+    expect(serviceSection).toContain('RestartForceExitStatus=75');
+    expect(serviceSection).toContain('RestartSec=30min');
   });
 
   testIfInstalled('passes bash syntax validation without starting a snapshot', () => {

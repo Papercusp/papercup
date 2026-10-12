@@ -191,6 +191,7 @@ import {
   AUTOMATIC_TOOL_NAMES,
   agentToolInvocationPredicate,
   automaticToolInvocationPredicate,
+  toolInvocationOwnerPredicate,
 } from './automatic-tool-names';
 import { isWorkspaceContended } from '../locks/contention-retry';
 
@@ -790,16 +791,7 @@ export default defineTool({
                -- so there is no join and nothing to hydrate.
                goal_ref, assumption_set_id
           FROM harness_shared.tool_invocations
-         WHERE (
-                 coord_owner_id = ${owner}
-                 OR (
-                   principal_kind = 'harness'
-                   AND principal_auth_method = 'spawn-url'
-                   AND principal_trust = 'trusted'
-                   AND metadata_json->'requestOrigin'->'query'->>'client' = ${owner}
-                   AND coord_owner_id = ('system:' || role || '/' || ${owner})
-                 )
-               )
+         WHERE ${toolInvocationOwnerPredicate(tx, owner)}
            AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'tool' = ANY(${kinds}::text[]))
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
@@ -906,16 +898,7 @@ export default defineTool({
              count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
              count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls
         FROM harness_shared.tool_invocations
-       WHERE (
-               coord_owner_id = ${owner}
-               OR (
-                 principal_kind = 'harness'
-                 AND principal_auth_method = 'spawn-url'
-                 AND principal_trust = 'trusted'
-                 AND metadata_json->'requestOrigin'->'query'->>'client' = ${owner}
-                 AND coord_owner_id = ('system:' || role || '/' || ${owner})
-               )
-             )
+       WHERE ${toolInvocationOwnerPredicate(tx, owner)}
          AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})

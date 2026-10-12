@@ -2,6 +2,7 @@
 import ts from 'typescript';
 import { execute, original, source } from './host-startup-migration-cases';
 import type { RailMigrationCase } from './rail-migration-cases';
+import type { DueReleaseRequestRow } from '../work-items-release-request';
 
 type Observation = { eligible: number; applied: number; reason: string; scope?: string | null };
 const prefix = 'packages/operator-core/lib/';
@@ -75,6 +76,72 @@ async function measured(
 }
 
 export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
+  id: 'release-request-original-timeout-delivery-retry-unknown-and-measured-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}dbos/in-process-periodic.ts|tick|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const { hasWorkItemProgressAfterReleaseRequest } = await import('../work-items-release-request');
+    const row: DueReleaseRequestRow = { id: 'WI-fixture', harness: 'fixture', workspaceId: 'fixture',
+      holderNow: 'holder', lastProgressAt: null, terminal: false, conditionRequest: null, paths: [],
+      request: { by: 'requester', holder: 'holder', reason: 'fixture timeout', onSilence: 'escalate',
+        deadlineAt: 1000, requestedAt: 500, resolved: false, resolution: null, resolvedAt: null } };
+    let scanFails = false, broadcasts = 0, resolves = 0, pages = 0, retirementFails = true;
+    const modules: Record<string, unknown> = {
+      '@papercusp/db-org': { getOrgPg: () => ({ sql: {} }) },
+      '../work-items-release-request': {
+        hasWorkItemProgressAfterReleaseRequest,
+        findDueReleaseRequests: async (_sql: unknown, opts: { alarmPending?: boolean }) => {
+          if (scanFails) throw new Error('request scan unreadable');
+          return opts.alarmPending ? (row.conditionRequest ? [row] : []) : (row.request.resolved ? [] : [row]);
+        },
+        resolveWorkItemReleaseRequest: async () => {
+          row.conditionRequest = { by: row.request.by, holder: row.request.holder, deadlineAt: row.request.deadlineAt };
+          row.request.resolved = true; row.request.resolution = 'consequence-escalate'; return row.request;
+        },
+        settleReleaseRequestCondition: async (_sql: unknown, _row: unknown, recovered: boolean) => {
+          if (recovered) row.conditionRequest = null; return true;
+        },
+      },
+      '../work-items': { releaseWorkItem: async () => { throw new Error('must not reclaim'); },
+        setWorkItemClaimHold: async () => { throw new Error('must not change lease'); }, commentWorkItem: async () => {} },
+      '../work-item-lock-release': {}, '../agent-tools/work_items/release-force-guard': {},
+      '../agent-tools/coordination/messages': { sendMessage: async () => {} },
+      '../attention-notify': { notifyAttention: async () => { pages++; throw new Error('page unavailable'); } },
+      '../severe-event-broadcast': {
+        broadcastSevereEvent: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
+          broadcasts++; if (broadcasts === 1) return false; return rail.broadcastSevereEvent(input);
+        },
+        broadcastSevereEventResolved: async (input: { conditionKey: string }) => rail.resolveAlarm(input.conditionKey),
+      },
+      '../alarm-attention': { resolveAlarm: async (key: string) => {
+        resolves++; if (retirementFails) return false; return rail.resolveAlarm(key);
+      } },
+    };
+    const ast = variable(prefix + 'dbos/in-process-periodic.ts', 'releaseRequestSweepCheck');
+    const check = await execute(`return (${ast.initializer!.getText()});`, {
+      observeFallback: () => true, require: (name: string) => {
+        if (!(name in modules)) throw new Error(`unexpected dependency ${name}`); return modules[name];
+      },
+    }) as { tick: () => Promise<void> };
+    await check.tick(); expect(pages).toBe(1); expect(broadcasts).toBe(1);
+    await check.tick(); await check.tick(); expect(broadcasts).toBe(3); expect(pages).toBe(1); expect(resolves).toBe(0);
+    scanFails = true; await expect(check.tick()).rejects.toThrow('request scan unreadable'); expect(resolves).toBe(0);
+    scanFails = false; row.lastProgressAt = new Date(501).toISOString();
+    await check.tick(); expect(row.conditionRequest).not.toBeNull();
+    retirementFails = false; await check.tick(); expect(row.conditionRequest).toBeNull();
+    // Subsequent episodes recover only from a measured release, terminal state or replacement request.
+    for (const recovery of ['release', 'terminal', 'replacement']) {
+      row.holderNow = 'holder'; row.lastProgressAt = null; row.terminal = false;
+      row.conditionRequest = { by: row.request.by, holder: row.request.holder, deadlineAt: row.request.deadlineAt };
+      await check.tick();
+      if (recovery === 'release') row.holderNow = null;
+      if (recovery === 'terminal') row.terminal = true;
+      if (recovery === 'replacement') row.request.deadlineAt++;
+      await check.tick(); expect(row.conditionRequest).toBeNull();
+    }
+    expect(pages).toBe(1);
+  }),
+}, {
   id: 'loop-arm-prior-facts-read-error-and-primary', item: 'P-009', route: 'observation',
   mechanism: 'routine-capability-read', rowIds: [row('agent-tools/loop/arm.ts', 'handler')],
   run: () => measured('routine-capability-read', 'loop-prior-facts', async (observeFallback) => {

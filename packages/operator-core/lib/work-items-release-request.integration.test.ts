@@ -653,6 +653,36 @@ describe('EI-21663360969291342 — generic release cannot mutate governor receip
 });
 
 describe('findDueReleaseRequests', () => {
+  it('retains an escalated episode across refresh/restart and retires only the measured CAS identity', async () => {
+    const id = 'WI-alarm-recovery', nowMs = Date.now();
+    await seedIssue(id, { takenBy: 'holder-1' });
+    await rr.setWorkItemReleaseRequest(id, { harness: H, by: 'req-1', holder: 'holder-1', reason: 'r', onSilence: 'escalate', deadlineAt: nowMs - 1 });
+    await rr.resolveWorkItemReleaseRequest(id, { harness: H, resolution: 'consequence-escalate' });
+    expect(await rr.findDueReleaseRequests(db.sql, { nowMs })).toEqual([]);
+    const [first] = await rr.findDueReleaseRequests(db.sql, { nowMs, alarmPending: true });
+    expect(first).toMatchObject({ id, terminal: false, conditionRequest: { by: 'req-1', holder: 'holder-1', deadlineAt: nowMs - 1 } });
+    expect(await rr.settleReleaseRequestCondition(db.sql, first, false)).toBe(true);
+    expect((await rr.findDueReleaseRequests(db.sql, { nowMs, alarmPending: true })).map((row) => row.id)).toEqual([id]);
+    await rr.setWorkItemReleaseRequest(id, { harness: H, by: 'req-2', holder: 'holder-1', reason: 'new request', onSilence: 'escalate', deadlineAt: nowMs - 2 });
+    await rr.resolveWorkItemReleaseRequest(id, { harness: H, resolution: 'consequence-escalate' });
+    expect(await rr.settleReleaseRequestCondition(db.sql, first, true)).toBe(false);
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = ${id}`;
+    const [latest] = await rr.findDueReleaseRequests(db.sql, { nowMs, alarmPending: true });
+    expect(latest.terminal).toBe(true);
+    expect(latest.conditionRequest?.by).toBe('req-2');
+    expect(await rr.settleReleaseRequestCondition(db.sql, latest, true)).toBe(true);
+    expect(await rr.findDueReleaseRequests(db.sql, { nowMs, alarmPending: true })).toEqual([]);
+  });
+
+  it('does not create a timeout episode when terminal settlement supersedes the consequence', async () => {
+    const id = 'WI-alarm-terminal', nowMs = Date.now();
+    await seedIssue(id, { takenBy: 'holder-1' });
+    await rr.setWorkItemReleaseRequest(id, { harness: H, by: 'req-1', holder: 'holder-1', reason: 'r', onSilence: 'escalate', deadlineAt: nowMs - 1 });
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = ${id}`;
+    expect((await rr.resolveWorkItemReleaseRequest(id, { harness: H, resolution: 'consequence-escalate' }))?.resolution).toBe('superseded');
+    expect(await rr.findDueReleaseRequests(db.sql, { nowMs, alarmPending: true })).toEqual([]);
+  });
+
   it('returns only UNRESOLVED requests whose deadline has passed', async () => {
     const now = Date.now();
 
