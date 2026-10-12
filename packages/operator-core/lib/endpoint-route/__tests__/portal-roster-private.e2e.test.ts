@@ -149,6 +149,11 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     console.info('PORTAL_DEV_COMPONENT_EVIDENCE ' + result.evidence);
   }, 180_000);
 
+it('rejects Dev workflow evidence without the actual Dev route before browser allocation', async () => {
+  await expect(verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: '/not-used', selected: 'selected', neighbor: 'neighbor' },
+    { devRead: true })).rejects.toThrow('Dev workflow requires the actual Dev route');
+});
+
 it('retains a browser response rejection while an earlier UI action is still running', async () => {
   const failure = new Error('original browser response deadline');
   const pending = retainPortalResponse(Promise.reject(failure));

@@ -604,12 +604,14 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }
   }
   if (input.dev) {
-    for (const module of ['ApiTab', 'WorkspacePicker', 'SchemaForm', 'RightRail']) {
+    for (const module of ['ApiTab', 'WorkspacePicker', 'SchemaForm', 'RightRail', 'IpcTab']) {
       assert.ok([...originals.keys()].some(path => path.endsWith(`/app/dev/_components/${module}.tsx`)),
         `Dev browser graph requires actual ${module}`);
     }
     assert.ok([...originals.keys()].some(path => path.endsWith('/apps/operator/app/dev/page.tsx')),
       'Dev browser graph requires the actual page');
+    assert.ok([...originals.keys()].some(path => path.endsWith('/packages/operator-core/lib/transport-adapters/index.ts')),
+      'Dev browser graph requires the real IPC transport barrel through the maintained prefix alias');
   }
   assert.ok([...originals.keys()].some(path => path.endsWith(input.dev
     ? '/apps/operator-vite/src/routes/dev/index.tsx' : input.cupboard
@@ -1545,6 +1547,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       } else {
         assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
       }
+    } else if (input.dev) {
+      assert.equal(await page.locator('.pc-dev-shell').count(), 1);
+      assert.equal(await page.locator('.pc-dev-api').count(), 1);
+      assert.equal(await page.getByRole('heading', { name: 'dev:activity', exact: true }).count(), options.devRead ? 1 : 0);
     } else if (input.cupboard) {
       assert.equal(await page.getByRole('button', { name: 'Refresh', exact: true }).count(), 1);
     } else if (input.support) {
