@@ -1,6 +1,6 @@
 /**
  * One bootc image serves every cloud (P-307): bake-cloud-images.sh renders the GCE disk, the
- * AWS AMI disk and the Azure VHD from the same CentOS Stream 9 image. Each cloud's release
+ * AWS AMI disk and the Azure VHD from the same CentOS Stream 10 image. Each cloud's release
  * contract names the guest packages that image must carry, and the release gates check
  * them by RPM name. A name the image does not install can never pass a real release gate
  * (WI-10005605 fixed AWS; WI-10005618 fixed GCP and Azure). These tests pin every
@@ -24,7 +24,7 @@ import { GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from './gcp-image-family';
 const BOOTC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'infra', 'images', 'bootc');
 const CONTAINERFILE = join(BOOTC_DIR, 'workspace-host.Containerfile');
 
-/** Ubuntu/Debian package names that have no package of that name on CentOS Stream 9. */
+/** Ubuntu/Debian package names that have no package of that name on CentOS Stream 10. */
 const DEBIAN_ONLY_NAMES = ['ufw', 'unattended-upgrades', 'walinuxagent', 'aws-ssm-agent'];
 
 /**
@@ -35,16 +35,7 @@ const INSTALLED_OUTSIDE_DNF_LIST: Readonly<Record<string, string>> = {
   'amazon-ssm-agent': 'standalone AWS RPM, pinned by aws-ami-scan.test.ts',
 };
 
-/**
- * KNOWN GAPS: required by a contract but not installed by the image, so that cloud's
- * release gate fails on a real bake. WALinuxAgent is tracked by WI-10005639; remove its
- * entry when it lands (the third test below forces that).
- */
-const KNOWN_GAPS: Readonly<Record<string, string>> = {
-  WALinuxAgent: 'WI-10005639',
-};
-
-const NOT_IN_DNF_LIST: Readonly<Record<string, string>> = { ...INSTALLED_OUTSIDE_DNF_LIST, ...KNOWN_GAPS };
+const NOT_IN_DNF_LIST = INSTALLED_OUTSIDE_DNF_LIST;
 
 const CONTRACTS = {
   aws: AWS_AMI_REQUIRED_GUEST_TOOLS,
@@ -76,12 +67,22 @@ describe('bootc guest-tool contracts (WI-10005618)', () => {
     }
   });
 
-  it('a known gap is really absent from the image, so a fixed gap cannot stay exempt', () => {
-    // If WALinuxAgent gets installed, this fails until its entry is removed, so the
-    // Azure check above starts covering it.
-    for (const [tool, ref] of Object.entries(KNOWN_GAPS)) {
-      expect(installedByName(containerfile, tool), `${tool} is installed; close ${ref} and drop the gap`).toBe(false);
-    }
+  it('installs Azure Linux Agent with its Azure-only guard and host-prepare ordering', () => {
+    expect(installedByName(containerfile, 'WALinuxAgent')).toBe(true);
+    expect(containerfile).toContain("grep -Fqx 'ConditionVirtualization=|microsoft' /usr/lib/systemd/system/waagent.service");
+    expect(containerfile).toContain("grep -Fxq 'Provisioning.Agent=auto' /etc/waagent.conf");
+    expect(containerfile).toContain('systemctl enable waagent.service');
+    expect(containerfile.indexOf('COPY papercusp-waagent-host-prepare.conf')).toBeGreaterThan(
+      containerfile.indexOf('rpm -q WALinuxAgent WALinuxAgent-udev azure-vm-utils'),
+    );
+
+    const dropIn = join(BOOTC_DIR, 'papercusp-waagent-host-prepare.conf');
+    expect(existsSync(dropIn)).toBe(true);
+    expect(readFileSync(dropIn, 'utf8')).toMatch(/^Wants=papercusp-host-prepare\.service$/m);
+    expect(readFileSync(dropIn, 'utf8')).toMatch(/^After=papercusp-host-prepare\.service$/m);
+    expect(containerfile).toMatch(
+      /^COPY papercusp-waagent-host-prepare\.conf \/usr\/lib\/systemd\/system\/waagent\.service\.d\/papercusp-host-prepare\.conf$/m,
+    );
   });
 
   it('the matcher is calibrated: it finds a known package and rejects a substring', () => {

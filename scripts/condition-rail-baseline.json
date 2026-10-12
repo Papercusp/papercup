@@ -170,7 +170,6 @@
     "log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|2",
     "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|1",
     "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|2",
-    "owner-only-alarm|apps/operator/bin/host-bootstrap.ts|runBootstrap|1",
     "owner-only-alarm|packages/operator-core/lib/fleet-ekg/scan.ts|alarm|1",
     "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|finishAnalyzeTick|1",
     "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|trackDependencySnapshot|1",

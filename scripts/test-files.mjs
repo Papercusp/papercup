@@ -1037,6 +1037,26 @@ export function joinNameFilterArgs(vitestArgs) {
   return out;
 }
 
+/** Keep Node options before file paths; translate the router's common selector. */
+export function buildNodeTestArgs(files, runnerArgs, { nodeArgs = [], reporterArgs = [] } = {}) {
+  const args = [];
+  const joined = joinNameFilterArgs(runnerArgs);
+  for (let i = 0; i < joined.length; i += 1) {
+    const arg = joined[i];
+    const filter = /^(-t|--testNamePattern)=([\s\S]*)$/.exec(arg);
+    if (filter) {
+      args.push(`--test-name-pattern=${filter[2]}`);
+    } else if (arg === '-t' || arg === '--testNamePattern') {
+      args.push('--test-name-pattern');
+    } else if (arg === '--reporter' || arg === '--outputFile') {
+      i += 1;
+    } else if (!/^--(?:reporter|outputFile)=/.test(arg)) {
+      args.push(arg);
+    }
+  }
+  return ['--test', ...nodeArgs, ...reporterArgs, ...args, ...files];
+}
+
 /** Bare (non-flag) args left after the pattern — the fingerprint of shell/npm quote-eating. */
 function positionalsAfter(args, from) {
   const strays = [];
@@ -3076,7 +3096,10 @@ export async function main(
         env: process.env,
         settle: classifyGovernedTestProcessOutcome,
       }, async (_admissionContext, governedEnv) => {
-        const child = spawnSync(process.execPath, ['--test', ...(group.nodeArgs ?? []), ...(nodeLedger?.reporterArgs ?? []), ...exact, ...vitestArgs], {
+        const child = spawnSync(process.execPath, buildNodeTestArgs(exact, vitestArgs, {
+          nodeArgs: group.nodeArgs,
+          reporterArgs: nodeLedger?.reporterArgs,
+        }), {
           cwd: group.cwd,
           env: governedEnv,
           encoding: 'utf8',
@@ -3116,6 +3139,8 @@ export async function main(
         failed: groupFailed,
         launchError: Boolean(result.error),
         finalizationError: Boolean(result.governedFinalizationError),
+        testsExecuted: nameFilter ? testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`) : undefined,
+        testsSkipped: testsSkippedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`),
         ...(result.governedAdmissionError
           ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
           : {}),

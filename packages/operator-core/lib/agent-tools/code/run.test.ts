@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
@@ -401,6 +404,50 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
     expect(payload.summary).toEqual({ rendered: true });
     expect(payload.state).toEqual({ cursor: 2 });
     expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
+  });
+
+  it('keeps a small script return visible when store replay state exceeds the result door', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-code-run-result-door-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    try {
+      const res = (await codeRun().fn(
+        {
+          script:
+            `store('full', { rows: Array.from({ length: 12 }, (_, index) => String(index).padEnd(600, 'x')) }); ` +
+            `return { marker: 'small-script-return', count: 3 };`,
+        },
+        mkCtx(),
+      )) as unknown as Parameters<typeof applyResultDoor>[0];
+      const source = JSON.parse(String(res.content[0].text)) as {
+        state?: { full?: { rows?: string[] } };
+      };
+      expect(source.state?.full?.rows).toHaveLength(12);
+      expect(source.state?.full?.rows?.every((row) => row.length === 600)).toBe(true);
+      const genericDoor = applyResultDoor(res, {
+        toolName: 'diagnostic:get',
+        workspaceId: 'ws-test',
+        runId: '99999999-3333-4333-8444-555555555555',
+      });
+      expect(JSON.parse(String(genericDoor.content[0].text)).summary).toBeUndefined();
+      const doored = applyResultDoor(res, {
+        toolName: 'code:run',
+        workspaceId: 'ws-test',
+        runId: '99999999-2222-4333-8444-555555555555',
+      });
+      const payload = JSON.parse(String(doored.content[0].text)) as {
+        summary?: { marker?: string; count?: number };
+        _projection?: { truncated?: boolean };
+      };
+
+      expect(payload.summary).toEqual({ marker: 'small-script-return', count: 3 });
+      expect(payload._projection?.truncated).toBe(true);
+      expect(doored._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid final media without placing a non-text item on the wire', async () => {

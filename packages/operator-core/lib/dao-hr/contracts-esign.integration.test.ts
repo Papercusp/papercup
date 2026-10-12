@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { grantDaoHrAdmin, installSampleTemplates } from './contract-templates';
 import { addHiringCandidate, approveHiringOffer, createHiringOffer, createHiringRole, getHiringOffer, listHiringHistory, requireHiringStage } from './hiring';
-import { completeContractSigning, getContractExecution, prepareContractExecution, startContractSigning, type ContractExecution } from './contracts-esign';
+import { completeContractSigning, getContractExecution, prepareContractExecution, reconcileContractSigning, startContractSigning, type ContractExecution } from './contracts-esign';
 import { DocumensoAdapter } from './documenso';
 
 const key={workspaceId:'ws-contract-signing',daoSlug:'contract-dao'},secret='test-fixture-secret-at-least-24-characters';
@@ -78,5 +78,39 @@ describe('P006 — persisted signing execution (schema-derived provider simulati
     await expect(startContractSigning(input,{sql:db.adminSql,adapter:provider})).rejects.toThrow('network outcome unknown');
     expect((await getContractExecution(input,{sql:db.adminSql})).state).toBe('dispatching');
     await expect(startContractSigning(input,{sql:db.adminSql,adapter:provider})).rejects.toMatchObject({code:'dispatch_unknown'});expect(attempts).toBe(1);
+    const frozen=await getContractExecution(input,{sql:db.adminSql});
+    let creates=0;
+    const recovered=new DocumensoAdapter({baseUrl:'https://signing.example.test',apiKey:'fixture-key',webhookSecret:secret},async(url,init)=>{
+      const path=new URL(String(url)).pathname;
+      if(path.endsWith('/create')){creates++;throw new Error('Recovery must never create another envelope');}
+      if(path.endsWith('/distribute'))return Response.json({id:'lost-envelope',recipients:frozen.signers.map((s,i)=>({email:s.email,signingUrl:'https://signing.example.test/sign/'+i}))});
+      if(path.endsWith('/download'))return new Response(new Uint8Array(frozen.source_pdf));
+      return Response.json({id:'lost-envelope',externalId:frozen.contract_id,status:'PENDING',recipients:frozen.signers.map(s=>({...s,role:'SIGNER',authOptions:{accessAuth:['ACCOUNT']}})),envelopeItems:[{id:'item'}]});
+    });
+    await expect(reconcileContractSigning({...input,actorPersonId:'PER-candidate',envelopeId:'lost-envelope'},{sql:db.adminSql,adapter:recovered})).rejects.toMatchObject({code:'not_admin'});
+    const reconciled=await reconcileContractSigning({...input,envelopeId:'lost-envelope'},{sql:db.adminSql,adapter:recovered});
+    expect(reconciled.state).toBe('signing');expect(reconciled.envelope_id).toBe('lost-envelope');expect(creates).toBe(0);
+    await expect(reconcileContractSigning({...input,envelopeId:'other-envelope'},{sql:db.adminSql,adapter:recovered})).rejects.toMatchObject({code:'invalid_transition'});
+    expect((await reconcileContractSigning({...input,envelopeId:'lost-envelope'},{sql:db.adminSql,adapter:recovered})).contract_id).toBe(frozen.contract_id);
+  });
+  it('recovers a completed envelope whose webhook arrived before its lost create response',async()=>{
+    const saved=await offer();await approveHiringOffer({...key,offerId:saved.offerId,actorPersonId:'PER-reviewer'},{sql:db.adminSql});
+    const frozen=await prepare(saved.offerId),input={...key,offerId:saved.offerId,actorPersonId:'PER-author'};
+    const lost=new DocumensoAdapter({baseUrl:'https://signing.example.test',apiKey:'fixture-key',webhookSecret:secret},async()=>{throw new Error('create response lost');});
+    await expect(startContractSigning(input,{sql:db.adminSql,adapter:lost})).rejects.toThrow('create response lost');
+    const calls:string[]=[];
+    const recovered=new DocumensoAdapter({baseUrl:'https://signing.example.test',apiKey:'fixture-key',webhookSecret:secret},async url=>{
+      const path=new URL(String(url)).pathname;calls.push(path);
+      if(path.endsWith('/download'))return new Response(new Uint8Array(frozen.source_pdf));
+      return Response.json({id:'completed-lost-envelope',externalId:frozen.contract_id,status:'COMPLETED',completedAt:'2026-10-11T20:00:00.000Z',
+        recipients:frozen.signers.map(s=>({...s,role:'SIGNER',signingStatus:'SIGNED',signedAt:'2026-10-11T19:00:00.000Z',authOptions:{accessAuth:['ACCOUNT']}})),envelopeItems:[{id:'item'}]});
+    });
+    const row=await reconcileContractSigning({...input,envelopeId:'completed-lost-envelope'},{sql:db.adminSql,adapter:recovered});
+    expect(row.state).toBe('signed');expect(row.can_bind).toBe(false);
+    expect(row.document_hash).toBe('0x'+createHash('sha256').update(row.sealed_pdf!).digest('hex'));
+    expect(row.completion_proof).toMatchObject({source:'provider-read'});
+    expect(calls.some(path=>path.endsWith('/create')||path.endsWith('/distribute'))).toBe(false);
+    const events=await listHiringHistory({...key,subjectKind:'offer',subjectId:saved.offerId},{sql:db.adminSql});
+    expect(events.filter(e=>e.state==='signed')).toHaveLength(1);
   });
 });

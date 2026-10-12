@@ -46,7 +46,6 @@ const NA_WATCHDOG_TOOLING = na(
 
 export const DISPOSITIONS = Object.freeze({
   // ── owner-only-alarm ──────────────────────────────────────────────────────────────────────
-  'owner-only-alarm|apps/operator/bin/host-bootstrap.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/agent-tools/operator/notify_owner.ts': na(
     'the notify_owner tool relays an agent-authored message to the owner; it reports no system condition',
   ),

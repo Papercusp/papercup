@@ -13,6 +13,9 @@
  * The acceptance-BAR vetting refusal was added 2026-10-01 from the repeated
  * watchdog sample (n=3) to keep caller-authored readiness failures out of the
  * structural repair lane.
+ * The acceptance-BAR reviewer-approval refusal was added 2026-10-12 from
+ * EI-25736374674133206 (n=3); it is a no-write caller prerequisite. A synthetic
+ * nested JSON wrapper row (n=0) also guards wrapper classification parity.
  * The reviewer-model allowlist refusal was added 2026-10-03 from EI-24950089856585512.
  * Kernel identity-ceiling refusals were added 2026-10-01 from a 24h sample
  * (n=33/16) to keep expected no-grant identities out of the structural lane.
@@ -388,6 +391,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'reviewer_model_not_allowed: codex/gpt-6.1-sol is absent from the workspace expert allowlist',
     expectedClass: 'caller',
     note: 'explicit reviewer-model allowlist refusal for the caller-selected model; do not promote it as a structural tool bug (EI-24950089856585512)',
+  },
+  {
+    n: 3, errorCode: 'handler_error', status: 'error',
+    message: 'acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON',
+    expectedClass: 'caller',
+    note: 'rubrics:amend deliberately returns this no-write refusal until the required outside-lineage reviewer approval exists (EI-25736374674133206)',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"code":"acceptance_bar_approval_required","error":"acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON"}',
+    expectedClass: 'caller',
+    note: 'synthetic nested tools:invoke wrapper for the same intentional approval refusal; both classifier engines must preserve caller control flow',
   },
   {
     n: 3, errorCode: 'unauthorized', status: 'error',

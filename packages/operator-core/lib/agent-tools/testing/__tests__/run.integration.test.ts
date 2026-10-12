@@ -1330,6 +1330,35 @@ describe('testing:run (integration)', () => {
     expect(parseRouterTerminalCompletion('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed')).toBeNull();
   });
 
+  it('recovers a completed Node-only run at the foreground deadline without replaying it', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-node-complete-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const output = [
+      'ROUTE cwd=packages/x runner=node:test',
+      '  requested real.test.ts',
+      '# tests 2', '# pass 1', '# fail 0', '# skipped 1',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=1',
+    ].join('\n');
+    expect(parseRouterTerminalCompletion(output)).toMatchObject({ requested: 1, executed: 1, status: 'passed' });
+    const runRouterFn = vi.fn(async () => ({
+      code: null, signal: null, timedOut: true, aborted: false, output,
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 1_000 },
+      { runRouterFn });
+    expect(out).toMatchObject({ ok: true, passed: 1, failed: 0, skipped: 1, files: 1, budgetExceeded: true });
+    expect(out).not.toHaveProperty('detachedRunId');
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+
+    expect(parseRouterTerminalCompletion(output.replace('status=passed', 'status=passed finalizationError=true'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 0'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 2'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('executed=1', 'executed=2'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('runner=node:test', 'runner=vitest'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.split('\n').slice(0, -1).join('\n'))).toBeNull();
+  });
+
   it('parses a strict typed NOT-MEASURED router marker without turning ordinary route errors into one', () => {
     const marker = [
       'TEST_FILE_ROUTE_ERROR (group cwd=packages/operator-core) could not launch Vitest: statement timeout',

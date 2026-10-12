@@ -64,6 +64,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   upsertRoutine: upsertRoutineSpy,
 }));
 
+// Alarm delivery has its own rail tests; loop materialization stays isolated from
+// the shared condition stream even when an unbounded re-arm clears an old alarm.
+vi.mock('../../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
+}));
+
 // autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001) reads the
 // LOOPS flag and best-effort arms an inbox-wake — both mocked so its unit tests
 // stay pure (no PG, no live flag resolver).

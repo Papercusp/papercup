@@ -645,6 +645,13 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   // Best-effort; a stamp failure must never fail the arm (materializeLoop already succeeded).
   try {
     await stampLoopArmedAt(sql, row.id, now.getTime());
+    // The guard deliberately performs zero reads on an unbounded fire, so the
+    // confirmed arm is the recovery measurement when a re-arm removes both bounds.
+    if ((input.active ?? true) && !(input.maxFires != null && input.maxFires > 0)
+      && !(input.maxDurationSec != null && input.maxDurationSec > 0)) {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      await resolveAlarm(`alarm:loop-dead-man:${row.id}`, 'loop-dead-man');
+    }
   } catch (e) {
     console.warn(
       `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,

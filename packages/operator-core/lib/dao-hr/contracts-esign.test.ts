@@ -27,6 +27,23 @@ describe('SPEC-P-006 — Documenso Envelope API contract',()=>{
     expect(()=>adapter.verifyWebhook(secret,{...event,event:'DOCUMENT_SIGNED'})).toThrow('completion event');
     expect(fetcher).not.toHaveBeenCalled();
   });
+  it('reconciles a known envelope only when its reference, signers and original PDF match',async()=>{
+    const pdf=await contractPdf(['The immutable uploaded contract.']);
+    const record={...envelope(),status:'PENDING'};
+    const fetcher=vi.fn(async(url:string|URL|Request)=>String(url).includes('/download')?new Response(new Uint8Array(pdf.pdf)):Response.json(record));
+    const adapter=configured(fetcher);
+    await expect(adapter.reconcile({contractId:'contract',envelopeId:'envelope',signers,pdf:pdf.pdf})).resolves.toBe('PENDING');
+    expect(fetcher.mock.calls.map(c=>String(c[0]))).toContain('https://signing.example.test/api/v2/envelope/item/item/download?version=original');
+    expect(fetcher.mock.calls.every(c=>!String(c[0]).endsWith('/create'))).toBe(true);
+  });
+  it.each(['reference','signer','document'] as const)('refuses reconciliation with a different %s',async mismatch=>{
+    const pdf=await contractPdf(['Original immutable document.']);
+    const record={...envelope(),status:'PENDING'};
+    if(mismatch==='reference')record.externalId='another-contract';
+    if(mismatch==='signer')record.recipients[1]!.email='another@example.test';
+    const fetcher=vi.fn(async(url:string|URL|Request)=>String(url).includes('/download')?new Response(mismatch==='document'?'%PDF-another-document':new Uint8Array(pdf.pdf)):Response.json(record));
+    await expect(configured(fetcher).reconcile({contractId:'contract',envelopeId:'envelope',signers,pdf:pdf.pdf})).rejects.toMatchObject({code:'invalid_completion'});
+  });
   it.each(['unsigned-company','wrong-signer','unauthenticated'] as const)('refuses %s and downloads no final artifacts',async scenario=>{
     const record=envelope();
     if(scenario==='unsigned-company')record.recipients[1]!.signingStatus='NOT_SIGNED';
@@ -53,5 +70,24 @@ describe('SPEC-P-006-A — frozen offer merge values',()=>{
     const result=await contractPdf([Array(500).fill('Registered clause.').join('\n')]);
     const pdf=await PDFDocument.load(result.pdf);
     expect(pdf.getPageCount()).toBe(result.lastPage);expect(result.lastPage).toBeGreaterThan(3);
+  });
+  it('preserves Latin accents, Greek and Cyrillic names and clauses in the actual PDF text',async()=>{
+    const clause='Élodie Šimůnek — Σύμβαση συνεργασίας — Договор найма';
+    const result=await contractPdf([Array(75).fill(clause).join('\n')]);
+    const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const loading=getDocument({data:new Uint8Array(result.pdf),useSystemFonts:false,disableFontFace:true});
+    const reader=await loading.promise;
+    const pages=[];
+    for(let n=1;n<=reader.numPages;n++){
+      const page=await reader.getPage(n),content=await page.getTextContent();
+      pages.push(content.items.map(item=>'str' in item?item.str:'').join(' '));
+    }
+    const text=pages.join(' ');
+    expect(text.split(clause)).toHaveLength(76);
+    expect(pages.at(-1)).toBe('Candidate signature and company countersignature');
+    await loading.destroy();
+  });
+  it('refuses unsupported glyphs instead of silently replacing them in the legal document',async()=>{
+    await expect(contractPdf(['Signer name: 😀'])).rejects.toMatchObject({code:'invalid_input',message:expect.stringContaining('U+1F600')});
   });
 });

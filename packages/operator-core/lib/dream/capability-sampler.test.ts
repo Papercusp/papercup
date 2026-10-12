@@ -166,7 +166,11 @@ describe('graph-enriched sampler inputs', () => {
         expect.stringContaining('Scoped authorization is required'), expect.stringContaining('Maximum one admitted resource'),
       ]));
       expect(hint.rationale).toContain('runtime compatibility remain unverified');
-      const stale = { ...hint, bVersion: 'obsolete' };
+      const oldB = structuredClone(b);
+      oldB.sources[0]!.sourceHash = capabilityHash('earlier independently captured source');
+      const stale = { ...hint, bVersion: capabilityContentVersion(oldB) };
+      expect(stale.bVersion).toMatch(/^[a-f0-9]{64}$/);
+      expect(stale.bVersion).not.toBe(hint.bVersion);
       expect(selection(s, { relations: [stale], thirdRoles: [], policy: { strategyWeights: [1, 0, 0] } }).selection.relation).toBeNull();
     },
   );

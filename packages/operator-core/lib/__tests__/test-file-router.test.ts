@@ -39,6 +39,7 @@ it('records a real node:test child when the focused router starts without a TS l
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
   collectionAttributionMarker,
@@ -71,6 +72,8 @@ import {
   resolveTestChildLauncher,
   testFileRunTimeoutMs,
   testFileListTimeoutMs,
+  testsExecutedFrom,
+  testsSkippedFrom,
   userBusReachable,
   vitestRunFailed,
   warnIfInstallInFlight,
@@ -105,6 +108,46 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('runs only the selected Node case through the common router selector', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-router-selector-'));
+    try {
+      const file = join(dir, 'selector.test.mjs');
+      const unwanted = join(dir, 'unwanted');
+      writeFileSync(file, `import { test } from 'node:test';
+        import { writeFileSync } from 'node:fs';
+        test('selected (case)', () => {});
+        test('unrelated case', () => { writeFileSync(${JSON.stringify(unwanted)}, 'ran'); throw new Error('must not run'); });`);
+      const args = buildNodeTestArgs([file], [
+        '--reporter=json', '--outputFile', join(dir, 'vitest.json'),
+        '-t', '^selected \\(case\\)$',
+      ]);
+      const run = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 10_000 });
+      expect(run.status, run.stderr || run.stdout).toBe(0);
+      expect(existsSync(unwanted)).toBe(false);
+      expect(testsExecutedFrom(run.stdout)).toBe(1);
+
+      const absent = spawnSync(process.execPath, buildNodeTestArgs([file], ['--testNamePattern=^absent$']),
+        { encoding: 'utf8', timeout: 10_000 });
+      expect(absent.status, absent.stderr || absent.stdout).toBe(0);
+      expect(testsExecutedFrom(absent.stdout)).toBe(0);
+      expect(existsSync(unwanted)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Node preflight/reporting options and excludes Vitest reporting options', () => {
+    expect(buildNodeTestArgs(['a.test.js'], [
+      '--reporter', 'json', '--outputFile=result.json', '--testNamePattern=--model=', '--test-reporter=tap',
+    ], { nodeArgs: ['--test-global-setup=preflight.mjs'], reporterArgs: ['--test-reporter=ledger.mjs'] }))
+      .toEqual(['--test', '--test-global-setup=preflight.mjs', '--test-reporter=ledger.mjs',
+        '--test-name-pattern=--model=', '--test-reporter=tap', 'a.test.js']);
+    const summary = '# tests 3\n# pass 1\n# fail 1\n# skipped 1\n';
+    expect(testsExecutedFrom(summary)).toBe(2);
+    expect(testsSkippedFrom(summary)).toBe(1);
+    expect(testsExecutedFrom(summary.replace('# tests 3', '# tests 4'))).toBeNull();
+  });
+
   it('accepts and routes conventional CLI Node:test files with their package preflight', () => {
     const file = 'libs/papercusp/packages/cli/src/install-atomic.node-test.ts';
     expect(isTestFilePath(file)).toBe(true);

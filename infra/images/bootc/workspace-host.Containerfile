@@ -116,6 +116,9 @@ ARG AMAZON_SSM_AGENT_VERSION=3.3.5390.0
 ARG AMAZON_SSM_AGENT_RPM_SHA256=85369679511b67f8f01824043ae17a679b6f21edd78229ccd1d5acd6c347f82f
 COPY papercusp-amazon-ssm-agent-ec2-only.conf /usr/lib/systemd/system/amazon-ssm-agent.service.d/papercusp-ec2-only.conf
 COPY papercusp-amazon-ssm-agent.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-amazon-ssm-agent.conf
+# Azure transport/provisioning (WI-10005639): Stream 10's WALinuxAgent unit
+# carries ConditionVirtualization=|microsoft, so systemd runs it only on Azure.
+# Order its provisioning after the identities and roots created at every boot.
 # Repository metadata changes independently of this source. Each bake supplies a
 # fresh key so an old cached dnf upgrade cannot stand in for today's vendor fixes.
 ARG PAPERCUSP_VENDOR_REFRESH
@@ -164,6 +167,7 @@ RUN set -eux; \
          nvme-cli \
          openssh-server \
          rsyslog \
+         WALinuxAgent \
          sudo \
          shadow-utils \
          policycoreutils \
@@ -219,7 +223,11 @@ RUN set -eux; \
        done \
     && test "$found_kernel" -gt 0 \
     && rpm -q google-compute-engine google-compute-engine-oslogin google-guest-agent \
+    && rpm -q WALinuxAgent WALinuxAgent-udev azure-vm-utils \
+    && grep -Fqx 'ConditionVirtualization=|microsoft' /usr/lib/systemd/system/waagent.service \
+    && grep -Fxq 'Provisioning.Agent=auto' /etc/waagent.conf \
     && systemctl enable google-guest-agent.service google-oslogin-cache.timer \
+    && systemctl enable waagent.service \
     && systemctl enable amazon-ssm-agent.service \
     && dnf clean all \
     `# Scrub dnf/subscription-manager residue from /var and /run.` \
@@ -243,6 +251,10 @@ RUN set -eux; \
     && rpm -q minisign dnf-automatic alsa-lib libatomic git-core \
               google-compute-engine google-compute-engine-oslogin google-guest-agent \
               amazon-ssm-agent
+
+# WALinuxAgent's upgrade scriptlet removes its service drop-in directory, so
+# copy our ordering edge only after the DNF upgrade/install transaction above.
+COPY papercusp-waagent-host-prepare.conf /usr/lib/systemd/system/waagent.service.d/papercusp-host-prepare.conf
 
 # ── Layer 2: the three identities (D-043 / D-248 / D-251) ─────────────────────
 #

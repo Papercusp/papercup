@@ -231,6 +231,30 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     });
   });
 
+  it('classifies the client-wrapper-absent capture status as caller-side and non-claimable', () => {
+    const report = {
+      toolName: 'scheduler:get_claim_spec',
+      status: 'client-wrapper-absent',
+      message: "The current Codex session's ALL_TOOLS catalog listed scheduler:get_claim_spec, but typeof tools.mcp__papercusp_su__scheduler_get_claim_spec was undefined. The documented ptool CLI tools:find path succeeded, so the server capability exists while the normalized direct wrapper is absent in this client session.",
+      reproduced: true,
+    };
+
+    expect(classifyToolError(undefined, report.status, report.message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure(report)).toMatchObject({
+      class: 'caller',
+      direct: false,
+      knownExternal: null,
+    });
+    expect(normalizeSuspectedToolFailure({
+      ...report,
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'tools:find and tools:invoke provide the deferred-tool route.',
+        actual: 'The normalized direct wrapper was absent before MCP dispatch.',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies scratch-reference size refusals from the reported error code or reason status', () => {
     expect(normalizeSuspectedToolFailure({
       toolName: 'capability:read',
@@ -759,6 +783,20 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       .toBe('caller');
     // Keep the rule specific to the deliberate readiness refusal.
     expect(classifyToolError('handler_error', 'error', 'acceptance BAR contract could not be loaded from the database'))
+      .toBe('structural');
+  });
+
+  it('classifies a missing acceptance BAR amendment approval as caller control flow', () => {
+    const message =
+      'acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({
+      ok: false,
+      code: 'acceptance_bar_approval_required',
+      error: message,
+    }))).toBe('caller');
+    // A failure loading approval data remains structural.
+    expect(classifyToolError('handler_error', 'error', 'acceptance BAR approval could not be loaded from the database'))
       .toBe('structural');
   });
 
