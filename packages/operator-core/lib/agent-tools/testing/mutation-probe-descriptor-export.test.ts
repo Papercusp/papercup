@@ -108,6 +108,24 @@ function probe(args: string[], env: Record<string, string | undefined>): { code:
 const MUTATE = 's/^guarded$/MUTATED/';
 
 describe('mutation-probe.sh descriptor export (R-1)', () => {
+  it('fails closed when the admitted descriptor builder crashes, without issuing a caught or survived verdict', () => {
+    const { file } = makeSubjectRepo();
+    const { recorder } = makeRecorder();
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    // Fail only the descriptor construction process; the preflight and guard
+    // still have a working Node, so this isolates the lost-metadata failure.
+    writeFileSync(join(bin, 'node'), `#!/bin/bash\nif [ -n "$MPD_MODE" ]; then\n  echo descriptor-builder-crash >&2\n  exit 17\nfi\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+    });
+    expect(code, out).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=build-failed');
+    expect(out).toContain('descriptor-builder-crash');
+    expect(out).not.toMatch(/MUTATION_PROBE_RESULT verdict=(caught|survived)/);
+  });
+
   it('copy-out: every leg receives the SAME strict descriptor naming the subject, expression, hashes and diff', () => {
     const { file } = makeSubjectRepo();
     const { recorder, log } = makeRecorder();

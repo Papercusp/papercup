@@ -1524,8 +1524,8 @@ build_mutation_descriptor() {
     ' "${POSITIVE_CONTROLS[@]}" 2>"$SCRATCH/mutation-descriptor.err"
   )" || MUTATION_DESCRIPTOR_JSON=""
   if [ -z "$MUTATION_DESCRIPTOR_JSON" ]; then
-    log "mutation descriptor could not be built ($(head -1 "$SCRATCH/mutation-descriptor.err" 2>/dev/null)) — guard rows will carry no execution_details.mutation"
-    return 0
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=build-failed target=%s\n' "$FILE"
+    die "mutation descriptor could not be built after reader admission ($(head -1 "$SCRATCH/mutation-descriptor.err" 2>/dev/null)); no mutation verdict is valid"
   fi
   MUTATION_PROBE_INVOCATION_ID="$(printf '%s' "$MUTATION_DESCRIPTOR_JSON" | sed -n 's/.*"probeInvocationId":"\([^"]*\)".*/\1/p')"
   log "mutation descriptor $MUTATION_DESCRIPTOR_GATE; probeInvocationId=$MUTATION_PROBE_INVOCATION_ID mode=$mode subject=$subject"
