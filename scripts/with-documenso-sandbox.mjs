@@ -93,6 +93,39 @@ export async function dockerAllocation(args, environment = {}, {
   } finally { clearTimeout(warning); }
 }
 
+/** Collect failure evidence while the owned container still exists. Never emit config secrets. */
+export function sandboxFailureDiagnostic(name, run, secrets = [], readiness = '') {
+  const inspected = run(['inspect', '--format', '{{json .State}}', name]);
+  let state;
+  try {
+    const value = JSON.parse(inspected.stdout || '{}');
+    state = { status: value.Status, exitCode: value.ExitCode, error: value.Error, oomKilled: value.OOMKilled };
+  } catch { state = { inspectExit: inspected.status }; }
+  const logs = run(['logs', '--tail', '35', name]);
+  let diagnostic = JSON.stringify({ container: name, state, readiness,
+    startupLog: ((logs.stdout || '') + (logs.stderr || '')).slice(-4000) });
+  for (const value of secrets.filter(value => value && value.length >= 8)) {
+    diagnostic = diagnostic.split(value).join('[redacted]');
+  }
+  return diagnostic;
+}
+
+export async function waitForSandboxPostgres(name, { run, secrets = [],
+  attempts = 31, isStopped = () => false, delay = () => new Promise(done => setTimeout(done, 1000)) }) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (isStopped()) return;
+    const ready = run(['exec', name, 'pg_isready', '-U', 'documenso']);
+    if (!ready.error && ready.status === 0) return;
+    const inspected = run(['inspect', '--format', '{{.State.Status}}', name]);
+    const terminal = /^(exited|dead)$/.test((inspected.stdout || '').trim());
+    if (terminal || attempt === attempts - 1) {
+      const readiness = ready.error?.message || (ready.stdout || '') + (ready.stderr || '') || 'exit=' + ready.status;
+      throw new Error('Sandbox Postgres did not become ready: ' + sandboxFailureDiagnostic(name, run, secrets, readiness));
+    }
+    await delay();
+  }
+}
+
 export async function runSandbox({ image, command }) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
@@ -181,13 +214,9 @@ export async function runSandbox({ image, command }) {
     await start(mail, ['--network-alias', 'mail', '-p', '127.0.0.1::1080', MAIL_IMAGE]);
     if (stopped) return 130;
     const mailUrl = 'http://127.0.0.1:' + loopbackPort(docker(['port', mail, '1080/tcp']));
-    for (let attempt = 0; ; attempt++) {
-      if (stopped) return 130;
-      const ready = spawnSync('docker', ['exec', database, 'pg_isready', '-U', 'documenso'], { stdio: 'ignore', timeout: 5000 });
-      if (ready.status === 0) break;
-      if (attempt >= 30) throw new Error('Sandbox Postgres did not become ready');
-      await new Promise(done => setTimeout(done, 1000));
-    }
+    const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });
+    await waitForSandboxPostgres(database, { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped });
+    if (stopped) return 130;
     // Select a free port without starting an unconfigured provider. Docker's
     // bind remains authoritative: a competing bind makes start fail and cleanup
     // runs, rather than treating an unrelated process as our provider.
@@ -211,7 +240,8 @@ export async function runSandbox({ image, command }) {
         const response = await fetch(appUrl + '/signin', { signal: AbortSignal.timeout(5000), redirect: 'manual' });
         if (response.status >= 200 && response.status < 400) break;
       } catch { /* boot/migration still in progress; bounded below */ }
-      if (Date.now() >= deadline) throw new Error('Documenso sandbox did not become ready within 180s: ' + app);
+      if (Date.now() >= deadline) throw new Error('Documenso sandbox did not become ready within 180s: ' +
+        sandboxFailureDiagnostic(app, diagnosticRun, Object.values(environment)));
       await new Promise(done => setTimeout(done, 1000));
     }
     const runtime = { kind: 'documenso-sandbox', image, appUrl, mailUrl, container: app,
