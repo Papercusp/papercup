@@ -15,7 +15,7 @@ const mailUrl = process.env.DOCUMENSO_TEST_MAIL_URL ?? '';
 
 async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): Promise<T> {
   try { return await action(); }
-  catch {
+  catch (error) {
     // Do not include URLs, values, page text or Playwright call logs: they may
     // contain verification links, signing links, passwords or a new API token.
     const controls = await page.locator('input,button,[role="tab"]').evaluateAll(elements => elements.map(element => ({
@@ -23,7 +23,20 @@ async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): P
       testId: element.getAttribute('data-testid'), invalid: element.getAttribute('aria-invalid'),
       label: element.tagName === 'INPUT' ? element.getAttribute('aria-label') : element.textContent?.slice(0,80),
     }))).catch(() => []);
-    throw new Error('Documenso UI phase failed: ' + name + '; controls=' + JSON.stringify(controls));
+    const issues = await page.locator('body').evaluate(element => {
+      const text = (element as HTMLElement).innerText;
+      // Only return fixed categories, never provider text that could echo input.
+      return [
+        ['signup-disabled', 'Signup is currently disabled'],
+        ['disposable-email', 'Disposable email addresses are not allowed'],
+        ['account-creation-refused', 'We were unable to create your account'],
+        ['captcha', 'Human verification required'],
+        ['signature-required', 'We need your signature'],
+        ['password-policy', 'Password should not be common'],
+      ].filter(([, message]) => text.includes(message!)).map(([code]) => code);
+    }).catch(() => []);
+    const errorType = error instanceof Error && ['TimeoutError', 'AssertionError', 'Error'].includes(error.name) ? error.name : 'unexpected';
+    throw new Error('Documenso UI phase failed: ' + name + '; errorType=' + errorType + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls));
   }
 }
 
@@ -35,6 +48,7 @@ async function savedSignature(page: Page, name: string) {
   await dialog.getByRole('tab', { name: 'Type', exact: true }).click();
   await dialog.getByTestId('signature-pad-type-input').fill(name);
   await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect.poll(() => dialog.isVisible(), { timeout: 30_000 }).toBe(false);
 }
 
 async function verifyEmail(page: Page, email: string) {
@@ -63,12 +77,17 @@ async function register(browser: Browser, person: SigningPerson) {
   const context = await browser.newContext();
   const page = await context.newPage();
   const password = randomBytes(24).toString('base64url') + 'Aa1!';
-  await uiPhase(page, 'register account with required signature', async () => {
+  await uiPhase(page, 'open provider signup form', async () => {
     await page.goto(baseUrl + '/signup');
+  });
+  await uiPhase(page, 'fill provider signup identity', async () => {
     await page.locator('input[name="name"]').fill(person.name);
     await page.locator('input[name="email"]').fill(person.email);
     await page.locator('input[name="password"]').fill(password);
-    await savedSignature(page, person.name);
+  });
+  await uiPhase(page, 'save required signup signature', () => savedSignature(page, person.name));
+  await uiPhase(page, 'submit provider signup', async () => {
+    expect(await page.locator('input[name="email"]').evaluate(input => (input as HTMLInputElement).form!.checkValidity())).toBe(true);
     await page.getByRole('button', { name: 'Create account', exact: true }).click();
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).not.toBe('/signup');
   });
