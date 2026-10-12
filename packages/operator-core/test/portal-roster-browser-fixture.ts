@@ -1953,6 +1953,28 @@ async function runPrivateDevPage(page: Page, context: BrowserContext, input: Por
 /** Actual config/spec workflow: no synthetic success or denial responses. */
 async function runPrivateHarnessSettingsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
   const { selected, neighbor, foreign } = input.settingsHarnesses!;
+  const reads: Array<Record<string, unknown>> = [];
+  const writes: Array<Record<string, unknown>> = [];
+  const captures = new Set<Promise<void>>();
+  const retain = () => writeFileSync(join(input.evidence, 'portal-settings-wire.json'),
+    JSON.stringify({ reads, writes }, null, 2));
+  page.on('request', request => {
+    if (request.method() === 'PUT' && new URL(request.url()).pathname === `/api/harness/${selected}/spec`) {
+      writes.push({ url: request.url(), body: request.postDataJSON() }); retain();
+    }
+  });
+  page.on('response', response => {
+    const target = new URL(response.url());
+    if (!target.pathname.endsWith('/rest-query') || target.searchParams.get('name') !== 'harnessProjectFiles.byHarness') return;
+    const capture = response.json().then(body => {
+      reads.push({ url: response.url(), args: target.searchParams.get('args'), status: response.status(), body }); retain();
+    }, error => { reads.push({ url: response.url(), error: String(error) }); retain(); });
+    captures.add(capture); void capture.finally(() => captures.delete(capture));
+  });
+  const { sql } = getOrgPg();
+  const stored = await sql`SELECT harness_slug, workspace_id, config FROM harness_shared.harness_project_files
+    WHERE harness_slug IN (${selected}, ${neighbor}, ${foreign}) ORDER BY harness_slug`;
+  writeFileSync(join(input.evidence, 'portal-settings-initial-store.json'), JSON.stringify(stored, null, 2));
   const endpoint = (slug: string) => new URL(`/api/harness/${slug}/spec?phase=staging`, input.base).href;
   const readConfig = async (slug: string) => {
     const response = await context.request.get(endpoint(slug));
@@ -1989,6 +2011,13 @@ async function runPrivateHarnessSettingsPage(page: Page, context: BrowserContext
   const setting = () => page.getByRole('checkbox', { name: 'Private setting', exact: true });
   await setting().waitFor(); assert.equal(await setting().isChecked(), false);
   const before = await readConfig(selected);
+  await Promise.all([...captures]);
+  const initialRead = reads.find(read => read.status === 200
+    && JSON.parse(read.args as string).harnessSlug === selected);
+  assert.ok(initialRead, 'Settings must retain its selected scoped config query before editing');
+  const initialRows = (initialRead.body as { rows: Array<{ config: string }> }).rows;
+  assert.deepEqual(initialRows.map(row => JSON.parse(row.config)), [before],
+    'Settings sync config must agree with canonical spec before a full-config save');
   await setting().focus(); await page.keyboard.press('Space');
   const save = () => page.getByRole('button', { name: 'Save', exact: true });
   const denied = page.waitForResponse(response => response.request().method() === 'PUT'
