@@ -178,6 +178,8 @@ import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy, egressIsSupportedProxy } from './egress-dispatcher';
 import {
   CACHE_POLICY_VERSION,
+  cacheSplitBoundaryEnabled,
+  resolveRelocateSystemTail,
   deferLargeToolsEnabled,
   deferMinToolBytesFromEnv,
   rewriteAnthropicCacheBody,
@@ -1138,7 +1140,21 @@ const cacheDeferLargeToolsOn = () => deferLargeToolsEnabled();
 const cacheDeferMinToolBytes = () => deferMinToolBytesFromEnv();
 /** P-004 stable/volatile system split — ON by default (measured +66k shared tokens/session);
  *  PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 kills it. */
-const cacheSplitBoundaryOn = () => process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
+const cacheSplitBoundaryOn = () => cacheSplitBoundaryEnabled();
+/**
+ * Whether to relocate the split system tail after messages[0] block 0
+ * (token-efficiency-prompts-cache-and-behavior-2026-10-11 P-015). The env var forces it per host
+ * (`=1` on, `=0` off); otherwise the registered flag GATEWAY_RELOCATE_SYSTEM_TAIL decides
+ * (getFlag is TTL-cached, so a per-request read is cheap). A flag-read failure keeps the
+ * previous layout.
+ */
+function relocateSystemTailOn(): Promise<boolean> {
+  return resolveRelocateSystemTail(async () => {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    return getFlag(FLAGS.GATEWAY_RELOCATE_SYSTEM_TAIL, 'system');
+  });
+}
 /** How many `prompt_cache_key` buckets the codex traffic is spread across. OpenAI degrades a
  *  single key past ~15 req/min; fewer buckets = more cross-session sharing. */
 const codexCacheShards = () => {
@@ -5708,6 +5724,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const cached = rewriteAnthropicCacheBody(bodyBuf, {
           injectToolsBreakpoint: cacheToolsBreakpointEnabled,
           splitBoundary: cacheSplitBoundaryEnabled,
+          relocateSystemTail: cacheSplitBoundaryEnabled && (await relocateSystemTailOn()),
           deferLargeTools: cacheDeferLargeToolsEnabled,
           deferMinToolBytes: cacheDeferMinToolBytesValue,
         });

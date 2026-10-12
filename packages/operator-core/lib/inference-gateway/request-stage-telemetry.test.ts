@@ -272,7 +272,7 @@ describe('ten-agent startup sharing evidence (R-10)', () => {
 describe('R-10 startup PREFIX cohorts from the journal layout (D-077)', () => {
   const hash = (seed: string) => ({ sha16: seed.padEnd(16, '0').slice(0, 16), bytes: 100 });
   const startup = (index: number, over: Partial<StartupPrefixRow> = {}, messages = 2, toolsCount = 88): StartupPrefixRow => ({
-    ownerId: `su-owner-${index}`, authorizationScope: 'acct-a', model: 'claude-test', transport: 'bearer-http',
+    ownerId: `su-owner-${index}`, requestId: index, authorizationScope: 'acct-a', model: 'claude-test', transport: 'bearer-http',
     tools: { sha256: 'b'.repeat(64), bytes: 433464, hashedBytes: 433464 },
     layout: {
       tools: { count: toolsCount, deferred: 74 },
@@ -326,7 +326,8 @@ describe('R-10 startup PREFIX cohorts from the journal layout (D-077)', () => {
       ownerId: base.ownerId, transport: 'bearer-http', model: base.model, authorizationScope: base.authorizationScope,
       tools: base.tools, instructions: null, layout: base.layout, startedAt: 5, inputTokens: 2, cacheReadTokens: 7,
       cacheWriteTokens: 9, outcome: 'ok' })}`;
-    expect(parseStartupPrefixRowLine(line)).toMatchObject({ ownerId: 'su-owner-1', startedAt: 5, cacheReadTokens: 7, outcome: 'ok' });
+    expect(parseStartupPrefixRowLine(line)).toMatchObject({ ownerId: 'su-owner-1', requestId: 1, startedAt: 5, cacheReadTokens: 7, outcome: 'ok' });
+    expect(parseStartupPrefixRowLine(line.replace('"requestId":1,', ''))!.requestId).toBeNull();
     expect(parseStartupPrefixRowLine(line)!.layout!.system.blocks).toHaveLength(4);
     expect(parseStartupPrefixRowLine(line.replace('"layout":', '"layout":{"junk":1},"x":'))!.layout).toBeNull();
     expect(parseStartupPrefixRowLine(line.replace(`"ownerId":"${base.ownerId}"`, '"ownerId":""'))).toBeNull();

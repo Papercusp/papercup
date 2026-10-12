@@ -583,6 +583,8 @@ export function parseStartupCacheEvidenceLine(line: string): StartupCacheEvidenc
  */
 export interface StartupPrefixRow {
   ownerId: string;
+  /** Gateway-process request counter (resets on restart); with ownerId + startedAt it dedupes repeated journal lines. */
+  requestId: number | null;
   authorizationScope: string | null;
   model: string | null;
   transport: GatewayTelemetryTransport;
@@ -597,6 +599,17 @@ export interface StartupPrefixRow {
 
 /** A real startup request: the full tool set is present and the conversation has barely begun. */
 export const STARTUP_MAX_MESSAGES = 3;
+
+/**
+ * The ONE startup-request predicate, shared by the R-10 cohort sizer and the startup-cache
+ * instrument (token-efficiency-prompts-cache-and-behavior-2026-10-11 P-001) so the two can never
+ * disagree about which rows are launches. Outcome is deliberately NOT part of it: the cohort sizer
+ * also requires `ok`, while the instrument keeps failed launches and reports their missing usage
+ * as unknown rather than dropping them.
+ */
+export function isStartupRequestLayout(layout: GatewayCacheLayout | null): layout is GatewayCacheLayout {
+  return layout !== null && layout.tools.count > 0 && layout.messages.count <= STARTUP_MAX_MESSAGES;
+}
 /** R-10 is specified for a ten-agent cohort. */
 export const STARTUP_COHORT_MIN_OWNERS = 10;
 
@@ -616,7 +629,8 @@ export function parseStartupPrefixRowLine(line: string): StartupPrefixRow | null
   catch { return null; }
   if (typeof raw.ownerId !== 'string' || !raw.ownerId) return null;
   return {
-    ownerId: raw.ownerId, authorizationScope: evidence.authorizationScope, model: evidence.model,
+    ownerId: raw.ownerId, requestId: finiteOrNull(raw.requestId),
+    authorizationScope: evidence.authorizationScope, model: evidence.model,
     transport: evidence.transport, tools: evidence.tools, layout: isLayoutShape(raw.layout) ? raw.layout : null,
     startedAt: evidence.startedAt, inputTokens: finiteOrNull(raw.inputTokens),
     cacheReadTokens: evidence.cacheReadTokens, cacheWriteTokens: evidence.cacheWriteTokens,
@@ -639,7 +653,7 @@ export function assessStartupPrefixCohorts(rows: readonly StartupPrefixRow[], mi
   let startups = 0, unkeyed = 0;
   for (const row of rows) {
     const layout = row.layout;
-    if (!layout || row.outcome !== 'ok' || layout.tools.count <= 0 || layout.messages.count > STARTUP_MAX_MESSAGES) continue;
+    if (row.outcome !== 'ok' || !isStartupRequestLayout(layout)) continue;
     startups++;
     const lastSystemMarker = layout.markers.reduce((last, m) => m.section === 'system' ? Math.max(last, m.index) : last, -1);
     const full = row.tools && row.tools.bytes === row.tools.hashedBytes && row.tools.bytes > 0;
