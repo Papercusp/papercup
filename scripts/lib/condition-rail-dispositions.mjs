@@ -65,17 +65,14 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/attention/bulk-run-owner-digest.ts': na(
     'owner digest of a finished bulk run’s results; a report, not a failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/dbos/in-process-periodic.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/endpoint-route/routes/internal/escalation-event.ts': na(
     'relays an escalation the harness already recorded on the escalations surface to the owner’s desktop; the raiser owns the condition, not this relay',
   ),
-  'owner-only-alarm|packages/operator-core/lib/endpoint-route/routes/internal/smoke-test-event.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/fleet-ekg/scan.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/human-queue-digest-action.ts': na(
     'reminder and weekly digest of the owner’s own needs-human queue; a report, not a failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/harness/routines/loop-dead-man.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts': na(
     'notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own',
@@ -115,8 +112,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/agent-tools/coordination/messages.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/agent-tools/index.ts': NA_FALLBACK_WAKE,
-  'log-only-fallback|packages/operator-core/lib/agent-tools/loop/arm.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/agent-tools/loop/checkpoint.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
   ),
@@ -136,10 +131,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/degradation/fallback-observations.ts': na(
     'the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)',
   ),
-  'log-only-fallback|packages/operator-core/lib/dbos/bootstrap.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|fail-open': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|fallback': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|fallback': na(
@@ -150,14 +141,11 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|fallback': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/grading-integrity.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
   ),
   'log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts': migrate('P-009'),
-  'log-only-fallback|packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/issues-engineer.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/learning/pot-gate/gates.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/learning/pot-gate/store.ts': migrate('P-013'),
@@ -168,7 +156,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/plan-items/claim-authority-swarm.ts': migrate('P-011'),
   'log-only-fallback|packages/operator-core/lib/pot-membership.ts': migrate('P-011'),
   'log-only-fallback|packages/operator-core/lib/pot/watchdog.ts': migrate('P-015'),
-  'log-only-fallback|packages/operator-core/lib/routines-dispatch-derivation.ts': migrate('P-009'),
   'log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/scout/dedup-burn-guard.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/scout/paused-rails.ts': migrate('P-013'),
