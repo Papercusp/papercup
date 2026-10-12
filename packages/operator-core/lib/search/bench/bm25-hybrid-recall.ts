@@ -17,6 +17,8 @@
  * `invalid`, never `pass`.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import type { MeasurementPin } from '../../agent-tools/plans/evidence-measurement-pin';
 
 // The same matcher the commit-time identity lints use, so what this scrubs at write time and
 // what git-sync's content lint refuses cannot drift (see prose-corpus.ts for the same pattern).
@@ -24,6 +26,68 @@ import { redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-pa
 
 export type Arm = 'legacy' | 'bm25';
 export const ARMS: readonly Arm[] = ['legacy', 'bm25'];
+
+/** D-035: a post-run HEAD is not a witness of the bytes that ran. */
+export const BM25_EXECUTED_SOURCE_PATHS = [
+  'packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts',
+  'packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts',
+  'libs/generic/search/src/hybrid.ts',
+  'libs/generic/rrf/src/index.ts',
+  'packages/operator-core/lib/search/lexical/rank.ts',
+  'packages/operator-core/lib/agent-tools/search/sources.ts',
+] as const;
+
+const repoPath = z.string().refine(p => !!p && !p.startsWith('/') && !p.includes('\\') &&
+  p.split('/').every(part => !!part && part !== '.' && part !== '..'), 'expected repository-relative path');
+const commitId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+export const sourceQualificationManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  rootCommit: commitId,
+  // A manifest may add dependencies to the mandatory six; none may be dropped.
+  sourceHashes: z.record(repoPath, z.string().regex(/^[0-9a-f]{64}$/)),
+  repos: z.record(z.string(), commitId),
+  runs: z.array(z.object({ seed: z.string().min(1), artifactPath: repoPath })).length(3),
+}).passthrough().superRefine((m, ctx) => {
+  for (const p of BM25_EXECUTED_SOURCE_PATHS) if (!m.sourceHashes[p])
+    ctx.addIssue({ code: 'custom', message: `missing executed source: ${p}` });
+  if (m.repos['.'] !== m.rootCommit)
+    ctx.addIssue({ code: 'custom', message: 'root repository pin differs from rootCommit' });
+  if (new Set(m.runs.map(r => r.seed)).size !== 3 || new Set(m.runs.map(r => r.artifactPath)).size !== 3)
+    ctx.addIssue({ code: 'custom', message: 'three distinct prospective seeds and artifact paths are required' });
+});
+export type SourceQualificationManifest = z.infer<typeof sourceQualificationManifestSchema>;
+export type ExecutedSourceSnapshot = MeasurementPin & { rootCommit: string | null; observedAt: string };
+
+/** Fail closed on unknown provenance as well as known dirt or movement. */
+export function qualifyExecutedSource(before: ExecutedSourceSnapshot, after: ExecutedSourceSnapshot,
+  expected?: SourceQualificationManifest): { verdict: 'pass' | 'invalid'; reasons: string[] } {
+  const reasons: string[] = [];
+  const paths = expected ? Object.keys(expected.sourceHashes) : [...BM25_EXECUTED_SOURCE_PATHS];
+  for (const [label, snapshot] of [['before', before], ['after', after]] as const) {
+    if (!snapshot.rootCommit) reasons.push(`${label}: root commit unavailable`);
+    if (expected && snapshot.rootCommit !== expected.rootCommit) reasons.push(`${label}: root commit differs from manifest`);
+    for (const error of snapshot.errors ?? []) reasons.push(`${label}: ${error}`);
+    for (const p of paths) {
+      const file = snapshot.files.find(f => f.path === p);
+      if (!file || file.clean !== true) reasons.push(`${label}: executed source dirty or unavailable: ${p}`);
+      if (expected && file?.sha256 !== expected.sourceHashes[p]) reasons.push(`${label}: executed source hash differs from manifest: ${p}`);
+      if (file && !snapshot.repos.some(r => r.repo === file.repo)) reasons.push(`${label}: repository pin missing: ${file.repo}`);
+    }
+    for (const repo of snapshot.repos) {
+      if (!repo.head || (repo.repo !== '.' && repo.gitlink !== repo.head))
+        reasons.push(`${label}: repository HEAD/gitlink unavailable or mismatched: ${repo.repo}`);
+      if (expected && repo.head !== expected.repos[repo.repo]) reasons.push(`${label}: repository pin differs from manifest: ${repo.repo}`);
+    }
+    for (const repo of Object.keys(expected?.repos ?? {})) if (!snapshot.repos.some(r => r.repo === repo))
+      reasons.push(`${label}: manifest repository pin unavailable: ${repo}`);
+  }
+  if (before.rootCommit !== after.rootCommit) reasons.push('root commit changed during execution');
+  for (const p of paths) if (before.files.find(f => f.path === p)?.sha256 !== after.files.find(f => f.path === p)?.sha256)
+    reasons.push(`executed source changed during execution: ${p}`);
+  for (const repo of before.repos) if (repo.head !== after.repos.find(r => r.repo === repo.repo)?.head)
+    reasons.push(`repository commit changed during execution: ${repo.repo}`);
+  return { verdict: reasons.length ? 'invalid' : 'pass', reasons: [...new Set(reasons)] };
+}
 
 /** Select saved warm-pass indices for diagnosis; never carry prior observations into a replay. */
 export function selectReplayPairs(saved: readonly PairResult[], sources: readonly string[], indices: readonly number[]): PairResult[] {

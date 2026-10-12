@@ -13,6 +13,7 @@ import { mergeExactAndBm25 } from '../lexical/rank';
 import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
+  BM25_EXECUTED_SOURCE_PATHS,
   LATENCY_P95_CEILING_MS,
   RECALL_K,
   armOrder,
@@ -29,6 +30,7 @@ import {
   legDurations,
   overallLatencyVerdict,
   overallVerdict,
+  qualifyExecutedSource,
   pairedCounts,
   rankOf,
   redactPairsForArtifact,
@@ -36,14 +38,62 @@ import {
   selectReplayPairs,
   splitDisjointSamples,
   statementDeltas,
+  sourceQualificationManifestSchema,
   steadyPassProblems,
   summarizeArm,
   summarizeSource,
   warmQueryEmbeddings,
   type ArmObservation,
+  type ExecutedSourceSnapshot,
   type PairResult,
   type StatementStat,
 } from './bm25-hybrid-recall';
+
+describe('executed source qualification', () => {
+  const sha = 'a'.repeat(64);
+  const commit = 'b'.repeat(40);
+  const snapshot = (): ExecutedSourceSnapshot => ({ schemaVersion: 1, rootCommit: commit, observedAt: '2026-10-12T00:00:00Z',
+    files: BM25_EXECUTED_SOURCE_PATHS.map(path => ({ path, dimension: 'source', sha256: sha, repo: '.', headBlob: 'c'.repeat(40), clean: true })),
+    repos: [{ repo: '.', head: commit, gitlink: null }], errors: [] });
+  const manifest = () => sourceQualificationManifestSchema.parse({ schemaVersion: 1, rootCommit: commit,
+    sourceHashes: Object.fromEntries(BM25_EXECUTED_SOURCE_PATHS.map(p => [p, sha])), repos: { '.': commit },
+    runs: [1, 2, 3].map(i => ({ seed: `prospective-${i}`, artifactPath: `docs/evidence/run-${i}.json` })) });
+
+  it('qualifies only identical clean bytes and committed pins before and after', () => {
+    expect(qualifyExecutedSource(snapshot(), snapshot(), manifest())).toEqual({ verdict: 'pass', reasons: [] });
+  });
+  it('rejects a dirty executed file even when a later HEAD and manifest hash match', () => {
+    const before = snapshot(); before.files[0]!.clean = false;
+    expect(qualifyExecutedSource(before, snapshot(), manifest()).verdict).toBe('invalid');
+  });
+  it('rejects unknown clean state and unavailable source instead of treating them as clean', () => {
+    const before = snapshot(); before.files[0]!.clean = null; before.files.pop();
+    expect(qualifyExecutedSource(before, snapshot(), manifest()).verdict).toBe('invalid');
+  });
+  it('rejects changed source bytes and frozen manifest hash mismatches', () => {
+    const after = snapshot(); after.files[0]!.sha256 = 'd'.repeat(64);
+    const result = qualifyExecutedSource(snapshot(), after, manifest());
+    expect(result.verdict).toBe('invalid');
+    expect(result.reasons).toContain(`executed source changed during execution: ${BM25_EXECUTED_SOURCE_PATHS[0]}`);
+  });
+  it('rejects a checkout whose submodule HEAD is not its parent gitlink', () => {
+    const before = snapshot(); before.files[2]!.repo = 'libs/generic/search';
+    before.repos.push({ repo: 'libs/generic/search', head: commit, gitlink: 'd'.repeat(40) });
+    expect(qualifyExecutedSource(before, before).verdict).toBe('invalid');
+  });
+  it('rejects commit movement and failed Git probes', () => {
+    const after = snapshot(); after.rootCommit = 'd'.repeat(40); after.errors = ['git object unavailable'];
+    expect(qualifyExecutedSource(snapshot(), after, manifest()).verdict).toBe('invalid');
+  });
+  it('refuses a manifest that drops the mandatory source set, reuses seeds, or has unsafe paths', () => {
+    const expected = manifest(); delete expected.sourceHashes[BM25_EXECUTED_SOURCE_PATHS[0]];
+    expect(sourceQualificationManifestSchema.safeParse(expected).success).toBe(false);
+    const repeated = manifest(); repeated.runs[1] = repeated.runs[0]!;
+    expect(sourceQualificationManifestSchema.safeParse(repeated).success).toBe(false);
+    const unsafe = manifest(); unsafe.sourceHashes['../outside'] = sha;
+    expect(sourceQualificationManifestSchema.safeParse(unsafe).success).toBe(false);
+  });
+});
 
 function obs(rank: number | null, engine: 'bm25' | 'legacy', latencyMs = 10, hits = 10): ArmObservation {
   return { rank, engine, latencyMs, hits, semanticCandidates: 1 };

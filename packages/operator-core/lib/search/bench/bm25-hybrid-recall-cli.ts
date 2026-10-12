@@ -41,7 +41,8 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 import type { Sql } from 'postgres';
 import type { Embedder } from '@papercusp/search';
@@ -51,6 +52,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import {
   ARMS,
+  BM25_EXECUTED_SOURCE_PATHS,
   COLD_LATENCY_P95_CEILING_MS,
   LATENCY_P95_CEILING_MS,
   callAttribution,
@@ -65,17 +67,20 @@ import {
   legDurations,
   overallLatencyVerdict,
   overallVerdict,
+  qualifyExecutedSource,
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
   selectReplayPairs,
   splitDisjointSamples,
   statementDeltas,
+  sourceQualificationManifestSchema,
   summarizeSource,
   warmQueryEmbeddings,
   type Arm,
   type ArmObservation,
   type CallAttribution,
+  type ExecutedSourceSnapshot,
   type PairResult,
   type QueryStyle,
   type Schedstat,
@@ -86,6 +91,28 @@ import {
 } from './bm25-hybrid-recall';
 
 const PLAN = 'bm25-lexical-search-evoke-adoption-2026-10-10';
+
+/** Reuse proof measurement's Git/blob pins; a best-effort pin is fail-closed here. */
+export async function captureExecutedSource(root: string, paths: readonly string[] = BM25_EXECUTED_SOURCE_PATHS): Promise<ExecutedSourceSnapshot> {
+  const { buildMeasurementPin, gitBlobId } = await import('../../agent-tools/plans/evidence-measurement-pin');
+  const { readHeadCommitFromFiles } = await import('../../agent-tools/plans/committed-tree-reader');
+  const errors: string[] = [];
+  const files = paths.flatMap(p => {
+    try {
+      const file = path.resolve(root, p);
+      if (path.relative(root, file) !== p || fs.realpathSync(file) !== file) throw new Error('unsafe source path');
+      const before = fs.statSync(file, { bigint: true });
+      const bytes = fs.readFileSync(file);
+      const after = fs.statSync(file, { bigint: true });
+      if (!before.isFile() || before.ino !== after.ino || before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new Error('source changed during read');
+      return [{ path: p, dimension: 'source' as const, sha256: createHash('sha256').update(bytes).digest('hex'), gitBlob: gitBlobId(bytes) }];
+    } catch (error) { errors.push(`${p}: ${String(error)}`); return []; }
+  });
+  const rootCommit = await readHeadCommitFromFiles(root) ?? null;
+  const pin = await buildMeasurementPin(root, files);
+  return { ...pin, rootCommit, observedAt: new Date().toISOString(), errors: [...errors, ...(pin.errors ?? [])] };
+}
 
 /** Cache vectors outside timing without wrapping the engine's registered embedder identity. */
 export function createPrecomputedHybridQueries(embedder: Embedder) {
@@ -411,6 +438,27 @@ async function main(): Promise<number> {
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
   if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
     throw new Error('--replay-reps must be an integer from 1 to 10');
+
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const manifestPath = argValue('--qualification-manifest');
+  const manifestBytes = manifestPath ? fs.readFileSync(manifestPath) : undefined;
+  const manifest = manifestBytes ? sourceQualificationManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8'))) : undefined;
+  if (manifest && (replayFrom || !manifest.runs.some(r => r.seed === seed && path.resolve(sourceRoot, r.artifactPath) === path.resolve(out))))
+    throw new Error('qualification requires the prospectively declared seed and artifact path, without replay');
+  const sourcePaths = manifest ? Object.keys(manifest.sourceHashes) : BM25_EXECUTED_SOURCE_PATHS;
+  const sourceBefore = await captureExecutedSource(sourceRoot, sourcePaths);
+  const preflight = qualifyExecutedSource(sourceBefore, sourceBefore, manifest);
+  const qualificationManifest = manifestBytes ? { path: manifestPath, sha256: createHash('sha256').update(manifestBytes).digest('hex') } : null;
+  if (preflight.verdict === 'invalid') {
+    // Preserve the rejection; there are no timing/recall observations to misread as a pass.
+    const artifact = { kind: 'bm25-hybrid-recall', plan: PLAN, generatedAt: new Date().toISOString(), seed,
+      judged: !!manifest, verdict: 'invalid', latencyVerdict: 'invalid', sources: [], qualificationManifest,
+      sourceQualification: { ...preflight, before: sourceBefore, after: sourceBefore } };
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`);
+    console.error(`[r13] REFUSING TO RUN: ${preflight.reasons.join('; ')} -> ${out}`);
+    return 1;
+  }
 
   const { SEARCH_SEMANTIC_DEFER_HIGHLIGHT } = await import('../../agent-tools/search/semantic-engine-options');
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }, flags, rank, canary] =
@@ -746,8 +794,10 @@ async function main(): Promise<number> {
 
   const minPairs = Math.min(MIN_PAIRS_PER_SOURCE, perSource);
   const summaries = sourceNames.map((s) => summarizeSource(s, pairs, minPairs, steadyPairs, warmPairs));
-  const verdict = overallVerdict(summaries);
-  const latencyVerdict = overallLatencyVerdict(summaries);
+  const sourceAfter = await captureExecutedSource(sourceRoot, sourcePaths);
+  const qualification = qualifyExecutedSource(sourceBefore, sourceAfter, manifest);
+  const verdict = qualification.verdict === 'invalid' ? 'invalid' : overallVerdict(summaries);
+  const latencyVerdict = qualification.verdict === 'invalid' ? 'invalid' : overallLatencyVerdict(summaries);
   let commit: string | null = null;
   try {
     commit = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
@@ -767,6 +817,9 @@ async function main(): Promise<number> {
     decisions: ['D-004', 'D-006'],
     generatedAt: new Date().toISOString(),
     startedAt,
+    judged: !!manifest,
+    qualificationManifest,
+    sourceQualification: { ...qualification, before: sourceBefore, after: sourceAfter },
     commit,
     workspaceId,
     database: server ?? null,
