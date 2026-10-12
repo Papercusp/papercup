@@ -49,6 +49,11 @@ export const sourceQualificationManifestSchema = z.object({
   embeddingProfile: z.object({ mode: z.string().min(1), profileId: z.string().min(1) }).strict(),
   runs: z.array(z.object({ seed: z.string().min(1), artifactPath: repoPath })).length(3),
 }).passthrough().superRefine((m, ctx) => {
+  // Passthrough metadata is persisted with the manifest too. Reject leaks
+  // before admission; rewriting an already-qualified manifest changes its hash.
+  const serialized = JSON.stringify(m);
+  if (redactIdentityLeaks(serialized) !== serialized)
+    ctx.addIssue({ code: 'custom', message: 'source qualification manifest contains identity leaks' });
   for (const p of BM25_EXECUTED_SOURCE_PATHS) if (!m.sourceHashes[p])
     ctx.addIssue({ code: 'custom', message: `missing executed source: ${p}` });
   if (m.repos['.'] !== m.rootCommit)
