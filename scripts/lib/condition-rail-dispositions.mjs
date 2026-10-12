@@ -207,7 +207,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1': NA_TYPE_ANNOTATION,

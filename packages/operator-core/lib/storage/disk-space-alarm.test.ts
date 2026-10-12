@@ -221,7 +221,7 @@ describe('write-headroom reserve is bounded on a large volume (EI-23337577023503
 });
 
 describe('formatDiskAlarmToast', () => {
-  it('names the path with free GB + %, and mentions inodes only when low-inodes', () => {
+  it('names the path with free GiB + %, and mentions inodes only when low-inodes', () => {
     const t = formatDiskAlarmToast([
       {
         path: '/ws',
@@ -238,7 +238,7 @@ describe('formatDiskAlarmToast', () => {
     expect(t.level).toBe('warning');
     expect(t.message).toContain('1 filesystem');
     expect(t.description).toContain('/ws');
-    expect(t.description).toContain('2.0 GB free');
+    expect(t.description).toContain('2.0 GiB free');
     expect(t.description).toContain('inodes free');
     expect(t.description).toContain('PAPERCUSP_DISK_SPACE_ALARM=0');
   });

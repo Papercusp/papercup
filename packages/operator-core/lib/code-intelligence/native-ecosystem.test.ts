@@ -91,6 +91,13 @@ describe('native CLI fixture runtime and deadline guards', () => {
     }
     expect(nativeCliResult({ status: 0, stdout: '{"ok":true,"data":{"answer":1}}', stderr: '' })).toEqual({ answer: 1 });
   });
+  it('refuses an incomplete evidence envelope before a caller reads missing proof fields', () => {
+    const envelope = { schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+      incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      content: [{ kind: 'reference', uri: 'papercusp://scratch/unavailable' }] };
+    expect(() => nativeCliResult({ status: 0, stdout: JSON.stringify(envelope), stderr: 'bounded evidence' }))
+      .toThrow(/incomplete evidence[\s\S]*under-budget-partial-result[\s\S]*bounded evidence/);
+  });
   it('preserves tool-owned data and byte-page identity instead of unwrapping them', () => {
     const page = { ok: true, data: Buffer.from('captured source').toString('base64'),
       byte_offset: 0, byte_length: 15, eof: false,

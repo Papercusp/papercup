@@ -72,9 +72,13 @@ describe('pg-autotune host-backup exclusion', () => {
     const bin = join(dir, 'bin');
     const lock = join(dir, 'db-backup.lock');
     const entered = join(dir, 'apply-entered');
+    const release = join(dir, 'release-apply');
     mkdirSync(bin);
     const fakeNpx = join(bin, 'npx');
-    writeFileSync(fakeNpx, '#!/usr/bin/env bash\nprintf ready >"$AUTOTUNE_ENTERED"\nsleep 2\n');
+    writeFileSync(
+      fakeNpx,
+      '#!/usr/bin/env bash\nprintf ready >"$AUTOTUNE_ENTERED"\nwhile [[ ! -e "$AUTOTUNE_RELEASE" ]]; do sleep 0.01; done\n',
+    );
     chmodSync(fakeNpx, 0o755);
     const apply = spawn(process.execPath, ['--import', 'tsx', AUTOTUNE, '--apply'], {
       cwd: ROOT,
@@ -83,9 +87,11 @@ describe('pg-autotune host-backup exclusion', () => {
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         PC_BACKUP_LOCK: lock,
         AUTOTUNE_ENTERED: entered,
+        AUTOTUNE_RELEASE: release,
         PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD: '',
       },
       stdio: 'ignore',
+      detached: true,
     });
     const closed = new Promise<number | null>((resolveExit) => apply.on('close', resolveExit));
     let childClosed = false;
@@ -104,13 +110,21 @@ describe('pg-autotune host-backup exclusion', () => {
         await delay(20);
       }
       expect(existsSync(entered), 'the apply child never reached the guarded npx re-exec').toBe(true);
-      // The fake npx sleeps 2s after signalling, so the lock must be held now.
+      // Keep the child alive until this assertion has observed the producer lock.
       expect(spawnSync('flock', ['-n', lock, 'true']).status, 'producer lock not held while the apply child runs').toBe(1);
+      writeFileSync(release, 'continue');
       const exited = await closed;
       expect(exited).toBe(0);
       expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
     } finally {
-      if (apply.exitCode === null) apply.kill();
+      if (apply.exitCode === null && apply.pid) {
+        try {
+          process.kill(-apply.pid, 'SIGKILL');
+        } catch {
+          // already exited
+        }
+        await closed;
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   }, 45_000);

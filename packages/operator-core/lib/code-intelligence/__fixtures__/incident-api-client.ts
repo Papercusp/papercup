@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createAdaptorServer } from '@hono/node-server';
 import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
 
@@ -25,7 +27,11 @@ assert.equal(version.status, 0, version.stderr); assert.match(version.stdout, /\
 console.log('NATIVE_INCIDENT_API_STAGE=pinned-assets-ready');
 const { firstPartyCallersOffthread } = await import('../first-party-callers-offthread.ts');
 const { LSP_VENDOR_DIR } = await import('../lsp-adapter.ts');
-const { handler } = await import('../../../../../apps/operator/bin/host-handler.ts');
+const handlerPath = process.argv[4], handlerHash = process.argv[5];
+assert(handlerPath && handlerHash, 'Maintained private ESM handler artifact required');
+assert.equal(createHash('sha256').update(readFileSync(handlerPath)).digest('hex'), handlerHash,
+  'Prepared handler artifact changed before the private runtime loaded it');
+const { handler } = await import(/* @vite-ignore */ pathToFileURL(handlerPath).href);
 const { superuserTokenPath } = await import('../../superuser-token.ts');
 const { loadHarnessRegistry } = await import('../../harness-registry.ts');
 const { persistHarnessTestRunsWithIds } = await import('../../testing-run-store.ts');
@@ -47,13 +53,13 @@ async function call(name: string, args: Record<string, unknown>) {
   // The host runs in this process: an asynchronous CLI leaves its HTTP loop live.
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
     const child = spawn(process.execPath, [join(repo, 'apps/operator/scripts/ptool.mjs'),
-      'tools:invoke', `--url=${plan.cliUrl}`, '--json', '-'], { cwd: repo, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'] });
+      name, `--url=${plan.cliUrl}`, '--json', '-'], { cwd: repo, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr = (stderr + data).slice(-16_000); });
     const timer = setTimeout(() => child.kill('SIGTERM'), plan.timeoutMs);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('close', status => { clearTimeout(timer); done({ status, stdout, stderr }); });
-    child.stdin.end(JSON.stringify({ name, args }));
+    child.stdin.end(JSON.stringify(args));
   });
   return nativeCliResult(result) as Record<string, any>;
 }

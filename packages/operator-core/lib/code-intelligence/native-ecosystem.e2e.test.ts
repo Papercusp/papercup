@@ -15,11 +15,22 @@ const planningPlan = process.env.NATIVE_PLANNING_PLAN;
 describe('native P018 private operator CLI incident claim and resume', () => {
   it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
     const root = resolve(import.meta.dirname, '../../../..');
+    // Prepare the maintained ESM handler artifact before allocating private PG.
+    // A direct tsx import of apps/operator's CommonJS entry is intentionally
+    // refused by the committed-source guard.
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'native-incident-handler-'));
+    const handlerPath = join(artifactRoot, 'handler.mjs');
+    const build = spawnSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
+      cwd: root, env: process.env, encoding: 'utf8', timeout: 120_000,
+    });
+    expect(build.status, build.stdout + build.stderr).toBe(0);
+    const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
+    try {
     const result = await new Promise<{ code: number | null; output: string }>((done, reject) => {
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         join(import.meta.dirname, '__fixtures__/incident-api-client.ts'),
-        join(homedir(), '.papercusp/vendor/repomix'), join(homedir(), '.papercusp/vendor/lsp')], {
+        join(homedir(), '.papercusp/vendor/repomix'), join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash], {
         cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let output = '';
@@ -35,6 +46,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
     });
+    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
   }, 200_000);
 });
 
@@ -69,7 +81,11 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
       codeScope: { symbol: 'nativePlanGraphAdvice', file: producer, paths: [producer, consumer], taskPaths: [
         { itemId: itemIds[0], paths: [reverse ? consumer : producer, shared] },
         { itemId: itemIds[1], paths: [reverse ? producer : consumer, shared] },
-      ] }, projection: { pick: ['results[].ok', 'results[].report.codeAdvice'] } }).results[0].report.codeAdvice;
+      ] }, projection: { pick: ['results[].ok', 'results[].report.codeAdvice.status',
+        'results[].report.codeAdvice.ordering', 'results[].report.codeAdvice.proposedOrder',
+        'results[].report.codeAdvice.overlaps', 'results[].report.codeAdvice.scope.repositoryId',
+        'results[].report.codeAdvice.ownership[].itemId', 'results[].report.codeAdvice.ownership[].coverage.workers',
+        'results[].report.codeAdvice.fileClaims.status'] } }).results[0].report.codeAdvice;
     for (const reverse of [false, true]) {
       const result = advice(reverse);
       expect(result.status, JSON.stringify(result)).toBe('measured');
@@ -186,7 +202,9 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
     expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
       row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
     const claimed = call('work_items:claim', { row: `${taskBriefItem},self,papercusp`,
-      projection: { pick: ['results[].taskBrief'] } });
+      projection: { pick: ['results[].taskBrief.status', 'results[].taskBrief.repository',
+        'results[].taskBrief.recover', 'results[].taskBrief.scope.paths', 'results[].taskBrief.files[].path',
+        'results[].taskBrief.files[].sha256', 'results[].taskBrief.sourceFingerprint'] } });
     const brief = claimed.results?.[0]?.taskBrief;
     expect(brief?.status, JSON.stringify(claimed)).toBe('current');
     expect(brief.repository.workspaceId).toBe(identity.workspaceId);
@@ -197,7 +215,8 @@ describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real
       expect(file.sha256).toBe(createHash('sha256').update(readFileSync(join(brief.repository.rootPath, file.path))).digest('hex'));
     }
     const resumed = call('work_items:get', { id: taskBriefItem, harness: 'papercusp', resume: true,
-      projection: { pick: ['results[].resume.taskBrief'] } });
+      projection: { pick: ['results[].resume.taskBrief.status', 'results[].resume.taskBrief.repository',
+        'results[].resume.taskBrief.sourceFingerprint', 'results[].resume.taskBrief.scope.paths'] } });
     const refreshed = resumed.results[0].resume.taskBrief;
     expect(refreshed?.status, JSON.stringify(resumed)).toBe('current');
     expect(refreshed.repository).toEqual(brief.repository);

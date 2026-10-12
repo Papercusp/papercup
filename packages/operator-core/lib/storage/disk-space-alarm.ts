@@ -339,17 +339,13 @@ export function describeWriteHeadroomBreaches(
   );
 }
 
-function fmtGb(bytes: number): string {
-  return `${(bytes / GIB).toFixed(1)} GB`;
-}
-
 /** Build the alarm toast body. Pure — unit-testable. */
 export function formatDiskAlarmToast(breaches: DiskBreach[]): { level: string; message: string; description: string } {
   const lines = breaches
     .map((b) => {
       const bits: string[] = [];
       if (b.kinds.includes('low-bytes')) {
-        bits.push(`${fmtGb(b.freeBytes)} free (${(b.freePct * 100).toFixed(1)}% of ${fmtGb(b.totalBytes)})`);
+        bits.push(`${fmtGiB(b.freeBytes)} free (${(b.freePct * 100).toFixed(1)}% of ${fmtGiB(b.totalBytes)})`);
       }
       if (b.kinds.includes('low-inodes')) {
         bits.push(`${(b.freeInodesPct * 100).toFixed(1)}% inodes free`);
