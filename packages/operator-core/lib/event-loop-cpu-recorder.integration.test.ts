@@ -267,8 +267,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '    return { profile: summarize(recording.profile), workload, startMs: recording.startMs, stopMs: recording.stopMs };',
             '  } finally { clearInterval(rotate); }',
             '}',
-            'async function captureEager(durationMs, alreadyStarted = false) {',
+            'async function captureEager(durationMs, alreadyStarted = false, workStartOffsetMs = 0) {',
             '  if (!alreadyStarted) eager.start(maxSamples);',
+            '  if (workStartOffsetMs > 0) await delay(workStartOffsetMs);',
             '  const beforeWork = { hotFrameCalls, churnedFunctions };',
             '  await workFor(durationMs);',
             '  const workload = { hotFrameCalls: hotFrameCalls - beforeWork.hotFrameCalls, churnedFunctions: churnedFunctions - beforeWork.churnedFunctions };',
@@ -293,6 +294,15 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'const disabledRevocation = strategy === "inspector" ? await revokeInspector(false, true) : await revokeEager();',
             'const recoveryWarmup = await measure(() => strategy === "inspector" ? recorder.update(true, true) : (eager.create(), eager.start(maxSamples)));',
             'const recoveryCapture = await measure(() => strategy === "inspector" ? captureInspector(350) : captureEager(350, true));',
+            'const recoveryPhaseOffsetsMs = [0, 2, 4, 6, 8, 8, 6, 4, 2, 0];',
+            'const recoveryPhaseSweep = [];',
+            'if (strategy === "eager") {',
+            '  for (const workStartOffsetMs of recoveryPhaseOffsetsMs) {',
+            '    const measured = await measure(() => captureEager(350, false, workStartOffsetMs));',
+            '    const profile = measured.value.profile;',
+            '    recoveryPhaseSweep.push({ workStartOffsetMs, profile: { samples: profile.samples, nodes: profile.nodes, hotSamples: profile.hotSamples, mapSamples: profile.mapSamples, mapFrameNames: profile.mapFrameNames, usefulSamples: profile.usefulSamples, sampleFrameCounts: profile.sampleFrameCounts.slice(0, 8), samplePathCounts: profile.samplePathCounts.slice(0, 4), bytes: profile.bytes }, workload: measured.value.workload, durationMs: measured.durationMs, workerGapMaxMs: measured.workerGapMaxMs });',
+            '  }',
+            '}',
             'const unsafeRevocation = strategy === "inspector" ? await revokeInspector(true, false) : await revokeEager();',
             'const memoryBefore = process.memoryUsage();',
             'memoryWindow = { peakRss: memoryBefore.rss, peakHeapUsed: memoryBefore.heapUsed };',
@@ -319,6 +329,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  disabledRevocation,',
             '  recoveryWarmup: { durationMs: recoveryWarmup.durationMs, workerGapMaxMs: recoveryWarmup.workerGapMaxMs },',
             '  recoveryCapture: { ...recoveryCapture.value, durationMs: recoveryCapture.durationMs, workerGapMaxMs: recoveryCapture.workerGapMaxMs },',
+            '  recoveryPhaseSweep,',
             '  unsafeRevocation,',
             '  delayed,',
             '  serializations: strategy === "eager" ? eager.serializationCount() : null,',
@@ -342,12 +353,17 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         const inspector = await run('inspector');
         const eager = await run('eager');
         const eagerNoInlining = await run('eager', ['--no-turbo-inlining']);
+        const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+        const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
+        const noInliningPhaseMedianUsefulSamples = median(eagerNoInlining.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
             eager.recoveryCapture.profile.samples <= maxSamples &&
+            eager.recoveryPhaseSweep.every(capture => capture.profile.samples <= maxSamples) &&
             eager.delayed.cleanup.sampleCount <= maxSamples,
           primaryFixtureVisible: eager.primary.profile.usefulSamples >= 1,
           recoveredHotFrames: eager.recoveryCapture.profile.usefulSamples >= 3,
+          repeatedRecoveryCoverage: eager.recoveryPhaseSweep.length === 10 && eagerPhaseMedianUsefulSamples >= 3,
           discardedWithoutSerialization:
             !eager.disabledRevocation.serialized &&
             !eager.unsafeRevocation.serialized &&
@@ -373,10 +389,29 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
               mapSamples: eager.recoveryCapture.profile.mapSamples,
               usefulSamples: eager.recoveryCapture.profile.usefulSamples,
             },
+            defaultRecoveryByPhase: eager.recoveryPhaseSweep.map(capture => ({
+              workStartOffsetMs: capture.workStartOffsetMs,
+              hotSamples: capture.profile.hotSamples,
+              mapSamples: capture.profile.mapSamples,
+              usefulSamples: capture.profile.usefulSamples,
+              samples: capture.profile.samples,
+            })),
             noInliningRecovery: {
               hotSamples: eagerNoInlining.recoveryCapture.profile.hotSamples,
               mapSamples: eagerNoInlining.recoveryCapture.profile.mapSamples,
               usefulSamples: eagerNoInlining.recoveryCapture.profile.usefulSamples,
+            },
+            noInliningRecoveryByPhase: eagerNoInlining.recoveryPhaseSweep.map(capture => ({
+              workStartOffsetMs: capture.workStartOffsetMs,
+              hotSamples: capture.profile.hotSamples,
+              mapSamples: capture.profile.mapSamples,
+              usefulSamples: capture.profile.usefulSamples,
+              samples: capture.profile.samples,
+            })),
+            phaseSweepMedianUsefulSamples: {
+              requiredPerCapture: 3,
+              default: eagerPhaseMedianUsefulSamples,
+              noInlining: noInliningPhaseMedianUsefulSamples,
             },
           },
           gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
@@ -390,11 +425,20 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
         expect(eagerNoInlining.recoveryCapture.workload.hotFrameCalls).toBeGreaterThan(0);
         expect(eagerNoInlining.recoveryCapture.workload.churnedFunctions).toBeGreaterThan(0);
+        const recoveryPhaseOffsetsMs = [0, 2, 4, 6, 8, 8, 6, 4, 2, 0];
+        expect(eager.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eagerNoInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        for (const capture of [...eager.recoveryPhaseSweep, ...eagerNoInlining.recoveryPhaseSweep]) {
+          expect(capture.workload.hotFrameCalls).toBeGreaterThan(0);
+          expect(capture.workload.churnedFunctions).toBeGreaterThan(0);
+          expect(capture.profile.samples).toBeLessThanOrEqual(maxSamples);
+          expect(capture.profile.bytes).toBeLessThan(8 * 1024 * 1024);
+        }
         expect(eager.disabledRevocation.serialized).toBe(false);
         expect(eager.unsafeRevocation.serialized).toBe(false);
         expect(eager.delayed.cleanup.serialized).toBe(false);
         expect(eager.delayed.cleanup.disposed).toBe(true);
-        expect(eager.serializations).toBe(2);
+        expect(eager.serializations).toBe(2 + eager.recoveryPhaseSweep.length);
         expect(Number.isFinite(eager.recoveryWarmup.workerGapMaxMs)).toBe(true);
         expect(Number.isFinite(eager.delayed.workerGapMaxMs)).toBe(true);
       } finally {
