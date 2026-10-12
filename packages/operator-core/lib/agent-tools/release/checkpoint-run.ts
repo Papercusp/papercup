@@ -87,6 +87,7 @@ import {
   beginStoredQualification,
   qualificationIntentMatches,
   readStoredQualification,
+  recoverStoredQualificationHistoricalPreSuiteError,
   recordStoredQualificationEligibility,
   reserveStoredQualificationRunner,
   waitStoredQualification,
@@ -405,6 +406,15 @@ export default defineTool({
       .describe(
         "Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-candidate queue and applies the detached writer's shared queue policy: ready-to-test checks queue.candidate, ready-to-verify checks queue.repairHead, and an exhausted queue refuses because its blocked head remains authoritative rather than admitting a fresh tip. Live/unknown fixers and every other non-suite queue decision also refuse until the judged candidate is knowable. The selected candidate must satisfy `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.",
       ),
+    historicalPreSuiteRecovery: z.object({
+      attemptId: z.string().min(1),
+      runId: z.string().min(1),
+      candidate: z.string().regex(/^[a-f0-9]{40}$/),
+      logPath: z.string().min(1),
+      logSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional().describe(
+      'Exact archived producer evidence for a historically misclassified dependency preflight. Reads and hashes the complete log, verifies the exact terminal attempt/run/candidate failed before the checkpoint lock, and starts a distinct successor while archiving the original terminal. Requires the same ancestor/path policy; rejects real code verdicts, suite evidence, active runners and unsafe queues. Ownership and launch checks still apply.',
+    ),
     // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
     // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
     // 19 of 22 rejections over 14 days (~11% of ALL calls to this verb), 6 distinct agents on
@@ -1130,6 +1140,26 @@ export default defineTool({
           requiredAncestorSha: args.requiredAncestorSha,
         }),
     };
+    if (args.historicalPreSuiteRecovery) {
+      const recovery = preflight.refuse ? null : await recoverStoredQualificationHistoricalPreSuiteError(
+        qualificationTarget, args.historicalPreSuiteRecovery, beginInput,
+      );
+      if (!recovery || !qualificationMutationContinues(recovery)) {
+        return { content: [{ type: 'text', text: serializeResponse({
+          ok: false,
+          launched: false,
+          reason: 'historical_pre_suite_recovery_refused',
+          recovery_status: recovery?.status ?? 'preflight-refused',
+          error: recovery && 'error' in recovery ? recovery.error : undefined,
+          note: 'NOT launched: exact archived pre-suite evidence, unchanged request policy and safe successor reconciliation were not all verified. The original terminal remains authoritative.',
+        }) }] };
+      }
+      recordMetadata({ historicalPreSuiteRecovery: {
+        predecessorAttemptId: args.historicalPreSuiteRecovery.attemptId,
+        successorAttemptId: recovery.transaction.attemptId,
+        logSha256: args.historicalPreSuiteRecovery.logSha256,
+      } });
+    }
     const storedQualification = await readStoredQualification(qualificationTarget);
     if (storedQualification.status === 'unreadable') {
       return {

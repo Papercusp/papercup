@@ -40,6 +40,7 @@ const qualificationMocks = vi.hoisted(() => ({
   wait: vi.fn(),
   reserve: vi.fn(),
   eligibility: vi.fn(),
+  recover: vi.fn(),
 }));
 const routingMocks = vi.hoisted(() => ({
   resolve: vi.fn(),
@@ -50,6 +51,7 @@ const livenessMocks = vi.hoisted(() => ({
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   readStoredQualification: (...a: unknown[]) => qualificationMocks.read(...a),
+  recoverStoredQualificationHistoricalPreSuiteError: (...a: unknown[]) => qualificationMocks.recover(...a),
   beginStoredQualification: (...a: unknown[]) => qualificationMocks.begin(...a),
   waitStoredQualification: (...a: unknown[]) => qualificationMocks.wait(...a),
   reserveStoredQualificationRunner: (...a: unknown[]) => qualificationMocks.reserve(...a),
@@ -162,6 +164,8 @@ beforeEach(() => {
   qualificationMocks.wait.mockReset();
   qualificationMocks.reserve.mockReset();
   qualificationMocks.eligibility.mockReset();
+  qualificationMocks.recover.mockReset();
+  qualificationMocks.recover.mockResolvedValue({ status: 'unreadable', error: 'recovery not configured' });
   livenessMocks.resolve.mockReset();
   qualificationMocks.read.mockResolvedValue({ status: 'none' });
   qualificationMocks.begin.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
@@ -2986,6 +2990,83 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       ],
     });
     expect(String(b.note)).toMatch(/durable eligibility waiter/);
+  });
+
+  const recoveryProof = {
+    attemptId: 'historical-attempt', runId: 'historical-run', candidate: 'a'.repeat(40),
+    logPath: '/archive/historical-run.log', logSha256: 'b'.repeat(64),
+  };
+
+  it('inherits the verified distinct historical successor before reserving a runner', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false })) });
+    vi.doMock('../../release/checkpoint-required-ancestor', async orig => ({
+      ...(await orig<typeof import('../../release/checkpoint-required-ancestor')>()),
+      assessRequiredAncestorPreflight: vi.fn(async () => ({
+        proceed: true, reason: 'contains-required-ancestor', candidate: recoveryProof.candidate,
+        candidateSource: 'current-quiet-cut', repairQueue: null, frozenLineageIdentity: null,
+        queueDecision: 'run-normal-gate',
+      })),
+    }));
+    const requiredAncestorSha = 'a'.repeat(40);
+    const successor = qualificationTransaction({
+      attemptId: 'verified-successor', requiredAncestorSha, declaredPaths: [MINE], candidate: recoveryProof.candidate,
+    });
+    qualificationMocks.recover.mockResolvedValue({ status: 'updated', transaction: successor });
+    qualificationMocks.read.mockResolvedValue({ status: 'present', transaction: successor });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({
+      paths: [MINE], requiredAncestorSha, historicalPreSuiteRecovery: recoveryProof,
+    }, MAKE_CTX())) as never);
+    expect(qualificationMocks.recover).toHaveBeenCalledWith(
+      expect.any(Object), recoveryProof,
+      expect.objectContaining({ requiredAncestorSha, declaredPaths: [MINE] }),
+    );
+    expect(qualificationMocks.begin).toHaveBeenCalledWith(expect.any(Object),
+      expect.objectContaining({ attemptId: 'verified-successor', attemptIdForVerificationTarget: undefined }),
+      expect.any(Object));
+    expect(qualificationMocks.reserve).toHaveBeenCalledWith(expect.any(Object),
+      expect.objectContaining({ attemptId: 'verified-successor' }));
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b.ok).toBe(true);
+  });
+
+  it.each(['conflict', 'unreadable', 'terminal'])('refuses %s archive recovery without beginning or launching', async status => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false })) });
+    qualificationMocks.recover.mockResolvedValue({ status });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE], historicalPreSuiteRecovery: recoveryProof }, MAKE_CTX())) as never);
+    expect(b).toMatchObject({ launched: false, reason: 'historical_pre_suite_recovery_refused', recovery_status: status });
+    expect(qualificationMocks.begin).not.toHaveBeenCalled();
+    expect(qualificationMocks.reserve).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not recover historical evidence while candidate preflight refuses', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => REFUSAL) });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE], historicalPreSuiteRecovery: recoveryProof }, MAKE_CTX())) as never);
+    expect(b).toMatchObject({ launched: false, recovery_status: 'preflight-refused' });
+    expect(qualificationMocks.recover).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not use historical evidence to bypass another live gate owner', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false })) });
+    vi.doMock('../../coord/gate-ownership', async orig => ({
+      ...(await orig<typeof import('../../coord/gate-ownership')>()),
+      readGateOwnership: vi.fn(async () => ({
+        workItem: 'WI-held', takenBy: 'su-peer', takenAt: new Date().toISOString(),
+        holderSessionState: 'live', thread: { total: 0, recent: [] },
+      })),
+      shouldStandDownForLivePeer: vi.fn(() => true),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => false),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE], historicalPreSuiteRecovery: recoveryProof }, MAKE_CTX())) as never);
+    expect(b).toMatchObject({ launched: false, reason: 'condition_claimed' });
+    expect(qualificationMocks.recover).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
   });
 
   it('P-003: an exact terminal attempt never auto-retries a real verdict', async () => {

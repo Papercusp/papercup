@@ -16,8 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
-import { dependencyGenerationInfraCode } from './admission-fix-precheck';
-import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
+import { dependencyGenerationInfraCode, GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -818,6 +817,13 @@ export function qualificationIntentMatches(
   input: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
 ): boolean {
   if (isTerminalQualificationOutcome(current.outcome)) return false;
+  return qualificationRequestPolicyMatches(current, input);
+}
+
+function qualificationRequestPolicyMatches(
+  current: CheckpointQualificationTransaction,
+  input: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
+): boolean {
   return (
     current.requiredAncestorSha === (input.requiredAncestorSha?.trim() || null) &&
     sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? [])
@@ -2262,6 +2268,7 @@ export function recordStoredQualificationScheduledTerminalRecovery(
 export function recoverStoredQualificationHistoricalPreSuiteError(
   target: GateVerdictTarget,
   input: Omit<HistoricalPreSuiteRecoveryInput, 'log'>,
+  request?: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
 ): Promise<StoredQualificationMutation> {
   let proof: HistoricalPreSuiteRecoveryInput;
   try {
@@ -2272,6 +2279,9 @@ export function recoverStoredQualificationHistoricalPreSuiteError(
   let successorInput: BeginQualificationInput;
   return mutateStoredQualification(target, (current) => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    if (request && !qualificationRequestPolicyMatches(current, request)) {
+      return { status: 'conflict', transaction: current };
+    }
     const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
     if (transition.status === 'updated') {
       successorInput = {

@@ -167,6 +167,17 @@ describe('stored historical pre-suite recovery', () => {
     expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
+  it.each([
+    { requiredAncestorSha: 'other-ancestor', declaredPaths: [] },
+    { requiredAncestorSha: 'candidate-1', declaredPaths: ['extra.ts'] },
+  ])('refuses a changed request policy under the row lock without archiving or writing', async request => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect((await recoverStoredQualificationHistoricalPreSuiteError(target, input, request)).status).toBe('conflict');
+    expect(statements[0].text).toContain('FOR UPDATE');
+    expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
   it('fails closed on an active fixer queue or CAS miss', async () => {
     const { current, input } = fixture();
     const red = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['x.test.ts'], nowMs: 125 });
