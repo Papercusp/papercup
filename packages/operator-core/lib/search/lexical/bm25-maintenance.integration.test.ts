@@ -257,6 +257,7 @@ describe('index maintenance workflow body (P-006)', () => {
       const first = await runBm25Maintenance(sql, opts);
       expect(first.errors).toEqual([]);
       expect(first.built).toBeNull();
+      expect(first.reclaimed, 'maintenance must reclaim one bloated index on the first run').not.toBeNull();
       const target = first.reclaimed!;
       expect(tables.map(idx)).toContain(target.index);
       expect(target.ratio).toBeGreaterThan(BM25_MAX_BLOAT_RATIO);
@@ -267,6 +268,7 @@ describe('index maintenance workflow body (P-006)', () => {
 
       const second = await runBm25Maintenance(sql, opts);
       expect(second.errors).toEqual([]);
+      expect(second.reclaimed, 'maintenance must reclaim the remaining bloated index on the next run').not.toBeNull();
       expect(second.reclaimed?.index).toBe(other);
       expect(second.pendingReclaims).toEqual([]);
       expect(await bytes(other)).toBeLessThan(otherBefore);
