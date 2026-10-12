@@ -165,6 +165,10 @@ registerDegradationMechanism({
   description: 'Inbox and outbox reads whose primary paged query completed rather than retrying the full-read fallback after a paging error.',
 });
 registerDegradationMechanism({
+  mechanism: 'work-item-lock-reclaim',
+  description: 'Eligible work-item reclaims whose lock inspection and targeted releases completed rather than leaving locks to expire by lease.',
+});
+registerDegradationMechanism({
   mechanism: 'release-state-read', scopeKeyed: true,
   description: 'Release guard reads that returned their primary snapshot rather than a fail-open empty or partial snapshot.',
   thresholds: { minEligible: 1 },
