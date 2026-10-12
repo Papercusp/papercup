@@ -35,6 +35,7 @@ import {
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
+  nativeLatestExecution,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
 } from '../scripts/psu-pty-host.mjs';
@@ -1042,22 +1043,27 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
   // it waits. Pre-fix the sender's retry of that same id answered
   // `{ ok: true, reason: 'pending-delivery-id' }` forever; now it is refused like
   // a first delivery, under phase `duplicate-pending`.
-  it('refuses a PENDING retry once the child crosses the unbound window, and keeps the completed answer', async () => {
+  it.each(['continuous', 'repaint-gap'] as const)('refuses a PENDING retry once the child crosses the unbound window, and keeps the completed answer: %s', async (outputMode) => {
     const windowMs = 4_000;
     const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-pending-'));
+    const sessions = join(root, 'sessions');
+    mkdirSync(sessions);
+    const transcript = join(sessions, 'rollout-pending.jsonl');
     const ownerId = uniqueOwner('UNBINDABLE-PENDING');
     const sock = socketPathFor(ownerId);
     const nativeId = '12345678-1234-4234-8234-123456789abd';
     const { captured, io } = fakeIo();
     let resolvedNativeId: string | null = null;
-    // \u0001 starts a continuous repaint (the busy gate holds every turn), \u0002
-    // stops it, \u0004 exits; anything else is echoed as INPUT:<bytes>.
+    // Native work, rather than repaint timer punctuality, holds the busy gate.
+    // \u0001 starts work, \u0002 settles it, \u0003 models a repaint gap, and
+    // \u0004 exits; anything else is echoed as INPUT:<bytes>.
     const childCode = [
+      "const fs=require('node:fs');const native=(type)=>fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type,turn_id:'pending-fixture'}})+'\\n');",
       "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
       'let repaint=null;',
       "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);",
-      "if(data.includes('\\u0001')){if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);return;}",
-      "if(data.includes('\\u0002')){clearInterval(repaint);repaint=null;return;}",
+      "if(data.includes('\\u0001')){native('task_started');if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);process.stdout.write('NATIVE_RUNNING\\n');return;}",
+      "if(data.includes('\\u0002')){clearInterval(repaint);repaint=null;native('task_complete');return;}",
       "if(data.includes('\\u0003')){clearInterval(repaint);repaint=null;setTimeout(()=>{repaint=setInterval(()=>process.stdout.write('.'),20);},180);return;}",
       "process.stdout.write('INPUT:'+data+'\\n');});",
       'setTimeout(()=>process.exit(0),20000);',
@@ -1066,7 +1072,7 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
       env: hermeticEnv({
-        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, TEST_TRANSCRIPT: transcript,
         PAPERCUSP_PSU_PTY_IDLE_MS: '60',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
@@ -1098,7 +1104,9 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       // owes a binding (carryBindingChild) that nothing has confirmed.
       expect(await waitForEvent((event) => event.kind === 'respawn-binding-unconfirmed')).toBe(true);
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x01', ownerId })).toBeTruthy();
-      await sleep(100);
+      expect(await waitForOutput(captured, 'NATIVE_RUNNING')).toBe(true);
+      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, receivedAtMs: hostStartedAt }))
+        .toMatchObject({ phase: 'running' });
 
       // (2) Admitted inside the window. childStartedAt >= hostStartedAt, so this
       // bound proves the child is younger than the window at admission.
@@ -1111,10 +1119,13 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       // lifecycle evidence in the failure instead of deleting it in cleanup.
       expect(await injectIntoHostWithConfirmation(sock, wake), JSON.stringify(readEvents(ownerId)))
         .toMatchObject({ ok: true, reason: 'pending-delivery-id' });
-      // Controlled reproduction: a delayed repaint timer can expose a quiet
-      // window without changing the intended busy lifecycle of this fixture.
-      expect(await injectIntoHost(sock, { mode: 'raw', data: '\x03', ownerId })).toBeTruthy();
-      await sleep(500);
+      if (outputMode === 'repaint-gap') {
+        // This gap previously let the re-arm attempt binding, fail, and clear
+        // its ID. Native running evidence must retain the intended busy state.
+        expect(await injectIntoHost(sock, { mode: 'raw', data: '\x03', ownerId })).toBeTruthy();
+        await sleep(500);
+      }
+      expect(readEvents(ownerId).filter((event) => event.kind === 'wake-rearm-dropped')).toHaveLength(0);
       expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(0);
 
       // (3) Let the child cross its window while the accepted copy stays PENDING
