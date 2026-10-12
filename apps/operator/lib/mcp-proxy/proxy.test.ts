@@ -2329,6 +2329,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       );
       const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
       process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+      const traceInfo = vi.spyOn(console, "info").mockImplementation(() => {});
       try {
         const upstream = applyThenResetUpstream();
         await listen(upstream);
@@ -2358,6 +2359,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
         );
         expect(r.status).toBe(502);
         const payload = JSON.parse(r.body) as {
+          traceId?: string;
           forwardingResult?: string;
           attempts?: number;
           note?: string;
@@ -2390,7 +2392,25 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
         });
         expect(typeof failure?.traceId).toBe("string");
         expect(String(failure?.traceId)).not.toBe("");
+        expect(payload.traceId).toBe(failure?.traceId);
+
+        const traceLine = traceInfo.mock.calls
+          .map(([line]) => String(line))
+          .find((line) => line.includes('"stage":"proxy_response_finished"'));
+        expect(traceLine).toBeDefined();
+        if (!traceLine) throw new Error("proxy failure response trace was not emitted");
+        const traceEvent = JSON.parse(
+          traceLine.slice("[mcp-request-trace] ".length),
+        ) as Record<string, unknown>;
+        expect(traceEvent).toMatchObject({
+          traceId: payload.traceId,
+          toolName: "tools/call",
+          stage: "proxy_response_finished",
+          outcome: "rejected",
+          httpStatus: 502,
+        });
       } finally {
+        traceInfo.mockRestore();
         fs.rmSync(logFile, { force: true });
         if (previousLogFile === undefined)
           delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;

@@ -5469,12 +5469,29 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (clientGone) return;
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
-          res.writeHead(refused ? 503 : 502, {
+          const failureStatus = refused ? 503 : 502;
+          // A locally generated MCP failure still crosses the proxy response boundary. Keep
+          // the same bounded trace event as a forwarded tools/call response so journald can
+          // correlate an upstream reset with the trace id returned to the client.
+          if (fwd.rpcMethods.includes("tools/call")) {
+            res.once("finish", () => {
+              logMcpRequestTrace({
+                traceId,
+                toolName: "tools/call",
+                stage: "proxy_response_finished",
+                elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                outcome: "rejected",
+                httpStatus: failureStatus,
+              });
+            });
+          }
+          res.writeHead(failureStatus, {
             "content-type": "application/json",
             "retry-after": "5",
           });
           res.end(
             JSON.stringify({
+              traceId,
               error: refused
                 ? "mcp_proxy_upstream_unavailable"
                 : "mcp_proxy_upstream_error",
@@ -5506,7 +5523,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }),
           );
           log(
-            `upstream ${refused ? "unavailable" : "error"} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`,
+            `upstream ${refused ? "unavailable" : "error"} after ${attempts} attempt(s) (trace ${traceId}): ${last?.err?.message ?? last?.err}`,
           );
           record({
             kind: refused ? "exhausted_refused" : "upstream_error",
