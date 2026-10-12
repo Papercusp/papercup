@@ -139,6 +139,7 @@ type PortalRosterBrowserInput = {
   frames?: boolean;
   evals?: boolean;
   support?: boolean;
+  cupboard?: boolean;
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -169,7 +170,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'cupboard' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -181,7 +182,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.support ? `
+  const entry = input.cupboard ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { Route as CupboardRoute } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/routes/cupboard/index.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(CupboardRoute.options.component))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.support ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
@@ -494,7 +507,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -570,7 +583,14 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Support preflight requires actual ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.support
+  if (input.cupboard) {
+    for (const suffix of ['/apps/operator/app/cupboard/CupboardClient.tsx',
+      '/apps/operator/app/cupboard/CupboardErrorState.tsx']) {
+      assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Cupboard browser graph requires ${suffix}`);
+    }
+  }
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.cupboard
+    ? '/apps/operator-vite/src/routes/cupboard/index.tsx' : input.support
     ? '/apps/operator-vite/src/routes/support.tsx' : input.evals
     ? '/apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' : input.frames
     ? '/apps/operator-vite/src/components/adv/AdvFramesTab.tsx' : input.git
@@ -634,7 +654,7 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
@@ -643,6 +663,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   assert.ok(!options.framesRead || input.frames, 'Frames read preflight requires the Frames panel');
   assert.ok(!options.evalsRead || input.evals, 'Evaluation read preflight requires Evaluation');
   assert.ok(!options.supportRead || input.support, 'Support workflow requires the actual Support route');
+  assert.ok(!options.cupboardRead || input.cupboard, 'Cupboard workflow requires the actual Cupboard route');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -659,8 +680,18 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const frameStreams: Array<{ slug: string; closed: Promise<void> }> = [];
   const supportRequests: Array<{ sessionId: string; message: string; surface: string; status: number }> = [];
   const outwardRequests: string[] = [];
-  const componentEvidence = options.framesRead || options.evalsRead || options.supportRead
-    ? mkdtempSync(join(tmpdir(), options.supportRead ? 'support-component-' : options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
+  let cupboardDenied = false;
+  const cupboardRequests: Array<{ query: Record<string, string>; status: number; titles: string[] }> = [];
+  const cupboardRows = [
+    { id: 901, slug: input.selected, title: input.selected + ' pack', description: 'Explicit selected listing fixture',
+      listing_kind: 'pack', claim_status: 'unclaimed', harness_link: '' },
+    { id: 902, slug: input.neighbor, title: input.neighbor + ' plugin', description: 'Explicit neighbor listing fixture',
+      listing_kind: 'plugin', claim_status: 'claimed', harness_link: '' },
+    { id: 903, slug: input.selected + '-stale', title: input.selected + ' stale', description: 'Hidden listing control',
+      listing_kind: 'pack', claim_status: 'stale', harness_link: '' },
+  ];
+  const componentEvidence = options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead
+    ? mkdtempSync(join(tmpdir(), options.cupboardRead ? 'cupboard-component-' : options.supportRead ? 'support-component-' : options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
   if (componentEvidence) writeFileSync(join(componentEvidence, 'browser-inputs.json'), JSON.stringify({
     browserBundleSha256: digest(built.bundle),
     originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
@@ -731,7 +762,22 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.supportRead && pathname === '/v1/support/chat' && request.method === 'POST') {
+    if (options.cupboardRead && request.method !== 'GET') {
+      writes.push({ surface: pathname, body: { method: request.method } });
+      response.writeHead(405); response.end('unexpected Cupboard mutation');
+    } else if (options.cupboardRead && pathname === '/api/cupboard/listings') {
+      const query = Object.fromEntries(requestUrl.searchParams);
+      const rows = cupboardRows.filter(row => (!query.kind || row.listing_kind === query.kind)
+        && (!query.q || row.title.includes(query.q)) && (!query.claim || row.claim_status === query.claim));
+      const status = cupboardDenied ? 403 : 200;
+      cupboardRequests.push({ query, status, titles: rows.map(row => row.title) });
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(cupboardDenied ? { error: 'explicit fixture cupboard denial' }
+        : { listings: rows, total: rows.length, next_cursor: null, kind_facets: { pack: 2, plugin: 1 } }));
+    } else if (options.cupboardRead && pathname === '/api/zero-harness/rest-query') {
+      reads.push({ name: requestUrl.searchParams.get('name'), args: JSON.parse(requestUrl.searchParams.get('args') ?? '{}') });
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows: [] }));
+    } else if (options.supportRead && pathname === '/v1/support/chat' && request.method === 'POST') {
       let body = '';
       for await (const chunk of request) body += String(chunk);
       const args = JSON.parse(body);
@@ -906,7 +952,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     const address = server.address(); assert.ok(address && typeof address === 'object');
     page = await browser.newPage();
     page.setDefaultTimeout(15_000);
-    if (options.supportRead) {
+    if (options.supportRead || options.cupboardRead) {
       await page.route('**/*', route => {
         const requestUrl = new URL(route.request().url());
         if (requestUrl.origin === `http://127.0.0.1:${address.port}`) return route.continue();
@@ -966,6 +1012,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('app', 'support'); url.searchParams.set('slug', input.selected);
       url.searchParams.set('q', 'preflight-search'); url.searchParams.set('ws', 'preflight-workspace');
     }
+    if (options.cupboardRead) {
+      url.searchParams.set('app', 'cupboard'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('ws', 'preflight-workspace');
+    }
     await page.goto(url.href);
     if (options.gitRead) {
       await page.waitForFunction(() => document.querySelector('.pc-adv-git')
@@ -973,7 +1023,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.support ? page.getByRole('heading', { name: 'Support', exact: true })
+    try { await (input.cupboard ? page.getByRole('button', { name: 'Refresh', exact: true })
+      : input.support ? page.getByRole('heading', { name: 'Support', exact: true })
       : input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
       : input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
       : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
@@ -983,6 +1034,53 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.cupboardRead) {
+      const selectedTitle = input.selected + ' pack';
+      const assertScope = () => {
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'cupboard'); assert.equal(params.get('slug'), input.selected);
+        assert.equal(params.get('ws'), 'preflight-workspace');
+        assert.equal(params.get('q'), input.selected); assert.equal(params.get('kind'), 'pack');
+        assert.equal(params.get('claim'), 'unclaimed');
+      };
+      await page.getByText(selectedTitle, { exact: true }).waitFor();
+      await page.getByText(input.neighbor + ' plugin', { exact: true }).waitFor();
+      assert.equal(await page.getByText(input.selected + ' stale', { exact: true }).count(), 0);
+      const packs = page.getByRole('button', { name: /^Packs\b/ });
+      await packs.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('kind') === 'pack');
+      await page.getByRole('textbox').fill(input.selected);
+      const unclaimed = page.getByRole('button', { name: 'unclaimed', exact: true });
+      await unclaimed.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(selected => new URL(location.href).searchParams.get('q') === selected
+        && new URL(location.href).searchParams.get('claim') === 'unclaimed', input.selected);
+      await page.getByText(selectedTitle, { exact: true }).waitFor();
+      assert.equal(await page.getByText(input.neighbor + ' plugin', { exact: true }).count(), 0);
+      assertScope();
+      await page.reload(); await page.getByText(selectedTitle, { exact: true }).waitFor(); assertScope();
+      assert.ok(cupboardRequests.some(r => r.status === 200 && r.query.kind === 'pack'
+        && r.query.claim === 'unclaimed' && r.query.q === input.selected && r.query.limit === '100'),
+      'Cupboard filter and reload must reach the listing HTTP contract');
+      cupboardDenied = true;
+      const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+      await refresh.focus(); await page.keyboard.press('Enter');
+      await page.getByTestId('cupboard-error-state').getByText("Couldn't load listings (HTTP 403).", { exact: true }).waitFor();
+      assert.equal(await page.getByText(selectedTitle, { exact: true }).count(), 0, 'Denied refresh must hide stale cards');
+      assertScope();
+      await page.reload(); await page.getByTestId('cupboard-error-state').waitFor(); assertScope();
+      cupboardDenied = false;
+      const retry = page.getByTestId('cupboard-error-retry');
+      await retry.focus(); await page.keyboard.press('Enter');
+      await page.getByText(selectedTitle, { exact: true }).waitFor();
+      assert.equal(await page.getByTestId('cupboard-error-state').count(), 0);
+      assertScope();
+      assert.ok(cupboardRequests.filter(r => r.status === 403).length >= 2, 'Warm and cold denials must be observed');
+      assert.deepEqual(writes, []); assert.deepEqual(outwardRequests, []); assert.deepEqual(errors, []);
+      assert.equal(reads.some(r => r.name === 'cupboard.identityOutcomeCosts'), false,
+        'Non-identity listing workflow must not fabricate identity evidence');
+      writeFileSync(join(componentEvidence!, 'receipt.json'), JSON.stringify({ reads, writes, cupboardRequests,
+        outwardRequests, errors, providerUsed: false }, null, 2));
+    }
     if (options.supportRead) {
       const assertShell = () => {
         const params = new URL(page!.url()).searchParams;
@@ -1337,6 +1435,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       } else {
         assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
       }
+    } else if (input.cupboard) {
+      assert.equal(await page.getByRole('button', { name: 'Refresh', exact: true }).count(), 1);
     } else if (input.support) {
       assert.equal(await page.locator('.pc-support-shell').count(), 1);
     } else if (input.evals) {
@@ -1373,12 +1473,15 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}),
       ...(options.supportRead ? { supportRead: true, keyboardFaq: true, denialRecovery: true,
         streamedAnswer: true, sessionScoped: true, humanEvent: true, deepLinkReload: true,
-        shellQueryPreserved: true, noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
+        shellQueryPreserved: true, noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}),
+      ...(options.cupboardRead ? { cupboardRead: true, keyboardFilters: true, filterReload: true,
+        warmDenial: true, coldDenial: true, keyboardRetry: true, shellQueryPreserved: true,
+        noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
   } catch (error) {
     if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
-      reads, writes, errors, supportRequests, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
+      reads, writes, errors, supportRequests, cupboardRequests, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead || options.cupboardRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
