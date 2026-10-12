@@ -1496,6 +1496,21 @@ export default defineTool({
         }
       }
     }
+    // derived-status-not-hand-written-2026-10-12 P-002: once every item of an unshipped plan
+    // is terminal, `derivedStatus.shipGate` names what refuses the ship — from the SAME
+    // resolver as shipReadiness above (reused when the caller asked for it, so the gate is
+    // evaluated once), outside cachedRead for the same staleness reason, and fail-soft.
+    // Default-on but bounded: a plan with live items, or a shipped one, never pays for it.
+    if (!args.heading && !requestedDecisionIds) {
+      const { attachDerivedShipGates } = await import('./derived-ship-gate');
+      await attachDerivedShipGates(env.results as Array<Record<string, unknown>>, {
+        resolve: async (gateArgs) => {
+          const { resolvePlanAcceptanceGateVerdict } = await import('../../sync-resolver/plan-acceptance-gate-verdict');
+          return resolvePlanAcceptanceGateVerdict(gateArgs);
+        },
+        ...(args.current ? { current: args.current } : {}),
+      });
+    }
     // review-system-rework-reduction-2026-09-23 P-032: the opt-in per-plan efficiency read.
     // Time-varying (it reads the call ledger), so like shipReadiness it stays outside cachedRead,
     // and it fails soft into an explicit unavailableReason rather than an absent field.
