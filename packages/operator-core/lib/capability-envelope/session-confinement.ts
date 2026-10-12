@@ -131,10 +131,17 @@ function withinProductReadBoundary(tool: string, args: unknown, boundary: Produc
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const row = args as Record<string, unknown>;
   const keys = tool === 'docs:get' ? ['harness', 'slugs', 'heading', 'offset'] :
-    ['harness', 'filePath', 'source', 'since', 'sinceHours', 'status', 'limit'];
+    tool === 'testing:run' ? ['harness', 'files', 'timeoutMs', 'maxFailures'] :
+      ['harness', 'filePath', 'source', 'since', 'sinceHours', 'status', 'limit'];
   if (Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
   if (tool === 'docs:get') return row.harness === boundary.docsHarness && Array.isArray(row.slugs) &&
     row.slugs.length > 0 && row.slugs.length <= 10 && row.slugs.every(s => boundary.docsSlugs.includes(s));
+  // Execute only the nominated product files. Evidence recovery, alternate roots,
+  // changed-path discovery and work-item/spec bindings would reveal author context.
+  if (tool === 'testing:run') return row.harness === boundary.harness && Array.isArray(row.files) &&
+    row.files.length > 0 && row.files.length <= 20 && row.files.every(s => boundary.testFiles.includes(s)) &&
+    Number.isInteger(row.timeoutMs) && Number(row.timeoutMs) >= 1000 && Number(row.timeoutMs) <= 120000 &&
+    Number.isInteger(row.maxFailures) && Number(row.maxFailures) >= 1 && Number(row.maxFailures) <= 5;
   // Exact file selectors avoid broad ledger reads and author-selected proof IDs.
   // Bound the raw history; the reviewer discovers observations independently.
   return row.harness === boundary.harness && typeof row.filePath === 'string' && boundary.testFiles.includes(row.filePath) &&
@@ -238,7 +245,7 @@ export function evaluateSessionConfinement(args: {
   }
   if (confinement.denyProductReadsOutside !== undefined &&
       (!validProductReadBoundary(confinement.denyProductReadsOutside) ||
-       args.purpose !== 'listing' && ['docs:get', 'testing:runs'].includes(toolName.trim()) &&
+       args.purpose !== 'listing' && ['docs:get', 'testing:runs', 'testing:run'].includes(toolName.trim()) &&
        !withinProductReadBoundary(toolName.trim(), args.args, confinement.denyProductReadsOutside))) {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-product-read',
       reason: `tool "${toolName.trim()}" must use the nominated product read boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };

@@ -106,6 +106,18 @@ describe('blind reviewer confinement — gate decisions', () => {
     const runs = { harness: 'papercusp', filePath: 'lib/probe.test.ts', source: 'mutation-probe', sinceHours: 24, limit: 20 };
     expect(read('docs:get', docs).allowed).toBe(true);
     expect(read('testing:runs', runs).allowed).toBe(true);
+    const execute = { harness: 'papercusp', files: ['lib/probe.test.ts'], timeoutMs: 120000, maxFailures: 5 };
+    expect(read('testing:run', execute).allowed).toBe(true);
+    for (const args of [{ ...execute, files: ['lib/other.test.ts'] }, { ...execute, files: [] },
+      { ...execute, files: ['lib/probe.test.ts', 'lib/other.test.ts'] }, { ...execute, harness: 'other' },
+      { ...execute, evidence: { workItemId: 'WI-123', bindings: [] } },
+      { ...execute, recoverEvidence: { workItemId: 'WI-123', runId: 'author-proof' } },
+      { ...execute, remeasureEvidence: { workItemId: 'WI-123' } },
+      { ...execute, changedPaths: ['lib/secret.ts'] }, { ...execute, root: '/other' },
+      { ...execute, timeoutMs: 120001 }, { ...execute, maxFailures: 6 }]) {
+      expect(read('testing:run', args).allowed).toBe(false);
+    }
+    expect(evaluate('testing:run').allowed).toBe(false); // A frozen legacy ceiling stays closed.
     for (const args of [{ ...docs, slugs: ['other-guide'] }, { ...docs, harness: 'other' },
       { ...docs, source: true }, { ...docs, slug: docs.slugs[0], slugs: undefined }]) {
       expect(read('docs:get', args).allowed).toBe(false);
@@ -120,6 +132,7 @@ describe('blind reviewer confinement — gate decisions', () => {
     }
     expect(evaluate('docs:get').allowed).toBe(false); // Legacy no-nomination ceiling stays closed.
     expect(Object.isFrozen(confinement.denyProductReadsOutside?.docsSlugs)).toBe(true);
+    expect(Object.isFrozen(confinement.denyProductReadsOutside?.testFiles)).toBe(true);
   });
 
   it('refuses the plan-artifact reads the reviewer must not see', () => {

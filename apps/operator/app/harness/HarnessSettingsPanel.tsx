@@ -134,14 +134,21 @@ interface DiscordSettings {
   error: string | null;
 }
 
-export default function HarnessSettingsPanel({
+export default function HarnessSettingsPanel(props: { slug: string; phase: string }) {
+  const workspaceId = useWorkspaceId();
+  return <HarnessSettingsPanelForScope key={JSON.stringify([workspaceId, props.slug, props.phase])}
+    {...props} workspaceId={workspaceId} />;
+}
+
+function HarnessSettingsPanelForScope({
   slug,
   phase,
+  workspaceId,
 }: {
   slug: string;
   phase: string;
+  workspaceId: string;
 }) {
-  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   // V1 hides the deprecated orchestrator-lane controls (worker-count
   // mode, fixed N, features cap, synthesizer, tiers, telemetry). They
   // remain wired (state/load/save) so a harness with these configs set
@@ -471,7 +478,7 @@ export default function HarnessSettingsPanel({
     }
   }, [parallel, branchIso, debuggerThreshold, aiBackend, originalConfig, slug, phase, validation.ok]);
 
-  if (!loaded) {
+  if (!loaded || settingsLoading) {
     return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Loading…</div>;
   }
 

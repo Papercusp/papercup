@@ -30,7 +30,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform as osPlatform, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
@@ -163,6 +163,20 @@ export interface BuildSandboxOpts {
   maskExists?: (abs: string) => boolean;
 }
 
+/** Use the host's existing scheduler directory, including its kernel flocks.
+ * A sandbox-private /tmp directory would split the admission domain. Never make
+ * /run or XDG_RUNTIME_DIR writable wholesale; only this metadata directory is bound.
+ */
+export function capabilityHeavySchedulerWritePath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidate = env.PC_HEAVY_DIR || join(env.XDG_RUNTIME_DIR || '/tmp', 'pc-heavy-slots');
+  try {
+    const real = realpathSync(candidate);
+    return statSync(real).isDirectory() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * EI-12725: BUILD-CACHE dirs that live OUTSIDE the repo tree, resolved to their REAL
  * paths and made writable in BOTH backends.
@@ -247,6 +261,7 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
     ...settings.filesystem.allowWrite,
     '/tmp',
     ...capabilityBuildCacheWritePaths(cwd),
+    ...[capabilityHeavySchedulerWritePath()].filter((p): p is string => p !== undefined),
   ];
   // WI-39391: keep the srt-preferred path in parity with the bwrap fallback.
   // Without this absolute denyRead entry, a child can bypass the literal
@@ -510,6 +525,8 @@ export function buildCapabilitySandboxCommand(
   for (const cache of capabilityBuildCacheWritePaths(input.cwd, home)) {
     argv.push('--bind', cache, cache);
   }
+  const schedulerPath = capabilityHeavySchedulerWritePath();
+  if (schedulerPath) argv.push('--bind', schedulerPath, schedulerPath);
   // Mask credential paths. Applied AFTER the ro-bind of `/`, so the overlay wins.
   // Dirs read empty via a tmpfs overlay; file credentials (e.g. ~/.npmrc) read
   // empty via `--ro-bind /dev/null` (a tmpfs needs a DIRECTORY mount point, so a

@@ -23,10 +23,18 @@ function unpack(value: unknown): unknown {
 }
 const lost = (id: string, reason: string) => ({ id, state: 'unrecoverable' as const, busy: false,
   language: 'javascript' as const, statePersistence: 'globalThis' as const, restartRecovery: 'unrecoverable' as const, reason });
+function unrecoverableCause(error: unknown): string {
+  const message = String(error);
+  const prefix = 'kernel_unrecoverable:';
+  const marker = message.indexOf(prefix);
+  return marker < 0 ? message : message.slice(marker + prefix.length);
+}
 
 async function owner(id: string, scope: string): Promise<number> {
   const out = await locateOwnerRpcResource(KIND, id, scope);
-  if (!out.ok) throw new Error(out.code === 'owner_gone' ? 'kernel_unrecoverable' : `kernel_owner_unreachable:${out.code}`);
+  if (!out.ok) throw new Error(out.code === 'owner_gone'
+    ? `kernel_unrecoverable:${out.message}`
+    : `kernel_owner_unreachable:${out.code}:${out.message}`);
   const pid = (out.result as { ownerPid?: number })?.ownerPid;
   if (!Number.isSafeInteger(pid) || !pid || pid <= 0) throw new Error('kernel_owner_protocol_error');
   return pid;
@@ -45,12 +53,12 @@ export async function controlManagedKernel(op: 'status' | 'close', id: string, s
     if (pid === process.pid) return op === 'status' ? inspectOrchestrationKernel(id, scope) : closeOrchestrationKernel(id, scope);
     const out = await callOwnerProcess({ targetPid: pid, kind: KIND, payload: { op, id, scope } });
     if (!out.ok) {
-      if (out.code === 'owner_gone') return lost(id, 'kernel_unrecoverable');
+      if (out.code === 'owner_gone') return lost(id, out.message);
       throw new Error(`kernel_owner_unreachable:${out.code}`);
     }
     return out.result as ReturnType<typeof inspectOrchestrationKernel>;
   } catch (error) {
-    if (String(error).includes('kernel_unrecoverable')) return lost(id, String(error));
+    if (String(error).includes('kernel_unrecoverable')) return lost(id, unrecoverableCause(error));
     throw error;
   }
 }
@@ -116,7 +124,7 @@ export const runManagedKernelScript: typeof runOrchestrationScript = async (scri
   let pid: number;
   try { pid = await owner(id, scope); }
   catch (error) { return { ok: false, error: String(error), logs: [],
-    ...(String(error).includes('kernel_unrecoverable') ? { kernel: lost(id, String(error)) } : {}) }; }
+    ...(String(error).includes('kernel_unrecoverable') ? { kernel: lost(id, unrecoverableCause(error)) } : {}) }; }
   if (pid === process.pid) return runOrchestrationScript(script, facade, opts);
   if (opts.signal?.aborted) return { ok: false, error: 'script_aborted', logs: [] };
   const token = randomUUID();

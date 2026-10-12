@@ -115,7 +115,8 @@ export async function locateOwnerRpcResource(kind: string, id: string, scope: st
       return { ok: true, result: { ownerPid: process.pid } };
     }
     localResources.delete(key);
-    return { ok: false, code: 'owner_gone', message: 'unknown or foreign scoped handle' };
+    return { ok: false, code: 'owner_gone',
+      message: 'owner mapping unavailable (unknown, foreign, expired, or lost on process restart); process-local state cannot be recovered' };
   }
   return callOwnerProcess({ targetPid: 0, kind: RESOURCE_KIND, payload: { op: 'locate', kind, id, scope } });
 }
@@ -362,9 +363,15 @@ export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }
             if (row && row.pid !== message.fromPid) result = { ok: false, code: 'handler_error', message: 'resource already bound' };
             else { resources.set(key, { pid: message.fromPid, at: Date.now() }); result = { ok: true, result: { ownerPid: message.fromPid } }; }
           } else if (p.op === 'locate') {
-            if (row && findLiveWorker(cluster, row.pid)) {
+            if (!row) {
+              result = { ok: false, code: 'owner_gone',
+                message: 'owner mapping unavailable (unknown, foreign, expired, or lost on primary restart); process-local state cannot be recovered' };
+            } else if (findLiveWorker(cluster, row.pid)) {
               row.at = Date.now(); result = { ok: true, result: { ownerPid: row.pid } };
-            } else result = { ok: false, code: 'owner_gone', message: 'unknown, foreign or ended scoped handle' };
+            } else {
+              result = { ok: false, code: 'owner_gone',
+                message: `owner worker pid ${row.pid} is no longer live; process-local state cannot be recovered` };
+            }
           }
         }
         try { findLiveWorker(cluster, message.fromPid)?.send({ type: OWNER_RPC_RESPONSE_TYPE, id: message.id, toPid: message.fromPid, ...result }); }

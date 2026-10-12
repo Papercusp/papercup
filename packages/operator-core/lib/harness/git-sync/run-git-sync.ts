@@ -54,7 +54,7 @@ import {
 } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { runSyncBack, type SyncBackConfig, type SyncBackResult } from './sync-back';
-import { detectQuarantineImporters } from './quarantine-import-guard';
+import { detectQuarantineImporters, detectStagedProvidersOfHeldImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import { armedMigrationFilename } from '../../migration-reservation';
 import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
@@ -4050,7 +4050,7 @@ export type PostStageGuardResult =
       lateLockedHoldings: GitSyncLockHolding[];
       /** Staged paths whose working-tree content changed after they were staged. */
       drifted: string[];
-      /** Every path removed from the index (late-locked + drifted + their dirty importers). */
+      /** Every path removed from the index (late-locked, drifted, importers, and incompatible staged providers). */
       unstaged: string[];
     }
   | { ok: false; error: string };
@@ -4070,6 +4070,8 @@ export type PostStageGuardResult =
  *  - DRIFTED paths: staged paths whose working-tree content no longer matches the index
  *    (the staged blob was a transient state, e.g. a probe's mutant since restored);
  *  - their dirty importers, so an importer never lands without the module it needs;
+ *  - staged providers whose removed exports are still consumed by a held importer's HEAD
+ *    text, so the old importer cannot land with a broken provider API;
  *  - WI-10006734: staged importers of an UNTRACKED module this index does not provide
  *    (84959c3039 committed `import('../integrations/ticket-integrations')` while that
  *    module stayed untracked for 39 minutes, and every isolated bundle failed).
@@ -4288,7 +4290,25 @@ export async function guardStagedIndexBeforeCommit(opts: {
   for (const offender of importerOffenders) {
     if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);
   }
-  const pathsToUnstage = [...new Set([...excludedDependencies, ...importers])].filter((path) => stagedSet.has(path));
+  const providerOffenders = await detectStagedProvidersOfHeldImporters({
+    stagedFiles: staged,
+    heldImporters: [...new Set([...excludedDependencies, ...importers])],
+    readHeadText: async (path) => {
+      const result = await runGit(['show', `HEAD:${path}`], repoPath);
+      return result.code === 0 ? result.stdout : null;
+    },
+    readIndexText: async (path) => {
+      const result = await runGit(['show', `:${path}`], repoPath);
+      return result.code === 0 ? result.stdout : null;
+    },
+    log,
+  });
+  const heldProviders = providerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
+  for (const offender of providerOffenders) {
+    if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);
+  }
+  const pathsToUnstage = [...new Set([...excludedDependencies, ...importers, ...heldProviders])]
+    .filter((path) => stagedSet.has(path));
   let unstagedPaths: string[] = [];
   if (pathsToUnstage.length > 0) {
     const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, pathsToUnstage, log);
@@ -4300,6 +4320,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
           ? `, same Cargo package [${packageClosure.paths.join(', ')}]`
           : '') +
         (importers.length > 0 ? `, dirty importers [${[...new Set(importers)].join(', ')}]` : '') +
+        (heldProviders.length > 0 ? `, staged providers with held HEAD consumers [${[...new Set(heldProviders)].join(', ')}]` : '') +
         ' — they stay dirty for the next tick',
     );
     unstagedPaths = unstage.paths;

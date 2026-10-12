@@ -28,9 +28,10 @@ describe('kernel placement failure truth', () => {
     warning.mockRestore();
   });
   it('names unrecoverability only when placement establishes an unknown, foreign or dead owner', async () => {
-    rpc.locate.mockResolvedValue({ ok: false, code: 'owner_gone', message: 'dead owner' });
-    expect(await controlManagedKernel('status', id, scope)).toMatchObject({ state: 'unrecoverable' });
+    const reason = 'owner worker pid 41 is no longer live; process-local state cannot be recovered';
+    rpc.locate.mockResolvedValue({ ok: false, code: 'owner_gone', message: reason });
+    expect(await controlManagedKernel('status', id, scope)).toMatchObject({ state: 'unrecoverable', reason });
     expect(await runManagedKernelScript('return 1;', { call: vi.fn() }, { kernel: { id, scope } }))
-      .toMatchObject({ ok: false, kernel: { state: 'unrecoverable' } });
+      .toMatchObject({ ok: false, error: expect.stringContaining(reason), kernel: { state: 'unrecoverable', reason: expect.stringContaining(reason) } });
   });
 });

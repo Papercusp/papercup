@@ -18,6 +18,7 @@ import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
   capabilityBuildCacheWritePaths,
+  capabilityHeavySchedulerWritePath,
   capabilitySrtSettingsPathForCwd,
   __resetCapabilitySrtSettings,
   CAPABILITY_SANDBOX_MASK_DIRS,
@@ -27,6 +28,38 @@ import {
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
+
+describe('shared heavy scheduler metadata in capability sandboxes', () => {
+  it('binds only the real shared metadata directory while retaining root and network containment', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'pc-scheduler-sandbox-')));
+    const runtime = join(root, 'runtime');
+    const slots = join(runtime, 'pc-heavy-slots');
+    mkdirSync(slots, { recursive: true });
+    const cwd = join(root, 'work');
+    mkdirSync(cwd);
+    vi.stubEnv('PC_HEAVY_DIR', undefined);
+    vi.stubEnv('XDG_RUNTIME_DIR', runtime);
+    try {
+      expect(capabilityHeavySchedulerWritePath()).toBe(slots);
+      const d = buildCapabilitySandboxCommand({ cmd: ['bash', '-c', 'true'], cwd }, {
+        enabled: true, required: true, bwrapWorks: true, srtBin: null,
+        denyAllEgress: true, homeDir: join(root, 'home'), maskExists: () => false,
+      });
+      const i = d.argv.indexOf(slots);
+      expect(d.argv.slice(i - 1, i + 2)).toEqual(['--bind', slots, slots]);
+      expect(d.argv.slice(0, 3)).toEqual(['--ro-bind', '/', '/']);
+      expect(d.argv).toContain('--unshare-net');
+      expect(d.argv).not.toContain(runtime);
+      const alias = join(root, 'slot-alias');
+      symlinkSync(slots, alias);
+      expect(capabilityHeavySchedulerWritePath({ PC_HEAVY_DIR: alias })).toBe(slots);
+      expect(capabilityHeavySchedulerWritePath({ XDG_RUNTIME_DIR: join(root, 'absent') })).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 const CMD = ['/usr/bin/bash', '-c', 'echo hi'];
 const CWD = '/proj/work';

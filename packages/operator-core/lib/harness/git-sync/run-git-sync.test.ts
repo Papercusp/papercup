@@ -2175,6 +2175,67 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', exporterPath, importerPath)).toBe('');
   });
 
+  it('WI-6554700010008411: a staged export removal stays with a quarantined importer whose HEAD still imports it', async () => {
+    const excludedPath = 'start.ts';
+    const importerPath = 'audit.ts';
+    const providerPath = 'slug-scope.ts';
+    const controlPath = 'control.ts';
+    writeFileSync(join(repo, providerPath), 'export function requireUnambiguousSlugScope() { return true; }\n');
+    writeFileSync(join(repo, importerPath),
+      "import { requireUnambiguousSlugScope } from './slug-scope';\nexport const scope = requireUnambiguousSlugScope();\n");
+    writeFileSync(join(repo, excludedPath), 'export const start = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed importer and provider API');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, excludedPath), 'export const start = 2; // BROKEN\n');
+    // The working tree drops the old API import, but this file is held because it now
+    // consumes an excluded dependency; its HEAD version still imports the old export.
+    writeFileSync(join(repo, importerPath), "import { start } from './start';\nexport const scope = start;\n");
+    writeFileSync(join(repo, providerPath), 'export const unrelated = 1;\n');
+    writeFileSync(join(repo, controlPath), 'export const control = true;\n');
+    const detector: ContentDetector = {
+      key: 'fake-broken-dependency',
+      glob: '**/start.ts',
+      matches: file => file === excludedPath,
+      detect: (_file, text) => text.includes('BROKEN') ? 'contains BROKEN' : null,
+      fixerRole: 'content-fixer',
+    };
+    const logs: string[] = [];
+
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      contentDetectors: [detector],
+      log: message => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(first.contentErrors.some(row => row.file === importerPath && row.detectorKey === 'quarantined-importer')).toBe(true);
+    expect(logs.join('\n')).toContain('quarantined-provider');
+    expect(git(originDir, 'show', `main:${providerPath}`)).toContain('requireUnambiguousSlugScope');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain('requireUnambiguousSlugScope');
+    expect(git(originDir, 'show', `main:${excludedPath}`)).toBe('export const start = 1;');
+    expect(git(originDir, 'show', `main:${controlPath}`)).toBe('export const control = true;');
+    expect(git(repo, 'status', '--porcelain', '--', excludedPath, importerPath, providerPath)).toMatch(/(?:start|audit|slug-scope)\.ts/);
+
+    // Once the quarantined dependency is fixed, all three mutually dependent edits can
+    // land together and the safety hold clears without manual cleanup.
+    writeFileSync(join(repo, excludedPath), 'export const start = 2;\n');
+    const recovered = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      contentDetectors: [detector],
+    });
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', `main:${providerPath}`)).toBe('export const unrelated = 1;');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain("from './start'");
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('EI-25203309445902479: a new importer created after the dirty census is held with its excluded dependencies', async () => {
     const quarantinedPath = 'quarantined-export.ts';
     const lockedPath = 'locked-export.ts';
