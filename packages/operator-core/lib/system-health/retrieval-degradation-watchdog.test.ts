@@ -94,13 +94,15 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
     startRetrievalDegradationWatchdog({ observe });
     const leg = { status: 'ran', candidates: 5, blocked: null };
     const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as SearchLegs;
-    observeLegs(legs, 1000);
+    const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    observeLegs(legs, 1000, correlationId);
     observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001);
     expect(observe).toHaveBeenCalledTimes(2);
     expect(observe.mock.calls.map((call) => call.slice(0, 2))).toEqual([
       ['retrieval', { eligible: 1, applied: 0, reason: 'semantic-blocked' }],
       ['retrieval', { eligible: 1, applied: 1, reason: 'applied' }],
     ]);
+    expect(observe.mock.calls[0]?.[2]).toMatchObject({ correlationId });
   });
 
   it('does not double count a search when several legs degraded', () => {

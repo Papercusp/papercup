@@ -168,5 +168,9 @@ export async function runRetrievalDegradationSweepOnce(
  */
 export function startRetrievalDegradationWatchdog(opts: { observe?: typeof observeFallback } = {}): void {
   setLegHealthObserver((sample) => (opts.observe ?? observeFallback)(RETRIEVAL_DEGRADATION_MECHANISM,
-    retrievalSampleDecision(sample), { observedAt: new Date(sample.atMs), processTag: 'search' }));
+    retrievalSampleDecision(sample), {
+      observedAt: new Date(sample.atMs),
+      processTag: 'search',
+      correlationId: sample.correlationId,
+    }));
 }
