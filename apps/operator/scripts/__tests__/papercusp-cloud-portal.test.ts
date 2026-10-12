@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { assertTutorialVoiceEnvironment, hostedServiceProcessIds, parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
+import { assertTutorialAssistanceEnvironment, assertTutorialVoiceEnvironment, hostedServiceProcessIds, parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
 
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
@@ -324,6 +324,57 @@ describe("hosted Portal boot launcher", () => {
     await expect(assertTutorialVoiceEnvironment({ PORTAL_ELEVENLABS_API_KEY: "test-key",
       PORTAL_ELEVENLABS_AGENT_ID: "test-agent", PORTAL_ELEVENLABS_PROMPT_OVERRIDE: "1" }, provider))
       .rejects.toThrow(/^tutorial_voice_provider_refused$/);
+  });
+
+  it("preflights Help without identity, conversation or owner authority and consumes the completed SSE answer", async () => {
+    const provider = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        for (const chunk of ['event: delta\ndata: {"text":"hi"}\n\nevent: do', 'ne\ndata: {"answer":"Your provider bills infrastructure."}\n\n']) {
+          controller.enqueue(new TextEncoder().encode(chunk));
+        }
+        controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    await expect(assertTutorialAssistanceEnvironment({ PORTAL_TUTORIAL_SERVED_E2E: "1",
+      PORTAL_OPERATOR_ORIGIN: "http://127.0.0.1:1234" }, provider)).resolves.toBeUndefined();
+    const [url, request] = provider.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.href).toBe("http://127.0.0.1:1234/api/agent-mcp/operator-converse");
+    expect(JSON.parse(request.body as string)).toEqual({
+      messages: [{ role: "user", content: "Explain who bills infrastructure in this lesson." }],
+      trigger: "user_message", modality: "text", hostTrust: "public",
+      lessonContext: { version: 3, step: "billing", status: "ready" },
+    });
+    expect(request.headers).toEqual({ "content-type": "application/json" });
+    expect(request.signal?.aborted).toBe(true);
+  });
+
+  it("rejects HTTP success with backend errors, an empty answer or an unfinished stream", async () => {
+    for (const body of ['event: error\ndata: {"message":"private-backend-sentinel"}\n\n',
+      'event: done\ndata: {"answer":" "}\n\n', 'event: delta\ndata: {"text":"partial"}\n\n',
+      'event: done\ndata: invalid-json\n\n']) {
+      const provider = vi.fn(async () => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+      await expect(assertTutorialAssistanceEnvironment({ PORTAL_TUTORIAL_SERVED_E2E: "1",
+        PORTAL_OPERATOR_ORIGIN: "http://localhost:1234" }, provider))
+        .rejects.toThrow(/^tutorial_help_provider_unavailable$/);
+    }
+    for (const response of [Response.json({ error: "private-sentinel" }, { status: 503 }), Response.json({ answer: "ok" })]) {
+      await expect(assertTutorialAssistanceEnvironment({ PORTAL_TUTORIAL_SERVED_E2E: "1",
+        PORTAL_OPERATOR_ORIGIN: "http://localhost:1234" }, async () => response))
+        .rejects.toThrow(/^tutorial_help_provider_unavailable$/);
+    }
+  });
+
+  it("requires an explicit local operator before Help and stops incomplete voice setup before any provider call", async () => {
+    const provider = vi.fn();
+    for (const origin of [undefined, "https://example.test", "http://user:secret@localhost:1234", "http://localhost:1234/private"]) {
+      await expect(assertTutorialAssistanceEnvironment({ PORTAL_TUTORIAL_SERVED_E2E: "1", PORTAL_OPERATOR_ORIGIN: origin }, provider))
+        .rejects.toThrow("tutorial_help_operator_origin_required");
+    }
+    await expect(assertTutorialAssistanceEnvironment({ PORTAL_TUTORIAL_SERVED_E2E: "1",
+      PORTAL_TUTORIAL_VOICE_SERVED_E2E: "1", PORTAL_OPERATOR_ORIGIN: "http://localhost:1234" }, provider))
+      .rejects.toThrow("tutorial_voice_configuration_missing");
+    await expect(assertTutorialAssistanceEnvironment({}, provider)).resolves.toBeUndefined();
+    expect(provider).not.toHaveBeenCalled();
   });
 
   // WI-10006664: phone deploy mints the bearer secret into papercusp-phone/portal.env;
