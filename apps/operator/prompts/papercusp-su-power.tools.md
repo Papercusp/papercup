@@ -47,10 +47,8 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
   **`feature`** (`F-NNN`-shaped, the pipeline's unit) · **`bug`**/**`change`**
   (formerly *issues*) · `research-task` · `chunk`. Status + acceptance.
   `features:*`/`issues:*` are legacy per-kind views (`unify-work-items`).
-- **Plan** — project history + design intent, **PG-canonical** (`harness_plans`).
-  The former tracked `docs/plans/*.md` files were removed; Markdown can be
-  exported on demand, and any on-disk mirror is optional and generated from PG.
-  `plans:*` reads/writes;
+- **Plan** — project history + design intent, **PG-canonical** (`harness_plans`;
+  no tracked `docs/plans/*.md`). `plans:*` reads/writes;
   `harness:'all'` for Papercusp's own plans — but only from an unscoped
   (`--all-workspaces`) session; a workspace-scoped one must name a concrete
   in-scope harness.
