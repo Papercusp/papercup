@@ -35,6 +35,31 @@ export interface CommittedReaderClosure {
   opaque: string[];
 }
 
+/** Validate independent input pins before any compilation side effects. The
+ * post-build qualifier reuses this contract and then checks actual bytes. */
+function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
+  assert.ok(closure && typeof closure === 'object' && !Array.isArray(closure),
+    'Independent closure receipt must be an object');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
+    'dependencyFiles', 'artifacts', 'omitted', 'opaque'] as const)
+    assert.ok(Array.isArray(closure[key]), `Required closure dimension missing: ${key}`);
+  for (const key of ['schema', 'environment', 'externalResolutions'] as const)
+    assert.ok(closure[key] && typeof closure[key] === 'object' && !Array.isArray(closure[key]),
+      `Required closure dimension missing: ${key}`);
+  assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
+  assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'artifacts'] as const)
+    assert.ok(closure[key].length, `Required closure dimension empty: ${key}`);
+  for (const key of ['sha256', 'metafileSha256'] as const) {
+    assert.ok(typeof closure[key] === 'string', `Required closure digest missing: ${key}`);
+    assert.match(closure[key], /^[a-f0-9]{64}$/, `Required closure digest invalid: ${key}`);
+  }
+  assert.ok(Object.keys(closure.schema).length && Object.keys(closure.environment).length,
+    'Required private schema and environment pins are missing');
+  for (const [key, expected] of Object.entries(closure.environment))
+    assert.match(expected, /^[a-f0-9]{64}$/, `Environment digest missing: ${key}`);
+}
+
 /** Qualify the selected committed preparation before creating a sidecar/host.
  * Source files reuse the independent full archive census. Dependencies remain
  * a separate full materialized census, including bytes and symlink identities;
@@ -59,6 +84,7 @@ export function qualifyCommittedReaderSource(o: {
   const closureBytes = readFileSync(o.receiptPath);
   if (o.receiptSha256) assert.equal(digest(closureBytes), o.receiptSha256, 'Pinned preparation receipt changed');
   const closure: CommittedReaderClosure = JSON.parse(String(closureBytes));
+  assertCommittedReaderClosure(closure);
   assert.equal(closure.sourceCommit, o.selectedCommit, 'Closure differs from selected committed source');
   const assertSourceReceiptUnchanged = () => {
     if (o.sourceReceiptSha256) assert.equal(digest(readFileSync(o.sourceReceiptPath)), o.sourceReceiptSha256,
@@ -68,16 +94,6 @@ export function qualifyCommittedReaderSource(o: {
   const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
   assertSourceReceiptUnchanged();
   assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from selected committed source');
-  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
-    'dependencyFiles', 'artifacts', 'omitted', 'opaque'] as const)
-    assert.ok(Array.isArray(closure[key]), `Required closure dimension missing: ${key}`);
-  for (const key of ['schema', 'environment', 'externalResolutions'] as const)
-    assert.ok(closure[key] && typeof closure[key] === 'object' && !Array.isArray(closure[key]),
-      `Required closure dimension missing: ${key}`);
-  assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
-  assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
-  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'artifacts'] as const)
-    assert.ok(closure[key].length, `Required closure dimension empty: ${key}`);
   const sourceFiles = new Map(source.files.map(file => [file.path, file]));
   const sourcePath = (path: string) => {
     assert.ok(path && !isAbsolute(path) && !path.split('/').some(part => !part || part === '.' || part === '..')
@@ -146,10 +162,7 @@ export function qualifyCommittedReaderSource(o: {
       assert.equal(copy.sha256, digest(readFileSync(join(o.root, path))), `Copied artifact differs from selected source: ${path}`);
   }
   assert.equal(digest(readFileSync(o.bundle)), closure.sha256, 'Prepared bundle changed');
-  assert.ok(Object.keys(closure.schema).length && Object.keys(closure.environment).length,
-    'Required private schema and environment pins are missing');
   for (const [key, expected] of Object.entries(closure.environment)) {
-    assert.match(expected, /^[a-f0-9]{64}$/, `Environment digest missing: ${key}`);
     if (!o.preparationOnly) {
       assert.ok(o.environment[key] !== undefined, `Required private environment missing: ${key}`);
       assert.equal(digest(o.environment[key]!), expected, `Required private environment differs: ${key}`);
@@ -242,9 +255,8 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     // Missing independent preparation must refuse before compilation/PG. Never
     // synthesize a closure from this process's own source/dependency snapshot.
     const closure: CommittedReaderClosure = JSON.parse(String(selectedReceipts.closure));
+    assertCommittedReaderClosure(closure);
     assert.equal(closure.sourceCommit, selected.selectedCommit, 'Closure differs from selected committed source');
-    assert.deepEqual(closure.omitted, [], 'Required closure has omitted dimensions');
-    assert.deepEqual(closure.opaque, [], 'Required closure has opaque dimensions');
     assertSelectedReceiptsUnchanged();
   }
   const path = join(evidenceDir, 'hono-host.mjs');
