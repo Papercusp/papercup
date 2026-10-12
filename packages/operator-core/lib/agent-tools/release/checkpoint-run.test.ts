@@ -3002,10 +3002,15 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     vi.doMock('../../release/checkpoint-required-ancestor', async orig => ({
       ...(await orig<typeof import('../../release/checkpoint-required-ancestor')>()),
       assessRequiredAncestorPreflight: vi.fn(async () => ({
-        proceed: true, reason: 'contains-required-ancestor', candidate: recoveryProof.candidate,
+        ok: true, reason: 'contained', requiredAncestor: recoveryProof.candidate, candidate: recoveryProof.candidate,
         candidateSource: 'current-quiet-cut', repairQueue: null, frozenLineageIdentity: null,
-        queueDecision: 'run-normal-gate',
-      })),
+        queueDecision: 'run-normal-gate', fixerAlive: null,
+      } satisfies import('../../release/checkpoint-required-ancestor').RequiredAncestorPreflight)),
+      assessFrozenRepairQueuePreflight: vi.fn(async () => ({
+        proceed: true, reason: 'clear', candidate: recoveryProof.candidate,
+        candidateSource: 'current-quiet-cut', repairQueue: null, frozenLineageIdentity: null,
+        queueDecision: 'run-normal-gate', nextAttempt: null, fixerSpawnId: null, fixerAlive: null,
+      } satisfies import('../../release/checkpoint-required-ancestor').FrozenRepairQueuePreflight)),
     }));
     const requiredAncestorSha = 'a'.repeat(40);
     const successor = qualificationTransaction({
