@@ -940,7 +940,7 @@ export async function runGitStdinViaSpawnerSidecar(
     const stdout = await fsp.readFile(stdoutPath);
     // A short read here would silently truncate a `--batch` stream and desync
     // the frame walk — which is exactly the corruption this design exists to
-    // rule out, so it must fail loudly onto the local fallback, not quietly.
+    // rule out, so it must reject explicitly rather than return corrupt bytes.
     if (typeof res.stdoutBytes === 'number' && res.stdoutBytes !== stdout.length) {
       throw new Error(
         `spawner sidecar handoff size mismatch: git wrote ${res.stdoutBytes} bytes, read back ${stdout.length}`,
