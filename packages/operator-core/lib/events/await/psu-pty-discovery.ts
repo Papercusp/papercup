@@ -1315,6 +1315,7 @@ export function injectIntoHostWithConfirmation(
       | 'recycle'
       | 'carry-respawn'
       | 'mcp-reconnect'
+      | 'delivery-cancel'
       | 'shutdown';
     data: string;
     /** WI-6638, mode:'shutdown' only: waive the mid-turn (agent-busy) refusal. It
@@ -1365,6 +1366,8 @@ export function injectIntoHostWithConfirmation(
      * this wake, when the message represents one (a loop-wake / event-wake
      * `turn`/`reset`/`recycle`/`carry-respawn` delivery — never a one-shot
      * `raw`/`osc`/`compact`/`mcp-reconnect` call, which has no delivery row).
+     * The capability-gated `delivery-cancel` control request also carries this
+     * id to identify an existing row; it never writes a turn.
      * Riding it on the envelope lets the RECEIVING host recognize a RETRY of a
      * delivery it already accepted (the client's own ack-wait can time out or
      * the ack write back can fail — either way is indistinguishable from a
