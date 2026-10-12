@@ -593,6 +593,76 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   });
 });
 
+describe('setup-release-checkout.sh destination capacity before source preparation', () => {
+  const GIB = 1024 ** 3;
+  const git = (cwd: string, ...args: string[]) => {
+    const r = spawnSync('git', ['-C', cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    if (r.status !== 0) throw new Error(`fixture git failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  function fixtureSha() {
+    git(int, 'init', '-q');
+    writeFileSync(join(int, 'tracked.txt'), 'pinned source\n');
+    git(int, 'add', 'tracked.txt');
+    git(int, 'commit', '-qm', 'capacity fixture');
+    return git(int, 'rev-parse', 'HEAD');
+  }
+
+  function runSetup(target: string, sha: string, extra: string[] = []) {
+    return spawnSync('bash', [SCRIPT_PATH, '--integration', int, '--release', target,
+      '--ref', sha, '--node-modules', 'auto', '--node-modules-copy', 'copy', ...extra], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env,
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1000 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(6 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: String(20 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+      },
+    });
+  }
+
+  it('returns infrastructure exit 77 without creating a fresh destination or its parents', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'missing-parent', 'checkout');
+    const before = git(int, 'worktree', 'list', '--porcelain');
+    const r = runSetup(target, sha);
+    expect(r.status, r.stderr).toBe(77);
+    expect(r.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+    expect(r.stderr).toContain(`required=${30 * GIB} size=unknown`);
+    expect(existsSync(dirname(target))).toBe(false);
+    expect(git(int, 'worktree', 'list', '--porcelain')).toBe(before);
+  });
+
+  it('keeps an existing checkout and untracked evidence intact on capacity refusal', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'checkout');
+    git(int, 'worktree', 'add', '--quiet', '--detach', target, sha);
+    writeFileSync(join(target, 'tracked.txt'), 'dirty source stays\n');
+    writeFileSync(join(target, 'evidence.txt'), 'evidence stays\n');
+    const r = runSetup(target, sha);
+    expect(r.status, r.stderr).toBe(77);
+    expect(readFileSync(join(target, 'tracked.txt'), 'utf8')).toBe('dirty source stays\n');
+    expect(readFileSync(join(target, 'evidence.txt'), 'utf8')).toBe('evidence stays\n');
+    expect(git(target, 'rev-parse', 'HEAD')).toBe(sha);
+  });
+
+  it('lets source-only setup finish without imposing the dependency-copy reserve', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'source-only');
+    const r = runSetup(target, sha, ['--source-only']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(git(target, 'rev-parse', 'HEAD')).toBe(sha);
+    expect(r.stderr).not.toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+  });
+});
+
 describe('clone_submodule_repo — filesystem-aware local object transport', () => {
   function makeFixture(): {
     work: string;

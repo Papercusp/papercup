@@ -512,6 +512,20 @@ fi
 
 assert_target_gitlink_mappings "$INTEGRATION_ROOT" "$TARGET_SHA" || exit $?
 
+# Refuse an already-insufficient destination before resetting source or publishing
+# dependencies. The copy path still measures each tree under its allocation lock;
+# this read-only minimum check preserves its reserve and margin without reaping.
+if [ "$SOURCE_ONLY" = "0" ] && [ "$NODE_MODULES_MODE" != "skip" ] \
+  && [ "$NODE_MODULES_COPY_MODE" = "copy" ]; then
+  _headroom_ancestor="$RELEASE_ROOT"
+  while [ ! -e "$_headroom_ancestor" ]; do
+    _headroom_ancestor="$(dirname "$_headroom_ancestor")"
+  done
+  DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+    dependency_generation_check_headroom '' \
+      "$_headroom_ancestor/.dependency-generation-headroom-check" || exit $?
+fi
+
 # EI-25223821707990839: an explicit generation can expire while source checkout
 # and submodule replacement run. Take its process-owned selector lease before
 # those mutations, so a missing generation leaves the existing source untouched
