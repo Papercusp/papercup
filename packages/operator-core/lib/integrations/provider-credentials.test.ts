@@ -25,6 +25,9 @@ import {
   saveProviderCredentials,
 } from './provider-credentials';
 import { createProviderRegistry } from './provider-registry';
+// Route modules perform their own startup work; keep that outside the timed assertion below.
+import * as pluginConfigRoute from '../endpoint-route/routes/plugins/config';
+import * as pluginConfigsRoute from '../endpoint-route/routes/plugins/configs';
 
 const BOT = 'chat-fixture-SECRETBOT';
 const APP = 'app-fixture-SECRETAPP';
@@ -185,15 +188,14 @@ describe('provider credentials: per-person values (D-026)', () => {
 describe('provider credentials: plain plugin-config reads cannot name the store', () => {
   it('refuses the provider-setup store name on /plugins/config and /plugins/configs', async () => {
     type Route = { method?: string; handler: (req: Request) => Promise<Response> };
-    const configModule = (await import('../endpoint-route/routes/plugins/config')) as unknown as { default: Route | Route[] };
-    const configsModule = (await import('../endpoint-route/routes/plugins/configs')) as unknown as { default: Route };
-    const routes = Array.isArray(configModule.default) ? configModule.default : [configModule.default];
+    const routes = (Array.isArray(pluginConfigRoute.default) ? pluginConfigRoute.default : [pluginConfigRoute.default]) as unknown as Route[];
     const getConfig = routes.find((r) => r.method === 'GET');
     expect(getConfig).toBeDefined();
     const store = encodeURIComponent(providerSetupStoreKey('example-chat'));
     const single = await getConfig!.handler(new Request(`http://127.0.0.1/api/plugins/config?harness=papercusp&plugin=${store}`));
     expect(single.status).toBe(400);
-    const many = await configsModule.default.handler(new Request(`http://127.0.0.1/api/plugins/configs?harness=papercusp&plugins=${store}`));
+    const configsRoute = pluginConfigsRoute.default as unknown as Route;
+    const many = await configsRoute.handler(new Request(`http://127.0.0.1/api/plugins/configs?harness=papercusp&plugins=${store}`));
     expect(many.status).toBe(400);
   });
 });
