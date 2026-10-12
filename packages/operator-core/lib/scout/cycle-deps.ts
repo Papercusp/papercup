@@ -66,6 +66,7 @@ import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
 import type { ExperimentDispatchPort } from './experiment-rail';
 import { activeWorkspaceId } from '../workspace-registry';
+import { observeFallback } from '../degradation/fallback-observations';
 import { getOwnerSteering } from '../owner-steering';
 import { resolveFederatedPrimingConfig, type FederatedPrimingConfig } from './federated-priming';
 import { buildGoalFeedbackConsultPort, readResolvedGoalConsultProposals } from './goal-consult';
@@ -796,6 +797,7 @@ export function buildScoutCycleDeps(
     // the roster (D-010), the cap wins — skip the meta-learned extras so the cycle
     // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
     ideate: async (digest, ctx) => {
+      const observationWorkspace = activeWorkspaceId();
       const federatedPriming = await readFederatedPriming();
       // WI-5041 lens rotation: only when the budget will actually cap the roster,
       // read per-lens last-routed recency so the capped window runs the STALEST
@@ -803,7 +805,11 @@ export function buildScoutCycleDeps(
       // to the legacy configured-order truncation, never blocks the cycle.
       const capped = ctx.maxIdeators != null && ctx.maxIdeators < scoutConfig.lenses.length;
       const lensRecency = capped
-        ? await readLensRecency().catch((err) => {
+        ? await readLensRecency().then((recency) => {
+            observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'lens-recency' }, { workspaceId: observationWorkspace });
+            return recency;
+          }).catch((err) => {
+            observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'lens-recency-read-failed', scope: 'lens-recency' }, { workspaceId: observationWorkspace });
             console.warn(
               '[scout/cycle-deps] lens-recency read failed (rotation degraded to configured order):',
               err instanceof Error ? err.message : err,
@@ -935,11 +941,14 @@ export function buildScoutCycleDeps(
       // the cuttable kill-switch). Fail-open to ON like the gym read above: a broken
       // flag read must not silently divert routing off the default.
       let goalEnabled = true;
+      const observationWorkspace = activeWorkspaceId();
       try {
         const { getFlag } = await import('@papercusp/flags/server');
         const { FLAGS } = await import('@papercusp/flags');
         goalEnabled = await getFlag(FLAGS.BLENDER_GOAL_RAIL, 'scout-goal-rail');
+        observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'goal-rail' }, { workspaceId: observationWorkspace });
       } catch (err) {
+        observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'goal-rail-read-failed', scope: 'goal-rail' }, { workspaceId: observationWorkspace });
         console.warn(
           '[scout/cycle-deps] goal-rail flag read failed — goal rail stays enabled (fail-open):',
           err instanceof Error ? err.message : err,

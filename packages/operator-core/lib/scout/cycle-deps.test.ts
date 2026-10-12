@@ -11,6 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 const getFlag = vi.hoisted(() => vi.fn(async () => false));
 const createScoutPlanDraft = vi.hoisted(() =>

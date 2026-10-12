@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import { readFileSync } from 'node:fs'; // EI-20847917368795366: source-pinned WIRING guard
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources'; // WI-40769

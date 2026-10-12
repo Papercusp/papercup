@@ -29,6 +29,7 @@
  */
 
 import postgres from 'postgres';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -5097,6 +5098,7 @@ export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Pro
   try {
     reserved = await tickLockSql().reserve();
   } catch (e) {
+    observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'lock-reserve-failed', scope: 'tick-lock' }, { workspaceId });
     console.warn(`[improvement-watchdog] could not reserve a connection for the tick lock, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
     return { ran: true, value: await fn() };
   }
@@ -5108,8 +5110,10 @@ export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Pro
       const rows = await reserved<{ ok: boolean }[]>`
         SELECT pg_try_advisory_lock(hashtext('improvement-watchdog'), hashtext(${workspaceId})) AS ok`;
       if (rows[0]?.ok) acquired = true;
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'tick-lock' }, { workspaceId });
     } catch (e) {
       lockErrored = true;
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'lock-query-failed', scope: 'tick-lock' }, { workspaceId });
       console.warn(`[improvement-watchdog] advisory-lock query failed, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
     }
     if (lockErrored) return { ran: true, value: await fn() };
@@ -5241,7 +5245,9 @@ async function runWatchdogTickBody(
   if (signals.length > 0) {
     try {
       recentTicks = await readRecentTicks(workspaceId, WATCHDOG_REFILE_HISTORY_LIMIT, { status: 'ran' });
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'tick-history' }, { workspaceId });
     } catch {
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'history-read-failed', scope: 'tick-history' }, { workspaceId });
       /* no prior-tick history this tick: delta gate off (fails open), deferred boost empty,
          re-file rate limit off (fails CLOSED — an empty set suppresses nothing extra) */
     }
@@ -5255,7 +5261,9 @@ async function runWatchdogTickBody(
     try {
       const dups = await readKeyDups([...new Set(signals.map(watchdogKeyOf))]);
       partition = partitionSignalsByKnownKeys(signals, dups, priorSeenKeys, refileEligible);
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'key-dedup' }, { workspaceId });
     } catch (e) {
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'key-dedup-read-failed', scope: 'key-dedup' }, { workspaceId });
       console.warn(`[improvement-watchdog] key-dup pre-filter failed (degrading to title dedup): ${e instanceof Error ? e.message : e}`);
       // The dup pre-filter is gone, but the delta gate is independent of it and is the
       // load-bearing anti-churn guard — apply it alone rather than re-filing everything.

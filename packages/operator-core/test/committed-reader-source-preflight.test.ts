@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles } from '../lib/verifier-source';
-import { preparePrivateOperatorApiBundle, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource,
+import { preparePrivateOperatorApiBundle, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle,
   type CommittedReaderClosure } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -50,6 +50,15 @@ function fixture() {
     selectedCommit: source.sourceCommit, schema: { ...closure.schema }, environment: { PAPERCUSP_BACKGROUND_WORKERS: '0' } } };
 }
 
+function prepareBuilder(f: ReturnType<typeof fixture>, script = 'test -f "$2"\n') {
+  const bin = join(f.root, 'apps/operator/bin'); mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'bundle-host.sh'), script);
+  const source = JSON.parse(readFileSync(f.options.sourceReceiptPath, 'utf8'));
+  source.files = verifierSourceFiles(f.root, { runtimeArtifacts: true });
+  writeFileSync(join(f.root, '.verifier-source.json'), JSON.stringify(source));
+  writeFileSync(f.options.sourceReceiptPath, JSON.stringify(source));
+}
+
 describe('selected committed reader preparation closure', () => {
   it('qualifies preparation without claiming actual private schema, environment or loaded-host proof', () => {
     const f = fixture();
@@ -71,25 +80,49 @@ describe('selected committed reader preparation closure', () => {
 
   it('retains independent preparation pins across the sanitized worker boundary and rejects receipt drift', () => {
     const f = fixture();
-    const bin = join(f.root, 'apps/operator/bin'); mkdirSync(bin, { recursive: true });
     // Preparation-only builder fixture: preserve the already pinned artifacts.
-    writeFileSync(join(bin, 'bundle-host.sh'), 'test -f "$2"\n');
+    prepareBuilder(f);
     const source = JSON.parse(readFileSync(f.options.sourceReceiptPath, 'utf8'));
-    source.files = verifierSourceFiles(f.root, { runtimeArtifacts: true });
-    writeFileSync(join(f.root, '.verifier-source.json'), JSON.stringify(source));
-    writeFileSync(f.options.sourceReceiptPath, JSON.stringify(source));
     const prepared = preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
       receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath, selectedCommit: source.sourceCommit,
     } });
     const execute = join(f.dir, 'execute'); mkdirSync(execute);
     const argv = ['--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256];
     const selection = resolvePreparedCommittedReaderSource(argv, execute);
-    expect(selection).toEqual({ sourceReceiptPath: join(f.dir, 'prepare/verifier-source.json'), selectedCommit: source.sourceCommit });
+    expect(selection).toEqual({ sourceReceiptPath: join(f.dir, 'prepare/verifier-source.json'), selectedCommit: source.sourceCommit,
+      sourceReceiptSha256: digest(readFileSync(f.options.sourceReceiptPath)), receiptSha256: prepared.receiptSha256 });
     const retained = JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), 'utf8'));
     expect(retained).toMatchObject({ ...f.closure, selectedSource: prepared.selectedSource,
       qualification: { pending: ['actual-private-schema', 'actual-private-environment', 'loaded-host'] } });
     writeFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), JSON.stringify({ ...retained, sourceCommit: 'b'.repeat(40) }));
     expect(() => resolvePreparedCommittedReaderSource(argv, execute)).toThrow(/receipt changed/);
+    expect(() => qualifyCommittedReaderSource({ ...f.options, ...selection,
+      receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') })).toThrow(/Pinned preparation receipt changed/);
+    writeFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), JSON.stringify(retained));
+    writeFileSync(selection.sourceReceiptPath, readFileSync(selection.sourceReceiptPath, 'utf8') + '\n');
+    expect(() => qualifyCommittedReaderSource({ ...f.options, ...selection,
+      receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') })).toThrow(/Pinned selected source receipt changed/);
+  });
+
+  it.each(['source-receipt.json', 'operator-api-preflight.json'])('refuses %s drift during preparation before publishing the handoff', name => {
+    const f = fixture();
+    prepareBuilder(f, `printf '\\n' >> "$(dirname "$2")/../${name}"\n`);
+    expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+      receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+      selectedCommit: f.options.selectedCommit,
+    } })).toThrow(/receipt changed during preparation/);
+    expect(() => readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toThrow(/ENOENT/);
+  });
+
+  it('preserves the generic preparation and digest-only worker handoff without a committed-reader selection', () => {
+    const f = fixture(); prepareBuilder(f);
+    const prepared = preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'));
+    expect(JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), 'utf8')))
+      .toEqual({ path: f.bundle, sha256: digest(readFileSync(f.bundle)) });
+    expect(resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + prepared.sha256], join(f.dir, 'execute')))
+      .toBe(f.bundle);
+    expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + prepared.sha256], join(f.dir, 'execute')))
+      .toThrow(/pinned preparation receipt/);
   });
 
   it('accepts matching independent source, build, external, dependency, schema and environment pins as preparation only', () => {
