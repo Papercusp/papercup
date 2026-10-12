@@ -136,6 +136,7 @@ type PortalRosterBrowserInput = {
   workflowsSeed?: PrivateWorkflowsSeed;
   stats?: boolean;
   git?: boolean;
+  frames?: boolean;
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -178,7 +179,25 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.git ? `
+  const entry = input.frames ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider, useSyncQuery } from '@papercusp/sync';
+    import AdvFramesTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvFramesTab.tsx'))};
+    function Fixture() {
+      const [open, setOpen] = React.useState(true);
+      const localRoster = useSyncQuery({ queryName: 'desktops.local' });
+      const ready = !localRoster.loading && !localRoster.error
+        && localRoster.data?.some(row => row.id === 'fixture-local');
+      return React.createElement(React.Fragment, null,
+        React.createElement('button', { onClick: () => setOpen(!open) }, open ? 'Close Frames' : 'Open Frames'),
+        open && ready ? React.createElement(AdvFramesTab) : null);
+    }
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(Fixture))));
+  ` : input.git ? `
     import * as React from 'react';
     import * as Tooltip from '@radix-ui/react-tooltip';
     import { createRoot } from 'react-dom/client';
@@ -453,7 +472,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -477,7 +496,9 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     // Browser packages may export CSS only under development/production (e.g.
     // Excalidraw). Use the real production export instead of a fixture alias.
     conditions: ['browser', 'production', ...(retainBrowserCss ? ['style'] : [])],
-    bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
+    // The actual noVNC dependency uses top-level await. Preserve its native
+    // module semantics instead of stripping or stubbing the live-view graph.
+    bundle: true, format: input.frames ? 'esm' : 'iife', platform: 'browser', target: 'es2022', write: false,
     outfile: join(portal, 'private-roster-browser.js'),
     logLevel: 'silent',
     plugins: [portalBrowserPackagesPlugin(portal), ...(boundary ? [boundary.plugin] : []), { name: 'retain-executed-browser-inputs', setup(builder) {
@@ -509,7 +530,16 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.git
+  if (input.frames) {
+    for (const suffix of ['/apps/operator-vite/src/components/adv/AdvFramesTab.tsx',
+      '/apps/operator-vite/src/components/adv/FrameVncView.tsx',
+      '/apps/operator-vite/src/components/adv/FrameScreenTrackView.tsx',
+      '/node_modules/@novnc/novnc/core/util/browser.js']) {
+      assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Frames preflight requires native ${suffix}`);
+    }
+  }
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.frames
+    ? '/apps/operator-vite/src/components/adv/AdvFramesTab.tsx' : input.git
     ? '/apps/operator/app/adv/harnesses/AdvGitWorkspace.tsx' : input.stats
     ? '/apps/operator-vite/src/components/adv/AdvStatsTab.tsx' : input.workflows
     ? '/apps/operator-vite/src/components/adv/AdvWorkflowsTab.tsx' : input.learning
@@ -570,12 +600,13 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
   assert.ok(!options.workflowsRead || input.workflows, 'Workflows read preflight requires Workflows');
   assert.ok(!options.gitRead || input.git, 'Git read preflight requires the Git workspace');
+  assert.ok(!options.framesRead || input.frames, 'Frames read preflight requires the Frames panel');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -586,6 +617,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const writes: Array<{ surface: string; body: any }> = [];
   const reads: Array<{ name: string | null; args: any }> = [];
+  let framesDenied = false;
+  const frameStreams: Array<{ slug: string; closed: Promise<void> }> = [];
+  const framesEvidence = options.framesRead ? mkdtempSync(join(tmpdir(), 'frames-component-')) : null;
+  if (framesEvidence) writeFileSync(join(framesEvidence, 'browser-inputs.json'), JSON.stringify({
+    browserBundleSha256: digest(built.bundle),
+    originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
+  }, null, 2));
   let workflowsFail = false;
   const workflowsTimeline: Array<{ name: string; atMs: number; status: number }> = [];
   const workflowHarness = 'private-calendar-harness';
@@ -652,7 +690,32 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.workflowsRead && pathname === '/api/zero-harness/rest-query') {
+    if (options.framesRead && request.method !== 'GET') {
+      writes.push({ surface: pathname, body: null });
+      response.writeHead(405); response.end();
+    } else if (options.framesRead && pathname === '/api/deploy/frames') {
+      reads.push({ name: pathname, args: { denied: framesDenied } });
+      response.writeHead(framesDenied ? 403 : 200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(framesDenied ? { error: 'explicit fixture roster denial' } : {
+        frames: [input.selected, input.neighbor].map(slug => ({ slug,
+          frame: { id: 'fixture-' + slug, target: 'fixture' }, desktop: { displays: 1 } })),
+      }));
+    } else if (options.framesRead && pathname.endsWith('/frame-view')) {
+      const slug = decodeURIComponent(pathname.split('/')[3]);
+      assert.ok([input.selected, input.neighbor].includes(slug), 'only listed frame streams may open');
+      reads.push({ name: pathname, args: { slug } });
+      frameStreams.push({ slug, closed: new Promise<void>(done => response.once('close', done)) });
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      response.write('event: status\ndata: ' + JSON.stringify({ slug, state: 'polling', displays: [1] }) + '\n\n');
+      response.write('event: thumb\ndata: ' + JSON.stringify({ slug, display: 1,
+        jpegBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+        capturedAtMs: Date.now(), role: 'fixture-' + slug }) + '\n\n');
+    } else if (options.framesRead && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      reads.push({ name, args: JSON.parse(requestUrl.searchParams.get('args') ?? '{}') });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ rows: name === 'desktops.local' ? [{ id: 'fixture-local' }] : [] }));
+    } else if (options.workflowsRead && pathname === '/api/zero-harness/rest-query') {
       const name = requestUrl.searchParams.get('name') ?? '';
       const denied = workflowsFail && name === 'plans.scheduledOccurrences';
       workflowsTimeline.push({ name, atMs: Date.now(), status: denied ? 403 : 200 });
@@ -762,7 +825,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end((options.brainstormHydration || options.workflowsRead || input.git ? '<link rel="stylesheet" href="/docs-preflight.css">' : '')
-        + '<div id="root"></div><script src="/docs-preflight.js"></script>');
+        + '<div id="root"></div><script' + (input.frames ? ' type="module"' : '') + ' src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
   const errors: string[] = [];
@@ -810,6 +873,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('app', options.insightsRead ? 'insights' : 'prs'); url.searchParams.set('q', 'preflight-search');
       url.searchParams.set('ws', 'preflight-workspace');
     }
+    if (options.framesRead) {
+      url.searchParams.set('app', 'frames'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('q', 'preflight-search'); url.searchParams.set('ws', 'preflight-workspace');
+    }
     await page.goto(url.href);
     if (options.gitRead) {
       await page.waitForFunction(() => document.querySelector('.pc-adv-git')
@@ -817,7 +884,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.git ? page.locator('.pc-adv-git')
+    try { await (input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
       : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
       : input.workflows ? page.getByTestId('workflows-control-deck')
       : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
@@ -825,6 +892,53 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.framesRead) {
+      const tile = (slug: string) => page!.getByRole('button', { name: `${slug} :1 — fixture-${slug}`, exact: true });
+      await tile(input.selected).waitFor(); await tile(input.neighbor).waitFor();
+      await page.getByRole('link', { name: '1 agent desktop on this computer →', exact: true }).waitFor();
+      const assertQuery = async (selection: string | null) => {
+        // Nuqs emits component state before its throttled history update.
+        // A detached panel proves rendering completed, not that the URL did.
+        await page!.waitForURL(url => url.searchParams.get('frame') === selection
+          && url.searchParams.get('live') === null && url.searchParams.get('drive') === null);
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'frames'); assert.equal(params.get('slug'), input.selected);
+        assert.equal(params.get('q'), 'preflight-search'); assert.equal(params.get('ws'), 'preflight-workspace');
+        assert.equal(params.get('frame'), selection); assert.equal(params.get('live'), null); assert.equal(params.get('drive'), null);
+      };
+      await tile(input.selected).focus(); await page.keyboard.press('Enter');
+      await page.getByRole('img', { name: `${input.selected} display :1 (enlarged)`, exact: true }).waitFor();
+      await assertQuery(input.selected + ':1');
+      await page.reload();
+      await page.getByRole('img', { name: `${input.selected} display :1 (enlarged)`, exact: true }).waitFor();
+      await assertQuery(input.selected + ':1');
+      framesDenied = true;
+      await page.reload();
+      await page.locator('.pc-frames__state[data-error="true"]').filter({ hasText: 'HTTP 403' }).waitFor();
+      assert.equal(await page.locator('.pc-frames__tile').count(), 0, 'denied roster must not invent thumbnails');
+      await assertQuery(input.selected + ':1');
+      const streamCountAfterDenial = frameStreams.length;
+      framesDenied = false;
+      await page.reload();
+      await tile(input.selected).waitFor(); await tile(input.neighbor).waitFor();
+      assert.equal(frameStreams.length, streamCountAfterDenial + 2, 'recovery opens one actual SSE per listed frame');
+      await tile(input.neighbor).focus(); await page.keyboard.press('Space');
+      await page.getByRole('img', { name: `${input.neighbor} display :1 (enlarged)`, exact: true }).waitFor();
+      await assertQuery(input.neighbor + ':1');
+      await page.getByRole('button', { name: 'Close live view', exact: true }).focus(); await page.keyboard.press('Enter');
+      await page.getByRole('region', { name: 'Frame live view', exact: true }).waitFor({ state: 'detached' });
+      await assertQuery(null);
+      await page.getByRole('button', { name: 'Close Frames', exact: true }).focus(); await page.keyboard.press('Enter');
+      await page.locator('.pc-frames').waitFor({ state: 'detached' });
+      await Promise.all(frameStreams.map(stream => stream.closed));
+      // Retain observed traffic even if a population assertion below fails.
+      if (framesEvidence) writeFileSync(join(framesEvidence, 'receipt.json'), JSON.stringify({ reads, writes,
+        streamCount: frameStreams.length, streamsClosed: true, providerUsed: false }, null, 2));
+      assert.deepEqual(writes, [], 'stills selection must not mint VNC sessions, join voice or change the server');
+      assert.equal(reads.filter(read => read.name === '/api/deploy/frames').length, 4);
+      assert.equal(frameStreams.length, 6, 'denied roster opens no streams; each accepted mount opens exactly two');
+      assert.deepEqual(new Set(frameStreams.map(stream => stream.slug)), new Set([input.selected, input.neighbor]));
+    }
     if (options.insightsRead) {
       await page.getByRole('alert').filter({ hasText: 'Could not load insights: HTTP 503' }).waitFor();
       insightsFail = false;
@@ -1051,6 +1165,9 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       } else {
         assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
       }
+    } else if (input.frames) {
+      assert.equal(await page.locator('.pc-frames').count(), options.framesRead ? 0 : 1);
+      if (options.framesRead) assert.equal(await page.getByRole('button', { name: 'Open Frames', exact: true }).count(), 1);
     } else if (!input.harnesses && !options.brainstormHydration && !options.prsRead && !options.insightsRead) {
       assert.match(await page.locator('body').innerText(), /Select a /);
     }
@@ -1071,10 +1188,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         neighborDistinct: true, noOutwardWrites: true, providerUsed: false } : {}),
       ...(options.workflowsRead ? { workflowsRead: true, staleNextRunWithheld: true, keyboardRetry: true,
         occurrenceRequests: workflowsTimeline.filter(r => r.name === 'plans.scheduledOccurrences') } : {}),
-      ...(options.gitRead ? { selectedCommitDiff: true, commitReload: true, keyboardClose: true } : {}) };
+      ...(options.gitRead ? { selectedCommitDiff: true, commitReload: true, keyboardClose: true } : {}),
+      ...(options.framesRead ? { framesRead: true, keyboardSelection: true, stillReload: true,
+        rosterDenialRecovery: true, shellQueryPreserved: true, streamsClosed: true, noOutwardWrites: true,
+        providerUsed: false, evidence: framesEvidence } : {}) };
   } catch (error) {
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
