@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,11 +8,28 @@ import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-
 
 const root = resolve(import.meta.dirname, '../../..');
 
-describe('PostgreSQL bootstrap browser import boundary', () => {
-  it.each(['ordinary', 'isolated'])('reaches the %s child preflight without loading the CommonJS browser installer', mode => {
+function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): string {
+  return JSON.stringify({ elapsedMs: performance.now() - startedAt, status: result.status, signal: result.signal,
+    error: result.error && { name: result.error.name, message: result.error.message,
+      code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
+}
+
+describe('PostgreSQL bootstrap import boundary', () => {
+  it.each(['ordinary', 'isolated'])('reaches the %s child preflight without loading runtime or browser bootstrap dependencies', mode => {
     const entry = join(root, 'scripts/with-test-pg.mjs');
+    const refusedModules = ['libs/test-config/src/pg-container.ts', 'libs/test-config/src/tmpdir-guard.ts',
+      'packages/operator-core/lib/fleet/process-group-lifetime.ts',
+      'libs/generic/verification-harness/src/evidence-root.ts'];
+    const hook = `export async function load(url, context, nextLoad) {
+      if (${JSON.stringify(refusedModules)}.some(path => url.endsWith('/' + path))) {
+        throw new Error('RUNTIME_BOOTSTRAP_IMPORT_REFUSED: ' + url);
+      }
+      return nextLoad(url, context);
+    }`;
     const script = `
       import Module from 'node:module';
+      import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
       const compile = Module.prototype._compile;
       Module.prototype._compile = function (content, filename) {
         if (filename.endsWith('/scripts/lib/playwright-temp-directory.cjs')) {
@@ -25,12 +42,15 @@ describe('PostgreSQL bootstrap browser import boundary', () => {
         '--', 'papercusp-missing-child-executable-browser-boundary'];
       await import(${JSON.stringify(pathToFileURL(entry).href)});
     `;
+    const startedAt = performance.now();
     const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
       cwd: root, encoding: 'utf8', timeout: 10_000,
       env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
     });
-    expect(result.status, result.stderr).toBe(1);
-    expect(result.stderr).toContain('child preflight failed');
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.stderr, diagnostic).toContain('child preflight failed');
+    expect(result.stderr).not.toContain('RUNTIME_BOOTSTRAP_IMPORT_REFUSED');
     expect(result.stderr).not.toContain('BROWSER_COMMONJS_BOOTSTRAP_REFUSED');
     expect(result.stdout).not.toContain('booting throwaway PG');
   });
@@ -83,32 +103,28 @@ describe('private API bundle durable evidence preflight', () => {
 describe('isolated PostgreSQL durable evidence preflight', () => {
   it.each(['', '  '])('refuses an explicitly blank sink before allocating ordinary PostgreSQL (%j)', sink => {
     const env = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink };
-    let failure: { status: number; stdout: string; stderr: string } | undefined;
-    try {
-      execFileSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--', process.execPath, '-e', 'process.exit(91)'], {
-        cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-      });
-    } catch (error) { failure = error as typeof failure; }
-    expect(failure).toBeDefined();
-    expect(failure!.status).toBe(1);
-    expect(failure!.stderr).toContain('PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
-    expect(failure!.stdout).not.toContain('booting throwaway PG');
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--', process.execPath, '-e', 'process.exit(91)'], {
+      cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
+    expect(result.stdout).not.toContain('booting throwaway PG');
   });
 
   it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])('refuses ledger receipts without an explicit sink before allocating PostgreSQL (%s)', mode => {
     for (const receiptKey of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
       const env = { ...process.env, [receiptKey]: '/tmp/unwritten-private-ledger-receipt' };
       delete env.PAPERCUSP_TEST_RUNS_DB_URL;
-      let failure: { status: number; stdout: string; stderr: string } | undefined;
-      try {
-        execFileSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode, '--', process.execPath, '-e', 'process.exit(91)'], {
-          cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-        });
-      } catch (error) { failure = error as typeof failure; }
-      expect(failure).toBeDefined();
-      expect(failure!.status).toBe(1);
-      expect(failure!.stderr).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
-      expect(failure!.stdout).not.toContain('booting throwaway PG');
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode, '--', process.execPath, '-e', 'process.exit(91)'], {
+        cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+      expect(result.stdout).not.toContain('booting throwaway PG');
     }
   });
 });
@@ -122,16 +138,14 @@ describe('private PostgreSQL child executable preflight', () => {
       kind === 'missing-relative' ? './papercusp-missing-relative-executable-0f38' :
         kind === 'directory' ? directory : file;
     try {
-      let failure: { status: number; stdout: string; stderr: string } | undefined;
-      try {
-        execFileSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--', command], {
-          cwd: join(root, 'packages/operator-core'), encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-        });
-      } catch (error) { failure = error as typeof failure; }
-      expect(failure).toBeDefined();
-      expect(failure!.status).toBe(1);
-      expect(failure!.stderr).toContain('child preflight failed');
-      expect(failure!.stdout).not.toContain('booting throwaway PG');
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--', command], {
+        cwd: join(root, 'packages/operator-core'), encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('child preflight failed');
+      expect(result.stdout).not.toContain('booting throwaway PG');
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
