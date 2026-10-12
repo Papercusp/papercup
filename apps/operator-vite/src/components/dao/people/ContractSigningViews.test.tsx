@@ -37,4 +37,18 @@ describe('Contract signing Workbench',()=>{
     const alert=await screen.findByRole('alert');expect(alert.textContent).toContain('Contract records could not be read.');
     expect(screen.getByRole('button',{name:'Retry contract read'})).toBeTruthy();
   });
+  it('recovers a lost dispatch through its existing envelope and refreshes the signing state',async()=>{
+    let recovered=false;
+    fetcher.mockImplementation(async(_url:string,init?:RequestInit)=>{
+      if(init?.method==='POST'){recovered=true;return Response.json({ok:true,state:'signing'});}
+      return Response.json({ok:true,templates,execution:{contractId:'contract-reference',state:recovered?'signing':'dispatching',bindingEligible:false,documentHash:null,completedAt:null,signingLinks:null}});
+    });
+    show();const form=await screen.findByRole('form',{name:'Recover signing dispatch'});
+    fireEvent.change(screen.getByLabelText('Documenso envelope ID'),{target:{value:'existing-envelope'}});fireEvent.submit(form);
+    await screen.findByText('Contract stage: signing');
+    expect(changed).toHaveBeenCalledOnce();
+    const call=fetcher.mock.calls.find(c=>c[1]?.method==='POST')!;
+    expect(JSON.parse(call[1].body)).toEqual({action:'reconcile',offerId:'offer',envelopeId:'existing-envelope'});
+    expect(screen.queryByRole('button',{name:'Start signatures'})).toBeNull();
+  });
 });

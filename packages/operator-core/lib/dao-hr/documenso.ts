@@ -1,6 +1,6 @@
 /** Single Documenso boundary. Uses the maintained Envelope API v2.
  * Credentials are injected outside the repo; links stay in private HR reads. */
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 export class DocumensoError extends Error {
@@ -49,6 +49,24 @@ export class DocumensoAdapter {
       await (await this.request('/envelope/distribute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ envelopeId, meta: { distributionMethod: 'NONE' } }) })).json());
     if (result.id !== envelopeId || result.recipients.length !== 2 || result.recipients.some(r => new URL(r.signingUrl).origin !== new URL(this.config.baseUrl).origin)) throw new DocumensoError('provider_refused', 'Documenso returned another envelope or signing host.');
     return result.recipients;
+  }
+  /** Recover an ambiguous create by reading the provider, never by creating again.
+   * An externalId alone is not proof: verify the frozen signers and uploaded bytes. */
+  async reconcile(input: { contractId:string;envelopeId:string;signers:[SigningPerson,SigningPerson];pdf:Uint8Array }) {
+    const parsed=z.object({id:z.string(),externalId:z.string(),status:z.enum(['DRAFT','PENDING','COMPLETED']),
+      recipients:z.array(z.object({email:z.string().email(),name:z.string(),role:z.literal('SIGNER'),authOptions:z.object({accessAuth:z.array(z.string()).refine(v=>v.includes('ACCOUNT'))})})).length(2),
+      envelopeItems:z.array(z.object({id:z.string().min(1)})).length(1)}).safeParse(
+        await(await this.request('/envelope/'+encodeURIComponent(input.envelopeId))).json());
+    if(!parsed.success)throw new DocumensoError('invalid_completion','The envelope cannot be reconciled with this contract.');
+    const record=parsed.data;
+    if(record.id!==input.envelopeId||record.externalId!==input.contractId||new Set(record.recipients.map(r=>r.email.toLowerCase())).size!==2||
+      input.signers.some(s=>!record.recipients.some(r=>r.email.toLowerCase()===s.email.toLowerCase()&&r.name===s.name)))
+      throw new DocumensoError('invalid_completion','The envelope reference or signers differ from the contract.');
+    const response=await this.request('/envelope/item/'+encodeURIComponent(record.envelopeItems[0]!.id)+'/download?version=original');
+    const original=pdfBytes(new Uint8Array(await response.arrayBuffer()));
+    const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest();
+    if(!timingSafeEqual(digest(original),digest(input.pdf)))throw new DocumensoError('invalid_completion','The uploaded document differs from the frozen contract.');
+    return record.status;
   }
   verifyWebhook(secret: string | null, raw: unknown) {
     const expected = Buffer.from(this.config.webhookSecret), supplied = Buffer.from(secret ?? '');

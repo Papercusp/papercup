@@ -33,7 +33,11 @@ export default function ContractSigningViews({daoSlug,offer,people,onChanged}:{d
       {!execution.bindingEligible?<p role="status">Non-binding sample. Counsel-approved templates and a formed issuing entity are required.</p>:execution.state!=='binding'?<p>Conditional contract: it takes effect only after the hire proposal executes.</p>:<p>Binding contract; hire proposal executed.</p>}
       <a className="dao-action" href={pdfUrl+'?kind=source'}>Download generated contract</a>
       {execution.state==='prepared'?<button type="button" className="dao-action" disabled={busy} onClick={()=>void action({action:'start',offerId:offer.offerId})}>Start signatures</button>:null}
-      {execution.state==='dispatching'?<p role="alert">The signing dispatch needs reconciliation. Use contract reference {execution.contractId} with your signing administrator.</p>:null}
+      {execution.state==='dispatching'?<form className="dao-form" aria-label="Recover signing dispatch" onSubmit={event=>{event.preventDefault();const fields=new FormData(event.currentTarget);void action({action:'reconcile',offerId:offer.offerId,envelopeId:fields.get('envelope')});}}>
+        <p>Find contract reference {execution.contractId} in Documenso and enter its envelope ID to recover signing.</p>
+        <label>Documenso envelope ID<input name="envelope" required maxLength={200}/></label>
+        <button type="submit" className="dao-action" disabled={busy||loading}>Recover signatures</button>
+      </form>:null}
       {execution.signingLinks?.map(link=><p key={link.email}><a className="dao-action" href={link.signingUrl} target="_blank" rel="noopener noreferrer">Open authenticated signing for {link.email}</a></p>)}
       {execution.documentHash?<><p>Executed document hash: <code>{execution.documentHash}</code></p><p>Signatures completed: {execution.completedAt}</p>
         <a className="dao-action" href={pdfUrl+'?kind=sealed'}>Download sealed contract</a> <a className="dao-action" href={pdfUrl+'?kind=certificate'}>Download signing audit certificate</a></>:null}
