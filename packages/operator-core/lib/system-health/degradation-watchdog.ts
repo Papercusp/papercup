@@ -170,7 +170,12 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'agent-launch-readiness', scopeKeyed: true,
-  description: 'Eligible role launches whose resolved working directory exists rather than selecting a workspace-directory fallback.',
+  description: 'Eligible role launches whose resolved working directory or tracked-session backend supports the launch rather than selecting a directory or backend fallback.',
+});
+registerDegradationMechanism({
+  mechanism: 'scheduled-blueprint-resolution', scopeKeyed: true,
+  description: 'Scheduled launches without an explicit blueprint ID whose primary harness blueprint resolves rather than selecting the coding default.',
+  thresholds: { minEligible: 1 },
 });
 registerDegradationMechanism({
   mechanism: 'voice-spend-read',
