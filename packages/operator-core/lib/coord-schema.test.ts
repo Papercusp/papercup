@@ -7,7 +7,7 @@ import {
   renderCoordLegend,
   type CoordLineSource,
 } from './coord-schema';
-import { canonicalRefKey } from './agent-tools/coordination/ref-hydrate';
+import { canonicalRefKey, type HydratedRef } from './agent-tools/coordination/ref-hydrate';
 import {
   COORD_EXECUTABLE_KINDS,
   COORD_CONVERSATIONAL_KINDS,
@@ -546,7 +546,7 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
         e({ summary: 'Papercusp item WI-4173', harness_slug: 'papercusp' }),
       ],
       {
-        bodyRefs: new Map([
+        bodyRefs: new Map<string, HydratedRef>([
           [canonicalRefKey(emailRef.ref), emailRef],
           [canonicalRefKey(papercuspRef.ref), papercuspRef],
         ]),
