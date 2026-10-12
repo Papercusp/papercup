@@ -536,7 +536,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
           ),
         // The guard reads this getter when the deadline fires, after the
         // callback may have progressed from BEGIN to a setup statement.
-        { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool },
+        { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool, signal: opts.signal },
       );
     }, { retries: opts.acquireRetries });
   } catch (err) {

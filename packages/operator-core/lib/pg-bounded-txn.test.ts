@@ -444,6 +444,30 @@ describe('boundedOrgTxn', () => {
     expect(fnRan).toBe(false);
   });
 
+  it('cancels a pending BEGIN acquisition when the source signal aborts', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const reason = new Error('source budget expired');
+      const begin = vi.fn(() => new Promise<never>(() => {}));
+      const caller = vi.fn(async () => 'unreachable');
+      const transaction = boundedOrgTxn(caller, {
+        client: { begin } as never,
+        signal: controller.signal,
+        acquireTimeoutMs: 10_000,
+      });
+      const assertion = expect(transaction).rejects.toBe(reason);
+
+      controller.abort(reason);
+      await assertion;
+
+      expect(begin).toHaveBeenCalledOnce();
+      expect(caller).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['begin', 'boundedOrgTxn:begin(admin)'],
     ['read-only', 'boundedOrgTxn:setup-read-only(admin)'],
