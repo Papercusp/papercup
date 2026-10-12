@@ -85,6 +85,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
+import { observeFallback } from './degradation/fallback-observations';
 import { STALE_MS } from './liveness';
 import {
   FEATURE_NON_REQUEUE_STATES,
@@ -633,6 +634,7 @@ export async function reclaimStaleWorkItemClaims(
   // Fail-open is intentional: the work-item reclaim remains authoritative and
   // the lock TTL is the fallback if the side database is unavailable.
   if (rows.length > 0) {
+    let cleanupMeasured = 0;
     try {
       const [{ releaseReclaimedWorkItemLocks }, { readWorkItemPaths }] = await Promise.all([
         import('./work-item-lock-release'),
@@ -644,6 +646,10 @@ export async function reclaimStaleWorkItemClaims(
           paths: readWorkItemPaths(row.payload),
           goalRef: row.feature_id,
         });
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'targeted-release-failed', scope: 'stale-sweep' },
+        { workspaceId: row.workspace_id });
+        cleanupMeasured++;
         if (lockRelease.failures > 0) {
           console.warn(
             `[stale-claims] ${row.feature_id}: targeted lock release had ${lockRelease.failures} failure(s); claim reclaim continues with lock TTL fallback`,
@@ -651,6 +657,10 @@ export async function reclaimStaleWorkItemClaims(
         }
       }
     } catch (error) {
+      for (const row of rows.slice(cleanupMeasured)) {
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0,
+          reason: 'cleanup-unavailable', scope: 'stale-sweep' }, { workspaceId: row.workspace_id });
+      }
       console.warn(
         `[stale-claims] targeted lock cleanup unavailable; claim reclaim continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
       );

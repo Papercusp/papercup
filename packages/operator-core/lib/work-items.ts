@@ -29,6 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { observeFallback } from './degradation/fallback-observations';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
@@ -5693,6 +5694,7 @@ export async function claimWorkItem(
   const issueWs = resolveIssuesScopeWorkspace();
   const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
+  let claimWorkspaceId = issueWs;
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
@@ -5768,6 +5770,7 @@ export async function claimWorkItem(
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
+    claimWorkspaceId = ws;
     const admissionFloor = agentReviewAdmission
       ? sql`(
           ${admittedWhereSql(sql)}
@@ -5887,12 +5890,16 @@ export async function claimWorkItem(
           paths: readWorkItemPaths(prior?.payload),
           goalRef: won.id,
         });
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'targeted-release-failed', scope: 'claim-transfer' }, { workspaceId: claimWorkspaceId });
         if (lockRelease.failures > 0) {
           console.warn(
             `[claim] ${won.id}: targeted lock release had ${lockRelease.failures} failure(s); transfer continues with lock TTL fallback`,
           );
         }
       } catch (error) {
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0,
+          reason: 'cleanup-unavailable', scope: 'claim-transfer' }, { workspaceId: claimWorkspaceId });
         console.warn(
           `[claim] ${won.id}: targeted lock cleanup unavailable; transfer continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
         );
