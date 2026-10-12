@@ -228,10 +228,12 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
           fingerprints: z.array(evidenceCurrentInputSchema).max(500),
         })
         .strict(),
+      z.boolean(),
     ])
+    .transform((current) => typeof current === 'boolean' ? undefined : current)
     .optional()
     .describe(
-      'Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false means current was omitted. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.',
+      'Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false and boolean true/false omit caller fingerprints and use independent server measurement. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.',
     ),
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),

@@ -126,6 +126,27 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve the exact clause verdict and tier', async (booleanDetail, stringDetail) => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', specIds: ['SPEC-001'] };
+    const aliased = await call(tool.args.parse({ ...base, detail: booleanDetail }));
+    const canonical = await call(tool.args.parse({ ...base, detail: stringDetail }));
+    expect(aliased).toEqual(canonical);
+    expect(aliased).toMatchObject({ ok: true, detail: stringDetail, count: 1, rows: [expect.objectContaining({ specId: 'SPEC-001' })] });
+    expect(Boolean(aliased.rows[0].scorecardDraft)).toBe(booleanDetail);
+  });
+
+  it.each([true, false])('boolean current=%s requests server measurement and cannot attest missing proof', async (current) => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([]);
+    const parsed = tool.args.parse({ harness: 'papercusp', slug: 'plan-a', current });
+    expect(parsed.current).toBeUndefined();
+    const result = await call(parsed);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ current: undefined }));
+    expect(result.rows[0].ratings.freshness.rating).not.toBe('pass');
+    expect(result.rows[0].wouldBlock).toContain('freshness');
+  });
+
   it('derives omitted classRef from the persisted subject class without waiving proof', async () => {
     listAcceptanceRubrics.mockResolvedValue([{ rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never]);
     listClauses.mockResolvedValue([clause('active')]);

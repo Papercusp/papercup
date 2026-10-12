@@ -272,7 +272,6 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     ['fixtureCalibrated', true],
     ['fixtureFree', true],
     ['falsifiable', true],
-    ['testLayer', 'integration'],
     ['testCases', ['suite > case']],
     ['pathReachable', true],
     ['oracleIndependent', true],
@@ -555,6 +554,29 @@ describe('as-committed bindings are measured at the run commit', () => {
 // verification-system-improvements-2026-10-10 P-001: the verification-system map names
 // derived_binding_invalid, so a test must trigger it.
 describe('parseDerivedBinding', () => {
+  it.each([undefined, 'integration'])('normalizes a flat layer into the derived binding stored by the handler (nested=%s)', (nested) => {
+    const result = parseDerivedBinding({
+      ...measuredBinding,
+      details: { testLayer: 'integration', observations: 'preserved', adequacy: { executed: true, ...(nested ? { testLayer: nested } : {}) } },
+    }, 42);
+    expect(result).toMatchObject({ ok: true, binding: { details: { observations: 'preserved', adequacy: { executed: true, testLayer: 'integration' } } } });
+    if (!result.ok) throw new Error('expected normalized binding');
+    expect(result.binding.details).not.toHaveProperty('testLayer');
+  });
+
+  it('refuses contradictory flat and nested layers without weakening the nested layer', () => {
+    const result = parseDerivedBinding({ ...measuredBinding, details: { testLayer: 'unit', adequacy: { testLayer: 'integration' } } }, 42);
+    expect(result).toMatchObject({ ok: false, error: 'derived_binding_invalid' });
+    const parsed = bindingSchema.safeParse({ ...measuredBinding, details: { testLayer: 'unit', adequacy: { testLayer: 'integration' } } });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([expect.objectContaining({ path: ['details', 'testLayer'], message: expect.stringContaining('conflicts') })]));
+  });
+
+  it('continues refusing invalid flat layer types and unrelated flat adequacy attestations', () => {
+    expect(bindingSchema.safeParse({ ...measuredBinding, details: { testLayer: 3 } }).success).toBe(false);
+    expect(bindingSchema.safeParse({ ...measuredBinding, details: { testLayer: 'integration', executed: true } }).success).toBe(false);
+  });
+
   it('CALIBRATION: a binding the schema accepts passes through unchanged', () => {
     const result = parseDerivedBinding(measuredBinding, 42);
     expect(result).toEqual({ ok: true, binding: bindingSchema.parse(measuredBinding) });

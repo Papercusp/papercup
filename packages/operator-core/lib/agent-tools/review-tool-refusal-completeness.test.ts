@@ -31,6 +31,7 @@ import scorecardsEmit from './scorecards/emit';
 import scorecardsEvaluate from './scorecards/evaluate';
 import consultGetFeedback from './consult/get-feedback';
 import workItemsComplete from './work_items/complete';
+import rubricsGet from './rubrics/get';
 
 /** What the caller receives for `request`, or null when it is accepted. */
 function refusalFor(schema: unknown, request: unknown): string | null {
@@ -89,6 +90,17 @@ const CASES: Case[] = [
 ];
 
 describe('RSR-P-008-A: one refusal names every invalid field', () => {
+  it.each([rubricsGet, plansGetSpecEvidence, plansEvaluateSpecTestAdequacy])('%s accepts both detail conventions without accepting malformed detail', (tool) => {
+    const base = tool.name === 'rubrics:get' ? { rubricRef: 'r' } : { slug: 'plan-a' };
+    for (const [alias, canonical] of [[true, 'full'], [false, 'summary']] as const) {
+      const aliased = validateSync(tool.args as never, { ...base, detail: alias });
+      const named = validateSync(tool.args as never, { ...base, detail: canonical });
+      expect(aliased.ok).toBe(true);
+      expect(aliased).toEqual(named);
+    }
+    expect(refusalFor(tool.args, { ...base, detail: 3 })).toContain('detail');
+  });
+
   it.each(CASES.map((c) => [c.tool.name, c] as const))('%s names both defects of a two-defect request', (_, c) => {
     expect(missingFromRefusal(c.tool.args, c.request, c.defects)).toEqual([]);
   });

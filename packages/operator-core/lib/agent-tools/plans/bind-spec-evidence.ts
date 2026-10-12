@@ -111,7 +111,6 @@ const ADEQUACY_DETAIL_KEYS = new Set([
   'fixtureCalibrated',
   'fixtureFree',
   'falsifiable',
-  'testLayer',
   'testCases',
   'pathReachable',
   'oracleIndependent',
@@ -152,6 +151,16 @@ const bindingDetailsSchema = z
       .passthrough(),
   )
   .superRefine((details, ctx) => {
+    if (details.testLayer !== undefined) {
+      if (typeof details.testLayer !== 'string') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['testLayer'], message: 'details.testLayer must be a string' });
+      } else if (details.adequacy !== null && typeof details.adequacy === 'object' && !Array.isArray(details.adequacy)) {
+        const nested = (details.adequacy as Record<string, unknown>).testLayer;
+        if (nested !== undefined && nested !== details.testLayer) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['testLayer'], message: 'details.testLayer conflicts with details.adequacy.testLayer' });
+        }
+      }
+    }
     for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -171,6 +180,11 @@ const bindingDetailsSchema = z
         message: issue.message,
       });
     }
+  })
+  .transform((details) => {
+    if (details.testLayer === undefined) return details;
+    const { testLayer, ...rest } = details;
+    return { ...rest, adequacy: { ...(details.adequacy as Record<string, unknown> | undefined), testLayer } };
   });
 const CAUSAL_PAIR_EVIDENCE_KINDS = new Set([
   'test',

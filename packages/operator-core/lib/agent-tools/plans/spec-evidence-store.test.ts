@@ -1939,12 +1939,13 @@ describe('listSpecEvidence timestamp normalization', () => {
       sourcePaths: ['src/feature.ts'],
       testPaths: ['test/feature.test.ts'],
     };
-    const readWithoutCallerCurrent = async () => {
+    const readWithoutCallerCurrent = async (current?: boolean) => {
       const [row] = await listSpecEvidence({
         harnessSlug: 'papercusp',
         planSlugs: ['plan-one'],
         specRevision: 1,
         specFingerprint: 'sha256:spec-v1',
+        ...(current === undefined ? {} : { current }),
       });
       return row;
     };
@@ -1983,6 +1984,24 @@ describe('listSpecEvidence timestamp normalization', () => {
       expect(row?.currentness.unknownReasons).toEqual(
         expect.arrayContaining([expect.stringMatching(/^server-measurement-unavailable:.+/)]),
       );
+    });
+
+    it.each([true, false])('boolean current=%s preserves independent measurement for current, moved and unavailable sources', async (current) => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      for (const state of ['unchanged', 'moved', 'unavailable'] as const) {
+        h.rows = [boundRow(
+          state === 'unavailable' ? { ...recipe, sourcePaths: ['src/p009-absent-source.ts'] } : recipe,
+          { source: state === 'moved' ? 'sha256:source-at-binding-time' : measured.sourceFingerprint, test: measured.testFingerprint },
+        )];
+        const omitted = await readWithoutCallerCurrent();
+        const aliased = await readWithoutCallerCurrent(current);
+        expect(aliased?.currentness).toEqual(omitted?.currentness);
+        expect(aliased?.currentness.overall).toBe(state === 'unchanged' ? 'current' : state === 'moved' ? 'stale' : 'unknown');
+        expect(aliased?.serverMeasurement.status).toBe(state === 'unavailable' ? 'unavailable' : 'measured');
+        if (state === 'unchanged') expect(aliased?.currentness.provenance).toBe('server-measured');
+        if (state === 'moved') expect(aliased?.currentness.staleReasons).toContain('source-stale');
+        if (state === 'unavailable') expect(aliased?.currentness.unknownReasons).toEqual(expect.arrayContaining([expect.stringMatching(/^server-measurement-unavailable:/)]));
+      }
     });
   });
 

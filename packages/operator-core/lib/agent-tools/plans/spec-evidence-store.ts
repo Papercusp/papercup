@@ -2142,7 +2142,8 @@ export interface ListSpecEvidenceOptions {
   evidenceRefs?: string[];
   /** Restrict a replay to exact immutable binding rows; [] selects no rows. */
   bindingIds?: number[];
-  current?: EvidenceCurrentInput[];
+  /** Boolean aliases carry no testimony and use the same server measurement as omission. */
+  current?: EvidenceCurrentInput[] | boolean;
   /** Pin reads to one immutable clause revision instead of the live revision pointer. */
   specRevision?: number;
   /** Optional content hash paired with specRevision for an exact immutable pin. */
@@ -2972,7 +2973,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   }
   const specRevision = options.specRevision;
   const specFingerprint = options.specFingerprint;
-  const replayCurrent = options.current ?? [];
+  const replayCurrent = Array.isArray(options.current) ? options.current : [];
   // Completion gates can span several clauses, while each scorecard rerun recipe pins one.
   // For a multi-clause replay, current[] already carries the exact tuple per evidence row;
   // preserve those tuples instead of applying one scalar fingerprint to every clause.
@@ -3174,7 +3175,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
   recordPhase('workspaceRead', workspaceReadStartedAt);
 
-  const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
+  const currentByKey = new Map(replayCurrent.map((c) => [evidenceCurrentInputKey(c), c]));
   // The server-measured replay opt-out is explained at its use in the loop below.
   const recipeBuildStartedAt = diagnostics ? Date.now() : 0;
   const recipes = rows.map((row) =>

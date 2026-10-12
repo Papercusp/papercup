@@ -61,11 +61,11 @@ const argsSchema = z.object({
   evidenceKinds: z.array(z.enum(SPEC_EVIDENCE_KINDS)).min(1).max(SPEC_EVIDENCE_KINDS.length).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   current: z
-    .array(evidenceCurrentInputSchema)
-    .max(500)
+    .union([z.array(evidenceCurrentInputSchema).max(500), z.boolean()])
+    .transform((current) => typeof current === 'boolean' ? undefined : current)
     .optional()
     .describe(
-      'Current fingerprints keyed by planSlug/specId/specRevision/specFingerprint/evidenceKind/evidenceRef when clause identity is supplied; legacy evidenceKind+evidenceRef tuples remain a fallback. Missing applicable values return unknown, never current.',
+      'Current fingerprints keyed by planSlug/specId/specRevision/specFingerprint/evidenceKind/evidenceRef when clause identity is supplied; legacy evidenceKind+evidenceRef tuples remain a fallback. Boolean true/false both omit caller fingerprints and use independent server measurement. Missing applicable values return unknown, never current.',
     ),
   currentness: z
     .array(z.enum(['current', 'stale', 'unknown']))

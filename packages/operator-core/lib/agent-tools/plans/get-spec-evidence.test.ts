@@ -97,6 +97,22 @@ beforeEach(() => {
 });
 
 describe('plans:get-spec-evidence detail levels', () => {
+  it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve scope, currentness and tier', async (booleanDetail, stringDetail) => {
+    const base = { harness: 'papercusp', slug: 'plan-a' };
+    const aliased = await call({ ...base, detail: booleanDetail });
+    const canonical = await call({ ...base, detail: stringDetail });
+    expect(aliased).toEqual(canonical);
+    expect(aliased).toMatchObject({ ok: true, detail: stringDetail, count: 3 });
+    expect(aliased.evidence.map((row: EvidenceRow) => row.currentness.overall)).toEqual(['current', 'stale', 'unknown']);
+    expect(Boolean(aliased.evidence[0].fingerprints)).toBe(booleanDetail);
+  });
+
+  it.each([true, false])('boolean current=%s omits caller fingerprints without promoting stale or unavailable evidence', async (current) => {
+    const result = await call({ harness: 'papercusp', slug: 'plan-a', current });
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ current: undefined }));
+    expect(result.evidence.map((row: EvidenceRow) => row.currentness.overall)).toEqual(['current', 'stale', 'unknown']);
+  });
+
   it('forwards only this request\'s committed-reader observations into metadata', async () => {
     const metadata = vi.fn();
     const cold = { ...createCommittedTreeDiagnostics(), reads: 1, memoMisses: 2,
