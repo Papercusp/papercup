@@ -2,7 +2,7 @@
 /**
  * Bracket a command with a real, disposable Documenso service.
  * Reuses upstream's Docker deployment (Postgres + local signing certificate),
- * with an internal network and MailDev so test mail stays in this fixture.
+ * with a private per-run bridge and MailDev so test mail stays in this fixture.
  *
  * node scripts/with-documenso-sandbox.mjs --image=documenso/documenso@sha256:... -- <command>
  * The command receives DOCUMENSO_URL, DOCUMENSO_TEST_MAIL_URL and a measured
@@ -75,9 +75,14 @@ export async function runSandbox({ image, command }) {
     const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, ...environment }, maxBuffer: 2_000_000 });
     if (result.error || result.status !== 0) {
-      // Arguments intentionally never contain secrets. Container logs are not
-      // emitted here: provider error bodies can contain credentials or tokens.
-      throw new Error('Documenso sandbox Docker operation failed: ' + args[0] + ' ' + (result.error?.message ?? result.status));
+      // CLI diagnostics explain allocation failures; application logs may contain
+      // tokens, so do not dump them. Redact environment values before reporting.
+      let diagnostic = (result.stderr ?? '').slice(-2000);
+      for (const value of Object.values(environment).filter(value => value.length >= 8)) {
+        diagnostic = diagnostic.split(value).join('[redacted]');
+      }
+      throw new Error('Documenso sandbox Docker operation failed: ' + args[0] + ' ' +
+        (result.error?.message ?? result.status) + (diagnostic ? ': ' + diagnostic : ''));
     }
     return result.stdout.trim();
   }
@@ -85,7 +90,7 @@ export async function runSandbox({ image, command }) {
     // docker run can create the container and then fail during port/mount setup.
     // Record the owned name before dispatch so cleanup covers partial allocation.
     containers.push(name);
-    docker(['run', '-d', '--name', name, '--label', 'papercusp.test.owner=' + network,
+    docker(['run', '--pull=never', '-d', '--name', name, '--label', 'papercusp.test.owner=' + network,
       '--network', network, ...args], environment);
   }
   async function cleanup() {
@@ -126,8 +131,11 @@ export async function runSandbox({ image, command }) {
     }
     // The container runs as a non-root user; the enclosing directory stays private.
     chmodSync(join(directory, 'cert.p12'), 0o644);
-    docker(['network', 'create', '--internal', '--label', 'papercusp.test.owner=' + network, network]);
     networkCreated = true;
+    // Match the upstream supported bridge setup. On this host, creating a
+    // published-mail container on an --internal bridge blocks before allocation
+    // (>35s), while this bridge creates in <1s. SMTP still terminates at MailDev.
+    docker(['network', 'create', '--label', 'papercusp.test.owner=' + network, network]);
     const databasePassword = secret();
     start(database, ['--network-alias', 'database', '-e', 'POSTGRES_USER', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB', PG_IMAGE],
       { POSTGRES_USER: 'documenso', POSTGRES_PASSWORD: databasePassword, POSTGRES_DB: 'documenso' });
