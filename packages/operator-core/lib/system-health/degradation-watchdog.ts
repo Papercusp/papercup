@@ -166,7 +166,12 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'work-item-lock-reclaim',
-  description: 'Eligible work-item reclaims whose lock inspection and targeted releases completed rather than leaving locks to expire by lease.',
+  scopeKeyed: true,
+  description: 'Eligible targeted lock releases and their claim-transfer or stale-sweep callers whose cleanup completed rather than leaving locks to expire by lease.',
+});
+registerDegradationMechanism({
+  mechanism: 'grading-standdown-read',
+  description: 'Grading dispatch suppression reads that measured the primary stand-down owner set rather than assuming an empty set after an error.',
 });
 registerDegradationMechanism({
   mechanism: 'release-state-read', scopeKeyed: true,
