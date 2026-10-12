@@ -62,14 +62,21 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
     const producer = 'packages/operator-core/lib/agent-tools/plans/plan-dag-parallelism.ts';
     const consumer = 'packages/operator-core/lib/agent-tools/plans/lint.ts';
     const shared = 'packages/operator-core/lib/agent-tools/plans/native-planning-advice.integration.test.ts';
-    const itemIds = (process.env.NATIVE_PLANNING_ITEMS ?? 'P-019,P-024').split(',');
+    const itemIds = (process.env.NATIVE_PLANNING_ITEMS ?? 'P-019,P-025').split(',');
     const itemArgs = { slug: planningPlan, harness: 'papercusp', itemIds,
       projection: { pick: ['items[].item.id', 'items[].item.storedStatus', 'items[].item.blockedBy',
         'items[].coverage.workers', 'items[].coverage.holder.ownerId'] } };
     const before = call('plans:items', itemArgs);
     expect(before.items).toHaveLength(2);
-    expect(before.items.every((row: { coverage?: { workers?: string[] } }) =>
-      row.coverage?.workers?.includes(identity.ownerId)), `Planning fixture needs two current caller-held items: ${JSON.stringify(before)}`).toBe(true);
+    // A completed reference legitimately has no current holder. Keep at least
+    // one caller-owned lane, and preserve the measured ownership of both labels.
+    expect(before.items.some((row: { coverage?: { workers?: string[] } }) =>
+      row.coverage?.workers?.includes(identity.ownerId)), `Planning fixture needs a current caller-held item: ${JSON.stringify(before)}`).toBe(true);
+    const activeItems = before.items.filter((row: { item: { storedStatus: string } }) =>
+      !['done', 'dropped'].includes(row.item.storedStatus));
+    const expectedWorkers = new Map<string, string[]>(activeItems.map((row: {
+      item: { id: string }; coverage?: { workers?: string[] };
+    }) => [row.item.id, row.coverage?.workers ?? []]));
     const claimArgs = { paths: [producer, consumer, shared],
       projection: { pick: ['active_locks[].lock_id', 'active_locks[].path', 'active_locks[].owner',
         'active_locks[].intent', 'active_locks[].coordination_domain'] } };
@@ -97,12 +104,25 @@ describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph pla
       const result = advice(reverse);
       expect(result.status, JSON.stringify(result)).toBe('measured');
       const [first, second] = reverse ? [...itemIds].reverse() : itemIds;
-      expect(result.ordering).toContainEqual(expect.objectContaining({ producer: first, consumer: second,
-        sourcePath: consumer, targetPath: producer }));
-      expect(result.proposedOrder.indexOf(first)).toBeLessThan(result.proposedOrder.indexOf(second));
-      expect(result.overlaps).toContainEqual({ items: itemIds, paths: [shared] });
+      if (activeItems.length === itemIds.length) {
+        expect(result.ordering).toContainEqual(expect.objectContaining({ producer: first, consumer: second,
+          sourcePath: consumer, targetPath: producer }));
+        expect(result.proposedOrder.indexOf(first)).toBeLessThan(result.proposedOrder.indexOf(second));
+        expect(result.overlaps).toContainEqual({ items: itemIds, paths: [shared] });
+      } else {
+        // Completed tasks are excluded by the maintained planner. Verify that
+        // exclusion instead of resurrecting a terminal claim for the fixture.
+        const terminalIds = itemIds.filter(id => !expectedWorkers.has(id));
+        expect(result.ordering).toEqual([]);
+        expect(result.overlaps).toEqual([]);
+        for (const id of terminalIds) expect(result.proposedOrder).not.toContain(id);
+      }
       expect(result.scope.repositoryId).toBeTruthy();
-      expect(result.ownership.every((row: { coverage: { workers: string[] } }) => row.coverage.workers.includes(identity.ownerId))).toBe(true);
+      expect(result.ownership).toHaveLength(activeItems.length);
+      for (const row of result.ownership as { itemId: string; coverage: { workers: string[] } }[]) {
+        expect(expectedWorkers.has(row.itemId)).toBe(true);
+        expect(row.coverage.workers).toEqual(expectedWorkers.get(row.itemId));
+      }
       expect(result.fileClaims.status).toBe('measured');
     }
     expect(call('plans:items', itemArgs)).toEqual(before);
