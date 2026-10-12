@@ -1206,6 +1206,110 @@ export type ScorecardGenerationFreshness =
   | GenerationFreshness
   | { status: 'not-applicable'; reason: string };
 
+type RecipeCurrentFingerprint = SpecTestAdequacyRerunRecipe['current']['fingerprints'][number];
+
+function scorecardReplayEvidenceKey(evidence: { evidenceKind: string; evidenceRef: string }): string {
+  return JSON.stringify([evidence.evidenceKind, evidence.evidenceRef]);
+}
+
+function sameRecipeCurrentFingerprint(a: RecipeCurrentFingerprint, b: RecipeCurrentFingerprint): boolean {
+  return (
+    a.planSlug === b.planSlug &&
+    a.specId === b.specId &&
+    a.specRevision === b.specRevision &&
+    a.specFingerprint === b.specFingerprint &&
+    a.evidenceKind === b.evidenceKind &&
+    a.evidenceRef === b.evidenceRef &&
+    a.sourceFingerprint === b.sourceFingerprint &&
+    a.testFingerprint === b.testFingerprint &&
+    a.fixtureFingerprint === b.fixtureFingerprint &&
+    a.rubricFingerprint === b.rubricFingerprint &&
+    a.environmentFingerprint === b.environmentFingerprint
+  );
+}
+
+/**
+ * A host generation is irrelevant only when the stored replay recipe carries a
+ * complete, one-to-one fingerprint set for its selected evidence, the replay args
+ * carry that same set, and every environment fingerprint is explicitly null.
+ * Missing or mismatched recipe data stays generation-bound/unknown by default.
+ */
+function hasCompleteTreeOnlyRerunRecipe(recipe: SpecTestAdequacyRerunRecipe | undefined): boolean {
+  if (
+    !recipe ||
+    recipe.schemaVersion !== 1 ||
+    recipe.evaluator !== 'plans:evaluate-spec-test-adequacy' ||
+    recipe.current.supplied !== true
+  ) {
+    return false;
+  }
+
+  const selectedEvidence = recipe.selection.evidence;
+  const fingerprints = recipe.current.fingerprints;
+  const argumentFingerprints = recipe.args.current;
+  if (
+    selectedEvidence.length === 0 ||
+    fingerprints.length !== selectedEvidence.length ||
+    !argumentFingerprints ||
+    argumentFingerprints.length !== fingerprints.length
+  ) {
+    return false;
+  }
+
+  const selectedKeys = new Set(selectedEvidence.map(scorecardReplayEvidenceKey));
+  if (selectedKeys.size !== selectedEvidence.length) return false;
+
+  const fingerprintsByKey = new Map<string, RecipeCurrentFingerprint>();
+  for (const fingerprint of fingerprints) {
+    const key = scorecardReplayEvidenceKey(fingerprint);
+    if (
+      !selectedKeys.has(key) ||
+      fingerprintsByKey.has(key) ||
+      fingerprint.environmentFingerprint !== null
+    ) {
+      return false;
+    }
+    fingerprintsByKey.set(key, fingerprint);
+  }
+
+  const argumentFingerprintsByKey = new Map<string, RecipeCurrentFingerprint>();
+  for (const fingerprint of argumentFingerprints) {
+    const key = scorecardReplayEvidenceKey(fingerprint);
+    if (argumentFingerprintsByKey.has(key)) return false;
+    argumentFingerprintsByKey.set(key, fingerprint);
+  }
+
+  return (
+    selectedKeys.size === fingerprintsByKey.size &&
+    selectedKeys.size === argumentFingerprintsByKey.size &&
+    [...selectedKeys].every((key) => {
+      const fingerprint = fingerprintsByKey.get(key);
+      const argumentFingerprint = argumentFingerprintsByKey.get(key);
+      return Boolean(fingerprint && argumentFingerprint && sameRecipeCurrentFingerprint(fingerprint, argumentFingerprint));
+    })
+  );
+}
+
+/**
+ * Classify whether a stamped scorecard depends on the live Scout bg-host
+ * generation. A complete matched recipe with no runtime-environment fingerprints
+ * has an explicit `not-applicable` result; all other evidence keeps the existing
+ * live-boundary comparison.
+ */
+export function classifyScorecardGenerationFreshness(
+  gradedHostStartedAt: string | null | undefined,
+  rerunRecipe: SpecTestAdequacyRerunRecipe | undefined,
+  liveHostStartedAtMs: number | null,
+): ScorecardGenerationFreshness {
+  if (hasCompleteTreeOnlyRerunRecipe(rerunRecipe)) {
+    return {
+      status: 'not-applicable',
+      reason: 'the complete matched replay recipe records no runtime-environment fingerprints, so the bg-host generation does not apply',
+    };
+  }
+  return compareGenerationFreshness(gradedHostStartedAt, liveHostStartedAtMs);
+}
+
 /**
  * The evidence-first projection for one scorecard.
  *
@@ -3281,14 +3385,16 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // verdict anyway must not pay for a systemd probe. Deliberately NOT
   // readRunningGeneration(): that also runs a `git log --before` and a tick-ledger query
   // to rebuild the full identity, and all we need here is the boundary itself.
-  const anyStamped = rows.some(
-    (r) =>
-      (r.payload as { observation?: { gradedGeneration?: unknown } } | null)?.observation?.gradedGeneration != null,
-  );
+  const anyGenerationApplicable = rows.some((r) => {
+    const rawObservation = (r.payload as { observation?: Record<string, unknown> } | null)?.observation;
+    if (rawObservation?.gradedGeneration == null) return false;
+    const observation = asStructuredObservation(rawObservation);
+    return !hasCompleteTreeOnlyRerunRecipe(observation?.rerunRecipe);
+  });
   const readLiveBoundary = filter.deps?.readBgHostActiveEnterMs ?? readBgHostActiveEnterMs;
   // Best-effort by construction: a freshness verdict must never fail the read it rides
   // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
-  const liveHostStartedAtMs = anyStamped
+  const liveHostStartedAtMs = anyGenerationApplicable
     ? await traceNamedQueryStage('scorecards-generation', () => readLiveBoundary().catch(() => null)) : null;
   let gradingAuditRubricRead = false;
   let gradingAuditRubric: Rubric | null = null;
@@ -3371,7 +3477,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // still alive — that answer only exists at READ time. Attach it to the row so no
     // consumer has to remember to compare boundaries by hand (nobody did).
     const generationFreshness = gradedGeneration
-      ? compareGenerationFreshness(gradedGeneration.hostStartedAt, liveHostStartedAtMs)
+      ? classifyScorecardGenerationFreshness(gradedGeneration.hostStartedAt, observation.rerunRecipe, liveHostStartedAtMs)
       : null;
 
     out.push({
