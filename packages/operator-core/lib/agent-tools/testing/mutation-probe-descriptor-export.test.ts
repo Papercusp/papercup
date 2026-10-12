@@ -134,11 +134,16 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       subjectAfterSha256: sha256(ORIGINAL.replace(/^guarded$/m, 'MUTATED')),
       mutantDiffTruncated: false,
       testCommandSha256: sha256(test),
+      testCommand: test,
     });
     expect(descriptor!.mutantDiff).toMatch(/^--- a\/subject\.txt$/m);
     expect(descriptor!.mutantDiff).toMatch(/^-guarded$/m);
     expect(descriptor!.mutantDiff).toMatch(/^\+MUTATED$/m);
     expect(out).toContain(`probeInvocationId=${descriptor!.probeInvocationId}`);
+    const replay = probe(['--file', file, '--mutate', descriptor!.mutateExpression!, '--test', descriptor!.testCommand!], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+    });
+    expect(replay.code, replay.out).toBe(0);
   });
 
   it('historical: the descriptor names the full before-fix commit and no expression', () => {
@@ -240,11 +245,17 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     git(reader, ['commit', '-qm', 'reader without parser']);
     const oldReader = git(reader, ['rev-parse', 'HEAD']);
     mkdirSync(join(sub, 'src'));
-    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), 'export {};\n');
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), 'export function parseMutationInvocationDescriptor(v: any) { return v.testCommand === undefined ? v : undefined; }\n');
     git(sub, ['add', 'src/mutation-descriptor.ts']);
     git(sub, ['commit', '-qm', 'descriptor parser']);
     git(reader, ['add', 'libs/test-config']);
     git(reader, ['commit', '-qm', 'reader with parser']);
+    const hashOnlyReader = git(reader, ['rev-parse', 'HEAD']);
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), 'export function parseMutationInvocationDescriptor(v: any) { return typeof v.testCommand === "string" ? v : undefined; }\n');
+    git(sub, ['add', 'src/mutation-descriptor.ts']);
+    git(sub, ['commit', '-qm', 'parser supports replayable command']);
+    git(reader, ['add', 'libs/test-config']);
+    git(reader, ['commit', '-qm', 'reader with command parser']);
     const newReader = git(reader, ['rev-parse', 'HEAD']);
 
     const health = join(dir, 'health.json');
@@ -264,6 +275,11 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(before.code, before.out).toBe(0);
     expect(before.out).toMatch(/withheld: deployed reader [0-9a-f]+ .* predates the descriptor parser/);
     expect(before.legs.every((l) => l.descriptor === null)).toBe(true);
+
+    const hashOnly = run(hashOnlyReader);
+    expect(hashOnly.code, hashOnly.out).toBe(0);
+    expect(hashOnly.out).toContain('does not accept the replayable testCommand');
+    expect(hashOnly.legs.every((l) => l.descriptor === null)).toBe(true);
 
     const after = run(newReader);
     expect(after.code, after.out).toBe(0);
