@@ -112,6 +112,14 @@ vi.mock('../../issues-engineer', async (importOriginal) => ({
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+// grading-integrity's audit stand-down read records a fallback observation (31bff9e09f).
+// Its buffered background flush writes through the faked org PG and would trip the
+// unexpected-query guard in whichever test crosses the flush threshold or timer, so the
+// sink is neutralized here as in the sibling tool tests.
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 
 import certifyTool from './certify-spec-clauses';
 import { validateGradingAuditReplayConsistency } from '../scorecards/emit';
@@ -229,7 +237,9 @@ const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active') 
     planItemId: 'P-003',
     behavior: `${specId}: an acknowledged event is not replayed after reconnect.`,
     behaviorClass: 'happy-path',
-    requiredEvidence: ['integration fixture'],
+    // Must not name a fixture: since 076100a289 a clause whose requiredEvidence names one needs
+    // fixture-fingerprinted executable proof, and these executable bindings attest fixtureFree.
+    requiredEvidence: ['integration test'],
     requiredTestLayers: ['integration'],
     mutationRequired: false,
     lifecycleStatus,
