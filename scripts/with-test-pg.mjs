@@ -36,6 +36,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { performance } from 'node:perf_hooks';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { SHARED_TEST_PG_DURABILITY_OFF } from '../libs/test-config/src/pg-container.ts';
 import { browserCachePath } from './lib/playwright-cache-path.mjs';
@@ -473,17 +474,44 @@ if (operatorApi) {
   assertNotTerminating();
   runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
-    const stage = (name, detail = {}) => process.send({ stage: name, ...detail });
-    stage('imports:harness-registry');
+    import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
+    const started = performance.now();
+    const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+    loopDelay.enable();
+    let activeStage = 'process-start';
+    let activePhase = 'start';
+    const send = (name, detail = {}) => process.send({ stage: name,
+      childPid: process.pid, childElapsedMs: performance.now() - started,
+      childEmittedAtMs: performance.timeOrigin + performance.now(),
+      childEventLoopDelayMaxMs: loopDelay.max / 1e6, ...detail });
+    const stage = (name, detail = {}) => {
+      activeStage = name;
+      activePhase = detail.phase ?? 'stage';
+      send(name, detail);
+    };
+    // A child timestamp and heartbeat keep import execution separate from the
+    // parent's IPC receive time. Neither heartbeat extends the readiness limit.
+    const heartbeat = setInterval(() => send(activeStage,
+      { heartbeat: true, phase: activePhase }), 1000);
+    heartbeat.unref();
+    const trackedImport = async (name, specifier) => {
+      const importStarted = performance.now();
+      stage(name, { phase: 'start' });
+      try {
+        const imported = await import(specifier);
+        stage(name, { phase: 'ready', operationDurationMs: performance.now() - importStarted });
+        return imported;
+      } catch (error) {
+        stage(name, { phase: 'failed', operationDurationMs: performance.now() - importStarted });
+        throw error;
+      }
+    };
     import { mkdir } from 'node:fs/promises';
     import { join } from 'node:path';
-    const { saveHarnessRegistry, loadHarnessRegistry } = await import('./packages/operator-core/lib/harness-registry.ts');
-    stage('imports:embed-sidecar');
-    const { createEmbedSidecarServer } = await import('./packages/operator-core/lib/memory/embed-sidecar-server.ts');
-    stage('imports:db-org');
-    const { getOrgPg, upsertRoutine } = await import('@papercusp/db-org');
-    stage('imports:device-monitoring');
-    const { releaseGateTile } = await import('./packages/operator-core/lib/device-monitoring.ts');
+    const { saveHarnessRegistry, loadHarnessRegistry } = await trackedImport('imports:harness-registry', './packages/operator-core/lib/harness-registry.ts');
+    const { createEmbedSidecarServer } = await trackedImport('imports:embed-sidecar', './packages/operator-core/lib/memory/embed-sidecar-server.ts');
+    const { getOrgPg, upsertRoutine } = await trackedImport('imports:db-org', '@papercusp/db-org');
+    const { releaseGateTile } = await trackedImport('imports:device-monitoring', './packages/operator-core/lib/device-monitoring.ts');
     stage('private-registry');
     const id = process.env.PAPERCUSP_WORKSPACE_ID;
     const home = join(process.env.PAPERCUSP_WORKSPACES_ROOT, id, 'operator-home');
@@ -505,9 +533,9 @@ if (operatorApi) {
     await sql\`UPDATE harness_shared.routines SET metadata = \${sql.json({ pause })}
       WHERE workspace_id = \${id} AND install_slug = \${id} AND name = 'green-checkpoint'\`;
     stage('measure-private-gate');
-    const { fetchOrientPipeline } = await import('./packages/operator-core/lib/agent-tools/coordination/pipeline-health.ts');
-    const { computePipelineHealth } = await import('./packages/operator-core/lib/why-chain.ts');
-    const { gitPipelineSnapshot } = await import('./packages/operator-core/lib/git-pipeline-stats.ts');
+    const { fetchOrientPipeline } = await trackedImport('imports:pipeline-health', './packages/operator-core/lib/agent-tools/coordination/pipeline-health.ts');
+    const { computePipelineHealth } = await trackedImport('imports:why-chain', './packages/operator-core/lib/why-chain.ts');
+    const { gitPipelineSnapshot } = await trackedImport('imports:git-pipeline-stats', './packages/operator-core/lib/git-pipeline-stats.ts');
     const pendingGateSources = new Set();
     const gate = await releaseGateTile(id, { fetch: (slug) => fetchOrientPipeline(slug, {
       compute: (slug) => computePipelineHealth({ slug, harnessSlug: slug,
@@ -525,10 +553,14 @@ if (operatorApi) {
     stage('sidecar-listen');
     const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false });
     const port = await sidecar.listening;
+    clearInterval(heartbeat);
+    loopDelay.disable();
     process.on('SIGTERM', async () => { await sidecar.close(); process.exit(0); });
     process.send({ ready: true, url: 'http://127.0.0.1:' + port, homeHarness: id });
   `;
   try {
+    const profileStartedAtMs = performance.timeOrigin + performance.now();
+    const profileSourceSha256 = createHash('sha256').update(profileSource).digest('hex');
     profileProcess = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', profileSource], {
       cwd: ROOT, env: { ...childEnv, ...runtimeEnv, PAPERCUSP_PG_PORT: String(port), PAPERCUSP_SKIP_PG_DISCOVERY: '1' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], detached: true,
@@ -541,24 +573,44 @@ if (operatorApi) {
     const ready = await new Promise((res, rej) => {
       let lastStage = 'process-start';
       let pendingGateSources = [];
+      let lastTiming = null;
+      let parentLoopLateMaxMs = 0;
+      let expectedTick = performance.now() + 100;
+      const loopSample = setInterval(() => {
+        const now = performance.now();
+        parentLoopLateMaxMs = Math.max(parentLoopLateMaxMs, now - expectedTick);
+        expectedTick = now + 100;
+      }, 100);
       const started = Date.now();
-      const timer = setTimeout(() => rej(new Error('operator-api profile preflight timed out at ' + lastStage +
-        '; pending gate sources=' + pendingGateSources.join(',') + ': ' + errors)), 45000);
-      const failed = (error) => { clearTimeout(timer); rej(error); };
+      const timer = setTimeout(() => failed(new Error('operator-api profile preflight timed out at ' + lastStage +
+        '; pending gate sources=' + pendingGateSources.join(',') +
+        '; timing=' + JSON.stringify({ lastTiming, parentLoopLateMaxMs, profileSourceSha256 }) + ': ' + errors)), 45000);
+      const failed = (error) => { clearTimeout(timer); clearInterval(loopSample); rej(error); };
       profileProcess.once('error', failed);
       profileProcess.once('exit', (code, signal) => failed(new Error('operator-api profile exited ' + code + '/' + signal + ': ' + errors)));
       profileProcess.on('message', (message) => {
         if (typeof message?.stage === 'string') {
-          lastStage = message.stage;
+          if (!message.heartbeat) lastStage = message.stage;
           if (Array.isArray(message.pendingGateSources)) pendingGateSources = message.pendingGateSources;
+          const parentReceivedAtMs = performance.timeOrigin + performance.now();
+          lastTiming = { stage: message.stage, phase: message.phase ?? 'stage',
+            heartbeat: message.heartbeat === true, childPid: message.childPid,
+            childElapsedMs: message.childElapsedMs, childEmittedAtMs: message.childEmittedAtMs,
+            childEventLoopDelayMaxMs: message.childEventLoopDelayMaxMs,
+            operationDurationMs: message.operationDurationMs,
+            parentReceivedAtMs, parentElapsedMs: parentReceivedAtMs - profileStartedAtMs,
+            deliveryDelayMs: parentReceivedAtMs - message.childEmittedAtMs,
+            parentLoopLateMaxMs, profileSourceSha256 };
           console.log('[with-test-pg] operator-api stage ' + lastStage + ' +' + (Date.now() - started) + 'ms' +
-            (Array.isArray(message.pendingGateSources) ? ' pending=' + JSON.stringify(pendingGateSources) : ''));
-          if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected) {
+            (Array.isArray(message.pendingGateSources) ? ' pending=' + JSON.stringify(pendingGateSources) : '') +
+            ' timing=' + JSON.stringify(lastTiming));
+          if (!message.heartbeat && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected) {
             process.send({ kind: 'isolated-runtime-bootstrap-progress', stage: 'profile:' + lastStage }, () => {});
           }
           return;
         }
         clearTimeout(timer);
+        clearInterval(loopSample);
         res(message);
       });
     });
