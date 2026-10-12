@@ -15,8 +15,11 @@ it('records a real node:test child when the focused router starts without a TS l
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { spawnSync } from 'node:child_process';
+    console.error('NODE_LEDGER_STAGE import-router');
     const { loadNodeTestLedger } = await import(${JSON.stringify(router)});
+    console.error('NODE_LEDGER_STAGE load-ledger');
     const { beginNodeTestLedger } = await loadNodeTestLedger();
+    console.error('NODE_LEDGER_STAGE begin-session');
     const dir = mkdtempSync(join(tmpdir(), 'plain-node-ledger-'));
     try {
       writeFileSync(join(dir, 'fx.test.mjs'), "import { test } from 'node:test'; test('recorded case', () => {});");
@@ -24,15 +27,19 @@ it('records a real node:test child when the focused router starts without a TS l
       const session = await beginNodeTestLedger({ repoRoot: dir,
         readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
         writeRows: async batch => { rows.push(...batch); } });
+      console.error('NODE_LEDGER_STAGE run-child');
       const run = spawnSync(process.execPath, ['--test', ...session.reporterArgs, 'fx.test.mjs'],
-        { cwd: dir, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
-      if (run.status !== 0) throw new Error(run.stderr || run.stdout);
+        { cwd: dir, encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } });
+      if (run.status !== 0) throw new Error(JSON.stringify({ status: run.status, signal: run.signal,
+        error: run.error?.message, stderr: run.stderr, stdout: run.stdout }));
+      console.error('NODE_LEDGER_STAGE record-result');
       const result = await session.record();
       console.log(JSON.stringify({ recorded: result.recorded, reason: result.reason,
         status: rows[0]?.status, cases: rows[0]?.executionDetails?.passedCaseTitles }));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   `], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
-  expect(child.status, child.stderr).toBe(0);
+  expect(child.status, JSON.stringify({ status: child.status, signal: child.signal,
+    error: child.error?.message, stderr: child.stderr, stdout: child.stdout })).toBe(0);
   expect(JSON.parse(child.stdout.trim())).toMatchObject({ recorded: 1, reason: null,
     status: 'pass', cases: ['recorded case'] });
 });
@@ -985,12 +992,15 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           spawnImpl,
           killProcessImpl,
           stopScopeImpl,
+          probeScopeSupportImpl: async () => ({ ok: true }),
           onProgress,
           governedProcessImpl: (_governedOptions: unknown, run: Function) =>
             run(undefined, undefined, { inherited: true }),
         },
       );
 
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
       const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
       const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
       expect(scopeUnit).toMatch(/^papercusp-test-\d+-[0-9a-z]+-\d+\.scope$/);
