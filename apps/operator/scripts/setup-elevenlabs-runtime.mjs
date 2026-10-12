@@ -1,7 +1,8 @@
 import { readFile, mkdir, mkdtemp, writeFile, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import ts from 'typescript';
 
 // Read the maintained SDK's cooked template without evaluating package code.
@@ -47,6 +48,6 @@ export async function setupElevenLabsRuntime(appRoot = resolve(dirname(fileURLTo
   return [...assets.keys()];
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   console.log(`elevenlabs-runtime: mirrored ${(await setupElevenLabsRuntime()).join(', ')}`);
 }

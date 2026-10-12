@@ -1435,7 +1435,8 @@
             "scripts/lib/**/*.test.ts",
             "scripts/lib/**/*.test.mjs",
             "scripts/agent-capacity/**/*.test.ts",
-            "scripts/relay/**/*.test.ts"
+            "scripts/relay/**/*.test.ts",
+            "scripts/bench-host/**/*.test.ts"
           ]
         },
         {
@@ -1858,7 +1859,8 @@
             "libs/test-config/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.tsx",
-            "apps/papercusp-publish/src/**/*.test.ts"
+            "apps/papercusp-publish/src/**/*.test.ts",
+            "apps/slack-asana-bug-drill/**/*.test.ts"
           ],
           "runners": [
             {

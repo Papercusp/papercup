@@ -93,7 +93,20 @@ import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-
 import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
-const json = (payload: unknown) => ({ data: payload });
+// WI-6554700010009422: a bounded-payload door keeps a response's LEADING fields and cuts the rest,
+// and every admit response spreads `...base` (the whole repairQueue diagnostic) before its decision
+// fields. A budget cut therefore kept the queue echo and dropped verdict/admitted/reason, so the
+// caller saw `ok:true` with no verdict. Bulky context keys always go LAST, after the decision fields.
+const TRAILING_CONTEXT_KEYS = ['target', 'source', 'repairQueue', 'repairQueueRead', 'callerAuthorization', 'timings'];
+export function decisionFieldsFirst(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const rec = payload as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rec)) if (!TRAILING_CONTEXT_KEYS.includes(key)) out[key] = value;
+  for (const key of TRAILING_CONTEXT_KEYS) if (key in rec) out[key] = rec[key];
+  return out;
+}
+const json = (payload: unknown) => ({ data: decisionFieldsFirst(payload) });
 const target = (ctx: { workspaceId?: unknown; harnessSlug?: string | null } = {}): GateVerdictTarget => ({
   workspaceId: typeof ctx.workspaceId === 'string' && ctx.workspaceId.trim() && ctx.workspaceId !== '*'
     ? ctx.workspaceId : activeWorkspaceId(),

@@ -3107,8 +3107,10 @@ export function resolveTrackedResumeSession(
 /**
  * Resolve a direct resume before searching raw native stores. Numeric adv ids
  * can fall outside the recent list; ask the existing exact-row surface rather
- * than interpreting the missing id as an OMP thread name. Native ids keep the
- * existing store/owner recovery path, and a missing exact row stays untracked.
+ * than interpreting the missing id as an OMP thread name. A native UUID's
+ * durable owner binding supplies that same exact lookup even when its transcript
+ * has been archived or is missing. Verify both identities before accepting it;
+ * an unbound UUID or a missing exact row keeps the native-store recovery path.
  * Read errors propagate so an unavailable operator cannot bless a raw source.
  */
 export async function resolveDirectTrackedResumeSession(
@@ -3119,12 +3121,19 @@ export async function resolveDirectTrackedResumeSession(
   const cached = resolveTrackedResumeSession(sessions, id, { home });
   if (cached) return cached;
   const wanted = String(id ?? "");
-  if (!/^\d+$/.test(wanted)) return null;
-  const exactId = Number(wanted);
+  const binding = UUID_RE.test(wanted) ? recoverSessionIdentity(wanted, { home }) : null;
+  const exactId = /^\d+$/.test(wanted) ? Number(wanted) : binding?.advSessionId;
   if (!Number.isSafeInteger(exactId) || exactId <= 0) return null;
   const exact = await apiImpl(
     `/api/adv/sessions/resumable?id=${encodeURIComponent(String(exactId))}`,
   );
+  if (binding) {
+    const source = (exact?.sessions ?? []).find((session) => Number(session.id) === exactId);
+    if (!source ||
+        (source.coordOwnerId && source.coordOwnerId !== binding.ownerId) ||
+        (source.sessionId !== wanted && source.ompThreadId !== wanted)) return null;
+    return source;
+  }
   return resolveTrackedResumeSession(exact?.sessions ?? [], String(exactId), {
     home,
   });

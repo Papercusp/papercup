@@ -13,6 +13,39 @@ import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
 
+it('keeps HOME-dependent ripgrep executable assets available while product HOME stays isolated', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-ripgrep-assets-'));
+  const originalHome = join(evidenceDir, 'original-home');
+  const bin = join(originalHome, '.local/bin');
+  await mkdir(bin, { recursive: true });
+  const rg = join(bin, 'rg'), backing = join(bin, 'claude');
+  // Exercise the installed shim's HOME-dependent executable contract with
+  // controlled assets, so the guard also runs on hosts without Claude installed.
+  await writeFile(rg, '#!/bin/bash\nset -eu\nexec "${CLAUDE_CODE_EXECPATH:-$HOME/.local/bin/claude}" "$@"\n', { mode: 0o700 });
+  await writeFile(backing, '#!/bin/bash\nset -eu\n[[ "$1" == "--version" ]]\necho "ripgrep isolated-asset-control"\n', { mode: 0o700 });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: originalHome, PAPERCUSP_RG: rg,
+    PATH: bin + ':' + process.env.PATH, TMPDIR: evidenceDir };
+  delete env.CLAUDE_CODE_EXECPATH;
+  delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--', process.execPath, '-e', `
+    const assert = require('node:assert/strict');
+    const { spawnSync } = require('node:child_process');
+    assert.notEqual(process.env.HOME, ${JSON.stringify(originalHome)});
+    assert.equal(process.env.PAPERCUSP_RG, ${JSON.stringify(rg)});
+    assert.equal(process.env.CLAUDE_CODE_EXECPATH, ${JSON.stringify(backing)});
+    const result = spawnSync(process.env.PAPERCUSP_RG, ['--version'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'ripgrep isolated-asset-control');
+    console.log('isolated-ripgrep-asset-control');
+  `], { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+    expect(result, result.output.slice(-8000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('isolated-ripgrep-asset-control');
+  } finally { await rm(evidenceDir, { recursive: true, force: true }); }
+}, 180_000);
+
 it('retains successful original teardown when the isolated execution assertion rejects', async () => {
   let originalRunId = '';
   let failure: unknown;

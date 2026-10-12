@@ -9634,6 +9634,50 @@ describe("direct numeric tracked-session recovery (EI-24966472541417677)", () =>
     await expect(resolveDirectTrackedResumeSession([], "31413", { apiImpl }))
       .rejects.toThrow("operator unavailable");
   });
+
+  it("recovers an out-of-window native UUID through its durable binding when the transcript is missing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-resume-"));
+    try {
+      const historical = { ...source, agent: "codex" };
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => ({ sessions: [historical] }));
+      expect(await resolveDirectTrackedResumeSession([recent], source.sessionId, { home, apiImpl }))
+        .toBe(historical);
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+      expect(existsSync(join(home, ".papercusp", "su-codex-homes", "session-31413"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "missing", sessions: [] },
+    { name: "different tracked id", sessions: [{ ...source, id: 34304 }] },
+    { name: "different native incarnation", sessions: [{ ...source, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }] },
+    { name: "different owner", sessions: [{ ...source, coordOwnerId: "su-other" }] },
+  ])("does not bless a mapped UUID with a $name exact row", async ({ sessions }) => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-refusal-"));
+    try {
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => ({ sessions }));
+      expect(await resolveDirectTrackedResumeSession([], source.sessionId, { home, apiImpl })).toBeNull();
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates mapped UUID lookup failure rather than misreporting it as an untracked source", async () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-read-failure-"));
+    try {
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => { throw new Error("operator unavailable"); });
+      await expect(resolveDirectTrackedResumeSession([], source.sessionId, { home, apiImpl }))
+        .rejects.toThrow("operator unavailable");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("direct resume of an archived consult incarnation (EI-25730332883266828)", () => {

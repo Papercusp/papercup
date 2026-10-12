@@ -760,6 +760,7 @@ export default defineTool({
               ...((liveRefresh.unconfirmed ?? 0) > 0 ? { unconfirmed: liveRefresh.unconfirmed } : {}),
               ...((liveRefresh.skipped ?? 0) > 0 ? { skipped: liveRefresh.skipped } : {}),
               ...(liveRefresh.failureReasons ? { failureReasons: liveRefresh.failureReasons } : {}),
+              ...(liveRefresh.failureSubtypes ? { failureSubtypes: liveRefresh.failureSubtypes } : {}),
             },
           }
         : {}),

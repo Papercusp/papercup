@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { spawnSync } from 'node:child_process';
 
 /**
@@ -29,7 +30,7 @@ export function launchAndroidDownloadCheck(env = process.env, spawn = spawnSync)
   return result.status;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try { process.exitCode = launchAndroidDownloadCheck(); }
   catch { console.error('android_download_launcher_precondition_failed'); process.exitCode = 1; }
 }

@@ -323,7 +323,9 @@ export async function getSpawnHeadroom(
     try {
       const { readLatestPerfSignals, evaluatePerfSignals } = await import('../system-health/perf-budgets');
       const signals = await readLatestPerfSignals();
-      const verdict = evaluatePerfSignals(signals, Date.now());
+      const { hostname } = await import('node:os');
+      const verdict = await evaluatePerfSignals(signals, Date.now(), undefined, false,
+        { workspaceId, hostId: hostname() });
       shedResult = applyHostSaturationShed(countHeadroom, verdict);
     } catch {
       /* fail-soft — perf module unreadable leaves headroom count-based only */

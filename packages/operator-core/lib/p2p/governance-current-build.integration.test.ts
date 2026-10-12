@@ -14,6 +14,7 @@ const journeys = [
 const sources = [
   ...journeys,
   'scripts/with-test-pg.mjs',
+  'scripts/lib/with-test-pg-cleanup.mjs',
   'scripts/test-files.mjs',
   'scripts/lib/batch-watchdog.mjs',
   'packages/operator-core/test/isolated-integration-proof.ts',

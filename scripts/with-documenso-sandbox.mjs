@@ -14,7 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
 import { getContainerRuntimeClient } from 'testcontainers';
 
@@ -352,7 +352,7 @@ export async function runSandbox({ image, command }) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try { process.exitCode = await runSandbox(parseSandboxArgs(process.argv.slice(2))); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

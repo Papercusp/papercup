@@ -766,7 +766,9 @@ export function selectRelatedTests({
 
   // Only changed paths INSIDE this root can be resolved against this index. A
   // change elsewhere (another package) that made this workspace affected cannot be
-  // narrowed here — run everything.
+  // narrowed here — run everything, even when the batch also contains local paths.
+  // Dropping the external paths in a mixed batch can omit their importing tests;
+  // bare package edges and transitive sources outside this index remain unindexed.
   const inScope = changedPaths.filter(
     (p) => p.startsWith(rootDir + path.sep) || p === rootDir,
   );
@@ -776,6 +778,16 @@ export function selectRelatedTests({
       selected: [],
       total,
       reason: "no-changed-paths-in-scope",
+      threshold,
+      executedMap: noMap,
+    };
+  }
+  if (inScope.length !== changedPaths.length) {
+    return {
+      mode: "full",
+      selected: [],
+      total,
+      reason: "changed-paths-outside-scope",
       threshold,
       executedMap: noMap,
     };

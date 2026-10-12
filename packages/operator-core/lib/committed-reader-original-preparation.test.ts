@@ -8,7 +8,8 @@ import { verifierSourceFiles } from './verifier-source';
 const sourcePreview = vi.hoisted(() => ({ prepareVerifierSource: vi.fn(), prepareVerifierDependencies: vi.fn() }));
 vi.mock('../../../scripts/source-preview.mjs', () => sourcePreview);
 
-import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderPlannedInputs } from '../test/private-http-workspace-preflight';
+import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderOriginalPreparation } from '../test/private-http-workspace-preflight';
+import type { CommittedReaderObservationCohort, CommittedReaderPreparationHandoff } from '../test/isolated-integration-proof';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const roots: string[] = [];
@@ -53,61 +54,149 @@ beforeEach(() => {
 
 afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
-describe('maintained independent committed-reader preparation', () => {
-  it('pins selected source, dependency graph, schema, environment and same-process observations before consumer preparation', async () => {
-    const parent = mkdtempSync(join(tmpdir(), 'reader-original-preparation-test-')); roots.push(parent);
-    const repositoryRoot = join(parent, 'repo'); mkdirSync(repositoryRoot);
-    const workRoot = join(parent, 'independent');
-    const selectedCommit = 'a'.repeat(40);
-    const schema = { 'harness_shared.tool_invocations.args_json': digest('jsonb:not-null') };
-    const environment = { PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
-
-    const prepared = await produceCommittedReaderOriginalPreparation({ repositoryRoot, workRoot,
-      selectedCommit, testPath, helperPaths, configPaths, schema, environment });
-
-    expect(prepared.root).toBe(join(workRoot, 'source'));
-    expect(prepared.root).not.toBe(repositoryRoot);
-    expect(sourcePreview.prepareVerifierSource).toHaveBeenCalledOnce();
-    expect(sourcePreview.prepareVerifierDependencies).toHaveBeenCalledOnce();
-    const sourceBytes = readFileSync(prepared.sourceReceiptPath);
-    const inputBytes = readFileSync(prepared.inputReceiptPath);
-    const observationBytes = readFileSync(prepared.observationReceiptPath);
-    expect(digest(sourceBytes)).toBe(prepared.sourceReceiptSha256);
-    expect(digest(inputBytes)).toBe(prepared.inputReceiptSha256);
-    expect(digest(observationBytes)).toBe(prepared.observationReceiptSha256);
-    expect(existsSync(join(repositoryRoot, 'apps/operator/dist-verify/original-hono-host.mjs'))).toBe(false);
-
-    const source = JSON.parse(String(sourceBytes));
-    const inputs = JSON.parse(String(inputBytes));
-    const observations = JSON.parse(String(observationBytes));
-    expect(inputs).toMatchObject({ sourceCommit: selectedCommit, phase: 'planned', testPaths: [testPath],
-      helperPaths: [...helperPaths].sort(), configPaths: [...configPaths].sort(),
-      executedImports: ['src/main.ts'], externalResolutions: { example: 'node_modules/example/index.js' },
-      schema, environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, digest(value)])),
-      omitted: [], opaque: [] });
-    expect(observations).toMatchObject({ ...prepared.identity, sourceRoot: prepared.root,
-      sourceReceipt: { path: prepared.sourceReceiptPath, sha256: prepared.sourceReceiptSha256 },
-      inputReceipt: { path: prepared.inputReceiptPath, sha256: prepared.inputReceiptSha256 },
-      omitted: [], opaque: [] });
-    for (const value of Object.values(observations.observations)) expect(value).toMatchObject({
-      ...prepared.identity,
-    });
-    expect(observations.observations.source.value).toEqual(source);
-    expect(observations.observations.schema.value).toEqual(schema);
-
-    const qualified = qualifyCommittedReaderPlannedInputs(prepared.root, { inputReceiptPath: prepared.inputReceiptPath,
-      sourceReceiptPath: prepared.sourceReceiptPath, selectedCommit, inputReceiptSha256: prepared.inputReceiptSha256,
-      sourceReceiptSha256: prepared.sourceReceiptSha256 });
-    expect(qualified.inputs).toEqual(inputs);
-  });
-
-  it('refuses empty live schema observations before creating source or bundle artifacts', async () => {
-    const parent = mkdtempSync(join(tmpdir(), 'reader-original-preparation-empty-schema-')); roots.push(parent);
-    const repositoryRoot = join(parent, 'repo'); mkdirSync(repositoryRoot);
-    await expect(produceCommittedReaderOriginalPreparation({ repositoryRoot, workRoot: join(parent, 'independent'),
-      selectedCommit: 'b'.repeat(40), testPath, helperPaths, configPaths, schema: {},
-      environment: { PAPERCUSP_BACKGROUND_WORKERS: '0' } })).rejects.toThrow(/schema observation is required/);
+/** These are synthetic contract controls, not evidence of an actual collected
+ * loader/config/schema/environment cohort or an independently qualified host. */
+function originalFixture() {
+  const parent = mkdtempSync(join(tmpdir(), 'reader-original-preparation-test-')); roots.push(parent);
+  const repositoryRoot = join(parent, 'repo'); mkdirSync(repositoryRoot);
+  const root = join(parent, 'original-source'); mkdirSync(root);
+  const selectedCommit = 'a'.repeat(40);
+  const source = fixtureSource(root, selectedCommit);
+  const dependency = join(root, 'node_modules/example'); mkdirSync(dependency, { recursive: true });
+  writeFileSync(join(dependency, 'index.js'), 'module.exports = 1;');
+  const schema = { 'harness_shared.tool_invocations.args_json': digest('jsonb:not-null') };
+  const environment = { PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
+  const inputs = { sourceCommit: selectedCommit, phase: 'planned', testPaths: [testPath],
+    helperPaths: [...helperPaths].sort(), configPaths: [...configPaths].sort(), executedImports: ['src/main.ts'],
+    dependencyFiles: verifierSourceFiles(join(root, 'node_modules')),
+    externalResolutions: { example: 'node_modules/example/index.js' }, copiedSources: [], copiedArtifacts: [],
+    schema, environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, digest(value)])),
+    omitted: [] as string[], opaque: [] as string[] };
+  const handoff: CommittedReaderPreparationHandoff = { root, selectedCommit,
+    sourceReceiptPath: join(parent, 'source.json'), sourceReceiptSha256: '',
+    inputReceiptPath: join(parent, 'inputs.json'), inputReceiptSha256: '',
+    observationReceiptPath: join(parent, 'observations.json'), observationReceiptSha256: '' };
+  const identity = { sourceCommit: selectedCommit, runId: 'original-reference-run',
+    process: { pid: 42, identity: 'original-reference-process-start' } };
+  const values = { source, dependencies: { files: inputs.dependencyFiles, externalResolutions: inputs.externalResolutions },
+    config: inputs.configPaths, imports: inputs.executedImports, schema, environment: inputs.environment };
+  const cohort: CommittedReaderObservationCohort = { ...structuredClone(identity), sourceRoot: root,
+    sourceReceipt: { path: handoff.sourceReceiptPath, sha256: '' },
+    inputReceipt: { path: handoff.inputReceiptPath, sha256: '' },
+    observations: Object.fromEntries(Object.entries(values).map(([key, value]) =>
+      [key, { ...structuredClone(identity), value: structuredClone(value) }])) as CommittedReaderObservationCohort['observations'],
+    omitted: [], opaque: [] };
+  const save = () => {
+    writeFileSync(handoff.sourceReceiptPath, JSON.stringify(source));
+    writeFileSync(handoff.inputReceiptPath, JSON.stringify(inputs));
+    handoff.sourceReceiptSha256 = digest(readFileSync(handoff.sourceReceiptPath));
+    handoff.inputReceiptSha256 = digest(readFileSync(handoff.inputReceiptPath));
+    cohort.sourceReceipt.sha256 = handoff.sourceReceiptSha256;
+    cohort.inputReceipt.sha256 = handoff.inputReceiptSha256;
+    writeFileSync(handoff.observationReceiptPath, JSON.stringify(cohort));
+    handoff.observationReceiptSha256 = digest(readFileSync(handoff.observationReceiptPath));
+  };
+  save();
+  const options = { repositoryRoot, workRoot: join(parent, 'consumer-preparation'), selectedCommit,
+    testPath, helperPaths, configPaths, schema, environment, original: { handoff, identity } };
+  const noEffects = () => {
     expect(sourcePreview.prepareVerifierSource).not.toHaveBeenCalled();
     expect(sourcePreview.prepareVerifierDependencies).not.toHaveBeenCalled();
+    expect(existsSync(options.workRoot)).toBe(false);
+    expect(existsSync(join(root, 'apps/operator/dist-verify/original-hono-host.mjs'))).toBe(false);
+  };
+  return { options, handoff, identity, inputs, cohort, source, save, noEffects };
+}
+
+describe('D047 pinned original preparation provenance', () => {
+  it.each(['static graph and caller values', 'caller values without schema'])(
+    'refuses %s before archive, dependency, compiler or private allocation', async variant => {
+      const f = originalFixture();
+      const options = { ...f.options, original: undefined,
+        ...(variant === 'caller values without schema' ? { schema: {} } : {}) };
+      await expect(produceCommittedReaderOriginalPreparation(options)).rejects.toThrow(/original.*handoff.*required|Required original preparation handoff is missing/i);
+      f.noEffects();
+    });
+
+  it('preserves supplied original identity and exact bytes without synthesizing an observation or building', async () => {
+    const f = originalFixture();
+    const paths = [f.handoff.sourceReceiptPath, f.handoff.inputReceiptPath, f.handoff.observationReceiptPath];
+    const bytes = paths.map(path => readFileSync(path));
+    const prepared = await produceCommittedReaderOriginalPreparation(f.options);
+    expect(prepared).toEqual({ ...f.handoff, identity: f.identity });
+    expect(prepared.identity.process.pid).not.toBe(process.pid);
+    paths.forEach((path, index) => expect(readFileSync(path)).toEqual(bytes[index]));
+    const qualified = qualifyCommittedReaderOriginalPreparation(prepared, f.identity);
+    expect(qualified.planned.inputs).toEqual(f.inputs);
+    expect(qualified.bytes).toEqual(bytes[2]);
+    f.noEffects();
   });
+
+  it.each(['source', 'dependencies', 'config', 'imports', 'schema', 'environment'] as const)(
+    'refuses missing original %s rather than filling from static/caller inputs', async dimension => {
+      const f = originalFixture(); delete (f.cohort.observations as Partial<typeof f.cohort.observations>)[dimension]; f.save();
+      await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/dimension identity is missing/);
+      f.noEffects();
+    });
+
+  it.each(['source', 'dependencies', 'config', 'imports', 'schema', 'environment'] as const)(
+    'refuses an original %s from a different process/run', async dimension => {
+      const f = originalFixture(); f.cohort.observations[dimension].runId = 'other-run'; f.save();
+      await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/cohort identity differs/);
+      f.noEffects();
+    });
+
+  it.each(['source', 'dependencies', 'config', 'imports', 'schema', 'environment'] as const)(
+    'refuses mismatched original %s values even with valid receipt digests', async dimension => {
+      const f = originalFixture(); f.cohort.observations[dimension].value = ['static-substitution']; f.save();
+      await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(new RegExp(`Original ${dimension} observation differs`));
+      f.noEffects();
+    });
+
+  it.each(['sourceReceiptSha256', 'inputReceiptSha256', 'observationReceiptSha256'] as const)(
+    'refuses missing original %s before effects', async pin => {
+      const f = originalFixture(); f.handoff[pin] = '';
+      await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/receipt digest is required/);
+      f.noEffects();
+    });
+
+  it.each(['sourceReceiptPath', 'inputReceiptPath', 'observationReceiptPath'] as const)(
+    'refuses original receipt drift at %s before effects', async path => {
+      const f = originalFixture(); writeFileSync(f.handoff[path], readFileSync(f.handoff[path], 'utf8') + '\n');
+      await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/receipt.*changed/i);
+      f.noEffects();
+    });
+
+  it.each(['omitted', 'opaque'] as const)('preserves refusal of unknown %s dimensions', async key => {
+    const f = originalFixture(); f.cohort[key] = ['unobserved-descendant']; f.save();
+    await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(new RegExp(`has ${key} dimensions`));
+    f.noEffects();
+  });
+
+  it('refuses selected commit disagreement instead of relabeling the original cohort', async () => {
+    const f = originalFixture(); f.options.selectedCommit = 'b'.repeat(40);
+    await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/selected.*differs/i);
+    f.noEffects();
+  });
+
+  it.each(['configPaths', 'executedImports'] as const)('reuses planned archive membership for %s', async key => {
+    const f = originalFixture(); f.inputs[key] = ['outside.ts'];
+    f.cohort.observations[key === 'configPaths' ? 'config' : 'imports'].value = f.inputs[key]; f.save();
+    await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/outside selected archive/);
+    f.noEffects();
+  });
+
+  it('refuses changed materialized dependencies instead of reconstructing observations', async () => {
+    const f = originalFixture(); writeFileSync(join(f.handoff.root, 'node_modules/example/index.js'), 'changed');
+    await expect(produceCommittedReaderOriginalPreparation(f.options)).rejects.toThrow(/dependency census differs/);
+    f.noEffects();
+  });
+
+  it.each(['sourceReceiptPath', 'inputReceiptPath', 'observationReceiptPath'] as const)(
+    'rechecks original %s bytes after qualification', path => {
+      const f = originalFixture(); const qualified = qualifyCommittedReaderOriginalPreparation(f.handoff, f.identity);
+      writeFileSync(f.handoff[path], readFileSync(f.handoff[path], 'utf8') + '\n');
+      expect(() => qualified.recheck()).toThrow(/receipt.*changed/i);
+      f.noEffects();
+    });
 });

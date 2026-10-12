@@ -5,6 +5,7 @@ import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promis
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
 import ts from 'typescript';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -69,27 +70,53 @@ export const SPEC_EVIDENCE_KINDS = [
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
-/** Same Vitest title when its hierarchy joiner or leading `it.each` string label is rendered differently. */
-export function hasSameCaseTitleIdentity(declaredCaseTitle: string, measuredCaseTitle: string): boolean {
-  if (declaredCaseTitle === measuredCaseTitle) return true;
-  const normalize = (title: string) => title
-    .split(' > ')
-    .map((segment) => segment.replace(/^'([^'\s]+)'(?=\s)/, '$1'))
-    .join(' ');
-  return normalize(declaredCaseTitle) === normalize(measuredCaseTitle);
-}
+// The case-title matching rule lives in the shared {file, testName} resolver
+// (test-rubric-unification-2026-10-12 P-002) so rubric tests checks and spec
+// evidence bindings cannot drift apart. Re-exported for existing importers.
+import {
+  hasSameCaseTitleIdentity,
+  hasMatchingDeclaredCaseTitle,
+  resolveTestCaseFilter,
+  type RecordedTestCase,
+} from '../../testing-case-filter';
+export { hasSameCaseTitleIdentity, hasMatchingDeclaredCaseTitle };
 
-/** Match a complete title or a complete suffix at a Vitest hierarchy boundary. */
-export function hasMatchingDeclaredCaseTitle(
-  declaredCaseTitle: string,
-  executedCaseTitles: readonly string[],
-): boolean {
-  return executedCaseTitles.some((executedCaseTitle) => {
-    const hierarchy = executedCaseTitle.split(' > ');
-    return hierarchy.some((_part, start) =>
-      hasSameCaseTitleIdentity(declaredCaseTitle, hierarchy.slice(start).join(' > ')),
-    );
-  });
+/**
+ * The per-case ledger rows (test_case_runs, migration 1478) of one test run, or null when
+ * none are recorded — a run before 1478, or a reporter that never saw the module. Runs
+ * inside the binding transaction, so the table's presence is probed with to_regclass
+ * rather than by catching 42P01 (a caught error would still abort the transaction).
+ */
+async function readRecordedTestCases(
+  tx: Sql,
+  testRunId: number,
+): Promise<{ file: string; cases: RecordedTestCase[] } | null> {
+  const present = (await tx`SELECT to_regclass('harness_shared.test_case_runs') IS NOT NULL AS present`) as Array<{
+    present: boolean;
+  }>;
+  if (!present[0]?.present) return null;
+  const rows = (await tx`
+    SELECT c.case_key, c.occurrence, c.status, c.duration_ms, r.file_path
+      FROM harness_shared.test_case_runs c
+      JOIN harness_shared.test_runs r ON r.id = c.test_run_id
+     WHERE c.test_run_id = ${testRunId}
+     ORDER BY c.case_index`) as Array<{
+    case_key: string;
+    occurrence: number;
+    status: RecordedTestCase['status'];
+    duration_ms: number | null;
+    file_path: string | null;
+  }>;
+  if (rows.length === 0) return null;
+  return {
+    file: rows[0]!.file_path ?? `test-run ${testRunId}`,
+    cases: rows.map((r) => ({
+      caseKey: r.case_key,
+      occurrence: r.occurrence,
+      status: r.status,
+      durationMs: r.duration_ms,
+    })),
+  };
 }
 
 const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
@@ -1161,6 +1188,10 @@ export type BindSpecEvidenceResult =
       testRunId: number;
       declaredCaseCount: number;
       passedCaseTitleCount: number;
+      /** Which record judged the declared cases: the per-case ledger, or the run's capped title list. */
+      source?: 'case-ledger' | 'passed-case-titles';
+      /** Declared titles that matched no executed recorded case (case-ledger source only). */
+      unmatchedTestCases?: string[];
       message: string;
     }
   | {
@@ -1373,7 +1404,39 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
             .map((title) => title.trim())
         : [];
+      // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
+      // EVERY declared case must resolve to an executed recorded case through the shared
+      // resolver. The capped passedCaseTitles list below could only check "at least one
+      // matched" and skipped the check entirely when the list was incomplete.
+      let judgedByCaseLedger = false;
+      if (input.evidenceKind === 'test' && declaredTestCases.length > 0) {
+        const recordedCases = await readRecordedTestCases(tx, input.testRunId);
+        if (recordedCases !== null) {
+          judgedByCaseLedger = true;
+          const unmatched = declaredTestCases.filter(
+            (testName) => !resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases).ok,
+          );
+          if (unmatched.length > 0) {
+            return {
+              status: 'test_cases_not_in_run',
+              testRunId: input.testRunId,
+              declaredCaseCount: declaredTestCases.length,
+              passedCaseTitleCount: recordedCases.cases.filter((c) => c.status === 'pass').length,
+              source: 'case-ledger',
+              unmatchedTestCases: unmatched,
+              message:
+                unmatched.length + ' of ' + declaredTestCases.length +
+                ' declared details.adequacy.testCases entries matched no executed case among the ' +
+                recordedCases.cases.length + ' recorded cases of test-run ' + input.testRunId + ' (' +
+                unmatched.map((t) => JSON.stringify(t)).join(', ') + '). A declared case that matches ' +
+                'nothing is refused rather than counted; correct the label (full describe/it path, or a ' +
+                "suffix at a ' > ' boundary) or bind a run that executed it.",
+            };
+          }
+        }
+      }
       if (
+        !judgedByCaseLedger &&
         input.evidenceKind === 'test' &&
         declaredTestCases.length > 0 &&
         rows[0].status === 'pass' &&
@@ -1393,6 +1456,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           testRunId: input.testRunId,
           declaredCaseCount: declaredTestCases.length,
           passedCaseTitleCount: passedCaseTitles.length,
+          source: 'passed-case-titles',
           message:
             'none of the ' + declaredTestCases.length +
             ' declared details.adequacy.testCases entries matched any of the ' +

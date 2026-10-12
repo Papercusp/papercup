@@ -213,8 +213,28 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
             'tree at propose time; actually RUN at grading time.',
         ),
+      testName: z
+        .string()
+        .trim()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          'optional test-case filter: a describe/it title path, or a complete suffix of one at a " > " ' +
+            'boundary. Requires exactly one file. At grading time it is resolved against the per-case ' +
+            'results ledger; a filter matching zero recorded cases refuses the emit instead of passing.',
+        ),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if (check.testName !== undefined && check.files.length !== 1) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['testName'],
+          message: 'a tests check with testName must name exactly one file (the file the test case lives in)',
+        });
+      }
+    }),
   z
     .object({
       kind: z.literal('cargo'),

@@ -11,7 +11,7 @@ import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-reader';
-import { qualifyCommittedReaderPlannedInputs, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
+import { qualifyCommittedReaderOriginalPreparation as qualifyOriginalPreparation } from './private-http-workspace-preflight';
 import { it } from 'vitest';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
 import { testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
@@ -342,12 +342,24 @@ export function observeIsolatedWorkerLifetime(child: ChildProcess, root: string,
 
 /** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
 export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
-  const files = paths.map(path => {
+  const sourcePaths = [...new Set(paths)];
+  const launcher = 'scripts/with-test-pg.mjs';
+  // The launcher owns teardown. Its extracted helper belongs to the same
+  // source receipt even when an older caller only declares the launcher.
+  // Read the actual import so historical launchers with inline cleanup keep
+  // their original source population; a missing imported helper fails closed.
+  if (sourcePaths.includes(launcher) &&
+      /\b(?:from\s*|import\s*\(\s*)['"]\.\/lib\/with-test-pg-cleanup\.mjs['"]/.test(
+        readFileSync(join(root, launcher), 'utf8'))) {
+    if (!sourcePaths.includes('scripts/lib/with-test-pg-cleanup.mjs'))
+      sourcePaths.push('scripts/lib/with-test-pg-cleanup.mjs');
+  }
+  const files = sourcePaths.map(path => {
     assert.ok(path && !path.startsWith('/') && !path.split('/').some(p => p === '..' || p === '.'));
     return { path, sha256: hash(readFileSync(join(root, path))) };
   });
   // Uncommitted local tests remain usable, but missing Git identity cannot certify live proof.
-  const committed = await readCommittedFiles(root, commit, paths).catch(() => new Map());
+  const committed = await readCommittedFiles(root, commit, sourcePaths).catch(() => new Map());
   return files.map(file => ({ ...file, gitSha256: committed.get(file.path)?.sha256 ?? null }));
 }
 
@@ -383,48 +395,14 @@ export interface CommittedReaderPreparationHandoff {
   observationReceiptSha256: string;
 }
 
-function qualifyOriginalPreparation(handoff: CommittedReaderPreparationHandoff | void,
-  expected: CommittedReaderObservationIdentity) {
-  assert.ok(handoff && typeof handoff === 'object', 'Required original preparation handoff is missing');
-  assert.match(expected.sourceCommit, /^[a-f0-9]{40}$/, 'Original selected reference is required');
-  assert.ok(expected.runId && Number.isSafeInteger(expected.process?.pid) && expected.process.pid > 0
-    && expected.process.identity, 'Original run/process identity is required');
-  for (const pin of [handoff.sourceReceiptSha256, handoff.inputReceiptSha256, handoff.observationReceiptSha256])
-    assert.match(pin, /^[a-f0-9]{64}$/, 'Original receipt digest is required');
-  assert.equal(handoff.selectedCommit, expected.sourceCommit, 'Original selected reference differs');
-  const bytes = readFileSync(handoff.observationReceiptPath);
-  assert.equal(hash(bytes), handoff.observationReceiptSha256, 'Original observation receipt changed');
-  const cohort: CommittedReaderObservationCohort = JSON.parse(String(bytes));
-  const identity = (value: CommittedReaderObservationIdentity) => {
-    assert.ok(value && typeof value === 'object', 'Original dimension identity is missing');
-    assert.deepEqual({ sourceCommit: value.sourceCommit, runId: value.runId, process: value.process }, expected,
-      'Original observation cohort identity differs');
-  };
-  identity(cohort);
-  assert.deepEqual(cohort.omitted, [], 'Original observation cohort has omitted dimensions');
-  assert.deepEqual(cohort.opaque, [], 'Original observation cohort has opaque dimensions');
-  assert.equal(cohort.sourceRoot, handoff.root, 'Original selected source root differs');
-  assert.deepEqual(cohort.sourceReceipt, { path: handoff.sourceReceiptPath, sha256: handoff.sourceReceiptSha256 },
-    'Original source receipt pin differs');
-  assert.deepEqual(cohort.inputReceipt, { path: handoff.inputReceiptPath, sha256: handoff.inputReceiptSha256 },
-    'Original input receipt pin differs');
-  const planned = qualifyCommittedReaderPlannedInputs(handoff.root, handoff);
-  const inputs: CommittedReaderPreparationInputs = planned.inputs;
-  const values = { source: planned.source,
-    dependencies: { files: inputs.dependencyFiles, externalResolutions: inputs.externalResolutions },
-    config: inputs.configPaths, imports: inputs.executedImports, schema: inputs.schema, environment: inputs.environment };
-  for (const key of Object.keys(values) as (keyof typeof values)[]) {
-    const observed = cohort.observations?.[key];
-    identity(observed);
-    assert.deepEqual(observed.value, values[key], `Original ${key} observation differs from planned inputs`);
-  }
-  const recheck = () => {
-    assert.deepEqual(readFileSync(handoff.observationReceiptPath), bytes, 'Original observation receipt changed during handoff');
-    planned.recheck();
-  };
-  recheck();
-  return { planned, cohort, bytes, recheck, handoff };
+/** Retain observed cleanup independently of the final source-integrity verdict. */
+export async function retainIsolatedLifecycleBeforeSourceCheck(evidenceDir: string,
+  lifecycle: Record<string, unknown>, ended: unknown, verifySource: () => void) {
+  lifecycle.ended = ended;
+  await writeFile(join(evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle), { flag: 'wx' });
+  verifySource();
 }
+
 
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
@@ -514,10 +492,10 @@ export async function recordIsolatedIntegrationProof(options: {
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
         assert.notEqual(readProcessIdentity(lifecycle.worker.pid), lifecycle.worker.identity);
         assert.notEqual(readProcessIdentity(lifecycle.database.pid), lifecycle.database.identity);
-        if (original) recheckPreparation();
-        else for (const file of source.files) assert.equal(hash(readFileSync(join(root, file.path))), file.sha256);
-        lifecycle.ended = ended;
-        await writeFile(join(ctx.evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle), { flag: 'wx' });
+        await retainIsolatedLifecycleBeforeSourceCheck(ctx.evidenceDir, lifecycle, ended, () => {
+          if (original) recheckPreparation();
+          else for (const file of source.files) assert.equal(hash(readFileSync(join(root, file.path))), file.sha256);
+        });
       } else {
         // A failed preparation allocated no worker or private database.
         if (!observedChild) {

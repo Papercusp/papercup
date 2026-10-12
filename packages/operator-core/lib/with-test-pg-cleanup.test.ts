@@ -39,6 +39,7 @@ describe('private PostgreSQL independent cleanup', () => {
         try { await cleanupOwnedTestState(f.resources); } catch (caught) { error = caught; }
         expect(error).toBeInstanceOf(AggregateError);
         if (!(error instanceof AggregateError)) throw new Error('cleanup did not reject with its stop failures');
+        expect(error.message).toContain('unverified resource stops');
         expect(error.errors).toHaveLength(1);
         expect(error.errors[0].cause).toBe(f.failure);
         expect(f.calls).toEqual(['child', 'profile', 'observe', 'pg', 'observation-stopped']);

@@ -249,6 +249,62 @@ describe('refreshLiveSessionsBeforeRead', () => {
     }
   });
 
+  it('reports only a bounded ingest-error subtype and never logs or returns the raw error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const rawMessage = '/private/session/path: permission denied';
+      const ingestError = Object.assign(new Error(rawMessage), { code: 'EACCES' });
+      const result = await refreshLiveSessionsBeforeRead(
+        sqlReturningLiveOwners(['su-error']) as never,
+        ['su-error'],
+        {
+          resolve: async () => ({ filePath: '/private/session/path', sessionId: 'private-session' }),
+          ingest: async () => { throw ingestError; },
+          resolveStates: livenessResolver(),
+        },
+      );
+
+      expect(result).toEqual({
+        attempted: 1,
+        refreshed: 0,
+        failureReasons: { ingest_error: 1 },
+        failureSubtypes: { filesystem_access: 1 },
+      });
+      expect(JSON.stringify(result)).not.toContain(rawMessage);
+      expect(JSON.stringify(result)).not.toContain('/private/session/path');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('transcript ingest failed (filesystem_access)'));
+      expect(warn.mock.calls.flat().join(' ')).not.toContain(rawMessage);
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('/private/session/path');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('classifies standard database SQLSTATE families without exposing the raw code', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const ingestError = Object.assign(new Error('private database detail'), { code: '23505' });
+      const result = await refreshLiveSessionsBeforeRead(
+        sqlReturningLiveOwners(['su-error']) as never,
+        ['su-error'],
+        {
+          resolve: async () => ({ filePath: '/private/session/path', sessionId: 'private-session' }),
+          ingest: async () => { throw ingestError; },
+          resolveStates: livenessResolver(),
+        },
+      );
+
+      expect(result.failureReasons).toEqual({ ingest_error: 1 });
+      expect(result.failureSubtypes).toEqual({ database_integrity: 1 });
+      expect(JSON.stringify(result)).not.toContain('23505');
+      expect(JSON.stringify(result)).not.toContain('private database detail');
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('private database detail');
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('23505');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('classifies a live transcript resolver error without exposing its raw message', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {

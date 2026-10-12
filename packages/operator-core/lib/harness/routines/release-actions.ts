@@ -45,6 +45,7 @@ import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
+import type { FreezeCutRecord, RedLegsAtR1 } from '../../release/known-good-freeze';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
@@ -1439,6 +1440,10 @@ export interface CheckpointVerdict {
   candidateSource?: CheckpointCandidateSource;
   /** Compatibility field for older producers that predate candidateSource. */
   diagnostic?: 'candidate-pinned';
+  /** P-012 (green-main-cycle-time-2026-10-08): where a FRESH cut came from (known-good vs tip). */
+  freezeCut?: FreezeCutRecord;
+  /** P-012: the red legs of a fresh candidate's first round (`legs: []` = R1 green). */
+  redLegsAtR1?: RedLegsAtR1;
   candidate?: string;
   from?: string | null;
   summary?: string;
@@ -2022,6 +2027,24 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
+  // P-012: the append-only green_checkpoint event IS the per-candidate ledger — every fresh cut
+  // records its source, and every measured first round its red legs ([] = green at R1).
+  if (v.freezeCut) {
+    detail.freezeCut = {
+      source: v.freezeCut.source,
+      reason: v.freezeCut.reason,
+      candidate: v.freezeCut.candidate.slice(0, 12),
+      tip: v.freezeCut.tip.slice(0, 12),
+      knownGood: v.freezeCut.knownGood ? v.freezeCut.knownGood.slice(0, 12) : null,
+    };
+  }
+  if (v.redLegsAtR1) {
+    detail.redLegsAtR1 = {
+      candidate: v.redLegsAtR1.candidate.slice(0, 12),
+      source: v.redLegsAtR1.source,
+      legs: [...v.redLegsAtR1.legs],
+    };
+  }
   if (v.from) detail.from = v.from.slice(0, 12);
   if (v.repairQueue) {
     // P-003 / D-002: `candidate` historically carried the mutable repair head on no-suite

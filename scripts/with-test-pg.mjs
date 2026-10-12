@@ -29,7 +29,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { access, stat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, stat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -70,18 +70,20 @@ if (isolatedRuntime && (process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() ||
 // spawn below runs from ROOT. Resolve that SAME executable before allocating
 // or migrating Postgres, and pin the path used by spawn. A package-relative
 // command must not burn an entire bootstrap before discovering ENOENT.
-try {
-  const candidates = /[/\\]/.test(cmd[0]) ? [resolve(ROOT, cmd[0])] :
-    (process.env.PATH ?? '').split(delimiter).map(dir => resolve(ROOT, dir, cmd[0]));
-  let executable;
+async function resolveExecutable(candidates) {
   for (const candidate of candidates) {
     try {
       if (!(await stat(candidate)).isFile()) continue;
       await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
-      executable = candidate;
-      break;
-    } catch { /* try the next PATH entry */ }
+      return await realpath(candidate);
+    } catch { /* try the next installation */ }
   }
+  return undefined;
+}
+try {
+  const candidates = /[/\\]/.test(cmd[0]) ? [resolve(ROOT, cmd[0])] :
+    (process.env.PATH ?? '').split(delimiter).map(dir => resolve(ROOT, dir, cmd[0]));
+  const executable = await resolveExecutable(candidates);
   if (!executable) throw new Error('child executable is missing or not executable from repository root: ' + cmd[0]);
   cmd[0] = executable;
 } catch (error) {
@@ -171,6 +173,7 @@ const { SHARED_TEST_PG_DURABILITY_OFF } = await import('../libs/test-config/src/
 const { browserCachePath } = await import('./lib/playwright-cache-path.mjs');
 const { defaultEvidenceRoot } = await import('../libs/generic/verification-harness/src/evidence-root.ts');
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
+const { cleanupOwnedTestState } = await import('./lib/with-test-pg-cleanup.mjs');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
@@ -269,37 +272,9 @@ async function cleanup() {
 }
 async function cleanupOwnedState() {
   cleanupStartedAt = Date.now();
-  cleanupStage('start');
-  if (childLifetime) {
-    cleanupStage('child-group-stop', { pid: child.pid });
-    await childLifetime.terminate();
-    cleanupStage('child-group-stopped', { pid: child.pid });
-  }
-  if (profileLifetime) {
-    cleanupStage('profile-stop', { pid: profileProcess.pid });
-    await profileLifetime.terminate();
-  }
-  const stopObserving = observePrivatePgStop();
-  // Elapsed waiting is not measured I/O progress and must not renew the proof
-  // observer's deadline. Ordinary no-IPC runs still need a bounded-cadence signal
-  // identifying the cleanup stage which keeps their supervisor alive.
-  const stopTimer = isolatedRuntime ? setInterval(() => cleanupStage('pg-stop-waiting'), 5000) : null;
-  stopTimer?.unref();
-  try {
-    cleanupStage('pg-stop', { health: pg?.health() ?? null });
-    await pg?.stop();
-    cleanupStage('pg-stopped');
-  } catch (error) {
-    cleanupStage('pg-stop-error', { error: error?.message ?? String(error) });
-    /* best effort — we still want the datadir gone */
-  } finally {
-    if (stopTimer) clearInterval(stopTimer);
-    stopObserving();
-  }
-  cleanupStage('remove-private-state');
-  await rm(dataDir, { recursive: true, force: true }).catch(() => {});
-  if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
-  await cleanupStage('complete', { runtimeRemoved: !runtimeRoot || !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) });
+  // Keep failed exit fences visible while stopping the other owned resources.
+  await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg,
+    dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop });
 }
 
 // Maintained integration callers fork a dedicated process group. That group
@@ -398,6 +373,21 @@ if (isolatedRuntime) {
   } finally { await capacitySql.end(); }
 }
 if (runtimeRoot && runtimeId) {
+  // Installed executables are inputs, like the browser cache below. Resolve
+  // them before replacing HOME: a maintained rg shim can use Claude's embedded
+  // ripgrep through $HOME/.local/bin/claude. Retain only executable paths, never
+  // its product HOME, credentials, or configuration.
+  const originalHome = process.env.HOME;
+  const rgOverride = process.env.PAPERCUSP_RG?.trim();
+  const rgAsset = await resolveExecutable(rgOverride ? [rgOverride] : [
+    ...(process.env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => resolve(ROOT, dir, 'rg')),
+    ...(originalHome ? [join(originalHome, '.local/bin/rg'), join(originalHome, '.cargo/bin/rg')] : []),
+    '/home/linuxbrew/.linuxbrew/bin/rg', '/usr/local/bin/rg', '/usr/bin/rg',
+  ]);
+  const claudeAsset = await resolveExecutable([
+    ...(process.env.CLAUDE_CODE_EXECPATH ? [process.env.CLAUDE_CODE_EXECPATH] : []),
+    ...(originalHome ? [join(originalHome, '.local/bin/claude')] : []),
+  ]);
   const home = join(runtimeRoot, 'home');
   const papercuspHome = join(home, '.papercusp');
   const workspacesRoot = join(runtimeRoot, 'workspaces');
@@ -422,6 +412,8 @@ if (runtimeRoot && runtimeId) {
   }
   runtimeEnv = {
     ...runtimeEnv,
+    ...(rgAsset ? { PAPERCUSP_RG: rgAsset } : {}),
+    ...(claudeAsset ? { CLAUDE_CODE_EXECPATH: claudeAsset } : {}),
     HOME: home,
     PAPERCUSP_HOME: papercuspHome,
     PAPERCUSP_IDENTITY_DIR: join(papercuspHome, 'identity'),

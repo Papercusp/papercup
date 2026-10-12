@@ -48,7 +48,6 @@ export const ALLOW_COUNTS = new Map([
   ['apps/operator/scripts/onboard-launcher.mjs|file-url-to-path', 1],
   ['apps/operator/scripts/ptool.mjs|path-to-file-url', 2],
   ['apps/operator/scripts/tutorial-runner.mjs|file-url-to-path', 1],
-  ['scripts/assert-workspace-links.mjs|path-to-file-url', 2],
   ['scripts/check-declared-consumed.mjs|file-template', 1],
   ['scripts/check-derived-signal-firings.mjs|file-template', 1],
   ['scripts/check-di-seam-arity-strands.mjs|file-template', 1],

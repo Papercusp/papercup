@@ -441,8 +441,10 @@ describe('release:repair-queue', () => {
   });
 
   it('documents request scope without accepting target identity in the operation payload', () => {
-    expect(tool.description).toContain('selected harness scope');
-    expect(tool.guidance?.notWhen).toContain('not a harness/workspace key in the payload');
+    // 32963fcf18 moved the "selected harness scope" sentence into guidance.notWhen; the
+    // description still names the request scope, so assert each where it actually lives.
+    expect(tool.description).toContain('for the selected harness (operator home if unscoped)');
+    expect(tool.guidance?.notWhen).toContain('Use the selected harness scope, not a harness/workspace key in the payload');
     expect(tool.args.safeParse({ op: 'get', harness: 'other' }).success).toBe(false);
   });
 
@@ -734,6 +736,16 @@ describe('release:repair-queue', () => {
     expect(result.note).toMatch(/confirm:true/);
     expect(mocks.write).not.toHaveBeenCalled();
     expect(mocks.retract).not.toHaveBeenCalled();
+    // WI-6554700010009422: a bounded-payload door keeps LEADING fields, so the decision fields
+    // must precede the bulky queue echo, or a budget cut returns ok:true with no verdict.
+    const keys = Object.keys(result);
+    for (const decision of ['ok', 'admitted', 'verdict', 'judgedSha', 'proof']) {
+      expect(keys.indexOf(decision)).toBeGreaterThanOrEqual(0);
+      expect(keys.indexOf(decision)).toBeLessThan(keys.indexOf('repairQueue'));
+    }
+    expect(keys.slice(-6).sort()).toEqual(
+      ['callerAuthorization', 'repairQueue', 'repairQueueRead', 'source', 'target', 'timings'].sort(),
+    );
     // WI-10005695: the response names where the admit spent its time, step by step.
     expect(result.timings.inFlight).toEqual([]);
     expect(result.timings.steps.map((s: { step: string }) => s.step)).toEqual([

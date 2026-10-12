@@ -12,6 +12,7 @@
  * bee's (self-selection, the blackboard result).
  */
 import { z } from 'zod';
+import { trackPhase } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1343,7 +1344,9 @@ export default defineTool({
     // widens behaviour without removing any.
     const ident = resolveAgentIdentity(ctx);
     const ctxHarness = (ctx as { harnessSlug?: string | null }).harnessSlug;
-    const inheritedHarness = await resolveInheritedHarnessScope(
+    // Phases (handler-phases-v1): get_next:harnessScope, get_next:preflight,
+    // get_next:claim, get_next:arbitrate.
+    const inheritedHarness = await trackPhase(ctx.phases, 'get_next:harnessScope', () => resolveInheritedHarnessScope(
       {
         explicitHarness: rawArgs.harness,
         ownerId: ident.ownerId,
@@ -1357,7 +1360,7 @@ export default defineTool({
         fleet: (input) => readFleetHarnessBinding(input, getClaimSpecRecord),
         brief: (input) => readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId })),
       },
-    );
+    ));
     if (inheritedHarness.kind !== 'harness') {
       // Reachable from an unscoped operator/cross-workspace session with no durable
       // binding, an explicit wildcard, or a stale/ambiguous durable binding. Preserve
@@ -1474,7 +1477,7 @@ export default defineTool({
       };
     };
     const preflightBudgetMs = remainingBudgetMs();
-    const preflight = await withBoundedTimeout<PreflightState | null>(
+    const preflight = await trackPhase(ctx.phases, 'get_next:preflight', () => withBoundedTimeout<PreflightState | null>(
       async () => {
         // P-006: keep the harness-scope gate inside the same deadline as every other
         // pre-claim read. Its first-use policy prime reads operator state and can wait
@@ -1665,7 +1668,7 @@ export default defineTool({
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
       { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },
-    );
+    ));
     if (preflight.degraded || !preflight.value) {
       return {
         content: [
@@ -1899,7 +1902,7 @@ export default defineTool({
       dispatchCallId?: string;
     } | null = null;
     let lateClaimSettlement: SchedulerLateSettlement | null = null;
-    const claim = await withBoundedTimeout(
+    const claim = await trackPhase(ctx.phases, 'get_next:claim', () => withBoundedTimeout(
       (signal) => {
         signal.addEventListener('abort', () => {
           const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
@@ -1959,7 +1962,7 @@ export default defineTool({
       // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
       { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim', signal: ctx.signal },
-    );
+    ));
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
     // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
     // PostgreSQL contention is the exception: it is a bounded, retryable condition and must
@@ -2045,7 +2048,7 @@ export default defineTool({
         ],
       };
     }
-    let res = await arbitrateSchedulerClaim(claim.value);
+    let res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(claim.value));
     let retiredSoloPlanSpec: { planSlug: string; specId: string; revision: number; cleared: boolean } | undefined;
     // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
     // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool

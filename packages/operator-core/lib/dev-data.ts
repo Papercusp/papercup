@@ -235,6 +235,98 @@ export async function telemetryRollup(
   };
 }
 
+// ── Handler phase rollup (papercusp-performance-audit-2026-10-12 P-001) ──
+
+export interface HandlerPhaseRollupInput {
+  toolName: string;
+  workspaceIds?: string[] | null;
+  hours?: number;
+}
+
+export interface HandlerPhaseRollup {
+  tool_name: string;
+  hours: number;
+  /** Calls in the window whose metadata_json carried handlerPhases (handler-phases-v1). */
+  calls_with_phases: number;
+  /** sum(attributedMs) / sum(elapsedMs): the share of the tool's wall time named phases explain. */
+  coverage_total: number | null;
+  /** Median per-call attributedMs / elapsedMs. */
+  coverage_p50: number | null;
+  /** Share of calls whose named phases cover at least 90% of their wall time. */
+  coverage_ge_90_share: number | null;
+  phases: Array<{ phase: string; count: number; p50_ms: number | null; p95_ms: number | null; total_ms: number }>;
+}
+
+/**
+ * Per-phase timing for one tool, read from the handler-phases-v1 record the dispatcher
+ * persists in tool_invocations.metadata_json.handlerPhases on every call that tracked a
+ * phase (libs/generic/tooldef/src/phase-tracker.ts).
+ */
+export async function handlerPhaseRollup(input: HandlerPhaseRollupInput): Promise<HandlerPhaseRollup> {
+  const hours = Math.max(1, Math.min(336, input.hours ?? 24));
+  const { sql } = getOrgPg();
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const workspaceIds = input.workspaceIds ?? [];
+  const wsFilter = workspaceIds.length > 0 ? sql`AND t.workspace_id = ANY(${sql.array(workspaceIds)})` : sql``;
+
+  type CoverageRow = { calls: number; attributed: number | null; elapsed: number | null; cov_p50: number | null; cov_ge_90: number | null };
+  const [coverage] = (await sql`
+    SELECT count(*)::int AS calls,
+           sum(attributed)::float8 AS attributed,
+           sum(elapsed)::float8 AS elapsed,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY attributed / NULLIF(elapsed, 0)) AS cov_p50,
+           avg((attributed / NULLIF(elapsed, 0) >= 0.9)::int)::float8 AS cov_ge_90
+      FROM (
+        SELECT (t.metadata_json->'handlerPhases'->>'attributedMs')::float8 AS attributed,
+               (t.metadata_json->'handlerPhases'->>'elapsedMs')::float8 AS elapsed
+          FROM harness_shared.tool_invocations t
+         WHERE t.invoked_at > ${sinceIso}::timestamptz
+           AND t.tool_name = ${input.toolName}
+           AND t.metadata_json ? 'handlerPhases'
+           ${wsFilter}
+      ) c
+  `) as unknown as CoverageRow[];
+
+  type PhaseRow = { phase: string; count: number; p50: number | null; p95: number | null; total: number };
+  const phaseRows = (await sql`
+    SELECT p->>'phase' AS phase,
+           count(*)::int AS count,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY (p->>'durationMs')::float8) AS p50,
+           percentile_cont(0.95) WITHIN GROUP (ORDER BY (p->>'durationMs')::float8) AS p95,
+           coalesce(sum((p->>'durationMs')::float8), 0)::float8 AS total
+      FROM harness_shared.tool_invocations t
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(t.metadata_json->'handlerPhases'->'phases') = 'array'
+             THEN t.metadata_json->'handlerPhases'->'phases' ELSE '[]'::jsonb END
+      ) p
+     WHERE t.invoked_at > ${sinceIso}::timestamptz
+       AND t.tool_name = ${input.toolName}
+       AND t.metadata_json ? 'handlerPhases'
+       ${wsFilter}
+     GROUP BY 1
+     ORDER BY total DESC
+  `) as unknown as PhaseRow[];
+
+  const round = (v: number | null | undefined) => (v == null ? null : Math.round(v));
+  const ratio = (v: number | null | undefined) => (v == null ? null : Math.round(v * 1000) / 1000);
+  const c = coverage ?? { calls: 0, attributed: null, elapsed: null, cov_p50: null, cov_ge_90: null };
+  return {
+    tool_name: input.toolName,
+    hours,
+    calls_with_phases: c.calls ?? 0,
+    coverage_total: c.elapsed ? ratio((c.attributed ?? 0) / c.elapsed) : null,
+    coverage_p50: ratio(c.cov_p50),
+    coverage_ge_90_share: ratio(c.cov_ge_90),
+    phases: phaseRows.map((r) => ({
+      phase: r.phase,
+      count: r.count,
+      p50_ms: round(r.p50),
+      p95_ms: round(r.p95),
+      total_ms: Math.round(r.total ?? 0),
+    })),
+  };
+}
+
 // ── Poll-suspect detector (EI-7029) ────────────────────────────────
 
 export interface PollSuspect {

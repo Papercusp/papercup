@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
   vacuumCalls: [] as string[],
   guardAcquired: true,
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
+  sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
+  unarchivedPaths: new Set<string>(),
 }));
 
 function makeSql() {
@@ -42,10 +44,11 @@ vi.mock('./disk', () => ({
   dirSizeBytes: () => 0,
   gatherProtectedSessionIdentity: async () => ({ ok: true, identity: { ownerIds: new Set(), sessionKeys: new Set() } }),
 }));
-vi.mock('../session-dir-gc', () => ({
+vi.mock('../session-dir-gc', async (original) => ({
+  ...(await original<typeof import('../session-dir-gc')>()),
   defaultSessionDirRoots: () => [],
-  discoverSessionDirCandidates: () => [],
-  planSessionDirGc: () => ({ remove: [], keptProtected: [], keptFresh: [] }),
+  discoverSessionDirCandidates: () => h.sessionCandidates,
+  findUnarchivedSessionDirs: async () => h.unarchivedPaths,
 }));
 vi.mock('../workspace-registry', () => ({
   readRegistry: () => ({ workspaces: [{ id: 'ws-test' }] }),
@@ -75,6 +78,8 @@ beforeEach(() => {
   h.vacuumCalls = [];
   h.guardAcquired = true;
   h.diskEntries = [];
+  h.sessionCandidates = [];
+  h.unarchivedPaths = new Set();
 });
 
 afterEach(() => {
@@ -296,6 +301,32 @@ describe('pruneStorageCategory — wall-time budget + continuation (EI-11379)', 
     expect(r.vacuumed).toBe(false);
     expect(h.vacuumCalls.length).toBe(0); // VACUUM deferred to the final draining call
     expect(r.continuation).toBeTruthy();
+  });
+});
+
+describe('pruneStorageCategory — session archive guard', () => {
+  it.each([false, true])('preserves unarchived session bytes when dryRun=%s', async (dryRun) => {
+    scratchSandbox = mkdtempSync(join(tmpdir(), 'storage-session-unarchived-'));
+    const dir = join(scratchSandbox, 'su-ended');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'session.jsonl'), 'retained history\n');
+    h.sessionCandidates = [{ path: dir, keyKind: 'owner', key: 'su-ended', mtimeMs: Date.now() - 10 * 86400000 }];
+    h.unarchivedPaths.add(dir);
+    const result = await pruneStorageCategory(REQ({ categoryId: 'agent-sessions', olderThanDays: 7, dryRun }));
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(0);
+    expect(existsSync(join(dir, 'session.jsonl'))).toBe(true);
+  });
+
+  it('still removes an expired session whose archive has been verified', async () => {
+    scratchSandbox = mkdtempSync(join(tmpdir(), 'storage-session-archived-'));
+    const dir = join(scratchSandbox, 'su-archived');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'session.jsonl'), 'archived history\n');
+    h.sessionCandidates = [{ path: dir, keyKind: 'owner', key: 'su-archived', mtimeMs: Date.now() - 10 * 86400000 }];
+    const result = await pruneStorageCategory(REQ({ categoryId: 'agent-sessions', olderThanDays: 7 }));
+    expect(result.removed).toBe(1);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

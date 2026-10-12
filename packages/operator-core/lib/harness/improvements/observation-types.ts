@@ -531,6 +531,14 @@ export interface ScorecardTestsCheckRun {
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
   failures?: string[];
+  /**
+   * The test-case filter the check named (one file plus a describe/it title path). When
+   * present, verdict/passed/failed describe ONLY the matched cases, resolved against the
+   * per-case ledger (test_case_runs) — never the whole file (test-rubric-unification P-002).
+   */
+  testName?: string;
+  /** How many recorded cases the testName filter matched (≥1; zero matches refuse the emit). */
+  matchedCases?: number;
 }
 
 /**
@@ -1869,6 +1877,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           measuredAt: r.measuredAt,
           ...(Array.isArray(r.failures)
             ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
+            : {}),
+          ...(typeof r.testName === 'string' && r.testName.trim() !== '' ? { testName: r.testName } : {}),
+          ...(typeof r.matchedCases === 'number' && Number.isSafeInteger(r.matchedCases) && r.matchedCases > 0
+            ? { matchedCases: r.matchedCases }
             : {}),
         };
       } else if (

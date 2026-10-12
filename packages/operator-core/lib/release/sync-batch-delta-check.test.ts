@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
-import { parseConfirmOutput } from './sync-batch-delta-check-deps';
+import { knownGoodShaOf, parseConfirmOutput } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
   evaluateRadius,
@@ -419,6 +419,88 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(state.cursor?.sha).toBe(SHA_A);
     expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
     expect(probes).toBe(0);
+  });
+});
+
+describe('runSyncBatchDeltaCheck — known-good point (green-main-cycle-time P-012)', () => {
+  const failingFile: FailingFile = { workspace: 'foo', file: 'packages/foo/src/a.test.ts' };
+  const OLD_GOOD = { sha: SHA_C, atMs: 5 };
+
+  it('a fully green window records the judged commit as the known-good point', async () => {
+    const { deps, state } = makeDeps({ now: () => 42 }, { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD });
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.lastPassed).toEqual({ sha: SHA_B, atMs: 42 });
+  });
+
+  it('a confirmed affected-tests red carries the previous known-good point', async () => {
+    const { deps, state } = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: [failingFile] }), confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('red');
+    expect(state.cursor?.sha).toBe(SHA_B); // the cursor advances
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD); // the known-good point does not
+  });
+
+  it('an UNCONFIRMED red is still a red leg: the window reports green but is not known-good', async () => {
+    const { deps, state } = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: [failingFile] }), confirmOne: async () => null },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a typecheck red carries the previous known-good point', async () => {
+    const { deps, state } = makeDeps(
+      { runTsc: async () => ({ ok: false, failing: ['packages/foo/src/a.ts'] }), confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a still-failing held-open red keeps a green window from becoming known-good', async () => {
+    const openRed = { path: failingFile.file, workspace: 'foo', introducedBy: SHA_C, firstSeenMs: 1, confirmations: 1 };
+    const { deps, state } = makeDeps(
+      { confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, openReds: [openRed], lastPassed: OLD_GOOD },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.cursor?.openReds?.[0]?.path).toBe(failingFile.file);
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a held cursor (undetermined run) and an up-to-date tick both keep the known-good point', async () => {
+    const held = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: null }) },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    expect((await runSyncBatchDeltaCheck(held.deps)).status).toBe('skipped');
+    expect(held.state.cursor?.lastPassed).toEqual(OLD_GOOD);
+
+    const idle = makeDeps({}, { sha: SHA_B, updatedAtMs: 1, lastPassed: OLD_GOOD });
+    expect((await runSyncBatchDeltaCheck(idle.deps)).status).toBe('up-to-date');
+    expect(idle.state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('bootstrapping at the tip never claims the tip as known-good (nothing was judged)', async () => {
+    const { deps, state } = makeDeps();
+    expect((await runSyncBatchDeltaCheck(deps)).status).toBe('bootstrapped');
+    expect(state.cursor?.lastPassed).toBeUndefined();
+  });
+
+  it('knownGoodShaOf accepts only a full lowercase sha, never a ref or abbreviation', () => {
+    expect(knownGoodShaOf(SHA_B)).toBe(SHA_B);
+    expect(knownGoodShaOf('staging')).toBeNull();
+    expect(knownGoodShaOf(SHA_B.slice(0, 12))).toBeNull();
+    expect(knownGoodShaOf(SHA_B.toUpperCase())).toBeNull();
+    expect(knownGoodShaOf(null)).toBeNull();
+    expect(knownGoodShaOf(undefined)).toBeNull();
   });
 });
 

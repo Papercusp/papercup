@@ -10,6 +10,7 @@
  * is for messages addressed to you — not for deriving fleet state (D-001).
  */
 import { z } from 'zod';
+import { trackPhase } from '@papercusp/tooldef';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleet } from '../../agent-fleets-store';
@@ -1317,11 +1318,13 @@ export default defineTool({
             new Set<string>(),
           )
         : Promise.resolve<Set<string> | null>(null);
-    const [rows, coverageRead, harnessPlans] = await Promise.all([
+    // Phases (handler-phases-v1): assignments:rows, one assignments:decorate:<leg> per
+    // decoration leg, assignments:schedulerClaims.
+    const [rows, coverageRead, harnessPlans] = await trackPhase(ctx.phases, 'assignments:rows', () => Promise.all([
       rowsPromise,
       coveragePromise,
       harnessPlansPromise,
-    ]);
+    ]));
     // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the filter and the
     // number that describes it are derived together, so this response can say
     // WHICH population its `agents` count counted. Same fleet, same minutes:
@@ -1361,7 +1364,7 @@ export default defineTool({
         );
     const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
       try {
-        await work();
+        await trackPhase(ctx.phases, `assignments:decorate:${label}`, work);
       } catch {
         // Preserve the pre-existing best-effort contract, but make the omitted
         // leg visible to the caller instead of silently returning a partial read.
@@ -1523,7 +1526,7 @@ export default defineTool({
       },
     );
     agents = agentPopulation.rows;
-    const schedulerClaimStates = await schedulerClaimStatePromise;
+    const schedulerClaimStates = await trackPhase(ctx.phases, 'assignments:schedulerClaims', () => schedulerClaimStatePromise);
     const schedulerClaimStateComplete =
       schedulerClaimStates !== null && agents.every((agent) => schedulerClaimStates.has(agent.agentId));
     agents = projectSchedulerClaimState(agents, schedulerClaimStates);

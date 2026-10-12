@@ -172,6 +172,19 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     expect(ANY_FAMILY_TERMINAL_STATES).toContain((await degradedItems())[0].status);
   }, 180_000);
 
+  it('P-004: one hard repair-round fail-open reason alarms below the generic candidate floor and recovers', async () => {
+    const task = '@fixture/operator-core::test:lane-stateful';
+    const key = degradationConditionKey(MECHANISM, task, 'proofs-unavailable');
+    const writer = { observeFallback, flushFallbackObservations };
+
+    expect(await recordGateReuseDecision(task, { offReason: 'proofs-unavailable' }, writer)).toBe(true);
+    expect((await runDegradationSweepOnce()).opened).toEqual([key]);
+
+    // A later measurable decision on this task settles the same condition.
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 1, reused: 1 } }, writer)).toBe(true);
+    expect((await runDegradationSweepOnce()).resolved).toEqual([key]);
+  }, 180_000);
+
   it('the seed mechanism is registered scope-keyed, so this test exercises the shipped registration', () => {
     expect(getDegradationMechanism(MECHANISM)).toMatchObject({ mechanism: MECHANISM, scopeKeyed: true });
   });
@@ -241,8 +254,8 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     expect((await degradedItems()).map((r) => r.feature_id)).toEqual([wi]);
   }, 180_000);
 
-  it('negative control: 19 eligible units is insufficient evidence, so nothing opens and nothing is minted', async () => {
-    await observe(19, 0, 'proofs-unavailable');
+  it('negative control: 19 ordinary candidate failures are insufficient evidence', async () => {
+    await observe(19, 0, 'otherRunner');
     const s = await runDegradationSweepOnce();
     expect(s.errors).toEqual([]);
     expect(s.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'insufficient' });

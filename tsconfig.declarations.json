@@ -443,6 +443,9 @@
     "scripts/assert-workspace-links.mjs",
     "scripts/lib/vitest-startup-trace.mjs",
     // WI-10007180: imported by the isolated reviewer fixture's TypeScript tests.
-    "scripts/reviewer-operator-assert.mjs"
+    "scripts/reviewer-operator-assert.mjs",
+    // WI-6554700010009433: the cross-leg per-file typecheck primitive, imported by
+    // packages/operator-core/lib/tsc-cross-leg-check.test.ts.
+    "scripts/lib/tsc-cross-leg-check.mjs"
   ]
 }

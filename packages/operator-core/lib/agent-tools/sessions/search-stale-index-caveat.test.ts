@@ -54,6 +54,7 @@ interface ParsedResult {
     unconfirmed?: number;
     skipped?: number;
     failureReasons?: Record<string, number>;
+    failureSubtypes?: Record<string, number>;
   };
 }
 
@@ -139,7 +140,8 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
     refreshLiveSessionsBeforeRead.mockResolvedValue({
       attempted: 1,
       refreshed: 0,
-      failureReasons: { ingest_timeout: 1 },
+      failureReasons: { ingest_error: 1 },
+      failureSubtypes: { filesystem_access: 1 },
     });
 
     const parsed = await run(
@@ -152,7 +154,8 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
       attempted: 1,
       refreshed: 0,
       degraded: true,
-      failureReasons: { ingest_timeout: 1 },
+      failureReasons: { ingest_error: 1 },
+      failureSubtypes: { filesystem_access: 1 },
     });
     expect(parsed.zeroHitCaveat).toBeDefined();
     // The claim that matters: this zero is UNVERIFIABLE, not evidence of absence.

@@ -34,6 +34,7 @@ import { guardAcceptanceBarTemplateDataWrite } from '../../../agent-tools/plans/
 // module top level and kills the child before it can emit `ready`.
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
+import { applyFederatedNowNote, type NowNoteSql } from '../../../agent-tools/plans/now-note-store';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
   FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
@@ -115,6 +116,11 @@ export interface HarnessPlanRow {
   /** Optional redundant wire value from post-861 peers. It is deliberately
    *  opaque and ignored: receivers recompute the index from canonical content. */
   forced_past?: unknown;
+  /** derived-status-not-hand-written-2026-10-12 P-004 (D-008): the plan's
+   *  structured Now note. OPTIONAL and opaque on the wire (a peer predating
+   *  migration 1480 omits it); applied by applyFederatedNowNote under the note's
+   *  own writtenAt/eventId last-writer-wins, never by the row clock alone. */
+  now_note?: unknown;
   supersedes: string[];
   superseded_by: string | null;
   archived: boolean;
@@ -464,6 +470,16 @@ async function writeToPg(
             await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
           }
         }
+        // P-004 (D-008 §2): the bootstrap insert above does nothing for an existing
+        // row, and per-part recomposition never carries the note, so the note is
+        // applied here under its own last-writer-wins (a fresh bootstrap row has no
+        // note yet, so a peer's note lands on it the same way).
+        await applyFederatedNowNote(
+          tx as unknown as NowNoteSql,
+          { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+          row.now_note,
+          { origin, fedTs, fedHlc },
+        );
         return;
       }
 
@@ -550,6 +566,16 @@ async function writeToPg(
         }
         if (origin === 'remote') await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
       }
+      // P-004 (D-008 §2): the same note last-writer-wins as the flag-ON branch,
+      // in the same transaction as the whole-blob upsert. It runs whether or not
+      // the upsert's row-clock guard admitted the op: a newer note wins on its own
+      // clock.
+      await applyFederatedNowNote(
+        tx as unknown as NowNoteSql,
+        { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+        row.now_note,
+        { origin, fedTs, fedHlc },
+      );
     },
   );
   if (!admission.admitted) {

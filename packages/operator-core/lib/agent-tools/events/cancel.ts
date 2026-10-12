@@ -18,7 +18,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { ackDelivery, cancelAwaitDetailed, retireAnnouncement } from '../../events/await/store';
 import { cancelComposedTree } from '../../events/await/compose-store';
 import { rebaseLoopAfterAwaitCancellation } from '../../harness/routines/loop-fire';
-import { bulkContent, runBulk } from '../_bulk';
+import { bulkContent, bulkEnvelopeSchema, runBulk } from '../_bulk';
 
 const cancelItemSchema = z
   .object({
@@ -100,6 +100,9 @@ export default defineTool({
         message: 'pass await_id/delivery_id/root_id/announcement_id, *_ids, or items',
       },
     ),
+  // runBulk's envelope ({ ok, results, counts }), stated structurally so the
+  // derived outputJsonSchema backs guidance.returns (guidance-output-schema-live-guard).
+  result: bulkEnvelopeSchema(),
   async handler(args, ctx) {
     // The judge role is evidence-only. It needs the delivery ACK path because
     // an in-turn inbox nudge explicitly directs its recipient to acknowledge,

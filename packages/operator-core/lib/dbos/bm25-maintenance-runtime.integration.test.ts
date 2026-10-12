@@ -125,6 +125,11 @@ describe('BM25 maintenance through the real registered DBOS runtime (P-006)', ()
   it('persists the maintenance step, removes real debt, replays once, and handles the next run', async () => {
     await makeDebt(['heron', 'egret', 'ibis']);
     expect(await needsCompaction(), 'fixture must have actual compaction debt before enqueue').toBe(true);
+    // The production wrapper must bypass transaction pooling even when the
+    // host enables it. Existing DBOS/test connections stay on the private DB;
+    // a newly pooled maintenance client would select the unavailable proxy.
+    vi.stubEnv('PAPERCUSP_PGBOUNCER', '1');
+    vi.stubEnv('PAPERCUSP_PGBOUNCER_PORT', '1');
     const workflowID = `bm25-runtime-${db.runTag}`;
     await enqueue(workflowID);
     const steps = await DBOS.listWorkflowSteps(workflowID);
@@ -168,6 +173,7 @@ describe('BM25 maintenance through the real registered DBOS runtime (P-006)', ()
         'packages/operator-core/lib/search/lexical/rank.ts',
         'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts',
         'packages/operator-core/lib/search/lexical/test-pg/Dockerfile',
+        'libs/papercusp/libs/db/src/connection.ts',
         'libs/papercusp/libs/db/sql/1447-bm25-pg-textsearch-indexes.sql',
         'packages/operator-core/test/isolated-integration-proof.ts',
         'packages/operator-core/lib/process-identity.ts',

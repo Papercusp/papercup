@@ -23,7 +23,7 @@ import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
 import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
-import { formatBm25MaintenanceReport, runBm25Maintenance } from '../search/lexical/bm25-maintenance';
+import { formatBm25MaintenanceReport, runOrgBm25Maintenance } from '../search/lexical/bm25-maintenance';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
@@ -220,8 +220,7 @@ async function bm25MaintenanceTick(): Promise<void> {
     async () => {
       try {
         const startedAt = Date.now();
-        const { sql } = getOrgPg();
-        const report = await runBm25Maintenance(sql);
+        const report = await runOrgBm25Maintenance();
         const finishedAt = Date.now();
         const line = formatBm25MaintenanceReport(report, {
           startedAtMs: startedAt,

@@ -12,6 +12,7 @@ it('ratifies through the production HTTP plans door and executes only the signed
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/plans/governance-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/governance-http-fixture.ts',
+      'scripts/lib/with-test-pg-cleanup.mjs',
       'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-event.ts',

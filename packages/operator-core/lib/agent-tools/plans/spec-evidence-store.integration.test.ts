@@ -87,6 +87,9 @@ const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql')
 // deployed by dropping the obsolete total index (WI-10001850 / EI-23634085867209303).
 const MIGRATION_1176 = migration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
 const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
+// 1478 adds the per-case results ledger (test-rubric-unification P-002): the bind path
+// resolves declared testCases against it when the run recorded its cases.
+const MIGRATION_1478 = migration('1478-test-case-runs.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -272,6 +275,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1378);
   await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1445);
+  await applyMigrationForTest(db.sql, MIGRATION_1478);
   const [{ present }] = await db.sql<{ present: boolean }[]>`SELECT EXISTS (
     SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared'
       AND table_name = 'spec_evidence_bindings' AND column_name = 'verifies_binding_id'
@@ -2902,6 +2906,65 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       passedCaseTitlesIncomplete: true,
     });
     expect(incompleteEvidence[0]?.testRunExecution?.passedCaseTitles).toHaveLength(64);
+  });
+
+  it('resolves declared cases against the per-case ledger, closing the title-cap bypass (P-002 / R-2)', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    // The same capped-title shape the previous case binds successfully: 65 passed, 64
+    // titles recorded, so the declared case is invisible to the title list. Here the run
+    // ALSO recorded every case in the ledger, which is the authority when present.
+    const runId = await recordRun();
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json({
+        schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        passed: 65, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'integration',
+        passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+        passedCaseTitlesTruncated: true,
+      })}
+      WHERE id = ${runId}`;
+    const keys = [
+      ...Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+      'outer > case beyond the title cap',
+    ];
+    for (const [index, caseKey] of keys.entries()) {
+      await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status, duration_ms)
+        VALUES (${runId}, ${index}, ${caseKey}, 'pass', 3)`;
+    }
+
+    // A case the title list could not show but the ledger recorded binds.
+    const beyondCap = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case beyond the title cap'] },
+    });
+    expect(beyondCap).toMatchObject({ ok: true, status: 'created' });
+
+    // A declared case the run never executed is refused, even though the capped title list
+    // could not have proved it absent — and even beside a declared case that DID match.
+    const rejected = await bindFromRun(runId, 'WI-102', {
+      adequacy: {
+        collected: true, skipped: false, executed: true, outcome: 'passed',
+        testCases: ['recorded case 3', 'case omitted from title cap'],
+      },
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: 'test_cases_not_in_run',
+      status: 'test_cases_not_in_run',
+      testRunId: runId,
+      declaredCaseCount: 2,
+      passedCaseTitleCount: 65,
+      source: 'case-ledger',
+      unmatchedTestCases: ['case omitted from title cap'],
+    });
+    expect(
+      await evidenceStore.listSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'],
+        workItemIds: ['WI-102'],
+        evidenceRefs: [DERIVE_TEST],
+      }),
+    ).toEqual([]);
   });
 
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {

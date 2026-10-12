@@ -10,7 +10,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { closeSync, fchmodSync, openSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { parseArgs } from 'node:util';
 import {
   closeInspector,
@@ -246,4 +246,4 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isCliEntry(import.meta.url)) await main();

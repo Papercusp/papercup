@@ -1139,6 +1139,7 @@ defineTestDomain({
         'scripts/lib/**/*.test.mjs',
         'scripts/agent-capacity/**/*.test.ts',
         'scripts/relay/**/*.test.ts',
+        'scripts/bench-host/**/*.test.ts',
       ] },
     { id: 'integration', label: 'Integration (test/)', globs: [
         'apps/operator/test/**/*.test.ts',
@@ -1182,6 +1183,12 @@ defineTestDomain({
         'libs/testing-shell/src/**/*.test.tsx',
         // The standalone publish worker (Cloudflare).
         'apps/papercusp-publish/src/**/*.test.ts',
+        // The slack-asana bug-drill fixture app: a SUBMODULE materialized from the
+        // papercusp-app template (listing.json ref 'papercusp-app'), and an npm
+        // workspace via the root `apps/*` glob. Its own vitest (package
+        // `@bug-drill/fixture`, TEMPLATE_CHECKS_CONFIG=template-checks.json) runs
+        // these: checks/, closure/*/checks/, src/ and tests/.
+        'apps/slack-asana-bug-drill/**/*.test.ts',
       ],
       // Live end-to-end smoke against `wrangler dev --local` (register → build
       // manifest → mint JWT → publish/start → upload → finalize).

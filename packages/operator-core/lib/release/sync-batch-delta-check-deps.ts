@@ -174,6 +174,26 @@ export function parseConfirmOutput(text: string): ConfirmVerdict {
   return null;
 }
 
+/** P-012: a stored known-good value counts only as a full lowercase 40-hex sha. Anything else
+ *  (absent, abbreviated, a branch name) reads as no known-good point, never as a ref to resolve:
+ *  resolving it would let a moving ref stand in for a commit the check actually judged. */
+export function knownGoodShaOf(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : null;
+}
+
+/** P-012 (green-main-cycle-time-2026-10-08): the newest commit this check judged GREEN for
+ *  `installSlug` (`metadata.sync_delta.lastPassed.sha`), or null when none is recorded. The gate's
+ *  fresh cut reads it through `CheckpointDeps.resolveKnownGoodRecutTarget`. */
+export async function readSyncDeltaKnownGood(installSlug: string): Promise<string | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT metadata->'sync_delta'->'lastPassed'->>'sha' AS sha
+      FROM harness_shared.routines
+     WHERE install_slug = ${installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}
+     LIMIT 1`;
+  return knownGoodShaOf(rows[0]?.sha);
+}
+
 /** Bind `SyncBatchDeltaDeps` to the real box. Pure module decides; this executes. */
 export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatchDeltaDeps {
   const script = (rel: string): string => path.join(cfg.root, rel);

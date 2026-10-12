@@ -40,6 +40,79 @@ export type SessionRefreshFailureReason =
   | 'ingest_aborted'
   | 'ingest_error';
 
+/** Bounded, anonymized cause families for thrown transcript-ingest errors. */
+export type SessionIngestFailureSubtype =
+  | 'filesystem_missing'
+  | 'filesystem_access'
+  | 'filesystem_io'
+  | 'filesystem_capacity'
+  | 'network_connection'
+  | 'database_connection'
+  | 'database_integrity'
+  | 'database_transaction'
+  | 'database_resource'
+  | 'database_operator'
+  | 'database_other'
+  | 'unknown';
+
+const SESSION_INGEST_FAILURE_SUBTYPES = new Set<SessionIngestFailureSubtype>([
+  'filesystem_missing',
+  'filesystem_access',
+  'filesystem_io',
+  'filesystem_capacity',
+  'network_connection',
+  'database_connection',
+  'database_integrity',
+  'database_transaction',
+  'database_resource',
+  'database_operator',
+  'database_other',
+  'unknown',
+]);
+
+function classifySessionIngestError(error: unknown): SessionIngestFailureSubtype {
+  let code: unknown;
+  try {
+    code = typeof error === 'object' && error !== null
+      ? (error as { code?: unknown }).code
+      : undefined;
+  } catch {
+    return 'unknown';
+  }
+  if (typeof code !== 'string') return 'unknown';
+  const normalized = code.toUpperCase();
+  if (normalized === 'ENOENT') return 'filesystem_missing';
+  if (normalized === 'EACCES' || normalized === 'EPERM') return 'filesystem_access';
+  if (normalized === 'EIO' || normalized === 'EBADF') return 'filesystem_io';
+  if (normalized === 'EMFILE' || normalized === 'ENFILE' || normalized === 'ENOSPC') {
+    return 'filesystem_capacity';
+  }
+  if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(normalized)) {
+    return 'network_connection';
+  }
+  if (!/^[0-9A-Z]{5}$/.test(normalized)) return 'unknown';
+  if (normalized.startsWith('08')) return 'database_connection';
+  if (normalized.startsWith('23')) return 'database_integrity';
+  if (normalized.startsWith('40')) return 'database_transaction';
+  if (normalized.startsWith('53')) return 'database_resource';
+  if (normalized.startsWith('57')) return 'database_operator';
+  return 'database_other';
+}
+
+function safeSessionIngestFailureSubtype(error: unknown): SessionIngestFailureSubtype | undefined {
+  let subtype: unknown;
+  try {
+    subtype = typeof error === 'object' && error !== null
+      ? (error as { sessionIngestFailureSubtype?: unknown }).sessionIngestFailureSubtype
+      : undefined;
+  } catch {
+    return undefined;
+  }
+  return typeof subtype === 'string' && SESSION_INGEST_FAILURE_SUBTYPES.has(subtype as SessionIngestFailureSubtype)
+    ? subtype as SessionIngestFailureSubtype
+    : undefined;
+}
+
 export interface SessionRefreshReceipt {
   attempted: number;
   refreshed: number;
@@ -49,6 +122,8 @@ export interface SessionRefreshReceipt {
   skipped?: number;
   /** Aggregated, anonymized failure categories; never includes owner/session ids or raw errors. */
   failureReasons?: Partial<Record<SessionRefreshFailureReason, number>>;
+  /** Safe bounded error families; populated only for thrown ingest errors. */
+  failureSubtypes?: Partial<Record<SessionIngestFailureSubtype, number>>;
 }
 
 function failedSessionRefresh(reason: SessionRefreshFailureReason): SessionRefreshReceipt {
@@ -201,14 +276,31 @@ export async function refreshResolvedSessionBeforeRead(
 ): Promise<SessionRefreshReceipt> {
   const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
   const refresh = await withBoundedTimeout(
-    () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
+    async () => {
+      try {
+        return await ingest(target.filePath, { owner, sessionId: target.sessionId });
+      } catch (error) {
+        const subtype = classifySessionIngestError(error);
+        // withBoundedTimeout logs its error message. Replace the raw exception
+        // before it reaches that logger; only the fixed subtype may cross the
+        // refresh boundary or appear in the search response.
+        const safeError = new Error(`transcript ingest failed (${subtype})`);
+        Object.assign(safeError, { sessionIngestFailureSubtype: subtype });
+        throw safeError;
+      }
+    },
     {
       fallback: undefined,
       timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
       label,
     },
   );
-  if (refresh.degraded) return failedSessionRefresh(boundedFailureReason('ingest', refresh.reason));
+  if (refresh.degraded) {
+    const reason = boundedFailureReason('ingest', refresh.reason);
+    const failed = failedSessionRefresh(reason);
+    const subtype = reason === 'ingest_error' ? safeSessionIngestFailureSubtype(refresh.error) : undefined;
+    return subtype ? { ...failed, failureSubtypes: { [subtype]: 1 } } : failed;
+  }
   return { attempted: 1, refreshed: 1 };
 }
 
@@ -410,10 +502,15 @@ export async function refreshLiveSessionsBeforeRead(
     );
   }));
   const failureReasons: NonNullable<SessionRefreshReceipt['failureReasons']> = {};
+  const failureSubtypes: NonNullable<SessionRefreshReceipt['failureSubtypes']> = {};
   for (const result of results) {
     for (const [reason, count] of Object.entries(result.failureReasons ?? {})) {
       const key = reason as SessionRefreshFailureReason;
       failureReasons[key] = (failureReasons[key] ?? 0) + (count ?? 0);
+    }
+    for (const [subtype, count] of Object.entries(result.failureSubtypes ?? {})) {
+      const key = subtype as SessionIngestFailureSubtype;
+      failureSubtypes[key] = (failureSubtypes[key] ?? 0) + (count ?? 0);
     }
   }
   return {
@@ -421,6 +518,7 @@ export async function refreshLiveSessionsBeforeRead(
     refreshed: results.reduce((total, result) => total + result.refreshed, 0),
     ...coverage,
     ...(Object.keys(failureReasons).length > 0 ? { failureReasons } : {}),
+    ...(Object.keys(failureSubtypes).length > 0 ? { failureSubtypes } : {}),
   };
 }
 

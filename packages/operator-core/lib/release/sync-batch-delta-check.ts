@@ -107,6 +107,8 @@
  * (or with the item's claimant).
  */
 
+import type { KnownGoodPoint } from './known-good-freeze';
+
 // ── tunables (every default fails toward doing less work) ────────────────────
 
 /** Skip the whole run when `loadavg1 > cores * this`. 1.2 = "the box is already
@@ -226,6 +228,11 @@ export interface SyncDeltaCursor {
    *  cursor sat on one window for 24h, 0 of ~291 ticks evaluated). Each measured run
    *  doubles it; it is dropped once it is back at the static cap. */
   windowCommitCap?: number;
+  /** P-012 (green-main-cycle-time-2026-10-08): the newest commit whose batch check PASSED — both
+   *  legs ran green over its window and no red is held open. The gate's fresh cut freezes here
+   *  (known-good-freeze.ts) instead of at the bare tip. Carried unchanged by every run that does
+   *  not itself pass, so it only ever moves forward to a newer passing commit. */
+  lastPassed?: KnownGoodPoint;
 }
 
 // ── git-log parsing ──────────────────────────────────────────────────────────
@@ -1731,12 +1738,20 @@ async function runSyncBatchDeltaTick(
 
   // Both legs measured this window: grow the learned cap back toward the static one.
   const grownCap = grownWindowCommitCap(cursor.windowCommitCap, caps.maxCommits);
+  const judgedSha = prefix.commits[prefix.commits.length - 1]!.sha;
+  // P-012: a known-good point only when BOTH legs were green as run (an unconfirmed red is still
+  // a red leg) and nothing is held open — otherwise the previous known-good point is carried.
+  const passed = tsc.ok && affected.ok && filed.length === 0 && stillOpen.length === 0;
+  const lastPassed: KnownGoodPoint | undefined = passed
+    ? { sha: judgedSha, atMs: deps.now() }
+    : cursor.lastPassed;
   const next: SyncDeltaCursor = {
-    sha: prefix.commits[prefix.commits.length - 1]!.sha,
+    sha: judgedSha,
     updatedAtMs: deps.now(),
     lastBatchCommits: selectedBatches.length,
     openReds: stillOpen,
     ...(grownCap !== undefined ? { windowCommitCap: grownCap } : {}),
+    ...(lastPassed ? { lastPassed } : {}),
   };
   await deps.writeCursor(next);
 

@@ -1,0 +1,15 @@
+export interface CleanupOwnedTestStateOptions {
+  child?: { pid?: number } | null;
+  childLifetime?: { terminate(): Promise<void> } | null;
+  profileProcess?: { pid?: number } | null;
+  profileLifetime?: { terminate(): Promise<void> } | null;
+  pg?: { stop(): Promise<void>; health?(): unknown } | null;
+  dataDir: string;
+  runtimeRoot?: string | null;
+  isolatedRuntime: boolean;
+  cleanupStage(stage: string, detail?: Record<string, unknown>): void | Promise<void>;
+  observePrivatePgStop(): () => void;
+}
+
+/** Attempts every independent stop and preserves state if any stop is unverified. */
+export function cleanupOwnedTestState(state: CleanupOwnedTestStateOptions): Promise<void>;

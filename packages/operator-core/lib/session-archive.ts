@@ -253,10 +253,11 @@ export const SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES = 256 * 1024 * 1024;
 
 // ── collectors (pure FS; exported for tests + the P-006 reconciler) ─────────
 
-async function dirents(dir: string): Promise<Dirent[]> {
+async function dirents(dir: string, strict = false): Promise<Dirent[]> {
   try {
     return await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return [];
   }
 }
@@ -270,10 +271,11 @@ async function statFile(abs: string): Promise<{ bytes: number; mtimeMs: number }
   }
 }
 
-async function isRealDir(abs: string): Promise<boolean> {
+async function isRealDir(abs: string, strict = false): Promise<boolean> {
   try {
     return (await lstat(abs)).isDirectory();
-  } catch {
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return false;
   }
 }
@@ -411,9 +413,9 @@ export async function findArchivedSessionIdForAdv(advSessionId: number): Promise
 export async function listCodexRolloutSessionIds(sessionRoot: string): Promise<string[]> {
   const ids = new Set<string>();
   const sessions = join(sessionRoot, 'sessions');
-  if (!(await isRealDir(sessions))) return [];
+  if (!(await isRealDir(sessions, true))) return [];
   const walk = async (dir: string, depth: number): Promise<void> => {
-    for (const e of await dirents(dir)) {
+    for (const e of await dirents(dir, true)) {
       if (e.isDirectory() && depth < 3) await walk(join(dir, e.name), depth + 1);
       else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
         const m = basename(e.name, '.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i);
@@ -430,10 +432,10 @@ export async function listCodexRolloutSessionIds(sessionRoot: string): Promise<s
 export async function listClaudeSessionIds(sessionRoot: string): Promise<string[]> {
   const ids = new Set<string>();
   const projects = join(sessionRoot, 'projects');
-  if (!(await isRealDir(projects))) return [];
-  for (const d of await dirents(projects)) {
+  if (!(await isRealDir(projects, true))) return [];
+  for (const d of await dirents(projects, true)) {
     if (!d.isDirectory()) continue;
-    for (const f of await dirents(join(projects, d.name))) {
+    for (const f of await dirents(join(projects, d.name), true)) {
       if (f.isFile() && f.name.endsWith('.jsonl')) ids.add(basename(f.name, '.jsonl'));
     }
   }

@@ -61,6 +61,28 @@ describe('judgeDegradation — pinned defaults (R-2)', () => {
   it('per-mechanism thresholds override the defaults', () => {
     expect(judgeDegradation(windowOf(10, 0), { mechanism: M }, { minEligible: 5 }).kind).toBe('collapsed');
   });
+
+  it('the gate reuse registration lowers the floor only for hard fail-open reasons', () => {
+    const mechanism = getDegradationMechanism('gate-pass-reuse');
+    if (!mechanism) throw new Error('gate-pass-reuse registration is missing');
+
+    for (const reason of [
+      'workspace-unresolved', 'no-judged-sha', 'head-mismatch', 'checkout-status-unknown',
+      'checkpoint-root-unverified', 'checkpoint-restore-failed', 'checkpoint-remains-dirty',
+      'dirty-checkout', 'no-runner-identity', 'pg-unavailable', 'proofs-unavailable',
+      'lane-filter-unavailable', 'skip-list-unwritable', 'arming-threw',
+    ]) {
+      expect(judgeDegradation(windowOf(1, 0, { [reason]: 1 }), { mechanism: mechanism.mechanism }, mechanism.thresholds))
+        .toMatchObject({ kind: 'collapsed', topReason: reason, conditionKey: `degraded:gate-pass-reuse:${reason}` });
+    }
+
+    for (const reason of ['disabled-by-env', 'script-cannot-run-zero-files']) {
+      expect(judgeDegradation(windowOf(1, 0, { [reason]: 1 }), { mechanism: mechanism.mechanism }, mechanism.thresholds))
+        .toMatchObject({ kind: 'insufficient', eligible: 1, minEligible: 20 });
+    }
+    expect(judgeDegradation(windowOf(19, 0, { otherRunner: 19 }), { mechanism: mechanism.mechanism }, mechanism.thresholds))
+      .toMatchObject({ kind: 'insufficient', eligible: 19, minEligible: 20 });
+  });
 });
 
 describe('judgeDegradation — dominant reason names the key (R-7)', () => {

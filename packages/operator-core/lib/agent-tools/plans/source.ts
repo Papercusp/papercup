@@ -44,6 +44,7 @@ import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-ta
 import type { BlueprintOperationRoutineTarget } from '../../harness/routines/materialize-plan-schedule';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
 import { activeAcceptanceRubricsQuery } from './plan-lifecycle-derivation';
+import { applyNowNoteToParsed, parseNowNote, type PlanNowNote } from './now-note-store';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -255,6 +256,10 @@ export interface PlanRow {
   decisions: PlanIndexDecision[];
   nowState: string | null;
   nowNext: string | null;
+  /** P-004 (migration 1480): the structured Now note; null when none was written
+   *  through plans:set-now (readers fall back to the content `## Now`) or when the
+   *  read path did not select it. */
+  nowNote: PlanNowNote | null;
   /** v2 P-001: the parsed `## Promote` policy ({ policy, warnings }); NULL when the row hasn't been
    *  repopulated since mig 331 (consumers fall back to parsing content until the next write). */
   promotePolicy: ParsePromoteResult | null;
@@ -323,6 +328,8 @@ interface PlanDbRow {
   decisions: unknown;
   now_state: string | null;
   now_next: string | null;
+  /** mig 1480 (P-004). OPTIONAL like output_schema: only the paths that select it map a note. */
+  now_note?: unknown;
   promote_policy: unknown;
   forced_past?: unknown;
   schedule: unknown;
@@ -372,6 +379,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     decisions: Array.isArray(r.decisions) ? (r.decisions as PlanIndexDecision[]) : [],
     nowState: r.now_state,
     nowNext: r.now_next,
+    nowNote: parseNowNote(r.now_note ?? null),
     // v2 P-001: surface the structured promote-policy; null when the column hasn't been repopulated
     // (the row predates mig 331's lazy-populate) → consumers fall back to parsing content.
     promotePolicy: (r.promote_policy as ParsePromoteResult | null) ?? null,
@@ -795,7 +803,7 @@ export async function getPlanRow(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, output_schema, forced_past
                ${opts.prefetchAcceptance ? tx`, (
@@ -1091,7 +1099,7 @@ export async function listPlanRows(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
@@ -1273,8 +1281,8 @@ export async function listPlanIndexRows(
       // rowFromDb — is identical whether or not the caller opted in.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data, input_schema,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
+        ? tx`now_state, now_note, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS now_note, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1413,8 +1421,8 @@ export async function listPlanIndexRowsForWorkspace(
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data, input_schema,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
+        ? tx`now_state, now_note, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS now_note, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1621,7 +1629,7 @@ export async function listPlanRowsMatchingAnyToken(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
@@ -1702,7 +1710,11 @@ export async function readPlanBySlug(
   const row = await getPlanRow(slug, opts, timings);
   if (!row) return null;
   const started = timings ? performance.now() : 0;
-  const parsed = parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) });
+  // P-004: the structured note wins over the content `## Now` (D-007 §5).
+  const parsed = applyNowNoteToParsed(
+    parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    row.nowNote,
+  );
   if (timings) timings['source.parse'] = Math.max(0, performance.now() - started);
   return {
     parsed,
@@ -1717,7 +1729,10 @@ export async function readAllPlans(
 ): Promise<Array<{ parsed: ParsedPlan; archived: boolean; row: PlanRow }>> {
   const rows = await listPlanRows(opts);
   return rows.map((row) => ({
-    parsed: parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    parsed: applyNowNoteToParsed(
+      parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+      row.nowNote,
+    ),
     archived: row.archived,
     row,
   }));

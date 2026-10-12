@@ -3376,6 +3376,35 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.failingTests as string[]).length).toBe(20);
   });
 
+  it('green-main-cycle-time P-012: buildCheckpointDetail records the freeze cut and the R1 red legs per candidate', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      freezeCut: {
+        source: 'known-good',
+        reason: 'known-good-selected',
+        candidate: 'a'.repeat(40),
+        tip: 'b'.repeat(40),
+        knownGood: 'a'.repeat(40),
+      },
+      redLegsAtR1: { candidate: 'a'.repeat(40), source: 'known-good', legs: ['suite', 'lint-tsc'] },
+    });
+    expect(d.freezeCut).toEqual({
+      source: 'known-good',
+      reason: 'known-good-selected',
+      candidate: 'a'.repeat(12),
+      tip: 'b'.repeat(12),
+      knownGood: 'a'.repeat(12),
+    });
+    expect(d.redLegsAtR1).toEqual({ candidate: 'a'.repeat(12), source: 'known-good', legs: ['suite', 'lint-tsc'] });
+
+    // A run with no fresh cut (frozen lineage, explicit candidate) carries neither field.
+    const plain = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'c'.repeat(40) });
+    expect(plain).not.toHaveProperty('freezeCut');
+    expect(plain).not.toHaveProperty('redLegsAtR1');
+  });
+
   it('P-013: buildCheckpointDetail keeps a compact per-round reuse record, and drops a malformed one', () => {
     const testPassReuse = {
       judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',

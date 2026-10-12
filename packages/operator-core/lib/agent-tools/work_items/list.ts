@@ -22,6 +22,7 @@ import {
   type CompletionAuthorityFilter,
 } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { trackPhase } from "@papercusp/tooldef";
 import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader, HOLDER_CONTEXT_SCHEMA } from "../coordination/holder-advisory";
 
@@ -512,7 +513,9 @@ export default defineTool({
     // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-
     // scoped (depends only on workspace + the filter args). The bounding is folded INTO
     // the cached factory so the stored value is the final, deterministic-per-args result.
-    const cached = await cachedRead(
+    // Phases (handler-phases-v1): list:read covers the cached read (a hit is cheap),
+    // list:query the database round-trip on a miss, list:holders the enrichment.
+    const cached = await trackPhase(ctx.phases, 'list:read', () => cachedRead(
       ctx as CachedReadCtx,
       {
         tool: "work_items:list",
@@ -587,16 +590,16 @@ export default defineTool({
         // countWorkItems has no `q` (a known count-vs-list parity gap), so a q search
         // cannot be counted and reports an unknown population instead of a wrong number.
         const countable = audienceDefaulted && q === undefined;
-        const [rows, agentCount, anyCount] = await Promise.all([
+        const [rows, agentCount, anyCount] = await trackPhase(ctx.phases, 'list:query', () => Promise.all([
           listWorkItems(filter),
           countable ? countWorkItems(filter) : Promise.resolve(null),
           countable ? countWorkItems({ ...filter, audience: undefined }) : Promise.resolve(null),
-        ]);
+        ]));
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
         // result cap. Full body via work_items:get { id }.
         return { rows: boundSummaries(rows), agentCount, anyCount };
       },
-    );
+    ));
     const items = cached.rows;
     const withheld =
       cached.agentCount !== null && cached.anyCount !== null
@@ -629,7 +632,7 @@ export default defineTool({
     // cannot attribute (`requirePrincipal: false` makes such a caller legitimate),
     // so the enrichment can never fail the read it decorates.
     const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
-    const withHolders = await attachHolderContext(items, reader).catch(() => items);
+    const withHolders = await trackPhase(ctx.phases, 'list:holders', () => attachHolderContext(items, reader)).catch(() => items);
     return denominator ? { data: withHolders, denominator } : { data: withHolders };
   },
 });

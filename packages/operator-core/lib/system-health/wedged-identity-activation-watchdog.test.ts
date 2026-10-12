@@ -7,6 +7,7 @@ import {
   classifyUnapplied,
   runUnappliedActivationCensusOnce,
   runWedgedIdentitySweepOnce,
+  identityActivationConditionKey,
   type CandidateRow,
   type UnappliedActivationCensusDeps,
   type UnappliedCandidateRow,
@@ -78,6 +79,9 @@ function row(overrides: Partial<CandidateRow> = {}): CandidateRow {
 
 function deps(overrides: Partial<WedgedIdentitySweepDeps> = {}): WedgedIdentitySweepDeps {
   return {
+    workspaceId: 'ws-a',
+    readOpenConditions: async () => [],
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     loadCandidates: async () => [row()],
     verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 },
     yieldAfterClassified: async (classifiedSoFar) => classifiedSoFar + 1,
@@ -540,6 +544,9 @@ function censusRow(overrides: Partial<UnappliedCandidateRow> = {}): UnappliedCan
 
 function censusDeps(overrides: Partial<UnappliedActivationCensusDeps> = {}): UnappliedActivationCensusDeps {
   return {
+    workspaceId: 'ws-a',
+    readOpenConditions: async () => [],
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     loadUnapplied: async () => [censusRow()],
     loadPositiveControl: async () => ({ recentBriefs: 90, recentJournalTurns: 3409 }),
     resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
@@ -548,6 +555,107 @@ function censusDeps(overrides: Partial<UnappliedActivationCensusDeps> = {}): Una
     ...overrides,
   };
 }
+
+describe('identity activation original detector condition episodes', () => {
+  const key = (kind: 'wedged' | 'unapplied' | 'wedged-coverage' | 'unapplied-coverage', owner = '') =>
+    identityActivationConditionKey(kind, 'ws-a', owner);
+
+  function episodeRail() {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true); open.add(event.conditionKey!); return true;
+    });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    return { open, broadcast, resolve, rail: { broadcast, resolve }, readOpenConditions: async () => [...open] };
+  }
+
+  it('opens before legacy escalation and recovers only an exact reconciled wedge owner', async () => {
+    const episode = episodeRail();
+    let candidates = [row({ advSessionId: null })];
+    const fixture = deps({ ...episode, loadCandidates: async () => candidates,
+      escalateWedged: async () => { expect(episode.open.has(key('wedged', 'su-healthy'))).toBe(true); } });
+    await runWedgedIdentitySweepOnce(fixture); await runWedgedIdentitySweepOnce(fixture);
+    expect(episode.broadcast).toHaveBeenCalledTimes(2);
+    for (const rows of [[], [row({ ownerId: 'foreign-owner' })], [row({ activation: null })],
+      [row({ retired: true })]]) {
+      candidates = rows; await runWedgedIdentitySweepOnce(fixture);
+      expect(episode.open.has(key('wedged', 'su-healthy'))).toBe(true);
+    }
+    const foreign = identityActivationConditionKey('wedged', 'foreign-ws', 'su-healthy');
+    episode.open.add(foreign); episode.open.add('alarm:identity-activation:wedged:bad-json');
+    candidates = [row()]; await runWedgedIdentitySweepOnce(fixture);
+    expect(episode.open.has(key('wedged', 'su-healthy'))).toBe(false);
+    expect(episode.open.has(key('wedged-coverage'))).toBe(false);
+    expect(episode.open.has(foreign)).toBe(true);
+    expect(episode.open.has('alarm:identity-activation:wedged:bad-json')).toBe(true);
+    candidates = [row({ advSessionId: null })]; await runWedgedIdentitySweepOnce(fixture);
+    expect(episode.open.has(key('wedged', 'su-healthy'))).toBe(true);
+  });
+
+  it('preserves owner episodes after a later page fails and recovers the coverage alarm only on a complete scan', async () => {
+    const episode = episodeRail(); episode.open.add(key('wedged', 'su-healthy'));
+    await runWedgedIdentitySweepOnce(deps({ ...episode, loadCandidates: async function* () {
+      yield [row()]; throw new Error('second page unreadable');
+    } }));
+    expect(episode.resolve).not.toHaveBeenCalled();
+    expect(episode.open.has(key('wedged-coverage'))).toBe(true);
+    await runWedgedIdentitySweepOnce(deps({ ...episode }));
+    expect(episode.open.size).toBe(0);
+  });
+
+  it('keeps a confirmed wedge on unknown liveness and failed delivery, but resolves measured terminal liveness', async () => {
+    const episode = episodeRail(); episode.open.add(key('wedged', 'su-healthy'));
+    const candidates = [row({ advSessionId: null })];
+    const fixture = deps({ ...episode, loadCandidates: async () => candidates,
+      resolveLiveness: async () => { throw new Error('unknown'); } });
+    await runWedgedIdentitySweepOnce(fixture);
+    expect(episode.resolve).not.toHaveBeenCalled();
+    await runWedgedIdentitySweepOnce({ ...fixture,
+      resolveLiveness: async () => new Map([['su-healthy', 'ended']]),
+      rail: { broadcast: episode.broadcast, resolve: async () => false } });
+    expect(episode.open.has(key('wedged', 'su-healthy'))).toBe(true);
+    await runWedgedIdentitySweepOnce({ ...fixture,
+      resolveLiveness: async () => new Map([['su-healthy', 'ended']]) });
+    expect(episode.open.size).toBe(0);
+  });
+
+  it('queries durable unapplied owners after restart and preserves absent or unmeasured activations', async () => {
+    const episode = episodeRail(); let candidates = [censusRow()];
+    const load = vi.fn(async (_owners: readonly string[]) => candidates);
+    const fixture = censusDeps({ ...episode, loadUnapplied: load,
+      escalateUnapplied: async () => { expect(episode.open.has(key('unapplied', 'su-stuck'))).toBe(true); } });
+    await runUnappliedActivationCensusOnce(fixture);
+    for (const rows of [[], [censusRow({ ownerId: 'foreign' })],
+      [censusRow({ activation: null })], [censusRow({ unappliedSince: null })],
+      [censusRow({ turnsSince: 0 })], [censusRow({ turnsSince: Number.NaN })],
+      [censusRow({ unappliedSince: 'invalid-clock' })]]) {
+      candidates = rows; await runUnappliedActivationCensusOnce(fixture);
+      expect(load).toHaveBeenLastCalledWith(expect.arrayContaining(['su-stuck']));
+      expect(episode.open.has(key('unapplied', 'su-stuck'))).toBe(true);
+    }
+    candidates = [censusRow({ activation: censusActivation({ status: 'applied', desired: NEW, applied: NEW }) })];
+    await runUnappliedActivationCensusOnce(fixture);
+    expect(episode.open.has(key('unapplied', 'su-stuck'))).toBe(false);
+    candidates = [censusRow()]; await runUnappliedActivationCensusOnce(fixture);
+    expect(episode.open.has(key('unapplied', 'su-stuck'))).toBe(true);
+  });
+
+  it('independently opens census coverage before legacy and rejects broken positive controls', async () => {
+    const episode = episodeRail();
+    const fixture = censusDeps({ ...episode, escalateNotMeasured: async () => {
+      expect(episode.open.has(key('unapplied-coverage'))).toBe(true);
+    } });
+    for (const control of [{ recentBriefs: 2, recentJournalTurns: 0 },
+      { recentBriefs: Number.NaN, recentJournalTurns: 4 }, { recentBriefs: 2, recentJournalTurns: -1 }]) {
+      await runUnappliedActivationCensusOnce({ ...fixture, loadPositiveControl: async () => control });
+      expect(episode.open.has(key('unapplied-coverage'))).toBe(true);
+    }
+    await runUnappliedActivationCensusOnce({ ...fixture, loadUnapplied: async () => { throw new Error('offline'); } });
+    expect(episode.resolve).not.toHaveBeenCalled();
+    await runUnappliedActivationCensusOnce({ ...fixture, loadUnapplied: async () => [] });
+    expect(episode.open.size).toBe(0);
+  });
+});
 
 describe('classifyUnapplied — turns gate the finding, not the status label alone', () => {
   it('flags a launch that stayed prepared through the threshold of completed turns (WI-10004663 class)', () => {

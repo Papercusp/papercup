@@ -75,6 +75,69 @@ import { cooperativeYield } from '../event-loop-lag-monitor';
 import { narrowedLaunchSpecToAppliedPairSql } from '../capability-envelope/identity-receipt-narrowing';
 import { normalizeSessionActivation } from '../session-activation';
 import { activeWorkspaceId } from '../workspace-registry';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+type IdentityConditionKind = 'wedged' | 'unapplied' | 'wedged-coverage' | 'unapplied-coverage';
+interface IdentityConditionDeps {
+  workspaceId?: string;
+  rail?: Partial<AlarmAttentionDeps>;
+  readOpenConditions?: () => Promise<string[]>;
+}
+
+export function identityActivationConditionKey(kind: IdentityConditionKind, workspaceId: string, ownerId = ''): string {
+  return `alarm:identity-activation:${kind}:` + encodeURIComponent(JSON.stringify([workspaceId, ownerId]));
+}
+
+async function readOpenIdentityConditions(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith('alarm:identity-activation:'))
+    .map(condition => condition.condition_key);
+}
+
+async function identityEpisodes(deps: IdentityConditionDeps): Promise<Set<string>> {
+  try { return new Set(await (deps.readOpenConditions ?? readOpenIdentityConditions)()); }
+  catch { return new Set(); } // An unreadable episode ledger authorizes no recovery.
+}
+
+function episodeOwners(episodes: Set<string>, kind: IdentityConditionKind, workspaceId: string): string[] {
+  const prefix = `alarm:identity-activation:${kind}:`;
+  const owners: string[] = [];
+  for (const key of episodes) {
+    if (!key.startsWith(prefix)) continue;
+    try {
+      const identity: unknown = JSON.parse(decodeURIComponent(key.slice(prefix.length)));
+      if (Array.isArray(identity) && identity.length === 2 && identity[0] === workspaceId &&
+          typeof identity[1] === 'string' && identity[1] &&
+          key === identityActivationConditionKey(kind, workspaceId, identity[1])) owners.push(identity[1]);
+    } catch { /* Malformed durable identities remain open. */ }
+  }
+  return owners;
+}
+
+async function raiseIdentityCondition(kind: IdentityConditionKind, workspaceId: string, ownerId: string,
+  message: string, deps: IdentityConditionDeps): Promise<void> {
+  const event = { kind: 'identity-activation-watchdog', summary: message, oneShot: true,
+    conditionKey: identityActivationConditionKey(kind, workspaceId, ownerId) };
+  try {
+    if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+    else await broadcastSevereEvent(event);
+  } catch { /* Preserve the original escalation even when keyed delivery is unavailable. */ }
+}
+
+async function recoverIdentityCondition(kind: IdentityConditionKind, workspaceId: string, ownerId: string,
+  episodes: Set<string>, deps: IdentityConditionDeps): Promise<void> {
+  const key = identityActivationConditionKey(kind, workspaceId, ownerId);
+  if (!episodes.has(key)) return;
+  try { await resolveAlarm(key, 'identity-activation-watchdog', deps.rail); }
+  catch { /* Failed keyed recovery preserves the durable episode. */ }
+}
+
+function acknowledgedActivation(value: unknown): boolean {
+  try { return !!normalizeSessionActivation(value)?.applied; }
+  catch { return false; }
+}
 
 /**
  * The kernel's launch-record selection, verbatim. MUST stay byte-identical to
@@ -208,7 +271,7 @@ export interface WedgedSession {
   liveness: WedgedLiveness;
 }
 
-export interface WedgedIdentitySweepDeps {
+export interface WedgedIdentitySweepDeps extends IdentityConditionDeps {
   /**
    * One array, or a stream of pages (the default streams; WI-10004803).
    * `knownVerdictKeys` (WI-10005391) are the keys the sweep already holds a
@@ -461,6 +524,8 @@ export async function runWedgedIdentitySweepOnce(
   overrides: Partial<WedgedIdentitySweepDeps> = {},
 ): Promise<WedgedIdentitySweepOutcome> {
   const deps = sweepDeps(overrides);
+  const workspaceId = deps.workspaceId ?? activeWorkspaceId();
+  const episodes = await identityEpisodes(deps);
 
   // Pages are classified and dropped as they arrive (WI-10004803). A read that
   // fails on ANY page fails the whole sweep closed, exactly as a failed
@@ -471,6 +536,7 @@ export async function runWedgedIdentitySweepOnce(
   let retired = 0;
   let classified = 0;
   const confirmed: Array<{ ownerId: string; reason: string }> = [];
+  const healthy = new Set<string>();
   // WI-10005391: an immutable snapshot of the carried verdicts. A row the loader
   // omitted is looked up HERE, never in a map this sweep is still building.
   const prior = new Map(deps.verdictCache.verdicts);
@@ -482,6 +548,7 @@ export async function runWedgedIdentitySweepOnce(
       page = await pages.next();
     } catch (e) {
       const reason = `candidate read failed: ${e instanceof Error ? e.message : String(e)}`;
+      await raiseIdentityCondition('wedged-coverage', workspaceId, '', reason, deps);
       await deps.escalateNotMeasured({ reason });
       return { verdict: 'not-measured', reason, escalated: 1 };
     }
@@ -503,6 +570,7 @@ export async function runWedgedIdentitySweepOnce(
           const reason =
             `candidate read omitted the launch record for ${row.ownerId} ` +
             `(verdict key ${row.verdictKey ?? 'null'}) that the sweep holds no verdict for`;
+          await raiseIdentityCondition('wedged-coverage', workspaceId, '', reason, deps);
           await deps.escalateNotMeasured({ reason });
           return { verdict: 'not-measured', reason, escalated: 1 };
         }
@@ -514,6 +582,7 @@ export async function runWedgedIdentitySweepOnce(
       }
       if (row.verdictKey) next.set(row.verdictKey, verdict);
       if (verdict.wedged) confirmed.push({ ownerId: row.ownerId, reason: verdict.reason });
+      else if (row.advSessionId != null && acknowledgedActivation(row.activation)) healthy.add(row.ownerId);
     }
   }
 
@@ -523,6 +592,7 @@ export async function runWedgedIdentitySweepOnce(
   // an empty `wedged` list that is indistinguishable from a clean fleet.
   if (scanned === 0) {
     const reason = 'no session_briefs rows carried an activation — the sweep cannot have measured anything';
+    await raiseIdentityCondition('wedged-coverage', workspaceId, '', reason, deps);
     await deps.escalateNotMeasured({ reason });
     return { verdict: 'not-measured', reason, escalated: 1 };
   }
@@ -533,6 +603,14 @@ export async function runWedgedIdentitySweepOnce(
   deps.verdictCache.lastReused = reused;
   deps.verdictCache.lastScanned = scanned;
   deps.verdictCache.lastRetired = retired;
+
+  // Recovery follows only a complete scan and an exact acknowledged, reconciled
+  // owner row. Retirement, removal and loss of an activation are not recovery.
+  const stillWedged = new Set(confirmed.map(candidate => candidate.ownerId));
+  for (const ownerId of healthy) {
+    if (!stillWedged.has(ownerId)) await recoverIdentityCondition('wedged', workspaceId, ownerId, episodes, deps);
+  }
+  await recoverIdentityCondition('wedged-coverage', workspaceId, '', episodes, deps);
 
   if (confirmed.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 
@@ -549,8 +627,15 @@ export async function runWedgedIdentitySweepOnce(
     .map((c) => ({ ...c, liveness: liveness.get(c.ownerId) ?? 'unknown' }))
     .filter((w) => !TERMINAL_STATES.has(w.liveness));
 
+  for (const candidate of confirmed) {
+    if (TERMINAL_STATES.has(liveness.get(candidate.ownerId) ?? 'unknown'))
+      await recoverIdentityCondition('wedged', workspaceId, candidate.ownerId, episodes, deps);
+  }
+
   if (wedged.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 
+  for (const candidate of wedged) await raiseIdentityCondition('wedged', workspaceId, candidate.ownerId,
+    `Identity activation is wedged for ${candidate.ownerId}: ${candidate.reason}`, deps);
   await deps.escalateWedged(wedged);
   return { verdict: 'wedged', scanned, wedged, escalated: 1 };
 }
@@ -625,8 +710,8 @@ export interface TurnJournalPositiveControl {
   recentJournalTurns: number;
 }
 
-export interface UnappliedActivationCensusDeps {
-  loadUnapplied: () => Promise<UnappliedCandidateRow[]>;
+export interface UnappliedActivationCensusDeps extends IdentityConditionDeps {
+  loadUnapplied: (openEpisodeOwners: readonly string[]) => Promise<UnappliedCandidateRow[]>;
   loadPositiveControl: () => Promise<TurnJournalPositiveControl>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
   escalateUnapplied: (unapplied: UnappliedSession[]) => Promise<void>;
@@ -654,6 +739,9 @@ export function classifyUnapplied(
   }
   if (!parsed || (parsed.status !== 'desired' && parsed.status !== 'prepared')) return { unapplied: false };
   if (sameActivationPair(parsed.desired, parsed.applied)) return { unapplied: false };
+  if (!Number.isSafeInteger(row.turnsSince) || row.turnsSince < 0 ||
+      (row.unappliedSince != null && !Number.isFinite(Date.parse(row.unappliedSince))))
+    return { unapplied: 'unmeasured' };
   // Unapplied, but no event says since WHEN, so its turns cannot be counted.
   // Reported as a count, never guessed into a finding.
   if (row.unappliedSince == null) return { unapplied: 'unmeasured' };
@@ -666,7 +754,7 @@ export function classifyUnapplied(
   };
 }
 
-async function defaultLoadUnapplied(): Promise<UnappliedCandidateRow[]> {
+async function defaultLoadUnapplied(openEpisodeOwners: readonly string[] = []): Promise<UnappliedCandidateRow[]> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
   // Index-backed per row: events by (workspace_id, owner_id, recorded_at, id);
@@ -702,7 +790,8 @@ async function defaultLoadUnapplied(): Promise<UnappliedCandidateRow[]> {
          LIMIT 1
       ) u ON true
      WHERE b.workspace_id = ${workspaceId}
-       AND b.control_state->'activation'->>'status' IN ('desired', 'prepared')
+       AND (b.control_state->'activation'->>'status' IN ('desired', 'prepared')
+            OR b.owner_id = ANY(${[...openEpisodeOwners]}::text[]))
   `;
   return rows.map((r) => ({
     ownerId: r.owner_id,
@@ -824,13 +913,18 @@ export async function runUnappliedActivationCensusOnce(
   overrides: Partial<UnappliedActivationCensusDeps> = {},
 ): Promise<UnappliedActivationCensusOutcome> {
   const deps = censusDeps(overrides);
+  const workspaceId = deps.workspaceId ?? activeWorkspaceId();
+  const episodes = await identityEpisodes(deps);
 
   let rows: UnappliedCandidateRow[];
   let control: TurnJournalPositiveControl;
   try {
-    [rows, control] = await Promise.all([deps.loadUnapplied(), deps.loadPositiveControl()]);
+    [rows, control] = await Promise.all([
+      deps.loadUnapplied(episodeOwners(episodes, 'unapplied', workspaceId)), deps.loadPositiveControl(),
+    ]);
   } catch (e) {
     const reason = `census read failed: ${e instanceof Error ? e.message : String(e)}`;
+    await raiseIdentityCondition('unapplied-coverage', workspaceId, '', reason, deps);
     await deps.escalateNotMeasured({ reason });
     return { verdict: 'not-measured', reason, escalated: 1 };
   }
@@ -841,17 +935,27 @@ export async function runUnappliedActivationCensusOnce(
   // stopped being written makes every session read 0 turns, which is
   // indistinguishable from "nobody is stuck". An active fleet (briefs touched
   // in 24h) with zero journaled turns is that broken instrument.
-  if (control.recentBriefs > 0 && control.recentJournalTurns === 0) {
+  if (!Number.isSafeInteger(control.recentBriefs) || control.recentBriefs < 0 ||
+      !Number.isSafeInteger(control.recentJournalTurns) || control.recentJournalTurns < 0 ||
+      (control.recentBriefs > 0 && control.recentJournalTurns === 0)) {
     const reason =
       `${control.recentBriefs} session brief(s) were active in the last 24h but session_turn_journal ` +
       `recorded 0 turns — the census cannot count turns`;
+    await raiseIdentityCondition('unapplied-coverage', workspaceId, '', reason, deps);
     await deps.escalateNotMeasured({ reason });
     return { verdict: 'not-measured', reason, escalated: 1 };
   }
 
   let unmeasured = 0;
   const confirmed: Array<Omit<UnappliedSession, 'liveness'>> = [];
+  const recovered = new Set<string>();
   for (const row of rows) {
+    // A smaller turn count, malformed activation or missing row does not show
+    // that an already-open unapplied episode has converged.
+    try {
+      const parsed = normalizeSessionActivation(row.activation);
+      if (parsed?.applied && sameActivationPair(parsed.desired, parsed.applied)) recovered.add(row.ownerId);
+    } catch { /* Unknown activation preserves existing episodes. */ }
     const verdict = classifyUnapplied(row);
     if (verdict.unapplied === 'unmeasured') unmeasured += 1;
     else if (verdict.unapplied === true) {
@@ -865,6 +969,13 @@ export async function runUnappliedActivationCensusOnce(
   }
 
   const scanned = rows.length;
+  const stillUnapplied = new Set(confirmed.map(candidate => candidate.ownerId));
+  for (const ownerId of recovered) {
+    if (!stillUnapplied.has(ownerId)) await recoverIdentityCondition('unapplied', workspaceId, ownerId, episodes, deps);
+  }
+  if (unmeasured === 0) await recoverIdentityCondition('unapplied-coverage', workspaceId, '', episodes, deps);
+  else await raiseIdentityCondition('unapplied-coverage', workspaceId, '',
+    `${unmeasured} activation row(s) have no valid measured turn history`, deps);
   if (confirmed.length === 0) return { verdict: 'clean', scanned, ended: 0, unmeasured, escalated: 0 };
 
   let liveness: Map<string, WedgedLiveness>;
@@ -879,9 +990,15 @@ export async function runUnappliedActivationCensusOnce(
   // An ended session cannot be converged; its finding is history, not an alarm.
   const unapplied = withLiveness.filter((u) => !TERMINAL_STATES.has(u.liveness));
   const ended = withLiveness.length - unapplied.length;
+  for (const candidate of withLiveness) {
+    if (TERMINAL_STATES.has(candidate.liveness))
+      await recoverIdentityCondition('unapplied', workspaceId, candidate.ownerId, episodes, deps);
+  }
 
   if (unapplied.length === 0) return { verdict: 'clean', scanned, ended, unmeasured, escalated: 0 };
 
+  for (const candidate of unapplied) await raiseIdentityCondition('unapplied', workspaceId, candidate.ownerId,
+    `Identity activation is unapplied for ${candidate.ownerId} after ${candidate.turnsSince} turns`, deps);
   await deps.escalateUnapplied(unapplied);
   return { verdict: 'unapplied', scanned, unapplied, ended, unmeasured, escalated: 1 };
 }

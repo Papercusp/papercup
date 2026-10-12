@@ -157,9 +157,9 @@
       "limitations": "Actual owner assignment was observed; no successful provider turn, native approval card/effect, OS restart, successful serving-account acceptance, clean-source BAR or full-candidate verdict was established."
     },
     "limitations": [
-      "The corrected native journey has not yet passed. These five tests cover its wait detector only.",
+      "The five detector controls remain scoped helper evidence. The corrected current-build native journey subsequently passed in mountedSuApprovalRepair.resumedNativeVerification (ledger 21161988); that run verified the explicit target approval, exact effect, same turn/session and OS-process restart.",
       "The original Connection: Unavailable cause remains unconfirmed.",
-      "Account auto is routing metadata, not serving-account proof. No full-candidate acceptance, BAR adequacy, independent grade, final Avi approval or public shipment is asserted."
+      "The successful native receipt reports accountServed=aviynw8 on both process legs, with accountRoute=auto. It is current-build repair evidence; clean full-candidate acceptance, BAR adequacy, independent grading, final Avi approval and public shipment remain separate."
     ]
   },
   "coldStartupProfile": {

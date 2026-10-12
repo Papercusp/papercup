@@ -1,7 +1,7 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -10,10 +10,9 @@ import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
-import { readProcessIdentity } from '../lib/process-identity';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
-// @ts-ignore -- reuse the maintained source exporter and pinned dependency snapshot used by verifier-prepare.
-import { prepareVerifierDependencies, prepareVerifierSource } from '../../../scripts/source-preview.mjs';
+import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
+  CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 
 /** Additional pins on the existing operator-api-preflight.json receipt. This
  * is preparation evidence, not proof that a host loaded or served the bundle.
@@ -185,140 +184,77 @@ export function qualifyCommittedReaderPlannedInputs(root: string, selected: {
     recheck: () => { unchanged(); validate(); unchanged(); } };
 }
 
-/** Materialize the source and original measurements in an independent
- * preparation tree before the private HTTP bundle/host is built. Source bytes
- * use the maintained verifier-prepare exporter; dependencies and imports are
- * measured from that frozen tree and its independent bundle. Schema and child
- * environment values must be supplied from the caller's live observations.
- */
+export function qualifyCommittedReaderOriginalPreparation(handoff: CommittedReaderPreparationHandoff | void,
+  expected: CommittedReaderObservationIdentity) {
+  assert.ok(handoff && typeof handoff === 'object', 'Required original preparation handoff is missing');
+  handoff = structuredClone(handoff);
+  expected = structuredClone(expected);
+  assert.match(expected.sourceCommit, /^[a-f0-9]{40}$/, 'Original selected reference is required');
+  assert.ok(expected.runId && Number.isSafeInteger(expected.process?.pid) && expected.process.pid > 0
+    && expected.process.identity, 'Original run/process identity is required');
+  for (const pin of [handoff.sourceReceiptSha256, handoff.inputReceiptSha256, handoff.observationReceiptSha256])
+    assert.match(pin, /^[a-f0-9]{64}$/, 'Original receipt digest is required');
+  assert.equal(handoff.selectedCommit, expected.sourceCommit, 'Original selected reference differs');
+  const bytes = readFileSync(handoff.observationReceiptPath);
+  assert.equal(digestBytes(bytes), handoff.observationReceiptSha256, 'Original observation receipt changed');
+  const cohort: CommittedReaderObservationCohort = JSON.parse(String(bytes));
+  const identity = (value: CommittedReaderObservationIdentity) => {
+    assert.ok(value && typeof value === 'object', 'Original dimension identity is missing');
+    assert.deepEqual({ sourceCommit: value.sourceCommit, runId: value.runId, process: value.process }, expected,
+      'Original observation cohort identity differs');
+  };
+  identity(cohort);
+  assert.deepEqual(cohort.omitted, [], 'Original observation cohort has omitted dimensions');
+  assert.deepEqual(cohort.opaque, [], 'Original observation cohort has opaque dimensions');
+  assert.equal(cohort.sourceRoot, handoff.root, 'Original selected source root differs');
+  assert.deepEqual(cohort.sourceReceipt, { path: handoff.sourceReceiptPath, sha256: handoff.sourceReceiptSha256 },
+    'Original source receipt pin differs');
+  assert.deepEqual(cohort.inputReceipt, { path: handoff.inputReceiptPath, sha256: handoff.inputReceiptSha256 },
+    'Original input receipt pin differs');
+  const planned = qualifyCommittedReaderPlannedInputs(handoff.root, handoff);
+  const inputs: CommittedReaderPreparationInputs = planned.inputs;
+  const values = { source: planned.source,
+    dependencies: { files: inputs.dependencyFiles, externalResolutions: inputs.externalResolutions },
+    config: inputs.configPaths, imports: inputs.executedImports, schema: inputs.schema, environment: inputs.environment };
+  for (const key of Object.keys(values) as (keyof typeof values)[]) {
+    const observed = cohort.observations?.[key];
+    identity(observed);
+    assert.deepEqual(observed.value, values[key], `Original ${key} observation differs from planned inputs`);
+  }
+  const recheck = () => {
+    assert.deepEqual(readFileSync(handoff.observationReceiptPath), bytes, 'Original observation receipt changed during handoff');
+    planned.recheck();
+  };
+  recheck();
+  return { planned, cohort, bytes, recheck, handoff };
+}
+
+/** Consume an independently supplied original cohort. Static archive/build
+ * metadata and caller values are preparation inputs, never measurements of
+ * invoked config, imports, applied schema or the original worker environment.
+ * This facade is read-only and allocates no producer/private runtime. */
 export async function produceCommittedReaderOriginalPreparation(o: {
   repositoryRoot: string; workRoot: string; selectedCommit: string; testPath: string;
   helperPaths: string[]; configPaths: string[]; schema: Record<string, string>;
   environment: Record<string, string>;
-}): Promise<{
-  identity: { sourceCommit: string; runId: string; process: { pid: number; identity: string } };
-  root: string; selectedCommit: string; sourceReceiptPath: string; sourceReceiptSha256: string;
-  inputReceiptPath: string; inputReceiptSha256: string; observationReceiptPath: string;
-  observationReceiptSha256: string;
-}> {
-  const { repositoryRoot, workRoot, selectedCommit, testPath } = o;
-  assert.ok(isAbsolute(repositoryRoot) && isAbsolute(workRoot), 'Independent preparation roots must be absolute');
-  assert.ok(!existsSync(workRoot), 'Independent preparation directory must be newly allocated');
-  const sourceRoot = realpathSync(repositoryRoot), preparationRoot = resolve(workRoot);
-  assert.ok(preparationRoot !== sourceRoot && !preparationRoot.startsWith(`${sourceRoot}${sep}`),
-    'Independent preparation directory must be outside the source repository');
-  assert.match(selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
-  assert.ok(o.schema && Object.keys(o.schema).length, 'Original private schema observation is required');
-  assert.ok(o.environment && Object.keys(o.environment).length, 'Original private environment observation is required');
-  for (const [key, value] of Object.entries(o.environment))
-    assert.ok(typeof value === 'string', `Original environment value is missing: ${key}`);
-
-  mkdirSync(workRoot, { recursive: false });
-  const root = join(workRoot, 'source');
-  const sourceReceiptPath = join(workRoot, 'verifier-source.json');
-  const inputReceiptPath = join(workRoot, 'operator-api-inputs.json');
-  const observationReceiptPath = join(workRoot, 'original-observations.json');
-  const sourceManifest = await prepareVerifierSource({ repo: repositoryRoot, ref: selectedCommit, dest: root,
-    inputs: [testPath] });
-  assert.equal(sourceManifest.sourceCommit, selectedCommit, 'Independent archive differs from selected source');
-  const sourceFiles = new Map(sourceManifest.files.map((file: VerifierSourceFile) => [file.path, file]));
-  for (const path of [testPath, ...o.helperPaths, ...o.configPaths])
-    assert.ok(sourceFiles.has(path), `Original preparation path is outside selected source: ${path}`);
-  assert.ok(sourceManifest.testedInputs.some((file: VerifierSourceFile) => file.path === testPath),
-    'Original integration test is absent from selected tested inputs');
-  const sourceBytes = Buffer.from(`${JSON.stringify(sourceManifest)}\n`);
-  writeFileSync(sourceReceiptPath, sourceBytes, { flag: 'wx', mode: 0o600 });
-
-  await prepareVerifierDependencies({ donor: repositoryRoot, dest: root, receipt: sourceManifest });
-  const dependenciesRoot = join(root, 'node_modules');
-  const dependencyFiles = verifierSourceFiles(dependenciesRoot);
-  assert.ok(dependencyFiles.length, 'Independent materialized dependency census is required');
-
-  // This is a separate bundle in the independently selected archive. The
-  // target producer builds its private bundle only after this handoff exists.
-  const bundle = join(root, 'apps/operator/dist-verify/original-hono-host.mjs');
-  mkdirSync(dirname(bundle), { recursive: true });
-  execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
-    cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
-    stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000, maxBuffer: 16 * 1024 * 1024,
-  });
-  const graph = JSON.parse(String(readFileSync(`${bundle}.meta.json`)));
-  assert.ok(graph.inputs && Object.keys(graph.inputs).length && graph.outputs && Object.keys(graph.outputs).length,
-    'Independent original build graph is required');
-  const sourcePath = (raw: string) => {
-    const absolute = isAbsolute(raw) ? resolve(raw) : resolve(root, raw);
-    const path = relative(root, absolute).split(sep).join('/');
-    assert.ok(path && path !== '..' && !path.startsWith('../') && !isAbsolute(path),
-      `Independent bundle path escapes selected source: ${raw}`);
-    return path;
-  };
-  const dependencyPaths = new Set(dependencyFiles.map(file => `node_modules/${file.path}`));
-  const executedImports = new Set<string>();
-  const externals = new Set<string>();
-  for (const [raw, input] of Object.entries(graph.inputs) as [string, { imports?: { path: string; external?: boolean }[] }][]) {
-    const path = sourcePath(raw);
-    if (!path.startsWith('node_modules/')) executedImports.add(path);
-    assert.ok(Array.isArray(input.imports), `Independent bundle imports are unknown: ${raw}`);
-    for (const edge of input.imports!) {
-      if (edge.external) { if (!isBuiltin(edge.path)) externals.add(edge.path); }
-      else {
-        const imported = sourcePath(edge.path);
-        if (!imported.startsWith('node_modules/')) executedImports.add(imported);
-      }
-    }
-  }
-  for (const output of Object.values(graph.outputs) as { imports?: { path: string; external?: boolean }[] }[]) {
-    assert.ok(Array.isArray(output.imports), 'Independent bundle output imports are unknown');
-    for (const edge of output.imports!) if (edge.external && !isBuiltin(edge.path)) externals.add(edge.path);
-  }
-  const resolveFromBundle = createRequire(bundle);
-  const externalResolutions = Object.fromEntries([...externals].sort().map(specifier => {
-    const path = sourcePath(resolveFromBundle.resolve(specifier));
-    assert.ok(path.startsWith('node_modules/') && dependencyPaths.has(path),
-      `Independent external resolution is not pinned: ${specifier} -> ${path}`);
-    return [specifier, path];
-  }));
-  for (const path of executedImports)
-    assert.ok(sourceFiles.has(path), `Independent bundle import is outside selected source: ${path}`);
-
-  const inputValues: CommittedReaderPreparationInputs = {
-    sourceCommit: selectedCommit, phase: 'planned', testPaths: [testPath], helperPaths: [...new Set(o.helperPaths)].sort(),
-    configPaths: [...new Set(o.configPaths)].sort(), executedImports: [...executedImports].sort(),
-    dependencyFiles, externalResolutions, copiedSources: [], copiedArtifacts: [], schema: structuredClone(o.schema),
-    environment: Object.fromEntries(Object.entries(o.environment).map(([key, value]) => [key, digestBytes(value)])),
-    omitted: [], opaque: [],
-  };
-  assertCommittedReaderInputs(inputValues);
-  const inputBytes = Buffer.from(JSON.stringify(inputValues));
-  writeFileSync(inputReceiptPath, inputBytes, { flag: 'wx', mode: 0o600 });
-  const sourceReceiptSha256 = digestBytes(sourceBytes);
-  const inputReceiptSha256 = digestBytes(inputBytes);
-  const processIdentity = readProcessIdentity(process.pid);
-  assert.ok(processIdentity, 'Original preparation process identity is required');
-  const identity = { sourceCommit: selectedCommit, runId: randomUUID(),
-    process: { pid: process.pid, identity: processIdentity } };
-  const values = {
-    source: sourceManifest,
-    dependencies: { files: dependencyFiles, externalResolutions },
-    config: inputValues.configPaths, imports: inputValues.executedImports,
-    schema: inputValues.schema, environment: inputValues.environment,
-  };
-  const observation = {
-    ...identity, sourceRoot: root,
-    sourceReceipt: { path: sourceReceiptPath, sha256: sourceReceiptSha256 },
-    inputReceipt: { path: inputReceiptPath, sha256: inputReceiptSha256 },
-    observations: Object.fromEntries(Object.entries(values).map(([key, value]) => [key,
-      { ...structuredClone(identity), value }])) as Record<string, unknown>,
-    omitted: [], opaque: [],
-  };
-  const observationBytes = Buffer.from(JSON.stringify(observation));
-  writeFileSync(observationReceiptPath, observationBytes, { flag: 'wx', mode: 0o600 });
-  const observationReceiptSha256 = digestBytes(observationBytes);
-  const planned = qualifyCommittedReaderPlannedInputs(root, { inputReceiptPath, sourceReceiptPath, selectedCommit,
-    inputReceiptSha256, sourceReceiptSha256 });
-  assert.deepEqual(planned.source, sourceManifest, 'Independent source receipt changed during production');
-  return { identity, root, selectedCommit, sourceReceiptPath, sourceReceiptSha256, inputReceiptPath,
-    inputReceiptSha256, observationReceiptPath, observationReceiptSha256 };
+  original?: { handoff: CommittedReaderPreparationHandoff; identity: CommittedReaderObservationIdentity };
+}): Promise<CommittedReaderPreparationHandoff & { identity: CommittedReaderObservationIdentity }> {
+  assert.ok(o.original, 'Pinned original preparation handoff is required before producer effects');
+  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.equal(o.original.identity.sourceCommit, o.selectedCommit, 'Original selected reference differs');
+  const original = qualifyCommittedReaderOriginalPreparation(o.original.handoff, o.original.identity);
+  const { inputs } = original.planned;
+  assert.ok(inputs.testPaths.includes(o.testPath), 'Original selected test differs');
+  for (const key of ['helperPaths', 'configPaths'] as const)
+    assert.deepEqual([...new Set(inputs[key])].sort(), [...new Set(o[key])].sort(),
+      `Original ${key} population differs from requested preparation`);
+  // Caller expectations may constrain a measured receipt; they never create it.
+  assert.deepEqual(inputs.schema, o.schema, 'Original schema differs from requested preparation');
+  assert.deepEqual(inputs.environment,
+    Object.fromEntries(Object.entries(o.environment).map(([key, value]) => [key, digestBytes(value)])),
+    'Original environment differs from requested preparation');
+  original.recheck();
+  return { ...original.handoff, identity: structuredClone(o.original.identity) };
 }
 
 /** The digested input receipt stays separate from the producer's output claims. */

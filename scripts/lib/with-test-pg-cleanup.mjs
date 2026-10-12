@@ -2,9 +2,11 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 
 /** Stop each owned resource even when another exit fence fails. Private state
- * remains available until every resource has a verified stop. */
-export async function cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime,
-  pg, dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop }) {
+ * remains available until every resource has a verified stop.
+ * @param {import('./with-test-pg-cleanup.d.mts').CleanupOwnedTestStateOptions} state */
+export async function cleanupOwnedTestState(state) {
+  const { child, childLifetime, profileProcess, profileLifetime,
+    pg, dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop } = state;
   const failures = [];
   const attempt = async (stage, operation, detail = {}, finishedStage = stage + 'ped') => {
     try {

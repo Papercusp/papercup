@@ -2368,7 +2368,9 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
           });
           deployInProgress = holders.some((h) => h.mode === 'exclusive');
         } catch { /* lock store unreadable — do not suppress */ }
-        perf = evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress);
+        const { hostname } = await import('node:os');
+        perf = await evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress,
+          { workspaceId: ctx.ws, hostId: hostname() });
       }
     } catch { /* perf-signals unreadable — leave null */ }
     // This reader runs even when the sampling routine has stopped. Reuse Infra's
