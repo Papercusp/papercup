@@ -157,6 +157,14 @@ registerDegradationMechanism({
   description: 'Search coverage requests served by a successfully measured snapshot rather than a fail-open empty snapshot.',
 });
 registerDegradationMechanism({
+  mechanism: 'scout-state-read', scopeKeyed: true,
+  description: 'Scout and learning-state reads that measured their primary state rather than continuing with a fail-open gate, config, rail, ledger or weight default.',
+});
+registerDegradationMechanism({
+  mechanism: 'coordination-window-read', scopeKeyed: true,
+  description: 'Inbox and outbox reads whose primary paged query completed rather than retrying the full-read fallback after a paging error.',
+});
+registerDegradationMechanism({
   mechanism: 'release-state-read', scopeKeyed: true,
   description: 'Release guard reads that returned their primary snapshot rather than a fail-open empty or partial snapshot.',
   thresholds: { minEligible: 1 },
