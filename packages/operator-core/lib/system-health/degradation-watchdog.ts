@@ -254,6 +254,10 @@ registerDegradationMechanism({
   description: 'Routine output opened its primary durable log rather than falling back to piped output.',
   thresholds: { minEligible: 1 },
 });
+registerDegradationMechanism({
+  mechanism: 'routine-scheduler-admission', scopeKeyed: true,
+  description: 'Scheduler ticks admitted ordinary work rather than retaining only the critical-queue safety floor; this records the chosen policy, not a diagnosis of latency or successful routine execution.',
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both
