@@ -169,6 +169,10 @@ registerDegradationMechanism({
   description: 'Applicable dispatcher capability evaluations that returned a measured policy verdict rather than allowing the call after an evaluator exception; unwired and exempt evaluations are excluded.',
 });
 registerDegradationMechanism({
+  mechanism: 'mdx-render',
+  description: 'Actual MDX parses that completed rather than returning searchable raw-text fallback; cache hits and cancellation before parsing are excluded.',
+});
+registerDegradationMechanism({
   mechanism: 'improvement-watchdog-read', scopeKeyed: true,
   description: 'Improvement-watchdog lock, history and key-dedup reads that completed their primary operation rather than sweeping unlocked or using no-history/title-only defaults.',
 });
