@@ -123,6 +123,32 @@ function withScratchWorkspaceMutex<T>(
   requestTraceId?: string,
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
+  const intent = {
+    subsystem: 'scratch-quota',
+    operation,
+    workspaceId,
+    ...(requestTraceId ? { requestTraceId: requestTraceId.slice(0, 120) } : {}),
+  };
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX !== '1') {
+    const filesystemAdmissionStartedAt = performance.now();
+    return withFsMutex(mutexName, run, {
+      intent,
+      waitingNoticeIntervalMs: 5_000,
+      onWaiting,
+      onAcquired: onAcquired
+        ? (info) => {
+          const filesystemWaitMs = Math.max(0, performance.now() - filesystemAdmissionStartedAt);
+          onAcquired({
+            waitedMs: filesystemWaitMs,
+            localWaitMs: 0,
+            fsMutexAdmissionMs: info.waitedMs,
+            admissionSubphaseTimingsMs: info.admissionSubphaseTimingsMs,
+          });
+        }
+        : undefined,
+    });
+  }
+
   const previous = scratchMutexState.get(mutexName) ?? Promise.resolve();
   const requests = scratchMutexWaiters.get(mutexName) ?? [];
   const request = {
@@ -184,12 +210,7 @@ function withScratchWorkspaceMutex<T>(
       : undefined;
     try {
       return await withFsMutex(mutexName, run, {
-        intent: {
-          subsystem: 'scratch-quota',
-          operation,
-          workspaceId,
-          ...(requestTraceId ? { requestTraceId: requestTraceId.slice(0, 120) } : {}),
-        },
+        intent,
         waitingNoticeIntervalMs: 5_000,
         onWaiting: observedOnWaiting,
         onAcquired: onAcquired
