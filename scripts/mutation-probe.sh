@@ -216,6 +216,9 @@
 #   Find probe rows with testing:runs { source:'mutation-probe' } or exact
 #   testRunIds:[N]. Replay the recorded testCommand, preserving its {} subject
 #   pointer and inline environment, against the recorded subject and mutation.
+#   Historical descriptors also retain historicalControls: mustBeAbsent,
+#   positiveControls, calibrationCommand and optional subjectMustBehave.
+#   Replay those original settings; older rows cannot reconstruct missing ones.
 #   An unchanged-test survivor followed by a descriptor-linked catch is refused
 #   at binding with mutation_reaim_unjustified; supply structured
 #   reaimJustification { survivorTestRunIds, reason } naming every prior survivor
