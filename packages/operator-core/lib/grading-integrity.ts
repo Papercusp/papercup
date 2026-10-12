@@ -868,11 +868,11 @@ export async function reservePendingGradingAudit(
                  -- so clearing it here is the natural place: the stamp is spent.
                  COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
                  '{observation,gradingAudit,dispatchReservation}',
-                 ${reservation}::jsonb,
+                 ${reservation}::text::jsonb,
                  true
                ),
                '{observation,gradingAudit,lastDispatchReservation}',
-               ${reservation}::jsonb,
+               ${reservation}::text::jsonb,
                true
              ),
              origin = 'local',
@@ -935,7 +935,7 @@ export async function reservePendingGradingAudit(
              SET payload = jsonb_set(
                    COALESCE(payload, '{}'::jsonb),
                    '{observation,gradingAudit}',
-                   ${reopenedStamp}::jsonb,
+                   ${reopenedStamp}::text::jsonb,
                    true
                  ),
                  origin = 'local',
@@ -1023,20 +1023,20 @@ export async function releasePendingGradingAudit(
            restoreJson && backoffJson
              ? tx`jsonb_set(
                  jsonb_set(
-                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::text::jsonb, true),
                    '{observation,gradingAudit,lastDispatchReservation}',
-                   ${restoreJson}::jsonb,
+                   ${restoreJson}::text::jsonb,
                    true
                  ),
                  '{observation,gradingAudit,dispatchBackoff}',
-                 ${backoffJson}::jsonb,
+                 ${backoffJson}::text::jsonb,
                  true
                )`
              : restoreJson
                ? tx`jsonb_set(
-                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::text::jsonb, true),
                    '{observation,gradingAudit,lastDispatchReservation}',
-                   ${restoreJson}::jsonb,
+                   ${restoreJson}::text::jsonb,
                    true
                  )`
                : backoffJson
@@ -1048,7 +1048,7 @@ export async function releasePendingGradingAudit(
                        true
                      ),
                      '{observation,gradingAudit,dispatchBackoff}',
-                     ${backoffJson}::jsonb,
+                     ${backoffJson}::text::jsonb,
                      true
                    )`
                  : tx`jsonb_set(
@@ -2343,7 +2343,8 @@ export async function reconcilePendingGradingAudits(
  * human or a session-side shutdown request (headless tasks have no terminal to
  * close). The start/audit timestamps protect a newer re-audit launched after a
  * previously settled verdict, and the grace period lets the final emit response
- * return before the task is retired.
+ * return before the task is retired. A cancelled target has no valid audit
+ * mission, so its tasks can be retired immediately, including late launches.
  */
 async function retireSettledGradingAuditTasks(
   input: DispatchPendingGradingAuditsInput,
@@ -2413,6 +2414,12 @@ async function retireSettledGradingAuditTasks(
     if (typeof label !== 'string' || !label.startsWith(GRADING_AUDIT_TASK_LABEL_PREFIX)) return [];
     const issueId = label.slice(GRADING_AUDIT_TASK_LABEL_PREFIX.length);
     const audit = cardById.get(issueId)?.gradingAudit;
+    if (audit?.state === 'cancelled') {
+      // Cancellation fences emission independently of the task's start time.
+      // The original audit stamp is only the retirement queue's ordering key.
+      const auditedAtMs = Date.parse(audit.stampedAt);
+      return Number.isFinite(auditedAtMs) ? [{ task, issueId, auditedAtMs }] : [];
+    }
     if (!audit || (audit.state !== 'passed' && audit.state !== 'failed') || !audit.auditedAt) return [];
     const auditedAtMs = Date.parse(audit.auditedAt);
     const startedAtMs = Date.parse(task.startedAt);

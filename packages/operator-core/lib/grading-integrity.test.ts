@@ -733,6 +733,51 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  it('retires cancelled audit missions without retiring their pending replacements', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-25100000000000005', {
+        gradingAudit: {
+          state: 'cancelled',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-10-06T07:00:00.000Z',
+        },
+      }),
+      card('EI-25100000000000006'),
+    ]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-cancelled-original',
+        state: 'running',
+        startedAt: '2026-10-06T07:20:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000005' },
+      } as unknown as TaskRow,
+      {
+        taskId: 'task-cancelled-late-launch',
+        state: 'running',
+        startedAt: '2026-10-06T07:59:59.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000005' },
+      } as unknown as TaskRow,
+      {
+        taskId: 'task-pending-replacement',
+        state: 'running',
+        startedAt: '2026-10-06T07:30:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000006' },
+      } as unknown as TaskRow,
+    ]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp', targetIds: ['EI-25100000000000005'] },
+      { ...d, killTask, now: () => Date.parse('2026-10-06T08:00:00.000Z') },
+    );
+
+    expect(killTask.mock.calls.map(([id]) => id).sort()).toEqual([
+      'task-cancelled-late-launch', 'task-cancelled-original',
+    ]);
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('fresh-launches generation-bound cards only from a compatible dispatcher build', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([
