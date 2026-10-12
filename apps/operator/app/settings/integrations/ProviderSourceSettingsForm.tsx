@@ -17,10 +17,14 @@ import { useCallback, useState, type CSSProperties, type FormEvent } from 'react
 import { toast } from 'sonner';
 import type { ProviderSourceSettingsOffer } from '@papercusp/operator-core/lib/integrations/provider-source-settings';
 import { Button } from '../../harness/Button';
+import { Checkbox } from '../../harness/Checkbox';
+import { RadioGroup } from '../../harness/RadioGroup';
 import { providerCredentialsPath } from './ProviderCredentialsForm';
 import { IntegrationRequestError } from './ticket-integrations-client';
 
 type Scope = 'personal' | 'organization';
+
+const SCOPE_OPTIONS: ReadonlyArray<{ value: Scope }> = [{ value: 'personal' }, { value: 'organization' }];
 
 async function saveSettings(providerId: string, source: { scope: Scope; liveSearch?: boolean }): Promise<void> {
   const res = await fetch(providerCredentialsPath(providerId), {
@@ -92,30 +96,23 @@ export function ProviderSourceSettingsForm({
     >
       <fieldset style={fieldsetStyle}>
         <legend style={labelText}>Who can read what it syncs</legend>
-        <label style={choiceRow}>
-          <input type="radio" name={`scope-${providerId}`} value="personal" checked={nextScope === 'personal'} onChange={() => setScope('personal')} />
-          Only you
-        </label>
-        <label style={choiceRow}>
-          <input
-            type="radio"
-            name={`scope-${providerId}`}
-            value="organization"
-            checked={nextScope === 'organization'}
-            onChange={() => setScope('organization')}
-          />
-          Your organization: each item is readable by the people who can see it in {displayName}
-        </label>
+        <RadioGroup label="Who can read what it syncs" value={nextScope} options={SCOPE_OPTIONS} onChange={setScope} optionStyle={() => choiceButton}>
+          {(option, selected) => (
+            <>
+              <span aria-hidden="true">{selected ? '◉' : '○'}</span>
+              <span>
+                {option.value === 'personal'
+                  ? 'Only you'
+                  : `Your organization: each item is readable by the people who can see it in ${displayName}`}
+              </span>
+            </>
+          )}
+        </RadioGroup>
       </fieldset>
       {offer.liveSearch && (
-        <label style={choiceRow}>
-          <input
-            type="checkbox"
-            name={`live-search-${providerId}`}
-            checked={nextLive}
-            disabled={nextScope !== 'organization'}
-            onChange={(event) => setLive(event.target.checked)}
-          />
+        // The wrapping label names the checkbox and keeps the whole sentence a click target.
+        <label style={checkRow}>
+          <Checkbox checked={nextLive} disabled={nextScope !== 'organization'} onChange={setLive} style={{ marginTop: 2 }} />
           Search {displayName} live instead of copying it. Each search runs as the person asking, with their own access.
         </label>
       )}
@@ -136,6 +133,20 @@ export function ProviderSourceSettingsForm({
 const formStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, margin: '8px 0 12px' };
 const fieldsetStyle: CSSProperties = { border: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 };
 const labelText: CSSProperties = { fontSize: 13, color: 'var(--fg)', padding: 0, marginBottom: 2 };
-const choiceRow: CSSProperties = { display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 13, color: 'var(--fg)' };
+const choiceButton: CSSProperties = {
+  display: 'flex',
+  width: '100%',
+  gap: 6,
+  alignItems: 'baseline',
+  padding: '2px 0',
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--fg)',
+  fontFamily: 'inherit',
+  fontSize: 13,
+  textAlign: 'left',
+  cursor: 'pointer',
+};
+const checkRow: CSSProperties = { display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: 'var(--fg)' };
 const errorText: CSSProperties = { color: 'var(--bad)', fontSize: 12, margin: '4px 0 0', overflowWrap: 'anywhere' };
 const actionRow: CSSProperties = { display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' };
