@@ -291,6 +291,16 @@ function implementationCouplingReason(behavior: string): string | null {
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
   }
+  const filesystemPermission =
+    /\b0[0-7]{3}\b[^.!?\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
+  const namedStorageBackend =
+    /\b(?:stored|persisted|written|saved|kept|mirrored|replicated)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b|\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b[^.!?\n]{0,80}\b(?:database|storage|store)\b/i.exec(behavior);
+  const storageEncryptionOrMirroring =
+    /\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b|\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b[^.!?\n]{0,80}\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b/i.exec(behavior);
+  const storageMechanism = filesystemPermission ?? namedStorageBackend ?? storageEncryptionOrMirroring;
+  if (storageMechanism) {
+    return 'prescribes a storage mechanism ' + JSON.stringify(storageMechanism[0].trim());
+  }
   const constructReference =
     /\b(?:function|class|method|variable|private field|implementation detail)\s+(`[^`]+`|'[^']+'|"[^"]+"|[A-Za-z_$][A-Za-z0-9_$]*)/gi;
   for (const match of behavior.matchAll(constructReference)) {
@@ -635,17 +645,18 @@ export function evaluatePlanSpecQuality(input: {
     .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
   const implementationIndependenceCoverage =
-    ' ' + behavioral.length + ' active/accepted behavior clause(s) inspected, including ' +
+    ' Detector coverage: implementation filenames/symbols, internal route literals, named operations, mandated reuse of existing surfaces, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).';
   ratings['implementation-independence'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
       : couplingFailures.length
         ? fail(
-            couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + implementationIndependenceCoverage,
             'Describe externally observable behavior instead of filenames or internal constructs.',
           )
-        : pass('No active/accepted behavior clause is coupled to an obvious implementation filename or construct.' + implementationIndependenceCoverage);
+        : pass('No active/accepted behavior clause is coupled to an implementation detail covered by the detector.' + implementationIndependenceCoverage);
 
   const invalidExemptionSpecIds = exemptions
     .filter((clause) => !validExplicitExemption(clause))

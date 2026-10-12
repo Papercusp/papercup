@@ -139,6 +139,7 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings['implementation-independence'].evidence).toContain(
         'including 3 sourceBar-pinned acceptance BAR projection(s)',
       );
+      expect(result.ratings['implementation-independence'].evidence).toContain('Detector coverage:');
       expect(result.verdict).toBe('pass');
       expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
       expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'AUTO-BAR-R-1-P-001'))
@@ -475,6 +476,21 @@ describe('evaluatePlanSpecQuality', () => {
       expected: 'existing implementation surface',
     },
     {
+      label: 'filesystem permission mode',
+      behavior: 'Secrets are stored in a 0600 file.',
+      expected: 'storage mechanism',
+    },
+    {
+      label: 'encrypted Postgres mirroring',
+      behavior: 'Secrets are mirrored to encrypted Postgres storage.',
+      expected: 'storage mechanism',
+    },
+    {
+      label: 'the reported 0600 file plus encrypted Postgres mirror',
+      behavior: 'Secrets are stored in a 0600 file plus encrypted Postgres mirror storage.',
+      expected: 'storage mechanism',
+    },
+    {
       label: 'an explicit implementation construct in a BAR projection',
       behavior: 'A class IntegrationSettingsRouter is declared once.',
       expected: 'class IntegrationSettingsRouter',
@@ -512,6 +528,7 @@ describe('evaluatePlanSpecQuality', () => {
     expect(rating.rating).toBe('fail');
     expect(rating.evidence).toContain('AUTO-BAR-R-2-P-001');
     expect(rating.evidence).toContain(expected);
+    expect(rating.evidence).toContain('Detector coverage:');
   });
 
   it('rejects a bare camelCase function reference in implementation-independence', () => {
@@ -525,6 +542,19 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
     expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatchDeltaCheck"');
+  });
+
+  it('accepts observable persistence without prescribing its storage mechanism', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'The user sees saved settings after reopening the page.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(result.ratings['implementation-independence'].evidence).toContain('named storage backends');
   });
 
   it.each(['macOS', 'iOS', 'iPadOS', 'watchOS', 'tvOS', 'visionOS'])(
