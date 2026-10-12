@@ -1,5 +1,45 @@
 import type { ChildProcess } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { linuxPgrpFromProcStat, linuxPpidFromProcStat, linuxProcStateFromStat,
+  linuxStartTicksFromProcStat } from '../process-identity.ts';
+
+/** A failed signal-zero fence needs member evidence, not a guessed cause. */
+function groupExitEvidence(group: number) {
+  const members: { pid: number; parentPid: number | null; state: string | null; startTicks: string | null }[] = [];
+  let unreadable = 0;
+  let omitted = 0;
+  let liveMembers = 0;
+  try {
+    for (const name of readdirSync('/proc')) {
+      if (!/^\d+$/.test(name)) continue;
+      try {
+        const stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+        const pgrp = linuxPgrpFromProcStat(stat);
+        if (pgrp === null) {
+          // The destructive PID parser excludes group zero. It is a valid
+          // kernel record, and cannot belong to this positive owned group.
+          const rawPgrp = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[2];
+          if (stat.lastIndexOf(')') >= 0 && rawPgrp === '0') continue;
+          unreadable++;
+          continue;
+        }
+        if (pgrp !== group) continue;
+        const state = linuxProcStateFromStat(stat);
+        if (state === null) unreadable++;
+        else if (state !== 'Z' && state !== 'X') liveMembers++;
+        if (members.length === 64) { omitted++; continue; }
+        members.push({ pid: Number(name), parentPid: linuxPpidFromProcStat(stat),
+          state, startTicks: linuxStartTicksFromProcStat(stat) });
+      } catch (error) {
+        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) unreadable++;
+      }
+    }
+    return { group, members, unreadable, omitted, liveMembers };
+  } catch (error) {
+    return { group, members, unreadable, omitted, liveMembers, error: String(error) };
+  }
+}
 
 // The operator's normal shutdown does not await individual routine promises.
 // Keep exact live groups enrolled until their exit fence, so a host replacement
@@ -63,9 +103,12 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
       // A successful parent can close its pipes while helpers still run. A
       // deadline or an unsuccessful probe must never manufacture an exit receipt.
       let probeFailureReported = false;
+      let nextMemberProbe = 0;
       for (;;) {
+        let groupFound = false;
         try {
           process.kill(-group, 0);
+          groupFound = true;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
             shutdownGroups.delete(lifetime.signal);
@@ -76,7 +119,25 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
             probeFailureReported = true;
           }
         }
-        if (Date.now() >= deadline) throw new Error(`process-group ${group} exit unverified before deadline`);
+        // Linux signal 0 also succeeds for an unreaped dead task. After the
+        // referenced leader has exited, verify that every visible member is
+        // dead before releasing the fence; unreadable/live members stay open.
+        // Only sample this exceptional case, and do not scan on every 10ms tick.
+        if (groupFound && process.platform === 'linux' &&
+            (child.exitCode !== null || child.signalCode !== null) && Date.now() >= nextMemberProbe) {
+          const evidence = groupExitEvidence(group);
+          nextMemberProbe = Date.now() + 100;
+          if (!evidence.error && evidence.unreadable === 0 && evidence.members.length > 0 && evidence.liveMembers === 0) {
+            report(`process-group dead members exit evidence: ${JSON.stringify(evidence)}`);
+            shutdownGroups.delete(lifetime.signal);
+            return;
+          }
+        }
+        if (Date.now() >= deadline) {
+          const evidence = process.platform === 'linux' ? groupExitEvidence(group) : { group, platform: process.platform };
+          report(`process-group exit deadline evidence: ${JSON.stringify(evidence)}`);
+          throw new Error(`process-group ${group} exit unverified before deadline; ${JSON.stringify(evidence)}`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     },

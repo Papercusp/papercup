@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { processGroupLifetime } from './process-group-lifetime';
+import { linuxPgrpFromProcStat, linuxProcStateFromStat } from '../process-identity';
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) {
@@ -11,6 +15,69 @@ function alive(pid: number): boolean {
 }
 
 describe.skipIf(process.platform === 'win32')('process group host shutdown', () => {
+  it.skipIf(process.platform !== 'linux')('finishes an exited group containing only an unreaped dead member without signalling its live outside-group reaper', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'group-exit-zombie-'));
+    const release = join(directory, 'release');
+    // A separate process group keeps the reaper alive. Its child remains in
+    // the original group as a real kernel Z record until this test releases it.
+    const controller = `import os,time,json,sys
+pid=os.fork()
+if pid==0: os._exit(0)
+os.setpgid(0,0)
+deadline=time.monotonic()+10
+while open('/proc/'+str(pid)+'/stat').read().split(')')[-1].strip().split()[0]!='Z':
+ time.sleep(.01)
+print(json.dumps({'dead':pid,'reaper':os.getpid()}),flush=True)
+while not os.path.exists(sys.argv[1]) and time.monotonic()<deadline: time.sleep(.01)
+os.waitpid(pid,0)
+`;
+    const child = spawn(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process');
+      const reaper = spawn('python3', ['-c', ${JSON.stringify(controller)}, ${JSON.stringify(release)}],
+        { stdio: ['ignore', 'pipe', 'pipe'] });
+      reaper.stderr.on('data', b => process.stderr.write(b));
+      reaper.once('error', e => { console.error(e); process.exit(1); });
+      let output = '';
+      reaper.stdout.on('data', b => {
+        output += b;
+        if (output.includes('\\n')) process.send(JSON.parse(output), () => process.exit(0));
+      });
+    `], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    const closed = once(child, 'close');
+    const messages: string[] = [];
+    const lifetime = processGroupLifetime(child, message => messages.push(message));
+    let stderr = '';
+    let deadPid = 0;
+    child.stderr?.on('data', b => { stderr += b; });
+    try {
+      const fixture = await Promise.race([
+        once(child, 'message').then(([value]) => value as { dead: number; reaper: number }),
+        closed.then(() => { throw new Error('dead-member fixture exited before readiness: ' + stderr); }),
+      ]);
+      deadPid = fixture.dead;
+      await closed;
+      expect(child.exitCode).toBe(0);
+      const stat = readFileSync(`/proc/${fixture.dead}/stat`, 'utf8');
+      expect(linuxProcStateFromStat(stat)).toBe('Z');
+      expect(linuxPgrpFromProcStat(stat)).toBe(child.pid);
+      expect(linuxPgrpFromProcStat(readFileSync(`/proc/${fixture.reaper}/stat`, 'utf8'))).not.toBe(child.pid);
+      expect(alive(fixture.reaper)).toBe(true);
+      expect(() => process.kill(-child.pid!, 0)).not.toThrow();
+      await expect(lifetime.waitForExit({ timeoutMs: 250 })).resolves.toBeUndefined();
+      expect(alive(fixture.reaper), 'group exit must not kill a live process outside the group').toBe(true);
+      const receipt = JSON.parse(messages[0]!.slice('process-group dead members exit evidence: '.length));
+      expect(receipt).toMatchObject({ group: child.pid, unreadable: 0, liveMembers: 0 });
+      expect(receipt.members).toContainEqual(expect.objectContaining({ pid: fixture.dead, state: 'Z', parentPid: fixture.reaper }));
+    } finally {
+      writeFileSync(release, 'reap');
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+      if (deadPid) await vi.waitFor(() => expect(alive(deadPid)).toBe(false), { timeout: 5000 });
+      await lifetime.waitForExit({ timeoutMs: 5000 });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('refuses an unverified exit and then escalates a stubborn group through the maintained exit fence', async () => {
     const child = spawn(process.execPath, ['-e',
       "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000);",
@@ -27,11 +94,18 @@ describe.skipIf(process.platform === 'win32')('process group host shutdown', () 
       ]);
       await expect(lifetime.waitForExit({ timeoutMs: 20 })).rejects.toThrow('exit unverified before deadline');
       expect(alive(child.pid!)).toBe(true);
+      if (process.platform === 'linux') {
+        const evidence = JSON.parse(messages[0]!.slice('process-group exit deadline evidence: '.length));
+        expect(evidence.group).toBe(child.pid);
+        expect(evidence.members).toContainEqual(expect.objectContaining({ pid: child.pid, parentPid: process.pid,
+          state: expect.stringMatching(/^[RSTDI]$/), startTicks: expect.stringMatching(/^\d+$/) }));
+        expect(evidence.omitted).toBe(0);
+      }
       await lifetime.terminate({ graceMs: 50, killWaitMs: 5000 });
       await closed;
       expect(child.signalCode).toBe('SIGKILL');
       expect(alive(child.pid!)).toBe(false);
-      expect(messages).toEqual([]);
+      expect(messages).toHaveLength(1);
     } finally {
       lifetime.signal('SIGKILL');
       await closed;
