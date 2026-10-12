@@ -8,7 +8,7 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(60_000);
 
-it('measures private committed-reader fixture scope before bundling or HTTP execution', async () => {
+it('binds the private committed-reader item and refuses another Pot before bundling or HTTP execution', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'committed-reader-setup-'));
   const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
     STAGING_FIRST_HTTP_SCENARIO: 'committed-reader-setup', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir };
@@ -29,5 +29,14 @@ it('measures private committed-reader fixture scope before bundling or HTTP exec
     bundleStarted: false, httpStarted: false, sidecarStarted: false });
   expect(receipt.rows).toHaveLength(1);
   expect(receipt.visible).toHaveLength(1);
+  expect(receipt.exact).toHaveLength(1);
+  expect(receipt.pot.state).toBe('exists');
+  expect(receipt.resolvedPot).toBe(receipt.workspace);
+  expect(receipt.rows[0]).toMatchObject({ workspace_id: receipt.workspace,
+    harness_slug: receipt.scope.harnessSlug, feature_id: receipt.itemId });
+  expect(receipt.binding.status).toBe('created');
+  expect(receipt.wrongScope).toEqual({ workspaceId: receipt.workspace,
+    harnessSlug: `${receipt.workspace}-wrong-pot` });
+  expect(receipt.wrongBinding.status).toBe('work_item_not_found');
   console.info('COMMITTED_READER_SETUP_MEASURED ' + JSON.stringify({ evidenceDir, receipt }));
 }, options.testTimeoutMs);
