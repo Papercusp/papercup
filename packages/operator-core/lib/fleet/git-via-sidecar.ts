@@ -43,6 +43,7 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { observeFallback } from '../degradation/fallback-observations';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 import { isReadOnlyGitBatchExec } from '../git-batch';
@@ -435,6 +436,15 @@ function recordSidecarFallback(
   disposition: 'local' | 'rejected' = 'local',
 ): void {
   const reason = e instanceof Error ? e.message : String(e);
+  // Record every eligible rejection before warning throttling. Use bounded reasons;
+  // arbitrary exception text would create a new condition key for every command.
+  observeFallback('spawner-sidecar-exec', {
+    eligible: 1,
+    applied: 0,
+    reason: !tripBreaker ? 'deadline-exceeded'
+      : e instanceof SidecarCircuitOpenError ? 'circuit-open'
+      : disposition === 'rejected' ? 'local-execution-rejected' : 'sidecar-unavailable',
+  }, { observedAt: new Date(nowMs) });
   if (tripBreaker && !(e instanceof SidecarCircuitOpenError)) {
     const b = __sidecarBreaker;
     b.consecutiveFailures += 1;
@@ -616,6 +626,11 @@ export async function runCommandViaSpawnerSidecar(
       },
     );
     noteSidecarSuccess();
+    // A child's non-zero exit still proves primary execution. An infrastructure
+    // rejection does not; its caller records the failed decision at the fallback seam.
+    if (!isSidecarInfrastructureFault(res)) {
+      observeFallback('spawner-sidecar-exec', { eligible: 1, applied: 1, reason: 'applied' });
+    }
     // WI-10004674: per-read wall latency, kept for read-only git only. Measured HERE
     // (the client sees every exec) — NOT from the receipt ledger, which after the
     // lazy-receipt fix holds only the slow reads and so cannot give a per-read p50.
@@ -947,6 +962,9 @@ export async function runGitStdinViaSpawnerSidecar(
       );
     }
     noteSidecarSuccess();
+    if (!isSidecarInfrastructureFault({ code: res.code, stderr: res.stderr ?? '' })) {
+      observeFallback('spawner-sidecar-exec', { eligible: 1, applied: 1, reason: 'applied' });
+    }
     return { code: res.code, stdout, stderr: res.stderr ?? '' };
   } finally {
     // Never leave blob contents lying around, on success or failure.
