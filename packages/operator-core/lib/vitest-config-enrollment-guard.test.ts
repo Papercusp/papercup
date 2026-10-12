@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,6 +79,25 @@ describe('Vitest config enrollment guard', () => {
         'vitest.config.ts',
       ),
     ).toBe(false);
+  });
+
+  // WI-6554700010009161: the root declares `!apps/*-checkpoint`; npm does not treat an excluded
+  // directory as a workspace, so the guard must not collect its config either.
+  it('honours negated workspace patterns when collecting declared configs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vitest-enrollment-negation-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['apps/*', '!apps/*-checkpoint'] }));
+      for (const app of ['drill', 'drill-checkpoint']) {
+        const dir = join(root, 'apps', app);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'package.json'), '{}');
+        writeFileSync(join(dir, 'vitest.config.ts'), 'export default {};');
+      }
+      const paths = collectVitestConfigs(root).map((config: { path: string }) => config.path);
+      expect(paths).toEqual(['apps/drill/vitest.config.ts']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps every declared workspace config enrolled at repository HEAD', () => {

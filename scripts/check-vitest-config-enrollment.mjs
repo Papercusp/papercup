@@ -61,6 +61,11 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   'libs/agent-chat/vitest.config.ts',
   'libs/generic/git-graph/vitest.config.ts',
   'libs/generic/ui-primitives/vitest.config.ts',
+  // Same class (WI-6554700010009161): libs/generic/rrf is github.com/Papercusp/rrf and its config
+  // deliberately follows @papercusp/search's standalone route; apps/slack-asana-bug-drill is the
+  // drill fixture app @bug-drill/fixture, its own repo (papercupai/slack-asana-bug-drill-20261009).
+  'libs/generic/rrf/vitest.config.ts',
+  'apps/slack-asana-bug-drill/vitest.config.ts',
   // node:test package (`node --test src/**/*.node-test.ts`); its vitest config is `include: []`
   // and runs nothing, so it has no pass proofs to record.
   'libs/papercusp/packages/cli/vitest.config.ts',
@@ -137,10 +142,21 @@ function workspacePatterns(rootPackage) {
   return Array.isArray(workspaces) ? workspaces : workspaces?.packages ?? [];
 }
 
+/** A workspace glob as a whole-path matcher: `*` stands for one path segment's characters. */
+function workspaceGlobMatcher(pattern) {
+  const source = pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*');
+  return new RegExp(`^${source}$`);
+}
+
 function declaredWorkspaceDirs(root = ROOT) {
   const rootPackage = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   const dirs = new Set();
-  for (const pattern of workspacePatterns(rootPackage)) {
+  const patterns = workspacePatterns(rootPackage);
+  // npm honours `!pattern` exclusions (e.g. `!apps/*-checkpoint`); a directory they exclude is
+  // not a workspace, so its config is not declared (WI-6554700010009161).
+  const excluded = patterns.filter((p) => p.startsWith('!')).map((p) => workspaceGlobMatcher(p.slice(1)));
+  for (const pattern of patterns) {
+    if (pattern.startsWith('!')) continue;
     if (pattern.endsWith('/*')) {
       const base = pattern.slice(0, -2);
       const absoluteBase = join(root, base);
@@ -154,7 +170,7 @@ function declaredWorkspaceDirs(root = ROOT) {
     }
     if (existsSync(join(root, pattern, 'package.json'))) dirs.add(pattern);
   }
-  return [...dirs].sort();
+  return [...dirs].filter((dir) => !excluded.some((re) => re.test(normalizePath(dir)))).sort();
 }
 
 function collectWorkspaceConfigs(workspaceDir, root, out) {
