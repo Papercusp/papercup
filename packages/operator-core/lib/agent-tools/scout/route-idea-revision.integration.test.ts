@@ -149,7 +149,7 @@ describe('blender:route-idea revision spine', () => {
     } else {
       expect(audit, JSON.stringify(audit)).toMatchObject({ ok: false, error: 'bar_requirements_missing' });
       const audits = await admin`
-        SELECT id FROM harness_shared.plan_audits
+        SELECT plan_slug FROM harness_shared.plan_audits
          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
       expect(audits).toEqual([]);
       const rubrics = await admin`
