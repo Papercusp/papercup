@@ -343,6 +343,8 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByTestId('preserved-task-grid')).toBeTruthy();
     expect(screen.getByTestId('rich-grid').getAttribute('data-rows')).toBe('2');
     expect(screen.getByText('Historical archive evidence')).toBeTruthy();
+    // vacuous-negative-ok: gone-for-good ratchet on summary claims deleted from AdvEvalsTab.tsx
+    // on 2026-10-10. The lowercase tab label "real graded runs" is an older, different element.
     expect(screen.queryByText(/Real graded run|92% opus|no valid no-Mug control/)).toBeNull();
     // The per-task Compare + the single-arm throughput/MAST viz are fed from the detail.
     expect(screen.getByTestId('viz-throughput')).toBeTruthy();
