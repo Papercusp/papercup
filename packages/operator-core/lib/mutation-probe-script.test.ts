@@ -2413,7 +2413,43 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
       expect(out).toMatch(/SANDBOX READ-ONLY WRITE/);
       expect(out).toMatch(/Read-only file system/); // the refused write is quoted, not paraphrased
       expect(out).toMatch(/scripts\/test-files\.mjs/);
+      expect(out).toMatch(/reader lease outside bwrap/);
       expect(existsSync(join(hostState, 'slot.pid'))).toBe(false);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'EI-25768400647222256: the direct test router reuses the host-held install lease inside the read-only sandbox',
+    () => {
+      writeFileSync(subject, ['#!/usr/bin/env bash', 'echo ok', ''].join('\n'));
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      // Do not let this test's own test:file lease satisfy the sandboxed child.
+      // The only valid marker must come from mutation-probe acquiring the lease
+      // outside bwrap for the exact router repository.
+      const env = { ...process.env };
+      delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      const routerLeaseProbe = [
+        "node --import ./scripts/lib/committed-source-loader.mjs --input-type=module -e '",
+        'import { REPO_ROOT, runTestFilesCli } from "./scripts/test-files.mjs"; ',
+        'import { installLockNameForRoot, installMutexIsHeld } from "./scripts/lib/install-lock-name.mjs"; ',
+        'const lock = installLockNameForRoot(REPO_ROOT); ',
+        'const status = await runTestFilesCli([], { env: process.env, ',
+        'acquireReadLease: async () => { throw new Error("nested lease acquisition"); }, ',
+        'run: async () => installMutexIsHeld(lock, process.env) ? 0 : 71 }); ',
+        'process.exitCode = status;',
+        "'",
+      ].join('');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject,
+        '--mutate', 's/echo ok/echo OK/',
+        '--test', routerLeaseProbe + ' && test -f {}',
+      ], env);
+      expect(code, out).toBe(0);
+      expect(out).toMatch(/NPM_INSTALL_SAFE (?:guarding reader|mutex already held)/);
+      expect(out).toMatch(/verdict=survived/);
+      expect(out).not.toMatch(/SANDBOX READ-ONLY WRITE/);
     },
   );
 
