@@ -168,6 +168,22 @@ describe('stored historical pre-suite recovery', () => {
     expect(h.appendPipelineEvent).not.toHaveBeenCalled();
   });
   it.each([
+    ['predecessor-attempt-mismatch', { attemptId: 'newer-attempt' }],
+    ['predecessor-run-mismatch', { runId: 'newer-run' }],
+    ['predecessor-candidate-mismatch', { candidate: 'newer-candidate' }],
+  ] as const)('attributes an unrelated predecessor before its changed ancestor policy (%s)', async (refusalReason, identity) => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: {
+      ...current, ...identity, requiredAncestorSha: 'newer-policy',
+    } });
+    expect(await recoverStoredQualificationHistoricalPreSuiteError(target, input, {
+      requiredAncestorSha: current.requiredAncestorSha, declaredPaths: [],
+    })).toMatchObject({ status: 'conflict', refusalReason });
+    expect(statements[0].text).toContain('FOR UPDATE');
+    expect(statements.some(statement => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
+  it.each([
     ['request-ancestor-mismatch', { requiredAncestorSha: 'other-ancestor', declaredPaths: [] }],
     ['request-paths-mismatch', { requiredAncestorSha: 'candidate-1', declaredPaths: ['extra.ts'] }],
   ] as const)('refuses a changed request policy under the row lock without archiving or writing (%s)', async (refusalReason, request) => {

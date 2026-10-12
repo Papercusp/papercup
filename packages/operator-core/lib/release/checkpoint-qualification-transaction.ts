@@ -2287,12 +2287,17 @@ export function recoverStoredQualificationHistoricalPreSuiteError(
   let successorInput: BeginQualificationInput;
   return mutateStoredQualification(target, (current) => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    // Validate the archive and exact predecessor before attributing a request-policy
+    // conflict. A newer attempt may have different policy; that must not suggest
+    // changing the caller's original guard to recover an unrelated terminal.
+    // This transition is pure: every policy/store guard still precedes any write.
+    const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
+    if (transition.status !== 'updated' && transition.status !== 'idempotent') return transition;
     if (request && !qualificationRequestPolicyMatches(current, request)) {
       return { status: 'conflict', transaction: current,
         refusalReason: current.requiredAncestorSha !== (request.requiredAncestorSha?.trim() || null)
           ? 'request-ancestor-mismatch' : 'request-paths-mismatch' };
     }
-    const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
     if (transition.status === 'updated') {
       successorInput = {
         attemptId: transition.transaction.attemptId,
