@@ -121,7 +121,6 @@
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|2",
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|1",
-    "log-only-fallback|packages/operator-core/lib/grading-integrity.ts|readActiveLoopStanddownOwners|1",
     "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|runWatchdogTickBody|1",
     "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|1",
     "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|2",
@@ -137,10 +136,6 @@
     "log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts|route|1",
     "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1",
-    "log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|1",
-    "log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|2",
-    "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|1",
-    "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|2",
     "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1",
     "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|1",
     "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|2"

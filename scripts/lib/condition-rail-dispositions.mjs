@@ -131,7 +131,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|fallback': NA_FALLBACK_WAKE,
-  'log-only-fallback|packages/operator-core/lib/grading-integrity.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
@@ -149,8 +148,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts': migrate('P-011'),
   'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
-  'log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/work-items.ts': migrate('P-013'),
   'log-only-fallback|scripts/check-optional-seam-strands.mjs': NA_LINT,
   'log-only-fallback|scripts/check-partial-index-alignment.mjs': NA_LINT,
   'log-only-fallback|scripts/check-sidecar-fallback-reported.mjs': NA_LINT,
