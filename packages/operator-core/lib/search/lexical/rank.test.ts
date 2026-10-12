@@ -2,9 +2,86 @@
  * fuseByPosition — merging best-first lists from different corpora by position, never by
  * raw score (plan bm25-lexical-search-evoke-adoption-2026-10-10 D-006).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RRF_K_DEFAULT } from '@papercusp/rrf';
-import { EXACT_LIST_MAX_AND_ROWS, fuseByPosition, mergeExactAndBm25, usesWebsearchOperators } from './rank';
+import {
+  EXACT_LIST_MAX_AND_ROWS,
+  fuseByPosition,
+  bm25LegIfAvailable,
+  mergeExactAndBm25,
+  resetBm25Availability,
+  usesWebsearchOperators,
+} from './rank';
+import type { AvailabilityEntry } from './rank';
+import type { Sql } from 'postgres';
+
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+
+function catalogSql(indexes: string[] = []) {
+  const queries: string[] = [];
+  const sql = Object.assign(
+    ((strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      queries.push(query);
+      if (query.includes('FROM pg_index')) return Promise.resolve(indexes.map((name) => ({ name })));
+      if (query.includes('to_regprocedure')) return Promise.resolve([{ ok: true }]);
+      return Promise.resolve([]);
+    }) as unknown as import('postgres').Sql,
+    { unsafe: vi.fn((fragment: string) => ({ fragment })) },
+  );
+  return { sql, queries };
+}
+
+describe('BM25 availability cache', () => {
+  it('uses a transaction client for cache-miss reads and retains the original client as cache key', async () => {
+    resetBm25Availability();
+    const owner = catalogSql();
+    const transaction = catalogSql(['session_turns_bm25']);
+
+    const loadAvailability = vi.fn(async (read: (sql: Sql) => Promise<AvailabilityEntry>) =>
+      await read(transaction.sql));
+    const first = await bm25LegIfAvailable(owner.sql, 'session_turns', 'query', undefined, {
+      availabilityLoader: loadAvailability,
+    });
+
+    expect(first?.engine).toBe('bm25');
+    expect(owner.queries.filter((query) => query.includes('FROM pg_index') || query.includes('to_regprocedure'))).toEqual([]);
+    expect(transaction.queries.filter((query) => query.includes('FROM pg_index'))).toHaveLength(1);
+    expect(transaction.queries.filter((query) => query.includes('to_regprocedure'))).toHaveLength(1);
+    expect(loadAvailability).toHaveBeenCalledOnce();
+
+    const cacheHit = await bm25LegIfAvailable(owner.sql, 'session_turns', 'query', undefined, {
+      availabilityLoader: loadAvailability,
+    });
+    expect(cacheHit?.engine).toBe('bm25');
+    expect(loadAvailability).toHaveBeenCalledOnce();
+    expect(transaction.queries).toHaveLength(2);
+    expect(owner.queries.filter((query) => query.includes('FROM pg_index') || query.includes('to_regprocedure'))).toEqual([]);
+  });
+
+  it('does not cache a catalog result when its source signal aborts during the bounded loader', async () => {
+    resetBm25Availability();
+    const owner = catalogSql();
+    const aborted = new AbortController();
+    let finishLoad!: (entry: AvailabilityEntry) => void;
+    const pending = new Promise<AvailabilityEntry>((resolve) => { finishLoad = resolve; });
+    const loader = vi.fn(async () => await pending);
+    const first = bm25LegIfAvailable(owner.sql, 'session_turns', 'query', undefined, {
+      availabilityLoader: loader,
+      signal: aborted.signal,
+    });
+
+    aborted.abort(new Error('source budget expired'));
+    finishLoad({ indexes: new Set(['session_turns_bm25']), scanScore: true, checkedAt: Date.now() });
+    await expect(first).rejects.toMatchObject({ message: 'source budget expired' });
+
+    const cacheMiss = catalogSql();
+    await bm25LegIfAvailable(owner.sql, 'session_turns', 'query', undefined, {
+      availabilityLoader: async (read) => await read(cacheMiss.sql),
+    });
+    expect(cacheMiss.queries.some((query) => query.includes('FROM pg_index'))).toBe(true);
+  });
+});
 
 describe('mergeExactAndBm25 (R-13, D-016)', () => {
   type R = { id: string; rank: number };
