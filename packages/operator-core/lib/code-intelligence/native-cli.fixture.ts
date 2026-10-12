@@ -47,6 +47,10 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
     throw new Error(`Native CLI returned an invalid response shape\n${evidence}`);
   }
   if (parsed.ok === false) throw new Error(`Native CLI tool refused\n${evidence}`);
+  if ('schemaVersion' in parsed && parsed.schemaVersion === 'papercusp.output-envelope/v1'
+    && 'state' in parsed && parsed.state === 'incomplete') {
+    throw new Error(`Native CLI returned incomplete evidence; request the exact required fields\n${evidence}`);
+  }
   // Only the legacy object wrapper is a transport envelope. Byte readers own
   // their base64 `data` field, so preserve the complete page and its cursor.
   return parsed.data !== null && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
@@ -56,7 +60,7 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
 export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>) {
   const plan = nativeCliPlan(baseUrl, name, args);
   return nativeCliResult(spawnSync(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
-    'tools:invoke', `--url=${plan.cliUrl}`, '--json', '-'], {
-    cwd: repoRoot, encoding: 'utf8', timeout: plan.timeoutMs, input: JSON.stringify({ name, args }), env: plan.env,
+    name, `--url=${plan.cliUrl}`, '--json', '-'], {
+    cwd: repoRoot, encoding: 'utf8', timeout: plan.timeoutMs, input: JSON.stringify(args), env: plan.env,
   })) as Record<string, any>;
 }
