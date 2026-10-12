@@ -451,7 +451,10 @@ export async function captureFactDependencies(
   const observedAt = new Date().toISOString();
   // P-012 — file anchors resolve in ONE batch through the checkpoint `file:`
   // resolver (a subject never applies to a file); everything else is a cell read.
-  const fileObservations = await observeFileAnchors(wanted.filter(isFactFileAnchor), env, fileOptions);
+  // The batch is STARTED here, not awaited: awaiting it first would delay every
+  // cell read behind it, re-introducing the serial cost the Promise.all below
+  // exists to remove. observeFileAnchors is total (never rejects).
+  const fileObservationsPending = observeFileAnchors(wanted.filter(isFactFileAnchor), env, fileOptions);
   // These are independent read-only resolver calls. Dispatch them together so
   // two slow cells cost roughly the slower read, not the sum of both reads —
   // the serial loop let a pair of otherwise healthy dependencies outlive the
@@ -461,6 +464,7 @@ export async function captureFactDependencies(
   const observations = await Promise.all(
     wanted.map(async (cell) => {
       if (isFactFileAnchor(cell)) {
+        const fileObservations = await fileObservationsPending;
         return { cell, subject: undefined, obs: fileObservations.get(cell) ?? { unknown: 'resolver-failed' } };
       }
       const subject = subjects?.[cell];
@@ -557,11 +561,14 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   // a stale fact would go looking for a broken resolver that is working fine.
   for (const key of overBudget) current.set(key, { unknown: 'read-budget-exceeded' });
   try {
-    for (const [cell, obs] of await observeFileAnchors([...fileTargets], env, fileOptions)) {
-      current.set(cell, obs);
-    }
+    // Started before the cell reads so the file batch overlaps them instead of
+    // adding its latency in front (observeFileAnchors is total — never rejects).
+    const fileObservationsPending = observeFileAnchors([...fileTargets], env, fileOptions);
     for (const [key, t] of targets) {
       current.set(key, await observeCell(t.cell, reader, env, t.subject));
+    }
+    for (const [cell, obs] of await fileObservationsPending) {
+      current.set(cell, obs);
     }
   } catch {
     // Fail-soft: return everything unmarked rather than half-marked. A partial
