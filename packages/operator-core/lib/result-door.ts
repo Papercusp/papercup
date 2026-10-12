@@ -554,9 +554,8 @@ export function buildProjectionHint(
     );
   }
   // capability:read's scratch-reference guard runs inside the handler, before
-  // dispatch-level projection can shrink the returned content. A long line
-  // therefore cannot be rescued by the `pipe` hint below; route it through the
-  // exact byte-page cursor instead.
+  // dispatch-level projection can shrink the returned content. A line beyond
+  // the byte-page threshold therefore needs the exact byte-page cursor.
   if (hasOversizedLine) {
     return (
       `${lead}${shape.lineCount} lines of non-JSON text include a line over ` +
@@ -564,11 +563,14 @@ export function buildProjectionHint(
       `(byte_offset+byte_limit; no raw) and follow next_cursor.`
     );
   }
+  // The spill's own query mode filters the saved body inside capability:read,
+  // before it renders a line window and checks that window against the result
+  // door. Dispatch-level `projection.pipe` runs later and cannot recover from
+  // that handler refusal, so point multi-line spills at the bounded query path.
   if (shape.lineCount > 1) {
     return (
-      `${lead}${shape.lineCount} lines of non-JSON text: \`projection: { pipe: [{ op:"grep", pattern:"..." }, ` +
-      `{ op:"head", n:20 }] }\`; \`pick\` does not apply. grep (fixed/ignoreCase/invert/before/after/context), ` +
-      `head, tail, sort, uniq, cut, count.${asString}${searchIt}`
+      `${lead}${shape.lineCount} lines of non-JSON text: search the spill with ` +
+      `\`capability:read { file_path, query:"terms" }\` (all terms, context and coverage).${asString}`
     );
   }
   return (
