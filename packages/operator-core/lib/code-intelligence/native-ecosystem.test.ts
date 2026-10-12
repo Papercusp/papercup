@@ -4,6 +4,7 @@ import '../harness/docs/native-source-change.test';
 import '../agent-tools/plans/native-planning-advice.test';
 import './task-brief.test';
 import '../dream/capability-packets.test';
+import '../dream/capability-sampler.test';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
