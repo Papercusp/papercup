@@ -132,6 +132,12 @@ export interface NativeGymProviderAuthorization {
     kind: 'provider-input-count'; sourceSha256: string; bodySha256: string;
     countBodySha256: string; responseSha256: string; requestId: string | null;
     measuredInputTokens: number;
+  } | {
+    /** A route with no count endpoint and no per-request output field (a
+     * ChatGPT Codex subscription) reserves the provider's own frozen limits.
+     * It is the only evidence that lets an oauth-http body omit its output cap. */
+    kind: 'provider-intrinsic-limit'; sourceSha256: string; bodySha256: string;
+    inputTokens: number; outputTokens: number;
   };
 }
 
@@ -200,7 +206,13 @@ export function createNativeGymGatewayController(input: {
         if (!supplied) return null;
         const authority = Object.freeze({ ...supplied });
         const body = JSON.parse(attempt.body);
-        const output = attempt.transport === 'anthropic-http' ? body.max_tokens : body.max_output_tokens;
+        const proof = authority.inputEvidence;
+        // The subscription backend rejects max_output_tokens, so the gateway strips it.
+        // Only host evidence of the provider's own frozen output limit can stand in.
+        const intrinsic = proof?.kind === 'provider-intrinsic-limit' && attempt.transport === 'oauth-http' &&
+          body.max_output_tokens === undefined;
+        const output = attempt.transport === 'anthropic-http' ? body.max_tokens :
+          intrinsic ? proof.outputTokens : body.max_output_tokens;
         if (!live || attempt.signal.aborted || !['evaluation', 'proposer'].includes(authority.attemptKind) ||
           !usd(authority.requestedUsd) || authority.requestedUsd > budgetUsd ||
           !count(authority.inputTokens) || authority.inputTokens > resourceBudget.inputTokens ||
@@ -211,16 +223,21 @@ export function createNativeGymGatewayController(input: {
           typeof authority.validateAuthorization !== 'function' ||
           !Number.isFinite(authority.validUntilMonotonicMs) || processMonotonicClock.now() >= authority.validUntilMonotonicMs) return null;
         const resources = { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens };
-        const proof = authority.inputEvidence;
-        if (proof && (proof.kind !== 'provider-input-count' ||
-            ![proof.sourceSha256, proof.bodySha256, proof.countBodySha256, proof.responseSha256].every(value => /^[a-f0-9]{64}$/.test(value)) ||
-            proof.bodySha256 !== attempt.bodySha256 || !count(proof.measuredInputTokens) || proof.measuredInputTokens > authority.inputTokens ||
-            proof.requestId !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(proof.requestId))) return null;
+        const digests = (values: unknown[]) => values.every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+        if (proof && (proof.bodySha256 !== attempt.bodySha256 || (proof.kind === 'provider-input-count' ? (
+            !digests([proof.sourceSha256, proof.bodySha256, proof.countBodySha256, proof.responseSha256]) ||
+            !count(proof.measuredInputTokens) || proof.measuredInputTokens > authority.inputTokens ||
+            proof.requestId !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(proof.requestId)) : proof.kind === 'provider-intrinsic-limit' ? (
+            !intrinsic || !digests([proof.sourceSha256, proof.bodySha256]) ||
+            proof.inputTokens !== authority.inputTokens || proof.outputTokens !== authority.outputTokens) : true))) return null;
         // Copy only validated evidence fields. Never serialize a host callback
         // object wholesale: extra properties could carry credential material.
-        const inputEvidence = proof ? { kind: proof.kind, sourceSha256: proof.sourceSha256, bodySha256: proof.bodySha256,
-          countBodySha256: proof.countBodySha256, responseSha256: proof.responseSha256,
-          requestId: proof.requestId, measuredInputTokens: proof.measuredInputTokens } : undefined;
+        const inputEvidence = !proof ? undefined : proof.kind === 'provider-input-count'
+          ? { kind: proof.kind, sourceSha256: proof.sourceSha256, bodySha256: proof.bodySha256,
+            countBodySha256: proof.countBodySha256, responseSha256: proof.responseSha256,
+            requestId: proof.requestId, measuredInputTokens: proof.measuredInputTokens }
+          : { kind: proof.kind, sourceSha256: proof.sourceSha256, bodySha256: proof.bodySha256,
+            inputTokens: proof.inputTokens, outputTokens: proof.outputTokens };
         const expectedResourceBudget = { ...resourceBudget, armIds: [...resourceBudget.armIds] };
         const cycle: CycleSpendReservationScope | undefined = runId === undefined ? undefined :
           { runId, budgetUsd, resources, expectedResourceBudget };

@@ -55,6 +55,8 @@ export async function estimateCurrentBenchLaunch(input: {
   verify: typeof import('./reproducibility/prereg').requireCommittedPreregistration;
   readAccounts: typeof import('../deployment/account-pool-store').loadAccountPool;
   supportsBearer: typeof import('../inference-gateway/credential-store').credentialRefSupportsOpenAiBearer;
+  /** D-023 subscription payer; a port set without it supports no subscription account. */
+  supportsSubscription?: (credentialRef: string) => Promise<boolean>;
   readRuntimes: typeof import('../runtime-vintage').listRuntimeVintage;
   measure: typeof import('../runtime-vintage').measureRuntimeVintageEnvironment;
   enabled(): Promise<boolean>;
@@ -68,6 +70,7 @@ export async function estimateCurrentBenchLaunch(input: {
       verify: (await import('./reproducibility/prereg')).requireCommittedPreregistration,
       readAccounts: (await import('../deployment/account-pool-store')).loadAccountPool,
       supportsBearer: (await import('../inference-gateway/credential-store')).credentialRefSupportsOpenAiBearer,
+      supportsSubscription: (await import('./current-su')).currentBenchSupportsCodexSubscription,
       readRuntimes: (await import('../runtime-vintage')).listRuntimeVintage,
       measure: (await import('../runtime-vintage')).measureRuntimeVintageEnvironment,
       enabled: () => import('./gate').then(gate => gate.isExternalBenchEnabled()),
@@ -84,15 +87,20 @@ export async function estimateCurrentBenchLaunch(input: {
     if (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arm.effort))
       throw new Error('The registered native effort is unsupported.');
     const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
-    const { currentBenchOpenAiInputContract } = await import('./current-su');
-    if (!rate.inputTokenCeiling || rate.inputTokenCeilingSourceSha256 !== currentBenchOpenAiInputContract(arm.model, rate.inputTokenCeiling))
-      throw new Error('The protocol lacks the supported provider input-count contract.');
+    const { currentBenchRateContract, currentBenchArmPayer } = await import('./current-su');
+    const payer = currentBenchArmPayer(arm), contract = currentBenchRateContract(payer, rate);
+    if (!contract || rate.inputTokenCeilingSourceSha256 !== contract)
+      throw new Error(payer === 'subscription' ? 'The protocol lacks the supported subscription provider-limit contract.'
+        : 'The protocol lacks the supported provider input-count contract.');
     await io.verify(protocol.runId, { preregHash: prereg.preregHash, config: protocol }, db);
     if (!await io.enabled()) throw new Error('Benchmark execution is disabled; enable papercusp-external-bench in workspace settings.');
     const accounts = (await io.readAccounts(workspaceId)).accounts.filter(account =>
       (account.provider ?? 'claude') === 'codex' && (['auto', 'default'].includes(arm.account) || account.id === arm.account));
-    if (!(await Promise.all(accounts.map(account => io.supportsBearer(account.credentialRef)))).some(Boolean))
-      throw new Error('Register an OpenAI API bearer account in this benchmark workspace; subscription/CLI credentials cannot enforce this cap.');
+    const supports = payer === 'subscription' ? io.supportsSubscription ?? (async () => false) : io.supportsBearer;
+    if (!(await Promise.all(accounts.map(account => supports(account.credentialRef)))).some(Boolean))
+      throw new Error(payer === 'subscription'
+        ? 'Register a Codex subscription account (codex-cli:<CODEX_HOME> with a ChatGPT login) in this benchmark workspace.'
+        : 'Register an OpenAI API bearer account in this benchmark workspace; a subscription account needs a protocol frozen with the subscription payer.');
     const rows = await io.readRuntimes(io.runtimeWorkspaceId, scope.sql);
     const host = rows.filter(row => row.pid === io.pid);
     if (host.length !== 1 || host[0].treeSha !== arm.runtime.sourceRevision ||
@@ -102,7 +110,10 @@ export async function estimateCurrentBenchLaunch(input: {
       estCostUsd: Math.min(protocol.aggregateBudgetUsd, protocol.taskIds.length * arm.generationBudget.maxUsd),
       estWallMin: protocol.taskIds.length * arm.generationBudget.maxWallClockMs / 60000,
       aggregateBudgetUsd: protocol.aggregateBudgetUsd, model: arm.model, effort: arm.effort, account: arm.account,
-      basis: 'Frozen per-assignment and aggregate ceilings; actual spend and time are measured after execution.',
+      payer, costBasis: payer === 'subscription' ? 'list-price-equivalent' as const : 'metered' as const,
+      basis: payer === 'subscription'
+        ? 'Frozen per-assignment and aggregate ceilings in list-price-equivalent USD: a ChatGPT subscription pays, so these are provider-reported usage at frozen list prices, not money spent.'
+        : 'Frozen per-assignment and aggregate ceilings; actual spend and time are measured after execution.',
       seeds: protocol.seeds, taskIds: protocol.taskIds,
       current: { workspaceId, protocolRunId: protocol.runId, preregHash: prereg.preregHash, seed: input.seed,
         observation: { runtimeWorkspaceId: io.runtimeWorkspaceId, workerUnit: host[0].unit, gatewayUnit: host[0].unit } } };

@@ -62,6 +62,7 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
+  currentBenchCodexRoute,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
@@ -189,7 +190,9 @@ export async function currentBenchTaskProviderCapture(input: CurrentTaskInput, {
   type Checkpoint = { allocation: Omit<CaptureOptions, 'recovery' | 'readOnly'>;
     recovery: ReturnType<ReturnType<typeof currentBenchWorkloadProviderInputCapture>['recoveryState']> };
   const expected = { accountingBinding, candidateCheckoutRoot: readOnly ? resolve(input.checkout.dir) : realpathSync(input.checkout.dir), model: arm.model,
-    effort: arm.effort, accountId: arm.account, maxRequests: resources.requestsPerArm!, maxBytes: 16 * 1024 * 1024 };
+    effort: arm.effort, accountId: arm.account, maxRequests: resources.requestsPerArm!, maxBytes: 16 * 1024 * 1024,
+    // D-023: only a subscription arm records a payer, so API-key allocations keep their hash.
+    ...(arm.payer === 'subscription' ? { payer: 'subscription' as const } : {}) };
   let capture!: ReturnType<typeof currentBenchWorkloadProviderInputCapture>;
   let checkpoint!: Checkpoint;
   await sql.begin(async tx => {
@@ -532,8 +535,8 @@ export async function freezeCurrentBenchTaskProviderReservation(
     const present = (value: unknown) => typeof value === 'string' && !!value.trim();
     const identity = { attemptId: reservationId, manifestSha256: preregHash, armId: key,
       nativeSessionId: captured.nativeSessionId, nativeTurnId: captured.nativeTurnId,
-      accountId: captured.accountId, bodySha256: captured.bodySha256, transport: 'bearer-http',
-      credentialHeader: 'authorization', target: 'https://api.openai.com/v1/responses' };
+      accountId: captured.accountId, bodySha256: captured.bodySha256,
+      ...currentBenchCodexRoute(captured.payer ?? 'api-key') };
     if (!attempt || !result || Object.entries(identity).some(([field, value]) => attempt[field] !== value || result[field] !== value) ||
         !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
         !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== reservationId ||
@@ -599,7 +602,8 @@ export async function currentBenchTaskProviderInputReader(input: CurrentTaskInpu
       maxBytes: host.allocation.maxBytes, model: pin.model, effort: pin.effort, accountId: pin.accountId };
   });
   return currentBenchWorkloadProviderInputReader({ ...frozen, sql, workspaceId: host.allocation.accountingBinding.workspaceId,
-    runId: host.allocation.accountingBinding.runId, checkoutRoot: host.captureRoot, accountingBinding: host.allocation.accountingBinding, receipts });
+    runId: host.allocation.accountingBinding.runId, checkoutRoot: host.captureRoot, accountingBinding: host.allocation.accountingBinding,
+    ...(host.allocation.payer ? { payer: host.allocation.payer } : {}), receipts });
 }
 
 /** Resolve the frozen controls once, before any durable run or native launch. */
@@ -633,7 +637,12 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
   const ceiling = Math.max(...protocol.priceSchedule.rates.map(rate => rate.inputTokenCeiling ?? 0));
   if (!Number.isSafeInteger(ceiling) || ceiling <= 0) throw new Error('Current native launch requires frozen provider input ceilings.');
   const requestsPerArm = 64;
-  const output = Math.min(budget.maxTokens ?? 4096, 4096);
+  // D-023: a subscription request reserves the frozen model maximum output
+  // (its backend rejects max_output_tokens); the API-key route keeps 4096.
+  const subscription = protocol.arms[0].payer === 'subscription';
+  const output = subscription ? Math.max(...protocol.priceSchedule.rates.map(rate => rate.outputTokenCeiling ?? 0))
+    : Math.min(budget.maxTokens ?? 4096, 4096);
+  if (!Number.isSafeInteger(output) || output <= 0) throw new Error('Current native launch requires a frozen per-request output ceiling.');
   const armIds = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
     protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed)))).sort();
   const resources = { inputTokens: ceiling * requestsPerArm, outputTokens: output * requestsPerArm,
@@ -647,11 +656,13 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 async function liveCurrentTask(input: CurrentTaskInput) {
   const { options, protocol, task, context, scope, resources, loopId } = input;
   const capture = await currentBenchTaskProviderCapture(input);
+  const currentArm = protocol.arms.find(arm => arm.id === options.armId)!;
   const auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
     protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
   const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId, token: randomBytes(32).toString('hex'),
     preregHash: options.preregistration.preregHash, protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed,
-    resources, outputTokenLimit: Math.min(4096, protocol.arms.find(arm => arm.id === options.armId)!.generationBudget.maxTokens ?? 4096),
+    resources, ...(currentArm.payer === 'subscription' ? {} : {
+      outputTokenLimit: Math.min(4096, currentArm.generationBudget.maxTokens ?? 4096) }),
     authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
     { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
   let host: Awaited<ReturnType<typeof controller.startNativeGateway>> | undefined;

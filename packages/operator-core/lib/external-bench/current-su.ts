@@ -426,6 +426,46 @@ const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
 const nativeMetadataAliases = { turn_id: 'turn_id', thread_id: 'thread_id', session_id: 'session_id',
   root_turn_id: 'root_turn_id', 'x-codex-installation-id': 'installation_id', 'x-codex-window-id': 'window_id' } as const;
 
+/** The ChatGPT Codex backend that serves a subscription (oauth-http) arm. */
+export const currentBenchCodexSubscriptionTarget = 'https://chatgpt.com/backend-api/codex/responses';
+
+export type CurrentBenchPayer = 'api-key' | 'subscription';
+
+/** benchmark-coverage-frontierswe-v2-2026-10-10#D-023. Omission is the original API key. */
+export function currentBenchArmPayer(arm: { payer?: CurrentBenchPayer }): CurrentBenchPayer {
+  return arm.payer ?? 'api-key';
+}
+
+/** The one Codex provider route a frozen payer basis may send through. */
+export function currentBenchCodexRoute(payer: CurrentBenchPayer) {
+  return payer === 'subscription'
+    ? { transport: 'oauth-http', target: currentBenchCodexSubscriptionTarget, credentialHeader: 'authorization' } as const
+    : { transport: 'bearer-http', target: 'https://api.openai.com/v1/responses', credentialHeader: 'authorization' } as const;
+}
+
+/** Freeze the subscription admission contract (D-023 consequence 3). The
+ * ChatGPT backend rejects max_output_tokens and has no input-count endpoint, so
+ * every request reserves the provider's own limits: the model context window
+ * (which the provider enforces) plus the model maximum output, at frozen rates.
+ * That is a larger per-request reservation than the API-key route, not a looser cap. */
+export function currentBenchCodexSubscriptionContract(model: string, inputTokens: number, outputTokens: number): string {
+  if (!model.trim() || ![inputTokens, outputTokens].every(value => Number.isSafeInteger(value) && value > 0)) {
+    throw new Error('Invalid subscription input contract.');
+  }
+  return createHash('sha256').update(canonicalJson({ version: 1, kind: 'provider-intrinsic-limit', payer: 'subscription',
+    model, inputTokens, outputTokens, transport: 'oauth-http', target: currentBenchCodexSubscriptionTarget,
+    outputField: 'omitted', settlement: 'provider-reported-usage-at-frozen-rates' })).digest('hex');
+}
+
+/** The admission contract a rate must carry for its payer basis, or null when
+ * the rate lacks the frozen ceilings that basis needs. */
+export function currentBenchRateContract(payer: CurrentBenchPayer, rate: FrozenBenchRate): string | null {
+  if (rate.inputTokenCeiling === undefined) return null;
+  if (payer === 'api-key') return currentBenchOpenAiInputContract(rate.model, rate.inputTokenCeiling);
+  return rate.outputTokenCeiling === undefined ? null
+    : currentBenchCodexSubscriptionContract(rate.model, rate.inputTokenCeiling, rate.outputTokenCeiling);
+}
+
 /** Freeze the maintained admission contract with the input cap. Its source is
  * the exact provider counting API plus the self-contained request restriction,
  * rather than a configured model window. Every send still needs a NEW measured
@@ -572,6 +612,56 @@ export function currentBenchOpenAiInputReader(input: { model: string; inputToken
   } };
 }
 
+/** Subscription admission (D-023). There is no provider count and no output
+ * field, so the bound is the frozen provider-intrinsic contract. It only accepts
+ * the final ChatGPT backend body, and only when max_output_tokens is absent, so
+ * a gateway that stopped stripping the field cannot inherit this reservation. */
+export function currentBenchCodexSubscriptionInputReader(input: { model: string; inputTokens: number; outputTokens: number }): {
+  read: (attempt: GatewayCarryTrialAttempt) => Promise<CurrentBenchNativeInputCeiling | null>; revoke: () => void } {
+  const { model, inputTokens, outputTokens } = input;
+  const sourceSha256 = currentBenchCodexSubscriptionContract(model, inputTokens, outputTokens);
+  let live = true;
+  return { revoke() { live = false; }, async read(value) {
+    const attempt = Object.freeze({ ...value });
+    try {
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+          attempt.transport !== 'oauth-http' || attempt.target !== currentBenchCodexSubscriptionTarget ||
+          attempt.credentialHeader !== 'authorization' ||
+          attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex')) return null;
+      const body = JSON.parse(attempt.body);
+      if (body.model !== model || body.max_output_tokens !== undefined || !selfContainedOpenAiInput(body)) return null;
+      const validUntilMonotonicMs = processMonotonicClock.now() + 5000;
+      return { model, inputTokens, sourceSha256, validUntilMonotonicMs,
+        evidence: Object.freeze({ kind: 'provider-intrinsic-limit' as const, sourceSha256, bodySha256: attempt.bodySha256,
+          inputTokens, outputTokens }),
+        validateAuthorization() {
+          if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
+            throw new Error('Subscription benchmark input authority expired or revoked.');
+          }
+        } };
+    } catch { return null; }
+  } };
+}
+
+/** The ChatGPT access token a `codex-cli:<home>` account sends. The gateway's
+ * OAuth proxy refreshes into the same auth.json, so this reads what it sends. */
+function codexSubscriptionCredentialResolver(credentialRef: string): CredentialResolver {
+  return { kind: 'file', authMode: 'oauth', invalidate() {}, async current() {
+    const [{ parseCodexCliRef }, { readCodexAuth }] = await Promise.all([
+      import('../inference-gateway/codex-cli-bridge'), import('../inference-gateway/codex-oauth-proxy')]);
+    const home = parseCodexCliRef(credentialRef);
+    const auth = home ? await readCodexAuth(home) : null;
+    if (!auth?.accessToken) throw new Error('Codex subscription account has no ChatGPT access token.');
+    return auth.accessToken;
+  } };
+}
+
+/** Launch preflight: can this account pay a subscription arm right now? */
+export async function currentBenchSupportsCodexSubscription(credentialRef: string): Promise<boolean> {
+  if (!credentialRef.startsWith('codex-cli:')) return false;
+  try { return !!await codexSubscriptionCredentialResolver(credentialRef).current(); } catch { return false; }
+}
+
 /** Reuse registered account and credential readers to authenticate the FINAL
  * payer. Never consult an ambient login or treat a caller bearer as a provider
  * credential. The complete native input ceiling is reserved per attempt. */
@@ -594,9 +684,14 @@ export function currentBenchProviderAuthenticator(input: {
   const { workspaceId, preregHash } = input;
   const assignmentId = currentBenchAssignmentId(protocol.runId, arm.id, input.taskId, input.seed);
   const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model)!;
-  const providerReader = input.readNativeInputCeiling === undefined && arm.agent === 'codex' && rate.inputTokenCeiling !== undefined &&
-    rate.inputTokenCeilingSourceSha256 === currentBenchOpenAiInputContract(arm.model, rate.inputTokenCeiling)
-    ? currentBenchOpenAiInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling }) : null;
+  const payer = currentBenchArmPayer(arm), subscription = payer === 'subscription';
+  const route = arm.agent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
+    : currentBenchCodexRoute(payer);
+  const contract = arm.agent === 'codex' ? currentBenchRateContract(payer, rate) : null;
+  const providerReader = input.readNativeInputCeiling !== undefined || contract === null ||
+    rate.inputTokenCeilingSourceSha256 !== contract ? null : subscription
+    ? currentBenchCodexSubscriptionInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! })
+    : currentBenchOpenAiInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling! });
   const readNativeInputCeiling = input.readNativeInputCeiling ?? providerReader?.read;
   let live = true;
   return { revoke() { live = false; providerReader?.revoke(); }, async authenticateProvider(value) {
@@ -604,17 +699,19 @@ export function currentBenchProviderAuthenticator(input: {
     try {
       const claude = attempt.transport === 'anthropic-http';
       const provider = claude ? 'claude' : 'codex';
-      // OAuth/CLI OpenAI routes currently cannot preserve the native output
-      // ceiling. The maintained gateway already refuses them for bounded runs.
+      // The payer basis fixes the one route: an API-key Codex arm cannot fall
+      // back to a subscription, and a subscription arm never sends with a key.
       if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
           attempt.manifestSha256 !== preregHash || attempt.armId !== assignmentId ||
-          attempt.transport !== (arm.agent === 'claude' ? 'anthropic-http' : 'bearer-http') ||
-          attempt.target !== (claude ? 'https://api.anthropic.com/v1/messages' : 'https://api.openai.com/v1/responses') ||
+          attempt.transport !== route.transport || attempt.target !== route.target ||
           attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
           rate.inputTokenCeiling === undefined || rate.inputTokenCeilingSourceSha256 === undefined || !readNativeInputCeiling ||
           !['auto', 'default'].includes(arm.account) && attempt.accountId !== arm.account) return null;
       const body = JSON.parse(attempt.body);
-      const output = claude ? body.max_tokens : body.max_output_tokens;
+      // The ChatGPT backend rejects max_output_tokens. The subscription bound is
+      // the frozen model maximum, and a body still carrying the field is refused.
+      const output = claude ? body.max_tokens : subscription
+        ? (body.max_output_tokens === undefined ? rate.outputTokenCeiling : undefined) : body.max_output_tokens;
       if (body.model !== arm.model || (claude ? body.output_config?.effort : body.reasoning?.effort) !== arm.effort ||
           !Number.isSafeInteger(output) || output <= 0 ||
           arm.generationBudget.maxTokens !== undefined && output > arm.generationBudget.maxTokens) return null;
@@ -625,9 +722,11 @@ export function currentBenchProviderAuthenticator(input: {
         return account ? { id: account.id, provider: accountProvider(account), credentialRef: account.credentialRef } : null;
       });
       const account = await readAccount(workspaceId, attempt.accountId);
-      if (!account || account.id !== attempt.accountId || account.provider !== provider || !account.credentialRef.trim()) return null;
+      if (!account || account.id !== attempt.accountId || account.provider !== provider || !account.credentialRef.trim() ||
+          subscription !== account.credentialRef.startsWith('codex-cli:')) return null;
       const snapshot = Object.freeze({ ...account });
       const resolver = ports ? ports.credentialResolver(provider, snapshot.credentialRef) : await (async () => {
+        if (subscription) return codexSubscriptionCredentialResolver(snapshot.credentialRef);
         const credentials = await import('../inference-gateway/credential-store');
         return claude ? credentials.makeCredentialResolver(snapshot.credentialRef) :
           credentials.makeBearerCredentialResolver(snapshot.credentialRef);
@@ -679,6 +778,9 @@ export interface CurrentBenchProviderCaptureRecovery {
 export function currentBenchWorkloadProviderInputCapture(options: {
   accountingBinding: CurrentBenchAccountingBinding; captureRoot: string; candidateCheckoutRoot: string;
   model: string; effort: string; accountId: string; maxRequests: number; maxBytes: number;
+  /** D-023 subscription route. Omission is the API-key route, so existing
+   * allocations keep their configuration hash. */
+  payer?: 'subscription';
   recovery?: CurrentBenchProviderCaptureRecovery;
   /** Terminal evidence inspection requires retained host pins and cannot allocate or send. */
   readOnly?: boolean;
@@ -691,8 +793,10 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     frozen.model, frozen.effort, frozen.accountId, frozen.captureRoot, frozen.candidateCheckoutRoot].every(present) ||
     !digest(binding.preregHash) || !binding.assignmentId.startsWith('bench-assignment:') ||
     !Number.isSafeInteger(frozen.maxRequests) || frozen.maxRequests < 1 || frozen.maxRequests > 10_000 ||
-    !Number.isSafeInteger(frozen.maxBytes) || frozen.maxBytes < 1 || frozen.maxBytes > 16 * 1024 * 1024)
+    !Number.isSafeInteger(frozen.maxBytes) || frozen.maxBytes < 1 || frozen.maxBytes > 16 * 1024 * 1024 ||
+    frozen.payer !== undefined && frozen.payer !== 'subscription')
     throw new Error('Provider input capture requires an exact private assignment and bounded allocation.');
+  const route = currentBenchCodexRoute(frozen.payer ?? 'api-key');
   resolveBenchWorkspace(binding.workspaceId);
   if (readOnly && !recovery) throw new Error('Read-only provider capture requires retained host recovery pins.');
   const root = lstatSync(frozen.captureRoot, { bigint: true });
@@ -729,7 +833,8 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     throw new Error('Provider input capture recovery differs from its private host allocation.');
   type Capture = Readonly<{ schemaVersion: 1; accountingBinding: CurrentBenchAccountingBinding;
     reservationId: string; bodyRef: string; bodyPath: string; bodySha256: string;
-    nativeSessionId: string; nativeTurnId: string; model: string; effort: string; accountId: string }>;
+    nativeSessionId: string; nativeTurnId: string; model: string; effort: string; accountId: string;
+    payer?: 'subscription' }>;
   const published = new Map(recovery?.captures.map(pin => [pin.reservationId, pin.receiptSha256]) ?? []);
   const paths = (id: string) => ({ body: `${namespace}/${id}/body.json`, receipt: `${namespace}/${id}/receipt.json` });
   const allocationCensus = () => {
@@ -754,8 +859,8 @@ export function currentBenchWorkloadProviderInputCapture(options: {
       if (allocationCensus() >= frozen.maxRequests || attempt.signal.aborted ||
           !uuid(attempt.attemptId) || !uuid(attempt.nativeSessionId) || !uuid(attempt.nativeTurnId) ||
           attempt.manifestSha256 !== binding.preregHash || attempt.armId !== binding.assignmentId ||
-          attempt.accountId !== frozen.accountId || attempt.transport !== 'bearer-http' ||
-          attempt.target !== 'https://api.openai.com/v1/responses' || attempt.credentialHeader !== 'authorization' ||
+          attempt.accountId !== frozen.accountId || attempt.transport !== route.transport ||
+          attempt.target !== route.target || attempt.credentialHeader !== route.credentialHeader ||
           !digest(attempt.credentialSha256) || typeof attempt.body !== 'string')
         throw new Error('Provider input capture refused a foreign, cancelled or exhausted request.');
       const bytes = Buffer.from(attempt.body), hash = createHash('sha256').update(bytes).digest('hex');
@@ -770,7 +875,8 @@ export function currentBenchWorkloadProviderInputCapture(options: {
       const receipt: Capture = { schemaVersion: 1, accountingBinding: { ...binding }, reservationId: attempt.attemptId,
         bodyRef: `${namespace}:${attempt.attemptId}#body`, bodyPath: path.body, bodySha256: hash,
         nativeSessionId: attempt.nativeSessionId, nativeTurnId: attempt.nativeTurnId,
-        model: frozen.model, effort: frozen.effort, accountId: frozen.accountId };
+        model: frozen.model, effort: frozen.effort, accountId: frozen.accountId,
+        ...(frozen.payer ? { payer: frozen.payer } : {}) };
       const encoded = canonicalJson(receipt);
       if (Buffer.byteLength(encoded) > 8192) throw new Error('Provider input capture receipt exceeds its bound.');
       // Each slot is an exclusive, persistent budget claim. A failed write or
@@ -885,15 +991,22 @@ export function currentBenchGatewayController(input: {
     throw new Error('Benchmark gateway resource policy differs from the frozen protocol.');
   }
   const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
-  const outputTokenLimit = input.outputTokenLimit === undefined
+  // D-023: the subscription backend rejects max_output_tokens, so a host limit
+  // would refuse every send there. That route reserves the frozen model maximum.
+  const payer = currentBenchArmPayer(arm), subscription = payer === 'subscription';
+  if (subscription && (input.outputTokenLimit !== undefined || rate.outputTokenCeiling === undefined)) {
+    throw new Error('A subscription arm reserves its frozen provider output ceiling and cannot take a host output limit.');
+  }
+  const outputTokenLimit = subscription ? rate.outputTokenCeiling! : input.outputTokenLimit === undefined
     ? Math.min(resources.outputTokens, arm.generationBudget.maxTokens ?? resources.outputTokens)
     : input.outputTokenLimit;
   if (!Number.isSafeInteger(outputTokenLimit) || outputTokenLimit <= 0 || outputTokenLimit > resources.outputTokens ||
       arm.generationBudget.maxTokens !== undefined && outputTokenLimit > arm.generationBudget.maxTokens) {
     throw new Error('Benchmark per-request output ceiling exceeds its frozen allowance or is invalid.');
   }
+  const codexRoute = currentBenchCodexRoute(payer);
   const controller = createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
-    outputTokenLimit,
+    ...(subscription ? {} : { outputTokenLimit }),
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
     async authorizeProviderAttempt(attempt) {
       // Copy before authentication so an async callback cannot retarget the
@@ -901,9 +1014,11 @@ export function currentBenchGatewayController(input: {
       const request = Object.freeze({ ...attempt });
       try {
         const body = JSON.parse(request.body);
-        const output = request.transport === 'anthropic-http' ? body.max_tokens : body.max_output_tokens;
+        const output = request.transport === 'anthropic-http' ? body.max_tokens : subscription
+          ? (body.max_output_tokens === undefined ? outputTokenLimit : undefined) : body.max_output_tokens;
         const effort = request.transport === 'anthropic-http' ? body.output_config?.effort : body.reasoning?.effort;
         if ((arm.agent === 'codex') !== (request.transport !== 'anthropic-http') ||
+            arm.agent === 'codex' && request.transport !== codexRoute.transport ||
             !['auto', 'default'].includes(arm.account) && request.accountId !== arm.account ||
             body.model !== arm.model || effort !== arm.effort ||
             !Number.isSafeInteger(output) || output <= 0 || output > outputTokenLimit ||
@@ -2220,6 +2335,8 @@ export function currentBenchWorkloadToolResultReader(options:
 export function currentBenchWorkloadProviderInputReader(options:
   Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
     checkoutRoot: string; accountingBinding: CurrentBenchAccountingBinding;
+    /** The capture allocation's payer route (D-023); omission is the API key. */
+    payer?: 'subscription';
     receipts: Array<((Parameters<typeof currentBenchWorkloadContextReader>[0]['receipts'][number] & { nativeSource?: 'input' }) |
       (Parameters<typeof currentBenchWorkloadToolResultReader>[0]['receipts'][number] & {
         nativeSource: 'tool-result'; contextId: string; consumer: string;
@@ -2291,7 +2408,7 @@ export function currentBenchWorkloadProviderInputReader(options:
       const body = JSON.parse(bodyText), bodySha256 = createHash('sha256').update(bytes).digest('hex');
       const identity = { attemptId: receipt.reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
         nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
-        bodySha256, transport: 'bearer-http', credentialHeader: 'authorization', target: 'https://api.openai.com/v1/responses' };
+        bodySha256, ...currentBenchCodexRoute(frozen.payer ?? 'api-key') };
       if (!attempt || !result || Object.entries(identity).some(([key, value]) => attempt[key] !== value || result[key] !== value) ||
           !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
           !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== receipt.reservationId ||

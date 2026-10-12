@@ -187,6 +187,10 @@ export const currentBenchmarkProtocolSchema = z.object({
     }).strict(),
     // Omission preserves uncontrolled protocols; when present on any arm it is required on all.
     control: armControl.optional(),
+    // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: who pays. Omission is the original
+    // OpenAI/Anthropic API key. 'subscription' runs a Codex arm on a ChatGPT subscription
+    // (oauth-http), and its USD caps are list-price equivalents rather than money spent.
+    payer: z.enum(['api-key', 'subscription']).optional(),
   }).strict()).min(2),
   aggregateBudgetUsd: z.number().finite().positive(),
   maxInFlightUsd: z.number().finite().positive(),
@@ -198,6 +202,9 @@ export const currentBenchmarkProtocolSchema = z.object({
     // complete-request count; a local estimate/client window is not proof.
     inputTokenCeiling: z.number().int().positive().optional(),
     inputTokenCeilingSourceSha256: digest.optional(),
+    // The provider's maximum output per request. A subscription backend rejects
+    // max_output_tokens, so this frozen model maximum is that route's output bound.
+    outputTokenCeiling: z.number().int().positive().optional(),
     // Freeze the most expensive supported cache-write tier before Claude sends.
     cacheWriteUsdPerMillion: z.number().finite().nonnegative().optional(),
   }).strict()).min(1) }).strict(),
@@ -243,6 +250,21 @@ export const currentBenchmarkProtocolSchema = z.object({
   protocol.priceSchedule.rates.forEach((rate, index) => {
     if ((rate.inputTokenCeiling === undefined) !== (rate.inputTokenCeilingSourceSha256 === undefined)) {
       issue(['priceSchedule', 'rates', index], 'Native input ceiling and source proof must be frozen together.');
+    }
+    if (rate.outputTokenCeiling !== undefined && rate.inputTokenCeiling === undefined) {
+      issue(['priceSchedule', 'rates', index], 'A provider output ceiling requires the frozen native input ceiling.');
+    }
+  });
+  // D-023: a subscription arm is never compared with an API-key arm.
+  if (new Set(protocol.arms.map(arm => arm.payer ?? 'api-key')).size !== 1) {
+    issue(['arms'], 'Matched arms require one payer basis.');
+  }
+  protocol.arms.forEach((arm, index) => {
+    if (arm.payer !== 'subscription') return;
+    const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model);
+    if (arm.agent !== 'codex') issue(['arms', index, 'payer'], 'Only Codex arms support the subscription payer.');
+    else if (rate && (rate.inputTokenCeiling === undefined || rate.outputTokenCeiling === undefined)) {
+      issue(['arms', index, 'payer'], 'A subscription arm needs frozen provider input and output ceilings.');
     }
   });
   if (protocol.confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
