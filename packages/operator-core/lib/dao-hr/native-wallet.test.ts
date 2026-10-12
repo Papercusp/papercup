@@ -33,7 +33,7 @@ describe('native DAO HR hosted wallet fixture', () => {
       const challengeId = String(issued.value.challengeId), message = String(issued.value.message);
       expect(message).toContain('urn:papercusp:principal:gh:' + identity.actors.candidate.githubUserId);
       const foreign = await submitWalletBinding({ challengeId, signature: await account.signMessage({ message }) }, admin);
-      expect(foreign).toMatchObject({ ok: false, status: 403 });
+      expect(foreign).toMatchObject({ ok: false, status: 404, error: 'challenge_not_found' });
       const bad = await submitWalletBinding({ challengeId, signature: await wrong.signMessage({ message }) }, candidate);
       expect(bad.ok).toBe(false);
       const signature = await account.signMessage({ message });
