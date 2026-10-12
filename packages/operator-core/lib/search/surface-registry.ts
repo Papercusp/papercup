@@ -271,6 +271,16 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'time filters. This is hybrid retrieval by contract, but through the private-vault engine.',
   },
   {
+    id: 'people:search',
+    entry: 'agent-tools/people/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Delegates to the workspace relationship graph\'s bounded identity lookup. Exact email ' +
+      'and phone identity matches rank first, followed by name; text filters match names and ' +
+      'contact fields. It returns canonical persons without interaction content, so prose ' +
+      'similarity ranking through the workspace search engine does not fit this contract.',
+  },
+  {
     id: 'reports:search',
     entry: 'agent-tools/reports/search.ts',
     engine: 'none',
@@ -434,6 +444,9 @@ export const UNRELATED_ENGINE_MODULE_CEILING = 3;
  * Keyed by path relative to `packages/operator-core/lib`.
  */
 export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
+  'search/bench/bm25-hybrid-recall-cli.ts':
+    'A read-only paired BM25-versus-legacy retrieval benchmark, invoked as a CLI. Its engine ' +
+    'results measure recall and latency for an experiment, rather than serving a product query.',
   'endpoint-route/routes/github/search-repos.ts':
     'Proxies the GitHub Search API server-side (so the browser never holds the token). It searches ' +
     "GitHub's corpus, not ours — there is no local index to rank and no floor to inherit.",
