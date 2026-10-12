@@ -9,6 +9,8 @@ import runTool, {
   clampTestingRunForegroundTimeoutMs,
   emptyDistilledRunRefusal,
   nameFilterNoMatchRefusal,
+  parseRouterTerminalCompletion,
+  recoverCompletedRunAfterBudget,
   resolveDetachedHarnessSlug,
   selectTestFileRoot,
   testEvidenceRecoveryRunId,
@@ -34,6 +36,27 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  it('reuses completed Node proof after its budget without needing PostgreSQL or a replay', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'completed-node-proof-'));
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      '# tests 2', '# pass 1', '# fail 0', '# skipped 1',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed'].join('\n');
+    try {
+      const args = { output, dir, root: '/repo', runId: 'preserved-node-run',
+        files: ['packages/x/real.test.ts'], timeoutMs: 1000 };
+      expect(await recoverCompletedRunAfterBudget(args)).toMatchObject({
+        ok: true, runId: 'preserved-node-run', passed: 1, failed: 0, skipped: 1, budgetExceeded: true,
+      });
+      expect(await recoverCompletedRunAfterBudget({ ...args,
+        output: output.replace('status=passed', 'status=passed finalizationError=true') })).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 2'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 0'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('executed=1', 'executed=2'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('runner=node:test', 'runner=vitest'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.split('\n').slice(0, -1).join('\n'))).toBeNull();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   const nativeConsult = { request_key: 'native-retry', question: 'Does the archived source reach the configured backend?',
     tried: 'Read the exact dispatcher and launcher', observed: 'Prior native source failed to launch',
     decision_at_stake: 'Whether historical conversion is supported',
