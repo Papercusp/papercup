@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from './util/cli-entry';
 import { readProcessIdentity, linuxProcStateFromStat } from './process-identity.ts';
 import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 
@@ -106,7 +106,7 @@ export function serveNativeRuntimeObserver(socket: string) {
   return server;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--observe-native') {
+if (isCliEntry(import.meta.url) && process.argv[2] === '--observe-native') {
   try { serveNativeRuntimeObserver(process.argv[3]!); }
   catch (error) { console.error(`Native runtime observer preparation failed: ${String(error)}`); process.exitCode = 1; }
 }
