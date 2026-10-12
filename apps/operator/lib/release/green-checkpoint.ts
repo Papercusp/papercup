@@ -15672,7 +15672,11 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   result: T,
   deps: Pick<
     CheckpointDeps,
-    "runRepairTickLegs" | "log" | "transitionFrozenRepairQueue" | "writeFrozenRepairQueue"
+    | "runRepairTickLegs"
+    | "log"
+    | "transitionFrozenRepairQueue"
+    | "writeFrozenRepairQueue"
+    | "checkDiskHeadroom"
   >,
 ): Promise<T> {
   if (result.reason !== "repair-in-progress") return result;
@@ -15682,6 +15686,29 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   const queue = result.repairQueue;
   if (!queue || queue.phase !== "awaiting-fixer" || !deps.runRepairTickLegs) {
     return result;
+  }
+  // WI-6554700010008915: a hold tick returns `repair-in-progress` BEFORE the candidate
+  // path's disk-headroom preflight, yet the legs below still run setupTree (a node_modules
+  // copy) and every leg's scratch writes. On 2026-10-12 a full /tmp turned that into
+  // ENOSPC leg failures folded into queue.legs as `failing`, which read as code reds.
+  // Apply the SAME admission check (fail-closed, like the candidate path): with no headroom
+  // the tick leaves the legs unmeasured, and the lifecycle never infers anything from that.
+  if (deps.checkDiskHeadroom) {
+    let headroom: { ok: boolean; summary: string };
+    try {
+      headroom = await deps.checkDiskHeadroom();
+    } catch (e) {
+      headroom = {
+        ok: false,
+        summary: `disk headroom probe failed: ${e instanceof Error ? e.message : e}`,
+      };
+    }
+    if (!headroom.ok) {
+      deps.log(
+        `P-009 repair-tick legs NOT measured: disk-headroom — ${headroom.summary}`,
+      );
+      return result;
+    }
   }
   try {
     const measured = await deps.runRepairTickLegs(

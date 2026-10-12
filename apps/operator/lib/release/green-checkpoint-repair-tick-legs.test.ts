@@ -472,6 +472,69 @@ describe("augmentWithRepairTickLegs", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("measurement failed"));
   });
 
+  // WI-6554700010008915: a hold tick returns BEFORE the candidate path's disk preflight, so
+  // a full /tmp made every leg fail with ENOSPC and those were folded into queue.legs as
+  // code reds. The tick must apply the same admission check and leave the legs unmeasured.
+  describe("disk-headroom admission (WI-6554700010008915)", () => {
+    it("does not run the legs when headroom is insufficient, and says why", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const writeFrozenRepairQueue = vi.fn();
+      const log = vi.fn();
+      const base = holdResult();
+      const result = await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs,
+        writeFrozenRepairQueue,
+        log,
+        checkDiskHeadroom: async () => ({ ok: false, summary: "/tmp 3.1 GiB free" }),
+      });
+      expect(runRepairTickLegs).not.toHaveBeenCalled();
+      expect(writeFrozenRepairQueue).not.toHaveBeenCalled();
+      expect(result).toBe(base);
+      expect(result.repairTickLegs).toBeUndefined();
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining("NOT measured: disk-headroom — /tmp 3.1 GiB free"),
+      );
+    });
+
+    it("fails closed when the headroom probe throws", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const log = vi.fn();
+      const base = holdResult();
+      const result = await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs,
+        log,
+        checkDiskHeadroom: async () => {
+          throw new Error("statfs EIO");
+        },
+      });
+      expect(runRepairTickLegs).not.toHaveBeenCalled();
+      expect(result).toBe(base);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("disk headroom probe failed: statfs EIO"));
+    });
+
+    it("measures as before when headroom is sufficient", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const result = await augmentWithRepairTickLegs(holdResult(), {
+        runRepairTickLegs,
+        log: vi.fn(),
+        checkDiskHeadroom: async () => ({ ok: true, summary: "ok" }),
+      });
+      expect(runRepairTickLegs).toHaveBeenCalledTimes(1);
+      expect(result.repairTickLegs).toEqual(measured);
+    });
+
+    it("never probes disk for a tick that would not measure anyway", async () => {
+      const checkDiskHeadroom = vi.fn(async () => ({ ok: false, summary: "x" }));
+      const base = holdResult({ reason: "not-green", green: false });
+      await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs: vi.fn(async () => measured),
+        log: vi.fn(),
+        checkDiskHeadroom,
+      });
+      expect(checkDiskHeadroom).not.toHaveBeenCalled();
+    });
+  });
+
   // WI-10005728: the tick's measurement used to reach gate_health only; queue.legs stayed
   // empty, so every leg read `never-admitted` and leg shrink / fixedAtHead never moved.
   describe("folds the measurement into the queue's leg lifecycle (WI-10005728)", () => {
