@@ -489,6 +489,43 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
+  it('WI-25783818561428811: checks the authoritative applied-file ledger before any DDL in the same psql session', async () => {
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out).toMatchObject({ ok: true, applied: true, schema_migrations_recorded: true });
+
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    const ledgerPresence = script.indexOf("to_regclass('harness_shared.schema_migrations')");
+    const appliedCheck = script.indexOf('SELECT EXISTS (SELECT 1 FROM harness_shared.schema_migrations');
+    const conditional = script.indexOf('\\if :papercusp_migration_already_applied');
+    const marker = script.indexOf('PAPERCUSP_MIGRATION_ALREADY_APPLIED');
+    const ddl = script.indexOf(`\\i ${FILE}`);
+    expect(ledgerPresence).toBeGreaterThanOrEqual(0);
+    expect(appliedCheck).toBeGreaterThan(ledgerPresence);
+    expect(conditional).toBeGreaterThan(appliedCheck);
+    expect(marker).toBeGreaterThan(conditional);
+    expect(ddl).toBeGreaterThan(marker);
+    expect(script).toContain('\\else');
+    expect(script).toContain('\\endif');
+  });
+
+  it('WI-25783818561428811: a boot-applied filename returns a safe no-op without recording a second tool action', async () => {
+    h.spawnSync.mockReturnValue({ status: 0, stdout: 'PAPERCUSP_MIGRATION_ALREADY_APPLIED\n', stderr: '' });
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out).toMatchObject({
+      ok: true,
+      applied: false,
+      already_applied: true,
+      schema_migrations_recorded: true,
+      action_key: 'migrate:999-fake.sql',
+    });
+    expect(out.note).toContain('same psql session');
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
   it('EI-6962: wraps the file in the SAME BEGIN/COMMIT as a schema_migrations INSERT, fed to psql via stdin (not -f)', async () => {
     const out = parse(
       await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
@@ -513,8 +550,8 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(script).toContain('999-fake.sql');
     expect(script).toContain('COMMIT;');
     // The INSERT must be INSIDE the same transaction as the \i, not appended after COMMIT.
-    expect(script.indexOf('BEGIN;')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('\\i')).toBeLessThan(script.indexOf('INSERT INTO'));
+    expect(script.indexOf('BEGIN;')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('\\i ' + FILE)).toBeLessThan(script.indexOf('INSERT INTO'));
     expect(script.indexOf('INSERT INTO')).toBeLessThan(script.lastIndexOf('COMMIT;'));
 
     // The su_meta coordination-domain idempotency ledger is STILL recorded —
@@ -816,9 +853,9 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     }
     expect(script).toContain("ERRCODE = '55P03'");
     expect(script).toContain('backup pg_dump holds AccessShareLock');
-    expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('pg_advisory_xact_lock')).toBeLessThan(script.indexOf('\\i'));
+    expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('pg_advisory_xact_lock')).toBeLessThan(script.indexOf('\\i ' + FILE));
   });
 
   it('exports the transaction-scoped backup rendezvous using the canonical key', () => {
@@ -1023,7 +1060,7 @@ describe('db:migrate — caller-widened lock_timeout_sec (WI-6381)', () => {
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '180s';");
-    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i ' + FILE));
   });
 
   it('a caller-supplied lock_timeout_sec drops the retry ceiling to 2 attempts instead of the default 5', async () => {

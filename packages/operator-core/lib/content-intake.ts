@@ -50,7 +50,8 @@ async function readPdf(bytes: Uint8Array, limits: ContentLimits, signal?: AbortS
   await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   checkCancelled(signal);
-  const task = getDocument({ data: bytes.slice(), isEvalSupported: false, disableFontFace: true, useWorkerFetch: false, stopAtErrors: true, verbosity: 0 });
+  // pdfjs-dist 6 removed the eval-based font path (and its `isEvalSupported` switch).
+  const task = getDocument({ data: bytes.slice(), disableFontFace: true, useWorkerFetch: false, stopAtErrors: true, verbosity: 0 });
   const abort = () => { void task.destroy(); };
   signal?.addEventListener('abort', abort, { once: true });
   try {

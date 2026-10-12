@@ -227,7 +227,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/scout/draft-review-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/scout/ungraded-filings-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/scout/watchdog-health-lane.ts': na(
     'digest lane that summarizes the system watchdog’s persisted ticks for the scout digest; a reader of watchdog output, not a watchdog',
   ),

@@ -4012,18 +4012,36 @@ export function formatSessionPortInspection(result: any): any[];
  *  operator via the defaults.
  * @param {string | null | undefined} sessionId
  * @param {'claude' | 'codex' | 'omp' | null} [sourceKind]
+ * @param {{
+ *   fetchImpl?: typeof fetch,
+ *   operatorUrl?: string,
+ *   token?: string | null,
+ *   timeoutMs?: number,
+ *   statusTimeoutMs?: number,
+ *   statusAttempts?: number,
+ *   statusDelayMs?: number,
+ *   sleep?: (ms: number) => Promise<unknown>,
+ *   sourceSession?: { agent: string, sessionId: string, configDir?: string | null, coordOwnerId?: string | null } | null,
+ *   home?: string,
+ * }} [options] `sourceSession` is the picked launch row (line ~16404 passes
+ *   it); its configDir is re-pinned in place to the restored archive root.
  */
 export function tryRematerializeFromArchive(sessionId: string | null | undefined, sourceKind?: "claude" | "codex" | "omp" | null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, sourceSession, home, }?: {
-    fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
-    timeoutMs?: number | undefined;
-    statusTimeoutMs?: number | undefined;
-    statusAttempts?: number | undefined;
-    statusDelayMs?: number | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
-    sourceSession?: null | undefined;
-    home?: string | undefined;
+    fetchImpl?: typeof fetch;
+    operatorUrl?: string;
+    token?: string | null;
+    timeoutMs?: number;
+    statusTimeoutMs?: number;
+    statusAttempts?: number;
+    statusDelayMs?: number;
+    sleep?: (ms: number) => Promise<unknown>;
+    sourceSession?: {
+        agent: string;
+        sessionId: string;
+        configDir?: string | null;
+        coordOwnerId?: string | null;
+    } | null;
+    home?: string;
 }): Promise<any>;
 /**
  * Re-verify — and if necessary RESTORE — a resume's transcript in the last

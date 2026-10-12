@@ -179,7 +179,7 @@ describe('failed native turn → durable routine retry → native wake', () => {
       await until(() => Date.now() - failedAt >= 30_000, 35_000);
       const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
       const recovery = await recoverExpectedLoopExecution({ sql, routineId, ownerId: owner, nowMs: Date.now() }, {
-        findHost: () => f.readHost(), arm,
+        findHost: async () => f.readHost(), arm,
         inference: async () => ({ active: 0, observedAt: Date.now() }),
       });
       expect(recovery, JSON.stringify({ recovery, host: f.readHost().execution })).toMatchObject({
@@ -203,7 +203,7 @@ describe('failed native turn → durable routine retry → native wake', () => {
         deliveredAt: null, urgent: false, minSleepSec: null, coalescedCount: 1, source: null,
         wakeHandle: null, note: null, turnProof: null, turnStartedAt: null, pickupDeadlineAt: null };
       const wakeDeps: ExecuteWakeDeps = {
-        findPsuHost: () => f.readHost(), injectPsuHostWithConfirmation: injectIntoHostWithConfirmation,
+        findPsuHost: async () => f.readHost(), injectPsuHostWithConfirmation: injectIntoHostWithConfirmation,
         resolveWakeModeFn: async () => 'auto', stageManualWakeFn: async () => undefined,
         getLatestSessionForOwner: async () => null, coldAutoEnabled: async () => false,
         presence: async () => null,

@@ -415,7 +415,8 @@ async function main(): Promise<void> {
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
     const runtimeReader = args.noPersist ? undefined
-      : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport);
+      // Same effective transport the runner resolves (runner.ts: `scenario.transport ?? 'http-sse'`).
+      : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport ?? 'http-sse');
     const ledgerBefore = args.noPersist ? null : await beginLlmScenarioLedger(scenarioFilePath, runtimeReader);
     const diagnosticCapture = createLlmCallDiagnosticCapture();
     const runnerStartedAt = new Date();

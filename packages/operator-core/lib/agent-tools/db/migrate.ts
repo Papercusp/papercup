@@ -218,7 +218,24 @@ export function migrationPsqlScript(args: {
     throw new Error(`migration ${args.resolvedFile} contains no executable statement-breakpoint chunks`);
   }
 
-  return bodies
+  // A migration can be applied by the boot runner as well as this tool. The
+  // su_meta action ledger below only remembers db:migrate calls, so it cannot
+  // protect a boot-applied file from a later manual re-run. Check the
+  // authoritative filename ledger in this same psql session before entering
+  // any DDL branch. Keep the table-existence guard so db:migrate can still
+  // bootstrap a schema whose first migration creates schema_migrations.
+  const schemaLedgerGuard =
+    `SELECT to_regclass('harness_shared.schema_migrations') IS NOT NULL AS papercusp_schema_migrations_exists \\gset\n` +
+    `\\if :papercusp_schema_migrations_exists\n` +
+    `SELECT EXISTS (SELECT 1 FROM harness_shared.schema_migrations WHERE filename = '${args.filenameLiteral}') AS papercusp_migration_already_applied \\gset\n` +
+    `\\else\n` +
+    `\\set papercusp_migration_already_applied false\n` +
+    `\\endif\n` +
+    `\\if :papercusp_migration_already_applied\n` +
+    `\\echo PAPERCUSP_MIGRATION_ALREADY_APPLIED\n` +
+    `\\else\n`;
+
+  return schemaLedgerGuard + bodies
     .map((body, index) => {
       const ledgerWrite =
         index === bodies.length - 1
@@ -234,7 +251,8 @@ export function migrationPsqlScript(args: {
         `COMMIT;\n`
       );
     })
-    .join('');
+    .join('') +
+    `\\endif\n`;
 }
 
 /** Skip the broad backup rendezvous only when a live backup owns it and the
@@ -1042,6 +1060,19 @@ export default defineTool({
               // forever (attempts never reaches 5).
               lock_timeout_retries_exhausted:
                 attempts >= migrationMaxAttempts && isRetryableLockFailure(r.stderr ?? ''),
+            });
+          }
+          if ((r.stdout ?? '').split(/\r?\n/).some((line) => line.trim() === 'PAPERCUSP_MIGRATION_ALREADY_APPLIED')) {
+            return json({
+              ok: true,
+              applied: false,
+              already_applied: true,
+              action_key: actionKey,
+              schema_migrations_recorded: true,
+              file: args.file,
+              note:
+                'The same psql session verified this filename in harness_shared.schema_migrations before entering the DDL branch — no-op.',
+              attempts,
             });
           }
           // Record only on a successful apply (first writer wins). This is the

@@ -9,11 +9,14 @@ import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/fu
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { readInstalledPluginProvenance } from '../cupboard/install-plugin-core';
 import type { InstalledPluginProvenance } from '../cupboard/types';
+import type { readInstalledPluginCommerceProvenance } from '../cupboard/install-io';
 import { declareMeter, LocalMeteredTurn, type LocalMeteredTurnState } from '../p2p/metered-invocation';
 import { createMicrochargeChannel } from '../p2p/microcharge';
 import { signPaymentTestBytes } from '../p2p/_payment-voucher-fixture';
 import invokeTool, { NestedToolRefusalError } from './tools/invoke';
 import type { ToolResult } from '@papercusp/tooldef';
+
+type IdentityLifecycleAdmit = NonNullable<Parameters<NativeInstalledPerUseTurns['nativeLifecycle']>[0]['identityLifecycle']>['admit'];
 
 vi.mock('../cupboard/install-plugin-core', () => ({ readInstalledPluginProvenance: vi.fn() }));
 
@@ -345,7 +348,9 @@ describe('host-owned installed tool admission composition', () => {
     const admit = vi.fn(async (binding: FundedToolTurnBinding): Promise<FundedToolTurnResult> => ({ ok: true,
       turn: { turnId: 'host-turn', accountId: 'account', revision: 2, state: 'running', binding,
         fundingReceipt: null, meterState: turn.snapshot(), usageEventKeys: null, closedAtMs: null, settlementOutbox: null } }));
-    const localTurn = vi.fn(() => turn), readProvenance = vi.fn(async () => structuredClone(provenance));
+    // Typed with the REAL reader signature so tests can install its genuine `null` (absent) result uncast.
+    const localTurn = vi.fn(() => turn),
+      readProvenance = vi.fn<typeof readInstalledPluginCommerceProvenance>(async () => structuredClone(provenance));
     const resolvePayer = vi.fn(async () => authority.payer);
     const resolveFunding = vi.fn(async () => ({ channelId: 'bound-channel', quantityCeiling: 4n, expiresAtMs: 10_000 }));
     const fetchImpl = vi.fn<typeof fetch>(async url => String(url).includes('/commerce/offers')
@@ -419,7 +424,8 @@ describe('host-owned installed tool admission composition', () => {
     const f = fixture(), registry = new NativeInstalledPerUseTurns();
     const identity = { ok: true as const, bindNativeTurn: vi.fn(async (_id: string) => {}),
       observeToolCall: vi.fn(async () => {}), complete: vi.fn(async () => {}), reconcile: vi.fn(async () => {}) };
-    const admitIdentity = vi.fn(async () => identity);
+    // Typed with the REAL identity-lifecycle `admit` signature so refusal variants install uncast.
+    const admitIdentity = vi.fn<IdentityLifecycleAdmit>(async () => identity);
     const complete = vi.fn(async (_workspace: string, _id: string, _turn: LocalMeteredTurn, _time: number): Promise<FundedToolTurnResult> =>
       ({ ok: true, turn: { ...(await f.admit.mock.results[0]!.value as Extract<FundedToolTurnResult, { ok: true }>).turn, state: 'settled' } }));
     const { host: _host, context: _context, ...installation } = f.input;
@@ -525,7 +531,7 @@ describe('host-owned installed tool admission composition', () => {
 
   it('attached supplier refreshes inventory each turn and preserves identity refusals', async () => {
     const f = attachedFixture(false);
-    f.admitIdentity.mockResolvedValueOnce({ ok: false, code: 'identity-refused', message: 'blocked', retryable: false } as never);
+    f.admitIdentity.mockResolvedValueOnce({ ok: false, code: 'identity-refused', message: 'blocked', retryable: false });
     expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'identity-refused' });
     expect(f.readNativeToolNames).not.toHaveBeenCalled();
     f.readNativeToolNames.mockResolvedValueOnce([]);
@@ -624,14 +630,14 @@ describe('host-owned installed tool admission composition', () => {
     });
 
   it('does not treat an unreceipted loaded plugin as a hosted free admission', async () => {
-    const f = catalogFixture(); f.readProvenance.mockResolvedValue(null as never);
+    const f = catalogFixture(); f.readProvenance.mockResolvedValue(null);
     expect(await f.lifecycle.admit(f.context)).toBe(f.identity);
     expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
   });
 
   it('keeps identity refusal ahead of the loaded catalog and financial supplier', async () => {
     const f = catalogFixture();
-    f.admitIdentity.mockResolvedValue({ ok: false, code: 'identity-required', message: 'identity refusal', retryable: false } as never);
+    f.admitIdentity.mockResolvedValue({ ok: false, code: 'identity-required', message: 'identity refusal', retryable: false });
     expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'identity-required' });
     expect(f.resolveContext).not.toHaveBeenCalled(); expect(f.readTools).not.toHaveBeenCalled();
     expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
@@ -657,7 +663,7 @@ describe('host-owned installed tool admission composition', () => {
   it('preserves an identity refusal before resolving or funding installed tools', async () => {
     const f = lifecycleFixture();
     const refused = { ok: false as const, code: 'identity-native-billing-unsupported', message: 'unproven cost', retryable: false };
-    f.admitIdentity.mockResolvedValueOnce(refused as never);
+    f.admitIdentity.mockResolvedValueOnce(refused);
     expect(await f.lifecycle.admit(f.context)).toBe(refused);
     expect(f.resolvePlan).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
   });
@@ -670,7 +676,7 @@ describe('host-owned installed tool admission composition', () => {
 
   it('closes only known unserved handles after a later installation admission fails', async () => {
     const f = lifecycleFixture(); f.plan.installations.push(f.plan.installations[0]!);
-    f.readProvenance.mockResolvedValueOnce(provenance).mockResolvedValueOnce(null as never);
+    f.readProvenance.mockResolvedValueOnce(provenance).mockResolvedValueOnce(null);
     expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'native-installed-admission-failed',
       message: expect.stringContaining('installation-binding-required') });
     expect(f.complete).toHaveBeenCalledExactlyOnceWith('workspace', 'host-turn', f.localTurn(), 1_000);

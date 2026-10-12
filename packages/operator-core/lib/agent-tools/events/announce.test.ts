@@ -176,7 +176,7 @@ describe('events:emit { announce: true }', () => {
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
   it('requires an explicit ref when presence lacks the selected fleet', async () => {
-    vi.mocked(getPresence).mockResolvedValueOnce({ fleetSlug: null, currentPlanSlug: null } as never);
+    vi.mocked(getPresence).mockResolvedValueOnce({ currentPlanSlug: null } as Awaited<ReturnType<typeof getPresence>>);
     await expect(emitHandler({
       event: 'unscoped-fleet-gate',
       announce: true,

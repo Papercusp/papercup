@@ -1975,9 +1975,13 @@ export function buildCheckpointSystemdArgv(
   // an unbuffered sed loses at most its already-in-flight line, matching the original
   // single-process write's own loss window — a block-buffered sed could instead lose a
   // whole buffered chunk of otherwise-successfully-produced output.
+  // EI-257879: normal-exit cleanup reaps non-ancestor members of the checkpoint's
+  // process group. The output consumer is a sibling, so give it its own group while
+  // keeping it in the same systemd cgroup. It drains to EOF after workers are reaped;
+  // systemd still owns abnormal teardown. pipefail preserves a real producer failure.
   const inner =
-    `${link}${clearEnvCommand}${gateEnv}PAPERCUSP_INTEGRATION_ROOT=${shellQuote(subjectRoot)} '${tsxBin(root)}' ` +
-    `apps/operator/lib/release/green-checkpoint.ts${candidateArg} 2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > ${target}`;
+    `set -o pipefail; ${link}${clearEnvCommand}${gateEnv}PAPERCUSP_INTEGRATION_ROOT=${shellQuote(subjectRoot)} '${tsxBin(root)}' ` +
+    `apps/operator/lib/release/green-checkpoint.ts${candidateArg} 2>&1 | setsid --wait sed -u 's/\\x1b\\[[0-9;]*m//g' > ${target}`;
   // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
   // tuple to this run's immutable log. The transient property is passed over D-Bus, so

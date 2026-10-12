@@ -223,8 +223,8 @@ export function testingRunAbortCompletionReceipt(
   }
 
   if (error === 'timeout') {
-    const detachedRunId = typeof payload.detachedRunId === 'string' ? payload.detachedRunId.trim() : '';
-    if (detachedRunId && payload.detachedDurable === true) {
+    const detachedRunId = typeof payload?.detachedRunId === 'string' ? payload.detachedRunId.trim() : '';
+    if (detachedRunId && payload?.detachedDurable === true) {
       return {
         status: 'recorded',
         effectRef: 'testing-run:' + runId + ':detached:' + detachedRunId,
@@ -233,8 +233,8 @@ export function testingRunAbortCompletionReceipt(
       };
     }
 
-    const taskId = typeof payload.taskId === 'string' ? payload.taskId.trim() : '';
-    if (taskId && payload.terminationUnconfirmed === true) {
+    const taskId = typeof payload?.taskId === 'string' ? payload.taskId.trim() : '';
+    if (taskId && payload?.terminationUnconfirmed === true) {
       return {
         status: 'recorded',
         effectRef: 'testing-run:' + runId + ':task:' + taskId,

@@ -51,6 +51,7 @@ describe('boundedOrgTxn', () => {
       await vi.advanceTimersByTimeAsync(101);
       const error = await caught;
       expect(error).toBeInstanceOf(DbCallDeadlineError);
+      if (!(error instanceof DbCallDeadlineError)) throw new Error('expected DbCallDeadlineError');
       expect(error.pool).toBe(acquirePool ?? null);
       if (acquirePool) expect(error.measured).toMatch(/1 acquisition\(s\) WAITING/);
       else expect(error.measured).toBeNull();

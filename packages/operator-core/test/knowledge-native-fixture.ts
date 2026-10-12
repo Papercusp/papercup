@@ -315,7 +315,8 @@ async function main() {
         // fail. A later turn no longer has to reconstruct it from teardown rows.
         stalledReceipts.push(await readCorpusReceipt(sql, workspace, stalledOwner, surface,
           evidenceDir, `stalled-${surface}-receipt.json`, true));
-        assert.ok(payload?.includes(knowledge[index].docSlug), `${surface} lost healthy procedure while plans stalled`);
+        if (payload == null) assert.fail(`${surface} lost healthy procedure while plans stalled (no payload)`);
+        assert.ok(payload.includes(knowledge[index].docSlug), `${surface} lost healthy procedure while plans stalled`);
         assert.ok(payload.includes(reports[index].reportId), `${surface} lost healthy report while plans stalled`);
         assert.ok(!payload.includes(knowledge[index].planSlug), 'locked plan must not masquerade as delivered');
         assert.equal(JSON.parse(payload).hookSpecificOutput.hookEventName, nativeEvent);

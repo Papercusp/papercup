@@ -3220,7 +3220,7 @@
               "stdout": "",
               "retired": false,
               "generationRoot": "/mnt/data/papercusp-dependency-generations",
-              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3230,7 +3230,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/data/dependency-generations/papercusp",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3240,7 +3240,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
               "stderrTruncated": false,
               "stdoutTruncated": false
             }
@@ -3262,7 +3262,7 @@
               "stdout": "",
               "retired": false,
               "generationRoot": "/mnt/data/papercusp-dependency-generations",
-              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3272,7 +3272,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/data/dependency-generations/papercusp",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3282,7 +3282,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
               "stderrTruncated": false,
               "stdoutTruncated": false
             }
@@ -3304,7 +3304,7 @@
               "stdout": "",
               "retired": false,
               "generationRoot": "/mnt/data/papercusp-dependency-generations",
-              "integrationRoot": "/home/marsh-office/papercusp-test-harnesses/pot-verify",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3314,7 +3314,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/data/dependency-generations/papercusp",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
               "stderrTruncated": false,
               "stdoutTruncated": false
             },
@@ -3324,7 +3324,7 @@
               "stdout": "",
               "retired": true,
               "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
-              "integrationRoot": "/home/marsh-office/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
               "stderrTruncated": false,
               "stdoutTruncated": false
             }
@@ -3452,98 +3452,98 @@
                 "name": "checkout-103bfbbc33d41d19a13a43b247223840073b7af4f24b8c4b31100a457ed39426",
                 "identity": "v1-9dc4d407676f2b9713d0af8b0553284c527538358c7f799f5e40dc3f96b21665",
                 "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/papercusp-checkpoint-admission-precheck",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "e72b982ce2e77516eda02a22358da5ce32194d2f443463e16504206e29f5a9d4"
               },
               {
                 "name": "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
                 "identity": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
-                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-checkpoint-admission-precheck",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/papercupai-workspace/papercusp-checkpoint-admission-precheck",
+                "host": "buildhost",
                 "sha256": "0fa46217ec86d1f00a4a2d086a95ac9fe427455c03910a33192f0cda28a55b64"
               },
               {
                 "name": "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
                 "identity": "v1-9d4bea8deb364c8f9d8ac0f8bc04ed105ae833ac05a084a63e0832d7420175da",
-                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercusp-nightly-release",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-nightly-release",
+                "host": "buildhost",
                 "sha256": "951e139ab6ad4bc5040ca714fb320892809495175f9d76bbf642df05fa592264"
               },
               {
                 "name": "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
                 "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
-                "checkout": "/home/marsh-office/.papercusp-workspaces/clones/hello-world-3-checkpoint",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/.papercusp-workspaces/clones/hello-world-3-checkpoint",
+                "host": "buildhost",
                 "sha256": "8cf837bdf2ce3f04ddfb11436bbdf2d9f5774c90a47ed515755b6509c92bcfc6"
               },
               {
                 "name": "checkout-53ddc01e5218db398064fb991e2147532d422087456bcb0314242253a24903f0",
                 "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
                 "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/slack-asana-bug-drill-checkpoint-admission-precheck",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "5e2272d5b89163e49d7a2af652a138cad8e69c16589a0766475b95c468a264ef"
               },
               {
                 "name": "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
                 "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
-                "checkout": "/home/marsh-office/.papercusp-workspaces/clones/oddsmith-checkpoint",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/.papercusp-workspaces/clones/oddsmith-checkpoint",
+                "host": "buildhost",
                 "sha256": "3542d15e538b9b731e0376c1f63ebe3639665a49a44ac6badf645dacae124034"
               },
               {
                 "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
                 "identity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
-                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-checkpoint",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/papercupai-workspace/papercusp-checkpoint",
+                "host": "buildhost",
                 "sha256": "e9b56ff42d4c9d9fb199da372bad723b25063a59380e366f4e9334b5e1deeae5"
               },
               {
                 "name": "ref-263719ba0b1aa62943b848ad81cedf7eef4bc257df55d97ee780534513d1cb62",
                 "identity": "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645",
                 "expires": "1791904014",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "2cbb04eb51611438c9e89aaf76d9b2cf15720c2bc64b7197e32ae541d144e6dd"
               },
               {
                 "name": "ref-452d0b5528ba838d89203e3d7a44421f9818a686aa4c9faeb81ddd0cfd2d28fe",
                 "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
                 "expires": "1791903987",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "d934ef58cab0d4acb6dde9ab6e9f0d6fff377a78f5c11a731720204a3c033249"
               },
               {
                 "name": "ref-781592e23b5e3691923d76db1200185fb72b5a8172af02bb78f6b2d9f8480310",
                 "identity": "v1-36f6fd8fcc4d1e9358f9f615792c7e3f091dcded0b1605f10aad85439b4c06e1",
                 "expires": "1791906534",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "168f65f5d9cb4303e8b6c08dda84163129c236cc31988d488c923f582e0b6e93"
               },
               {
                 "name": "ref-9adeef0051baef96c114803081f342ca3efc081eaeba4c149f94d1cb4b3f5b7c",
                 "identity": "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
                 "expires": "1791903862",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "06e6506d01367d3632c7569f62e14a8fe304b89cd57cb997018435a4a52edf6b"
               },
               {
                 "name": "ref-d372b5727e8668d341befa74355d2cd7d2890dd3f80e84e1e680289517618484",
                 "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
                 "expires": "1791906859",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "bc5c0545fa5f748b10e8a586bdbd9b1e4a0d293aa11dc4482496b6a4fbee7acb"
               },
               {
                 "name": "ref-df0a03eb2cf9a875ea8dbbe3611f2109e0fbbc7d90d0576dadf453d79009dc49",
                 "identity": "v1-b235e06323a71b9ee81a41bc3f1cdb3d50995f113ab1fc5f3e67c4172b954f8f",
                 "expires": "1791905871",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "22e7f82e42c13b705a761acbea7c79c59ca4e5942921adbf2d0b4882b5d0100e"
               },
               {
                 "name": "ref-e8bc2ce3e71f7b5004535aa962154eb090d35ea8424303fb30a8cd09c533acaf",
                 "identity": "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f",
                 "expires": "1791906055",
-                "host": "main-server-Precision-7865-Tower",
+                "host": "buildhost",
                 "sha256": "d55857f7cd0e6961c151e7db303ef851bc612e1a7c04e2a79edd763585c1440c"
               }
             ],
@@ -3579,29 +3579,29 @@
               {
                 "name": "checkout-2807f21ae14cfcc122ae4101e544784c544dd221f80fe7447be27669d16d61c0",
                 "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
-                "checkout": "/home/marsh-office/papercupai-workspace/papercusp-relcut-0022-green",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/papercupai-workspace/papercusp-relcut-0022-green",
+                "host": "buildhost",
                 "sha256": "d72e1359a6378d927bfcb1278fa8735cf8bc68deedfd843982f0f0a1114c0090"
               },
               {
                 "name": "checkout-709e38c8022dfe5aa5162235fa897b2b72265355958192bff28477b0c70ce32d",
                 "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
-                "checkout": "/home/marsh-office/papercupai-workspace/papercup-checkpoint",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "~/papercupai-workspace/papercup-checkpoint",
+                "host": "buildhost",
                 "sha256": "4045862f52d830480a027452d04f29c5c3380b6896b1e5bda03aec3786f3786b"
               },
               {
                 "name": "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
                 "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
-                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercusp-relcut-0022-green",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-relcut-0022-green",
+                "host": "buildhost",
                 "sha256": "ecf708bd9a7726f41c029dbe395b505b86ba89233de8aea06cc9ddc7a27b3e32"
               },
               {
                 "name": "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259",
                 "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
-                "checkout": "/mnt/data/offload/root-disk/home/marsh-office/papercupai-workspace/papercup-checkpoint",
-                "host": "main-server-Precision-7865-Tower",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercup-checkpoint",
+                "host": "buildhost",
                 "sha256": "7262d4a4ac56a1a25aa0f80f8300c2f8421616126009ccffc3ad61fd64726735"
               }
             ],

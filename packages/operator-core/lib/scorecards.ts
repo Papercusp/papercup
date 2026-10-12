@@ -3205,6 +3205,12 @@ export interface ListScorecardsFilter {
    */
   includeLinks?: boolean;
   /**
+   * Resolve the live bg-host boundary and project generationFreshness. Default
+   * TRUE. Evidence projections that do not consume generation freshness can
+   * omit this process probe with false; rubric and audit currentness still run.
+   */
+  includeGeneration?: boolean;
+  /**
    * Test seam (WI-5277) — override the LIVE generation-boundary read used to judge each
    * row's {@link ScorecardRow.generationFreshness}. Production leaves this unset and
    * reads systemd. Injectable so the freshness verdict is testable without a running
@@ -3394,7 +3400,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   const readLiveBoundary = filter.deps?.readBgHostActiveEnterMs ?? readBgHostActiveEnterMs;
   // Best-effort by construction: a freshness verdict must never fail the read it rides
   // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
-  const liveHostStartedAtMs = anyGenerationApplicable
+  const liveHostStartedAtMs = filter.includeGeneration !== false && anyGenerationApplicable
     ? await traceNamedQueryStage('scorecards-generation', () => readLiveBoundary().catch(() => null)) : null;
   let gradingAuditRubricRead = false;
   let gradingAuditRubric: Rubric | null = null;
@@ -3476,7 +3482,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // WI-5277: the stamp alone never told a reader whether the generation it names is
     // still alive — that answer only exists at READ time. Attach it to the row so no
     // consumer has to remember to compare boundaries by hand (nobody did).
-    const generationFreshness = gradedGeneration
+    const generationFreshness = filter.includeGeneration !== false && gradedGeneration
       ? classifyScorecardGenerationFreshness(gradedGeneration.hostStartedAt, observation.rerunRecipe, liveHostStartedAtMs)
       : null;
 

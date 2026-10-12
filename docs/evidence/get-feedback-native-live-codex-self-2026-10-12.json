@@ -163,7 +163,49 @@
       "canonicalMutationLimit": "The claim/release payloads target gatingtest:scoped, a controlled dispatcher witness. They are refused before dispatch; no actual canonical claim, release, lock, mode or loop writer executes in these cases.",
       "currentSourceReview": "Before the intentional fourth-case edit, the test and adv-sessions bytes matched the saved clean proof. The host differs only in perSpill scratch-write timing capture, as read from git diff against fc8692c1b4. The historical proof remains historical; source hash equality or a fresh governing adequacy verdict is not claimed.",
       "extension": "Added the missing codex-to-codex convert pair to this existing guard, matching the current recorded trial. Focused verification is separate from canonical mutation/wake acceptance.",
-      "extensionVerification": { "testRunId": 21145307, "source": "local", "commitSha": "1e463e0ca9ac60f9a5f02ce0e2e5900a7c0236d3", "worktreeDirty": true, "isScratchConfig": false, "harnessSlug": null, "result": "Focused four-case guard completed with process exit 0 and 356 unselected tests. Canonical row independently read status pass. Ledger scope is unverified because PAPERCUSP_TEST_RUN_HARNESS was unset; do not bind this row as clean harness-qualified proof.", "limit": "Local dirty conventional transport proof. Complete executed source graph, committed-input reproduction, added-pair mutation calibration and current governing adequacy are separate and remain open." }
+      "extensionVerification": { "testRunId": 21145307, "source": "local", "commitSha": "1e463e0ca9ac60f9a5f02ce0e2e5900a7c0236d3", "worktreeDirty": true, "isScratchConfig": false, "harnessSlug": null, "result": "Focused four-case guard completed with process exit 0 and 356 unselected tests. Canonical row independently read status pass. Ledger scope is unverified because PAPERCUSP_TEST_RUN_HARNESS was unset; do not bind this row as clean harness-qualified proof.", "limit": "Historical local dirty conventional transport proof. The committed fourth-pair verification below is a separate receipt; this row is not relabelled or recertified." },
+      "committedFourthPairVerification": {
+        "observedAt": "2026-10-12T16:04:23.222Z",
+        "commitSha": "0b480bab21f55d112af0aced793dec24144b8b47",
+        "population": ["codex-to-codex convert"],
+        "filter": "isolated consult native identity guard.*'codex' → 'codex'",
+        "positive": { "testRunId": 21147716, "source": "local", "passed": 1, "failed": 0, "unselected": 359, "processExit": 0 },
+        "mutation": {
+          "baselineTestRunId": 21147731,
+          "unchangedCopyTestRunId": 21147743,
+          "mutantTestRunId": 21147755,
+          "source": "mutation-probe",
+          "baselineAndCopyResult": "Each control passed 1 selected case with 0 failures and 359 unselected cases.",
+          "mutantResult": "The mutant failed 1 selected case with 359 unselected cases: expected attempted.isError to be true, actual undefined, at mcp-handler-gating-matrix.test.ts:6186.",
+          "change": "Restore nativeSessionHeader || nativeSessionQuery || nativeThread instead of nativeThread || nativeSessionHeader || nativeSessionQuery.",
+          "relocation": "copy-out overlay",
+          "verdict": "caught",
+          "processExit": 0,
+          "guardExit": 1,
+          "independentParse": "unchecked",
+          "treeIntegrity": "VERIFIED byte-identical to pre-probe state",
+          "runnerSha256": "108fb5af6ae4cb6aee32bdf8d6e559c5286b6cc0a7d57f23eae1f4a4e4046c90",
+          "descriptorLimit": "All three mutation-probe receipts lack execution_details.mutation: the serving reader predates the descriptor parser. Log argv and worker source captures carry the disclosed linkage.",
+          "replayEncodingLimit": "The final historical replay JSON corrupts the Unicode arrow; the FOCUSED_MUTATION_ARGV_JSON launch vector and executed case titles retain the correct filter. EI-25790454361669195 repairs the maintained serializer and adds a conventional UTF-8 regression; local red21147776/green21147784 qualify that repair, not this older receipt or shipment."
+        },
+        "ledgerReadback": "All four exact IDs independently read through testing:runs: positive and both controls pass, mutant fails at the intended assertion; workspaceId papercusp-workspace, harnessSlug papercusp, worktreeDirty false and isScratchConfig false.",
+        "namedSourceHashes": {
+          "test": "36a702a7ba551ed45aed1b68fc387758f8f092e0b84cc5bea9f57450cf12aeb8",
+          "hostOriginal": "31f075686b103737512675b87bce737402f776ef52172da05914dc3fa0b3b913",
+          "hostMutant": "98ecf27c5592133ee96e877d69c94485e8f531a97cdca2975c71e15dc19c1cba",
+          "nativeRowClassifier": "b61799ce18dcb6ff7ee1bc095d39f791dac5b2cf004708d1e44cb6392f2110ac"
+        },
+        "sourceEvidence": "Each repository-worker Vite source diagnostic is stable with reasons []. The positive capture records inputsCaptured true and opaque child-process, git-metadata and config-deps-unavailable inputs. Mutation phase maps contain diagnostics but no complete capture rows. Whole executed-source graph remains unqualified.",
+        "evidenceRefs": [
+          { "path": "/dev/shm/get-feedback-native-codex-codex-20261012T1552.log" },
+          { "path": "/dev/shm/get-feedback-native-codex-codex-20261012T1552.sources.json", "sha256": "6705c92d610b9d14eb79ee82ecc547b83a853dc02d80d37ce8c79bd1a76b263c" },
+          { "path": "/dev/shm/get-feedback-native-codex-codex-mutation-20261012T1558.log" },
+          { "path": "/dev/shm/get-feedback-native-codex-codex-mutation-20261012T1558-baseline.sources.json", "sha256": "3db7bc4a4327f18e96b028ba5c09900a9cd83db2f820046c1c7b66421436a45a" },
+          { "path": "/dev/shm/get-feedback-native-codex-codex-mutation-20261012T1558-copy-baseline.sources.json", "sha256": "3db7bc4a4327f18e96b028ba5c09900a9cd83db2f820046c1c7b66421436a45a" },
+          { "path": "/dev/shm/get-feedback-native-codex-codex-mutation-20261012T1558-mutant.sources.json", "sha256": "e6c955d69ba75de6788a3240684567a8fe5a8a725d9611946410d09a9128ee00" }
+        ],
+        "limit": "Committed causal transport-guard proof for the added pair only. The claim/release payload still targets gatingtest:scoped; actual canonical mutation/system/wake coverage, native-fork/matrix observations, original R6 shortfall, independent vetting and exact shipment remain open. No new governing adequacy or shipment claim."
+      }
     },
     "classes": [
       { "class": "canonical work-item assignment and state", "writers": ["packages/operator-core/lib/agent-tools/work_items/claim.ts", "packages/operator-core/lib/agent-tools/work_items/release.ts", "packages/operator-core/lib/agent-tools/work_items/set_state.ts"], "observed": "One source-held blocked work-item has equal raw endpoints; no corresponding mutation verb in the recorded owner-window subset.", "remaining": "Complete actor/target transition and ABA coverage, including system/direct changes. Nonterminal transition notes are optional post-write comments and cannot serve as a universal transactional history.", "status": "partial" },
@@ -269,7 +311,341 @@
       "followup": { "workItemId": "EI-25783526988153071", "assignee": "su-e16e0da4-f858-4e10-9665-55116edbc36b", "status": "open, unconfirmed", "question": "Determine whether the actual source reanchor should have emitted a new applied activation span; inspect the producer and exact provenance before naming a cause. Preserve the observed native reply attribution and do not replay trials or monitor the source peer." },
       "status": "bounded retained-history and writer-semantics observation; full isolation and acceptance remain open"
     },
-    "next": "Use the maintained clean runner for the intentional Codex-to-Codex expansion only after its actual bytes are committed, then calibrate that new case with the existing identity mutation seam. The ABA committed control and bounded activation/control read are complete at their disclosed scopes; do not rerun them solely for HEAD. Preserve native/R6 population and matrix gaps, rubric vetting and exact R7 shipment requirements."
+    "reanchorProducerProvenanceExtension": {
+      "priorArtifactSha256": "1306d2819bec04379a49368fb8c68b046c478c2bebfd4b0579cd90c22d429b0b",
+      "workItemId": "EI-25783526988153071",
+      "supersedesConclusion": "The earlier followup's unconfirmed producer question is now narrowed by the exact historical lifecycle receipt. The current best-effort recorder was not present in the server build that handled this start; no dropped write by that current recorder is established.",
+      "sourceHeader": {
+        "method": "Read the existing completeBytes prefix through one O_NOFOLLOW descriptor; retain its matching SHA256 and parse the native session_meta header.",
+        "completeBytes": 1816563,
+        "sha256": "8ecf931d79d4cd37f07685a41f6df798c4f1414f2ebe30e52a3a074d2f948aae",
+        "nativeSessionId": "01a12b36-959b-7171-8827-52882103ae32",
+        "timestamp": "2026-10-11T13:46:00.032Z",
+        "headerRecordedAt": "2026-10-11T13:46:35.651Z",
+        "cliVersion": "0.162.1",
+        "workingTreeCommit": "926c0409f984664cf5a04f29dff4188a9b258c9b",
+        "limit": "The transcript's Git header describes the CLI working tree. It is not the runtime version serving lifecycle:report."
+      },
+      "historicalStartReceipt": {
+        "relation": "harness_shared.tool_invocations",
+        "id": "36187969",
+        "invokedAt": "2026-10-11T13:46:39.334Z",
+        "toolName": "activity:report",
+        "ownerId": "su-26e81472-29ed-4d18-8b4b-4520850d8aef",
+        "kind": "lifecycle",
+        "summary": "▶ session started",
+        "advSessionId": 40295,
+        "nativeSessionId": "01a12b36-959b-7171-8827-52882103ae32",
+        "status": "ok",
+        "servingHost": "port-3070",
+        "servingBuildSha": "d740fc3802",
+        "servingProcessId": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:51298645",
+        "method": "Indexed workspace/native-session activity lookup in the fixed start window, then an exact-id read of the first retained lifecycle receipt. The row was nonempty and had no query truncation.",
+        "limit": "The indexed discovery returned ten retained rows under LIMIT 10; its code:run summary displayed four. Neither is a lifetime population claim. The exact-id drill-down independently retains the complete start arguments. Runtime provenance comes from the registered ledger, not a full executed-source graph."
+      },
+      "producerSourceComparison": {
+        "historicalServingRevision": "d740fc3802",
+        "historicalFiles": [
+          { "path": "packages/operator-core/lib/adv-sessions.ts", "sha256": "50b61afe59cef0c3f7cc8b5d76822ae478c50d41bf41d35d0acf8e79079ce31c", "reanchorSpanRecorderPresent": false },
+          { "path": "packages/operator-core/lib/session-identity-attribution.ts", "sha256": "bb58dcde348384cb977e792cef6b12ec8fd8cea7261e09e9378d9dc992f8ee5c", "reanchorSpanRecorderPresent": false }
+        ],
+        "headerRevisionFiles": [
+          { "path": "packages/operator-core/lib/adv-sessions.ts", "sha256": "1302d7954d1430be339b8f5ca28ab2e2f55c85d99ca4688742b031709d38b8ab", "reanchorSpanRecorderPresent": true },
+          { "path": "packages/operator-core/lib/session-identity-attribution.ts", "sha256": "da0fab92d512c4c7b3dfde7abd92c73bc1f96bb9a96352a7f13dc6f8b8ffd458", "reanchorSpanRecorderPresent": true }
+        ],
+        "observation": "The exact-id and owner reanchor functions at the historical serving revision return without recording an applied reanchor span. Both newer paths reuse recordSessionIdentityReanchor. The source's newer working-tree header did not make that recorder available to its historical port-3070 lifecycle call.",
+        "distinguishingTest": "Resolve the exact native start receipt's serving build, then inspect both producer files at that Git revision and at the native header revision. A dropped write by the current recorder requires that recorder in the serving producer; the retained serving revision has no such call or function."
+      },
+      "existingRepair": {
+        "workItemId": "WI-10004917",
+        "storedState": "done",
+        "storedRunId": "a84cd3f3-ae50-47db-a2f9-58aee56fc3cf",
+        "storedCompletion": "The retained completion reports three exact regression files passed on stamped, clean source. This is historical repair evidence, not a new current-build verdict.",
+        "runStatusReadback": {
+          "status": "pass",
+          "exitCode": 0,
+          "kind": "ledgerRecovery",
+          "fileCount": 2,
+          "files": ["packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts", "packages/operator-core/lib/session-identity-attribution.integration.test.ts"],
+          "limit": "The detached lifecycle snapshot is missing or unreadable. This read recovers two latest per-file ledger rows only; it does not independently recover the stored launcher's third file or its complete original run population."
+        },
+        "recurrenceGuards": [
+          "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts:903 — real-PG exact/owner reanchor resolves the new native owner span and a no-op retry converges on one applied event",
+          "packages/operator-core/lib/session-identity-attribution.integration.test.ts:210 — real-PG applied reanchor span is idempotent and preserves a later return to an earlier native id"
+        ],
+        "limit": "Reuse the existing recorder and guards. No new product implementation or guard was needed for this historical producer difference; current-runtime qualification and exact shipment remain open."
+      },
+      "currentBuildRouteObservation": {
+        "testClass": "operator-api",
+        "route": "http://127.0.0.1:3170",
+        "runtime": "staging-operator",
+        "stagingBuildSha": "2e2c5749a1",
+        "releaseBuildSha": "d740fc3802",
+        "bothRecorderFilesContainedByStaging": true,
+        "bothRecorderFilesContainedByRelease": false,
+        "isolation": "Separate port, process and checkout; database and workspace are shared. Private test identity/data is required for writes.",
+        "limit": "These path-contained route reads prepare current-build qualification. No production reanchor write, source-peer wake, trial replay, gate action or shipment occurred."
+      },
+      "receipt": {
+        "path": "/dev/shm/get-feedback-d006-reanchor-provenance-20261012T1439.json",
+        "sha256": "e0b819d459fe1c4ecc7253c4f52c1b493f5627f96aff2db5b72628bc540d8ca7",
+        "bytes": 86949,
+        "nativeSessionId": "01a1307e-8d5e-7f00-94e8-7367a46478c3",
+        "completedCallCount": 6,
+        "method": "Preserve the exact completed native custom_tool_call/custom_tool_call_output pairs, their timestamps and line hashes for producer discovery, source comparison, exact start arguments, stored run recovery and both current-build route reads."
+      },
+      "status": "historical producer difference verified; current-runtime qualification, native isolation and exact shipment open"
+    },
+      "reanchorCurrentBuildQualification": {
+        "priorArtifactSha256": "3d9744cbac96ab629fe460efc737e012e9efff8736d7135c72354f180bd3f6a4",
+        "workItemId": "EI-25783526988153071",
+        "evidencePlane": "current-build operational qualification through served activity:report, using private data in the shared operator database",
+        "method": "Stamp a private adv row with a fresh Codex native id while retaining an applied span for its older native id. Send SessionStart twice through port3170 for each exact-row and owner-only path. Assert the first report heals the applied span and the retry retains the same event; read the exact request's serving identity from its invocation ledger. Clean only the allocated private owners and verify zero fixture residue.",
+        "status": "passed for already-anchored no-op healing and retry idempotence on both paths",
+        "receipt": {
+          "schemaVersion": "get-feedback-reanchor-current-http-v1",
+          "url": "http://127.0.0.1:3170",
+          "actor": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+          "cases": [
+            {
+              "target": "exact",
+              "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+              "advSessionId": 41642,
+              "oldNative": "77fb5819-d5b1-43d4-81a3-900cb5ad3b12",
+              "newNative": "124eba85-9b3e-48dc-935f-bc68f3a44925",
+              "before": [
+                {
+                  "id": "67149",
+                  "native_session_id": "77fb5819-d5b1-43d4-81a3-900cb5ad3b12",
+                  "source": "control",
+                  "adv_session_id": "41642",
+                  "phase": "applied"
+                }
+              ],
+              "requests": [
+                {
+                  "attempt": 1,
+                  "args": {
+                    "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+                    "agent": "codex",
+                    "harness_slug": "papercusp",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started",
+                    "session_id": "124eba85-9b3e-48dc-935f-bc68f3a44925",
+                    "adv_session_id": 41642
+                  },
+                  "response": {
+                    "ok": true,
+                    "id": "7855184",
+                    "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started"
+                  },
+                  "invocation": {
+                    "id": "36956087",
+                    "status": "ok",
+                    "serving_build_sha": "c495ddd9f6",
+                    "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:60506507",
+                    "serving_host": "port-3170",
+                    "invoked_at": "2026-10-12 11:05:59.696-04"
+                  },
+                  "events": [
+                    {
+                      "id": "67149",
+                      "native_session_id": "77fb5819-d5b1-43d4-81a3-900cb5ad3b12",
+                      "source": "control",
+                      "adv_session_id": "41642",
+                      "phase": "applied"
+                    },
+                    {
+                      "id": "67150",
+                      "native_session_id": "124eba85-9b3e-48dc-935f-bc68f3a44925",
+                      "source": "reanchor",
+                      "adv_session_id": "41642",
+                      "phase": "applied"
+                    }
+                  ]
+                },
+                {
+                  "attempt": 2,
+                  "args": {
+                    "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+                    "agent": "codex",
+                    "harness_slug": "papercusp",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started",
+                    "session_id": "124eba85-9b3e-48dc-935f-bc68f3a44925",
+                    "adv_session_id": 41642
+                  },
+                  "response": {
+                    "ok": true,
+                    "id": "7855189",
+                    "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started"
+                  },
+                  "invocation": {
+                    "id": "36956104",
+                    "status": "ok",
+                    "serving_build_sha": "c495ddd9f6",
+                    "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:60506507",
+                    "serving_host": "port-3170",
+                    "invoked_at": "2026-10-12 11:06:02.261-04"
+                  },
+                  "events": [
+                    {
+                      "id": "67149",
+                      "native_session_id": "77fb5819-d5b1-43d4-81a3-900cb5ad3b12",
+                      "source": "control",
+                      "adv_session_id": "41642",
+                      "phase": "applied"
+                    },
+                    {
+                      "id": "67150",
+                      "native_session_id": "124eba85-9b3e-48dc-935f-bc68f3a44925",
+                      "source": "reanchor",
+                      "adv_session_id": "41642",
+                      "phase": "applied"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "target": "owner",
+              "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+              "advSessionId": 41643,
+              "oldNative": "253eb747-5472-4582-9cac-b8c82a47d3be",
+              "newNative": "a5094683-a1e9-488b-b55e-0dbe28d226b2",
+              "before": [
+                {
+                  "id": "67151",
+                  "native_session_id": "253eb747-5472-4582-9cac-b8c82a47d3be",
+                  "source": "control",
+                  "adv_session_id": "41643",
+                  "phase": "applied"
+                }
+              ],
+              "requests": [
+                {
+                  "attempt": 1,
+                  "args": {
+                    "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+                    "agent": "codex",
+                    "harness_slug": "papercusp",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started",
+                    "session_id": "a5094683-a1e9-488b-b55e-0dbe28d226b2"
+                  },
+                  "response": {
+                    "ok": true,
+                    "id": "7855192",
+                    "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started"
+                  },
+                  "invocation": {
+                    "id": "36956114",
+                    "status": "ok",
+                    "serving_build_sha": "c495ddd9f6",
+                    "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:60506507",
+                    "serving_host": "port-3170",
+                    "invoked_at": "2026-10-12 11:06:04.775-04"
+                  },
+                  "events": [
+                    {
+                      "id": "67151",
+                      "native_session_id": "253eb747-5472-4582-9cac-b8c82a47d3be",
+                      "source": "control",
+                      "adv_session_id": "41643",
+                      "phase": "applied"
+                    },
+                    {
+                      "id": "67152",
+                      "native_session_id": "a5094683-a1e9-488b-b55e-0dbe28d226b2",
+                      "source": "reanchor",
+                      "adv_session_id": "41643",
+                      "phase": "applied"
+                    }
+                  ]
+                },
+                {
+                  "attempt": 2,
+                  "args": {
+                    "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+                    "agent": "codex",
+                    "harness_slug": "papercusp",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started",
+                    "session_id": "a5094683-a1e9-488b-b55e-0dbe28d226b2"
+                  },
+                  "response": {
+                    "ok": true,
+                    "id": "7855202",
+                    "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+                    "kind": "lifecycle",
+                    "summary": "▶ session started"
+                  },
+                  "invocation": {
+                    "id": "36956136",
+                    "status": "ok",
+                    "serving_build_sha": "c495ddd9f6",
+                    "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:60506507",
+                    "serving_host": "port-3170",
+                    "invoked_at": "2026-10-12 11:06:06.629-04"
+                  },
+                  "events": [
+                    {
+                      "id": "67151",
+                      "native_session_id": "253eb747-5472-4582-9cac-b8c82a47d3be",
+                      "source": "control",
+                      "adv_session_id": "41643",
+                      "phase": "applied"
+                    },
+                    {
+                      "id": "67152",
+                      "native_session_id": "a5094683-a1e9-488b-b55e-0dbe28d226b2",
+                      "source": "reanchor",
+                      "adv_session_id": "41643",
+                      "phase": "applied"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "cleanup": [
+            {
+              "owner": "su-reanchor-http-proof-6b18a663-b7cb-42d3-a407-dd976d688035",
+              "remaining": 0
+            },
+            {
+              "owner": "su-reanchor-http-proof-d1721454-c836-4d80-bf03-3e389ec970cb",
+              "remaining": 0
+            }
+          ]
+        },
+        "retainedLog": {
+        "path": ".papercusp/scratch/bash-63257f0d-d0e.log",
+        "pathBase": "canonical repository root",
+          "sha256": "821392446b35c4fbefb800d7f1e7381e71aa0754294f3e1c8cd1bdc2de41816c",
+          "bytes": 5470,
+          "taskId": "0mv5dwqk31388istwem",
+          "terminalStatus": "completed",
+          "exitCode": 0
+        },
+        "recurrenceGuards": [
+          "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts",
+          "packages/operator-core/lib/session-identity-attribution.integration.test.ts",
+          "packages/operator-core/lib/agent-tools/activity/report-lifecycle.test.ts"
+        ],
+        "limits": [
+          "These four current-build requests qualify healing of already-stamped private rows; they do not reconstruct the historical internal update or exercise every changed-native transition.",
+          "Existing recurrence guards were read and reused; no historical test matrix was replayed or re-certified for HEAD.",
+          "Exact native trial attribution is preserved. Native isolation, remaining backend matrix, original R6 cohort shortfall, independent rubric vetting and final R7 shipment remain open."
+        ]
+      },
+    "next": "The added Codex-to-Codex transport case now has separate committed positive/control/mutant qualification. Continue the remaining canonical issue-family and system/wake isolation coverage through maintained production seams; preserve native-fork/matrix observations, original R6 population and shortfall, independent vetting and exact R7 shipment requirements. Do not replay these settled guards solely for HEAD."
   },
   "projectDecision": "Retain the captured plan-only claim endpoints, exact nested reply/close physical binding and bounded actor/system-port/coordination/PTY observations as native-conversion evidence. Continue the remaining D-006 mutation/wake coverage before isolation acceptance. No mandatory reporting-only reconciliation or new monitoring surface is introduced.",
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],

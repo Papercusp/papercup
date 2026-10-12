@@ -7,7 +7,7 @@ import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
 import type { TutorialAssistanceRequest } from './cloud-tutorial-help';
 vi.mock('./cloud-tutorial-progress', () => ({ readAccountTutorialProgress: vi.fn() }));
-import { readAccountTutorialProgress } from './cloud-tutorial-progress';
+import { readAccountTutorialProgress, type AccountTutorialProgressRecord } from './cloud-tutorial-progress';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 const origin = 'https://app.papercusp.com';
 const scope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'customer-a' };
@@ -48,7 +48,7 @@ describe('hosted lesson assistance boundary', () => {
     const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
       context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills cloud resources?' };
     const unselected = principal({ selectedWorkspaceId: undefined, permissions: [] });
-    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as never);
+    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as AccountTutorialProgressRecord);
     expect((await call(accountInput, { principal: unselected })).status).toBe(200);
     expect(answer.mock.calls[0][0]).toEqual(accountInput);
     expect(runTenant.mock.calls[0][0]).toMatchObject({ principal: { userId: scope.userId, activeOrganizationId: scope.tenantId } });
@@ -58,8 +58,8 @@ describe('hosted lesson assistance boundary', () => {
     expect((await call({ ...accountInput, context: { ...accountInput.context, transcript: 'private' } }, { principal: unselected })).status).toBe(400);
     expect((await call(input, { principal: unselected })).status).toBe(403);
     expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
-    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' }, { currentLessonId: 'billing', disposition: 'closed' }]) {
-      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved as never);
+    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' } as AccountTutorialProgressRecord, { currentLessonId: 'billing', disposition: 'closed' } as AccountTutorialProgressRecord]) {
+      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved);
       expect((await call(accountInput, { principal: unselected })).status).toBe(409);
     }
     expect(answer).not.toHaveBeenCalled();
@@ -69,7 +69,7 @@ describe('hosted lesson assistance boundary', () => {
     const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
       context: { version: 3, step: 'billing', status: 'ready' }, question: 'Your cloud provider bills cloud resources.', engine: 'kokoro' };
     const unselected = principal({ selectedWorkspaceId: undefined, permissions: [] });
-    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as never);
+    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as AccountTutorialProgressRecord);
     const response = await call(accountInput, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected });
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('audio/wav');
@@ -81,8 +81,8 @@ describe('hosted lesson assistance boundary', () => {
       { ...accountInput, question: `api_key=${NEVER_EMIT_MARKER}` },
       { ...accountInput, context: { ...accountInput.context, transcript: 'private workspace content' } },
     ]) expect((await call(body, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBeGreaterThanOrEqual(400);
-    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' }, { currentLessonId: 'billing', disposition: 'closed' }]) {
-      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved as never);
+    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' } as AccountTutorialProgressRecord, { currentLessonId: 'billing', disposition: 'closed' } as AccountTutorialProgressRecord]) {
+      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved);
       expect((await call(accountInput, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBe(409);
     }
     expect(speech).not.toHaveBeenCalled(); expect(answer).not.toHaveBeenCalled();

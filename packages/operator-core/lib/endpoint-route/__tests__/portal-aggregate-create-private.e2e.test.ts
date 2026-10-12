@@ -61,6 +61,7 @@ for (const [_surface, proof, expected] of [
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts',
     retainedArtifacts: ['phases/prepare/operator-api-preflight.json', 'phases/execute/worker-result.json',
+      'phases/execute/requested-browser-proof.json',
       'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
       `phases/execute/${prefix}-seed.json`, `phases/execute/${prefix}-reads.json`,
       ...(proof === 'ROSTER_CONVERSATIONS_BROWSER_PROOF'

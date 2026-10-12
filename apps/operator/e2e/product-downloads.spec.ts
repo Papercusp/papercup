@@ -61,7 +61,15 @@ for (const width of [1440, 390]) test(`five download products work by menu and k
   await expect(page.getByRole('radio', { name: 'PSU + PUI', exact: true })).toBeChecked();
   await expect(page.getByRole('link', { name: /Download Linux x86_64.*PSU \+ PUI/ })).toHaveAttribute('href',
     `${origin}/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz`);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  const geometry = await page.evaluate(() => ({ viewport: innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    overflow: [...document.querySelectorAll('.product-downloads *')].filter(el =>
+      el.getBoundingClientRect().right > innerWidth + 1 || el.scrollWidth > el.clientWidth + 1)
+      .map(el => ({ element: el.id || el.className || el.tagName, width: el.clientWidth,
+        scrollWidth: el.scrollWidth, text: el.textContent?.slice(0, 140) })) }));
+  await info.attach('download-layout', { contentType: 'application/json', body: Buffer.from(JSON.stringify(geometry)) });
+  console.log('DOWNLOAD_LAYOUT', JSON.stringify(geometry));
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewport + 1);
   expect(errors).toEqual([]);
   await page.screenshot({ path: info.outputPath(`downloads-${width}.png`), fullPage: true });
 });

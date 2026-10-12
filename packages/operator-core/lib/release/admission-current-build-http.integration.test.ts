@@ -24,8 +24,10 @@ it('refuses an undiscoverable gitlink inventory through current-build HTTP witho
       'packages/operator-core/lib/release/admission-jobs.worker.ts',
       'packages/operator-core/lib/release/admission-fix-precheck.ts',
       'packages/operator-core/lib/release/admission-import-completeness.ts',
+      'packages/operator-core/lib/release/frozen-candidate-repair-queue.ts',
       'scripts/lib/related-tests.mjs',
       'apps/operator/bin/bundle-host.sh',
+      'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts',
     ],
     execute: async (observe, evidenceDir) => {

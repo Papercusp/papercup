@@ -1090,8 +1090,18 @@ export default defineTool({
       // walls/checks, not just note metadata. Parse rows from the exact stored note
       // before returning so callers can enumerate the full set before choosing a
       // destructive rowsMode:'replace' write.
-      const { walls } = splitCarryNoteWalls(note);
-      const { checks } = splitCarryNoteChecks(note);
+      const { body: noteWithoutWalls, walls } = splitCarryNoteWalls(note);
+      const { body: noteBody, checks } = splitCarryNoteChecks(noteWithoutWalls);
+      // WI-6554700010008923: the rows above are the SAME rows serialized inside the
+      // stored note's `## Walls` / `## Checks` sections, so returning both shipped
+      // every row twice. Measured over 848 loop notes (2026-10-12): rows are 73% of
+      // the 199 notes whose body alone fits the per-result cap, and 82% of reads were
+      // spilled past it. Return the prose body once and the rows once, structured.
+      // `contentHash` and `length` still describe the FULL stored note, so an unchanged
+      // attestation or a hash comparison is unaffected; a note with no rows is
+      // returned byte-identically. A caller that writes this body back as a raw `note`
+      // loses nothing: absent `## Walls` / `## Checks` rows carry forward from storage.
+      const rowsSplitOut = note !== null && (walls.length > 0 || checks.length > 0);
       return {
         content: [
           {
@@ -1130,7 +1140,10 @@ export default defineTool({
                   }
                 : {}),
               ownerId,
-              note,
+              note: rowsSplitOut ? noteBody : note,
+              ...(rowsSplitOut
+                ? { noteRowsOmitted: 'note omits its Walls/Checks sections; those rows are walls[]/checks[] below. contentHash and length describe the full stored note.' }
+                : {}),
               contentHash: note === null ? null : shortCarryHash(note),
               updatedAtMs: current.updatedAtMs,
               length: note?.length ?? 0,

@@ -53,6 +53,7 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 import {
   detectInstalledHookDrift,
   formatHookDriftSummary,
@@ -121,7 +122,11 @@ export function resolveInstalledCcHookDir(homeDir: string = os.homedir()): strin
 export interface InstalledHookDriftSweepDeps {
   resolveCanonical: () => CanonicalDirResolution;
   resolveInstalled: () => string;
-  detect: (opts: { canonicalDir: string; installedDir: string }) => HookDriftReport;
+  detect: (opts: {
+    canonicalDir: string;
+    installedDir: string;
+    managedNames: readonly string[];
+  }) => HookDriftReport;
   escalateDrift: (report: HookDriftReport) => Promise<void>;
   escalateNotMeasured: (info: { reason: string; canonicalDir?: string; installedDir?: string }) => Promise<void>;
   host: () => string;
@@ -237,7 +242,11 @@ export async function runInstalledHookDriftSweepOnce(
   let report: HookDriftReport;
   try {
     installedDir = deps.resolveInstalled();
-    report = deps.detect({ canonicalDir: canonical.dir, installedDir });
+    report = deps.detect({
+      canonicalDir: canonical.dir,
+      installedDir,
+      managedNames: CC_HOOK_FILES,
+    });
   } catch (e) { return notMeasured({ reason: String(e), canonicalDir: canonical.dir }); }
 
   // Fail-closed branch FIRST: a refusal carries drifted:[] and would otherwise

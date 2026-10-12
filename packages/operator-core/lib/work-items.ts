@@ -9647,18 +9647,22 @@ export async function releaseWorkItem(
       /* a caller's delta bookkeeping must never fail the release itself */
     }
   }
-  // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
-  // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
-  // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL. Await the
-  // already-fail-soft cleanup so the release promise's contract is honest: when
-  // it resolves, both the work-item row and its coordination claim ledger have
-  // settled (see releaseWorkItemLease's doc comment for the bounded no-throw path).
-  if (wi.harness) await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+  // A known foreign caller must not release the holder's linked plan lane.
+  // The UPDATE below still performs the atomic check if ownership changes
+  // after this read; this preflight does not replace that CAS.
+  if (opts.expectedAssignee !== undefined && wi.assignee && wi.assignee !== opts.expectedAssignee) return null;
   // P-105: claim:released:<id> — wake anyone awaiting this item's claim to free, the
   // moment it returns to the pool (both the voluntary work_items:release tool AND the
   // stale-claim reaper route through here). Fire-and-forget + lazy import (work-items-
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = async (released: WorkItem | null): Promise<void> => {
+    // EI-25792454845221765: only a successful canonical release may clear
+    // the coordination lease. Doing this before the guarded UPDATE deleted
+    // a foreign holder's lease even when that UPDATE refused the release.
+    // Await cleanup before notifying waiters or resolving the release.
+    if (released && wi.harness) {
+      await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+    }
     if (released && wasClaimed) {
       await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
       // P-009: the agent has put this work DOWN — clear its goal stamp so later

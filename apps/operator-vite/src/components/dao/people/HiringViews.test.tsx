@@ -4,6 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
 import HiringViews from './HiringViews';
+// Radix primitives portal/hide their native controls; native stand-ins with the same contract keep options + onChange routing assertable.
+vi.mock('@/app/harness/Select', () => ({ Select: ({ value, onChange, options, ariaLabel, placeholder }: { value: string; onChange: (v: string) => void; options: Array<{ value: string; label: string }>; ariaLabel?: string; placeholder?: string }) => (
+  <select aria-label={ariaLabel} value={value} onChange={e => onChange(e.target.value)}>{placeholder ? <option value="">{placeholder}</option> : null}{options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>) }));
+vi.mock('@/app/harness/Checkbox', () => ({ Checkbox: ({ checked, onChange, ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; ariaLabel?: string }) => (
+  <input type="checkbox" aria-label={ariaLabel} checked={checked} onChange={e => onChange(e.target.checked)} />) }));
 
 const view: HiringView = {
   actorPersonId: 'PER-author', nonBinding: true,

@@ -30,7 +30,7 @@
     "exitStatusAtRead": "unknown; ended_at was null"
   },
   "nativeEvidence": {
-    "path": "/home/marsh-office/.papercusp/su-codex-homes/session-40968/sessions/2026/10/11/rollout-2026-10-11T18-28-54-01a12d15-510f-7221-a0d5-6feb1a3b4877.jsonl",
+    "path": "~/.papercusp/su-codex-homes/session-40968/sessions/2026/10/11/rollout-2026-10-11T18-28-54-01a12d15-510f-7221-a0d5-6feb1a3b4877.jsonl",
     "completePrefixBytes": 848871,
     "prefixSha256": "b46dd526148e13e0fbc3cb9d2007967059dceb3ab40a6a4ab43698f235834940",
     "frameLine": 9,

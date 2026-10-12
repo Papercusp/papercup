@@ -13,8 +13,14 @@ import type { Sql } from 'postgres';
 import type { UnservableSweepDeps } from './unservable-critical-watchdog';
 
 const oracle = vi.hoisted(() => vi.fn());
+const broadcastSevereEventMock = vi.hoisted(() => vi.fn(async (_event: {
+  conditionKey?: string;
+  oneShot?: boolean;
+  summary?: string;
+  body?: string;
+}) => true));
 vi.mock('../work-items', () => ({ explainIssueClaimFloors: oracle }));
-vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: async () => true }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: broadcastSevereEventMock }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   readConditionEnvelopes: async () => [], computeConditionStates: () => [],
 }));
@@ -199,6 +205,20 @@ describe('runUnservableCriticalSweepOnce', () => {
     });
     expect(seen).toEqual(['WI-1', 'WI-2']);
     expect(res).toMatchObject({ scanned: 2, escalated: 2, failed: 0, skipped: false });
+  });
+
+  it('recommends claimHold:false to lift a durable claim hold', async () => {
+    broadcastSevereEventMock.mockClear();
+    const res = await runUnservableCriticalSweepOnce(sql, {
+      flagEnabled: async () => true,
+      readRows: async () => [row({ itemId: 'WI-held', floor: 'claim-hold' })],
+      escalate: async () => {},
+      now: () => NOW,
+    });
+    expect(res).toMatchObject({ scanned: 1, escalated: 1, failed: 0, skipped: false });
+    const body = broadcastSevereEventMock.mock.calls[0]?.[0]?.body;
+    expect(body).toContain("work_items:release { id: 'WI-held', claimHold: false } to lift it");
+    expect(body).not.toContain('claimHold: true');
   });
 
   it('one failing escalate does not abort the batch — the rest still report, and the failure is logged not swallowed', async () => {

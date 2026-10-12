@@ -24,6 +24,7 @@ import {
   type InstalledHookDriftSweepDeps,
 } from './installed-hook-drift-watchdog';
 import type { HookDriftReport } from '../desktop-install/installed-hook-drift';
+import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 
 function report(over: Partial<HookDriftReport> = {}): HookDriftReport {
   return {
@@ -171,6 +172,20 @@ describe('resolveInstalledCcHookDir', () => {
 });
 
 describe('runInstalledHookDriftSweepOnce', () => {
+  it('scopes detection to the managed CC hook manifest', async () => {
+    let managedNames: readonly string[] | undefined;
+    const { deps } = harness({
+      detect: (opts) => {
+        managedNames = opts.managedNames;
+        return report();
+      },
+    });
+
+    await runInstalledHookDriftSweepOnce(deps);
+
+    expect(managedNames).toEqual(CC_HOOK_FILES);
+  });
+
   it('stays quiet only when a real comparison ran and found nothing', async () => {
     const { calls, deps } = harness();
     const out = await runInstalledHookDriftSweepOnce(deps);

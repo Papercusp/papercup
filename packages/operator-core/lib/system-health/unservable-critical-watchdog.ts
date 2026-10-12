@@ -372,7 +372,7 @@ function remedyFor(alert: UnservableAlert): string {
     case 'not-claimable-status':
       return `its state is outside the claimable set (ISSUE_FAMILY_CLAIMABLE_STATES=['open']) — work_items:set_state { id: '${alert.itemId}', state:'open' } if it should be worked, or close it if it should not`;
     case 'claim-hold':
-      return `it is on a durable claim hold — work_items:release { id: '${alert.itemId}', claimHold: true } to lift it, or record why the park should outlive this alert`;
+      return `it is on a durable claim hold — work_items:release { id: '${alert.itemId}', claimHold: false } to lift it, or record why the park should outlive this alert`;
     default:
       return `run work_items:observe { ids: ['${alert.itemId}'] } for the authoritative floor detail and its remedy`;
   }

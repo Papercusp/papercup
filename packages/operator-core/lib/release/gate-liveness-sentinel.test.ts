@@ -24,6 +24,22 @@ describe('classifyGateRoundEnding (pipeline_events green_checkpoint detail)', ()
     expect(classifyGateRoundEnding({ reason: 'something-new' })).toBe('other');
     expect(classifyGateRoundEnding(null)).toBe('other');
   });
+
+  // Statuses and detail shapes measured on install `papercusp`, 2026-10-05..10-12.
+  it('classifies every measured row status, reading status before detail.reason', () => {
+    const deferred = ['skipped-joined-attempt', 'skipped-locked', 'unchanged-since-verdict', 'repair-in-progress', 'release-fixer-skipped-snapshot'];
+    for (const status of deferred) expect(classifyGateRoundEnding({ green: null }, status)).toBe('deferred');
+    expect(classifyGateRoundEnding({ green: null, killed: false }, 'error')).toBe('crash');
+    expect(classifyGateRoundEnding({ phase: 'terminal', stage: 'begin', reason: 'conflict' }, 'skipped-qualification-conflict')).toBe('conflict');
+    for (const status of ['skipped-memory-budget', 'disk-headroom', 'dependency-prewarm-missing', 'skipped-runner-liveness-unknown']) {
+      expect(classifyGateRoundEnding({ green: null }, status)).toBe('refused');
+    }
+    // A red verdict is a verdict whatever its status label says.
+    expect(classifyGateRoundEnding({ green: false }, 'decision-pending')).toBe('verdict');
+    expect(classifyGateRoundEnding({ green: false }, 'not-green')).toBe('verdict');
+    // An unknown new status still alarms rather than hiding as deferred.
+    expect(classifyGateRoundEnding({ green: null }, 'some-new-status')).toBe('other');
+  });
 });
 
 describe('decideGateLiveness — P-023 / bar R-3', () => {
@@ -56,8 +72,28 @@ describe('decideGateLiveness — P-023 / bar R-3', () => {
     expect(d.state).not.toBe('no-runs');
     expect(d.state).not.toBe('healthy');
     expect(d.alert && d.escalate).toBe(true);
-    expect(d.windowCounts).toEqual({ fires: 3, verdicts: 0, nonVerdictEndings: 3 });
+    expect(d.windowCounts).toEqual({ fires: 3, verdicts: 0, nonVerdictEndings: 3, deferred: 0 });
     expect(d.reason).toMatch(/conflict, crash/);
+  });
+
+  it('deferred ticks during a long wait are not a crash loop (the false-alarm shape)', () => {
+    // A red candidate awaiting its repair: every ~18 min the gate fires and writes
+    // unchanged-since-verdict / repair-in-progress, with no verdict for hours. Nothing failed.
+    const events = [end(400, 'verdict'), fire(110), end(109, 'deferred'), fire(90), end(89, 'deferred'),
+      fire(70), end(69, 'deferred'), fire(50), end(49, 'deferred'), fire(30), end(29, 'deferred')];
+    const d = decideGateLiveness({ nowMs: NOW, mainRed: true, events });
+    expect(d.state).toBe('healthy');
+    expect(d.alert || d.escalate).toBe(false);
+    expect(d.windowCounts).toEqual({ fires: 5, verdicts: 0, nonVerdictEndings: 0, deferred: 5 });
+  });
+
+  it('deferred ticks neither hide nor break a real crash loop', () => {
+    const events = [end(400, 'verdict'), end(100, 'conflict'), end(90, 'deferred'), end(60, 'conflict'), end(30, 'deferred')];
+    const d = decideGateLiveness({ nowMs: NOW, mainRed: true, events });
+    expect(d.state).toBe('crash-loop');
+    expect(d.windowCounts).toMatchObject({ nonVerdictEndings: 2, deferred: 2 });
+    expect(d.episodeKey).toBe(`crash-loop:${NOW - 100 * MIN}`);
+    expect(d.reason).toMatch(/2 failed rounds: conflict/);
   });
 
   it('crash-loop episode key is stable while old endings slide out of the window', () => {

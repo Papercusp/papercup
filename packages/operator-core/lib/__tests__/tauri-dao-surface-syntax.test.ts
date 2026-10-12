@@ -20,8 +20,7 @@ function screenshotTargets(source: string, name: string) {
       captures++;
       const targeted = node.arguments.some((arg, index) => ts.isStringLiteral(arg)
         && ['--title', '--window-id'].includes(arg.text)
-        && node.arguments[index + 1] !== undefined
-        && (!ts.isStringLiteral(node.arguments[index + 1]) || node.arguments[index + 1].text.length > 0));
+        && ((next) => next !== undefined && (!ts.isStringLiteral(next) || next.text.length > 0))(node.arguments[index + 1]));
       if (!targeted) missing.push(`${name}:${parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1}`);
     }
     ts.forEachChild(node, visit);

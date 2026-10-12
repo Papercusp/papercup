@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
+import { buildCheckpointSystemdArgv } from "@papercusp/operator-core/lib/release-checkpoint-launch";
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
@@ -4214,6 +4215,50 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
     expect(killed).toContain(253520);
     expect(killed).not.toContain(213099);
     expect(kill).toHaveBeenCalledWith(253520, "SIGKILL");
+  });
+});
+
+describe("EI-257879: checkpoint cleanup preserves its launcher output transport", () => {
+  it.each([0, 23])("drains the verdict and preserves producer exit %i while reaping workers", (exitCode) => {
+    const root = mkdtempSync(join(tmpdir(), "checkpoint-output-sweep-"));
+    try {
+      mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+      const log = join(root, "run.log");
+      const evidence = join(root, "sweep.json");
+      // Run the real selector in an isolated process group, without a suite or systemd.
+      // The fixture occupies tsx's launcher slot and leaves one live worker to reap.
+      writeFileSync(join(root, "node_modules/.bin/tsx"), `#!${process.execPath}
+const { spawn, spawnSync } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const checkpointSweepTargets = ${checkpointSweepTargets.toString()};
+const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+worker.once('spawn', () => {
+  const table = spawnSync('ps', ['-eo', 'pid=,ppid=,pgid='], { encoding: 'utf8' }).stdout.trim().split('\\n').map(line => {
+    const [pid, ppid, pgid] = line.trim().split(/\\s+/).map(Number);
+    return { pid, ppid, pgid };
+  });
+  const pgid = table.find(row => row.pid === process.pid).pgid;
+  const targets = checkpointSweepTargets(table, process.pid, pgid);
+  process.stdout.write('\\x1b[32m__GREEN_CHECKPOINT_RESULT__ fixture-verdict\\x1b[0m\\n', () => {
+    for (const pid of targets) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    writeFileSync(${JSON.stringify(evidence)}, JSON.stringify({ worker: worker.pid, targets }));
+    process.exit(${exitCode});
+  });
+});
+`, { mode: 0o755 });
+      const inner = buildCheckpointSystemdArgv(root, log, process.env.PATH ?? "/usr/bin:/bin").at(-1)!;
+      const result = spawnSync("bash", ["-c", inner], {
+        cwd: root, detached: true, encoding: "utf8", timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(existsSync(evidence), result.stderr + readFileSync(log, "utf8")).toBe(true);
+      const swept = JSON.parse(readFileSync(evidence, "utf8"));
+      expect(swept.targets).toContain(swept.worker);
+      expect(result.status).toBe(exitCode);
+      expect(readFileSync(log, "utf8")).toBe("__GREEN_CHECKPOINT_RESULT__ fixture-verdict\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

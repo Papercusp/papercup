@@ -163,10 +163,10 @@ describe('seller-local monetary RPC', () => {
   });
 
   it('never falls back when the seller peer is unreachable or returns an unsigned response', async () => {
-    const f = fixture(), rpc = vi.fn(async () => { throw new PeerUnreachableError('offline'); });
+    const f = fixture(), rpc = vi.fn(async (): Promise<unknown> => { throw new PeerUnreachableError('offline'); });
     const remote = remoteSellerReceiptCapability({ grantId: 'grant', devicePubkey: f.pub('device'), harnessSlug: 'papercusp' }, f.pub('seller'), 'channel', { rpc });
     await expect(remote.signReceipt(f.bytes, { turnId: 'turn' })).rejects.toThrow('offline');
-    rpc.mockImplementation(async () => ({ ok: true }) as never);
+    rpc.mockImplementation(async () => ({ ok: true }));
     await expect(remote.verify()).rejects.toThrow('seller-rpc-response-unconfirmed');
     expect(f.deps.sign).not.toHaveBeenCalled(); expect(f.deps.settle).not.toHaveBeenCalled();
   });

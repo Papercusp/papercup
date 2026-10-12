@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
+import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue } from '../lib/release/frozen-candidate-repair-queue';
 import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
@@ -43,6 +44,9 @@ async function main() {
     'packages/operator-core/lib/release/admission-jobs.worker.ts',
     'packages/operator-core/lib/release/admission-fix-precheck.ts',
     'packages/operator-core/lib/release/admission-import-completeness.ts',
+    'packages/operator-core/lib/release/frozen-candidate-repair-queue.ts',
+    'apps/operator/bin/bundle-host.sh',
+    'apps/operator/bin/bundle-host-common.sh',
     'scripts/lib/related-tests.mjs'];
   const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
   const fingerprint = () => Object.fromEntries(sources.map(path => [path, digest(join(root, path))]));
@@ -79,10 +83,10 @@ async function main() {
   git(fixture, 'update-index', '--cacheinfo', `160000,${git(child, 'rev-parse', 'HEAD')},component`);
   git(fixture, 'commit', '-q', '-m', 'private integration source');
   const sourceCommit = git(fixture, 'rev-parse', 'HEAD');
-  const queue = { schemaVersion: 4, phase: 'ready-to-verify', candidate, base: candidate, repairHead: candidate,
-    worktreePath: fixture, attempts: 1, openedAtMs: Date.now(), updatedAtMs: Date.now(), fixerSpawnId: null,
-    failingTests: ['component::test'], signature: [{ kind: 'workspace-task', id: 'component::test',
-      recipe: 'native component test', admittedRound: 1, measuredHead: candidate }], admissions: [] };
+  const queue = createFrozenCandidateRepairQueue({ candidate, base: candidate,
+    failingTests: ['component::test'], nowMs: Date.now() });
+  assert.deepEqual(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue))), queue,
+    'private queue fixture must satisfy the current persisted contract before bundling');
   const { sql } = getOrgPg();
   // Only initial private fixture data is seeded directly. The tested operation
   // itself crosses the real HTTP dispatcher and admission worker.
@@ -99,17 +103,9 @@ async function main() {
   const before = await readQueue();
   console.log('ADMISSION_HTTP_PHASE bundle-start');
   const prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+  // The maintained host builder emits its worker siblings from these same sources.
+  // Reuse that output; invoking the host builder again would repeat every worker build.
   const worker = join(evidenceDir, 'admission-jobs.worker.mjs');
-  try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'),
-      '../../packages/operator-core/lib/release/admission-jobs.worker.ts', worker],
-    { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'admission-worker-build.log'), output);
-  } catch (error) {
-    const failure = error as { stdout?: unknown; stderr?: unknown };
-    writeFileSync(join(evidenceDir, 'admission-worker-build.log'), String(failure.stdout ?? '') + String(failure.stderr ?? ''));
-    throw error;
-  }
   const bundleBytes = readFileSync(prepared.path);
   assert.ok(bundleBytes.includes(Buffer.from('precheck-population')), 'inventory dispatch missing from host bundle');
   assert.ok(readFileSync(worker).includes(Buffer.from('no discoverable test files')),

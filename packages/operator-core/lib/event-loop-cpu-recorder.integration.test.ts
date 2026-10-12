@@ -625,13 +625,14 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
         };
         const requiredPhaseMedianUsefulSamples = 3;
-        const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
-        const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
-        const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
-        const noCompilerInliningPhaseMedianUsefulSamples = median(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noMaglevInliningPhaseMedianUsefulSamples = median(eagerNoMaglevInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile.workWindow?.definite?.usefulSamples ?? 0));
+        const noCompilerInliningPhaseMedianUsefulSamples = median(eagerNoCompilerInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile.workWindow?.definite?.usefulSamples ?? 0));
         const summarizeTierTrace = (result: typeof eager) => {
           const window = result.recoveryCapture.profile.workWindow;
-          const definiteSamples = (result.recoveryCapture.profile.sampleChains ?? [])
+          const sampleChains: NonNullable<TimedProfile['sampleChains']> = result.recoveryCapture.profile.sampleChains ?? [];
+          const definiteSamples = sampleChains
             .filter(sample => {
               const offsetUs = sample.sampleOffsetUs;
               return offsetUs !== null && window !== undefined &&
@@ -656,7 +657,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             flags: result.v8Flags,
             traceLines: result.v8TierTraceLines,
             recoveryPhaseMedianUsefulSamples: median(
-              result.recoveryPhaseSweep.map(capture => capture.profile.workWindow?.definite?.usefulSamples ?? 0),
+              result.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile.workWindow?.definite?.usefulSamples ?? 0),
             ),
             definiteWorkWindow: {
               sampleCount: definiteSamples.length,
@@ -685,7 +686,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
             eager.recoveryCapture.profile.samples <= maxSamples &&
-            eager.recoveryPhaseSweep.every(capture => capture.profile.samples <= maxSamples) &&
+            eager.recoveryPhaseSweep.every((capture: TimedCapture) => capture.profile.samples <= maxSamples) &&
             eager.delayed.cleanup.sampleCount <= maxSamples,
           primaryFixtureVisible: (eager.primary.profile.workWindow?.definite?.usefulSamples ?? 0) >= 1,
           recoveredHotFrames: (eager.recoveryCapture.profile.workWindow?.definite?.usefulSamples ?? 0) >= 3,
@@ -1004,10 +1005,10 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         expect(eagerNoCompilerInlining.recoveryCapture.workload.hotFrameCalls).toBeGreaterThan(0);
         expect(eagerNoCompilerInlining.recoveryCapture.workload.churnedFunctions).toBeGreaterThan(0);
         const recoveryPhaseOffsetsMs = [0, 2, 4, 6, 8, 8, 6, 4, 2, 0];
-        expect(eager.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
-        expect(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
-        expect(eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
-        expect(eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eager.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eagerNoTurboInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eagerNoMaglevInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
+        expect(eagerNoCompilerInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.workStartOffsetMs)).toEqual(recoveryPhaseOffsetsMs);
         for (const capture of [
           ...eager.recoveryPhaseSweep,
           ...eagerNoTurboInlining.recoveryPhaseSweep,
@@ -1024,10 +1025,10 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           eagerNoTurboInlining.recoveryCapture.profile,
           eagerNoMaglevInlining.recoveryCapture.profile,
           eagerNoCompilerInlining.recoveryCapture.profile,
-          ...eager.recoveryPhaseSweep.map(capture => capture.profile),
-          ...eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile),
-          ...eagerNoMaglevInlining.recoveryPhaseSweep.map(capture => capture.profile),
-          ...eagerNoCompilerInlining.recoveryPhaseSweep.map(capture => capture.profile),
+          ...eager.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile),
+          ...eagerNoTurboInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile),
+          ...eagerNoMaglevInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile),
+          ...eagerNoCompilerInlining.recoveryPhaseSweep.map((capture: TimedCapture) =>capture.profile),
         ]) {
           expect(profile.timeDeltaCount).toBe(profile.samples);
           expect(profile.sampleOffsetCount).toBe(profile.samples);

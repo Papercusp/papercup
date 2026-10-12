@@ -649,6 +649,7 @@ footer { color: var(--muted); font-size: .78rem; margin-top: 3.5rem; text-align:
 #choose-android:checked ~ .download-panels #download-android,
 #choose-iphone:checked ~ .download-panels #download-iphone { display: block; }
 .product-downloads h3 { font-size: 1.25rem; margin-top: .5rem; }
+.product-downloads p { overflow-wrap: anywhere; }
 .product-downloads .dl { display: block; overflow-x: auto; max-width: 100%; }
 `;
 

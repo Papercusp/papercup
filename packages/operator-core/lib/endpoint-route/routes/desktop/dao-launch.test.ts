@@ -8,7 +8,14 @@ vi.mock('../../../dao-launch-store', async importOriginal => {
 import routes from './dao-launch';
 import { createDaoLaunchSchema } from '../../../dao-launch';
 import { DaoLaunchError } from '../../../dao-launch-store';
-const context = { params: { id: 'organization-id' } };
+import type { RouteContext } from '../../define-route';
+const context: RouteContext = {
+  principal: null,
+  input: undefined,
+  params: { id: 'organization-id' },
+  log: () => {},
+  signal: new AbortController().signal,
+};
 
 describe('DAO launch routes', () => {
   beforeEach(() => { Object.values(io).forEach(mock => mock.mockReset()); });

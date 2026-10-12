@@ -26,14 +26,39 @@ import type { Sql } from 'postgres';
 
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import {
   classifyGoalGradingBacklog,
   GOAL_GRADING_RUBRIC_REF,
+  GOAL_GRADING_BACKLOG_LOOKBACK_MS,
   readGoalGradingBacklogInput,
   type GoalGradingBacklogInput,
   type GoalGradingBacklogVerdict,
 } from '../goal-grading-backlog';
 import { holderCountsAsAlive, resolveHolderLiveness } from '../goals/holder';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+
+const CONDITION_PREFIX = 'alarm:goal-grading-backlog:';
+export function goalGradingBacklogAlarmKey(goal: GoalGradingBacklogGoal): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([goal.workspaceId, goal.goalId]));
+}
+async function readOpenBacklogConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+
+function measuredInput(input: GoalGradingBacklogInput, goal: GoalGradingBacklogGoal, nowMs: number): boolean {
+  return input?.goalId === goal.goalId && Number.isFinite(nowMs) && input.nowMs === nowMs &&
+    Array.isArray(input.activityMs) && input.activityMs.every(at => Number.isFinite(at) &&
+      at <= nowMs && at >= Math.floor((nowMs - GOAL_GRADING_BACKLOG_LOOKBACK_MS) / 3600_000) * 3600_000) &&
+    Array.isArray(input.cards) && input.cards.every(card => card &&
+      Number.isFinite(card.windowStartMs) && Number.isFinite(card.windowEndMs) &&
+      card.windowEndMs > card.windowStartMs && Number.isFinite(card.createdMs) && card.createdMs <= nowMs &&
+      typeof card.final === 'boolean') &&
+    Object.values(input.thresholds ?? {}).every(value => value === undefined || (Number.isFinite(value) && value >= 0));
+}
 
 const SWEEP_IDENTITY: AgentIdentity = {
   ownerId: 'goal-grading-backlog-watchdog',
@@ -76,6 +101,10 @@ export interface GoalGradingBacklogSweepDeps {
   resolveCleared: (goal: GoalGradingBacklogGoal) => Promise<number>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys: () => Promise<string[]>;
+  /** Exact scoped existence, including goals omitted from the active candidate list. */
+  readGoal: (goal: GoalGradingBacklogGoal) => Promise<GoalGradingBacklogGoal | null>;
 }
 
 export interface GoalGradingBacklogSweepResult {
@@ -197,6 +226,13 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalGradingBacklogSweepDeps>): G
     resolveCleared: defaultResolveCleared,
     flagEnabled: defaultFlagEnabled,
     now: () => Date.now(),
+    readOpenConditionKeys: readOpenBacklogConditionKeys,
+    readGoal: async (goal) => {
+      const [row] = await sql<{ workspace_id: string; id: string }[]>`
+        SELECT workspace_id, id FROM harness_shared.goals
+         WHERE workspace_id = ${goal.workspaceId} AND id = ${goal.goalId}`;
+      return row ? { workspaceId: row.workspace_id, goalId: row.id } : null;
+    },
     ...overrides,
   };
 }
@@ -222,18 +258,53 @@ export async function runGoalGradingBacklogSweepOnce(
   };
   if (!(await deps.flagEnabled())) return { ...result, skipped: true };
 
-  const goals = await deps.readGoals();
+  const goals = new Map((await deps.readGoals())
+    .filter(goal => typeof goal?.workspaceId === 'string' && goal.workspaceId.length > 0 &&
+      typeof goal.goalId === 'string' && goal.goalId.length > 0)
+    .map(goal => [goalGradingBacklogAlarmKey(goal), goal]));
+  // A restart, a paused goal or an empty candidate list does not erase an episode.
+  // Recover durable identities only from an exact existence + backlog measurement.
+  try {
+    for (const key of await deps.readOpenConditionKeys()) {
+      if (!key.startsWith(CONDITION_PREFIX)) continue;
+      let identity: unknown;
+      try { identity = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length))); }
+      catch { continue; }
+      if (!Array.isArray(identity) || identity.length !== 2 ||
+          !identity.every(part => typeof part === 'string' && part.length > 0)) continue;
+      const [workspaceId, goalId] = identity;
+      const goal = { workspaceId, goalId };
+      if (goalGradingBacklogAlarmKey(goal) === key) goals.set(key, goal);
+    }
+  } catch (e) {
+    console.warn(`[goal-grading-backlog] condition read failed (non-fatal): ${String(e)}`);
+  }
   const nowMs = deps.now();
-  for (const goal of goals) {
+  for (const [key, goal] of goals) {
     result.scanned += 1;
     try {
+      const current = await deps.readGoal(goal);
+      if (!current || current.workspaceId !== goal.workspaceId || current.goalId !== goal.goalId) continue;
       const input = await deps.readInput(goal, nowMs);
+      if (!measuredInput(input, goal, nowMs)) throw new Error('incomplete or mismatched backlog measurement');
       const verdict = classifyGoalGradingBacklog(input);
       if (verdict.healthy) {
+        await resolveAlarm(key, 'goal-grading-backlog-watchdog', deps.rail);
         result.resolved += await deps.resolveCleared(goal);
         continue;
       }
       result.alerting += 1;
+      // Broadcast before legacy debounce, liveness or wake effects. Their failures
+      // must not suppress the condition that records this measured backlog.
+      try {
+        const event = { conditionKey: key, oneShot: true,
+          summary: `Grading is behind on goal '${goal.goalId}'`,
+          body: `Workspace ${goal.workspaceId}. ${verdict.reason}` };
+        if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
+      } catch (e) {
+        console.warn(`[goal-grading-backlog] condition broadcast failed (non-fatal): ${String(e)}`);
+      }
 
       const graderId = input.lastCardAuthor ?? null;
       let graderAlive = false;

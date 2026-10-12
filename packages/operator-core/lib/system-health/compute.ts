@@ -431,7 +431,7 @@ type SystemHealthGitSyncRow = GitSyncRoutineRead & { install_slug: string };
 
 async function readSystemHealthGitSyncRows(workspaceId: string): Promise<SystemHealthGitSyncRow[]> {
   const { sql } = getOrgPg();
-  return sql<SystemHealthGitSyncRow>`
+  return sql<SystemHealthGitSyncRow[]>`
     SELECT install_slug, active, trigger_config, metadata FROM harness_shared.routines
      WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${workspaceId}`;
 }

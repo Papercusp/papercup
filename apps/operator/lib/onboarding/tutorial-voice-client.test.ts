@@ -4,9 +4,11 @@ import { startTutorialVoice } from './tutorial-voice-client';
 vi.mock('@elevenlabs/client', () => ({ Conversation: { startSession: vi.fn() } }));
 const signedUrl = 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=synthetic';
 const endSession = vi.fn(async () => {});
+type VoiceSession = Awaited<ReturnType<typeof Conversation.startSession>>;
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(Conversation.startSession).mockResolvedValue({ endSession } as never);
+  const session: Pick<VoiceSession, 'endSession'> = { endSession };
+  vi.mocked(Conversation.startSession).mockResolvedValue(session as VoiceSession);
   vi.stubGlobal('fetch', vi.fn(async () => new Response('worklet', { headers: { 'content-type': 'application/javascript; charset=utf-8' } })));
 });
 afterEach(() => vi.unstubAllGlobals());

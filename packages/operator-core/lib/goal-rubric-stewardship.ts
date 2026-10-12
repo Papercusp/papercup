@@ -224,7 +224,11 @@ export async function readGoalRubricStewardship(
       import('./scorecards'), import('./rubrics'), import('./work-item-completion-authority'), import('./work-items'),
     ]));
     const [stored, rubric] = await Promise.all([
-      ids.length ? traceNamedQueryStage('stewardship-scorecards', () => listScorecards({ issueIds: ids, includeSuperseded: true, limit: PAGE_SIZE * 2 })) : Promise.resolve([]),
+      // Cycle classification consumes rubric/audit currentness, not the bg-host
+      // generation. Awaiting that unused process probe can exhaust goals.detail's
+      // deadline while the mandatory evidence reads have already completed.
+      ids.length ? traceNamedQueryStage('stewardship-scorecards', () => listScorecards({ issueIds: ids,
+        includeSuperseded: true, includeGeneration: false, limit: PAGE_SIZE * 2 })) : Promise.resolve([]),
       // Missing rubrics stay unmeasured. A GUI read must not start the broad
       // library fallback's first-party seed writes in a cold real process.
       traceNamedQueryStage('stewardship-rubrics', () => getRubricWithoutSeeding(WOE_RUBRIC)),

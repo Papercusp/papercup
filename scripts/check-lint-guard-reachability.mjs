@@ -401,14 +401,14 @@ export const ACKNOWLEDGED_PARTIAL_COVERAGE = new Map([
     'lint:full-replacement-mocks',
     'scans every *.test.ts in the tree; enforced only when packages/operator-core is affected',
   ],
-  [
-    'lint:migration-fixture-drift',
-    'scans every *.integration.test.ts in the tree; enforced only when apps/operator is affected',
-  ],
+  // `lint:migration-fixture-drift` USED TO SIT HERE and is now RETIRED (WI-6554700010009165):
+  // the bare npm alias ran the detector WITHOUT `--check`, so it exited 0 unconditionally and
+  // guarded nothing. Its enforcing sibling `lint:migration-fixture-drift:check` is the declared
+  // guard; the PostToolUse hook still runs the script by path. Watermark 2 → 1.
 ]);
 
 /** Ceiling on the partial-coverage set. SHRINK-ONLY — register a guard instead of appending. */
-export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
+export const PARTIAL_COVERAGE_HIGH_WATERMARK = 1;
 
 /**
  * Tiers that actually STOP a bad change. `hook` and `logic-test` are deliberately

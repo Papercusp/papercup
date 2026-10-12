@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
-import { WorkosLifecycleWorker } from './workos-lifecycle-worker';
+import { WorkosLifecycleWorker, workosDirectoryIdentitySubject } from './workos-lifecycle-worker';
 import {
   PostgresWorkosAccessClosureSink,
   PostgresWorkosLifecycleProjectionStore,
@@ -140,6 +140,112 @@ beforeEach(async () => {
 });
 
 describe('PostgresWorkosLifecycleProjectionStore', () => {
+  async function directoryFixture() {
+    const users = await sql<IdRow[]>`
+      INSERT INTO papercusp_auth.hosted_users (primary_email)
+      VALUES ('directory@example.com'), ('unrelated@example.com') RETURNING id::text AS id
+    `;
+    const orgs = await sql<IdRow[]>`
+      INSERT INTO papercusp_auth.organizations (identity_provider, external_organization_id, display_name)
+      VALUES ('workos', 'directory-org', 'Directory Org'), ('workos', 'other-org', 'Other Org')
+      RETURNING id::text AS id
+    `;
+    const subject = workosDirectoryIdentitySubject('directory-org', 'directory-1', 'directory-user-1');
+    await sql`
+      INSERT INTO papercusp_auth.external_identities (hosted_user_id, provider, subject, profile)
+      VALUES (${users[0].id}::uuid, 'workos-dsync', ${subject}, '{"authorized_directory_groups":["allowed-group"]}'::jsonb),
+        (${users[0].id}::uuid, 'workos', 'login-user', '{}'::jsonb)
+    `;
+    const sessions: string[] = [];
+    for (let u = 0; u < users.length; u++) {
+      for (let o = 0; o < orgs.length; o++) {
+        await sql`
+          INSERT INTO papercusp_auth.organization_memberships (organization_id,user_id,role,status,authority,created_via)
+          VALUES (${orgs[o].id}::uuid,${users[u].id}::uuid,'member','active','papercusp','member_management')
+        `;
+        const id = `hs_${String.fromCharCode(65 + sessions.length).repeat(43)}`;
+        await sql`
+          INSERT INTO papercusp_auth.hosted_sessions
+            (id,user_id,organization_id,permission_version,upstream_provider,upstream_session_id,expires_at)
+          VALUES (${id},${users[u].id},${orgs[o].id},1,'workos',${`upstream-${sessions.length}`},now()+interval '1 hour')
+        `;
+        sessions.push(id);
+      }
+    }
+    const worker = new WorkosLifecycleWorker(new PostgresWorkosLifecycleProjectionStore(runAsService), new PostgresWorkosAccessClosureSink(runAsService));
+    const userData = { id:'directory-user-1', directory_id:'directory-1', organization_id:'directory-org', state:'inactive' };
+    return { worker, userData, sessions, users, orgs };
+  }
+
+  async function applyReceipt(worker: WorkosLifecycleWorker, value: WorkOsWebhookReceiptResult) {
+    await insertReceipt(value);
+    return worker.apply(workosLifecycleEventFromReceipt(value)!);
+  }
+
+  async function revokedSessionIds() {
+    return (await sql<IdRow[]>`SELECT id FROM papercusp_auth.hosted_sessions WHERE revoked_at IS NOT NULL ORDER BY id`).map(row => row.id);
+  }
+
+  it.each(['dsync.user.updated','dsync.user.deleted'])('closes only the bound organization membership for %s and retains replay ordering', async (type) => {
+    const { worker,userData,sessions } = await directoryFixture();
+    const value = receipt('directory-revoke',type,userData);
+    expect(await applyReceipt(worker,value)).toMatchObject({ disposition:'applied',closureDelivered:true });
+    expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition:'duplicate' });
+    const stale = receipt('directory-old','dsync.user.updated',{...userData,state:'active'});
+    stale.eventCreatedAt = new Date(OCCURRED_AT.getTime()-1000);
+    expect(await applyReceipt(worker,stale)).toMatchObject({ disposition:'stale' });
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    const rows = await sql<{status:string}[]>`SELECT status FROM papercusp_auth.organization_memberships ORDER BY status`;
+    expect(rows.map(row => row.status)).toEqual(['active','active','active','revoked']);
+    expect((await sql<{status:string}[]>`SELECT status FROM papercusp_auth.hosted_users`).map(row=>row.status)).toEqual(['active','active']);
+  });
+
+  it('ordinary login membership revocation also preserves unrelated users and organizations', async () => {
+    const { worker,sessions,users,orgs } = await directoryFixture();
+    await applyReceipt(worker,receipt('login-member-revoke','organization_membership.deleted',{user_id:'login-user',organization_id:'directory-org'}));
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    // Distinguishing control for EI-25792063050875001: reproduce the former
+    // returned union on the identical isolated population. The closure sink is
+    // deliberately global for user/org shutdown; a membership producer must
+    // send exact session IDs instead of these wildcard targets.
+    await sql`UPDATE papercusp_auth.hosted_sessions SET revoked_at=NULL,revocation_reason=NULL`;
+    await new PostgresWorkosAccessClosureSink(runAsService).closeAffectedAccess({
+      signalId:'legacy-membership-control', source:'workos-lifecycle', eventId:'login-member-revoke',
+      cause:'reduce-membership-access', receivedAt:RECEIVED_AT.toISOString(),
+      deadlineAt:new Date(RECEIVED_AT.getTime()+60_000).toISOString(), maxPropagationMs:60_000,
+      targets:{userIds:[users[0].id],organizationIds:[orgs[0].id]},
+      channels:['hosted-session','sse','websocket','pty-ticket','file-ticket','connector-ticket'],
+    });
+    expect(await revokedSessionIds()).toEqual(sessions.slice(0,3));
+  });
+
+  it('does not match missing/different directory bindings or a mutable email', async () => {
+    const { worker,userData } = await directoryFixture();
+    await applyReceipt(worker,receipt('unbound','dsync.user.updated',{...userData,id:'unbound',email:'directory@example.com'}));
+    await applyReceipt(worker,receipt('other-directory','dsync.user.updated',{...userData,directory_id:'other-directory'}));
+    await applyReceipt(worker,receipt('other-organization','dsync.user.updated',{...userData,organization_id:'other-org'}));
+    expect(await revokedSessionIds()).toEqual([]);
+  });
+
+  it('requires a locally authorized group mapping for removal and never grants on addition', async () => {
+    const { worker,userData,sessions } = await directoryFixture();
+    const data = (groupId:string) => ({directory_id:'directory-1',user:userData,group:{id:groupId,directory_id:'directory-1',organization_id:'directory-org'}});
+    await applyReceipt(worker,receipt('other-group','dsync.group.user_removed',data('unmapped-group')));
+    await applyReceipt(worker,receipt('group-add','dsync.group.user_added',data('allowed-group')));
+    expect(await revokedSessionIds()).toEqual([]);
+    await applyReceipt(worker,receipt('group-remove','dsync.group.user_removed',data('allowed-group')));
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    await applyReceipt(worker,receipt('later-group-add','dsync.group.user_added',data('allowed-group')));
+    expect((await sql<{status:string}[]>`SELECT status FROM papercusp_auth.organization_memberships WHERE status='revoked'`)).toHaveLength(1);
+  });
+
+  it('rejects malformed directory states and conflicting group scopes', () => {
+    expect(()=>workosLifecycleEventFromReceipt(receipt('invalid-state','dsync.user.updated',{id:'x',directory_id:'d',organization_id:'o',state:'maybe'}))).toThrow('state_invalid');
+    expect(()=>workosLifecycleEventFromReceipt(receipt('invalid-scope','dsync.group.user_removed',{
+      directory_id:'d',user:{id:'u',directory_id:'d',organization_id:'o'},group:{id:'g',directory_id:'d',organization_id:'other'},
+    }))).toThrow('scope_mismatch');
+  });
+
   it('projects a verified identity exactly once and persists the entity cursor on the receipt ledger', async () => {
     const accepted = receipt('event_user_1', 'user.created', {
       id: 'user_workos_1',

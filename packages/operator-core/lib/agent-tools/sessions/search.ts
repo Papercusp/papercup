@@ -459,13 +459,16 @@ export default defineTool({
     }
 
     if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
+      // Bind the narrowed array before the closure: property-path narrowing
+      // (`filters.owners`) does not survive a function boundary.
+      const ownerIds: string[] = filters.owners;
       try {
         const [row] = await measureSearchPhase(ctx, 'zero_hit_owner_session_count', () => tx<Array<{ session_count: string; earliest: string | null }>>`
           SELECT COUNT(DISTINCT session_id)::text AS session_count,
                  MIN(COALESCE(ts, ingested_at))::text AS earliest
             FROM harness_shared.session_turns
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-             AND owner = ANY(${filters.owners}::text[])
+             AND owner = ANY(${ownerIds}::text[])
         `);
         const sessionCount = row ? Number(row.session_count) : 0;
         if (sessionCount > 1) {

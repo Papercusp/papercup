@@ -2,11 +2,16 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { parseAsString, useQueryState } from 'nuqs';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import ContractSigningViews from './ContractSigningViews';
 import OnboardingViews from './OnboardingViews';
 import EngagementViews from './EngagementViews';
 
 const cadences = ['hourly','weekly','biweekly','monthly','annual','per-milestone'];
+const engagementOptions = [{ value: 'employee', label: 'Employee' }, { value: 'contractor', label: 'Contractor' }];
+/** The shared Select drops empty-value options, so "no manager" needs a non-empty sentinel to stay re-selectable. */
+const NO_MANAGER = '__no-manager__';
 const states: Record<string, string> = { offered: 'Awaiting internal approval', approved: 'Approved for contract', 'contract-generated': 'Awaiting signatures', signed: 'Signed; awaiting hire vote', 'hire-proposed': 'Hire vote open', hired: 'Hired', rejected: 'Rejected', lapsed: 'Lapsed' };
 type Offer = HiringView['offers'][number];
 type Role = HiringView['roles'][number];
@@ -19,6 +24,13 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
   const [roleId, setRoleId] = useQueryState('hiringRole', parseAsString.withDefault(''));
   const [offerId, setOfferId] = useQueryState('hiringOffer', parseAsString.withDefault(''));
   const generation = useRef(0);
+  // Form selections are controlled (shared Select/Checkbox primitives do not take part in FormData).
+  const [managerId, setManagerId] = useState('');
+  const [exclusive, setExclusive] = useState(false);
+  const [candidateId, setCandidateId] = useState('');
+  const [offerPersonId, setOfferPersonId] = useState('');
+  const [engagementType, setEngagementType] = useState('employee');
+  const [cadence, setCadence] = useState('monthly');
   const url = '/api/pot/' + encodeURIComponent(daoSlug) + '/hiring';
   const load = useCallback(async () => {
     const request = ++generation.current;
@@ -60,21 +72,25 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
     { key: 'pay', header: 'Regular pay', width: 2, toCopyText: row => row.terms.pay.amount + ' ' + row.terms.pay.currency,
       render: ({ row }) => <>{row.terms.pay.amount} {row.terms.pay.currency} · {row.terms.pay.cadence}</> },
   ];
-  const peopleOptions = data.people.map(person => <option key={person.personId} value={person.personId}>{person.displayName}</option>);
+  const peopleOptions = data.people.map(person => ({ value: person.personId, label: person.displayName }));
+  const isPerson = (id: string) => data.people.some(p => p.personId === id);
+  const manager = isPerson(managerId) ? managerId : '';
+  const candidate = isPerson(candidateId) ? candidateId : '';
+  const offerPerson = role?.candidates.includes(offerPersonId) ? offerPersonId : role?.candidates[0] ?? '';
   async function createRole(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = event.currentTarget, fields = new FormData(form);
-    if (await action({ action: 'role', title: fields.get('title'), level: fields.get('level'), managerPersonId: fields.get('manager') || null, exclusive: fields.get('exclusive') === 'on' })) form.reset();
+    if (await action({ action: 'role', title: fields.get('title'), level: fields.get('level'), managerPersonId: manager || null, exclusive })) { form.reset(); setManagerId(''); setExclusive(false); }
   }
   async function addCandidate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const fields = new FormData(event.currentTarget);
-    await action({ action: 'candidate', roleId: role!.roleId, personId: fields.get('person') });
+    event.preventDefault(); if (!candidate) return;
+    await action({ action: 'candidate', roleId: role!.roleId, personId: candidate });
   }
   async function createOffer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const fields = new FormData(event.currentTarget);
     const overrides: Record<string, number> = {};
     for (const key of ['shares','vestingDays','cliffDays']) { const value = fields.get(key); if (value !== null && value !== '') overrides[key] = Number(value); }
-    await action({ action: 'offer', roleId: role!.roleId, personId: fields.get('person'), engagementType: fields.get('engagement'), jurisdiction: fields.get('jurisdiction'),
-      pay: { amount: fields.get('amount'), currency: fields.get('currency'), cadence: fields.get('cadence') }, overrides });
+    await action({ action: 'offer', roleId: role!.roleId, personId: offerPerson, engagementType, jurisdiction: fields.get('jurisdiction'),
+      pay: { amount: fields.get('amount'), currency: fields.get('currency'), cadence }, overrides });
   }
   async function createAmendment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();const fields=new FormData(event.currentTarget);
@@ -94,24 +110,25 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
     <details><summary>Create a role</summary><form className="dao-form" aria-label="Create role" onSubmit={createRole}>
       <label>Role title<input name="title" required maxLength={120} /></label>
       <label>Level<input name="level" required maxLength={60} /></label>
-      <label>Manager<select className="dao-select" name="manager"><option value="">No manager</option>{peopleOptions}</select></label>
-      <label><input name="exclusive" type="checkbox" />Exclusive engagement</label>
+      <label>Manager<Select className="dao-select" ariaLabel="Manager" value={manager || NO_MANAGER} onChange={value => setManagerId(value === NO_MANAGER ? '' : value)}
+        options={[{ value: NO_MANAGER, label: 'No manager' }, ...peopleOptions]} /></label>
+      <label><Checkbox ariaLabel="Exclusive engagement" checked={exclusive} onChange={setExclusive} />Exclusive engagement</label>
       <button type="submit" className="dao-action" disabled={busy}>Create role</button>
     </form></details>
     {role ? <section aria-label={role.title + ' candidates'}><h4>{role.title} · {role.level}</h4>
       <form className="dao-form" aria-label="Add candidate" onSubmit={addCandidate}>
-        <label>Candidate<select className="dao-select" name="person" required><option value="">Select a person</option>{peopleOptions}</select></label>
-        <button type="submit" className="dao-action" disabled={busy || !data.people.length}>Add candidate</button>
+        <label>Candidate<Select className="dao-select" ariaLabel="Candidate" placeholder="Select a person" value={candidate} onChange={setCandidateId} options={peopleOptions} /></label>
+        <button type="submit" className="dao-action" disabled={busy || !data.people.length || !candidate}>Add candidate</button>
       </form>
       {!data.people.length ? <p>No shared person records are available. Add the person to your workspace contacts first.</p> : null}
       {role.candidates.length ? <form className="dao-form" aria-label="Create offer" onSubmit={createOffer}>
         <h4>Offer terms</h4><p>Empty equity overrides use the current policy for this role and level. The saved offer freezes its terms.</p>
-        <label>Offer candidate<select className="dao-select" name="person" required>{role.candidates.map(id => <option value={id} key={id}>{name(id)}</option>)}</select></label>
-        <label>Engagement<select className="dao-select" name="engagement"><option value="employee">Employee</option><option value="contractor">Contractor</option></select></label>
+        <label>Offer candidate<Select className="dao-select" ariaLabel="Offer candidate" value={offerPerson} onChange={setOfferPersonId} options={role.candidates.map(id => ({ value: id, label: name(id) }))} /></label>
+        <label>Engagement<Select className="dao-select" ariaLabel="Engagement" value={engagementType} onChange={setEngagementType} options={engagementOptions} /></label>
         <label>Jurisdiction<input name="jurisdiction" required maxLength={200} /></label>
         <label>Pay amount<input name="amount" required inputMode="decimal" pattern="[0-9]{1,16}(\.[0-9]{1,2})?" /></label>
         <label>Currency<input name="currency" defaultValue="USD" required pattern="[A-Z]{3}" maxLength={3} /></label>
-        <label>Pay cadence<select className="dao-select" name="cadence" defaultValue="monthly">{cadences.map(c => <option key={c} value={c}>{c}</option>)}</select></label>
+        <label>Pay cadence<Select className="dao-select" ariaLabel="Pay cadence" value={cadence} onChange={setCadence} options={cadences.map(c => ({ value: c, label: c }))} /></label>
         <label>Shares override<input name="shares" type="number" min="1" step="1" /></label>
         <label>Vesting days override<input name="vestingDays" type="number" min="1" max="3650" step="1" /></label>
         <label>Cliff days override<input name="cliffDays" type="number" min="0" max="3650" step="1" /></label>

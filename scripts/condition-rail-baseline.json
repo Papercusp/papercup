@@ -14,7 +14,6 @@
     "bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/scout/draft-review-watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/scout/ungraded-filings-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|<module>|1",

@@ -76,7 +76,7 @@ const workspace: CloudWorkspacesControlRow = { kind: "workspace", id: "customer"
 function resetNuqsUpdateQueue() {
   // nuqs keeps its throttle queue at module scope; clear pending work before
   // mounting an independent router in this integration-test fixture.
-  render(<NuqsTestingAdapter />).unmount();
+  render(<NuqsTestingAdapter>{null}</NuqsTestingAdapter>).unmount();
 }
 function mount(initial = "/cloud-workspaces", options: { resetQueue?: boolean } = {}) {
   if (options.resetQueue !== false) resetNuqsUpdateQueue();

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as eventStore from '../events/await/store';
+import type { AwaitRow, KeyFireRow } from '../events/await/types';
 import {
   applyBlockerDefaultToHistory,
   decideBlockerDefault,
@@ -126,13 +127,16 @@ describe('sweepWorkItemBlockerDefaults', () => {
     { kind: 'gate' as const, ref: 'reaper:declared-ready', clearsBlocker: true, announced: true },
   ])('production resolver clears $ref only when the fire proves its condition', async ({ kind, ref, clearsBlocker, announced }) => {
     const firedAt = '2026-09-30T12:00:00.000Z';
+    // Element-level casts to the REAL row types (overlap-checked: a renamed/removed field
+    // fails to compile) — the outer value then type-checks against inspectEventKey's
+    // actual return, with no blanket cast over the whole fixture.
     const inspect = vi.spyOn(eventStore, 'inspectEventKey').mockResolvedValue({
       announcements: announced
-        ? [{ firedAt, firedReason: 'event', supersededAt: null, cancelledAt: null, expiresTs: null }]
+        ? [{ firedAt, firedReason: 'event', supersededAt: null, cancelledAt: null, expiresTs: null } as AwaitRow]
         : [],
       waiters: [], deliveries: [], composedRoot: null,
-      fireLatch: { lastFiredAt: firedAt },
-    } as never);
+      fireLatch: { lastFiredAt: firedAt } as KeyFireRow,
+    });
     try {
       const due = blocker({ kind, ref, capability: 'live-dependency',
         decideBy: undefined, defaultAction: undefined, recheckAt: PAST });

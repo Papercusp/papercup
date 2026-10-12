@@ -238,9 +238,9 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
     vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY', '1');
     try {
       const independentId = await fileIndependentGrading({ createdBy: GRADER });
-      const args = acceptanceArgs(independentId, {
-        title: 'Acceptance producer readback', body: 'The original verdict body is preserved.',
-      });
+      const acceptanceTitle = 'Acceptance producer readback';
+      const acceptanceBody = 'The original verdict body is preserved.';
+      const args = acceptanceArgs(independentId, { title: acceptanceTitle, body: acceptanceBody });
       const producer = { ...asAuthor, ctxHarness: 'papercusp' };
       const result = await emitScorecard(args as never, producer as never);
       expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true });
@@ -276,8 +276,8 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
       // the real adapter too, using the persisted card's author and verdict.
       const capturedId = await captureAcceptanceVerdict({ workspaceId: activeWorkspaceId(),
         ownerId: persisted!.created_by, harnessSlug: 'papercusp', sessionRef: persisted!.created_by,
-        issueId: persisted!.issue_id, rubricRef: RUBRIC, title: args.title as string, planSlug: SUBJECT_PLAN,
-        body: args.body as string, ratings: persisted!.observation.ratings,
+        issueId: persisted!.issue_id, rubricRef: RUBRIC, title: acceptanceTitle, planSlug: SUBJECT_PLAN,
+        body: acceptanceBody, ratings: persisted!.observation.ratings,
         acceptance: persisted!.observation.acceptance });
       const retryFailures = capturedId ? [] : await db.adminSql`SELECT title, body
         FROM harness_shared.engineer_issues WHERE title = 'Reports automatic capture failed'`;

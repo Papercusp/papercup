@@ -47,10 +47,13 @@ function renderForm(offer = BOTH, sources: ReadonlyArray<{ scope: string; liveSe
 }
 
 const form = () => screen.getByRole('form', { name: 'Fixture Chat sharing' });
-const onlyYou = () => screen.getByRole('radio', { name: 'Only you' }) as HTMLInputElement;
-const organization = () => screen.getByRole('radio', { name: /^Your organization/ }) as HTMLInputElement;
-const liveSearch = () => screen.getByRole('checkbox', { name: /^Search Fixture Chat live/ }) as HTMLInputElement;
+// The choices are the shared RadioGroup / Checkbox primitives (role="radio"/"checkbox" buttons), not
+// native inputs, so their state is read from aria-checked rather than an input's `.checked`.
+const onlyYou = () => screen.getByRole('radio', { name: 'Only you' });
+const organization = () => screen.getByRole('radio', { name: /^Your organization/ });
+const liveSearch = () => screen.getByRole('checkbox', { name: /^Search Fixture Chat live/ }) as HTMLButtonElement;
 const saveButton = () => screen.getByRole('button', { name: 'Save sharing' }) as HTMLButtonElement;
+const isChecked = (element: HTMLElement) => element.getAttribute('aria-checked') === 'true';
 
 describe('ProviderSourceSettingsForm', () => {
   it('renders nothing when the provider offers no organization scope, or nothing is connected yet', () => {
@@ -66,16 +69,19 @@ describe('ProviderSourceSettingsForm', () => {
     expect(form().getAttribute('data-provider-source-settings')).toBe('fixture-chat');
     expect(form().getAttribute('data-scope')).toBe('personal');
     expect(form().getAttribute('data-live-search')).toBe('false');
-    expect(onlyYou().checked).toBe(true);
+    expect(screen.getByRole('radiogroup', { name: 'Who can read what it syncs' })).toBeTruthy();
+    expect(isChecked(onlyYou())).toBe(true);
+    expect(isChecked(organization())).toBe(false);
     expect(liveSearch().disabled).toBe(true);
     expect(saveButton().disabled).toBe(true);
 
     fireEvent.click(organization());
-    expect(organization().checked).toBe(true);
+    expect(isChecked(organization())).toBe(true);
+    expect(isChecked(onlyYou())).toBe(false);
     expect(liveSearch().disabled).toBe(false);
     expect(saveButton().disabled).toBe(false);
     fireEvent.click(liveSearch());
-    expect(liveSearch().checked).toBe(true);
+    expect(isChecked(liveSearch())).toBe(true);
 
     fireEvent.submit(form());
     await waitFor(() => expect(H.toast.success).toHaveBeenCalledWith('Fixture Chat sharing saved.'));
@@ -96,10 +102,10 @@ describe('ProviderSourceSettingsForm', () => {
   it('turns live search off with a move back to personal, and shows a refusal from the server', async () => {
     renderForm(BOTH, [{ scope: 'organization', liveSearch: true }]);
     expect(form().getAttribute('data-live-search')).toBe('true');
-    expect(liveSearch().checked).toBe(true);
+    expect(isChecked(liveSearch())).toBe(true);
 
     fireEvent.click(onlyYou());
-    expect(liveSearch().checked).toBe(false);
+    expect(isChecked(liveSearch())).toBe(false);
     expect(liveSearch().disabled).toBe(true);
 
     H.response = {

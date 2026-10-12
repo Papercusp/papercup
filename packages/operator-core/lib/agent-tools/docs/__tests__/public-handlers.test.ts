@@ -30,12 +30,17 @@ function payload(result: unknown) {
   return JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
 }
 
+/** Handler results are `ToolResponse | ToolResult`; only the MCP result shape carries `isError`. */
+function isErrorResult(result: unknown): boolean {
+  return typeof result === 'object' && result !== null && 'isError' in result && result.isError === true;
+}
+
 describe('public docs handler routing and isolation', () => {
   it.each(['papercup', 'papercup-deep'] as const)('%s keeps hostile retrieved instructions outside the permission boundary', async (role) => {
     const ctx = { role, harnessSlug: 'private-project', isSuperuser: false };
     const originalContext = { ...ctx };
-    const originalSearchRoles = [...search.agentRoles];
-    const originalGetRoles = [...get.agentRoles];
+    const originalSearchRoles = [...(search.agentRoles ?? [])];
+    const originalGetRoles = [...(get.agentRoles ?? [])];
     const found = payload(await search.handler(search.args.parse({ query: 'Permissions' }), ctx as never));
     expect(found).toMatchObject({ surface: 'public', hits: [expect.objectContaining({ slug: 'hostile' })] });
     const retrieved = payload(await get.handler(get.args.parse({ slugs: ['hostile'] }), ctx as never));
@@ -49,7 +54,7 @@ describe('public docs handler routing and isolation', () => {
     expect(payload(privateSearch)).toMatchObject({ error: 'public_scope_conflict', surface: 'public' });
     expect(payload(privateGet)).toMatchObject({ error: 'public_scope_conflict', surface: 'public' });
     expect(payload(sourceGet)).toMatchObject({ error: 'public_source_read_forbidden', surface: 'public' });
-    expect([privateSearch, privateGet, sourceGet].every((result) => result.isError)).toBe(true);
+    expect([privateSearch, privateGet, sourceGet].every(isErrorResult)).toBe(true);
     expect(JSON.stringify({ found, retrieved, privateSearch, privateGet, sourceGet })).not.toContain('PRIVATE_CANARY');
     expect(ctx).toEqual(originalContext);
     expect(search.agentRoles).toEqual(originalSearchRoles);

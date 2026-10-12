@@ -214,7 +214,7 @@ describe('curated Conversations — agent-message selection survives normalizati
     fireEvent.click(screen.getByRole('button', { name: `Open ${message.summary}` }));
     expect(store.conv).toBe('messages');
     expect(store.cmsg).toBe(message.msg_id);
-    expect(await within(screen.getByRole('main')).findByText(message.body)).toBeTruthy();
+    expect(await within(screen.getByRole('tabpanel')).findByText(message.body)).toBeTruthy();
   });
 
   it('keeps an agent-message deep link selected after mounting', async () => {
@@ -222,7 +222,7 @@ describe('curated Conversations — agent-message selection survives normalizati
     render(<AdvConversationsTab />);
     expect(store.conv).toBe('messages');
     expect(store.cmsg).toBe(message.msg_id);
-    expect(await within(screen.getByRole('main')).findByText(message.body)).toBeTruthy();
+    expect(await within(screen.getByRole('tabpanel')).findByText(message.body)).toBeTruthy();
   });
 
   it('normalizes a message route without an id back to the inbox', () => {

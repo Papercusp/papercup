@@ -57,6 +57,7 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
   it('builds a bounded direct activity query and skips a URL that points at PgBouncer', () => {
     const direct = buildPgActivityArgs({ connectionString: 'postgresql://harness_admin:secret@127.0.0.1:5432/papercusp' });
     expect(direct.unavailable).toBeUndefined();
+    if (!direct.args) throw new Error(`expected direct activity args, got unavailable=${direct.unavailable}`);
     expect(direct.args.join(' ')).toContain('pg_stat_activity');
     expect(direct.args.join(' ')).toContain('LIMIT 24');
     expect(direct.args.join(' ')).not.toMatch(/\bquery\b/i);

@@ -11,6 +11,7 @@ import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import {
   compareWorkosLifecycleCursor,
+  workosDirectoryIdentitySubject,
   type WorkosAccessClosureSignal,
   type WorkosAccessClosureSink,
   type WorkosLifecycleClosureTargets,
@@ -426,11 +427,49 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
                AND status <> 'revoked'
           `;
         }
-        return mergeTargets(userTargets, organizationTargets);
+        return userId && organizationId ? this.membershipSessionTargets(sql, userId, organizationId) : undefined;
+      }
+      case 'reduce-directory-access': {
+        // Only a locally bound directory identity may reduce an existing grant.
+        // Directory payload email/role/raw_attributes never establish this link.
+        const subject = workosDirectoryIdentitySubject(
+          mutation.externalOrganizationId, mutation.directorySubject, mutation.userSubject,
+        );
+        const links = await sql<HostedUserRow[]>`
+          SELECT hosted_user_id::text AS hosted_user_id
+            FROM papercusp_auth.external_identities
+           WHERE provider = 'workos-dsync' AND subject = ${subject}
+             AND (${mutation.groupSubject ?? null}::text IS NULL OR
+               (jsonb_typeof(profile->'authorized_directory_groups') = 'array' AND
+                (profile->'authorized_directory_groups') ? ${mutation.groupSubject ?? ''}))
+           FOR UPDATE
+        `;
+        const userId = links[0]?.hosted_user_id;
+        const organizationId = (await this.organizationTargets(sql, mutation.externalOrganizationId))?.organizationIds?.[0];
+        if (!userId || !organizationId) return undefined;
+        await sql`
+          UPDATE papercusp_auth.organization_memberships
+             SET status = 'revoked',
+                 revoked_at = COALESCE(revoked_at, ${cursor.occurredAt}::timestamptz), updated_at = now()
+           WHERE user_id = ${userId}::uuid AND organization_id = ${organizationId}::uuid
+             AND status <> 'revoked'
+        `;
+        return this.membershipSessionTargets(sql, userId, organizationId);
       }
       case 'ignore-external-authority':
         return undefined;
     }
+  }
+
+  private async membershipSessionTargets(sql: Sql, userId: string, organizationId: string): Promise<WorkosLifecycleClosureTargets | undefined> {
+    // A membership reduction is an intersection, not the global user/org union
+    // used for account deactivation and organization shutdown.
+    const rows = await sql<IdRow[]>`
+      SELECT id FROM papercusp_auth.hosted_sessions
+       WHERE user_id = ${userId} AND organization_id = ${organizationId}
+         AND revoked_at IS NULL
+    `;
+    return rows.length ? { hostedSessionIds: rows.map((row) => row.id) } : undefined;
   }
 
   private async userTargets(sql: Sql, subject: string): Promise<WorkosLifecycleClosureTargets | undefined> {
@@ -552,6 +591,37 @@ export function workosLifecycleEventFromReceipt(receipt: WorkOsWebhookReceiptRes
   const base = lifecycleBase(receipt);
   const { data } = base;
   switch (receipt.eventType) {
+    case 'dsync.user.created':
+    case 'dsync.user.updated':
+    case 'dsync.user.deleted': {
+      if (receipt.eventType !== 'dsync.user.deleted' && data.state !== 'active' && data.state !== 'inactive') {
+        throw new TypeError('workos_directory_user_state_invalid');
+      }
+      return {
+        ...base, kind: 'directory.user.changed',
+        userSubject: requiredText(data.id, 'data.id'),
+        directorySubject: requiredText(data.directory_id, 'data.directory_id'),
+        organizationSubject: requiredText(data.organization_id, 'data.organization_id'),
+        state: receipt.eventType === 'dsync.user.deleted' ? 'deleted' : data.state as 'active' | 'inactive',
+      };
+    }
+    case 'dsync.group.user_added':
+    case 'dsync.group.user_removed': {
+      const user = record(data.user);
+      const group = record(data.group);
+      if (!user || !group) throw new TypeError('workos_directory_group_membership_invalid');
+      const directory = requiredText(data.directory_id, 'data.directory_id');
+      const organization = requiredText(user.organization_id, 'data.user.organization_id');
+      if (user.directory_id !== directory || group.directory_id !== directory || group.organization_id !== organization) {
+        throw new TypeError('workos_directory_membership_scope_mismatch');
+      }
+      return {
+        ...base, kind: 'directory.group.membership',
+        userSubject: requiredText(user.id, 'data.user.id'), directorySubject: directory,
+        organizationSubject: organization, groupSubject: requiredText(group.id, 'data.group.id'),
+        direction: receipt.eventType === 'dsync.group.user_added' ? 'added' : 'removed',
+      };
+    }
     case 'user.created':
     case 'user.updated': {
       const first = optionalText(data.first_name);

@@ -19,6 +19,12 @@ export function startupTraceEnv(env) {
   return { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} ${preload}`.trim() };
 }
 
+/**
+ * @param {any} child - a forked child process (its `send` is wrapped in place).
+ * @param {(row: Record<string, unknown>) => void} emit - receives one diagnostic row per startup event.
+ * @param {() => number} [now]
+ * @returns {() => void} stops observing.
+ */
 export function observeForkStartup(child, emit, now = () => performance.now()) {
   const origin = now();
   const originalSend = child.send;

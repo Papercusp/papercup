@@ -153,18 +153,21 @@ export async function readGoalGradingBacklogInput(
     (m, c) => (m === null || Number(c.created_ts) > Number(m.created_ts) ? c : m),
     null,
   );
+  const measuredCards = cards.map((c) => ({
+    windowStartMs: c.ws ? Date.parse(c.ws) : NaN,
+    windowEndMs: c.we ? Date.parse(c.we) : NaN,
+    createdMs: Number(c.created_ts),
+    final: !c.provisional,
+  }));
+  if (measuredCards.some(c => !Number.isFinite(c.windowStartMs) || !Number.isFinite(c.windowEndMs) ||
+      c.windowEndMs <= c.windowStartMs || !Number.isFinite(c.createdMs))) {
+    throw new Error('Incomplete goal grading card measurement');
+  }
   return {
     goalId: input.goalId,
     nowMs: input.nowMs,
     lastCardAuthor: newest?.created_by?.trim() || null,
     activityMs: activity.map((r) => new Date(r.hour).getTime()),
-    cards: cards
-      .map((c) => ({
-        windowStartMs: c.ws ? Date.parse(c.ws) : NaN,
-        windowEndMs: c.we ? Date.parse(c.we) : NaN,
-        createdMs: Number(c.created_ts),
-        final: !c.provisional,
-      }))
-      .filter((c) => Number.isFinite(c.windowStartMs) && Number.isFinite(c.windowEndMs) && Number.isFinite(c.createdMs)),
+    cards: measuredCards,
   };
 }

@@ -100,7 +100,7 @@ export const EXPLICIT_HYGIENE_GATE_SCRIPTS: Record<string, ExplicitHygieneEntry>
   },
   "lint:migration-fixture-drift:check": {
     category: "fixture-drift",
-    remedy: "npm run lint:migration-fixture-drift",
+    remedy: "npm run lint:migration-fixture-drift:check",
     why:
       "A test fixture has fallen behind the migrations it mirrors. The remedy is to " +
       "regenerate the fixture; the check makes no claim about production behaviour.",

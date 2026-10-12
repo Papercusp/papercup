@@ -128,7 +128,7 @@ describe("dev:service_health handler", () => {
   it("starts fixed and supervision probes while a requested unit read is still pending", async () => {
     let resolveUnits!: (value: Awaited<ReturnType<typeof probeUnitStates>>) => void;
     unitM.mockReturnValueOnce(new Promise((resolve) => { resolveUnits = resolve; }));
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1, status: 200 }]);
 
     const response = tool.handler({ units: ["papercusp-staging-api"], scope: "user" } as never, {} as never);
     expect(probeM).toHaveBeenCalledTimes(1);
@@ -213,7 +213,7 @@ describe("dev:service_health handler", () => {
       supervision: expect.any(Number),
       dhtUniverse: expect.any(Number),
     }));
-    expect(Object.values(b.healthPhaseTimingsMs).every((duration) => Number.isFinite(duration) && duration >= 0)).toBe(true);
+    expect(Object.values(b.healthPhaseTimingsMs).every((duration) => typeof duration === "number" && Number.isFinite(duration) && duration >= 0)).toBe(true);
   });
 
   it("P-004: folds the additive supervision block without disturbing the pre-existing { ok, services, telemetry } shape", async () => {

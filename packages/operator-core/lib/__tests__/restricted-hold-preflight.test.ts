@@ -71,6 +71,7 @@ describe('interpretRestrictedHoldPreflight — fail closed', () => {
       + 'at nextLoad\nat AsyncLoaderHooksOnLoaderHookWorker.load\nNode.js v24.18.1';
     const result = interpretRestrictedHoldPreflight({ status: 1, stdout: '', stderr });
     expect(result).toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+    if (result.verdict !== 'refuse') throw new Error(`expected a refusal, got ${result.verdict}`);
     expect(result.hint).toContain('Present @esbuild/linux-x64; required @esbuild/linux-arm64');
     expect(result.hint).toContain('AsyncLoaderHooksOnLoaderHookWorker.load');
   });
@@ -80,6 +81,7 @@ describe('interpretRestrictedHoldPreflight — fail closed', () => {
       const result = interpretRestrictedHoldPreflight({ status: 1, stdout: '',
         stderr: 'ORIGINATING_LOADER_FAILURE\n' + filler + '\nFINAL_LOADER_FRAME' });
       expect(result).toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+      if (result.verdict !== 'refuse') throw new Error(`expected a refusal, got ${result.verdict}`);
       expect(result.hint).toContain('ORIGINATING_LOADER_FAILURE');
       expect(result.hint).toContain('FINAL_LOADER_FRAME');
       expect(result.hint.length).toBeLessThan(4000);

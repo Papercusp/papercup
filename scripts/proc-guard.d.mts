@@ -293,13 +293,15 @@ export function parseCgroupPath(raw: Buffer | string): string | null;
  * the real inherited deadline to retain Vitest in its caller's bounded scope.
  * A Node preload calls this in each fork, so a sibling scope cannot silently
  * produce passing tests alongside parent-only memory observations.
+ * @param {{ env?: NodeJS.ProcessEnv | undefined; pid?: number | undefined; now?: number | undefined; procRoot?: string | undefined; readFile?: ((path: string, encoding: "utf8") => string) | undefined }} [opts]
+ *   `readFile` is a test seam; it is only ever called as `readFile(path, "utf8")`.
  */
 export function assertManagedTestCgroup({ env, pid, now, procRoot, readFile, }?: {
     env?: NodeJS.ProcessEnv | undefined;
     pid?: number | undefined;
     now?: number | undefined;
     procRoot?: string | undefined;
-    readFile?: typeof readFileSync | undefined;
+    readFile?: ((path: string, encoding: "utf8") => string) | undefined;
 }): {
     pid: number;
     cgroupPath: string | null | undefined;
@@ -436,4 +438,3 @@ export type CgroupBusyUnknown = {
     procs?: undefined;
 };
 export type CgroupBusySample = CgroupBusyOk | CgroupBusyUnknown;
-import { readFileSync } from "node:fs";

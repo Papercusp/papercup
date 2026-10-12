@@ -79,6 +79,21 @@ export type WorkosLifecycleEvent =
       userSubject: string;
       organizationSubject: string;
       direction: 'grant-or-elevation' | 'reduction';
+    })
+  | (WorkosLifecycleEventBase & {
+      kind: 'directory.user.changed';
+      userSubject: string;
+      organizationSubject: string;
+      directorySubject: string;
+      state: 'active' | 'inactive' | 'deleted';
+    })
+  | (WorkosLifecycleEventBase & {
+      kind: 'directory.group.membership';
+      userSubject: string;
+      organizationSubject: string;
+      directorySubject: string;
+      groupSubject: string;
+      direction: 'added' | 'removed';
     });
 
 export type WorkosLifecycleMutation =
@@ -143,7 +158,15 @@ export type WorkosLifecycleMutation =
       provider: 'workos';
       userSubject: string;
       externalOrganizationId: string;
-      cause: 'membership-upsert' | 'external-role-grant-or-elevation';
+      cause: 'membership-upsert' | 'external-role-grant-or-elevation' | 'directory-user-active' | 'directory-group-added';
+    }
+  | {
+      kind: 'reduce-directory-access';
+      provider: 'workos';
+      userSubject: string;
+      externalOrganizationId: string;
+      directorySubject: string;
+      groupSubject?: string;
     };
 
 export interface WorkosLifecycleClosureTargets {
@@ -277,6 +300,10 @@ export function workosLifecycleCursor(event: WorkosLifecycleEvent): WorkosLifecy
 
 function entityKey(event: WorkosLifecycleEvent): string {
   switch (event.kind) {
+    case 'directory.user.changed':
+      return `workos:directory-user:${workosDirectoryIdentitySubject(event.organizationSubject, event.directorySubject, event.userSubject)}`;
+    case 'directory.group.membership':
+      return `workos:directory-group:${workosDirectoryIdentitySubject(event.organizationSubject, event.directorySubject, event.userSubject)}:${requiredText(event.groupSubject, 'groupSubject')}`;
     case 'user.upsert':
     case 'user.deactivated':
     case 'user.deleted':
@@ -299,9 +326,37 @@ function entityKey(event: WorkosLifecycleEvent): string {
   }
 }
 
+/** Directory and login subjects are distinct. Bind these immutable coordinates
+ * locally under provider `workos-dsync`; never correlate by mutable email/name. */
+export function workosDirectoryIdentitySubject(organization: string, directory: string, user: string): string {
+  return JSON.stringify([
+    requiredText(organization, 'organizationSubject'),
+    requiredText(directory, 'directorySubject'),
+    requiredText(user, 'userSubject'),
+  ]);
+}
+
 /** Secret-free mutation projection. Exported so store contract tests can pin it. */
 export function projectWorkosLifecycleMutation(event: WorkosLifecycleEvent): WorkosLifecycleMutation {
   switch (event.kind) {
+    case 'directory.user.changed':
+    case 'directory.group.membership': {
+      const userSubject = requiredText(event.userSubject, 'userSubject');
+      const externalOrganizationId = requiredText(event.organizationSubject, 'organizationSubject');
+      const directorySubject = requiredText(event.directorySubject, 'directorySubject');
+      if ((event.kind === 'directory.user.changed' && event.state === 'active') ||
+          (event.kind === 'directory.group.membership' && event.direction === 'added')) {
+        return {
+          kind: 'ignore-external-authority', provider: 'workos', userSubject, externalOrganizationId,
+          cause: event.kind === 'directory.user.changed' ? 'directory-user-active' : 'directory-group-added',
+        };
+      }
+      return {
+        kind: 'reduce-directory-access', provider: 'workos', userSubject, externalOrganizationId, directorySubject,
+        ...(event.kind === 'directory.group.membership'
+          ? { groupSubject: requiredText(event.groupSubject, 'groupSubject') } : {}),
+      };
+    }
     case 'user.upsert':
       return {
         kind: 'upsert-user',

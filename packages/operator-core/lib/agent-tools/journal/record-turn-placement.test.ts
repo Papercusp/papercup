@@ -38,6 +38,12 @@ vi.mock('../../turn-end-tracking-io', () => ({
 vi.mock('../../session-cursor-io', () => ({ boundedBuildAndPersistCursor: vi.fn(async () => false) }));
 import tool from './record-turn';
 
+/** Narrow a tool result union to its `data` payload; a result without one fails the test. */
+function responseData(result: object): unknown {
+  if (!('data' in result)) throw new Error('tool result carried no data payload');
+  return result.data;
+}
+
 beforeEach(() => {
   h.record.mockReset().mockResolvedValue({ recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' });
   h.persist.mockReset().mockResolvedValue(true);
@@ -119,7 +125,7 @@ describe('journal native placement seam', () => {
         }),
       ]);
       expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
-      expect(result.data).not.toHaveProperty('unpublishedReportObserved');
+      expect(responseData(result)).not.toHaveProperty('unpublishedReportObserved');
       expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         ownerId: 'holder', workspaceId: 'workspace', assistantText: '## Findings\nUnpublished report.',
       }));
@@ -153,7 +159,7 @@ describe('journal native placement seam', () => {
     h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
     h.journal.mockResolvedValueOnce({ id: 'journal-row', deduped: true });
     const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
-    expect(result.data).not.toHaveProperty('unpublishedReportObservationScheduled');
+    expect(responseData(result)).not.toHaveProperty('unpublishedReportObservationScheduled');
     expect(h.observeReport).not.toHaveBeenCalled();
   });
   it('returns the native outcome even when journal transcript discovery fails', async () => {

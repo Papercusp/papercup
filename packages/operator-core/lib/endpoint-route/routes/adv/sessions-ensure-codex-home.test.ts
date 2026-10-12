@@ -96,7 +96,7 @@ let resumableSessions: (req: Request) => Promise<Response>;
 beforeAll(async () => {
   const routes = (await import('./sessions')).default;
   const db = await import('@papercusp/db-org');
-  vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: {} } as never);
+  vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: {} } as ReturnType<typeof db.getOrgPg>);
   const route = routes.find((entry) => entry.path === '/adv/sessions/ensure-codex-home');
   if (!route) throw new Error('ensure-codex-home route is absent');
   ensureCodexHome = route.handler as typeof ensureCodexHome;

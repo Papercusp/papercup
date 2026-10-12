@@ -69,7 +69,7 @@ describe('getFeedbackProd expert-routing settings', () => {
       { ownerId: 'right-owner', score: 0.9, evidence: [{ session_id: 'right-native', turn_idx: 3, sim: 0.9 }] },
     ];
     h.routeConsult.mockResolvedValueOnce({ verdict: 'routed', qualified: candidates,
-      snapshot: { candidates }, queryVec: null } as never);
+      snapshot: { candidates }, queryVec: null } as Awaited<ReturnType<typeof import('./relevance-router').routeConsult>>);
     h.observeNativeConsultSource.mockImplementationOnce(async () => ({ ownerId: 'wrong-owner', eligible: false,
       sessionId: null, evidenceSessions: ['wrong-native'], backend: null, state: 'unknown', reason: 'evidence session ownership changed' }));
     h.observeNativeConsultSource.mockImplementationOnce(async () => ({ ownerId: 'right-owner', eligible: true,

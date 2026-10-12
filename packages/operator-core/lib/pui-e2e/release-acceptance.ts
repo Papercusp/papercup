@@ -44,14 +44,25 @@ export function nativeApprovalTurnSettled(
   events: readonly SuSessionEvent[], turnId: string, hasPendingCard: boolean,
 ): boolean {
   if (hasPendingCard) return false;
-  const lifecycle = events.findLast((event) => event.type === 'lifecycle');
+  const lifecycle = findLastSessionEvent(events, (event) => event.type === 'lifecycle');
   if (lifecycle?.type !== 'lifecycle') return false;
   if (lifecycle.state === 'failed' || lifecycle.state === 'ended') return true;
-  const reply = events.findLast((event) => event.type === 'transcript'
+  const reply = findLastSessionEvent(events, (event) => event.type === 'transcript'
     && event.phase === 'completed' && event.role === 'assistant'
     && event.channel === 'text' && event.turnId === turnId);
   return lifecycle.state === 'waiting-for-owner' && reply !== undefined
     && lifecycle.sequence > reply.sequence;
+}
+
+// Array.prototype.findLast is ES2023 and outside this program's lib, so walk backwards.
+function findLastSessionEvent(
+  events: readonly SuSessionEvent[], predicate: (event: SuSessionEvent) => boolean,
+): SuSessionEvent | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event !== undefined && predicate(event)) return event;
+  }
+  return undefined;
 }
 
 /** Reject an incomplete installed-product invocation before starting its database or PTY. */

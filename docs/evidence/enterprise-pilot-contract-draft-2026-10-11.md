@@ -4,6 +4,10 @@
 
 Status: **prepared for buyer discovery; not an approved pilot or a completed P-003**. Avi's continuation directive authorizes engineering work through verified shipment; it supplies no customer interview, customer acceptance, certification, contractual approval or funded customer allowance. P-002 remains a prerequisite. No prospect has been contacted through this work.
 
+12 October continuation: roadmap D-008 selects the support-to-engineering handoff, Slack, one allowlisted workspace and current-build qualification as the internal engineering profile. Avi's full typed direction is `session_turn:codex:01a130a1-42a3-74a3-bf78-e6ae93d51d07:18` (file-backed origin unknown/unenrolled). Independent source preparation proceeds under WI-6554700010009188; actual buyer discovery, IdP setup, trial, legal/security approval and final qualification remain required. Strategy-choice waiting no longer parks engineering preparation.
+
+The first identity unit reuses the existing signed WorkOS receipt, ordered entity cursor, `external_identities`, local membership and session-closure surfaces. Directory bindings use provider `workos-dsync` and the JSON tuple `[organization_id,directory_id,directory_user_id]`; an approved group binding is the local identity profile's `authorized_directory_groups` array. Provider emails, names and roles do not bind or grant access. Binding administration/setup is still full P-004 work; this preparatory adapter acts only on already bound identities and closes the matching organization membership's sessions.
+
 Authority: roadmap Decisions D-002, D-003, D-006 and D-007. Source continuation: `session_turn:codex:01a12cd3-b523-79e0-a48b-f6e045265f67:8`. The [buyer-discovery packet](enterprise-buyer-discovery-packet-2026-10-09.md) and [capability/reuse census](enterprise-capability-reuse-census-2026-10-09.md) remain the evidence inputs. This document adds a concrete implementation and qualification contract without closing discovery or changing the roadmap's requirements, dependency graph or acceptance rubric.
 
 ## Product shaping and proposed first journey

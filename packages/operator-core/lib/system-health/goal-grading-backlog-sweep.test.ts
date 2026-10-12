@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import type { GoalGradingBacklogInput } from '../goal-grading-backlog';
 import {
+  goalGradingBacklogAlarmKey,
   goalGradingBacklogConditionKey,
   runGoalGradingBacklogSweepOnce,
   type GoalGradingBacklogGoal,
@@ -59,6 +60,9 @@ function deps(overrides: Partial<GoalGradingBacklogSweepDeps> = {}): GoalGrading
     resolveCleared: vi.fn(async () => 0),
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
+    readGoal: vi.fn(async goal => goal),
+    readOpenConditionKeys: vi.fn(async () => []),
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     ...overrides,
   };
 }
@@ -151,6 +155,85 @@ describe('runGoalGradingBacklogSweepOnce', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('opens durable per-workspace goal episodes before legacy coalescing and failure', async () => {
+    const foreign = { ...BACKLOG, workspaceId: 'other:workspace' };
+    const order: string[] = [];
+    const d = deps({ readGoals: async () => [BACKLOG, foreign],
+      rail: { broadcast: async event => {
+        expect(event.oneShot).toBe(true); order.push(event.conditionKey!); return true;
+      } },
+      escalate: vi.fn(async () => { order.push('legacy'); throw new Error('legacy unavailable'); }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await runGoalGradingBacklogSweepOnce(sql, d);
+      expect(out).toMatchObject({ alerting: 2, failed: 2 });
+      expect(order).toEqual([goalGradingBacklogAlarmKey(BACKLOG), 'legacy', goalGradingBacklogAlarmKey(foreign), 'legacy']);
+      const coalesced = deps({ escalate: async () => ({ coalesced: true }) });
+      await runGoalGradingBacklogSweepOnce(sql, coalesced);
+      expect(coalesced.rail!.broadcast).toHaveBeenCalledTimes(1);
+      expect(coalesced.wakeGrader).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('recovers a durable episode after restart only from exact scoped healthy measurements', async () => {
+    const key = goalGradingBacklogAlarmKey(BACKLOG);
+    const d = deps({ readGoals: async () => [], readOpenConditionKeys: async () => [key],
+      readInput: async goal => healthyInput(goal) });
+    await runGoalGradingBacklogSweepOnce(sql, { ...d });
+    expect(d.readGoal).toHaveBeenCalledWith(BACKLOG);
+    expect(d.rail!.resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'goal-grading-backlog-watchdog recovered' });
+    expect(d.resolveCleared).toHaveBeenCalledWith(BACKLOG);
+  });
+
+  it.each(['missing', 'foreign', 'throw', 'mismatched-input', 'invalid-activity', 'invalid-card', 'invalid-threshold'])(
+    'preserves durable conditions for %s recovery evidence', async kind => {
+      const key = goalGradingBacklogAlarmKey(BACKLOG);
+      const d = deps({ readGoals: async () => [], readOpenConditionKeys: async () => [key],
+        readGoal: async goal => {
+          if (kind === 'missing') return null;
+          if (kind === 'foreign') return { ...goal, workspaceId: 'other' };
+          if (kind === 'throw') throw new Error('goal read unavailable');
+          return goal;
+        },
+        readInput: async goal => ({ ...healthyInput(goal),
+          ...(kind === 'mismatched-input' ? { goalId: 'other' } : {}),
+          ...(kind === 'invalid-activity' ? { activityMs: [NaN] } : {}),
+          ...(kind === 'invalid-card' ? { cards: [{ windowStartMs: NaN, windowEndMs: NOW, createdMs: NOW, final: true }] } : {}),
+          ...(kind === 'invalid-threshold' ? { thresholds: { maxUngradedHours: NaN } } : {}),
+        }) });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await runGoalGradingBacklogSweepOnce(sql, d);
+        expect(d.rail!.resolve).not.toHaveBeenCalled();
+        expect(d.resolveCleared).not.toHaveBeenCalled();
+      } finally { warn.mockRestore(); }
+    });
+
+  it('ignores malformed durable identities and preserves episodes on failed ledger reads or disabled flags', async () => {
+    const d = deps({ readGoals: async () => [], readOpenConditionKeys: async () => [
+      'alarm:goal-grading-backlog:%', 'alarm:goal-grading-backlog:%5B%22ws%22%5D',
+      'alarm:goal-grading-backlog:%5B%22%22%2C%22goal%22%5D', 'alarm:other:goal',
+    ] });
+    await runGoalGradingBacklogSweepOnce(sql, d);
+    expect(d.readGoal).not.toHaveBeenCalled();
+    expect(d.rail!.resolve).not.toHaveBeenCalled();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runGoalGradingBacklogSweepOnce(sql, { ...d, readOpenConditionKeys: async () => { throw new Error('ledger unavailable'); } });
+      await runGoalGradingBacklogSweepOnce(sql, { ...d, flagEnabled: async () => false });
+      expect(d.rail!.resolve).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('contains condition delivery failure and still wakes the legacy live grader', async () => {
+    const d = deps({ rail: { broadcast: async () => { throw new Error('condition rail unavailable'); } } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await runGoalGradingBacklogSweepOnce(sql, d)).toMatchObject({ escalated: 1, wokeGrader: 1, failed: 0 });
+    } finally { warn.mockRestore(); }
   });
 });
 

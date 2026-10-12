@@ -133,8 +133,9 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(projected.description).toContain("`session:'self'` spans your respawn chain");
     expect(projected.description).toContain('evidence-only judges may read only self.');
     expect(projected.description).toContain('A multi-session self window has `session_id` null');
-    expect(readModule.default.guidance.returns).toContain('session_ids? (sessions represented in a self window)');
-    expect(readModule.default.guidance.returns).toContain('each turn ref identifies its source session');
+    // toContain rejects an undefined receiver, so a missing guidance block still fails.
+    expect(readModule.default.guidance?.returns).toContain('session_ids? (sessions represented in a self window)');
+    expect(readModule.default.guidance?.returns).toContain('each turn ref identifies its source session');
   });
 
   it('advertises an object result and preserves all rows in structuredContent', async () => {

@@ -4,7 +4,8 @@
  * newest settled card while the grader filed nothing for ~16h, and nothing alerted.
  */
 import { describe, expect, it } from 'vitest';
-import { classifyGoalGradingBacklog } from './goal-grading-backlog';
+import type { Sql } from 'postgres';
+import { classifyGoalGradingBacklog, readGoalGradingBacklogInput } from './goal-grading-backlog';
 
 const H = 3600_000;
 const T0 = Date.parse('2026-10-06T00:00:00.000Z');
@@ -93,4 +94,35 @@ describe('classifyGoalGradingBacklog', () => {
     });
     expect(v.alerts).toEqual(['grading-backlog', 'grader-idle']);
   });
+});
+
+describe('readGoalGradingBacklogInput', () => {
+  it('preserves exact workspace/goal scope and real card coverage in the existing reader', async () => {
+    const calls: Array<{ query: string; values: unknown[] }> = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join(' '); calls.push({ query, values });
+      return query.includes('tool_invocations') ? [{ hour: new Date(T0), owner: 'holder' }] : [{
+        ws: new Date(T0).toISOString(), we: new Date(T0 + H).toISOString(),
+        created_ts: String(T0 + H), provisional: false, created_by: 'grader',
+      }];
+    }) as unknown as Sql;
+    const input = await readGoalGradingBacklogInput({ workspaceId: 'workspace', goalId: 'goal', nowMs: T0 + 2 * H }, { sql });
+    expect(classifyGoalGradingBacklog(input)).toMatchObject({ healthy: true, ungradedActiveHours: 0 });
+    expect(calls[0].values.slice(0, 2)).toEqual(['workspace', 'goal']);
+    expect(calls[0].query).toContain("goal_actor_class = 'holder-agent'");
+    expect(calls[1].values[0]).toBe('workspace');
+    expect(calls[1].query).toContain("lane = 'observation'");
+  });
+
+  it.each(['absent-window', 'invalid-window', 'reversed-window', 'invalid-created'])(
+    'refuses %s rather than dropping card evidence and declaring recovery', async kind => {
+      const sql = (async (strings: TemplateStringsArray) => strings.join(' ').includes('tool_invocations')
+        ? [{ hour: new Date(T0), owner: 'holder' }]
+        : [{ ws: kind === 'absent-window' ? null : kind === 'invalid-window' ? 'invalid' : new Date(T0).toISOString(),
+          we: new Date(T0 + (kind === 'reversed-window' ? -H : H)).toISOString(),
+          created_ts: kind === 'invalid-created' ? 'invalid' : String(T0 + H),
+          provisional: false, created_by: 'grader' }]) as unknown as Sql;
+      await expect(readGoalGradingBacklogInput({ workspaceId: 'workspace', goalId: 'goal', nowMs: T0 + 2 * H }, { sql }))
+        .rejects.toThrow('Incomplete goal grading card measurement');
+    });
 });

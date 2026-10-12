@@ -1949,12 +1949,15 @@ async function classifyOwnerNativeSessionUnshared(opts: {
   try {
     const classifyRows = async (sql: ReturnType<typeof getOrgPg>['sql']): Promise<OwnerNativeSessionClassification> => {
       let rows: OwnerNativeSessionRow[];
-      if (opts.advSessionId != null) {
+      // Capture before the closure: TS does not carry the `!= null` narrowing of a
+      // property access into a lazily-invoked callback.
+      const advSessionId = opts.advSessionId;
+      if (advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
         rows = await traceNamedQueryStage('native-session-verifier-owner-row-lookup', () => sql<OwnerNativeSessionRow[]>`
           SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
-           WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
+           WHERE id = ${advSessionId} AND coord_owner_id = ${opts.ownerId}
         `);
         if (rows.length === 0) {
           return { binding: 'foreign', boundSessionId: null, advSessionId: null };

@@ -1407,11 +1407,14 @@ export function injectIntoHostWithConfirmation(
      * deliberately redundant with ownerId/deliveryId so the receiving host can
      * reject any mutated or cross-owner operation before it recycles a child.
      * Older hosts ignore this additive v1 field; callers must require the
-     * `quota-recovery` capability before sending it. */
+     * `quota-recovery` capability before sending it. `cause` is diagnostic only:
+     * the host (psu-pty-host.mjs decodeQuotaRecovery) maps anything but 'auth'
+     * to 'quota'. */
     quotaRecovery?: {
       operationId: string;
       ownerId: string;
       startedAtMs: number;
+      cause?: 'quota' | 'auth';
     };
   },
   timeoutMs = 2000,
@@ -1441,6 +1444,7 @@ export function injectIntoHostWithConfirmation(
       operationId: string;
       ownerId: string;
       startedAtMs: number;
+      cause?: 'quota' | 'auth';
     };
   } = {
     v: 1,

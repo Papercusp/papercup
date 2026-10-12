@@ -1420,6 +1420,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/content-lint-runner.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/gate-liveness-sentinel.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/gate-liveness-sentinel.mts (plan green-main-cycle-time-2026-10-08 P-023): the out-of-operator red-gate liveness alarm, one tick per systemd timer fire. Its only start is ONE awaited `execFile(file, args, { cwd: ROOT, timeout: timeoutMs, ... })` used for two alarm deliveries — the mcp-call notifications:send_owner client (90 s) and notify-send (15 s) — at most once each per tick, and only while a breach is open. It must stay runnable when the operator and productive capacity are down, because that outage is exactly what it reports; it detaches nothing and holds nothing after exit. Pinned by matchesSource to that one timeout-bounded start.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
+        /\bexecFile\(file, args, \{ cwd: ROOT, timeout: timeoutMs\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/gen-agent-env.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

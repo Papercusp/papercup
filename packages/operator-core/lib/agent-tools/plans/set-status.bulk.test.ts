@@ -312,7 +312,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
   });
 
   it('a busy lock maps to that item\'s { ok:false, error:"busy" } without throwing', async () => {
-    lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner_label: 'o', intent: 'i', expires_ts: 1 }] } as never);
+    lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner: 'o', owner_label: 'o', intent: 'i', expires_ts: new Date(1), holder_snapshot: null }] });
     const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
     expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
     expect(b.counts).toEqual({ ok: 0, failed: 1 });

@@ -39,17 +39,20 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const temporarySqlDirs: string[] = [];
 
+/** The resolver `resolveReservationTarget` injects — i.e. `resolveScriptPgUrl`'s shape. */
+type PgUrlResolution = ReturnType<NonNullable<Parameters<typeof resolveReservationTarget>[0]>>;
+
 describe('migration reservation target binding (EI-25452541884750444)', () => {
-  const discovered = {
+  const discovered: PgUrlResolution = {
     url: 'postgresql://harness_admin:private-secret@127.0.0.1:23325/papercusp',
     source: 'discovery',
-    envLocal: { exists: false, applied: [], skipped: null },
+    envLocal: { file: join(REPO_ROOT, 'apps/operator/.env.local'), exists: false, present: [], applied: [], skipped: null },
   };
 
   it('uses the operator env root and refuses discovery-only targets', () => {
     let root: string | undefined;
     expect(() => resolveReservationTarget((opts) => {
-      root = opts.root;
+      root = opts?.root;
       return discovered;
     })).toThrow(/explicitly configured operator database target/);
     expect(root).toBe(join(REPO_ROOT, 'apps/operator'));

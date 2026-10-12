@@ -7,4 +7,10 @@ export function loaderIdentity(value?: string): {
     switches: string[];
 };
 export function startupTraceEnv(env: any): any;
-export function observeForkStartup(child: any, emit: any, now?: () => number): () => void;
+/**
+ * @param {any} child - a forked child process (its `send` is wrapped in place).
+ * @param {(row: Record<string, unknown>) => void} emit - receives one diagnostic row per startup event.
+ * @param {() => number} [now]
+ * @returns {() => void} stops observing.
+ */
+export function observeForkStartup(child: any, emit: (row: Record<string, unknown>) => void, now?: () => number): () => void;

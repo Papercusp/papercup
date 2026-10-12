@@ -140,7 +140,7 @@
           "normalizedHash": "dff2b2e0276adf2f744832a6d2e71d0a38fc9224b985067dc528ad5e036284c1",
           "protocolVersion": 2,
           "persistenceProof": {
-            "nativeRef": "/home/marsh-office/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
+            "nativeRef": "~/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
             "persisted": true,
             "renderedHash": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242"
           }
@@ -155,7 +155,7 @@
     ]
   },
   "native": {
-    "path": "/home/marsh-office/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
+    "path": "~/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
     "prefixBytes": 883969,
     "prefixSha256": "829bd253ac2d4c0f8ef050a8a56ce9e0a6caca678cbae28a54d75f80d7c07e60",
     "nativeSessionFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
@@ -1509,8 +1509,8 @@
       }
     ],
     "failedLogs": [
-      "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-1709b24b-8d78-2239739-1791763321349.log",
-      "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-c4f7f29b-deed-2239739-1791763333271.log"
+      "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-1709b24b-8d78-2239739-1791763321349.log",
+      "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-c4f7f29b-deed-2239739-1791763333271.log"
     ]
   },
   "openAcceptance": [

@@ -171,7 +171,7 @@ describe('private customer loop port composition', () => {
 
   it('claims only native message turns and sanitizes private route errors', async () => {
     const f = await fixture();
-    const handleNativeRequest = vi.fn(async () => { throw new Error('private-secret'); });
+    const handleNativeRequest = vi.fn(async (): Promise<Response> => { throw new Error('private-secret'); });
     const handler = createHostedCustomerChannelHttpHandler({ workspaceId: 'vm-local-workspace',
       customerWorkspaceId: 'customer-workspace', projectDir: project, transform: f.transform,
       lookupTool: () => f.tool, dispatchDeps: {}, createModelPort: f.modelFactory, handleNativeRequest });
@@ -190,7 +190,9 @@ describe('private customer loop port composition', () => {
       { method: 'POST', body: JSON.stringify({ engine: 'loop' }) }), context);
     expect(response?.status).toBe(403);
     expect(await response?.text()).toBe('{"error":"hosted_native_loop_unavailable"}');
-    handleNativeRequest.mockResolvedValue(undefined as never);
+    // Deliberate contract violation: the injected handler resolves a non-Response value.
+    const nonResponse: unknown = undefined;
+    handleNativeRequest.mockResolvedValue(nonResponse as Response);
     const malformed = await handler(new Request('http://127.0.0.1/api/harness/h/agent-chats/c/messages',
       { method: 'POST', body: JSON.stringify({ engine: 'loop' }) }), context);
     expect(malformed?.status).toBe(403);

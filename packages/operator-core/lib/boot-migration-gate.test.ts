@@ -10,13 +10,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BootMigrateResult } from './db-boot-migrate';
 
-const notifyAttention = vi.fn(async () => {});
-const broadcastSevereEvent = vi.fn(async () => true);
-const broadcastSevereEventResolved = vi.fn(async () => true);
-vi.mock('./attention-notify', () => ({ notifyAttention: (...a: unknown[]) => notifyAttention(...(a as [])) }));
+// Typed with the real signatures so `mock.calls[n][0]` is the real input type
+// (an untyped `vi.fn(async () => {})` records calls as the empty tuple `[]`).
+type NotifyAttention = typeof import('./attention-notify').notifyAttention;
+type SevereEventBroadcastModule = typeof import('./severe-event-broadcast');
+const notifyAttention = vi.fn<NotifyAttention>(async () => {});
+const broadcastSevereEvent = vi.fn<SevereEventBroadcastModule['broadcastSevereEvent']>(async () => true);
+const broadcastSevereEventResolved = vi.fn<SevereEventBroadcastModule['broadcastSevereEventResolved']>(async () => true);
+vi.mock('./attention-notify', () => ({ notifyAttention: (...a: Parameters<NotifyAttention>) => notifyAttention(...a) }));
 vi.mock('./severe-event-broadcast', () => ({
-  broadcastSevereEvent: (...a: unknown[]) => broadcastSevereEvent(...(a as [])),
-  broadcastSevereEventResolved: (...a: unknown[]) => broadcastSevereEventResolved(...(a as [])),
+  broadcastSevereEvent: (...a: Parameters<SevereEventBroadcastModule['broadcastSevereEvent']>) => broadcastSevereEvent(...a),
+  broadcastSevereEventResolved: (...a: Parameters<SevereEventBroadcastModule['broadcastSevereEventResolved']>) =>
+    broadcastSevereEventResolved(...a),
 }));
 
 import {

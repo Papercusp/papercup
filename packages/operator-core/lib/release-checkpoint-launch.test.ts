@@ -150,7 +150,8 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
     // green-checkpoint.ts's combined stdout+stderr feeds the filter, whose OWN stdout is
     // what lands in the file — never a raw, unfiltered write straight from the CLI.
-    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp.log");
+    expect(inner).toContain("2>&1 | setsid --wait sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp.log");
+    expect(inner).toMatch(/^set -o pipefail;/);
     const csIdx = inner.indexOf('green-checkpoint.ts');
     const sedIdx = inner.indexOf('sed -u');
     const redirectIdx = inner.lastIndexOf('> /tmp/cp.log');
@@ -175,7 +176,7 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
 
   it('applies through the per-run-log path too (the run log, not just the stable symlink target)', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, '/tmp/cp-RUN.log').at(-1)!;
-    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp-RUN.log");
+    expect(inner).toContain("2>&1 | setsid --wait sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp-RUN.log");
   });
 });
 

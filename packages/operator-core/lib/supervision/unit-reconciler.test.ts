@@ -1137,7 +1137,7 @@ describe('censusUnregisteredFailedUnits (unregistered crash-loop reporting)', ()
         `Id=${unit}\nLoadState=loaded\nTransient=${transient}\nNRestarts=${getRestarts()}`,
       ).join('\n\n');
     });
-    return { execUser, notify: vi.fn(async () => {}) };
+    return { execUser, notify: vi.fn<ReconcilerDeps['notify']>(async () => {}) };
   }
 
   it('pages once when an unregistered service NRestarts rises by three within five minutes, then re-arms after the episode settles', async () => {

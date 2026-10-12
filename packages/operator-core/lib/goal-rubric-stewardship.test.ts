@@ -60,6 +60,23 @@ describe('goal rubric stewardship read-only lookup', () => {
     expect(readers.rubric).toHaveBeenCalledWith('quality');
     expect(readers.seedableRubric).not.toHaveBeenCalled();
   });
+
+  it('reads cycle evidence without awaiting unused background-generation currentness', async () => {
+    readers.cards.mockImplementation(async (filter) => {
+      if (filter.includeGeneration !== false) {
+        throw new Error('Background-generation probe reached from stewardship projection');
+      }
+      return [baseline()];
+    });
+    const sql = vi.fn().mockResolvedValueOnce([{ id: 'EI-1', baseline: null }])
+      .mockResolvedValue([]) as unknown as Sql;
+    const result = await readGoalRubricStewardship({ workspaceId: 'isolated', goalId: 'goal-with-card' }, { sql });
+
+    expect(result.error).toBeNull();
+    expect(result.cycles).toHaveLength(1);
+    expect(result.cycles[0].scorecardRef).toBe('EI-1');
+    expect(readers.rubric).toHaveBeenCalledWith('quality');
+  });
 });
 
 const baseline = (): StewardshipCard => ({ issueId: 'EI-1', createdAt: '2026-10-09T10:00:00Z', createdBy: 'grader',

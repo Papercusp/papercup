@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
 import ContractSigningViews from './ContractSigningViews';
+// Radix Select portals are noise here — a native stand-in with the same contract keeps options + onChange routing assertable.
+vi.mock('@/app/harness/Select',()=>({Select:({value,onChange,options,ariaLabel,placeholder}:{value:string;onChange:(v:string)=>void;options:Array<{value:string;label:string}>;ariaLabel?:string;placeholder?:string})=>(
+  <select aria-label={ariaLabel} value={value} onChange={e=>onChange(e.target.value)}>{placeholder?<option value="">{placeholder}</option>:null}{options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select>)}));
 const offer:HiringView['offers'][number]={workspaceId:'ws',daoSlug:'dao',offerId:'offer',roleId:'role',personId:'PER-candidate',authoredBy:'PER-author',approvalsRequired:1,approvedBy:['PER-reviewer'],state:'approved',preview:null,
   terms:{engagementType:'employee',jurisdiction:'US-DE',employmentLike:false,pay:{amount:'5000',currency:'USD',cadence:'monthly'},equity:{shares:1000,vestingDays:1460,cliffDays:365,startRule:'hire_passed',policyVersion:2}}};
 const templates=[{templateKey:'employment',documentKind:'employment-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Employment agreement',latestVersion:3},{templateKey:'equity',documentKind:'equity-grant-agreement',engagementType:'employee',jurisdiction:'US-DE',title:'Equity agreement',latestVersion:2},
@@ -15,7 +18,10 @@ describe('Contract signing Workbench',()=>{
   it('uses only matching registry versions and sends references, company person and date without editable offer terms',async()=>{
     show();const form=await screen.findByRole('form',{name:'Generate contract'});
     expect(screen.queryByText('Unrelated agreement · v1')).toBeNull();
+    expect((screen.getByRole('button',{name:'Generate contract'})as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('option',{name:'Candidate'})).toBeNull();
     fireEvent.change(screen.getByLabelText('Company countersigner'),{target:{value:'PER-company'}});
+    expect((screen.getByRole('button',{name:'Generate contract'})as HTMLButtonElement).disabled).toBe(false);
     fireEvent.change(screen.getByLabelText('Start date'),{target:{value:'2026-11-01'}});fireEvent.submit(form);
     await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
     const call=fetcher.mock.calls.find(c=>c[1]?.method==='POST')!;

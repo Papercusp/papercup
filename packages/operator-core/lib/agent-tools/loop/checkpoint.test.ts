@@ -268,6 +268,7 @@ const {
   CARRY_ROW_ID_MAX,
   shortCarryHash,
   splitCarryNoteChecks,
+  splitCarryNoteWalls,
   withCarryNoteChecks,
   withCarryNoteWalls,
 } = await import('../../carry-note');
@@ -1902,14 +1903,43 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
     const b = body(await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' }));
 
+    // WI-6554700010008923: the rows are returned ONCE, structured — not also inside `note`.
     expect(b).toMatchObject({
       ok: true,
       read: true,
-      note,
+      note: '## Next action\nresume the focused test',
       updatedAtMs,
       walls,
       checks,
     });
+    expect(b.note).not.toContain('## Checks');
+    expect(b.note).not.toContain('## Walls');
+    expect(b.noteRowsOmitted).toMatch(/walls\[\]\/checks\[\]/);
+    // Hash and length still describe the FULL stored note, so attestation is unaffected.
+    expect(b.contentHash).toBe(shortCarryHash(note));
+    expect(b.length).toBe(note.length);
+  });
+
+  it('read:true body written back as a raw note keeps every stored row (round-trip)', async () => {
+    const checks = [{ id: 'check-1', claim: 'gate is green', recheck: 'dev:pipeline_position' }];
+    const walls = [{ id: 'wall-1', claim: 'owner decision pending', recheck: 'coord:inbox' }];
+    const stored = withCarryNoteWalls(withCarryNoteChecks('## Next action\nresume the focused test', checks), walls);
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: stored, updatedAtMs: 1_787_546_123_000 });
+    const b = body(await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' }));
+
+    const merged = mergeCarryRows({ priorNote: stored, baseNote: b.note, hasNoteWrite: true });
+    expect(splitCarryNoteChecks(merged.note).checks).toMatchObject(checks);
+    expect(splitCarryNoteWalls(merged.note).walls).toMatchObject(walls);
+    expect(merged.droppedChecks).toEqual([]);
+    expect(merged.droppedWalls).toEqual([]);
+  });
+
+  it('read:true returns a note without rows byte-identically and adds no omission marker', async () => {
+    const note = '## Did\nplain note\n\n## Next action\nnothing carried';
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note, updatedAtMs: 1_787_546_123_000 });
+    const b = body(await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' }));
+    expect(b.note).toBe(note);
+    expect(b).not.toHaveProperty('noteRowsOmitted');
   });
 
   describe('WI-1826126 — a newer carry-note stranded under another harness', () => {
