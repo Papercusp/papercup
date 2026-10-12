@@ -29,6 +29,7 @@ import {
   type FrozenRepairBoundedLifeRecord,
   type FrozenRepairBoundedLifeState,
 } from './frozen-repair-bounded-life';
+import { FROZEN_REPAIR_CARRY_METADATA_KEY, nextFrozenRepairPendingCarry } from './frozen-repair-carry';
 
 export const FROZEN_REPAIR_BOUNDED_LIFE_METADATA_KEY = 'repair_queue_bounded_life';
 
@@ -122,9 +123,16 @@ export async function retireFrozenRepairQueueForBoundedLife(
       return { retired: false, refusal: fixerAlive === true ? 'live-fixer' : 'liveness-unknown' };
     }
     const nextState = frozenRepairBoundedLifeStateAfterRetire(state, record);
+    // P-010 (D-026): the retired queue's admitted fixes, carried into the next fresh cut.
+    const pendingCarry = nextFrozenRepairPendingCarry(
+      metadata?.[FROZEN_REPAIR_CARRY_METADATA_KEY],
+      current,
+      'bounded-life',
+      record.retiredAtMs,
+    );
     const rows = (await tx.unsafe(
       // Same teardown as the owner retire (P-013 convergence + repair inconclusive cleared),
-      // plus the bounded-life record in the SAME write.
+      // plus the bounded-life record and the pending carry in the SAME write.
       `UPDATE harness_shared.routines
           SET metadata = ((CASE
                 WHEN metadata #>> '{gate_health,inconclusive,status}'
@@ -133,7 +141,9 @@ export async function retireFrozenRepairQueueForBoundedLife(
                        #- '{gate_health,inconclusive}'
                 ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
               END) #- '{gate_health,convergence}')
-              || jsonb_build_object('${FROZEN_REPAIR_BOUNDED_LIFE_METADATA_KEY}', $7::jsonb),
+              || jsonb_build_object('${FROZEN_REPAIR_BOUNDED_LIFE_METADATA_KEY}', $7::jsonb)
+              || CASE WHEN $8::jsonb IS NULL THEN '{}'::jsonb
+                      ELSE jsonb_build_object('${FROZEN_REPAIR_CARRY_METADATA_KEY}', $8::jsonb) END,
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
@@ -151,6 +161,7 @@ export async function retireFrozenRepairQueueForBoundedLife(
         expectedQueue.updatedAtMs,
         expectedQueue.fixerSpawnId,
         JSON.stringify(nextState),
+        pendingCarry ? JSON.stringify(pendingCarry) : null,
       ],
     )) as Array<{ retired: boolean }>;
     return rows[0]?.retired === true

@@ -4433,7 +4433,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId],
+      // P-010: the 7th param is the pending carry; a queue that admitted nothing carries nothing.
+      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId, null],
     );
 
     const replacement = { ...retirableQueue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
@@ -4466,7 +4467,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId],
+      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId, null],
     );
   });
 

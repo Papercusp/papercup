@@ -88,6 +88,10 @@ import {
   type FrozenCandidateRepairQueueRead,
 } from '../../release/frozen-candidate-repair-queue';
 import {
+  FROZEN_REPAIR_CARRY_METADATA_KEY,
+  nextFrozenRepairPendingCarry,
+} from '../../release/frozen-repair-carry';
+import {
   buildIsolatedScopeArgv,
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
@@ -6693,18 +6697,28 @@ export async function retireFrozenCandidateRepairQueue(
       };
     }
 
+    // P-010 (green-main-cycle-time-2026-10-08#D-026): the retired queue's admitted fixes are
+    // carried into the next fresh cut; the record lands in the SAME write as the retire.
+    const pendingCarry = nextFrozenRepairPendingCarry(
+      lockedMetadata?.[FROZEN_REPAIR_CARRY_METADATA_KEY],
+      current,
+      'owner-retire',
+      Date.now(),
+    );
     const rows = (await tx.unsafe(
       // P-013: retiring the queue also clears `gate_health.convergence` — same reason as the
       // null-queue branch of writeFrozenCandidateRepairQueue. Both cycle-teardown paths must
       // clear it or one of them leaves shrink figures for a candidate that no longer exists.
       `UPDATE harness_shared.routines
-          SET metadata = (CASE
+          SET metadata = ((CASE
                 WHEN metadata #>> '{gate_health,inconclusive,status}'
                        IN ('repair-in-progress', 'repair-staging-mismatch')
                   THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
                        #- '{gate_health,inconclusive}'
                 ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-              END) #- '{gate_health,convergence}',
+              END) #- '{gate_health,convergence}')
+              || CASE WHEN $7::jsonb IS NULL THEN '{}'::jsonb
+                      ELSE jsonb_build_object('${FROZEN_REPAIR_CARRY_METADATA_KEY}', $7::jsonb) END,
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
@@ -6726,6 +6740,7 @@ export async function retireFrozenCandidateRepairQueue(
         expectedQueue.repairHead,
         expectedQueue.updatedAtMs,
         expectedQueue.fixerSpawnId,
+        pendingCarry ? JSON.stringify(pendingCarry) : null,
       ],
     )) as Array<{ retired: boolean }>;
     if (rows[0]?.retired === true) return { retired: true, current: null };
