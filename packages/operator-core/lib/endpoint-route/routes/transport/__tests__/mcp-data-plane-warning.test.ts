@@ -63,6 +63,77 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it.each([
+    ['line body', {
+      ok: true,
+      file_path: '/tmp/result.spill',
+      body: 'requested file content',
+      total_lines: 1,
+      start_line: 1,
+      end_line: 1,
+      has_more: false,
+    }],
+    ['empty file body', {
+      ok: true,
+      file_path: '/tmp/empty.txt',
+      body: '',
+      total_lines: 0,
+      start_line: null,
+      end_line: null,
+      has_more: false,
+    }],
+    ['empty byte page', {
+      ok: true,
+      file_path: '/tmp/empty.txt',
+      encoding: 'base64',
+      byte_offset: 0,
+      byte_length: 0,
+      total_bytes: 0,
+      eof: true,
+      data: '',
+      next_cursor: null,
+    }],
+    ['selected scratch content', {
+      ok: true,
+      file_path: '/tmp/result.spill',
+      reference: { uri: 'papercusp://scratch/result.spill' },
+      selected_indexes: [0],
+      total_content_items: 1,
+      content: [{ type: 'text', text: 'requested file content' }],
+    }],
+  ])('does not warn on a successful capability:read %s result', (_mode, structuredContent) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: 'capability:read result' }],
+      structuredContent,
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('does not warn on a populated sessions:read result with turns', () => {
+    const body = {
+      ok: true,
+      session_id: 'session-1',
+      turn_count: 1,
+      turns: [{ turn_idx: 0, speaker: 'assistant', text: 'stored transcript turn' }],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not warn for successful capability:git-evidence result envelopes', () => {
     const bodies = [
       {
