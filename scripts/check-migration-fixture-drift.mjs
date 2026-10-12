@@ -16,22 +16,22 @@
  * `store.integration.test.ts` red on `column "root_id" does not exist"`, from
  * migration 572, landed weeks after the fixture — EI-19359711978838614.)
  *
- * WHY THIS IS A TRIGGER, NOT A FULL SCHEMA-DIFF LINT:
+ * WHY THIS IS AN ADVISORY TRIGGER, NOT A GATE:
  *   A large fraction of these fixtures are INTENTIONALLY partial stubs by
  *   design — e.g. the hive-eval fixture hand-writes "only the columns the live
  *   reads query", forever, on purpose. A blanket "every migrated column must
  *   appear in every fixture" check would be close to 100% false-positive on
- *   this tree and could never be wired in as a gate (mirrors the caution in
- *   check-required-field-strands.mjs's own header: the class here is common and
- *   usually intentional). So this only fires on the DIFF a migration itself
- *   introduces: does the column you just added to a table already appear in
- *   some OTHER fixture that constructs that exact table? If so, that fixture
- *   used to be schema-complete for every column it names and just silently
- *   fell one column behind — a precise, low-noise signal, independent of
- *   whether the fixture is a deliberate stub (a deliberate stub was ALREADY
- *   missing unrelated columns before this migration ran, so it never matches:
- *   the table has to already appear with a full column list, sans exactly the
- *   new one).
+ *   this tree (mirrors the caution in check-required-field-strands.mjs's own
+ *   header: the class here is common and usually intentional). This check
+ *   narrows only by SCOPE: it looks at the columns a migration itself
+ *   introduces, never the whole schema. It does NOT tell a deliberate stub
+ *   apart from a fixture that fell one column behind: findFixtureGaps()
+ *   reports EVERY fixture that builds the table without the new column
+ *   (EI-25794636390257047). Read each hit as "review this file", not as proven
+ *   drift. That noise is why it stays advisory; its gate script
+ *   (lint:migration-fixture-drift:check) was retired in WI-6554700010009165.
+ *   Telling the two cases apart would need the table's full pre-migration
+ *   column list, which this script does not compute.
  *
  * Advisory by default (never blocks); --check exits 1 on any structural gap
  * found. No DB connection required — a fixture literally omitting a column the
