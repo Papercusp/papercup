@@ -118,6 +118,8 @@ export interface FirstPartyCallersQuery {
   readonly limit?: number;
   /** Reuse this worker's typed program for bounded interface diagnostics and static tool links. */
   readonly includeInterfaces?: boolean;
+  /** Already-authorized registry roots; every compiler source/config read is confined to this cohort. */
+  readonly authorizedReadRoots?: readonly string[];
   /**
    * Repository-relative files or directories to search (WI-10006543). Default: the
    * whole repository. A grep over `packages/x/lib apps/y/bin` asks about those roots
@@ -663,7 +665,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   const incomingScope = scope.scoped && op === 'impact' && (q.direction ?? 'downstream') === 'downstream';
   const declarationScope = (op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
   const tree = openScopedTsTree(q.ts, q.root, search.files,
-    declarationScope ? undefined : (_ts, _file, text) => text);
+    declarationScope ? undefined : (_ts, _file, text) => text, q.authorizedReadRoots);
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
