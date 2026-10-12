@@ -1,8 +1,26 @@
-import { expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { getTestPg } from '@papercusp/test-config/pg';
 import { getOrgPg } from '@papercusp/db-org';
 import { withIsolatedIntegrationSourceObserver } from '../test/isolated-integration-proof';
 import { FALLBACK_FLUSH_DELAY_MS, flushFallbackObservations } from './degradation/fallback-observations';
-import { noteSidecarFallback } from './fleet/git-via-sidecar';
+import { noteSidecarFallback, resetSidecarFallbackStatsForTest } from './fleet/git-via-sidecar';
+
+beforeEach(resetSidecarFallbackStatsForTest);
+afterEach(resetSidecarFallbackStatsForTest);
+
+async function expectPrivateDatabaseDropped(database: string) {
+  const admin = postgres(await getTestPg(), { max: 1, prepare: false, onnotice: () => {} });
+  try {
+    // Maintained cleanup can defer behind another fixture's drop. Measure its
+    // completion rather than treating cleanup's return as proof of removal.
+    await expect.poll(async () => {
+      const rows = await admin`SELECT datname FROM pg_database WHERE datname = ${database}`;
+      return rows.length;
+    }, { timeout: 30_000, interval: 100 }).toBe(0);
+    process.stdout.write(`PARENT_SOURCE_OBSERVER_CLEANUP ${JSON.stringify({ database, removed: true })}\n`);
+  } finally { await admin.end({ timeout: 5 }); }
+}
 
 it('owns delayed parent source-reader fallback observations in a private migrated database', async () => {
   const env = { ...process.env };
@@ -37,6 +55,7 @@ it('owns delayed parent source-reader fallback observations in a private migrate
   });
   expect(result.database).toBe(result.value);
   expect(result.flush.failed).toBe(0);
+  await expectPrivateDatabaseDropped(result.database);
   expect(process.env.HARNESS_DATABASE_URL).toBe(env.HARNESS_DATABASE_URL);
   expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(env.HARNESS_ADMIN_DATABASE_URL);
   expect(process.env.PAPERCUSP_PGBOUNCER).toBe(env.PAPERCUSP_PGBOUNCER);
@@ -46,10 +65,19 @@ it('owns delayed parent source-reader fallback observations in a private migrate
 
 it('drains the parent observer before restoring its environment when source capture throws', async () => {
   const adminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
-  await expect(withIsolatedIntegrationSourceObserver(async () => {
-    noteSidecarFallback('committed-tree-reader', new Error('parent-capture-failed-test'), undefined, 'rejected');
+  let database = '';
+  await expect(withIsolatedIntegrationSourceObserver(async sql => {
+    [{ database }] = await sql<{ database: string }[]>`SELECT current_database() AS database`;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      noteSidecarFallback('committed-tree-reader', new Error('parent-capture-failed-test'), undefined, 'rejected');
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(
+        '[committed-tree-reader] spawner-sidecar rejected; local execution avoided: parent-capture-failed-test'));
+    } finally { warning.mockRestore(); }
     throw new Error('source capture failed');
   })).rejects.toThrow('source capture failed');
+  expect(database).toMatch(/^org_/);
+  await expectPrivateDatabaseDropped(database);
   expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(adminUrl);
   // No deferred row may survive to resolve the restored ambient pool.
   expect(await flushFallbackObservations()).toMatchObject({ written: 0, failed: 0 });
