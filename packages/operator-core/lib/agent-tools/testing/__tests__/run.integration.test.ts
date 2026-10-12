@@ -1330,6 +1330,26 @@ describe('testing:run (integration)', () => {
     expect(parseRouterTerminalCompletion('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed')).toBeNull();
   });
 
+  it('returns the reportless Node zero-match diagnosis without replaying the router', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-node-zero-match-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const pattern = '^no-such-case$';
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      'ℹ tests 0', 'ℹ pass 0', 'ℹ fail 0', 'ℹ skipped 0',
+      `TEST_FILE_NAME_FILTER_NO_MATCH requested=1 matched=1 executedFiles=1 testsExecuted=0 status=failed reason=name-filter-matched-no-tests pattern=${JSON.stringify(pattern)}; refusing to report a verdict`,
+    ].join('\n');
+    const runRouterFn = vi.fn(async () => ({
+      code: 2, signal: null, timedOut: false, aborted: false, output,
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], testNamePattern: pattern },
+      { runRouterFn });
+    expect(out).toMatchObject({ ok: false, error: 'name_filter_no_match', skipped: 0, files: 1 });
+    expect(out).not.toHaveProperty('detachedRunId');
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
   it('recovers a completed Node-only run at the foreground deadline without replaying it', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-node-complete-');
     await mkdir(join(root, 'scripts'), { recursive: true });

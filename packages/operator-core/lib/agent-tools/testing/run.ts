@@ -2829,6 +2829,26 @@ function distillVitestSummary(
   };
 }
 
+/** A Node zero-match refusal has no JSON report and no executed-case summary. */
+export function reportlessNameFilterNoMatchRefusal(opts: {
+  output: string;
+  routerExit: number | null;
+  pattern?: string;
+  files: number;
+  runId: string;
+  root: string;
+}): ReturnType<typeof nameFilterNoMatchRefusal> | null {
+  if (opts.routerExit !== ROUTER_EXIT_ROUTE_ERROR || !opts.pattern) return null;
+  const text = opts.output.replace(ANSI_SGR, '');
+  const marker = /^TEST_FILE_NAME_FILTER_NO_MATCH requested=(\d+) matched=(\d+) executedFiles=(\d+) testsExecuted=0 status=failed reason=name-filter-matched-no-tests (.*)$/m.exec(text);
+  if (!marker || !marker[4]!.startsWith(`pattern=${JSON.stringify(opts.pattern)};`)) return null;
+  const counts = marker.slice(1, 4).map(Number);
+  if (opts.files < 1 || counts.some((count) => !Number.isSafeInteger(count) || count !== opts.files)) return null;
+  return nameFilterNoMatchRefusal({
+    pattern: opts.pattern, skipped: 0, files: opts.files, runId: opts.runId, root: opts.root,
+  });
+}
+
 /**
  * What a `no_report` refusal had to go on, so the next one can be diagnosed from
  * the result instead of re-run (EI-24734340317452188).
@@ -3651,6 +3671,11 @@ export async function runTestFilesCore(opts: {
       reportTexts = [];
     }
     if (reportTexts.length === 0) {
+      const unmatchedFilter = reportlessNameFilterNoMatchRefusal({
+        output: outcome.output, routerExit: outcome.code,
+        pattern: opts.testNamePattern, files: pathResolution.files.length, runId, root,
+      });
+      if (unmatchedFilter) return unmatchedFilter;
       // Registered node:test files run through scripts/test-files.mjs and do
       // not produce Vitest's JSON report. Their terminal TEST_FILE_RESULT
       // plus Node's numeric summary is still a complete, structured verdict;

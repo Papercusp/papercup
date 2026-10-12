@@ -11,6 +11,7 @@ import runTool, {
   nameFilterNoMatchRefusal,
   parseRouterTerminalCompletion,
   recoverCompletedRunAfterBudget,
+  reportlessNameFilterNoMatchRefusal,
   resolveDetachedHarnessSlug,
   selectTestFileRoot,
   testEvidenceRecoveryRunId,
@@ -36,6 +37,33 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  it('diagnoses reportless Node zero-match without inventing a verdict from unrelated output', () => {
+    const pattern = '^missing "case"$';
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      'ℹ tests 0', 'ℹ pass 0', 'ℹ fail 0', 'ℹ skipped 0',
+      `TEST_FILE_NAME_FILTER_NO_MATCH requested=1 matched=1 executedFiles=1 testsExecuted=0 status=failed reason=name-filter-matched-no-tests pattern=${JSON.stringify(pattern)}; refusing to report a verdict`,
+    ].join('\n');
+    const args = { output, routerExit: 2, pattern, files: 1, runId: 'node-zero-match', root: '/repo' };
+    expect(reportlessNameFilterNoMatchRefusal(args)).toMatchObject({
+      ok: false, error: 'name_filter_no_match', skipped: 0, files: 1, runId: args.runId,
+    });
+    for (const routerExit of [0, 1, null]) {
+      expect(reportlessNameFilterNoMatchRefusal({ ...args, routerExit })).toBeNull();
+    }
+    for (const changed of [
+      output.replace('testsExecuted=0', 'testsExecuted=1'),
+      output.replace('matched=1', 'matched=0'),
+      output.replace('executedFiles=1', 'executedFiles=0'),
+      output.replace('status=failed', 'status=passed'),
+      output.replace('TEST_FILE_NAME_FILTER_NO_MATCH', 'TEST_FILE_RESULT'),
+    ]) {
+      expect(reportlessNameFilterNoMatchRefusal({ ...args, output: changed })).toBeNull();
+    }
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, pattern: 'another case' })).toBeNull();
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, pattern: undefined })).toBeNull();
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, files: 2 })).toBeNull();
+  });
+
   it('reuses completed Node proof after its budget without needing PostgreSQL or a replay', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'completed-node-proof-'));
     const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
