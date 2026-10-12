@@ -49,8 +49,11 @@
  * sits claimed and unworkable until a human looks. Whether the agent behind it is recoverable or
  * abandoned changes the remedy, not the fact that one is needed.
  *
- * Hence: liveness NARROWS the population, held work JUSTIFIES the page. Neither alone is enough,
- * and paging on liveness alone is the mistake the counter-design already measured.
+ * Hence: liveness NARROWS the population, and actionable held work JUSTIFIES the page. Holds
+ * parked on an active typed external blocker are not actionable stranded work (D-010/P-010); the
+ * shared classifier excludes them from the count and keeps their IDs visible in the verdict.
+ * Neither liveness nor held work alone is enough, and paging on liveness alone is the mistake
+ * the counter-design already measured.
  *
  * WHY REUSE getLoopStatuses. `lastRealTurnAt` is a union over the journal and session_turns'
  * assistant turns (loop.ts ~line 2000) and has under-reported twice already (WI-6069 and its
@@ -98,6 +101,7 @@ import {
 import { hasAutonomyPosture } from './loop-dead-man';
 import { getLoopStatuses } from './loop';
 import { readEngineLoopRowsByOwner } from './engine-loop-standdown';
+import { isParkedOnExternalBlocker } from '../../scheduler/claim-spec-store';
 import { classifyEndedHolder, type SessionEndClassification } from '../../session-end-classifier';
 import {
   resolveFleetParkResumePath,
@@ -164,6 +168,7 @@ export function silentHaltWakeBody(
   verdict: SilentHaltVerdict,
   parkPath: FleetParkResumePath | null,
 ): string {
+  const blockerParkedIds = candidate.blockerParkedWorkItemIds ?? [];
   const park = parkPath?.parked
     ? [
         ``,
@@ -173,15 +178,21 @@ export function silentHaltWakeBody(
     : [];
   return [
     `You are an autonomous session that stopped taking turns while still HOLDING ` +
-      `${candidate.heldWorkItems} work-item(s): ${verdict.reason ?? 'no armed loop, no pending await — no wake source'}.`,
+      `${candidate.heldWorkItems} actionable work-item(s): ${verdict.reason ?? 'no armed loop, no pending await — no wake source'}.`,
+    ...(blockerParkedIds.length > 0
+      ? [`Held item(s) excluded from the stranded-work count because they are parked on active typed external blockers: ${blockerParkedIds.join(', ')}.`]
+      : []),
     ``,
     `This wake came from the system-side silent-halt sweep (${SILENT_HALT_WAKE_OWNER}), not from a`,
     `peer — there is no one to reply to. It is the ONE wake this disarm epoch gets: if you take no`,
     `real turn, the next sweep tick pages the human owner about the stranded work.`,
     ``,
     `NEXT, in this turn:`,
-    `  1. Re-read each held item's checkpoint (work_items:get) and either RESUME the work or`,
+    `  1. Re-read each actionable held item's checkpoint (work_items:get) and either RESUME the work or`,
     `     work_items:checkpoint + work_items:release what you cannot continue.`,
+    ...(blockerParkedIds.length > 0
+      ? [`     Keep the listed blocker-parked items visible with their typed blockers; do not count them as stranded work.`]
+      : []),
     `  2. Restore a real wake source before ending the turn: loop:arm { intervalSec, goal }`,
     `     (verify loop:status.active) or events:await { event } when blocked on a completion.`,
     `  3. If you deliberately stopped (loop:end), note that a clean wind-down releases held claims`,
@@ -206,11 +217,12 @@ export interface SilentHaltInput {
   /** The loop's own cadence, for the interval-relative staleness floor. */
   intervalSec: number | null;
   /**
-   * Non-terminal work-items this session still holds. ZERO means `unguarded-halt-rescue` owns
-   * the case (it wakes exactly the load-0 population) and this module must stay silent; only a
-   * HELD item makes the strand concrete enough to justify a human. See the header.
+   * Non-terminal, non-observation work-items this session holds, excluding rows parked on an
+   * active typed external blocker. ZERO means no actionable held work justifies this page.
    */
   heldWorkItems: number;
+  /** Held items excluded by D-010/P-010's shared typed-blocker predicate, retained for context. */
+  blockerParkedWorkItemIds?: readonly string[];
 }
 
 export interface SilentHaltVerdict {
@@ -258,11 +270,17 @@ export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
 
   // THE TERM THAT JUSTIFIES A PAGE. A load-0 halt is `unguarded-halt-rescue`'s case and it WAKES
   // that agent — strictly better than bothering a human, so this module must not double-report
-  // it. Only a HELD item makes the strand concrete: heartbeat-fresh means the dead-owner reaper
-  // will not reclaim it, and a session taking no turns will not advance it, so it is stuck
-  // whether the agent is recoverable OR abandoned. That is what makes this the one case here
-  // that does not depend on a distinction no available signal can make.
+  // it. Only actionable held work makes the strand concrete: active typed external-blocker parks
+  // are excluded by D-010/P-010, while every other held row keeps the original rule. For an
+  // actionable hold, heartbeat-fresh means the dead-owner reaper will not reclaim it, and a
+  // session taking no turns will not advance it, so it is stuck whether the agent is recoverable
+  // OR abandoned. That is what makes this the one case here that does not depend on a distinction
+  // no available signal can make.
   if (input.heldWorkItems <= 0) {
+    const blockerParkedIds = input.blockerParkedWorkItemIds ?? [];
+    if (blockerParkedIds.length > 0) {
+      return no(`holds-only-active-external-blockers (parked work items: ${blockerParkedIds.join(', ')})`);
+    }
     return no('holds-no-work (unguarded-halt-rescue wakes this case; nothing is stranded)');
   }
 
@@ -284,13 +302,20 @@ export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
   }
 
   const silentForMs = Math.max(turnAge ?? 0, inactiveFor ?? 0);
+  const blockerParkedIds = input.blockerParkedWorkItemIds ?? [];
+  const blockerParkedNote =
+    blockerParkedIds.length > 0
+      ? `; active external-blocker parks excluded: ${blockerParkedIds.join(', ')}`
+      : '';
   return {
     halted: true,
     reason:
       `autonomy posture registered, loop INACTIVE for ` +
       `${inactiveFor != null ? `${Math.round(inactiveFor / 60000)}m` : 'unknown'}, ` +
-      `no pending await, heartbeat fresh (${Math.round(input.heartbeatAgeMs / 1000)}s) but ` +
-      `${turnAge != null ? `no real turn in ${Math.round(turnAge / 60000)}m` : 'no real turn ever recorded'}`,
+      `no pending await, heartbeat fresh (${Math.round(input.heartbeatAgeMs / 1000)}s), ` +
+      `${input.heldWorkItems} actionable held work item(s), but ` +
+      `${turnAge != null ? `no real turn in ${Math.round(turnAge / 60000)}m` : 'no real turn ever recorded'}` +
+      blockerParkedNote,
     exemption: null,
     staleFloorMs: silentForMs > 0 ? staleFloorMs : staleFloorMs,
   };
@@ -305,8 +330,10 @@ export interface SilentHaltCandidate {
   heartbeatAgeMs: number | null;
   inactiveForMs: number | null;
   pendingAwaits: number;
-  /** Non-terminal, non-observation work-items this session still holds (`taken_by`). */
+  /** Non-terminal, non-observation actionable work-items this session still holds (`taken_by`). */
   heldWorkItems: number;
+  /** Held rows excluded because they are parked on active typed external blockers. */
+  blockerParkedWorkItemIds?: string[];
   modes: Array<{ mode: string }>;
   /** Fleet the session belongs to (presence row), for the park-contract framing. */
   fleetSlug?: string | null;
@@ -414,7 +441,6 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       fleet_slug: string | null;
       heartbeat_age_ms: string | number | null;
       inactive_for_ms: string | number | null;
-      held_work_items: string | number | null;
       modes: string[] | null;
     }>
   >`
@@ -431,13 +457,6 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
            p.fleet_slug,
            round(extract(epoch from (now() - p.heartbeat_at)) * 1000)     AS heartbeat_age_ms,
            round(extract(epoch from (now() - l.active_changed_at)) * 1000) AS inactive_for_ms,
-           -- lane <> 'observation' is load-bearing: work_items also holds agents' own turn-end
-           -- notes, which are never claimed work and would make every session look loaded.
-           (SELECT count(*)::int FROM harness_shared.work_items w
-             WHERE w.taken_by = l.owner_id
-               AND w.lane IS DISTINCT FROM 'observation'
-               AND w.status NOT IN ('done','dropped','passed','deprecated','resolved','closed'))
-                                                                           AS held_work_items,
            array_agg(DISTINCT m.mode)                                      AS modes
       FROM loops l
       JOIN harness_shared.agent_modes m
@@ -447,6 +466,37 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
      WHERE p.heartbeat_at > now() - make_interval(secs => ${SILENT_HALT_HEARTBEAT_FRESH_MS / 1000})
      GROUP BY l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
               p.fleet_slug, p.heartbeat_at, l.active_changed_at`;
+
+  if (rows.length === 0) return [];
+
+  // Read held rows once, then classify them with D-010/P-010's shared parser. SQL must not grow
+  // a second interpretation of which external blockers are active.
+  const ownerIds = [...new Set(rows.map((row) => row.owner_id))];
+  const heldRows = await sql<
+    Array<{
+      owner_id: string;
+      work_item_id: string;
+      status: string | null;
+      external_blockers: unknown;
+    }>
+  >`
+    /* silent-halt-held-work */
+    SELECT w.taken_by AS owner_id, w.feature_id AS work_item_id, w.status,
+           w.payload->'externalBlockers' AS external_blockers
+      FROM harness_shared.work_items w
+     WHERE w.taken_by = ANY(${ownerIds}::text[])
+       AND w.lane IS DISTINCT FROM 'observation'
+       AND w.status NOT IN ('done','dropped','passed','deprecated','resolved','closed')`;
+  const heldByOwner = new Map<string, { actionableCount: number; blockerParkedIds: string[] }>();
+  for (const held of heldRows) {
+    const current = heldByOwner.get(held.owner_id) ?? { actionableCount: 0, blockerParkedIds: [] };
+    if (isParkedOnExternalBlocker({ status: held.status, externalBlockers: held.external_blockers })) {
+      current.blockerParkedIds.push(held.work_item_id);
+    } else {
+      current.actionableCount += 1;
+    }
+    heldByOwner.set(held.owner_id, current);
+  }
 
   // The wake-source count comes from the ONE shared predicate (D-008 (1)), never re-derived here:
   // it drops the session's own inbox watcher (D-006), a self-held `work-item:done:<X>`, and an
@@ -458,18 +508,22 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
     sql,
   );
 
-  return rows.map((r) => ({
-    ownerId: r.owner_id,
-    workspaceId: r.workspace_id,
-    routineId: r.routine_id,
-    intervalSec: r.interval_sec == null ? null : Number(r.interval_sec),
-    heartbeatAgeMs: r.heartbeat_age_ms == null ? null : Number(r.heartbeat_age_ms),
-    inactiveForMs: r.inactive_for_ms == null ? null : Number(r.inactive_for_ms),
-    pendingAwaits: pending.get(r.owner_id) ?? 0,
-    heldWorkItems: Number(r.held_work_items ?? 0),
-    modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
-    fleetSlug: r.fleet_slug ?? null,
-  }));
+  return rows.map((r) => {
+    const held = heldByOwner.get(r.owner_id) ?? { actionableCount: 0, blockerParkedIds: [] };
+    return {
+      ownerId: r.owner_id,
+      workspaceId: r.workspace_id,
+      routineId: r.routine_id,
+      intervalSec: r.interval_sec == null ? null : Number(r.interval_sec),
+      heartbeatAgeMs: r.heartbeat_age_ms == null ? null : Number(r.heartbeat_age_ms),
+      inactiveForMs: r.inactive_for_ms == null ? null : Number(r.inactive_for_ms),
+      pendingAwaits: pending.get(r.owner_id) ?? 0,
+      heldWorkItems: held.actionableCount,
+      blockerParkedWorkItemIds: held.blockerParkedIds.sort(),
+      modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
+      fleetSlug: r.fleet_slug ?? null,
+    };
+  });
 }
 
 /**
@@ -549,6 +603,7 @@ export async function sweepSilentHalts(opts: {
       inactiveForMs: c.inactiveForMs,
       intervalSec: c.intervalSec,
       heldWorkItems: c.heldWorkItems,
+      blockerParkedWorkItemIds: c.blockerParkedWorkItemIds,
     });
 
     if (!verdict.halted) {

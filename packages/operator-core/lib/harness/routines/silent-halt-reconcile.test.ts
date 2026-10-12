@@ -88,6 +88,26 @@ describe('evaluateSilentHalt', () => {
     expect(evaluateSilentHalt(haltedInput({ heldWorkItems: 2 })).halted).toBe(true);
   });
 
+  it('active typed external-blocker holds alone do not justify a silent-halt page (D-010/P-010)', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 0,
+      blockerParkedWorkItemIds: ['WI-CREDENTIAL'],
+    }));
+    expect(v.halted).toBe(false);
+    expect(v.exemption).toContain('holds-only-active-external-blockers');
+    expect(v.exemption).toContain('WI-CREDENTIAL');
+  });
+
+  it('still pages on actionable held work and names coexisting blocker-parked IDs', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 1,
+      blockerParkedWorkItemIds: ['WI-CREDENTIAL'],
+    }));
+    expect(v.halted).toBe(true);
+    expect(v.reason).toContain('1 actionable held work item');
+    expect(v.reason).toContain('WI-CREDENTIAL');
+  });
+
   it('a stale heartbeat means the process is gone, not halted', () => {
     const v = evaluateSilentHalt(haltedInput({ heartbeatAgeMs: SILENT_HALT_HEARTBEAT_FRESH_MS + MIN }));
     expect(v.halted).toBe(false);
@@ -394,7 +414,7 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     const [owner, summary, body] = h.sendWakeMessage.mock.calls[0];
     expect(owner).toBe('su-halted');
     expect(summary).toBe(wakeMarkerSummary('su-halted', disarmEpochToken(now, 120 * MIN)));
-    expect(body).toMatch(/HOLDING 1 work-item/);
+    expect(body).toMatch(/HOLDING 1 actionable work-item/);
     expect(body).toMatch(/next sweep tick pages the human owner/);
     expect(h.fireWake).toHaveBeenCalledOnce();
     // Restart-safety ordering: the durable marker strictly precedes the wake fire.
@@ -594,7 +614,13 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
    * Drives the REAL default candidate read end to end against a routing fake: the candidate query
    * yields one AUTO session with its loop off, and `event_awaits` yields `awaitRows` for it.
    */
-  async function sweepWithAwaits(awaitRows: Array<Record<string, unknown>>, items: Array<Record<string, unknown>> = []) {
+  async function sweepWithAwaits(
+    awaitRows: Array<Record<string, unknown>>,
+    items: Array<Record<string, unknown>> = [],
+    heldItems: Array<Record<string, unknown>> = [
+      { owner_id: 'su-x', work_item_id: 'WI-BASE', status: 'open', external_blockers: null },
+    ],
+  ) {
     const fakeSql = ((strings: TemplateStringsArray) => {
       const text = strings.join('?');
       if (text.includes('WITH loops AS')) {
@@ -607,11 +633,11 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
             fleet_slug: null,
             heartbeat_age_ms: 30_000,
             inactive_for_ms: 120 * MIN,
-            held_work_items: 1,
             modes: ['auto'],
           },
         ]);
       }
+      if (text.includes('/* silent-halt-held-work */')) return Promise.resolve(heldItems);
       if (text.includes('harness_shared.event_awaits')) return Promise.resolve(awaitRows);
       if (text.includes('FROM harness_shared.work_items')) return Promise.resolve(items);
       return Promise.resolve([]);
@@ -657,6 +683,42 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
     expect(r.exempt['su-x']).toMatch(/pending-await x1/);
     expect(r.halted).toEqual([]);
   });
+
+  it.each([
+    { itemStatus: 'blocked', blockerStatus: 'active', shouldPark: true },
+    { itemStatus: 'needs-human', blockerStatus: 'active', shouldPark: true },
+    { itemStatus: 'needs-human', blockerStatus: 'cleared', shouldPark: false },
+    { itemStatus: 'wip', blockerStatus: 'active', shouldPark: false },
+  ])(
+    'applies D-010/P-010 to $itemStatus work with a $blockerStatus blocker',
+    async ({ itemStatus, blockerStatus, shouldPark }) => {
+      const r = await sweepWithAwaits([], [], [{
+        owner_id: 'su-x',
+        work_item_id: 'WI-CREDENTIAL',
+        status: itemStatus,
+        external_blockers: [{
+          kind: 'runtime',
+          capability: 'credential',
+          capabilitySource: 'explicit',
+          ref: 'credential:provider',
+          summary: 'Waiting for the credential provider',
+          status: blockerStatus,
+          createdAt: new Date(now).toISOString(),
+          createdBy: 'su-x',
+          updatedAt: new Date(now).toISOString(),
+        }],
+      }]);
+      expect(r.checked).toBe(1);
+      if (shouldPark) {
+        expect(r.halted).toEqual([]);
+        expect(r.exempt['su-x']).toContain('holds-only-active-external-blockers');
+        expect(r.exempt['su-x']).toContain('WI-CREDENTIAL');
+      } else {
+        expect(r.halted).toEqual(['su-x']);
+        expect(r.exempt).not.toHaveProperty('su-x');
+      }
+    },
+  );
 
   it('a host that needs a relaunch is NOT woken; it is paged at once with the HOST UNHEALTHY remedy', async () => {
     const h = sweepHarness([candidate()], haltedAs('su-halted'), {

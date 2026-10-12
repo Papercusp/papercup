@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,40 @@ describe('selected committed reader preparation closure', () => {
       selectedCommit: f.options.selectedCommit,
     } })).toThrow(/missing-closure.json/);
     expect(readFileSync(f.bundle, 'utf8')).toBe('export const host = 1;');
+  });
+
+  it.each(['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'dependencyFiles',
+    'externalResolutions', 'artifacts', 'schema', 'environment', 'sha256', 'metafileSha256'] as const)(
+    'refuses a missing %s pin before the builder has side effects', dimension => {
+      const f = fixture();
+      prepareBuilder(f, 'touch "$2.builder-started"\n');
+      delete (f.closure as Partial<CommittedReaderClosure>)[dimension]; f.save();
+      expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+        receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+        selectedCommit: f.options.selectedCommit,
+      } })).toThrow();
+      expect(existsSync(`${f.bundle}.builder-started`)).toBe(false);
+      expect(existsSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toBe(false);
+    });
+
+  it.each(['schema', 'environment'] as const)('refuses empty required %s before compilation', dimension => {
+    const f = fixture(); prepareBuilder(f, 'touch "$2.builder-started"\n');
+    f.closure[dimension] = {}; f.save();
+    expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+      receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+      selectedCommit: f.options.selectedCommit,
+    } })).toThrow();
+    expect(existsSync(`${f.bundle}.builder-started`)).toBe(false);
+  });
+
+  it.each(['sha256', 'metafileSha256'] as const)('refuses malformed %s before compilation', dimension => {
+    const f = fixture(); prepareBuilder(f, 'touch "$2.builder-started"\n');
+    f.closure[dimension] = 'unknown'; f.save();
+    expect(() => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { committedReader: {
+      receiptPath: f.options.receiptPath, sourceReceiptPath: f.options.sourceReceiptPath,
+      selectedCommit: f.options.selectedCommit,
+    } })).toThrow();
+    expect(existsSync(`${f.bundle}.builder-started`)).toBe(false);
   });
 
   it('retains independent preparation pins across the sanitized worker boundary and rejects receipt drift', () => {

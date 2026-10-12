@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import type { RouteContext } from '../define-route';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../../model-context-budget.mjs';
 
