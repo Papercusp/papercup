@@ -1135,6 +1135,223 @@
     ],
     "next": "Continue residual D006 direct/filesystem/native matrix and acceptance work. Do not replay this qualified case or settled proofs solely for HEAD. Preserve preflight correction's distinct scope."
   },
+  "d017FilesystemCommittedQualification": {
+    "priorArtifactSha256": "3a393a3174aba789e0ed1a870dc1644a2ab4f18189ddb7ab9d4f492adf5eb12e",
+    "evidencePlane": "committed-source-filesystem-vitest-maintained-copy-out-overlay",
+    "commitSha": "39152ae9b0a1f3fe45cc322f554094f84d49fc20",
+    "subjectPath": "packages/operator-core/lib/session-port/source.ts",
+    "testPath": "packages/operator-core/lib/session-port/source.test.ts",
+    "subjectSha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca",
+    "testSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+    "method": "Maintained lint-as-committed snapshot; real file descriptors and synchronous append/path replacement after fstat; symlink refusal; independent mutation-probe.sh copy-out overlay. No shared repository source mutation.",
+    "fullFile": {
+      "testRunId": 21160991,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "logPath": "/dev/shm/get-feedback-d017-filesystem-clean-20261012T2056.transcript.log",
+      "logSha256": "bc0fcf18aad4a4be9fb07d26d3df2684d95b80af300e72a247960d750845cfbe",
+      "sourceMapPath": "/dev/shm/get-feedback-d017-filesystem-clean-20261012T2056.sources.json",
+      "sourceMapSha256": "8d44765fc5d6325632121c80bcd251ed78ab79e0760e7bf3c7c5ec891e10d3b6"
+    },
+    "causalQualification": {
+      "symlink": {
+        "mutation": "s/ \\| fsConstants\\.O_NOFOLLOW//",
+        "mutantSha256": "27a5e09cd4ad2d41d1e18e913a7eea3d96299b130ae45aeb90d61b1462584631",
+        "baseline": {
+          "testRunId": 21161938,
+          "passed": 1,
+          "failed": 0,
+          "unselected": 12
+        },
+        "unchangedCopy": {
+          "testRunId": 21161947,
+          "passed": 1,
+          "failed": 0,
+          "unselected": 12
+        },
+        "mutant": {
+          "testRunId": 21161960,
+          "passed": 0,
+          "failed": 1,
+          "unselected": 12
+        },
+        "actualObservation": "Both one-case controls passed. Removing O_NOFOLLOW made the promise resolve with the symlink target bytes instead of rejecting ELOOP; source.test.ts:94:45 rejection assertion failed. Later target integrity assertions were not reached in this mutant.",
+        "verdict": "caught",
+        "probeExit": 0,
+        "guardExit": 1,
+        "mutantParse": "unchecked",
+        "assertionEvidence": "test-file-assertion-failure",
+        "subjectUnchanged": true,
+        "commandPath": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-symlink.command.json",
+        "commandSha256": "9c36749b4f6b9fe440bb4202ac4c0643db4b14bc9ec43aa29046f6a993370b4a",
+        "logPath": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-symlink.log",
+        "logSha256": "f04e2de52a8767902d7bfc050f9998a9017e9aeee282c06eaf8e7f590713b263",
+        "sourceMaps": {
+          "baseline": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-symlink-baseline.sources.json",
+            "sha256": "437df1fd8e651935f63512e91a5557e40c5312021fceef3a958cad6fda4ab634",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca",
+                "currentSha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          },
+          "copy-baseline": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-symlink-copy-baseline.sources.json",
+            "sha256": "437df1fd8e651935f63512e91a5557e40c5312021fceef3a958cad6fda4ab634",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca",
+                "currentSha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          },
+          "mutant": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-symlink-mutant.sources.json",
+            "sha256": "794466c3e0799111e6179fa0c3f2ae7fd019c3c44e71d9ef22ee3e20cc7b4066",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "27a5e09cd4ad2d41d1e18e913a7eea3d96299b130ae45aeb90d61b1462584631",
+                "currentSha256": "27a5e09cd4ad2d41d1e18e913a7eea3d96299b130ae45aeb90d61b1462584631"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          }
+        },
+        "descriptor": "Deployed-reader compatibility withheld mutation descriptors. Exact canonical receipt IDs and source hashes are retained; no descriptor linkage claimed."
+      },
+      "highwater": {
+        "mutation": "s/const highWaterBytes = stat\\.size;/const highWaterBytes = (await lstat(path)).size;/",
+        "mutantSha256": "dd309ebe0f3ef9608c8e783e53952ab4136d8a588b16b9a52fc99cab7283251d",
+        "baseline": {
+          "testRunId": 21161971,
+          "passed": 2,
+          "failed": 0,
+          "unselected": 11
+        },
+        "unchangedCopy": {
+          "testRunId": 21161979,
+          "passed": 2,
+          "failed": 0,
+          "unselected": 11
+        },
+        "mutant": {
+          "testRunId": 21161985,
+          "passed": 0,
+          "failed": 2,
+          "unselected": 11
+        },
+        "actualObservation": "Both two-case controls passed. Reading high-water via lstat(path) after descriptor fstat failed append at source.test.ts:66 (returned bytes included the later record) and replacement at:68 (path size24 versus opened source size22). Each mutant assertion was observed independently.",
+        "verdict": "caught",
+        "probeExit": 0,
+        "guardExit": 1,
+        "mutantParse": "unchecked",
+        "assertionEvidence": "test-file-assertion-failure",
+        "subjectUnchanged": true,
+        "commandPath": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-highwater.command.json",
+        "commandSha256": "1d1b1d14561894410fcc45bddff681ac0b4231ab65f1e6d548eae709931b6d40",
+        "logPath": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-highwater.log",
+        "logSha256": "dd12d85267bccc4e8a2488c29142a5099b3e1cb580082002860bf47af0a8bd84",
+        "sourceMaps": {
+          "baseline": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-highwater-baseline.sources.json",
+            "sha256": "437df1fd8e651935f63512e91a5557e40c5312021fceef3a958cad6fda4ab634",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca",
+                "currentSha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          },
+          "copy-baseline": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-highwater-copy-baseline.sources.json",
+            "sha256": "437df1fd8e651935f63512e91a5557e40c5312021fceef3a958cad6fda4ab634",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca",
+                "currentSha256": "1619ddc551709defaa18d628fbc6a25606393b6c7227303e8b84ac28ef8e09ca"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          },
+          "mutant": {
+            "path": "/dev/shm/get-feedback-d017-filesystem-mutation-20261012T2123-highwater-mutant.sources.json",
+            "sha256": "8b919b3eeae654acfe11724f8b88721a312ef527e38cb64d072ad6411a702d41",
+            "rows": 0,
+            "namedSources": [
+              {
+                "path": "packages/operator-core/lib/session-port/source.test.ts",
+                "sha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd",
+                "currentSha256": "ec01d8ccff73a05e75dd54614885c9878f0cf740619e9ee12a81c39a209344cd"
+              },
+              {
+                "path": "packages/operator-core/lib/session-port/source.ts",
+                "sha256": "dd309ebe0f3ef9608c8e783e53952ab4136d8a588b16b9a52fc99cab7283251d",
+                "currentSha256": "dd309ebe0f3ef9608c8e783e53952ab4136d8a588b16b9a52fc99cab7283251d"
+              }
+            ],
+            "status": "stable",
+            "reasons": []
+          }
+        },
+        "descriptor": "Deployed-reader compatibility withheld mutation descriptors. Exact canonical receipt IDs and source hashes are retained; no descriptor linkage claimed."
+      }
+    },
+    "limits": [
+      "Seven exact canonical receipt rows read independently; source defaults exclude mutation-probe browsing, so exact IDs or source:mutation-probe are required.",
+      "Stable named worker source capture is scoped. Full-file map has one captured row, focused map rows are empty; full import/config/main-process graph remains unknown.",
+      "The real filesystem changes are coordinated test controls, not a physical native actor or a proof of universal same-UID/process filesystem immutability. Hash/inode/link checks after successful reads are covered by passing controls; each mutant covers only its reached failing assertions.",
+      "No additional native matrix, original R6 cohort, acceptance or shipment credit. All prior artifact sections/checks and native/R6/rubric9/R7 residues remain unchanged."
+    ],
+    "next": "Continue actual D006/D017 native source isolation and remaining matrix acceptance, independent rubric9 review and exactR7 shipment. Do not replay this committed qualification solely for HEAD."
+  },
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }
