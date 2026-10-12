@@ -109,7 +109,6 @@ export const DISPOSITIONS = Object.freeze({
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
   ),
   'log-only-fallback|packages/operator-core/lib/agent-tools/operator/converse-prompt.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/agent-tools/plans/remote-seat-inventory.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/attention/reconcile-escalations.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/blueprint/blueprint-run-action.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts': migrate('P-013'),
@@ -139,7 +138,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts': na(
     'seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision',
   ),
-  'log-only-fallback|packages/operator-core/lib/issues-engineer.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/memory/bench/wi-6512-known-item-replay-cli.ts': NA_CLI,
   'log-only-fallback|packages/operator-core/lib/operator-sentinel-handoff-deps.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts': migrate('P-015'),
