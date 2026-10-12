@@ -789,6 +789,76 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect((prior.payload as Record<string, any>).toolFailureProbation.reporters).toEqual(['su-a']);
   });
 
+  it('keeps a timed-out capability:bash report separate from the legacy ECONNREFUSED row', async () => {
+    const priorReport: SuspectedToolFailure = {
+      toolName: 'capability:bash',
+      message: 'ECONNREFUSED: Unable to connect. Is the computer able to access the url?',
+      reproduced: true,
+    };
+    const timeoutReport: SuspectedToolFailure = {
+      toolName: 'capability:bash',
+      status: 'timed_out',
+      message: 'A read-only du summary of a home directory exceeded its 40000ms capability:bash wall clock. The returned result says the pc-heavy slot-acquired marker was not seen and hypothesizes it may have timed out queued, but the cause is unverified. No host disk contents were changed.',
+    };
+    const priorNormalized = normalizeSuspectedToolFailure(priorReport);
+    const timeoutNormalized = normalizeSuspectedToolFailure(timeoutReport);
+    expect(priorNormalized.class).toBe('transient');
+    expect(timeoutNormalized.class).toBe('transient');
+    expect(priorNormalized.classKey).toBe(
+      'repeated-tool-error-class:capability:bash:transient:error-code-unknown:schema-unknown~field-unknown:runtime-unknown',
+    );
+    expect(timeoutNormalized.classKey).toBe(priorNormalized.classKey);
+    expect(priorNormalized.watchdogKey).toBe(
+      'repeated-tool-error:capability:bash:transient:md5-1258d1f30c048e723dd13e6b951fa28b',
+    );
+    expect(timeoutNormalized.watchdogKey).not.toBe(priorNormalized.watchdogKey);
+
+    const legacyWatchdogKey = 'repeated-tool-error:capability:bash:transient:econnrefused-unable-to-connect-is-the';
+    const prior = existing({
+      id: 'EI-LEGACY-ECONNREFUSED',
+      title: 'Direct capability:bash calls return ECONNREFUSED',
+      scope: 'harness:papercusp',
+      payload: {
+        watchdogKey: legacyWatchdogKey,
+        toolFailureProbation: {
+          ...priorNormalized,
+          watchdogKey: legacyWatchdogKey,
+          state: 'promoted',
+          report: priorReport,
+          reporters: ['su-prior-a', 'su-prior-b'],
+          directEvidence: true,
+        },
+      },
+    });
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
+
+    const result = await captureImprovement({
+      title: 'capability:bash tool-call failure (timed_out)',
+      body: timeoutReport.message,
+      kind: 'change',
+      lane: 'observation',
+      scope: 'harness:papercusp',
+      workspaceId: 'ws',
+      createdBy: 'su-timeout-reporter',
+      watchdogKey: timeoutNormalized.watchdogKey,
+      payloadExtra: {
+        toolFailureProbation: {
+          ...timeoutNormalized,
+          state: 'probation',
+          report: timeoutReport,
+          reporters: ['su-timeout-reporter'],
+        },
+      },
+    }, d);
+
+    expect(result).toMatchObject({ created: true });
+    expect(d.created).toHaveLength(1);
+    expect((prior.payload as Record<string, any>).toolFailureProbation.reporters).toEqual([
+      'su-prior-a',
+      'su-prior-b',
+    ]);
+  });
+
   // WI-10003605: a workspace-spanning invocation records harness '*'. Scoping it
   // `harness:*` hit the work-item scope guard, so every such capture threw and the
   // in-process operator console.warned per invocation (failing fail-on-console tests).
