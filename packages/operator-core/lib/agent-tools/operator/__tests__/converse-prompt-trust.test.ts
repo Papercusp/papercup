@@ -8,6 +8,7 @@
  * converse-prompt-surface.test.ts).
  */
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 import '../../agent_tools/list';
 import '../../tools/find';

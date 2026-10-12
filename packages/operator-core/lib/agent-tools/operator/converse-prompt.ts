@@ -27,6 +27,7 @@ import {
 import { readServingGeneration } from '../../serving-generation';
 import { buildMemoryContextBlock, lastUserContext } from '../../memory/injection';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { loadHarnessRegistry } from '../../harness-registry';
 import {
   buildPlanContextSection,
@@ -210,11 +211,18 @@ export async function buildOperatorPrompt(
       : Promise.resolve({ dossier: [], plan: null });
   let compactedSummary: string | null = null;
   if (contextMode === 'compaction' && input.conversationId && conversationsModule) {
+    const summaryWorkspaceId = activeWorkspaceId();
     try {
       const { readConversationSummary } = await conversationsModule;
       const s = await readConversationSummary(input.conversationId);
       if (s?.summaryText && s.summaryText.trim()) compactedSummary = s.summaryText.trim();
+      observeFallback('conversation-context-read', {
+        eligible: 1, applied: 1, reason: 'applied', scope: 'rolling-summary',
+      }, { workspaceId: summaryWorkspaceId });
     } catch (err) {
+      observeFallback('conversation-context-read', {
+        eligible: 1, applied: 0, reason: 'summary-read-failed', scope: 'rolling-summary',
+      }, { workspaceId: summaryWorkspaceId });
       console.warn(
         '[converse-prompt] summary read failed (window fallback):',
         err instanceof Error ? err.message : String(err),

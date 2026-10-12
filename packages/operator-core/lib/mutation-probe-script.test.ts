@@ -23,7 +23,7 @@
  *     SIGKILL — so a deferred handler is frequently never a handler at all.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn as spawnProcess, spawnSync as spawnProcessSync, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,6 +46,27 @@ let dir: string;
 let subject: string;
 let admissionBase: string;
 let previousAdmissionBase: string | undefined;
+
+/**
+ * These children execute disposable fixture code, including uncommitted CJS
+ * guards and intentionally mutated ES modules. Inheriting the launcher's
+ * committed-source loader either refuses those guards or substitutes HEAD for
+ * the mutant before the probe can judge it. Reuse the loader suite's cleanEnv
+ * boundary: copy the child environment, leaving the parent runner's enforcement
+ * and environment intact. Explicit argv loaders remain explicit.
+ */
+function fixtureChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child = { ...env };
+  delete child.NODE_OPTIONS;
+  return child;
+}
+
+// Keep one environment boundary for synchronous and asynchronous fixture
+// children, including the fake ptool and the overlay's guard descendants.
+const spawn = ((command: string, args: string[], options: SpawnOptions = {}) =>
+  spawnProcess(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcess;
+const spawnSync = ((command: string, args: string[], options: SpawnSyncOptions = {}) =>
+  spawnProcessSync(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcessSync;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mutation-probe-test-'));
@@ -141,6 +162,28 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('runs disposable CJS guards without substituting source or changing parent loader custody', () => {
+    const repo = join(dir, 'loader-custody-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    const loader = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+    const parentOptions = process.env.NODE_OPTIONS;
+    const inherited = { ...process.env, NODE_OPTIONS: `--import=${loader}` };
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node -e "if (require(process.argv[1]) !== 1) process.exit(1)" {}',
+    ], inherited);
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).not.toContain('COMMITTED_SOURCE refused');
+    expect(out).not.toContain('COMMITTED_SOURCE substituted');
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+    expect(inherited.NODE_OPTIONS).toBe(`--import=${loader}`);
+    expect(process.env.NODE_OPTIONS).toBe(parentOptions);
+  });
+
   it.each([
     ['invalid syntax', 's/beta/'],
     ['undeclared replacement state', 's/beta/$undefined_thing/'],
