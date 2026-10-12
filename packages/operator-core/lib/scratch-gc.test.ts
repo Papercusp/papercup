@@ -1195,24 +1195,62 @@ describe('deferred scratch quota recovery', () => {
   it('includes background scan counters in progress while a writer waits for usage refresh', async () => {
     const wsRoot = scratchRootForWorkspace('ws-Q');
     makeSparseRun('ws-Q', UUID(1), 128);
+    makeRunDir('ws-Q', 'extra', UUID(3), 128);
     _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
 
     const readdirMock = vi.mocked(readdirAsync);
     const originalRead = readdirMock.getMockImplementation()!;
     const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const statMock = vi.mocked(statAsync);
+    const originalStat = statMock.getMockImplementation()!;
+    const measuredRunDirs = [
+      join(wsRoot, 'quota', UUID(1)),
+      join(wsRoot, 'extra', UUID(3)),
+    ];
+    let activeWalkOperations = 0;
+    let maxConcurrentWalkOperations = 0;
+    const trackStart = (path: unknown): boolean => {
+      const value = String(path);
+      const isMeasuredPath = value === wsRoot
+        || value === join(wsRoot, 'quota')
+        || value === join(wsRoot, 'extra')
+        || measuredRunDirs.some((runDir) => value === runDir || value.startsWith(`${runDir}/`));
+      if (!isMeasuredPath) return false;
+      activeWalkOperations += 1;
+      maxConcurrentWalkOperations = Math.max(maxConcurrentWalkOperations, activeWalkOperations);
+      return true;
+    };
+    const trackEnd = (tracked: boolean): void => {
+      if (tracked) activeWalkOperations -= 1;
+    };
     let releaseScan!: () => void;
     let reachedRoot!: () => void;
     const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
     const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
     let rootReads = 0;
     readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
-      const entries = await read(path, options);
-      if (String(path) === wsRoot && ++rootReads === 1) {
-        reachedRoot();
-        await scanGate;
+      const tracked = trackStart(path);
+      try {
+        const entries = await read(path, options);
+        if (String(path) === wsRoot && ++rootReads === 1) {
+          reachedRoot();
+          await scanGate;
+        }
+        if (tracked) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        return entries as never;
+      } finally {
+        trackEnd(tracked);
       }
-      return entries as never;
     }) as typeof readdirAsync);
+    statMock.mockImplementation((async (...args: Parameters<typeof statAsync>) => {
+      const tracked = trackStart(args[0]);
+      try {
+        if (tracked) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        return await originalStat(...args);
+      } finally {
+        trackEnd(tracked);
+      }
+    }) as typeof statAsync);
 
     const timings: ScratchWriteTimings[] = [];
     const measurement = refreshScratchUsage('ws-Q');
@@ -1253,6 +1291,7 @@ describe('deferred scratch quota recovery', () => {
       await measurement;
       await write;
       expect(rootReads).toBe(1);
+      expect(maxConcurrentWalkOperations).toBe(1);
       expect(timings.find((row) => !row.progress)).toMatchObject({
         quotaRecoveryMs: 0,
         writeMs: expect.any(Number),
@@ -1261,6 +1300,7 @@ describe('deferred scratch quota recovery', () => {
       if (progressTimeout) clearTimeout(progressTimeout);
       releaseScan();
       readdirMock.mockImplementation(originalRead);
+      statMock.mockImplementation(originalStat);
       await Promise.allSettled([measurement, ...(write ? [write] : [])]);
     }
   });

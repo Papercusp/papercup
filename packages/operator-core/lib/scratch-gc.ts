@@ -1112,9 +1112,9 @@ async function withScratchSizeScanSlot<T>(operation: () => Promise<T>): Promise<
 }
 
 /**
- * Measure a directory tree asynchronously with a small process-wide I/O bound. Independent
- * entries overlap, while concurrent workspace walks cannot multiply their filesystem pressure
- * without limit; the walk never blocks the event loop.
+ * Measure a directory tree asynchronously with a process-wide I/O bound. A single walk visits
+ * entries sequentially so operation timing identifies the active filesystem operation; concurrent
+ * workspace walks still share the bound, and the walk never blocks the event loop.
  */
 async function sizeOfDirAsync(
   dir: string,
@@ -1142,47 +1142,42 @@ async function sizeOfDirAsync(
   }
   if (diagnostics) diagnostics.sizeWalkEntries += entries.length;
   let total = 0;
-  let nextEntry = 0;
-  const workerCount = Math.min(SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT, entries.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextEntry < entries.length) {
-      const entry = entries[nextEntry++];
-      const child = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        // Scratch run directories are exactly the directory level below each tool directory.
-        // Record their totals as this normal size walk visits files, so FIFO recovery can reuse
-        // them without a second recursive stat pass.
-        const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
-        if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
-        const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics);
-        total += childBytes;
-      } else {
-        if (runBytesByPath && depth <= 1 && entry.isSymbolicLink()) {
-          // The workspace walk counts symlinks as entries rather than traversing them. A
-          // per-run index cannot safely represent a symlinked tool/run directory.
-          runBytesByPath.set(child, Number.NaN);
+  for (const entry of entries) {
+    const child = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      // Scratch run directories are exactly the directory level below each tool directory.
+      // Record their totals as this normal size walk visits files, so FIFO recovery can reuse
+      // them without a second recursive stat pass.
+      const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
+      if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
+      const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics);
+      total += childBytes;
+    } else {
+      if (runBytesByPath && depth <= 1 && entry.isSymbolicLink()) {
+        // The workspace walk counts symlinks as entries rather than traversing them. A
+        // per-run index cannot safely represent a symlinked tool/run directory.
+        runBytesByPath.set(child, Number.NaN);
+      }
+      if (diagnostics) diagnostics.sizeWalkFiles += 1;
+      try {
+        const bytes = (await withScratchSizeScanSlot(() =>
+          measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child)),
+        )).size;
+        total += bytes;
+        if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
+        if (runDir && runBytesByPath) {
+          runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
         }
-        if (diagnostics) diagnostics.sizeWalkFiles += 1;
-        try {
-          const bytes = (await withScratchSizeScanSlot(() =>
-            measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child)),
-          )).size;
-          total += bytes;
-          if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
-          if (runDir && runBytesByPath) {
-            runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
-          }
-        } catch (error) {
-          if (scratchFsErrorCode(error) === 'ENOENT') continue; // removed after readdir; it no longer consumes quota
-          if (diagnostics) {
-            diagnostics.fileStatErrors += 1;
-            rememberScratchSizeWalkErrorCode(diagnostics, error);
-          }
-          /* Other stat failures make the measurement incomplete. */
+      } catch (error) {
+        if (scratchFsErrorCode(error) === 'ENOENT') continue; // removed after readdir; it no longer consumes quota
+        if (diagnostics) {
+          diagnostics.fileStatErrors += 1;
+          rememberScratchSizeWalkErrorCode(diagnostics, error);
         }
+        /* Other stat failures make the measurement incomplete. */
       }
     }
-  }));
+  }
   return total;
 }
 
@@ -1458,7 +1453,7 @@ export interface ScratchQuotaRecoveryDiagnostics {
   sizeWalkFiles: number;
   readdirOperations: number;
   statOperations: number;
-  /** Sum of readdir/stat durations; bounded overlapping operations can exceed wall time. */
+  /** Sum of readdir/stat durations for this sequential size walk. */
   operationTotalMs: number;
   maxOperationMs: number;
   maxOperationKind: ScratchQuotaRecoveryOperationKind | null;
