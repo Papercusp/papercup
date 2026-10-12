@@ -274,6 +274,26 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it('does not treat command output plus quoted snapshot prose as a bridge invocation', () => {
+    const result = runAssertionPreflightOnly([
+      'ROUTES="$(printf "%s" tauri-agent-tools)"',
+      'TOOL="$VERIFY_TAURI_AGENT_TOOLS_BIN"',
+      'echo "$ROUTES $TOOL" | grep -q "sourcesArray=true" || fail "trigger snapshot route did not return sources[]"',
+    ].join('\n'));
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('still rejects an actual bridge alias invocation when its arguments mention snapshot prose', () => {
+    const result = runAssertionPreflightOnly([
+      'TOOL="$VERIFY_TAURI_AGENT_TOOLS_BIN"',
+      '"$TOOL" probe "snapshot route"',
+    ].join('\n'));
+
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('must pin --pid to "$VERIFY_TAURI_PID"');
+  });
+
   it('rejects invalid shell syntax before any verifier dependency is executed', () => {
     const { dir, invocations, result } = runAssertion(
       '#!/usr/bin/env bash\nif then\n  echo never\nfi\n',

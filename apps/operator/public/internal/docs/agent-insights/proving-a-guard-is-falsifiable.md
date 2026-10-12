@@ -64,6 +64,20 @@ scripts/mutation-probe.sh \
 
 `0` mutant/historical source CAUGHT (guard is falsifiable ✓) · `1` mutant/historical source SURVIVED (your guard is weaker than you think) · `2` misuse / missing historical control / failed calibration / no-op mutation / a mutant that no longer PARSES · `3` in-tree restore FAILED, act now. Note `0` means *the guard failed on the mutant or historical source* — "the probe succeeded" and "the test passed" mean OPPOSITE things here.
 
+## Read, replay and bind recorded proof
+
+A recorded probe row stores `execution_details.mutation`: `probeInvocationId`, `leg`, mode, subject path, the mutation expression or full historical commit, before/after subject hashes, bounded diff, and the literal `testCommand` beside its SHA256. The command preserves inline environment such as `PROBE_SUBJECT={}`. Replay that template against the same repository revision and subject with the recorded mutation. Older descriptor rows retain the hash alone; their command cannot be reconstructed from the hash. Historical descriptors also retain `historicalControls`: the exact `mustBeAbsent` literal, ordered `positiveControls`, `calibrationCommand`, and optional `subjectMustBehave` command. Replay them as `--must-be-absent`, repeated `--positive-control`, `--calibration`, and optional `--subject-must-behave`, using the recorded full `againstCommit`. Pre-field rows remain readable but cannot reconstruct these missing settings. Match the recorded before/after hashes to the replayed snapshots; a changed working tree or missing commit cannot reproduce the same proof.
+
+`PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=auto` is the default. It tests the deployed reader's exact parser and withholds the descriptor until that reader accepts the current fields; the log says why. Use `always` only against a reader you have verified compatible. `never` deliberately records legacy rows with unverified linkage. A source edit or green local test does not prove the default live path has adopted the descriptor.
+
+Find probe rows through `testing:runs { source:'mutation-probe' }` or `testing:runs { testRunIds:[N] }`. The default source filter can omit them; an exact ID read preserves the requested probe row and discloses that filter omission.
+
+A historical guard that reads a fixed source path rather than the passed snapshot exits **INCONCLUSIVE (2)** with `guard-ignores-subject`. An unrelated crash or timeout in the poisoned-snapshot control gives `consumption-unproven`. These are uncertainty, not SURVIVED or CAUGHT. Copy-out relocation is the appropriate mode for guards that import their subject; historical mode is useful when the guard actually consumes the passed snapshot.
+
+Binding a descriptor-linked mutant catch after a survivor on the unchanged test can return `mutation_reaim_unjustified`. Pass a structured `reaimJustification` with `survivorTestRunIds` naming every relevant survivor and a concrete `reason` explaining the changed mutation; the binder validates and stores it. This check covers ledgered mutant-leg rows. Pre-descriptor rows and disabled exports do not establish re-aim coverage.
+
+The destructive-code fence still applies to source and prose subjects. Its current textual detection can match destructive command examples in comments or documentation. This known limitation is tracked separately; `--fake-destructive` follows the existing controlled-mock contract and is not a general bypass for destructive execution.
+
 ## Sweep-lock recipe (tier 3 only)
 
 For tier 3, pause the sweep only for the files the probe mutates — git-sync excludes actively file-locked paths from its staging pathspecs, so probes on disjoint files and unrelated commits keep moving:

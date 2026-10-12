@@ -1,7 +1,7 @@
 # Authoring an integration provider and a trigger pack
 URL: /internal/docs/plugins/provider-and-trigger-pack-authoring
 
-How an outside author builds, type-checks, installs, connects, syncs and arms a sandboxed daemon provider plus a trigger pack, following the independent-author journey suite (an Outlook-shaped Graph provider): manifest, JSON-RPC daemon protocol, cursor and delivery identity, host.fetch trust model, consent, review and arm.
+How an outside author builds, type-checks, installs, connects, syncs and arms a sandboxed daemon provider plus a trigger pack, following the independent-author journey suite (an Outlook-shaped Graph provider): manifest, JSON-RPC daemon protocol, cursor and delivery identity, host.fetch trust model, consent, review and arm. Includes the Slack chat-provider and bug-triage trigger-pack worked example.
 
 This guide walks an outside author through shipping an integration provider and a trigger pack for Papercusp. Every step below is exercised end to end by one test suite, `packages/operator-core/lib/integrations/independent-author-journey.integration.test.ts`. That suite builds an Outlook-shaped mail and calendar provider outside the source tree, installs it into a clean workspace, connects it through the real OAuth routes, syncs it, and fires its pack. The package it builds is `packages/operator-core/test/fixtures/outlook-graph-provider/`. Read that package next to this guide: it is the smallest complete example.
 
@@ -226,6 +226,11 @@ Run your fake service API as a stub `fetch` behind the host: the daemon then rea
 * Pack materialization and lifecycle: `packages/operator-core/lib/cupboard/trigger-pack-materialize.ts`, `trigger-pack-lifecycle.ts`.
 * First-party providers on the same contract: `libs/papercusp/plugins/gmail/`, `libs/papercusp/plugins/google-calendar/`.
 * Design and decisions: plan `generalized-integrations-google-migration-cupboard-workflows-2026-10-05` (D-006 daemon protocol, D-013 materialization, D-016 pack lifecycle, D-017 delivery identity, D-026 this journey).
+* Chat provider with pasted credentials, app registration and socket ingress: `libs/papercusp/plugins/slack/` (see the worked example below).
+* Provider-neutral trigger pack with picker inputs: `libs/papercusp/plugins/bug-triage/`.
+* Socket-provider journey suite: `packages/operator-core/lib/integrations/socket-provider-author-journey.integration.test.ts`, fixture `packages/operator-core/test/fixtures/teamchat-socket-provider/`.
+* Public mirror export for first-party Cupboard packages: `scripts/plugin-mirror-export.mjs`.
+* Chat provider decisions: plan `cupboard-distributable-integrations-2026-10-10` (D-014 public mirrors, D-015 cupboard-only distribution, D-017 pack setup on Settings, D-023 source config in ingress).
 
 ## Ticket-provider examples: Linear and Asana
 
@@ -238,3 +243,107 @@ Asana uses REST through host.fetch, requires projectGids, and supports workspace
 Asana additionally declares push.subscribe and push.unsubscribe plus a data-only push descriptor: x-hook-secret handshake and hex HMAC-SHA256 x-hook-signature. The host owns signature verification and encrypted handshake-secret storage. Subscribe reconciles one webhook per configured project; a delivery only wakes reconciliation, never supplies authoritative ticket data. Polling remains the fallback.
 
 Regression examples: packages/operator-core/lib/providers/linear/linear-provider.test.ts and linear-provider.integration.test.ts; providers/asana/asana-provider.test.ts and asana-provider.integration.test.ts; providers/connector-push.integration.test.ts. The current real-workspace acceptance remains pending under linear-asana-task-sync-2026-10-05; these examples describe implementation, not a shipment receipt.
+
+## Chat-provider worked example: Slack and bug-triage
+
+The maintained chat example is a pair of packages: the provider `libs/papercusp/plugins/slack` and the trigger pack `libs/papercusp/plugins/bug-triage`. Together they replace the Slack ingestion and Slack-to-ticket bug workflow that used to be built into the app (plan `cupboard-distributable-integrations-2026-10-10`). Both declare `"distribution": "cupboard"`, so the bundled plugin root never loads them; a workspace gets them only by installing from the Cupboard (D-015). Each is published as its own public repository (`Papercusp/papercusp-slack`, `Papercusp/papercusp-bug-triage`), exported from the in-tree package by `scripts/plugin-mirror-export.mjs` (D-014).
+
+Slack shows three provider features that the ticket examples above do not use: pasted credentials, an app definition the user creates the app from, and a host-held socket.
+
+### The provider: credentials, app registration, socket
+
+```json
+"provider": {
+  "id": "slack",
+  "contractVersion": 1,
+  "datatypes": ["chat-message"],
+  "capabilities": ["ingress.normalize", "chat.channels", "chat.reply"],
+  "egressHosts": ["slack.com"],
+  "defaultDestinations": { "chat-message": ["document", "event"] },
+  "ingress": {
+    "socket": {
+      "credential": "app_token",
+      "open": { "url": "https://slack.com/api/apps.connections.open", "method": "POST", "urlField": "url" },
+      "ackField": "envelope_id",
+      "reconnect": { "field": "type", "values": ["disconnect"] }
+    }
+  },
+  "setup": {
+    "credentials": [
+      { "key": "app_token", "label": "App-level token", "pattern": "xapp-[A-Za-z0-9-]{10,}", "placeholder": "xapp-1-...", "help": "..." },
+      { "key": "bot_token", "label": "Bot token", "pattern": "xoxb-[A-Za-z0-9-]{10,}", "placeholder": "xoxb-...", "help": "...", "hosts": ["slack.com"] }
+    ],
+    "appRegistration": {
+      "createUrl": "https://api.slack.com/apps?new_app=1&manifest_json={definition}",
+      "docsUrl": "https://api.slack.com/reference/manifests#creating_apps",
+      "copyHint": "Create New App → From a manifest → paste this JSON.",
+      "definition": { "...": "the full Slack app manifest" }
+    }
+  }
+}
+```
+
+* **`setup.credentials`** declares masked paste-a-secret fields. The host checks each pasted value against its `pattern` (anchored, via the SDK) before saving it, stores it host-side the same way it stores OAuth tokens, and never returns it to the page or the package. The bot token lists `hosts: ["slack.com"]`, so `host.fetch` attaches it only to requests for that host. The app token is the one the socket descriptor names.
+* **`setup.appRegistration`** lets the provider's card on Settings → Integrations offer **Create app**: the host substitutes the bundled `definition` into `createUrl`. A copy-the-definition fallback uses `copyHint`. Slack's definition enables Socket Mode, registers `/papercusp`, subscribes the bot to `app_mention`, `message.channels`, `message.groups` and `message.im`, and requests only the scopes those need (`app_mentions:read`, the four `*:history` scopes, `channels:read`, `groups:read`, `commands`, `chat:write`).
+* **`ingress.socket`** is a descriptor, not code. The host opens the connection: it calls `open.url` with the credential named by `credential`, reads the WebSocket address from `urlField`, acknowledges every envelope by echoing its `ackField`, and reconnects when a frame's `type` is one of `reconnect.values`. Each envelope goes to the daemon's `ingress.normalize` capability as `{ envelope, sourceConfig }`, where `sourceConfig` is the connected source's non-secret config (never a credential; the SDK type is `ProviderIngressNormalizeArgs`). The capability returns canonical `chat-message` records. The package never holds the socket or the app token.
+
+The daemon (`daemon.mjs` over `provider.mjs`) implements three capabilities:
+
+* `ingress.normalize`: `normalizeEnvelope` turns an Events API envelope or a slash command into zero or more `chat-message` records (channel, author, text, thread, mentions, timestamp). It drops bot-authored posts so the package never reacts to its own replies. The one exception is a test identity the source declares in `sourceConfig.testBotAllowance`: a post that matches its bot, app, user and channel exactly, in one of the source's watched channels, is kept as a plain message, so an automated drill can post as a bot (D-023). A provider with no source-scoped rules ignores `sourceConfig`.
+* `chat.channels`: `listChannels` returns the workspace's channels. Trigger-pack forms use it to fill channel pickers.
+* `chat.reply`: `replyInThread` posts a threaded reply through `host.fetch`.
+
+### The trigger pack: bug-triage
+
+```json
+"triggerPack": {
+  "inputs": {
+    "type": "object", "additionalProperties": false, "required": ["channels", "destination"],
+    "properties": {
+      "channels": { "type": "array", "title": "Channels to watch", "minItems": 1,
+        "items": { "type": "string", "minLength": 1 },
+        "x-options": { "capability": "chat.channels" } },
+      "destination": { "type": "string", "title": "File bugs in", "minLength": 1,
+        "x-options": { "capability": "ticket.containers", "args": { "purpose": "create" } } }
+    }
+  },
+  "defaultStormPolicy": { "maxRuns": 20, "windowSeconds": 300 },
+  "targets": [ { "id": "triage-message", "kind": "plan", "path": "plan.md" } ],
+  "bindings": [
+    { "id": "message-to-triage",
+      "source": { "kind": "external", "datatype": "chat-message" },
+      "target": "triage-message",
+      "eventPattern": "ext:*:message",
+      "filter": { "all": [ { "text": { "exists": true } } ] },
+      "mapping": { "mode": "payload-context" } }
+  ]
+}
+```
+
+* **It names no provider.** The binding asks for the `chat-message` datatype, and `ext:*:message` matches that event from any chat provider, so the same pack works with Slack today and with a chat provider written later.
+* **`x-options` turns inputs into pickers.** The settings form fills the channel list from whichever installed provider offers `chat.channels`, and the destination list from whichever offers `ticket.containers` (Asana or Linear). The user picks; nothing is typed.
+* **The destination is fixed by the installation.** The plan (`plan.md`) treats the message as untrusted. It files through `ticket:file`, which resolves the destination from the installation that owns the run's binding and refuses a message from a channel the installation does not watch; neither the message nor the worker can redirect a ticket, and a replayed run returns the ticket it already filed instead of filing again (D-012).
+* **Installing does not arm it.** Installed from the Cupboard without a project, the pack appears as a section on Settings → Integrations; choosing the project there materializes it (D-017). The user then picks channels and a destination, reviews the disarmed binding, and arms it.
+
+### Building and publishing these two packages
+
+1. **Build and test in the tree.** Change `libs/papercusp/plugins/slack` or `libs/papercusp/plugins/bug-triage`, then run `packages/operator-core/lib/providers/slack/slack-package.test.ts` and `scripts/plugin-mirror-export.test.mjs`. The second test exports both packages the way publishing does and fails on anything a standalone checkout could not use: an import outside the package, an undeclared dependency, a missing licence, or text that cites internal context (a work-item or session id, a dated plan slug, a home-directory path, an operator port). In plugin source, describe the behaviour rather than the plan that asked for it.
+2. **Let the change commit.** The export reads committed content only, so an uncommitted edit can never reach a public repository.
+3. **Push the mirror.** `node scripts/plugin-mirror-export.mjs --package slack --out /tmp/papercusp-slack-publish --push https://github.com/Papercusp/papercusp-slack.git` clones the mirror repository, replaces its tree with the export, and pushes one commit on top of its history; unchanged content pushes nothing. A new package's repository is created once beforehand (`gh repo create Papercusp/papercusp-<name> --public`).
+4. **List it.** `cupboard:publish-plugin { slug, githubUrl }` creates the Cupboard listing from that repository (step 6 above), and the listing becomes installable once it is approved. Workspaces get a pushed revision when they next install or update the package from the listing.
+
+### What the user does
+
+1. In the Cupboard, install **Slack** and **Bug triage**.
+2. On Settings → Integrations, open the Slack card, choose **Create app**, install the app to the workspace, and paste the app-level token and bot token.
+3. In the Bug triage section, choose the project, the channels to watch and the destination, review, and arm.
+4. A bug report posted in a watched channel becomes one ticket at the destination; other messages file nothing.
+
+The Slack report-bug message shortcut and reaction gestures are not part of these packages. They belong to the app's own Slack connection, which does not run for a Slack source connected through the package (D-022); they move to packages under `provider-adapters-to-packages-2026-10-11#P-008` (D-019).
+
+### Tests to copy
+
+* `packages/operator-core/lib/providers/slack/slack-package.test.ts` and `slack-package.integration.test.ts`: the manifest contract, envelope normalisation (including the drill identity), and the capabilities against a stubbed Slack API.
+* `packages/operator-core/lib/integrations/socket-provider-author-journey.integration.test.ts` with the fixture `packages/operator-core/test/fixtures/teamchat-socket-provider/`: an outside author's socket provider taken through publish, install, connect, arm and fire on the real Cupboard and host paths. Start a new socket provider from this fixture.
+* `packages/operator-core/lib/capability-verbs/ticket.integration.test.ts`: `ticket:file` resolving and pinning the destination from the bug-triage installation.
+* `packages/plugin-loader/src/loader.test.ts`: the bundled plugin root skipping `distribution: "cupboard"` packages.
