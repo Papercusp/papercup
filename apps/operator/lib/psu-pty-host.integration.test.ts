@@ -4398,9 +4398,12 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     "if(line==='QUIT'){process.exit(0);}}});" +
     'setTimeout(()=>process.exit(0),15000);';
 
-  it.each([true, false])(
-    'a refused pin changes in the respawned child only when managed=%s',
-    async (managed) => {
+  it.each([
+    [true, false], [false, false],
+    [true, true], [false, true],
+  ])(
+    'a refused pin changes in the respawned child only when managed=%s (graceful signal resistant=%s)',
+    async (managed, gracefulSignalResistant) => {
       // WI-10004944: the heal accepts a replacement proxy only if it serves
       // /api/mcp (d24b79f750, psu-pty-host.mjs `proxyMcpRouteExists`). A real
       // Streamable HTTP endpoint answers a GET with 405; a 404 there means "not
@@ -4435,7 +4438,9 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
 
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', childCode],
+        args: ['-e', (gracefulSignalResistant
+          ? "for(const signal of ['SIGHUP','SIGTERM','SIGINT'])process.on(signal,()=>{});"
+          : '') + childCode],
         cwd: '/tmp',
         env,
         ownerId,
@@ -4454,11 +4459,28 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
         expect(captured()).not.toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
 
         await controlInject(sock, 'recycle', '');
+        // RECYCLE fences the predecessor before it can boot a successor. A
+        // graceful-signal-resistant child legitimately uses the host's 5s
+        // graceful wait plus its bounded hard-kill wait. Observe that phase
+        // separately; starting the 5s BOOT assertion at injection races it.
+        await vi.waitFor(() => {
+          expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+            .toContain('"kind":"respawn-predecessor-stop-finished"');
+        }, { timeout: 8_000 });
         await vi.waitFor(() => {
           expect(captured().split('BOOT:').length - 1).toBe(2);
         }, { timeout: 5000 });
 
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+        const lifecycle = events.trim().split('\n').map((line) => JSON.parse(line));
+        const stopped = lifecycle.findIndex((event) => event.kind === 'respawn-predecessor-stop-finished');
+        const respawned = lifecycle.findIndex((event) => event.kind === 'respawned');
+        expect(stopped).toBeGreaterThanOrEqual(0);
+        expect(respawned).toBeGreaterThan(stopped);
+        expect(lifecycle[stopped]).toMatchObject({ exitObserved: true });
+        if (gracefulSignalResistant) {
+          expect(lifecycle[stopped]).toMatchObject({ forceKillRequested: true, signal: 'SIGKILL' });
+        }
         if (managed) {
           expect(captured()).toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
           expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
