@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 32,
-    "openUnknown": 59
+    "repairedPeerFocused": 33,
+    "openUnknown": 58
   },
   "classes": {
     "assertion": 55,
@@ -1026,7 +1026,7 @@
     {
       "path": "packages/operator-core/lib/scout/cycle-real-rails.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
       "lines": [
         14263,
@@ -1048,7 +1048,9 @@
           "isScratchConfig": false,
           "testNamePattern": null,
           "collectionFailed": false,
-          "caseCoverage": "Stored passedCaseTitles contains all seven named cases, including the four originally failing full-cycle, broad-plan, gym-archive and provenance cases."
+          "caseCoverage": "Stored passedCaseTitles contains all seven named cases, including the four originally failing full-cycle, broad-plan, gym-archive and provenance cases.",
+          "testRoot": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+          "runtimeCapture": "before/after not-configured"
         },
         "repositoryComparison": {
           "testSha256": "d04de75a5900efb74772c741c735833e663423812ef0fba3cf64778eae67eac4",
@@ -1058,13 +1060,48 @@
             "packages/operator-core/lib/scout/cycle-deps.ts",
             "packages/operator-core/lib/scout/scout-plan-draft.ts",
             "packages/operator-core/lib/scout/router.ts",
-            "packages/operator-core/lib/scout/paused-rails.ts"
+            "packages/operator-core/lib/scout/paused-rails.ts",
+            "packages/operator-core/lib/scout/paused-rails.test.ts",
+            "packages/operator-core/lib/issues-engineer.ts"
           ],
-          "entrySourcesMatchReceiptCommit": true,
-          "scope": "Repository-byte equality only; this list is not the complete transitive import graph or the modules actually loaded by either historical process."
+          "entrySourcesMatchReceiptCommit": false,
+          "scope": "The named test equals329df5e, completion7e4a94c0 and receiptf419975. The unchanged named entries match those commits; scout-plan-draft.ts/issues-engineer.ts differ. This is repository-byte comparison only, not complete transitive imports or actual historical/current loaded modules. Canonical WI-10007478 whole completion remains STALE over changed routed-ledger.ts.",
+          "unchangedEntrySources": [
+            "packages/operator-core/lib/scout/cycle.ts",
+            "packages/operator-core/lib/scout/cycle-deps.ts",
+            "packages/operator-core/lib/scout/router.ts",
+            "packages/operator-core/lib/scout/paused-rails.ts",
+            "packages/operator-core/lib/scout/paused-rails.test.ts"
+          ],
+          "changedEntrySources": [
+            "packages/operator-core/lib/scout/scout-plan-draft.ts",
+            "packages/operator-core/lib/issues-engineer.ts"
+          ]
         },
         "presentFixtureContract": "The current fixture pins active workspace identity and seeds both enabled gym_autoloop_config and an active gym-cycle routine for paused-rails.ts's real liveness read (scout-su-ideate-pipeline-gaps-2026-10-08 P-002). The current broad-plan assertion expects 'Awaiting steward/owner triage', matching scout-plan-draft.ts. These present-source observations are compatible with the clean pass; they do not by themselves prove original causal repair attribution.",
-        "limits": "No source change, new admission or test replay. Retain this row open-unknown and the33focused/20peer/71unknown population. Original loaded bytes, full imports/config/schema/environment, accountable specific repair attribution, final D006/P004 assurance, acceptance and shipment remain unestablished."
+        "limits": "D-034 qualifies ONLY this historical repaired-fixture row. No source change, new source admission, test replay or isolated original causal mutant. Complete original/current loaded bytes/imports/config/schema/environment remain UNKNOWN. Preserve original failed census/gaps, rootCauseVerified:false, ingestion/memory and other UNKNOWN rows, finalSweepReadiness:not-established, acceptanceClaim:false and shipmentClaim:false. No current parent readiness, finalD006/P004 close or shipment.",
+        "repairItem": "WI-10007478",
+        "repairItemState": "done",
+        "repairCompletionAuthority": "committed",
+        "fixtureRepairCommit": "329df5e4705e35c87b45a5d203f049a7f2e19f78",
+        "completionAttestedCommit": "7e4a94c095089db527f55249e42ca18401717ce1",
+        "attribution": "WI-10007478 explicit committed checkpointProseSnapshot attributes the already-red Oct5 fixture to missing live gym/workspace setup and retired Mug text. The exact fixture diff pins PAPERCUSP_WORKSPACE_ID=WS, restores savedEnv, seeds enabled gym_autoloop_config plus active gym-cycle on the same harness, and expects steward/owner. Existing real router/storage/provenance assertions remain. filesChanged/settlementManifest OMIT the fixture paths; attribution is explicit prose plus exact committed diff and saved logs, not manifest coverage. The accepted134PASS run4e817bca is unit scope, not this integration file.",
+        "originalRepairReceipt": {
+          "logRef": ".papercusp/scratch/p23-int2.log",
+          "logSha256": "cc1c666c5e373ac09bbec5697d5ec5d40c8b2861fa24387be09401d1da6e1851",
+          "head": "91ea137bce",
+          "worktreeDirty": true,
+          "scope": "BOTH named files dirty; unverified harness warning. Scout7PASS plus routed-ledger36PASS=43PASS/zero skips. Summary matches both real file completions. Local historical evidence only; not a clean bound."
+        },
+        "savedFailureSha256": "af151548a22308749269ceffeca3ec4d94dead58c586c6aa81d156e6f825c0bc"
+      },
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-034",
+        "reviewedMapSha256": "dcb573b85dfab18c88d4624a48ebbd429546ca72609cfdf6a48b7e62d19410bb",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10007478",
+        "recurrenceGuard": "pausedRailsFrom requires enabled gym config AND an active gym-cycle routine on the SAME harness. Conventional paused-rails.test.ts covers live same-harness, inactive routine, disabled config, different harnesses and no routine. The actual paused-routine PG guard preserves decided verdicts and restores routine state. No isolated original one-change causal mutant was executed.",
+        "scope": "Reviewed historical fixture repair only, using explicit committed completion prose, exact fixture diff and saved integration logs. The repair completion manifest omits the fixture paths. Original DIRTY43 and later CLEAN7 are separate scopes; complete original/current loaded-source, imports/config/schema/environment, current parent readiness, final D006, acceptance and shipment remain UNKNOWN/not established."
       }
     },
     {
@@ -3959,13 +3996,13 @@
       "count": 55,
       "status": "partially-repaired-peer-focused",
       "stateCounts": {
-        "repaired-peer-focused": 9,
-        "open-unknown": 46
+        "repaired-peer-focused": 10,
+        "open-unknown": 45
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Forty-six remaining entries unproved; nine historical diagnoses and existing accountable repairs were independently reviewed in report-plan D-019, D-027 and D-029. D-029 adds fixture-root isolation, producer snapshots and PG cleanup; ingestion remains unproved pending its specific catalog-pollution control. Focused proof does not establish complete loaded-source/environment or final assurance.",
+      "rootCause": "Forty-five remaining entries unproved; ten historical diagnoses and existing accountable repairs were independently reviewed in report-plan D-019, D-027, D-029 and D-034. D-029 adds fixture-root isolation, producer snapshots and PG cleanup; D-034 qualifies only Scout's accountable historical gym/workspace and retired-wording fixture repair. Ingestion remains unproved pending its specific catalog-pollution control. No isolated original Scout causal mutant establishes the original gym-routing cause; complete loaded-source/environment and final assurance remain unknown.",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     },
     {
