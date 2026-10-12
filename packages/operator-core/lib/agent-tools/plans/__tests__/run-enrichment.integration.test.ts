@@ -125,7 +125,7 @@ describe('listPlanRuns enrichment (P-022)', () => {
          plan_run_ref, started_at, completed_at)
       VALUES ('ws-x', ${bindings[0].id}, 'slack:message-1', 'succeeded',
               ${JSON.stringify({ trigger: { payload: { text: 'Ship the release', channelId: 'C1' } } })}::text::jsonb,
-              ${JSON.stringify({ slackThreadReply: { channelId: 'C1', threadId: '1777.1', messageTs: '1777.2' } })}::text::jsonb,
+              ${JSON.stringify({ gmailDraft: { draftId: 'draft-1', subject: 'Re: Ship the release' } })}::text::jsonb,
               1, ${String(id)}, now(), now())`;
 
     const run = (await listPlanRuns(TEMPLATE, { harnessSlug: HARNESS }))[0]!;
@@ -136,10 +136,13 @@ describe('listPlanRuns enrichment (P-022)', () => {
       policyDisposition: 'ran',
       planRun: { id, status: 'done', durationMs: 5000 },
     });
-    expect(run.triggerRun?.outcomeLinks[0]).toMatchObject({
-      kind: 'slack-thread',
-      href: expect.stringContaining('https://app.slack.com/client/T1/C1/'),
-    });
+    expect(run.triggerRun?.outcomeLinks).toEqual([
+      {
+        kind: 'gmail-draft',
+        label: 'Re: Ship the release',
+        href: 'https://mail.google.com/mail/u/0/#drafts/draft-1',
+      },
+    ]);
   });
 });
 

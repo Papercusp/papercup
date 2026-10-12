@@ -216,7 +216,7 @@ export type ExternalTriggerRunDisposition =
   | 'failed';
 
 export interface ExternalTriggerOutcomeLink {
-  kind: 'gmail-draft' | 'slack-thread';
+  kind: 'gmail-draft';
   label: string;
   href: string | null;
 }
@@ -416,7 +416,6 @@ interface RunVisibilityDbRow {
   id: string;
   bindingId: string;
   sourceKind: string;
-  sourceConfig: Record<string, unknown>;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   stormPolicy: Record<string, unknown>;
@@ -548,10 +547,7 @@ export function externalTriggerDisposition(
   return { disposition: 'dropped', detail: status === 'cancelled' ? 'dropped · cancelled' : `dropped · ${status}` };
 }
 
-function outcomeLinks(
-  outcome: Record<string, unknown>,
-  sourceConfig: Record<string, unknown>,
-): ExternalTriggerOutcomeLink[] {
+function outcomeLinks(outcome: Record<string, unknown>): ExternalTriggerOutcomeLink[] {
   const result: ExternalTriggerOutcomeLink[] = [];
   const gmail = object(outcome.gmailDraft);
   const draftId = text(gmail.draftId);
@@ -560,20 +556,6 @@ function outcomeLinks(
       kind: 'gmail-draft',
       label: text(gmail.subject) || `Gmail draft ${draftId}`,
       href: `https://mail.google.com/mail/u/0/#drafts/${encodeURIComponent(draftId)}`,
-    });
-  }
-  const slack = object(outcome.slackThreadReply);
-  const channelId = text(slack.channelId);
-  const threadId = text(slack.threadId);
-  const teamId = text(sourceConfig.teamId);
-  if (channelId && threadId) {
-    const href = teamId
-      ? `https://app.slack.com/client/${encodeURIComponent(teamId)}/${encodeURIComponent(channelId)}/thread-${encodeURIComponent(channelId)}-${encodeURIComponent(threadId.replace('.', ''))}`
-      : null;
-    result.push({
-      kind: 'slack-thread',
-      label: `Slack thread ${channelId}`,
-      href,
     });
   }
   return result;
@@ -765,7 +747,7 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     redactedPayload,
     action: object(row.action),
     blueprintOperation,
-    outcomeLinks: outcomeLinks(outcome, row.sourceConfig),
+    outcomeLinks: outcomeLinks(outcome),
     timeline,
     planRun,
   };
@@ -789,7 +771,6 @@ export async function loadExternalTriggerRunVisibilities(
     SELECT tr.id::text,
            tr.binding_id::text AS "bindingId",
            s.kind AS "sourceKind",
-           s.config AS "sourceConfig",
            b.event_pattern AS "eventPattern",
            b.event_filter AS "eventFilter",
            b.storm_policy AS "stormPolicy",
@@ -1297,117 +1278,6 @@ export async function migrateExternalTriggerPlanBindingToOperation(
         legacyExecution: parseAgenticPlanExecutionTarget(legacy.action.execution),
       },
     };
-  });
-}
-
-/**
- * Idempotently install one semantic source→plan binding.
- *
- * `trigger_bindings` intentionally permits multiple bindings between the same
- * source and plan because users may author distinct filters. Connection-time
- * provisioning needs a narrower guarantee: re-running provisioning (or two
- * concurrent installs) must not multiply one built-in binding, such as the
- * Slack flagship's (slack-flagship.ts). Google connect no longer ensures any
- * binding (app-agent-tasks-durable-execution-2026-10-06 D-011). A
- * transaction-scoped advisory lock serializes that exact semantic key, then an
- * equality read reuses the installed row. The binding remains disarmed; arming
- * is still an explicit, separately-governed operation.
- */
-export async function ensureExternalTriggerBinding(
-  sql: postgres.Sql,
-  workspaceId: string,
-  input: CreateExternalTriggerBindingInput,
-): Promise<CreatedExternalTriggerBinding> {
-  const ws = required(workspaceId, 'workspace_id');
-  const sourceId = required(input.sourceId, 'source_id');
-  // Plan-only by design: this door serves connection-time provisioning of the
-  // built-in plan bindings. A goal binding has no such provisioning caller —
-  // use createExternalTriggerBinding directly (P-020).
-  if (input.goalId?.trim()) throw new Error('external_trigger_goal_binding_ensure_unsupported');
-  const planHarnessSlug = required(input.planHarnessSlug, 'plan_harness_slug');
-  const planSlug = required(input.planSlug, 'plan_slug');
-  const eventPattern = required(input.eventPattern, 'event_pattern');
-  const eventFilter = JSON.stringify(input.eventFilter ?? {});
-  const execution = parseAgenticPlanExecutionTarget(input.execution);
-  const action = JSON.stringify({ type: 'launch-plan', ...(execution ? { execution } : {}) });
-  const lockKey = ['external-trigger-binding', ws, sourceId, planHarnessSlug, planSlug, eventPattern].join(':');
-
-  return sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-    const rows = await tx<
-      Array<
-        Omit<CreatedExternalTriggerBinding, 'createdAt' | 'updatedAt'> & {
-          createdAt: Date | string;
-          updatedAt: Date | string;
-        }
-      >
-    >`
-      SELECT b.id::text,
-             b.source_id::text AS "sourceId",
-             s.kind AS "sourceKind",
-             b.plan_harness_slug AS "planHarnessSlug",
-             b.plan_slug AS "planSlug",
-             b.goal_id AS "goalId",
-             b.work_item_harness_slug AS "workItemHarnessSlug",
-             b.work_item_kind AS "workItemKind",
-             b.event_pattern AS "eventPattern",
-             b.event_filter AS "eventFilter",
-             b.action,
-             b.armed,
-             b.storm_policy AS "stormPolicy",
-             b.created_by AS "createdBy",
-             b.created_at AS "createdAt",
-             b.updated_at AS "updatedAt"
-        FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.data_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE b.workspace_id = ${ws}
-         AND b.source_id = ${sourceId}::uuid
-         AND b.plan_harness_slug = ${planHarnessSlug}
-         AND b.plan_slug = ${planSlug}
-         AND b.event_pattern = ${eventPattern}
-         AND b.event_filter = ${eventFilter}::text::jsonb
-         AND b.detached_at IS NULL
-       ORDER BY b.created_at, b.id
-       LIMIT 1`;
-    if (rows[0]) {
-      const updated = await tx<
-        Array<
-          Omit<CreatedExternalTriggerBinding, 'createdAt' | 'updatedAt'> & {
-            createdAt: Date | string;
-            updatedAt: Date | string;
-          }
-        >
-      >`
-        UPDATE harness_shared.trigger_bindings b
-           SET action = ${action}::text::jsonb, updated_at = now()
-         WHERE b.workspace_id = ${ws} AND b.id = ${rows[0].id}::uuid
-           AND b.action IS DISTINCT FROM ${action}::text::jsonb
-        RETURNING b.id::text,
-                  b.source_id::text AS "sourceId",
-                  (SELECT kind FROM harness_shared.data_sources s
-                    WHERE s.workspace_id = ${ws} AND s.id = b.source_id) AS "sourceKind",
-                  b.plan_harness_slug AS "planHarnessSlug",
-                  b.plan_slug AS "planSlug",
-                  b.goal_id AS "goalId",
-                  b.work_item_harness_slug AS "workItemHarnessSlug",
-                  b.work_item_kind AS "workItemKind",
-                  b.event_pattern AS "eventPattern",
-                  b.event_filter AS "eventFilter",
-                  b.action,
-                  b.armed,
-                  b.storm_policy AS "stormPolicy",
-                  b.created_by AS "createdBy",
-                  b.created_at AS "createdAt",
-                  b.updated_at AS "updatedAt"`;
-      const row = updated[0] ?? rows[0];
-      return {
-        ...row,
-        createdAt: iso(row.createdAt) as string,
-        updatedAt: iso(row.updatedAt) as string,
-      };
-    }
-    return createExternalTriggerBinding(tx, ws, input);
   });
 }
 

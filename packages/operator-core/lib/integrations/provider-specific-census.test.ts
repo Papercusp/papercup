@@ -21,6 +21,17 @@
  *
  * Subject root: the repository root, overridable with PROVIDER_CENSUS_ROOT so a mutation
  * probe can point the census at a copy.
+ *
+ * STRICT kinds (plan cupboard-distributable-integrations-2026-10-10, rubric R-3, D-024
+ * ruling 3, P-023): Slack, Asana and the chat bug-report workflow ship only as the slack,
+ * asana and bug-triage packages. For these three the census is not an allowance: the
+ * census may hold no entry for them, and the strict check fails on ANY app-code module
+ * specific to one of them, whatever its path says. A module is specific to a kind when its
+ * path names it (a slack/asana path word, or a bug word beside an intake word) or when its
+ * body speaks that kind's protocol (STRICT_CONTENT_MARKERS: API hosts, token prefixes, SDK
+ * imports, Web API method names, the report-bug callback ids and :bug: reaction). The
+ * markers are proven against the real packages, so they describe how this code actually
+ * looks, not a guess at it.
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -209,7 +220,8 @@ function walk(absDir: string, out: string[], root: string): void {
     return;
   }
   for (const name of names) {
-    if (SKIP_DIRS.has(name) || name.startsWith('.')) continue;
+    // dist-* holds esbuild bundles (dist-devhost, dist-sidecar, ...): built copies, not source.
+    if (SKIP_DIRS.has(name) || name.startsWith('.') || /^dist-/.test(name)) continue;
     const abs = join(absDir, name);
     let isDir = false;
     try {
@@ -249,6 +261,135 @@ export function staleCensusEntries(root: string, census: readonly CensusEntry[])
     if (e.detectedBy === 'content' && !(e.marker && e.marker.test(readFileSync(abs, 'utf8')))) {
       stale.push(`${e.path}: body no longer matches ${String(e.marker)}`);
     }
+  }
+  return stale;
+}
+
+/** Integrations that must leave app code entirely (R-3): no census entry, no allowance. */
+export type StrictKind = 'slack' | 'asana' | 'bug-workflow';
+
+/**
+ * Protocol markers per strict kind. Each must match the kind's real package (asserted below)
+ * and nothing in app code outside NOT_STRICT_SPECIFIC. Web API method names count only as
+ * quoted strings, so `deps.conversations.list(...)` or `reviews.push(...)` never match.
+ */
+export const STRICT_CONTENT_MARKERS: Record<StrictKind, RegExp> = {
+  slack: new RegExp(
+    [
+      String.raw`\bslack\.com\b`,
+      String.raw`\bxox[abpr]-`,
+      String.raw`\bxapp-\d`,
+      String.raw`@slack\/`,
+      String.raw`x-slack-(?:signature|request-timestamp)`,
+      String.raw`['"\x60\/](?:apps\.connections\.open|chat\.(?:postMessage|postEphemeral|update)|conversations\.(?:history|replies|members|list|info|join)|views\.(?:open|publish|update|push)|reactions\.(?:add|get|remove))['"\x60?]`,
+      String.raw`['"](?:url_verification|event_callback|block_actions|view_submission|message_action)['"]`,
+    ].join('|'),
+    'i',
+  ),
+  asana: new RegExp(
+    [
+      String.raw`\basana\.com\b`,
+      String.raw`\bopt_fields\b`,
+      String.raw`\bresource_subtype\b`,
+      String.raw`(?:from\s+|require\(\s*)['"]asana['"]`,
+    ].join('|'),
+    'i',
+  ),
+  'bug-workflow': new RegExp(
+    [
+      String.raw`\breport[-_]bug\b`,
+      String.raw`:bug:`,
+      String.raw`\bchat_bug_suggestions\b`,
+      String.raw`\b(?:is)?[Bb]ug_?[Rr]eport(?:s|ing)?\b`,
+      String.raw`\b(?:reportBug|chatBug|bugTriage|bug_triage|bugSuggest|bug_suggest)`,
+    ].join('|'),
+  ),
+};
+
+const BUG_PATH_WORDS = new Set(['bug', 'bugs']);
+/** A bug word next to one of these in a path names the chat bug-report workflow. */
+const BUG_WORKFLOW_PATH_PARTNERS = new Set([
+  'report',
+  'reports',
+  'triage',
+  'suggest',
+  'suggestion',
+  'suggestions',
+  'intake',
+  'chat',
+  'reaction',
+]);
+
+/** Strict kinds a module's path names. */
+export function strictKindsInPath(path: string): StrictKind[] {
+  const words = pathWords(path);
+  const kinds: StrictKind[] = [];
+  if (words.includes('slack')) kinds.push('slack');
+  if (words.includes('asana')) kinds.push('asana');
+  if (words.some((w) => BUG_PATH_WORDS.has(w)) && words.some((w) => BUG_WORKFLOW_PATH_PARTNERS.has(w))) {
+    kinds.push('bug-workflow');
+  }
+  return kinds;
+}
+
+/** Strict kinds whose protocol a module body speaks. */
+export function strictKindsInContent(body: string): StrictKind[] {
+  return (Object.keys(STRICT_CONTENT_MARKERS) as StrictKind[]).filter((k) => STRICT_CONTENT_MARKERS[k].test(body));
+}
+
+/**
+ * App-code modules that match a strict marker but are not specific to that kind, each with
+ * its reason. An entry must keep matching (stale entries fail) and may never name a kind
+ * by path. Keep this short; a Slack, Asana or bug-workflow module does not belong here.
+ */
+export const NOT_STRICT_SPECIFIC: Record<string, { kinds: StrictKind[]; reason: string }> = {
+  'packages/operator-core/lib/personal-vault/provider-egress.mjs': {
+    kinds: ['slack'],
+    reason:
+      'egress classifier over every provider host (Google, Microsoft, Slack, Discord, Telegram, ...); ' +
+      'Slack is one row of a provider-neutral list',
+  },
+  'packages/operator-core/lib/db-schema-reference/index-manifest.ts': {
+    kinds: ['bug-workflow'],
+    reason:
+      'GENERATED index census of every table; lists chat_bug_suggestions until the contract ' +
+      'migration WI-6554700010008890 drops it, after which this entry goes stale and is removed',
+  },
+};
+
+/** Every app-code module under `root` specific to a strict kind, as `path: kinds`. */
+export function strictViolations(
+  root: string,
+  allow: Record<string, { kinds: StrictKind[] }> = NOT_STRICT_SPECIFIC,
+): string[] {
+  const files: string[] = [];
+  for (const r of APP_ROOTS) walk(join(root, r), files, root);
+  const out: string[] = [];
+  for (const f of files.sort()) {
+    const byPath = strictKindsInPath(f);
+    const allowed = new Set(allow[f]?.kinds ?? []);
+    const byContent = strictKindsInContent(readFileSync(join(root, f), 'utf8')).filter((k) => !allowed.has(k));
+    const kinds = [...new Set([...byPath, ...byContent])];
+    if (kinds.length > 0) out.push(`${f}: ${kinds.join(', ')}`);
+  }
+  return out;
+}
+
+/** NOT_STRICT_SPECIFIC entries that no longer match their kinds, or that name a kind by path. */
+export function staleStrictAllowances(
+  root: string,
+  allow: Record<string, { kinds: StrictKind[] }> = NOT_STRICT_SPECIFIC,
+): string[] {
+  const stale: string[] = [];
+  for (const [path, { kinds }] of Object.entries(allow)) {
+    const abs = join(root, path);
+    if (!existsSync(abs)) {
+      stale.push(`${path}: file is gone`);
+      continue;
+    }
+    if (strictKindsInPath(path).length > 0) stale.push(`${path}: path names a strict kind`);
+    const found = new Set(strictKindsInContent(readFileSync(abs, 'utf8')));
+    for (const k of kinds) if (!found.has(k)) stale.push(`${path}: no longer matches ${k}`);
   }
   return stale;
 }
@@ -344,5 +485,91 @@ describe('provider-specific code census (shrink-only)', () => {
 
   it('every census group has an owned migration', () => {
     for (const e of CENSUS) expect(MIGRATION_OWNERS[e.group], e.path).toMatch(/\S/);
+  });
+});
+
+describe('strict R-3 check: no Slack, Asana or bug-workflow module in app code', () => {
+  it('the census holds no slack, asana or bug-workflow group or entry', () => {
+    expect(Object.keys(MIGRATION_OWNERS).filter((g) => /slack|asana|bug/i.test(g))).toEqual([]);
+    expect(CENSUS.filter((e) => strictKindsInPath(e.path).length > 0).map((e) => e.path)).toEqual([]);
+    const strictBodies = CENSUS.filter(
+      (e) => existsSync(join(REPO_ROOT, e.path)) && strictKindsInContent(readFileSync(join(REPO_ROOT, e.path), 'utf8')).length > 0,
+    );
+    expect(strictBodies.map((e) => e.path)).toEqual([]);
+  });
+
+  it('positive control: the markers recognise the real slack, asana and bug-triage packages', () => {
+    const pkg = (rel: string) => readFileSync(join(REPO_ROOT, 'libs/papercusp/plugins', rel), 'utf8');
+    expect(strictKindsInContent(pkg('slack/provider.mjs'))).toContain('slack');
+    expect(strictKindsInContent(pkg('asana/index.cjs'))).toContain('asana');
+    expect(strictKindsInContent(pkg('bug-triage/papercusp.json'))).toContain('bug-workflow');
+  });
+
+  it('negative control: generic code that only says "slack" or shares a method name is not flagged', () => {
+    for (const body of [
+      'export const ECHO_ABSORB_SLACK_MS = 400; // timer slack, not the provider\n',
+      "if (review?.status === 'pending') reviews.push(timing.reviewWaitMs);\n",
+      'return deps.conversations.list(input);\n',
+      '<a href="https://github.com/x/y/issues/new">🐛 Open a GitHub issue</a>\n',
+      "export const kinds = ['bug', 'feature', 'change'] as const;\n",
+    ]) {
+      expect(strictKindsInContent(body), body).toEqual([]);
+    }
+    expect(strictKindsInPath('packages/operator-core/lib/attention/bug-reproduction.ts')).toEqual([]);
+    expect(strictKindsInPath('packages/operator-core/lib/agent-tools/operator/voice_debug.ts')).toEqual([]);
+  });
+
+  it('control: a planted module of each kind fails the check, whatever its path says', () => {
+    const root = fixtureRoot({
+      'packages/operator-core/lib/integrations/provider-options.ts': 'export {};\n',
+      // Content only: none of these paths names a provider.
+      'packages/operator-core/lib/chat/thread-poster.ts':
+        "await fetch('https://slack.com/api/chat.postMessage', { method: 'POST', body });\n",
+      'packages/operator-core/lib/tickets/task-sync.ts':
+        "const url = 'https://app.asana.com/api/1.0/tasks?opt_fields=name,completed';\n",
+      'packages/operator-core/lib/intake/message-classifier.ts':
+        "if (payload.callback_id === 'report_bug') await fileTicket(payload);\n",
+      // Path only: the body is empty.
+      'apps/operator/app/settings/integrations/AsanaProjectPicker.tsx': 'export {};\n',
+      'packages/operator-core/lib/admission/chat-bug-intake.ts': 'export {};\n',
+      'packages/operator-core/lib/release/gate-fire-drill.ts': 'export const DRILL_WINDOW_SLACK_MS = 5_000;\n',
+      // Tests are not app code.
+      'packages/operator-core/lib/chat/thread-poster.test.ts': "fetch('https://slack.com/api/chat.postMessage');\n",
+    });
+    try {
+      expect(strictViolations(root, {})).toEqual([
+        'apps/operator/app/settings/integrations/AsanaProjectPicker.tsx: asana',
+        'packages/operator-core/lib/admission/chat-bug-intake.ts: bug-workflow',
+        'packages/operator-core/lib/chat/thread-poster.ts: slack',
+        'packages/operator-core/lib/intake/message-classifier.ts: bug-workflow',
+        'packages/operator-core/lib/tickets/task-sync.ts: asana',
+      ]);
+      // An allowance hides a content match only, never a path that names the kind,
+      // and an allowance for a path-named module is itself reported.
+      const allow = {
+        'packages/operator-core/lib/chat/thread-poster.ts': { kinds: ['slack' as const] },
+        'apps/operator/app/settings/integrations/AsanaProjectPicker.tsx': { kinds: ['asana' as const] },
+      };
+      expect(strictViolations(root, allow)).toContain('apps/operator/app/settings/integrations/AsanaProjectPicker.tsx: asana');
+      expect(strictViolations(root, allow)).not.toContain('packages/operator-core/lib/chat/thread-poster.ts: slack');
+      expect(staleStrictAllowances(root, allow)).toEqual([
+        'apps/operator/app/settings/integrations/AsanaProjectPicker.tsx: path names a strict kind',
+        'apps/operator/app/settings/integrations/AsanaProjectPicker.tsx: no longer matches asana',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('no module specific to Slack, Asana or the bug workflow exists in app code', () => {
+    expect(
+      strictViolations(REPO_ROOT),
+      'Slack, Asana and the chat bug workflow ship only as the slack, asana and bug-triage packages ' +
+        '(libs/papercusp/plugins). Move this code into the package, or make it provider-neutral.',
+    ).toEqual([]);
+  });
+
+  it('every strict allowance still applies and names no kind by path', () => {
+    expect(staleStrictAllowances(REPO_ROOT), 'Remove these entries from NOT_STRICT_SPECIFIC.').toEqual([]);
   });
 });

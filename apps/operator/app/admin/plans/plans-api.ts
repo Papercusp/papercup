@@ -3074,7 +3074,7 @@ export interface TriggerRunVisibility {
   stormPolicy: Record<string, unknown>;
   redactedPayload: Record<string, unknown>;
   outcomeLinks: Array<{
-    kind: "gmail-draft" | "slack-thread";
+    kind: "gmail-draft";
     label: string;
     href: string | null;
   }>;
