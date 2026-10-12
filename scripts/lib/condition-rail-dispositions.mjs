@@ -107,8 +107,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
   ),
-  'log-only-fallback|packages/operator-core/lib/attention/reconcile-escalations.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/blueprint/blueprint-run-action.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/db-tools/sanitize-baseline.ts': na(
     'developer tool that sanitizes the frozen schema baseline; the unknown-shape note is its own report to the operator running it',
@@ -121,7 +119,6 @@ export const DISPOSITIONS = Object.freeze({
     'the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)',
   ),
   'log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|fallback': NA_FALLBACK_WAKE,
-  'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|fallback': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
     'configuration parse default: a non-integer tunable falls back to its documented default once at parse time',
