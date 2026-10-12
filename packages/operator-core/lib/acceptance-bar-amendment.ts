@@ -240,19 +240,59 @@ export function approvalReceiptJsonSource(body: string): string {
   const parsable = fences.find((f) => parses(f.content));
   if (parsable) return parsable.content;
 
-  // Requesters also paste the compact preview JSON on its own line between
-  // explanatory paragraphs. Accept exactly one schema-valid approval in that
-  // shape; multiple receipts are ambiguous and must fail closed below.
-  const inlineApprovals = body.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
-    if (!line.startsWith('{') || !line.endsWith('}')) return false;
-    try {
-      return acceptanceBarApprovalSchema.safeParse(JSON.parse(line)).success;
-    } catch {
-      return false;
+  // Requesters also paste the preview JSON between explanatory paragraphs.
+  // A one-line-only check rejected ordinary pretty-printed JSON in an otherwise
+  // valid post, then blamed the post id even though it contained the receipt.
+  // Scan balanced object spans (respecting JSON strings/escapes) and accept only
+  // one schema-valid receipt. Bound candidate work so brace-heavy prose fails
+  // closed instead of turning approval parsing into an unbounded scan.
+  const inlineApprovals: string[] = [];
+  let scannedObjects = 0;
+  for (let start = 0; start < body.length; start += 1) {
+    if (body[start] !== '{') continue;
+    scannedObjects += 1;
+    if (scannedObjects > 128) return body;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < body.length; index += 1) {
+      const character = body[index]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = index;
+          break;
+        }
+      }
     }
-  });
+    if (end < 0) continue;
+
+    const candidate = body.slice(start, end + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (acceptanceBarApprovalSchema.safeParse(parsed).success) {
+        inlineApprovals.push(candidate);
+        if (inlineApprovals.length > 1) return body;
+        start = end;
+      }
+    } catch {
+      // Continue scanning later objects in prose; malformed surrounding text
+      // must not hide a complete, independently parseable receipt below it.
+    }
+  }
   if (inlineApprovals.length === 1) return inlineApprovals[0]!;
-  if (inlineApprovals.length > 1) return body;
 
   // Preserve the historical shape: first fence if any, else the whole body, so
   // a malformed receipt still reaches JSON.parse and reports its own error.
