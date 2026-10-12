@@ -765,10 +765,35 @@ export function looksLikeMidInstallCorruption(output) {
   // itself as a concurrent install (EI-21417347162023894).
   if (
     output.split(/\r?\n/).some(
-      (line) =>
-        /(?:Error\s+)?\[ERR_MODULE_NOT_FOUND\]:/.test(line) &&
-        /Cannot find (?:module|package)/.test(line) &&
-        /node_modules[\\/]/.test(line),
+      (line) => {
+        if (
+          !/(?:Error\s+)?\[ERR_MODULE_NOT_FOUND\]:/.test(line) ||
+          !/Cannot find (?:module|package)/.test(line)
+        )
+          return false;
+
+        // Node reports the IMPORTER for a missing package ("... imported from <path>").
+        // That path can be a suite-owned scratch checkout whose node_modules tree is
+        // intentionally isolated, not this repository's shared install. Attribute the
+        // hint only when the diagnostic's node_modules path resolves inside REPO_ROOT.
+        for (const match of line.matchAll(/(?:file:\/\/)?(?:[A-Za-z]:)?[\\/][^\s'"`]+/g)) {
+          const candidate = match[0].replace(/[),;]+$/, '');
+          if (!/node_modules[\\/]/i.test(candidate)) continue;
+          let absolutePath;
+          try {
+            absolutePath = candidate.startsWith('file://') ? fileURLToPath(candidate) : resolve(candidate);
+          } catch {
+            continue;
+          }
+          const fromRepo = relative(REPO_ROOT, absolutePath);
+          if (
+            fromRepo === '' ||
+            (fromRepo !== '..' && !fromRepo.startsWith(`..${sep}`) && !isAbsolute(fromRepo))
+          )
+            return true;
+        }
+        return false;
+      },
     )
   )
     return true;

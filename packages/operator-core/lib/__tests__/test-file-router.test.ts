@@ -2262,10 +2262,18 @@ describe('looksLikeMidInstallCorruption (EI-18662389554660036)', () => {
   });
 
   it('flags an ERR_MODULE_NOT_FOUND stack that points into node_modules (a half-written package)', () => {
+    const missingModule = join(REPO_ROOT, 'node_modules/vitest/node_modules/@vitest/mocker/dist/node.js');
     const stack = `node:internal/modules/esm/resolve:something
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node_modules/@vitest/mocker/dist/node.js'
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '${missingModule}'
     at new NodeError (node:internal/errors:405:5)`;
     expect(looksLikeMidInstallCorruption(stack)).toBe(true);
+  });
+
+  it('does NOT attribute an isolated scratch checkout dependency failure to the shared install', () => {
+    const stack = `node:internal/modules/esm/resolve:something
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'get-tsconfig' imported from /dev/shm/pcv/wi5764-loader-GsWRfz/repo/node_modules/tsx/dist/register-CFH5oNdT.mjs
+    at new NodeError (node:internal/errors:405:5)`;
+    expect(looksLikeMidInstallCorruption(stack)).toBe(false);
   });
 
   it('does NOT flag an unrelated MODULE_NOT_FOUND with no node_modules path (a real missing-file bug)', () => {

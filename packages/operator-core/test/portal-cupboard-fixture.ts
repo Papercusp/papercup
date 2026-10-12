@@ -42,10 +42,14 @@ export async function startPrivateCupboardCatalog(evidence: string) {
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const address = server.address(); assert.ok(address && typeof address === 'object');
   const base = `http://127.0.0.1:${address.port}`;
-  const initial = await fetch(base + '/listings?limit=100');
-  const body = await initial.json() as { results: Array<{ title: string }> };
-  assert.equal(initial.status, 200);
-  assert.deepEqual(body.results.map(row => row.title).sort(), [selectedTitle, neighborTitle].sort());
+  try {
+    const initial = await fetch(base + '/listings?limit=100');
+    const body = await initial.json() as { results: Array<{ title: string }> };
+    assert.equal(initial.status, 200);
+    assert.deepEqual(body.results.map(row => row.title).sort(), [selectedTitle, neighborTitle].sort());
+  } catch (error) {
+    await new Promise<void>(done => server.close(() => done())); raw.close(); throw error;
+  }
   return { base, marker, selectedTitle, neighborTitle, hiddenTitle,
     close: async () => { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); raw.close(); } };
 }
@@ -56,6 +60,7 @@ export async function runPrivateCupboardPage(page: Page, context: BrowserContext
 }, url: URL) {
   const seed = input.cupboardSeed;
   url.searchParams.set('slug', input.selected);
+  url.searchParams.set('q', seed.marker);
   const reads: Array<{ url: string; status: number; body: string }> = [], writes: string[] = [];
   const captures = new Set<Promise<void>>();
   let denied = false;

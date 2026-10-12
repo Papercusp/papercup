@@ -1,13 +1,27 @@
 import { fork } from 'node:child_process';
-import { rm, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 import { buildPortalRosterBrowser, retainPortalResponse, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateHarnessesBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateWorkspaceBrowserMount } from '../../../test/portal-roster-browser-fixture';
+import { startPrivateCupboardCatalog } from '../../../test/portal-cupboard-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+
+it('private Cupboard catalog preflight executes the maintained listing filters and excludes private rows before PG allocation', async () => {
+  const evidence = await mkdtemp(join(tmpdir(), 'cupboard-preflight-'));
+  let catalog: Awaited<ReturnType<typeof startPrivateCupboardCatalog>> | undefined;
+  try {
+    catalog = await startPrivateCupboardCatalog(evidence);
+    const response = await fetch(catalog.base + '/listings?kind=pack&claim=unclaimed&q=' + encodeURIComponent(catalog.marker));
+    expect(response.status).toBe(200);
+    const body = await response.json() as { results: Array<{ title: string }> };
+    expect(body.results.map(row => row.title)).toEqual([catalog.selectedTitle]);
+  } finally { await catalog?.close(); await rm(evidence, { recursive: true, force: true }); }
+});
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal Testing browser graph compiles through the maintained standalone boundary before private allocation', async () => {
@@ -154,6 +168,9 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     expect(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'private Cupboard requires a durable receipt sink before browser compilation').toBeTruthy();
     preparePrivateRosterSocketRoot();
     await verifyPrivateHudReadPolicy();
+    const catalogEvidence = await mkdtemp(join(tmpdir(), 'cupboard-preflight-'));
+    try { const catalog = await startPrivateCupboardCatalog(catalogEvidence); await catalog.close(); }
+    finally { await rm(catalogEvidence, { recursive: true, force: true }); }
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', cupboard: true });
     let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
