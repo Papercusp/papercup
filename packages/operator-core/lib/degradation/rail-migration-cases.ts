@@ -19,7 +19,7 @@ export interface RailMigrationCase {
 import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 
-export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-010', 'P-012'];
+export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
