@@ -96,8 +96,8 @@ function legs(log: string): Array<{ phase: string | null; descriptor: string | n
   return readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function probe(args: string[], env: Record<string, string | undefined>): { code: number; out: string } {
-  const r = spawnSync('bash', [SCRIPT, ...args], {
+function probe(args: string[], env: Record<string, string | undefined>, script = SCRIPT): { code: number; out: string } {
+  const r = spawnSync('bash', [script, ...args], {
     encoding: 'utf8',
     timeout: 90_000,
     env: { ...process.env, ...env },
@@ -108,6 +108,39 @@ function probe(args: string[], env: Record<string, string | undefined>): { code:
 const MUTATE = 's/^guarded$/MUTATED/';
 
 describe('mutation-probe.sh descriptor export (R-1)', () => {
+  it('auto: discovers the original script repository after the runner freezes itself outside Git', () => {
+    const reader = join(dir, 'reader');
+    initRepo(reader);
+    const sub = join(reader, 'libs', 'test-config');
+    initRepo(sub);
+    mkdirSync(join(sub, 'src'));
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'),
+      readFileSync(resolve(__dirname, '../../../../../libs/test-config/src/mutation-descriptor.ts')));
+    git(sub, ['add', 'src/mutation-descriptor.ts']);
+    git(sub, ['commit', '-qm', 'replayable descriptor reader']);
+    const script = join(reader, 'scripts', 'mutation-probe.sh');
+    mkdirSync(join(reader, 'scripts'));
+    writeFileSync(script, readFileSync(SCRIPT));
+    git(reader, ['add', 'scripts/mutation-probe.sh', 'libs/test-config']);
+    git(reader, ['commit', '-qm', 'original runner and reader']);
+    const health = join(dir, 'health.json');
+    writeFileSync(health, JSON.stringify({ sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) }));
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: undefined,
+    }, script);
+
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/mutation descriptor on: deployed reader [0-9a-f]+ parses execution_details\.mutation/);
+    const seen = legs(log);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(leg => leg.descriptor !== null
+      && parseMutationInvocationDescriptor(JSON.parse(leg.descriptor)))).toBe(true);
+  });
+
   it('fails closed when the admitted descriptor builder crashes, without issuing a caught or survived verdict', () => {
     const { file } = makeSubjectRepo();
     const { recorder } = makeRecorder();

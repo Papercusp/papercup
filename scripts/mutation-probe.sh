@@ -1434,7 +1434,7 @@ mutation_descriptor_reader_ready() {
     MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
     return 1
   fi
-  repo="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)}"
+  repo="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$RUNNER_ROOT}"
   link="$(git -C "$repo" rev-parse --verify -q "$sha:libs/test-config" 2>/dev/null)"
   if [ -z "$link" ]; then
     MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha has no resolvable libs/test-config gitlink in $repo"
