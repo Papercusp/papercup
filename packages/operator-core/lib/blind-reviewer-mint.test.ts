@@ -173,7 +173,13 @@ describe('mintBlindGapReviewer', () => {
     expect(d.loadBrief).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, harnessSlug: 'papercusp' });
     expect(d.handler).toHaveBeenCalledTimes(1);
     const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
-    expect(args).toEqual({ brief: result.kickoff, harness: 'papercusp', headless: true, account: 'auto' });
+    expect(args).toEqual({
+      brief: result.kickoff,
+      harness: 'papercusp',
+      headless: true,
+      account: 'auto',
+      mcpTarget: 'spawn-host',
+    });
     // The reviewer routes through the gateway pool, never the box's own system login: a
     // revoked/limited 'default' login killed every reviewer on its first turn
     // (WI-6554700010008650). Pinned to the literal so the constant cannot drift silently.
@@ -184,6 +190,18 @@ describe('mintBlindGapReviewer', () => {
     expect(ctx.isSuperuser).toBe(false);
     expect(ctx.principal).toEqual({ kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: 'ws-1' });
     expect(ctx[KEY]).toEqual(blindReviewerConfinement(SLUG));
+  });
+
+  it('binds the reviewer door to the spawning product runtime instead of the stable catalog', async () => {
+    const d = deps();
+    await mintBlindGapReviewer(
+      { slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } },
+      d.deps,
+    );
+    expect(d.handler).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpTarget: 'spawn-host' }),
+      expect.objectContaining({ [KEY]: blindReviewerConfinement(SLUG) }),
+    );
   });
 
   it('refuses without a concrete workspace and loads nothing', async () => {

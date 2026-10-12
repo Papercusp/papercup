@@ -140,7 +140,15 @@ export async function mintBlindGapReviewer(
     [confinementKey]: blindReviewerConfinement(input.slug),
   };
   const launch = await handler(
-    { brief: kickoff, harness: input.harness, headless: true, account: BLIND_GAP_REVIEW_ACCOUNT },
+    {
+      brief: kickoff,
+      harness: input.harness,
+      headless: true,
+      account: BLIND_GAP_REVIEW_ACCOUNT,
+      // A confined reviewer must reach the door and product on the build that
+      // minted it. The stable endpoint may still serve an older tool catalog.
+      mcpTarget: 'spawn-host',
+    },
     systemCtx as never,
   );
   return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq };
