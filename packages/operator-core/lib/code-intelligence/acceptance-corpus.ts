@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = 'e3dbfa8012b01a3df65a0dec91fc77f1e45109b5';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-10-05T21:30:41Z';
+export const CORPUS_BASELINE_COMMIT = '25b768f6978dcaf7808222bc64feda2d6b74d74f';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-10-11T23:24:38Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.
@@ -207,12 +207,12 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 319,
+        line1: 337,
         symbolOnLine: 'impl AsyncRead for IpcStream',
       },
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 335,
+        line1: 353,
         symbolOnLine: 'impl AsyncWrite for IpcStream',
       },
     ],
