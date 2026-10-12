@@ -1,5 +1,6 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ const src = readFileSync(SCRIPT, 'utf8');
 const lockRootAssignment = src.match(/^TAURI_VERIFIER_LOCK_ROOT=.*$/m)?.[0];
 const displayLockAssignment = src.match(/^DISPLAY_LOCK_DIR=.*$/m)?.[0];
 const portLockAssignment = src.match(/^PORT_LOCK_DIR=.*$/m)?.[0];
+const pickAndLockPortsFunction = src.match(/^pick_and_lock_ports\(\) \{[\s\S]*?^\}/m)?.[0];
 
 function commonEnv(root: string, privateTmpdir: string, runtimeDir: string, home: string) {
   return {
@@ -24,6 +26,24 @@ function commonEnv(root: string, privateTmpdir: string, runtimeDir: string, home
     LOCK_RELEASE: join(root, 'release'),
     LOCK_PORT: '49399',
   };
+}
+
+async function getFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('expected an IPv4 address from an ephemeral TCP listener');
+  }
+  const port = address.port;
+  await new Promise<void>((resolveClose, reject) => {
+    server.close(error => error ? reject(error) : resolveClose());
+  });
+  return port;
 }
 
 describe('verify-tauri-headless shares reservation locks across isolated TMPDIRs', () => {
@@ -106,6 +126,88 @@ describe('verify-tauri-headless shares reservation locks across isolated TMPDIRs
       expect(second.stdout).toContain('second launcher was blocked by the shared flock');
       expect(firstPortDir).toBe(join(runtimeDir, 'papercusp-tauri-verifier', 'port-locks'));
       expect(firstDisplayDir).toBe(join(runtimeDir, 'papercusp-tauri-verifier', 'display-locks'));
+    } finally {
+      writeFileSync(join(root, 'release'), 'release');
+      const result = await firstDone;
+      expect(result.code, firstStderr || firstStdout).toBe(0);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('walks to another port pair when isolated TMPDIRs share XDG_RUNTIME_DIR', async () => {
+    expect(lockRootAssignment).toBeTruthy();
+    expect(portLockAssignment).toBeTruthy();
+    expect(pickAndLockPortsFunction).toBeTruthy();
+
+    const root = mkdtempSync(join(tmpdir(), 'verify-tauri-port-picker-locks-'));
+    const tmpA = join(root, 'private-a');
+    const tmpB = join(root, 'private-b');
+    const runtimeDir = join(root, 'runtime');
+    const home = join(root, 'home');
+    mkdirSync(tmpA);
+    mkdirSync(tmpB);
+    mkdirSync(runtimeDir);
+    mkdirSync(home);
+    const portBase = await getFreePort();
+
+    const pickScript = [
+      'set -euo pipefail',
+      'source "$FEDERATION_ASSERTS"',
+      'TMPDIR="$PRIVATE_TMPDIR"',
+      lockRootAssignment!,
+      portLockAssignment!,
+      'PORT_BASE="$LOCK_PORT"',
+      pickAndLockPortsFunction!,
+      'pick_and_lock_ports',
+    ];
+    const firstScript = [
+      ...pickScript,
+      'printf "%s\\n%s\\n%s\\n" "$PORT_LOCK_DIR" "$DEV_PORT" "$PTY_PORT" > "$LOCK_READY"',
+      'while [ ! -e "$LOCK_RELEASE" ]; do sleep 0.01; done',
+      'fed_release_port_locks',
+    ].join('\n');
+    const secondScript = [
+      ...pickScript,
+      'printf "%s\\n%s\\n%s\\n" "$PORT_LOCK_DIR" "$DEV_PORT" "$PTY_PORT"',
+      'fed_release_port_locks',
+    ].join('\n');
+
+    const first = spawn('bash', ['-c', firstScript], {
+      env: { ...commonEnv(root, tmpA, runtimeDir, home), LOCK_PORT: String(portBase) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const firstDone = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveDone) => {
+      first.once('close', (code, signal) => resolveDone({ code, signal }));
+    });
+
+    let firstStdout = '';
+    let firstStderr = '';
+    first.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+      firstStdout += chunk;
+    });
+    first.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+      firstStderr += chunk;
+    });
+
+    try {
+      const deadline = Date.now() + 3000;
+      while (!existsSync(join(root, 'ready')) && Date.now() < deadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      expect(existsSync(join(root, 'ready')), firstStderr).toBe(true);
+
+      const [firstPortDir, firstDevPort, firstPtyPort] = readFileSync(join(root, 'ready'), 'utf8').trim().split('\n');
+      const second = spawnSync('bash', ['-c', secondScript], {
+        env: { ...commonEnv(root, tmpB, runtimeDir, home), LOCK_PORT: String(portBase) },
+        encoding: 'utf8',
+      });
+      const [secondPortDir, secondDevPort, secondPtyPort] = second.stdout.trim().split('\n');
+
+      expect(second.status, second.stderr).toBe(0);
+      expect(secondPortDir).toBe(firstPortDir);
+      expect(firstPortDir).toBe(join(runtimeDir, 'papercusp-tauri-verifier', 'port-locks'));
+      expect(Number(secondDevPort)).toBeGreaterThan(Number(firstDevPort));
+      expect(Number(secondPtyPort)).not.toBe(Number(firstPtyPort));
     } finally {
       writeFileSync(join(root, 'release'), 'release');
       const result = await firstDone;
