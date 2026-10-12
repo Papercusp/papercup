@@ -1,4 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { brotliDecompressSync } from 'node:zlib';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
@@ -282,7 +285,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
         },
       },
     });
-    const timings = verdict.serverAudit?.authorityTimings as Record<string, unknown>;
+    const timings = verdict?.serverAudit?.authorityTimings as Record<string, unknown>;
     expect(JSON.stringify(timings)).not.toMatch(/ws-a|SELECT|launch_spec/i);
   });
 
@@ -1160,5 +1163,129 @@ describe('P-005 grants reach actual execution boundaries', () => {
       obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
     });
     expect(grants.read).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Plan token-efficiency-prompts-cache-and-behavior-2026-10-11 P-011 (D-018): the
+ * refused-compaction retry loop was a re-armed predecessor's launch row judging a
+ * live owner's `session:request-compaction`. These cases replay REAL rows instead
+ * of compiled stand-ins: one owner's `session_briefs` control anchor and both of
+ * its open `adv_sessions` rows, read verbatim from the live database at 08:57Z on
+ * 2026-10-12 (read-only transaction; capture script recorded on the plan) and
+ * stored brotli-compressed. The SHA-256 pin makes a hand-edited fixture fail loudly.
+ * Row 39614 is the owner's current launch (its specificationRevision is the applied
+ * pair); row 39406 is an older, still-open launch at an earlier revision with no
+ * receipt for the applied pair — the re-armed predecessor.
+ */
+interface RealKernelCapture {
+  capturedAt: string;
+  ownerId: string;
+  workspaceId: string;
+  brief: { control_state: { activation?: { applied?: { specificationRevision?: string; stateRevision?: string } } }; control_generation: number; workspace_id: string };
+  sessions: Array<{
+    adv_session_id: number; adv_session_xmin: string; started_at: string; ended_at: string | null;
+    ended_by: string | null; port_id: string | null;
+    launch_spec: { specificationRevision: string; stateRevision: string; identityHistory?: Array<{ specificationRevision: string; stateRevision: string }> };
+  }>;
+}
+const REAL_ROWS_FIXTURE = new URL('./__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br', import.meta.url);
+const REAL_ROWS_SHA256 = 'c184f14f95f4fd51c1dd56ae7283b81556dab1515c64d8889d8112ca9dd18e56';
+const REAL_CURRENT_ROW = 39614;
+const REAL_PREDECESSOR_ROW = 39406;
+
+function loadRealCapture(): RealKernelCapture {
+  const bytes = readFileSync(REAL_ROWS_FIXTURE);
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(REAL_ROWS_SHA256);
+  return JSON.parse(brotliDecompressSync(bytes).toString('utf8')) as RealKernelCapture;
+}
+
+/** The anchor read's rows for this owner, newest first — the SQL's `ORDER BY s.id DESC`. */
+function realAnchorRows(capture: RealKernelCapture) {
+  return capture.sessions.map((session) => ({ ...capture.brief, ...session }));
+}
+
+function realCompactionRequest(capture: RealKernelCapture, advSessionId?: number) {
+  return request({
+    toolName: 'session:request-compaction',
+    capabilities: ['coord:write'],
+    args: { autoContinue: true },
+    ctx: ctx({
+      workspaceId: capture.workspaceId,
+      uiClientId: capture.ownerId,
+      ...(advSessionId === undefined ? {} : { advSessionId }),
+    }),
+  });
+}
+
+describe('control-anchor kernel resolver over real captured rows (P-011)', () => {
+  it('the captured rows reproduce a re-armed predecessor beside the current launch', () => {
+    const capture = loadRealCapture();
+    const applied = capture.brief.control_state.activation?.applied;
+    expect(applied?.specificationRevision).toMatch(/^[0-9a-f]{64}$/);
+    const byId = new Map(capture.sessions.map((s) => [s.adv_session_id, s]));
+    const current = byId.get(REAL_CURRENT_ROW);
+    const predecessor = byId.get(REAL_PREDECESSOR_ROW);
+    // Both launches are still open for the same owner and workspace.
+    expect(current?.ended_at).toBeNull();
+    expect(predecessor?.ended_at).toBeNull();
+    expect(capture.sessions.map((s) => s.adv_session_id)).toEqual([REAL_CURRENT_ROW, REAL_PREDECESSOR_ROW]);
+    // The current row carries the applied pair; the predecessor carries neither it nor a receipt for it.
+    expect(current?.launch_spec.specificationRevision).toBe(applied?.specificationRevision);
+    expect(current?.launch_spec.stateRevision).toBe(applied?.stateRevision);
+    expect(predecessor?.launch_spec.specificationRevision).not.toBe(applied?.specificationRevision);
+    expect((predecessor?.launch_spec.identityHistory ?? []).some((h) =>
+      h.specificationRevision === applied?.specificationRevision && h.stateRevision === applied?.stateRevision)).toBe(false);
+  });
+
+  it('refuses a flipped fixture byte through the SHA-256 pin', () => {
+    const bytes = Buffer.from(readFileSync(REAL_ROWS_FIXTURE));
+    bytes[bytes.length >> 1] ^= 0x01;
+    expect(createHash('sha256').update(bytes).digest('hex')).not.toBe(REAL_ROWS_SHA256);
+  });
+
+  it('allows the current launch to request compaction when it is the verified caller', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_CURRENT_ROW));
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: String(REAL_CURRENT_ROW), selection: 'caller-row' } },
+    });
+  });
+
+  it('denies the re-armed predecessor as stale-artifact when it is the verified caller', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_PREDECESSOR_ROW));
+    expect(verdict).toMatchObject({
+      decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      serverAudit: {
+        identityLaunchRecordSelection: { advSessionId: String(REAL_PREDECESSOR_ROW), selection: 'caller-row' },
+      },
+    });
+  });
+
+  it('fails closed as verified-caller-row-unavailable when the verified caller row is absent', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_CURRENT_ROW + 1));
+    expect(verdict).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['verified-caller-row-unavailable'] },
+    });
+  });
+
+  it('elects the newest launch, not the predecessor, when no caller row is bound', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture));
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: {
+        identityLaunchRecord: { advSessionId: String(REAL_CURRENT_ROW), selection: 'owner-workspace-fallback' },
+      },
+    });
   });
 });
