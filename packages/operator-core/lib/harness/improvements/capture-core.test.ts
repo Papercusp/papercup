@@ -5034,14 +5034,17 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(new Set(store.occurrences.map((occurrence) => occurrence.canonicalId))).toEqual(new Set(['EI-S1']));
   });
 
-  it('keeps same-prefix lock failures separate while exact repeats still coalesce (EI-25714783883986261)', async () => {
+  it('keeps same-prefix helper-eligible lock failures separate while exact repeats still coalesce (EI-25714783883986261)', async () => {
     const store = signatureStore();
     const firstMessage = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
       'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
     const secondMessage = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
       'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.';
+    // This core helper intentionally accepts `status: error`; the HTTP 502
+    // production route falls through to captureImprovement and is covered by
+    // the two-report wrapper regression in capture.test.ts.
     const failure = (message: string) => ({
-      toolName: 'locks:acquire', errorCode: 'mcp_proxy_upstream_error', status: '502',
+      toolName: 'locks:acquire', errorCode: 'mcp_proxy_upstream_error', status: 'error',
       schemaRevision: '', fieldPath: '', runtimeVersion: '', message,
     });
 
