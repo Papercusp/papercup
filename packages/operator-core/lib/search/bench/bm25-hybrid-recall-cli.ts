@@ -438,6 +438,8 @@ async function main(): Promise<number> {
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
   if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
     throw new Error('--replay-reps must be an integer from 1 to 10');
+  if (fs.existsSync(out) || fs.existsSync(out.replace(/\.json$/, '.md')))
+    throw new Error('artifact path already exists; preserve every prior result and choose a new declared path');
 
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
   const manifestPath = argValue('--qualification-manifest');
@@ -455,7 +457,7 @@ async function main(): Promise<number> {
       judged: !!manifest, verdict: 'invalid', latencyVerdict: 'invalid', sources: [], qualificationManifest,
       sourceQualification: { ...preflight, before: sourceBefore, after: sourceBefore } };
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`);
+    fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { flag: 'wx' });
     console.error(`[r13] REFUSING TO RUN: ${preflight.reasons.join('; ')} -> ${out}`);
     return 1;
   }
@@ -896,8 +898,8 @@ async function main(): Promise<number> {
     steadyPairs: writtenSteady.pairs,
   };
   fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`);
-  fs.writeFileSync(out.replace(/\.json$/, '.md'), renderMarkdown(artifact));
+  fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`, { flag: 'wx' });
+  fs.writeFileSync(out.replace(/\.json$/, '.md'), renderMarkdown(artifact), { flag: 'wx' });
   for (const s of summaries) {
     const l = s.arms.legacy;
     const b = s.arms.bm25;

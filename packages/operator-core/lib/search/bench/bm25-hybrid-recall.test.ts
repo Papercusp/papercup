@@ -85,6 +85,12 @@ describe('executed source qualification', () => {
     const after = snapshot(); after.rootCommit = 'd'.repeat(40); after.errors = ['git object unavailable'];
     expect(qualifyExecutedSource(snapshot(), after, manifest()).verdict).toBe('invalid');
   });
+  it('rejects an inconsistent root HEAD or a missing repository witness', () => {
+    const inconsistent = snapshot(); inconsistent.repos[0]!.head = 'd'.repeat(40);
+    expect(qualifyExecutedSource(inconsistent, inconsistent).verdict).toBe('invalid');
+    const missing = snapshot(); missing.repos = [];
+    expect(qualifyExecutedSource(missing, missing).verdict).toBe('invalid');
+  });
   it('refuses a manifest that drops the mandatory source set, reuses seeds, or has unsafe paths', () => {
     const expected = manifest(); delete expected.sourceHashes[BM25_EXECUTED_SOURCE_PATHS[0]];
     expect(sourceQualificationManifestSchema.safeParse(expected).success).toBe(false);

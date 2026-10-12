@@ -65,6 +65,8 @@ export function qualifyExecutedSource(before: ExecutedSourceSnapshot, after: Exe
   const paths = expected ? Object.keys(expected.sourceHashes) : [...BM25_EXECUTED_SOURCE_PATHS];
   for (const [label, snapshot] of [['before', before], ['after', after]] as const) {
     if (!snapshot.rootCommit) reasons.push(`${label}: root commit unavailable`);
+    if (snapshot.repos.find(r => r.repo === '.')?.head !== snapshot.rootCommit)
+      reasons.push(`${label}: root HEAD differs from observed root commit`);
     if (expected && snapshot.rootCommit !== expected.rootCommit) reasons.push(`${label}: root commit differs from manifest`);
     for (const error of snapshot.errors ?? []) reasons.push(`${label}: ${error}`);
     for (const p of paths) {
