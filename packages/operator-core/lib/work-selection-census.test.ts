@@ -147,6 +147,7 @@ describe('work-selection census (enterprise-data-sources P-007)', () => {
     expect(reaching.map((r) => r.id).sort()).toEqual([
       'drain-mode',
       'embed-backfill',
+      'fleet-metrics-population',
       'list-search-count',
       'spec-enforcement-latency',
       'sql-features-consolidated-view',

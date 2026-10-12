@@ -126,6 +126,7 @@ beforeAll(async () => {
       owner text,
       speaker text NOT NULL,
       text text NOT NULL,
+      chunked_at timestamptz,
       ingested_at timestamptz NOT NULL DEFAULT now(),
       text_embedding vector(768),
       text_embedding_mode text,
@@ -207,7 +208,7 @@ describe('native source population before retrieval and subject bounds', () => {
     const session = options.session ?? 'sess-' + owner;
     await rootSql`UPDATE harness_shared.session_turns
       SET source_kind = ${options.backend ?? 'claude'}, session_id = ${session},
-          text = ${options.text ?? question} WHERE owner = ${owner}`;
+          text = ${options.text ?? question}, chunked_at = NULL WHERE owner = ${owner}`;
     await rootSql`INSERT INTO harness_shared.adv_sessions
       (workspace_id, coord_owner_id, agent, role, session_id, ended_at)
       VALUES (${options.workspace ?? WS}, ${owner}, ${options.backend ?? 'claude'}, ${options.role ?? null},
@@ -268,11 +269,21 @@ describe('bounded subject evidence against real transcript SQL', () => {
     if (addedOwners.length) await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
     addedOwners = [];
   });
-  async function passage(owner: string, text: string, angle: number) {
+  async function passage(owner: string, text: string, angle: number, previouslyChunked = false) {
     addedOwners.push(owner);
     await insertTurn(owner, angle, DAY);
-    await rootSql`UPDATE harness_shared.session_turns SET text = ${text} WHERE owner = ${owner}`;
+    if (previouslyChunked) {
+      await rootSql`UPDATE harness_shared.session_turns SET chunked_at = ${NOW.toISOString()}::timestamptz WHERE owner = ${owner}`;
+    }
+    await rootSql`UPDATE harness_shared.session_turns SET text = ${text}, chunked_at = NULL WHERE owner = ${owner}`;
   }
+
+  it('invalidates a previous chunk marker when replacing fixture transcript text', async () => {
+    await passage('subject-chunk-marker', 'replacement transcript', 0, true);
+    const rows = await rootSql`SELECT text, chunked_at FROM harness_shared.session_turns WHERE owner = 'subject-chunk-marker'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ text: 'replacement transcript', chunked_at: null });
+  });
 
   it('rejects the sole-live-gate collision while keeping direct and conceptual expertise', async () => {
     await passage('subject-gate', 'The ownership cell is held-live; this is the sole live gate lane. Do not run the checkpoint.', 0);

@@ -180,7 +180,7 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
       },
       {
         file: 'packages/operator-core/lib/agent-tools/loop/arm.ts',
-        anchor: 'const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });',
+        anchor: 'claimWorkItem(drivenCandidate, ownerId, { harness }),',
         via: 'claimWorkItem',
       },
       {
@@ -320,12 +320,24 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     role: 'listing',
     surface: 'search:* issue source (engineer_issues)',
     file: 'packages/operator-core/lib/agent-tools/search/sources.ts',
-    anchor: 'FROM harness_shared.engineer_issues ${lex.join}',
+    anchor: ': sql`harness_shared.engineer_issues ei`;',
     admits: 'inherits the engineer_issues view: bug, change, task',
     reachesNonWork: 'no',
     discriminators: ['engineer_issues view kind filter'],
     evidence: 'code',
     note: 'Found by the WI-10005121 completeness scan.',
+  },
+  {
+    id: 'fleet-metrics-population',
+    role: 'listing',
+    surface: 'fleet metrics population and terminal contributions',
+    file: 'packages/operator-core/lib/agent-tools/fleet/fleet-metrics-scope.ts',
+    anchor: 'SELECT wi.feature_id FROM harness_shared.work_items wi',
+    admits: 'all kinds matching the saved fleet view filter, including observations',
+    reachesNonWork: 'yes',
+    discriminators: ['workspace', 'harness', 'fleet view filter', 'optional issue kind'],
+    evidence: 'code',
+    note: 'Reporting uses the fleet view population, not the claim queue; listAllWorkItemsForFileExport deliberately includes observations.',
   },
   // ── auxiliary ──────────────────────────────────────────────────────────────────────────
   {
@@ -520,6 +532,7 @@ export const WORK_SELECTION_SCAN_EXCLUSIONS: readonly WorkSelectionScanExclusion
   ex('coordination/coupling-sources.ts', 'observation-lane', 'reads lane=observation reflections only'),
   ex('improvements/filing-classes.ts', 'filing-identity', 'finds an existing row for a filing class before minting'),
   ex('plans/acceptance-drain-filing.ts', 'filing-identity', 'finds its own acceptance-drain filing'),
+  ex('plans/acceptance-drain-disposition.ts', 'filing-identity', 'reads or updates acceptance-drain filings by acceptanceDrainPlan identity, never selects agent work'),
   ex('plans/acceptance-drain-sweep.ts', 'filing-identity', 'sweeps its own acceptance-drain filings'),
   ex('plans/spec-triad-filing.ts', 'filing-identity', 'finds its own spec-triad filing'),
   ex('plans/spec-triad-sweep.ts', 'filing-identity', 'sweeps its own spec-triad filings'),
