@@ -3009,6 +3009,23 @@ dependency_generation_ensure_once() {
   dependency_generation_emit_phase \
     cache-validation "$phase_started_ms" "$cache_validation_outcome"
   if [ "$existing_generation_valid" = 'true' ]; then
+    # The tree identity can stay unchanged while a new input selector carries
+    # different lockfiles. Audit that binding just as we audit a copied build
+    # (WI-6554700010008526), using the pre-copy snapshot rather than live inputs.
+    if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+      phase_started_ms="$(dependency_generation_now_ms)"
+      if ! dependency_generation_audit_lock_tree "$generation/tree" "$build/.lock-inputs"; then
+        dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" failed
+        dependency_generation_emit_summary \
+          lock-tree-incomplete "$total_started_ms" "$source_before" "$identity" \
+          "$predecessor_identity" "$tree_total" "$tree_total" 0 0
+        dependency_generation_log \
+          'FATAL: cached dependency trees do not realise their lockfiles; refusing to publish a selector (repair the source install, e.g. npm run install:safe)'
+        dependency_generation_remove_build "$build"
+        return 75
+      fi
+      dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
+    fi
     dependency_generation_log "validated existing generation $identity; confirming live source stability"
     dependency_generation_log 'capturing live dependency manifest (after existing-generation validation)'
     phase_started_ms="$(dependency_generation_now_ms)"
