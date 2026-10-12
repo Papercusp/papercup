@@ -347,7 +347,7 @@ export async function evaluateSetContent(
   expectedHash: string | undefined,
   opts: {
     expectedVersion?: number;
-    meta?: { version: number; contentHash: string } | null;
+    meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
     allowShrink?: boolean;
     /**
      * EI-18756269998422483: opt this call into the item-status-regression
@@ -462,11 +462,21 @@ export async function evaluateSetContent(
   // (plans:edit, set-content, and set-content-chunk) must not skip activation,
   // admission, acceptance, supersede, or terminal cleanup gates. Legacy plans
   // convert only through set-frontmatter, which now accepts non-terminal starts.
-  const currentStatus = currentParsed.frontmatter.status ?? null;
+  // The PG row is the lifecycle authority. A prior writer can leave its
+  // frontmatter stale; comparing only the two markdown bodies would treat that
+  // stale value as unchanged, then withPlanLock would persist it back into the
+  // canonical status column on this otherwise unrelated edit.
+  const storedPlanStatus = opts.meta?.planStatus;
+  const currentContentStatus = currentParsed.frontmatter.status ?? null;
+  // `status` is a nullable derived index. Older rows and lightweight test seeds
+  // can legitimately leave it NULL, so only a populated value can override the
+  // canonical markdown status.
+  const currentStatus = storedPlanStatus != null ? storedPlanStatus : currentContentStatus;
   const proposedStatus = proposed.frontmatter.status ?? null;
   const legacyConversion = currentParsed.isLegacy && !proposed.isLegacy;
   if (legacyConversion || currentStatus !== proposedStatus) {
     const writer = currentParsed.isLegacy ? 'plans:set-frontmatter' : 'plans:set-plan-status';
+    const statusMismatch = storedPlanStatus != null && storedPlanStatus !== currentContentStatus;
     return {
       newBody: null,
       value: {
@@ -475,7 +485,9 @@ export async function evaluateSetContent(
         currentStatus,
         proposedStatus,
         writer,
-        message: writer === 'plans:set-frontmatter'
+        message: statusMismatch
+          ? `The canonical plan status '${currentStatus ?? 'missing'}' disagrees with the current markdown status '${currentContentStatus ?? 'missing'}'; use ${writer} to reconcile lifecycle status before this content write.`
+          : writer === 'plans:set-frontmatter'
           ? 'Legacy plans must be converted with plans:set-frontmatter and a non-terminal initial status.'
           : 'Plan lifecycle status changes must use plans:set-plan-status so the lifecycle gates and cleanup run.',
       },

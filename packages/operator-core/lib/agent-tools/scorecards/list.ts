@@ -37,7 +37,7 @@ export default defineTool({
     chaining:
       'scorecards:list { rubricRef, subjectRef: "EI-123", since } → while nextCursor is non-null, call scorecards:list again with the same filters and cursor: nextCursor → inspect missingKeys/ratings → drill row with work_items:get { id: issueId } or rubric criteria with rubrics:get { rubricRef }.',
     returns:
-      'Rows include ratings, synthesized, nKeys, missingKeys; `ratings`, `gradedGeneration`, and `generationFreshness` are nested OBJECTS, not scalars (`generationFreshness` only appears with `gradedGeneration`), so flat/CSV projection fails. `count` is page size; when `hasMore` is true, pass `nextCursor` back as `cursor` to continue the keyset page. `nextCursor` is null when exhausted.',
+      'Rows include ratings, synthesized, nKeys, missingKeys; `ratings`, `gradedGeneration`, and `generationFreshness` are nested OBJECTS, not scalars (`generationFreshness` only appears with `gradedGeneration`), so flat/CSV projection fails. Its status is `fresh`, `stale`, `unknown`, or `not-applicable`; `not-applicable` means a complete matched replay recipe proves the selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence still use the live bg-host generation comparison. `count` is page size; when `hasMore` is true, pass `nextCursor` back as `cursor` to continue the keyset page. `nextCursor` is null when exhausted.',
     seeAlso: [
       'scorecards:freshness (staleness / partial-emit summary)',
       'scorecards:evaluate (typed grading skeleton + evidence delta)',

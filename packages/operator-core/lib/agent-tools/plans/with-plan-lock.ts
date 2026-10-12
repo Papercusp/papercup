@@ -176,6 +176,8 @@ export async function settleRoutedPlanIdeaOnTerminalEntry(
 export interface PlanWriteMeta {
   version: number;
   contentHash: string;
+  /** Canonical plan lifecycle status, read under the same lock as `body`. */
+  planStatus: string | null;
   /** Operational lifecycle read under the same lock as the candidate body. */
   opStatus: string | null;
   /**
@@ -497,6 +499,7 @@ export async function withPlanLock<T>(
         content: string;
         version: string | number;
         content_hash: string;
+        status: string | null;
         template: string | null;
         template_data: unknown;
         input_schema: unknown;
@@ -505,7 +508,7 @@ export async function withPlanLock<T>(
         acceptance_bar_rubric_slug: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, template, template_data, input_schema, output_schema, op_status,
+      SELECT content, version, content_hash, status, template, template_data, input_schema, output_schema, op_status,
              acceptance_bar_rubric_slug
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -530,6 +533,7 @@ export async function withPlanLock<T>(
       ? {
           version: curVersion,
           contentHash: cur.content_hash,
+          planStatus: cur.status ?? null,
           opStatus: cur.op_status ?? null,
           templateData: cur.template_data ?? null,
           inputSchema: cur.input_schema ?? null,

@@ -43,12 +43,13 @@
 // and the export refuses without it rather than publish a README with no download link.
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
+import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -535,17 +536,28 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
 }
 
 /** Prepare a source snapshot only after all declared inputs match their pin.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean }} options
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false, operatorApi }) {
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
+  // Observations come from a separately selected root, never this exporter.
+  const planned = operatorApi ? readOperatorApiHandoff(operatorApi, sha) : undefined;
+  if (operatorApi) {
+    if (realpathSync(operatorApi.root) === realpathSync(repo))
+      throw new PreviewError('operator-api inputs require an independent selected root', 2);
+    if (existsSync(operatorApi.outputPath)) throw new PreviewError('operator-api handoff destination already exists', 2);
+    assertOutsideArchive(dest, operatorApi.outputPath);
+    for (const path of paths) assert.ok(planned.source.testedInputs.some(input => input.path === path),
+      `Operator-api selected tested input missing: ${path}`);
+  }
   if (gitCheckout) {
     // Reuse the guarded local clone: detached exact ref, borrowed objects, local
     // submodule pins, no origins, and cleanup only of its own new destination.
     const { createScratchClone } = await import('@papercusp/operator-core/lib/scratch-git-clone');
     await createScratchClone({ source: repo, ref: sha, destination: dest, includeSubmodules: true });
-  } else await fs.mkdir(dest, { recursive: true });
+  } else await fs.mkdir(dest, { recursive: !operatorApi });
+  let handoffIdentity;
   try {
     // Unlike the public export, verification includes desktop/helper gitlinks too.
     const allow = new Set(git(repo, ['ls-tree', '--name-only', sha]).trim().split('\n'));
@@ -588,6 +600,20 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     const gitMetadataPaths = checkout ? ['.git', ...submodules.map(row => `${row.path}/.git`)] : [];
     const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
       ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
+    if (planned) {
+      assert.deepEqual(manifest.files, planned.source.files, 'Operator-api selected source census differs');
+      assert.deepEqual(manifest.submodules, planned.source.submodules, 'Operator-api selected submodules differ');
+      assert.deepEqual(manifest.testedInputs, planned.source.testedInputs, 'Operator-api selected tested inputs differ');
+      // Copy already-materialized bytes. Never install, borrow ambient modules,
+      // dereference links or replace a dependency tree recorded as source.
+      assert.ok(!existsSync(join(dest, 'node_modules')), 'Operator-api archive already contains dependencies');
+      await fs.cp(join(operatorApi.root, 'node_modules'), join(dest, 'node_modules'),
+        { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true, force: false });
+      assert.deepEqual(verifierSourceFiles(join(dest, 'node_modules')), planned.inputs.dependencyFiles,
+        'Operator-api copied materialized dependency census differs');
+      readOperatorApiHandoff(operatorApi, sha); // Pins and donor bytes must survive the copy.
+      manifest.operatorApiInputs = { path: resolve(operatorApi.outputPath), sha256: operatorApi.inputReceiptSha256 };
+    }
     await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
     if (gitCheckout) {
       // This exporter owns the independent Git directory. Ignore only its
@@ -596,8 +622,32 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
       // still checked independently by verifyVerifierSource.
       await fs.appendFile(join(dest, '.git/info/exclude'), '\n/.verifier-source.json\n');
     }
+    if (planned) {
+      // Check the complete archive again after asynchronous copying, before
+      // publishing any handoff. The earlier census is not a copy-time guard.
+      verifyArchivedSourceSync(dest, manifest, { runtimeArtifacts: true });
+      assertOutsideArchive(dest, operatorApi.outputPath);
+      const output = await fs.open(operatorApi.outputPath, 'wx', 0o600);
+      try {
+        handoffIdentity = await output.stat();
+        await output.writeFile(planned.bytes);
+      } finally { await output.close(); }
+      verifyVerifierSourceSync(dest, manifest);
+      readOperatorApiHandoff(operatorApi, sha);
+    }
     return manifest;
   } catch (error) {
+    // A failed write or final attestation must not leave our partial handoff.
+    // Never unlink an existing file that lost the exclusive-create race, or a
+    // replacement with a different identity.
+    if (handoffIdentity) {
+      const current = await fs.lstat(operatorApi.outputPath).catch(error => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (current?.dev === handoffIdentity.dev && current?.ino === handoffIdentity.ino)
+        await fs.unlink(operatorApi.outputPath);
+    }
     await fs.rm(dest, { recursive: true, force: true });
     if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
     throw error;
@@ -622,11 +672,120 @@ export async function verifyVerifierSource(dest, expected, options = {}) {
  */
 export function verifyVerifierSourceSync(dest, expected, options = {}) {
   try {
-    return verifyArchivedSourceSync(dest, expected, options);
+    const result = verifyArchivedSourceSync(dest, expected,
+      expected.operatorApiInputs ? { ...options, runtimeArtifacts: true } : options);
+    if (expected.operatorApiInputs) {
+      assertOutsideArchive(dest, expected.operatorApiInputs.path);
+      const bytes = pinnedReceiptBytes(expected.operatorApiInputs.path, expected.operatorApiInputs.sha256);
+      assertOperatorApiPlannedInputs(dest, expected, JSON.parse(String(bytes)));
+    }
+    return result;
   } catch (error) {
     if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
     throw error;
   }
+}
+
+/** Validate the existing producer's planned contract without inventing an
+ * observed import, schema or environment pin from static source membership. */
+function assertOperatorApiPlannedInputs(root, source, inputs) {
+  assert.equal(inputs?.phase, 'planned', 'Operator-api independent planned inputs are required');
+  assert.equal(inputs.sourceCommit, source.sourceCommit, 'Operator-api selected source differs');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
+    'dependencyFiles', 'copiedArtifacts', 'omitted', 'opaque'])
+    assert.ok(Array.isArray(inputs[key]), `Operator-api required dimension missing: ${key}`);
+  assert.deepEqual(inputs.omitted, [], 'Operator-api required dimensions omitted');
+  assert.deepEqual(inputs.opaque, [], 'Operator-api required dimensions opaque');
+  const files = new Map(source.files.map(file => [file.path, file]));
+  const sourcePath = path => {
+    assert.ok(typeof path === 'string' && path && !isAbsolute(path) && !path.includes('\\')
+      && !path.split('/').some(part => !part || part === '.' || part === '..'), 'Invalid operator-api source path');
+    assert.ok(files.has(path), `Operator-api source outside selected archive: ${path}`);
+    assert.ok(isInside(realpathSync(root), realpathSync(join(root, path))), `Operator-api source escapes archive: ${path}`);
+  };
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports'])
+    assert.ok(inputs[key].length, `Operator-api required observation missing: ${key}`);
+  for (const path of [...inputs.testPaths, ...inputs.helperPaths, ...inputs.configPaths,
+    ...inputs.executedImports, ...inputs.copiedSources]) sourcePath(path);
+  for (const path of inputs.testPaths) assert.ok(source.testedInputs.some(input => input.path === path
+    && input.sha256 === files.get(path).sha256), `Operator-api test missing from selected tested inputs: ${path}`);
+  for (const key of ['schema', 'environment', 'externalResolutions'])
+    assert.ok(inputs[key] && typeof inputs[key] === 'object' && !Array.isArray(inputs[key]),
+      `Operator-api required dimension missing: ${key}`);
+  for (const key of ['schema', 'environment']) {
+    assert.ok(Object.keys(inputs[key]).length, `Operator-api required observation missing: ${key}`);
+    for (const value of Object.values(inputs[key])) assert.ok(typeof value === 'string' && value,
+      `Operator-api invalid observation: ${key}`);
+  }
+  for (const value of Object.values(inputs.environment)) assert.match(value, /^[a-f0-9]{64}$/,
+    'Operator-api environment digest missing');
+  assert.ok(inputs.dependencyFiles.length, 'Operator-api materialized dependencies missing');
+  const modules = join(root, 'node_modules');
+  assert.ok(lstatSync(modules).isDirectory(), 'Operator-api dependencies must be an independent directory');
+  assert.deepEqual(verifierSourceFiles(modules), inputs.dependencyFiles, 'Operator-api materialized dependency census differs');
+  for (const file of inputs.dependencyFiles) if (file.kind === 'symlink')
+    assert.ok(isInside(realpathSync(modules), realpathSync(join(modules, file.path))),
+      `Operator-api dependency symlink escapes materialized tree: ${file.path}`);
+  const dependencies = new Set(inputs.dependencyFiles.map(file => `node_modules/${file.path}`));
+  for (const path of Object.values(inputs.externalResolutions)) assert.ok(dependencies.has(path),
+    `Operator-api external resolution lacks dependency pin: ${path}`);
+  const copies = new Map();
+  for (const copy of inputs.copiedArtifacts) {
+    sourcePath(copy.sourcePath);
+    assert.ok(typeof copy.path === 'string' && copy.path && !isAbsolute(copy.path) && !copy.path.includes('\\')
+      && !copy.path.split('/').some(part => !part || part === '.' || part === '..'), 'Invalid operator-api artifact path');
+    assert.ok(!['operator-api-preflight.json', 'operator-api-inputs.json', 'verifier-source.json',
+      'hono-host.mjs', 'hono-host.mjs.meta.json', 'operator-api-build.log'].includes(copy.path)
+      && !copies.has(copy.path), 'Reserved or duplicate operator-api artifact path');
+    copies.set(copy.path, copy.sourcePath);
+  }
+  assert.deepEqual([...new Set(copies.values())].sort(), [...new Set(inputs.copiedSources)].sort(),
+    'Operator-api copied source census differs');
+}
+
+function prospectiveRealpath(path, links = new Set()) {
+  const absolute = resolve(path);
+  try { return realpathSync(absolute); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    let stat;
+    try { stat = lstatSync(absolute); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (stat?.isSymbolicLink()) {
+      assert.ok(!links.has(absolute), 'Operator-api receipt path has a symlink cycle');
+      links.add(absolute);
+      return prospectiveRealpath(resolve(dirname(absolute), readlinkSync(absolute)), links);
+    }
+    const parent = dirname(absolute);
+    if (parent === absolute) throw error;
+    return join(prospectiveRealpath(parent, links), basename(absolute));
+  }
+}
+
+function assertOutsideArchive(root, path) {
+  // Resolve missing ancestors and dangling links as well as existing parents;
+  // the export root may not have been allocated yet.
+  assert.ok(!isInside(prospectiveRealpath(root), prospectiveRealpath(path)),
+    'Operator-api receipt must be outside the archive');
+}
+
+function pinnedReceiptBytes(path, expected) {
+  assert.match(expected ?? '', /^[a-f0-9]{64}$/, 'Operator-api receipt digest is required');
+  const bytes = readFileSync(path);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, 'Pinned operator-api receipt changed');
+  return bytes;
+}
+
+function readOperatorApiHandoff(options, selectedCommit) {
+  assertOutsideArchive(realpathSync(options.root), options.sourceReceiptPath);
+  assertOutsideArchive(realpathSync(options.root), options.inputReceiptPath);
+  const source = JSON.parse(String(pinnedReceiptBytes(options.sourceReceiptPath, options.sourceReceiptSha256)));
+  assert.equal(source.sourceCommit, selectedCommit, 'Operator-api independent selected commit differs');
+  verifyArchivedSourceSync(options.root, source, { runtimeArtifacts: true });
+  const bytes = pinnedReceiptBytes(options.inputReceiptPath, options.inputReceiptSha256);
+  const inputs = JSON.parse(String(bytes));
+  assertOperatorApiPlannedInputs(options.root, source, inputs);
+  return { source, inputs, bytes };
 }
 
 /** Transport the independently verified archive receipt into native reporters.
@@ -1523,10 +1682,11 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (a === '--inputs-file') {
+    else if (['--inputs-file', '--operator-api-root', '--operator-api-source-receipt',
+      '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
-      if (!path || path.startsWith('--')) throw new PreviewError('missing value for --inputs-file', 2);
-      opts['inputs-file'] = path;
+      if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
+      opts[a.slice(2)] = path;
     }
     else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt'].includes(a)) opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
@@ -1566,7 +1726,12 @@ async function main(argv) {
       }
       const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
         inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], gitCheckout: opts.gitCheckout === true,
-        tauriInputs: opts.tauriInputs === true });
+        tauriInputs: opts.tauriInputs === true,
+        ...(Object.keys(opts).some(key => key.startsWith('operator-api-')) ? { operatorApi: {
+          root: opts['operator-api-root'], sourceReceiptPath: opts['operator-api-source-receipt'],
+          sourceReceiptSha256: opts['operator-api-source-sha'], inputReceiptPath: opts['operator-api-inputs'],
+          inputReceiptSha256: opts['operator-api-inputs-sha'], outputPath: join(dirname(opts.receipt), 'operator-api-preflight.json'),
+        } } : {}) });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
     await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),

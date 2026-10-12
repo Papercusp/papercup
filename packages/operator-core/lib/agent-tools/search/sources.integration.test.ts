@@ -1165,6 +1165,14 @@ const HEADLINE_OPTS_MIRROR =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
 describe('P-017 — session_turn.lexical lexicalMode', () => {
+  it('rejects a pre-aborted source call before probing BM25 or reading rows', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(byName('session_turn').lexical(p17Params({ signal: controller.signal })))
+      .rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it("'and' mode is the PRE-P-017 query exactly — same rows, order, ranks and highlight bytes", async () => {
     // The literal query as it stood before `lexicalSql` was introduced.
     const legacy = (await sql`

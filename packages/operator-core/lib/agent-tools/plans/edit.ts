@@ -89,7 +89,10 @@ export async function evaluatePlanEdit(
   replaceAll: boolean,
   slug: string,
   expectedHash: string | undefined,
-  opts: { expectedVersion?: number; meta?: { version: number; contentHash: string } | null } = {},
+  opts: {
+    expectedVersion?: number;
+    meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
+  } = {},
 ): Promise<{ newBody: string | null; value: PlanEditValue }> {
   if (current === null) {
     return { newBody: null, value: { ok: false, code: 'not_found' } };

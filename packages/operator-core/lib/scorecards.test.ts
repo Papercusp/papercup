@@ -7,10 +7,11 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
+import type { SpecTestAdequacyRerunRecipe } from './harness/improvements/observation-types';
 
 describe('superseding a pending grading-audit target', () => {
   it('atomically cancels the pending stamp and clears its live reservation only for the matching superseder', async () => {
@@ -675,6 +676,80 @@ describe('parseGradedGeneration (EI-12147, widened WI-5397)', () => {
     expect(parseGradedGeneration('abc1234')).toBeNull();
     expect(parseGradedGeneration(['abc1234'])).toBeNull();
     expect(parseGradedGeneration({ sha: 42, hostStartedAt: false })).toBeNull();
+  });
+});
+
+describe('scorecard generation freshness evidence plane (EI-25738206826588439)', () => {
+  const makeTreeOnlyRecipe = (): SpecTestAdequacyRerunRecipe => {
+    const fingerprints = Array.from({ length: 4 }, (_, index) => ({
+      planSlug: 'tree-only-plan',
+      specId: 'SPEC-1',
+      specRevision: 3,
+      specFingerprint: 'sha256:spec',
+      evidenceKind: 'test/mutation',
+      evidenceRef: `run:${index + 1}`,
+      sourceFingerprint: `sha256:source-${index + 1}`,
+      testFingerprint: `sha256:test-${index + 1}`,
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    }));
+    return {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'unit-test',
+      args: {
+        slug: 'tree-only-plan',
+        classRef: 'unit-test',
+        specIds: ['SPEC-1'],
+        includeDraft: true,
+        current: fingerprints,
+      },
+      selection: {
+        planSlug: 'tree-only-plan',
+        specId: 'SPEC-1',
+        specRevision: 3,
+        specFingerprint: 'sha256:spec',
+        evidence: fingerprints.map(({ evidenceKind, evidenceRef }) => ({ evidenceKind, evidenceRef })),
+      },
+      current: { supplied: true, fingerprints },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+  };
+
+  it('does not mark a complete matched tree-only recipe stale after the host boundary changes', () => {
+    expect(
+      classifyScorecardGenerationFreshness(
+        '2026-07-14T00:00:00.000Z',
+        makeTreeOnlyRecipe(),
+        Date.parse('2026-07-15T00:00:00.000Z'),
+      ),
+    ).toMatchObject({ status: 'not-applicable' });
+  });
+
+  it('keeps incomplete, mismatched, and runtime-bound recipes on the live host comparison', () => {
+    const treeOnly = makeTreeOnlyRecipe();
+    const incomplete = structuredClone(treeOnly);
+    incomplete.args.current?.pop();
+    const mismatched = structuredClone(treeOnly);
+    mismatched.selection.evidence[0]!.evidenceRef = 'run:wrong';
+    const runtimeBound = makeTreeOnlyRecipe();
+    runtimeBound.current.fingerprints[0]!.environmentFingerprint = 'sha256:environment';
+    runtimeBound.args.current![0]!.environmentFingerprint = 'sha256:environment';
+
+    for (const recipe of [undefined, incomplete, mismatched, runtimeBound]) {
+      expect(
+        classifyScorecardGenerationFreshness(
+          '2026-07-14T00:00:00.000Z',
+          recipe,
+          Date.parse('2026-07-15T00:00:00.000Z'),
+        ),
+      ).toMatchObject({ status: 'stale' });
+    }
   });
 });
 

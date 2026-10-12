@@ -436,8 +436,9 @@ export default defineTool({
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
-      (current) =>
+      (current, meta) =>
         evaluateSetContent(current, draft.content, args.slug, args.expectedHash ?? draft.meta.expectedHash, {
+          meta,
           allowShrink: args.allowShrink ?? draft.meta.allowShrink,
           wholeDocumentRewrite: true,
           allowStatusRegression: args.allowStatusRegression ?? draft.meta.allowStatusRegression,

@@ -36,6 +36,7 @@ import {
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { captureTestSourceSnapshot } from './testing-worktree';
+import { verifierSourceFiles } from './verifier-source';
 
 let tmp: string;
 let fx: Superproject;
@@ -607,6 +608,211 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] }))
       .rejects.toThrow('archive symlink escapes source root');
     expect(existsSync(dest)).toBe(false);
+  });
+});
+
+describe('D044 independent operator-api input handoff', () => {
+  let fixture: Superproject;
+  const input = 'apps/operator/src/index.ts';
+  const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+  beforeAll(() => {
+    fixture = makeSuperproject(join(tmp, 'd044-fixture'));
+    // These fixture dependencies are normally tracked. The independent donor
+    // must materialize its own dependencies after capturing source membership.
+    git(fixture.repo, ['rm', '-r', 'node_modules', 'apps/operator/node_modules']);
+    git(fixture.repo, ['commit', '-qm', 'independent materialization fixture']);
+    fixture.commit = git(fixture.repo, ['rev-parse', 'HEAD']);
+  });
+
+  async function handoff() {
+    const evidence = mkdtempSync(join(tmp, 'd044-case-'));
+    const root = join(evidence, 'donor');
+    const source = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+      dest: root, inputs: [input] });
+    const sourceReceiptPath = join(evidence, 'source.json');
+    writeFileSync(sourceReceiptPath, JSON.stringify(source));
+    write(root, 'node_modules/pkg/index.js', 'module.exports = 1;\n');
+    symlinkSync('pkg/index.js', join(root, 'node_modules/relative.js'));
+    const planned = {
+      phase: 'planned', sourceCommit: source.sourceCommit, testPaths: [input],
+      helperPaths: ['packages/core/index.ts'], configPaths: ['package-lock.json'],
+      executedImports: [input], copiedSources: ['packages/core/index.ts'],
+      copiedArtifacts: [{ path: 'copied-helper.ts', sourcePath: 'packages/core/index.ts' }],
+      dependencyFiles: verifierSourceFiles(join(root, 'node_modules')),
+      externalResolutions: { pkg: 'node_modules/pkg/index.js' },
+      schema: { private: 'synthetic-applied-schema' }, environment: { MODE: digest('synthetic') },
+      omitted: [] as string[], opaque: [] as string[],
+    };
+    const operatorApi = { root, sourceReceiptPath, sourceReceiptSha256: digest(readFileSync(sourceReceiptPath)),
+      inputReceiptPath: join(evidence, 'planned.json'), inputReceiptSha256: '',
+      outputPath: join(evidence, 'operator-api-preflight.json') };
+    const repin = () => {
+      writeFileSync(operatorApi.inputReceiptPath, JSON.stringify(planned));
+      operatorApi.inputReceiptSha256 = digest(readFileSync(operatorApi.inputReceiptPath));
+    };
+    repin();
+    const dest = join(evidence, 'export');
+    return { planned, operatorApi, source, sourceReceiptPath, repin, dest,
+      prepare: () => prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+        dest, inputs: [input], operatorApi }) };
+  }
+
+  it('copies pinned dependencies and relative symlinks and hands off the exact independent bytes', async () => {
+    const c = await handoff();
+    const receipt = await c.prepare();
+    expect(receipt.operatorApiInputs).toEqual({ path: c.operatorApi.outputPath,
+      sha256: c.operatorApi.inputReceiptSha256 });
+    expect(readFileSync(c.operatorApi.outputPath)).toEqual(readFileSync(c.operatorApi.inputReceiptPath));
+    expect(verifierSourceFiles(join(c.dest, 'node_modules'))).toEqual(c.planned.dependencyFiles);
+    expect(await verifyVerifierSource(c.dest, receipt)).toEqual(receipt);
+    const receiptPath = join(c.dest, '..', 'export-source.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    expect(verifierSourceChildEnv({ root: c.dest, receiptPath }).VERIFY_TAURI_SOURCE_RECEIPT).toBe(receiptPath);
+    writeFileSync(c.operatorApi.outputPath, '{}');
+    expect(() => verifierSourceChildEnv({ root: c.dest, receiptPath })).toThrow('Pinned operator-api receipt changed');
+  });
+
+  it.each(['executedImports', 'schema', 'environment'] as const)(
+    'refuses an absent independent %s observation before allocating the export', async key => {
+      const c = await handoff();
+      Object.assign(c.planned, { [key]: key === 'executedImports' ? [] : {} });
+      c.repin();
+      await expect(c.prepare()).rejects.toThrow('required observation missing');
+      expect(existsSync(c.dest)).toBe(false);
+      expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+    });
+
+  it.each(['omitted', 'opaque'] as const)('refuses a required %s dimension before effects', async key => {
+    const c = await handoff();
+    c.planned[key].push('loaded-host');
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow(`required dimensions ${key}`);
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('requires observed imports separately from static copied source membership', async () => {
+    const c = await handoff();
+    c.planned.executedImports = ['absent-observed-import.ts'];
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow('source outside selected archive');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it.each(['source', 'dependency', 'receipt'] as const)('refuses %s byte drift before effects', async kind => {
+    const c = await handoff();
+    if (kind === 'source') writeFileSync(join(c.operatorApi.root, input), 'source drift');
+    if (kind === 'dependency') writeFileSync(join(c.operatorApi.root, 'node_modules/pkg/index.js'), 'dependency drift');
+    if (kind === 'receipt') writeFileSync(c.operatorApi.inputReceiptPath, '{}');
+    await expect(c.prepare()).rejects.toThrow(/changed|census differs/);
+    expect(existsSync(c.dest)).toBe(false);
+    expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+  });
+
+  it('refuses a selected tested-input pin that differs from the archived file', async () => {
+    const c = await handoff();
+    c.source.testedInputs[0].sha256 = '0'.repeat(64);
+    writeFileSync(c.sourceReceiptPath, JSON.stringify(c.source));
+    c.operatorApi.sourceReceiptSha256 = digest(readFileSync(c.sourceReceiptPath));
+    await expect(c.prepare()).rejects.toThrow('tampered verification source provenance');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('refuses absolute donor dependency links before allocation rather than rebasing their identity', async () => {
+    const c = await handoff();
+    const target = join(c.operatorApi.root, 'node_modules/pkg/index.js');
+    symlinkSync(target, join(c.operatorApi.root, 'node_modules/absolute.js'));
+    // Pin the supplied malformed identity without asking the maintained census
+    // to validate it before the exporter gets a chance to refuse it.
+    c.planned.dependencyFiles.push({ path: 'absolute.js', kind: 'symlink', executable: true, sha256: digest(target) });
+    c.repin();
+    const copy = vi.spyOn(fsPromises, 'cp');
+    try {
+      await expect(c.prepare()).rejects.toThrow('archive symlink escapes source root: absolute.js');
+      expect(copy).not.toHaveBeenCalled();
+      expect(existsSync(c.dest)).toBe(false);
+      expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+    } finally { copy.mockRestore(); }
+  });
+
+  it('refuses a dependency link into an ambient tree before effects', async () => {
+    const c = await handoff();
+    symlinkSync('../../source.json', join(c.operatorApi.root, 'node_modules/ambient.js'));
+    c.planned.dependencyFiles.push({ path: 'ambient.js', kind: 'symlink', executable: true,
+      sha256: digest('../../source.json') });
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow('archive symlink escapes source root: ambient.js');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('refuses an internal handoff path even when reached through a symlinked parent', async () => {
+    const c = await handoff();
+    symlinkSync(c.dest, join(c.dest, '..', 'export-alias'));
+    c.operatorApi.outputPath = join(c.dest, '..', 'export-alias', 'operator-api-preflight.json');
+    await expect(c.prepare()).rejects.toThrow('receipt must be outside the archive');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it.each(['donor-source', 'export-source', 'planned-receipt'] as const)(
+    'removes the new export when %s drifts during dependency copy', async kind => {
+      const c = await handoff();
+      const original = fsPromises.cp;
+      const copy = vi.spyOn(fsPromises, 'cp').mockImplementation(async (...args) => {
+        await original(...args);
+        if (kind === 'donor-source') writeFileSync(join(c.operatorApi.root, input), 'racing source');
+        if (kind === 'export-source') writeFileSync(join(c.dest, input), 'racing source');
+        if (kind === 'planned-receipt') writeFileSync(c.operatorApi.inputReceiptPath, '{}');
+      });
+      try {
+        await expect(c.prepare()).rejects.toThrow(/changed/);
+        expect(existsSync(c.dest)).toBe(false);
+        expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+      } finally { copy.mockRestore(); }
+    });
+
+  it.each(['partial-write', 'post-write-source-drift'] as const)(
+    'removes only its newly created handoff after %s', async kind => {
+      const c = await handoff();
+      const original = fsPromises.open;
+      const open = vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+        const handle = await original(...args);
+        if (args[0] === c.operatorApi.outputPath) {
+          const write = handle.writeFile.bind(handle);
+          handle.writeFile = async (...writeArgs) => {
+            await write(...writeArgs);
+            if (kind === 'partial-write') throw new Error('synthetic partial handoff write');
+            writeFileSync(join(c.dest, input), 'post-write source drift');
+          };
+        }
+        return handle;
+      });
+      try {
+        await expect(c.prepare()).rejects.toThrow(/synthetic partial handoff write|changed/);
+        expect(existsSync(c.dest)).toBe(false);
+        expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+      } finally { open.mockRestore(); }
+    });
+
+  it('preserves a preexisting handoff that wins the exclusive-create race', async () => {
+    const c = await handoff();
+    const original = fsPromises.cp;
+    const copy = vi.spyOn(fsPromises, 'cp').mockImplementation(async (...args) => {
+      await original(...args);
+      writeFileSync(c.operatorApi.outputPath, 'independent existing handoff');
+    });
+    try {
+      await expect(c.prepare()).rejects.toThrow(/EEXIST/);
+      expect(existsSync(c.dest)).toBe(false);
+      expect(readFileSync(c.operatorApi.outputPath, 'utf8')).toBe('independent existing handoff');
+    } finally { copy.mockRestore(); }
+  });
+
+  it('preserves complete source-only export without an operator-api handoff', async () => {
+    const dest = join(tmp, 'd044-source-only');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    expect(receipt.operatorApiInputs).toBeUndefined();
+    expect(await verifyVerifierSource(dest, receipt)).toEqual(receipt);
+    expect(verifierSourceFiles(dest).filter(file => file.path !== '.verifier-source.json')).toEqual(receipt.files);
   });
 });
 

@@ -209,6 +209,53 @@ describe('evaluateSetContent — plan lifecycle status writer guard (WI-10002607
     });
   });
 
+  it('refuses a stale markdown status that disagrees with the locked canonical plan row', async () => {
+    const staleCurrent = CURRENT.replace('status: draft', 'status: ready');
+    const proposed = staleCurrent.replace(
+      'Where it stands now.',
+      'The current state and next action remain recorded.',
+    );
+    const { newBody, value } = await evaluateSetContent(staleCurrent, proposed, 'ei-1812-test', undefined, {
+      expectedVersion: 22,
+      meta: {
+        version: 22,
+        contentHash: hashPlanContent(staleCurrent),
+        planStatus: 'active',
+      },
+      allowShrink: true,
+    });
+
+    expect(newBody).toBeNull();
+    expect(value).toMatchObject({
+      ok: false,
+      code: 'plan_status_change_requires_lifecycle_writer',
+      currentStatus: 'active',
+      proposedStatus: 'ready',
+      writer: 'plans:set-plan-status',
+      message: expect.stringContaining('disagrees with the current markdown status'),
+    });
+  });
+
+  it('uses markdown status when the nullable derived status column is NULL', async () => {
+    const current = CURRENT.replace('status: draft', 'status: active');
+    const proposed = current.replace(
+      'Where it stands now.',
+      'The current state and next action remain recorded.',
+    );
+    const { newBody, value } = await evaluateSetContent(current, proposed, 'ei-1812-test', undefined, {
+      expectedVersion: 22,
+      meta: {
+        version: 22,
+        contentHash: hashPlanContent(current),
+        planStatus: null,
+      },
+      allowShrink: true,
+    });
+
+    expect(newBody).toBe(proposed);
+    expect(value).toMatchObject({ ok: true });
+  });
+
   it('routes legacy conversion through set-frontmatter', async () => {
     const legacy = CURRENT.replace(/^---\n[\s\S]*?\n---\n/, '');
     const { newBody, value } = await evaluateSetContent(legacy, CURRENT, 'ei-1812-test', undefined, {
