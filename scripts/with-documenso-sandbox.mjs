@@ -114,7 +114,9 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
   attempts = 31, isStopped = () => false, delay = () => new Promise(done => setTimeout(done, 1000)) }) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (isStopped()) return;
-    const ready = run(['exec', name, 'pg_isready', '-U', 'documenso']);
+    // The image initializes through a temporary Unix-socket-only server, then
+    // stops it before starting the final TCP listener used by Documenso.
+    const ready = run(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'documenso', '-d', 'documenso']);
     if (!ready.error && ready.status === 0) return;
     const inspected = run(['inspect', '--format', '{{.State.Status}}', name]);
     const terminal = /^(exited|dead)$/.test((inspected.stdout || '').trim());
