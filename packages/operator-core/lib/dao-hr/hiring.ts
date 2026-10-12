@@ -22,7 +22,7 @@ interface DaoKey { workspaceId: string; daoSlug: string }
 interface Deps { sql?: Sql }
 export type OfferState = 'offered' | 'approved' | 'contract-generated' | 'signed' | 'hire-proposed' | 'hired' | 'rejected' | 'lapsed';
 export interface HiringTerms { engagementType: EngagementType; jurisdiction: string; pay: PayTerms; equity: OfferEquityTerms; employmentLike: boolean }
-export interface HiringOffer extends DaoKey { offerId: string; roleId: string; personId: string; authoredBy: string; terms: HiringTerms; approvalsRequired: number; state: OfferState }
+export interface HiringOffer extends DaoKey { offerId: string; roleId: string; personId: string; authoredBy: string; terms: HiringTerms; approvalsRequired: number; state: OfferState; amendsOfferId?: string }
 export class HiringError extends Error {
   constructor(readonly code: 'invalid_input' | 'not_admin' | 'person_missing' | 'role_missing' | 'candidate_missing' | 'offer_missing' | 'self_approval' | 'invalid_transition', message: string) { super(message); this.name = 'HiringError'; }
 }
@@ -84,15 +84,24 @@ export async function addHiringCandidate(input: DaoKey & { roleId: string; perso
   });
   return { ...key, roleId, personId: candidate };
 }
-interface OfferRow { workspace_id: string; dao_slug: string; offer_id: string; role_id: string; person_id: string; authored_by: string; terms: HiringTerms; approvals_required: number; state: OfferState }
+interface OfferRow { workspace_id: string; dao_slug: string; offer_id: string; role_id: string; person_id: string; authored_by: string; terms: HiringTerms; approvals_required: number; state: OfferState; amends_offer_id?: string | null }
 const project = (r: OfferRow): HiringOffer => ({ workspaceId: r.workspace_id, daoSlug: r.dao_slug, offerId: r.offer_id, roleId: r.role_id,
-  personId: r.person_id, authoredBy: r.authored_by, terms: r.terms, approvalsRequired: r.approvals_required, state: r.state });
-export async function createHiringOffer(input: DaoKey & { roleId: string; personId: string; actorPersonId: string; engagementType: EngagementType; jurisdiction: string; pay: PayTerms; overrides?: unknown }, deps: Deps = {}): Promise<HiringOffer> {
+  personId: r.person_id, authoredBy: r.authored_by, terms: r.terms, approvalsRequired: r.approvals_required, state: r.state, ...(r.amends_offer_id ? {amendsOfferId:r.amends_offer_id} : {}) });
+export async function createHiringOffer(input: DaoKey & { roleId: string; personId: string; actorPersonId: string; engagementType: EngagementType; jurisdiction: string; pay: PayTerms; overrides?: unknown; amendsOfferId?: string }, deps: Deps = {}): Promise<HiringOffer> {
   const key = valid(keySchema, input), sql = deps.sql ?? getOrgPg().sql;
   const pay = valid(paySchema, input.pay), engagementType = valid(z.enum(['employee', 'contractor']), input.engagementType), jurisdiction = valid(text, input.jurisdiction);
   const actor = await admin(sql, key, input.actorPersonId), candidate = await person(sql, key.workspaceId, input.personId), roleId = valid(text, input.roleId);
   return sql.begin(async tx => {
     const connection = tx as unknown as Sql;
+    const amends = input.amendsOfferId ? valid(text,input.amendsOfferId) : null;
+    if (amends) {
+      const [parent] = await tx<Array<{person_id:string;admitted_at:string|null;offboarding_proof:unknown}>>`
+        SELECT o.person_id,c.admitted_at,c.offboarding_proof FROM harness_shared.dao_hr_offers o
+        JOIN harness_shared.dao_hr_contracts c USING (workspace_id,dao_slug,offer_id)
+        WHERE o.workspace_id=${key.workspaceId} AND o.dao_slug=${key.daoSlug} AND o.offer_id=${amends} AND o.state='hired' FOR UPDATE OF c`;
+      if (!parent?.admitted_at || parent.offboarding_proof || await person(connection,key.workspaceId,parent.person_id) !== candidate)
+        throw new HiringError('invalid_transition','An amendment must reference this person\'s active admitted engagement.');
+    }
     const [role] = await tx<Array<{ title: string; level: string; manager_person_id: string | null; exclusive: boolean }>>`
       SELECT r.title,r.level,r.manager_person_id,r.exclusive FROM harness_shared.dao_hr_candidates c
       JOIN harness_shared.dao_hr_roles r USING (workspace_id,dao_slug,role_id)
@@ -103,10 +112,15 @@ export async function createHiringOffer(input: DaoKey & { roleId: string; person
     const equity = resolveOfferTermsFrom(settings, policy?.version ?? null, { role: role.title, level: role.level, overrides: input.overrides });
     const terms: HiringTerms = { engagementType, jurisdiction, pay, equity, employmentLike: looksLikeEmployment({ engagementType, pay, managerPersonId: role.manager_person_id, exclusive: role.exclusive }) };
     const offerId = randomUUID();
-    const [row] = await tx<OfferRow[]>`INSERT INTO harness_shared.dao_hr_offers (workspace_id,dao_slug,offer_id,role_id,person_id,authored_by,terms,approvals_required)
-      VALUES (${key.workspaceId},${key.daoSlug},${offerId},${roleId},${candidate},${actor},${connection.json({ ...terms, pay: { ...terms.pay }, equity: { ...terms.equity } })},${settings.offerApprovalsRequired}) RETURNING *`;
+    const encodedTerms = connection.json({ ...terms, pay: { ...terms.pay }, equity: { ...terms.equity } });
+    // Standard hires retain their pre1465 SQL surface. The new column is used
+    // only by amendments, after their own schema prerequisite is installed.
+    const rows = amends ? await tx<OfferRow[]>`INSERT INTO harness_shared.dao_hr_offers (workspace_id,dao_slug,offer_id,role_id,person_id,authored_by,terms,approvals_required,amends_offer_id)
+      VALUES (${key.workspaceId},${key.daoSlug},${offerId},${roleId},${candidate},${actor},${encodedTerms},${settings.offerApprovalsRequired},${amends}) RETURNING *` :
+      await tx<OfferRow[]>`INSERT INTO harness_shared.dao_hr_offers (workspace_id,dao_slug,offer_id,role_id,person_id,authored_by,terms,approvals_required)
+      VALUES (${key.workspaceId},${key.daoSlug},${offerId},${roleId},${candidate},${actor},${encodedTerms},${settings.offerApprovalsRequired}) RETURNING *`;
     await history(connection, key, 'offer', offerId, 'offered', actor);
-    return project(row!);
+    return project(rows[0]!);
   }) as Promise<HiringOffer>;
 }
 export async function getHiringOffer(input: DaoKey & { offerId: string }, deps: Deps = {}): Promise<HiringOffer> {
@@ -217,7 +231,7 @@ export async function readHiringView(input: DaoKey & { policy: HivePolicy | null
 export const hiringActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('role'), title: text, level: text, managerPersonId: text.nullable().optional(), exclusive: z.boolean().optional() }).strict(),
   z.object({ action: z.literal('candidate'), roleId: text, personId: text }).strict(),
-  z.object({ action: z.literal('offer'), roleId: text, personId: text, engagementType: z.enum(['employee','contractor']), jurisdiction: text, pay: paySchema, overrides: z.unknown().optional() }).strict(),
+  z.object({ action: z.literal('offer'), roleId: text, personId: text, engagementType: z.enum(['employee','contractor']), jurisdiction: text, pay: paySchema, overrides: z.unknown().optional(), amendsOfferId: text.optional() }).strict(),
   z.object({ action: z.literal('approve'), offerId: text }).strict(),
 ]);
 export async function runHiringAction(key: DaoKey, raw: unknown, deps: PeopleDeps = {}) {
