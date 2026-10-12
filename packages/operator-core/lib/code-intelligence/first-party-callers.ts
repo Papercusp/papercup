@@ -657,7 +657,11 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   // dependency body turns a single declaration lookup into a whole-project
   // checker (EI-25679714152389108). Outgoing/context queries still need the
   // actual reached declarations and retain their full compiler snapshots.
-  const declarationScope = (op === 'callers' || op === 'symbol') && !q.includeInterfaces;
+  // Reverse impact searches incoming calls in the requested full-source files.
+  // Bodies outside that scope add no certified callers; retain their re-export
+  // links without turning a bounded planning advisory into a whole-project load.
+  const incomingScope = scope.scoped && op === 'impact' && (q.direction ?? 'downstream') === 'downstream';
+  const declarationScope = (op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
   const tree = openScopedTsTree(q.ts, q.root, search.files,
     declarationScope ? undefined : (_ts, _file, text) => text);
   try {
@@ -677,7 +681,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
        (q.line1 === undefined || d.site.line1 === q.line1) &&
        (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase())));
     if (op === 'impact' || op === 'trace') {
-      const result = compilerTraversal(q, tree, program, decls, scope.paths, partial, started, now);
+      const result = compilerTraversal(q, tree, program, decls, scope.paths, partial, started, now, declarationScope);
       return withInterfaces({ ...result, attribution: { resolved: result.sites.length,
         unattributed: { external: 0, 'other-in-repo': 0, unresolved: 0 },
         declarations: decls.slice(0, 50).map(d => d.site), declarationCount: decls.length,

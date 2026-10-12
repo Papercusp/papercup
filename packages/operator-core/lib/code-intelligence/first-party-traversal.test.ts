@@ -30,6 +30,34 @@ const hopNames = (answer: ReturnType<typeof trace>, pathIndex = 0) => answer.tra
   [answer.evidence!.relationships[index]!.source!.site.name, answer.evidence!.relationships[index]!.target!.site.name]);
 
 describe('P008 compiler-backed directed trace', () => {
+  it('P013: keeps scoped downstream aliases and multi-hop callers without loading out-of-scope bodies', () => {
+    const answer = firstPartyCallers({ ts, root, op: 'impact', direction: 'downstream', name: 'target',
+      filePath: 'src/leaf.ts', paths: ['src/leaf.ts', 'src/bridge.ts', 'src/entry.ts'], maxDepth: 2 });
+    expect(answer.error).toBeNull();
+    expect(answer.attribution!.stubbedFiles).toBeGreaterThan(0);
+    expect(answer.evidence!.relationships.map(edge => [edge.source!.site.name, edge.target!.site.name])).toEqual([
+      ['bridge', 'target'], ['entry', 'bridge'],
+    ]);
+    expect(answer.evidence!.sourceScope.supportingFiles.map(source => source.path)).toEqual([
+      'src/bridge.ts', 'src/entry.ts', 'src/leaf.ts',
+    ]);
+    for (const source of answer.evidence!.sourceScope.supportingFiles) {
+      expect(source.representation).toBe('full-source');
+      expect(source.contentHash).toBe(createHash('sha256').update(readFileSync(join(root, source.path))).digest('hex'));
+    }
+    expect(answer.evidence!.relationships.every(edge => edge.runtimeExecution === 'unknown')).toBe(true);
+    expect(answer.evidence!.graphScope.limitations).toContain('Only searched files are full compiler inputs; other reached files are re-export stubs.');
+    // Outgoing traversal needs the actual reached bodies even outside the search scope.
+    const outgoing = firstPartyCallers({ ts, root, op: 'impact', direction: 'upstream', name: 'entry',
+      filePath: 'src/entry.ts', paths: ['src/entry.ts'], maxDepth: 2 });
+    expect(outgoing.error).toBeNull();
+    expect(outgoing.evidence!.relationships.map(edge => [edge.source!.site.name, edge.target!.site.name])).toEqual([
+      ['entry', 'bridge'], ['bridge', 'target'],
+    ]);
+    expect(outgoing.evidence!.sourceScope.supportingFiles.find(source => source.path === 'src/bridge.ts')).toMatchObject({
+      representation: 'full-source', contentHash: createHash('sha256').update(files['src/bridge.ts']).digest('hex'),
+    });
+  });
   it('returns the forward reference path across an alias and re-export without mixing homonyms', () => {
     const answer = trace();
     expect(answer.error).toBeNull();

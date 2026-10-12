@@ -8,7 +8,7 @@ import { versionedSymbolIdentity, unmeasuredSourceEvidence, type CodeIntelAnswer
   type CodeIntelSourceEvidence, type CodeIntelSourceFile, type CodeIntelTraversal,
   type CodeIntelVersionedSite, type SymbolSite } from './contracts.ts';
 import type { CandidateSearch, FirstPartyCallersQuery } from './first-party-callers.ts';
-import { hierarchyItems, isExternalPath, tsDeclarations, tsSiteOf, type TsDeclaration, type TsTree } from './typescript-service.ts';
+import { hierarchyItems, isExternalPath, tsDeclarations, tsSiteOf, type TsDeclaration, type ScopedTsTree } from './typescript-service.ts';
 
 const posix = (path: string) => path.split('\\').join('/');
 const nodeKey = (item: TsModule.CallHierarchyItem) => `${item.file}:${item.selectionSpan.start}`;
@@ -32,9 +32,9 @@ interface CallEdge {
   readonly binding: 'direct' | 'indirect' | 'dynamic' | 'unresolved';
 }
 
-export function compilerTraversal(q: FirstPartyCallersQuery, tree: TsTree, program: TsModule.Program,
+export function compilerTraversal(q: FirstPartyCallersQuery, tree: ScopedTsTree, program: TsModule.Program,
   declarations: readonly TsDeclaration[], paths: readonly string[], limitations: readonly string[],
-  started: number, now: () => number): CodeIntelAnswer {
+  started: number, now: () => number, dependenciesStubbed = false): CodeIntelAnswer {
   const intent = q.op === 'trace' ? 'trace' : 'impact';
   const fail = (error: string): CodeIntelAnswer => {
     const answer: CodeIntelAnswer = { backend: 'typescript-service', intent, query: q.name, sites: [], error,
@@ -174,7 +174,8 @@ export function compilerTraversal(q: FirstPartyCallersQuery, tree: TsTree, progr
     const path = posix(relative(tree.root, file.fileName));
     if (isExternalPath(path) || program.isSourceFileDefaultLibrary(file)) return [];
     return [{ path, contentHash: createHash('sha256').update(file.text).digest('hex'),
-      language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' as const }];
+      language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript',
+      representation: dependenciesStubbed && !tree.rootFiles.has(file.fileName) ? 'reexport-stub' as const : 'full-source' as const }];
   }).sort((a, b) => a.path.localeCompare(b.path));
   const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
   const sourceByPath = new Map(sources.map(source => [source.path, source]));
@@ -191,6 +192,7 @@ export function compilerTraversal(q: FirstPartyCallersQuery, tree: TsTree, progr
       sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
       supportingFiles: sources.filter(source => supportingPaths.has(source.path)) },
     graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [...limitations,
+      ...(dependenciesStubbed ? ['Only searched files are full compiler inputs; other reached files are re-export stubs.'] : []),
       'Static possible call paths only; compiler relationships do not establish runtime execution.',
       'The scoped source program excludes hidden, ignored and node_modules files; external, dynamic and indirect callback bindings remain unknown.'] },
     languageCapabilities: [...new Set(sources.map(source => source.language))].map(language => ({ language, intent, status: 'compiler-backed' })),

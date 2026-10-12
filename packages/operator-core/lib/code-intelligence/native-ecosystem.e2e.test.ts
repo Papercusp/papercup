@@ -9,6 +9,57 @@ import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
+const planningPlan = process.env.NATIVE_PLANNING_PLAN;
+
+describe.runIf(Boolean(baseUrl && planningPlan))('native P013 real CLI graph planning advice', () => {
+  it('orders scoped producer/consumer references and reports overlap without changing live assignments or file claims', () => {
+    const identity = call('coord:whoami', {});
+    const producer = 'packages/operator-core/lib/agent-tools/plans/plan-dag-parallelism.ts';
+    const consumer = 'packages/operator-core/lib/agent-tools/plans/lint.ts';
+    const shared = 'packages/operator-core/lib/agent-tools/plans/native-planning-advice.integration.test.ts';
+    const itemIds = ['P-013', 'P-016'];
+    const itemArgs = { slug: planningPlan, harness: 'papercusp', itemIds,
+      projection: { pick: ['items[].item.id', 'items[].item.storedStatus', 'items[].item.blockedBy',
+        'items[].coverage.workers', 'items[].coverage.holder.ownerId'] } };
+    const before = call('plans:items', itemArgs);
+    expect(before.items).toHaveLength(2);
+    expect(before.items.every((row: { coverage: { workers: string[] } }) => row.coverage.workers.includes(identity.ownerId))).toBe(true);
+    const claimArgs = { paths: [producer, consumer, shared],
+      projection: { pick: ['active_locks[].lock_id', 'active_locks[].path', 'active_locks[].owner',
+        'active_locks[].intent', 'active_locks[].coordination_domain'] } };
+    const claims = call('locks:queue', claimArgs);
+    for (const path of [consumer, 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',
+      'packages/operator-core/lib/code-intelligence/first-party-traversal.ts']) {
+      const route = call('dev:pipeline_position', { path, testClass: 'operator-api',
+        projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+      expect(route.currentBuildTestRoute.readiness).toBe('ready');
+      expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
+        row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
+    }
+    // These held IDs are reference task labels for the caller-supplied code scope.
+    // The advisory must not rewrite their authoritative paths or dependencies.
+    const advice = (reverse: boolean) => call('plans:lint', { slug: planningPlan, harness: 'papercusp',
+      codeScope: { symbol: 'nativePlanGraphAdvice', file: producer, paths: [producer, consumer], taskPaths: [
+        { itemId: itemIds[0], paths: [reverse ? consumer : producer, shared] },
+        { itemId: itemIds[1], paths: [reverse ? producer : consumer, shared] },
+      ] }, projection: { pick: ['results[].ok', 'results[].report.codeAdvice'] } }).results[0].report.codeAdvice;
+    for (const reverse of [false, true]) {
+      const result = advice(reverse);
+      expect(result.status, JSON.stringify(result)).toBe('measured');
+      const [first, second] = reverse ? [...itemIds].reverse() : itemIds;
+      expect(result.ordering).toContainEqual(expect.objectContaining({ producer: first, consumer: second,
+        sourcePath: consumer, targetPath: producer }));
+      expect(result.proposedOrder.indexOf(first)).toBeLessThan(result.proposedOrder.indexOf(second));
+      expect(result.overlaps).toContainEqual({ items: itemIds, paths: [shared] });
+      expect(result.scope.repositoryId).toBeTruthy();
+      expect(result.ownership.every((row: { coverage: { workers: string[] } }) => row.coverage.workers.includes(identity.ownerId))).toBe(true);
+      expect(result.fileClaims.status).toBe('measured');
+    }
+    expect(call('plans:items', itemArgs)).toEqual(before);
+    expect(call('locks:queue', claimArgs)).toEqual(claims);
+  }, nativeCliTestTimeout(['coord:whoami', 'plans:items', 'locks:queue', ...Array<string>(3).fill('dev:pipeline_position'),
+    'plans:lint', 'plans:lint', 'plans:items', 'locks:queue']));
+});
 
 describe.runIf(Boolean(baseUrl))('native P021 real CLI source/path expansion', () => {
   it('expands budget-omitted captured records through capability:read after the source changes', () => {
