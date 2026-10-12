@@ -1084,6 +1084,67 @@ const routeReadCases: RailMigrationCase[] = [{
   },
 }];
 
+const hookLockCases: RailMigrationCase[] = [{
+  id: 'omp-hook-original-lock-failures-primary-busy-and-authenticated-ingress',
+  item: 'P-013', route: 'observation', mechanism: 'hook-lock-enforcement',
+  rowIds: [1, 2, 3].map(n => `log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|${n}`),
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const ts = await import('typescript');
+    const recorder = await import('./fallback-observations');
+    const { recordHookFallbacks } = await import('../agent-tools/activity/report');
+    const file = source('apps/operator/scripts/hooks/omp/coord-hook.ts');
+    const caller = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'onToolCall') as import('typescript').FunctionDeclaration;
+    const statements = caller.body!.statements;
+    const start = statements.findIndex(node => node.getText(file).startsWith('const paths = lockKeysFromTargets'));
+    expect(start).toBeGreaterThan(-1);
+    // Execute the original lock region. Earlier command guards are independent
+    // exclusions; importing the hook into the operator would cross its boundary.
+    const originalLockRegion = statements.slice(start).map(node => node.getText(file)).join('\n');
+    const observations: ScoutReadObservation[] = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row, options) => {
+      expect(mechanism).toBe('hook-lock-enforcement'); expect(row.scope).toBe('fixture-owner');
+      expect(options?.workspaceId).toBe('fixture'); expect(options?.processTag).toBe('omp-hook');
+      expect(options?.observedAt?.toISOString()).toBe('2026-10-12T11:00:00.000Z');
+      observations.push(row); return true;
+    });
+    let keys: string[] = [], result: unknown = null, calls = 0;
+    const owner = 'fixture-owner';
+    const ingress = (row: { eligible: 1; applied: 0 | 1; reason: 'lock-keys-empty' | 'lock-request-refused' | 'lock-transport-unavailable' | 'applied' }) => {
+      expect(recordHookFallbacks([{ ...row, observed_at: '2026-10-12T11:00:00.000Z' }], owner, 'omp',
+        { isSuperuser: true, uiClientId: owner, workspaceId: 'fixture' }, 'fixture')).toBe(1);
+    };
+    const run = () => execute(originalLockRegion, {
+      event: { toolName: 'write', toolCallId: 'fixture' }, targets: [{ root: '/fixture' }],
+      lockKeysFromTargets: () => keys, realpathSync: (root: string) => root,
+      callMcpTool: async () => { calls++; return result; },
+      asStructuredCallError: (r: unknown) => r && (r as { error?: string }).error === 'mcp_tool_error' ? r : null,
+      recordRequestDefect: async () => {}, recordHookError: async () => {}, recordHookSuccess: async () => {},
+      acquiredLocks: new Map(), formatBusyRefusal: () => 'busy',
+      observeFallback: (mechanism: string, row: Parameters<typeof ingress>[0]) => {
+        expect(mechanism).toBe('hook-lock-enforcement'); ingress(row);
+      },
+    }) as Promise<{ block?: boolean; reason?: string }>;
+    try {
+      expect(await run()).toEqual({}); expect(calls).toBe(0);
+      keys = ['a.ts']; result = { ok: false, error: 'mcp_tool_error', message: 'refused' };
+      expect(await run()).toEqual({});
+      result = null; expect(await run()).toEqual({});
+      result = { ok: true, lock_id: 'lock' }; expect(await run()).toEqual({});
+      result = { ok: false, busy: [{}] }; expect(await run()).toEqual({ block: true, reason: 'busy' });
+      expect(observations.map(row => [row.applied, row.reason])).toEqual([
+        [0, 'lock-keys-empty'], [0, 'lock-request-refused'], [0, 'lock-transport-unavailable'], [1, 'applied'], [1, 'applied'],
+      ]);
+      const sample = { eligible: 1, applied: 1, reason: 'applied', observed_at: '2026-10-12T11:00:00.000Z' } as const;
+      expect(recordHookFallbacks([sample], 'another-owner', 'omp', { isSuperuser: true, uiClientId: owner }, 'fixture')).toBe(0);
+      expect(recordHookFallbacks([sample], owner, 'omp', {}, 'fixture')).toBe(0);
+      expect(recordHookFallbacks([sample], owner, 'codex', { isSuperuser: true, uiClientId: owner }, 'fixture')).toBe(0);
+      expect(observations).toHaveLength(5);
+    } finally { sink.mockRestore(); }
+    return { route: 'observation', mechanism: 'hook-lock-enforcement', observations };
+  },
+}];
+
 const mdxRenderCases: RailMigrationCase[] = [{
   id: 'mdx-render-original-failure-primary-and-production-host-observer',
   item: 'P-013', route: 'observation', mechanism: 'mdx-render',
@@ -1158,7 +1219,7 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

@@ -93,7 +93,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, readFreshGitSyncMissedIntervalsByInstall, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../fleet/git-via-sidecar';
 import { PUSH_BACKLOG_DEADLINE_MS } from './push-backlog-reader';
@@ -1082,6 +1082,48 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
     expect(data.gitSyncMissedIntervalsByInstall?.map((entry) => entry.missedIntervals)).toEqual([6, 5]);
     // Keep the raw diagnostic max even when it came from the progressing install.
     expect(data.gitSyncMaxMissedIntervals).toBe(8);
+  });
+
+  it('re-reads current starvation candidates with the same exclusions as the deploy snapshot', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 24 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 8 * 60_000,
+            last_progress_at: now - 60_000,
+          },
+        }),
+        install_slug: 'progressing-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: now - 15 * 60_000 }),
+        install_slug: 'starved-install',
+      },
+      {
+        ...routine({ last_status: 'error', last_synced_at: now - 30 * 60_000 }),
+        install_slug: 'failing-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'no_path', last_synced_at: now - 30 * 60_000 }),
+        install_slug: 'missing-checkout',
+      },
+    ]);
+
+    await expect(readFreshGitSyncMissedIntervalsByInstall('ws-ei-218', now)).resolves.toEqual([
+      { installSlug: 'starved-install', missedIntervals: 5 },
+    ]);
+    const [template, workspaceId] = sqlMock.mock.calls[0] ?? [];
+    expect(String((template as TemplateStringsArray).join(' '))).toContain("target_role = 'system:git-sync'");
+    expect(workspaceId).toBe('ws-ei-218');
+  });
+
+  it('reports an unreadable live routine read as unknown instead of an empty candidate set', async () => {
+    sqlMock.mockRejectedValue(new Error('routine metadata unavailable'));
+    await expect(readFreshGitSyncMissedIntervalsByInstall('ws-ei-218', now)).resolves.toBeNull();
   });
 
   it('keeps the deploy panel fail-soft when the routine metadata read fails', async () => {

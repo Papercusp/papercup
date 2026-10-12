@@ -50,6 +50,39 @@ import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { noteLiveNativeSession } from '../../compaction-usage';
+import { observeFallback } from '../../degradation/fallback-observations';
+
+const hookFallbackSchema = z.object({
+  eligible: z.literal(1),
+  applied: z.union([z.literal(0), z.literal(1)]),
+  reason: z.enum(['lock-keys-empty', 'lock-request-refused', 'lock-transport-unavailable', 'applied']),
+  observed_at: z.string().datetime(),
+}).strict().refine(row => (row.reason === 'applied') === (row.applied === 1), {
+  message: 'applied must describe the primary lock-check outcome',
+});
+
+/** Rows carry no owner/workspace/mechanism authority. Reuse the coordination
+ * identity resolver at the authenticated ingress, then the durable rail writer. */
+export function recordHookFallbacks(
+  rows: z.infer<typeof hookFallbackSchema>[] | undefined,
+  owner: string,
+  agent: string | undefined,
+  ctx: Parameters<typeof resolveAgentIdentity>[0],
+  workspaceId: string,
+): number {
+  if (!rows?.length || agent !== 'omp') return 0;
+  let caller: ReturnType<typeof resolveAgentIdentity>;
+  try { caller = resolveAgentIdentity(ctx); } catch { return 0; }
+  if (caller.ownerId !== owner) return 0;
+  let accepted = 0;
+  for (const row of rows) {
+    if (!observeFallback('hook-lock-enforcement', {
+      eligible: row.eligible, applied: row.applied, reason: row.reason, scope: caller.ownerId,
+    }, { workspaceId, processTag: 'omp-hook', observedAt: new Date(row.observed_at) })) break;
+    accepted++;
+  }
+  return accepted;
+}
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends exactly SESSION_START_MARKER (SessionStart) or SESSION_END_MARKER
@@ -171,6 +204,8 @@ export default defineTool({
     status: z.string().max(32).optional(),
     /** The worker's cwd at report time. */
     cwd: z.string().max(1024).optional(),
+    /** Bounded observations from the OMP hook's existing post-tool heartbeat. */
+    hook_fallbacks: z.array(hookFallbackSchema).max(64).optional(),
     /**
      * Native-hook delta cursor. When present, activity:report also returns the
      * current coordination inbox/display snapshot iff this generation changed,
@@ -223,6 +258,7 @@ export default defineTool({
       resolveConcreteHarnessSlug(args.harness_slug, ctx) ??
       resolveConcreteHarnessSlug(undefined, ctx);
     const workspaceId = resolveConcreteWorkspaceId(ctx.workspaceId, ctx.principal?.workspaceId);
+    const hookFallbacksAccepted = recordHookFallbacks(args.hook_fallbacks, owner, args.agent, ctx, workspaceId);
 
     // Normalize the raw cross-CLI report + append it through the PG-backed
     // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`
@@ -275,6 +311,7 @@ export default defineTool({
             ok: true,
             id: null,
             dropped: 'contention',
+            ...(args.hook_fallbacks ? { hook_fallbacks_accepted: hookFallbacksAccepted } : {}),
             ...(hookBundle ? { hook_bundle: hookBundle } : {}),
           }),
         }],
@@ -574,6 +611,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             ...result,
+            ...(args.hook_fallbacks ? { hook_fallbacks_accepted: hookFallbacksAccepted } : {}),
             ...(hookBundle ? { hook_bundle: hookBundle } : {}),
           }),
         },

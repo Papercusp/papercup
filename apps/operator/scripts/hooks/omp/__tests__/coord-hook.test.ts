@@ -3730,6 +3730,52 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     expect(called).toBe(false);
   });
 
+  it('retains disconnected lock observations until the existing activity heartbeat accepts them', async () => {
+    _resetActivityReportDedupeForTests();
+    const priorDir = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
+    process.env.PAPERCUSP_LOCKS_CACHE_DIR = join(fx.workspace, 'hook-markers');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let offline = true;
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const request = JSON.parse(init.body).params;
+      calls.push({ name: request.name, args: request.arguments });
+      if (offline) throw new Error('ECONNREFUSED');
+      const payload = request.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'observed-lock' }
+        : { ok: true, hook_fallbacks_accepted: request.arguments.hook_fallbacks?.length ?? 0 };
+      return { ok: true, text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } }) };
+    }) as unknown as typeof fetch;
+    const edit = (id: string) => ({ type: 'tool_call' as const, toolName: 'write', toolCallId: id,
+      input: { path: join(repo, 'a.ts'), content: 'x' } });
+    try {
+      const first = edit('disconnected');
+      expect(await onToolCall(first)).toEqual({});
+      expect(calls.map(call => call.name)).toEqual(['locks:acquire']); // no reporting RPC on the edit path
+      stageActivityReport(first);
+      expect(await reportActivityResult({ type: 'tool_result', toolCallId: first.toolCallId })).toBeNull();
+      const missed = calls.at(-1)!.args.hook_fallbacks as Array<Record<string, unknown>>;
+      expect(missed).toHaveLength(1);
+      expect(missed[0]).toMatchObject({ eligible: 1, applied: 0, reason: 'lock-transport-unavailable' });
+      offline = false;
+      const second = edit('recovered');
+      expect(await onToolCall(second)).toEqual({});
+      stageActivityReport(second);
+      await reportActivityResult({ type: 'tool_result', toolCallId: second.toolCallId });
+      const delivered = calls.at(-1)!.args.hook_fallbacks as Array<Record<string, unknown>>;
+      expect(delivered).toHaveLength(2);
+      expect(delivered[0]).toEqual(missed[0]); // original outage time survives retry
+      expect(delivered[1]).toMatchObject({ eligible: 1, applied: 1, reason: 'applied' });
+      await reportActivity({ type: 'tool_call', toolName: 'read', toolCallId: 'drained', input: {} });
+      expect(calls.at(-1)!.args).not.toHaveProperty('hook_fallbacks');
+    } finally {
+      errors.mockRestore();
+      _resetActivityReportDedupeForTests();
+      if (priorDir === undefined) delete process.env.PAPERCUSP_LOCKS_CACHE_DIR;
+      else process.env.PAPERCUSP_LOCKS_CACHE_DIR = priorDir;
+    }
+  });
+
   it('forwards positive native edit proof with exact acquired paths', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     global.fetch = (async (_url: unknown, init: { body: string }) => {

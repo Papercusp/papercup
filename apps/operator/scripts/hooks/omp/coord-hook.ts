@@ -2777,6 +2777,8 @@ function shouldSendActivityReport(args: Record<string, unknown>, now = Date.now(
 export function _resetActivityReportDedupeForTests(): void {
   activityReportDedupe.clear();
   pendingActivityCalls.clear();
+  pendingHookFallbacks.length = 0;
+  hookFallbacksInFlight = false;
   _hookBundleGeneration = null;
 }
 
@@ -2790,6 +2792,51 @@ export function stageActivityReport(event: ToolCallEvent): void {
   pendingActivityCalls.set(event.toolCallId, event);
 }
 
+interface HookFallbackObservation {
+  eligible: 1;
+  applied: 0 | 1;
+  reason: 'lock-keys-empty' | 'lock-request-refused' | 'lock-transport-unavailable' | 'applied';
+  observed_at: string;
+}
+const pendingHookFallbacks: HookFallbackObservation[] = [];
+let hookFallbacksInFlight = false;
+
+/** Self-contained port of the rail writer. Delivery rides the existing activity
+ * RPC; an unavailable operator must never add another wait to an edit. Keep the
+ * original event time and retain unacknowledged samples through reconnection. */
+function observeFallback(
+  _mechanism: 'hook-lock-enforcement',
+  decision: Omit<HookFallbackObservation, 'observed_at'>,
+): void {
+  if (pendingHookFallbacks.length >= 2_000) {
+    pendingHookFallbacks.shift();
+    console.error('[su-locks] observation buffer full; oldest undelivered sample discarded');
+  }
+  pendingHookFallbacks.push({ ...decision, observed_at: new Date().toISOString() });
+}
+
+async function callActivityReport(args: Record<string, unknown>): Promise<unknown> {
+  // Concurrent heartbeats must not send the same pending prefix twice.
+  const batch = hookFallbacksInFlight ? [] : pendingHookFallbacks.slice(0, 64);
+  if (batch.length) hookFallbacksInFlight = true;
+  try {
+    const result = await callMcpTool('activity:report', {
+      ...args,
+      ...(batch.length ? { hook_fallbacks: batch } : {}),
+    });
+    const accepted = (result as { hook_fallbacks_accepted?: unknown } | null)?.hook_fallbacks_accepted;
+    if (typeof accepted === 'number' && Number.isInteger(accepted) && accepted >= 0 && accepted <= batch.length) {
+      const delivered = new Set(batch.slice(0, accepted));
+      for (let i = pendingHookFallbacks.length - 1; i >= 0; i--) {
+        if (delivered.has(pendingHookFallbacks[i])) pendingHookFallbacks.splice(i, 1);
+      }
+    }
+    return result;
+  } finally {
+    if (batch.length) hookFallbacksInFlight = false;
+  }
+}
+
 /**
  * Fire-and-forget activity report. Never blocks or throws — callMcpTool swallows all
  * errors + returns null, so a `void reportActivity(event)` is safe (no unhandled
@@ -2798,7 +2845,7 @@ export function stageActivityReport(event: ToolCallEvent): void {
 export async function reportActivity(event: ToolCallEvent): Promise<void> {
   const args = buildActivityArgs(event);
   if (!shouldSendActivityReport(args)) return;
-  await callMcpTool('activity:report', args);
+  await callActivityReport(args);
 }
 
 /** Report a completed tool and request the generation-aware coordination fold. */
@@ -2807,7 +2854,7 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
   pendingActivityCalls.delete(event.toolCallId);
   if (!staged) return null;
   const args = buildActivityArgs(staged);
-  const result = (await callMcpTool('activity:report', {
+  const result = (await callActivityReport({
     ...args,
     hook_bundle: {
       generation: _hookBundleGeneration,
@@ -2827,7 +2874,7 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
 export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void> {
   const harnessSlug = currentHarnessSlug();
   const role = currentLaunchRole();
-  await callMcpTool('activity:report', {
+  await callActivityReport({
     owner: hookOwnerId(),
     agent: 'omp',
     kind: 'lifecycle',
@@ -4977,6 +5024,7 @@ export async function onToolCall(
   // the state that persisted undetected for a whole session. Fail open —
   // a harness bug must never wedge the agent — but never silently.
   if (paths.length === 0) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-keys-empty' });
     console.error(
       `[su-locks] INVARIANT: ${targets.length} lock target(s) produced 0 keys; ` +
         'lock enforcement is OFF for this tool call (failing open)',
@@ -5028,6 +5076,7 @@ export async function onToolCall(
   // transport problem, and it will recur on every tool call until fixed.
   const structured = asStructuredCallError(result);
   if (structured !== null) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-request-refused' });
     console.error(
       `[su-locks] locks:acquire REFUSED THE REQUEST (${structured.error}): ` +
         `${structured.message} — this is a hook defect, not an operator outage; ` +
@@ -5041,6 +5090,7 @@ export async function onToolCall(
   }
 
   if (result == null) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-transport-unavailable' });
     // Operator unreachable or call errored — fail open. Cooperative
     // discipline only works when the system is up; blocking edits
     // would wedge the agent. The persisted marker (file-locking #3)
@@ -5062,6 +5112,8 @@ export async function onToolCall(
     busy?: BusyEntry[];
     reason?: string;
   };
+  // A busy/refused lock verdict completed the primary enforcement check too.
+  observeFallback('hook-lock-enforcement', { eligible: 1, applied: 1, reason: 'applied' });
   // Reaching here means the operator answered — a successful hook
   // call, whether the answer was ok or busy.
   if (r.ok === true && typeof r.lock_id === 'string') {
