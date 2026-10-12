@@ -1431,6 +1431,33 @@ export const MEMORY_RECALL_CLAIM_MIN_DDL = `
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
 
+/**
+ * Fallback-observation sink (migrations 1458 + 1471). The issue claim path refreshes the
+ * per-workspace partition flag (issues-engineer refreshIssuesPerWorkspace), which records an
+ * `observeFallback('workspace-routing-read', …)` decision on every refresh; the debounced flush
+ * then INSERTs these columns. Without the relation the flush console.warns
+ * "write failed; N observation(s) lost", which vitest-fail-on-console turns into a red claim
+ * test (WI-6554700010008895). The ALTER keeps a fixture that installed 1458 alone current.
+ */
+export const FALLBACK_OBSERVATIONS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.fallback_observations (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    mechanism text NOT NULL,
+    eligible integer NOT NULL,
+    applied integer NOT NULL,
+    reason text NOT NULL,
+    scope text,
+    process_tag text,
+    observed_at timestamptz NOT NULL DEFAULT now(),
+    correlation_id uuid,
+    CONSTRAINT fallback_observations_counts_valid
+      CHECK (eligible >= 0 AND applied >= 0 AND applied <= eligible),
+    CONSTRAINT fallback_observations_mechanism_nonempty CHECK (length(btrim(mechanism)) > 0),
+    CONSTRAINT fallback_observations_reason_nonempty CHECK (length(btrim(reason)) > 0)
+  );
+  ALTER TABLE harness_shared.fallback_observations ADD COLUMN IF NOT EXISTS correlation_id uuid`;
+
 export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS harness_shared.goals (
     workspace_id text NOT NULL, id text NOT NULL,
@@ -1446,6 +1473,7 @@ export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   MEMORY_RECALL_CLAIM_MIN_DDL,
   EVENT_AWAITS_MIN_DDL,
   SCOUT_ROUTED_IDEAS_MIN_DDL,
+  FALLBACK_OBSERVATIONS_MIN_DDL,
 ];
 
 /**
