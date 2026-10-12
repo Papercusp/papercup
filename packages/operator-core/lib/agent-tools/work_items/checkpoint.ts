@@ -1300,6 +1300,22 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
+      // Keep the attestation pair early so compact discovery retains it when
+      // later nested fields consume the bounded schema budget.
+      unchanged: looseBoolean().describe(
+        'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
+          'is still current instead of rewriting it. Requires `contentHash`. Do not send `checkpoint`, ' +
+          '`did`/`left`/`insight`/`next`, `clear`, `append`, `checks`, or `dependsOn` with `unchanged:true`; ' +
+          'omit `unchanged` when writing a new body. Conflicting fields return `attestation_conflicting_args`.',
+      ).meta({
+        'x-papercusp-call-constraint':
+          'when `unchanged:true` => `contentHash` required; `checkpoint`, `clear:true`, `append:true`, `checks`, ' +
+          '`retireIds`, and `dependsOn` forbidden (violations return `attestation_conflicting_args`); ' +
+          '`confirmRetire` cannot authorize a row mutation.',
+      }),
+      contentHash: contentHashSpec().describe(
+        'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
+      ),
       /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
        *  Omission is allowed only alongside `checks`, `dependsOn`, `learned`, or
        *  `learnedLevel`, which are metadata-only patches that preserve the stored body
@@ -1368,21 +1384,6 @@ export default defineTool({
       dependsOn: dependsOnSpec(),
       learned: learnedSpec(),
       learnedLevel: learnedLevelSpec(),
-      // P-007/R-06. These MUST exist on the single shorthand, not only on the items[]
-      // entry: the whole point of an attestation is the one-item call an agent makes
-      // at a compaction boundary, and this object is `.strict()`, so declaring them
-      // only on the batch shape makes the documented `{ id, unchanged, contentHash }`
-      // call fail Zod validation before the tool body ever runs — a feature that reads
-      // as shipped and is unreachable.
-      unchanged: looseBoolean().describe(
-        'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
-          'is still current instead of rewriting it. Requires `contentHash`. Do not send `checkpoint`, ' +
-          '`did`/`left`/`insight`/`next`, `clear`, `append`, `checks`, or `dependsOn` with `unchanged:true`; ' +
-          'omit `unchanged` when writing a new body. Conflicting fields return `attestation_conflicting_args`.',
-      ),
-      contentHash: contentHashSpec().describe(
-        'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
-      ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.workItem), {
       message: 'pass { id, checkpoint? } (workItem aliases id) for one, or items:[{ id, checkpoint? }] for many',
