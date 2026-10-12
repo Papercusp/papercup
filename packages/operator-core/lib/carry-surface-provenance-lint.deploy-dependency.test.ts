@@ -68,6 +68,13 @@ describe('unprobed-deploy-dependency', () => {
     );
   });
 
+  it('does not treat an unestablished deployment-skew explanation as a release dependency', () => {
+    const line =
+      'The triggering verifier exception and deployment-skew explanation remain unestablished. ' +
+      'Keep this item open and claim-held until exact retained evidence satisfies the release condition.';
+    expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
+  });
+
   it('a checks row in the same write that probes the release plane clears the narrative line', () => {
     const note = withCarryNoteChecks('Waiting on the deploy to finish R-3.', [
       { claim: 'R-3 is blocked on the :3070 deploy', recheck: 'dev:pipeline_position { path } → servingRuntimes' },
