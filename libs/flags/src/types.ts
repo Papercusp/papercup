@@ -15,6 +15,11 @@ export const FLAGS = {
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the cutover
   // kill-switch that restores the legacy ts_rank_cd ordering on every call site.
   BM25_LEXICAL_RANKING: "papercusp-bm25-lexical-ranking",
+  // WI-6554700010009291 (owner directives #1759/#1764): capability:bash runs each command
+  // through `rtk rewrite`, so our own shell tool gets the same RTK output compression as
+  // Claude's native Bash hook. Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is
+  // the fleet-wide kill-switch that runs every capability:bash command verbatim.
+  CAPABILITY_BASH_RTK: "papercusp-capability-bash-rtk",
   // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
   // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible
   // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
