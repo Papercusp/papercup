@@ -67,6 +67,10 @@ import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from 
 
 const listClauses = vi.mocked(listSpecClauses);
 const listEvidence = vi.mocked(listSpecEvidence);
+/** One `listSpecEvidence` row. The selection-cohort tests build PARTIAL rows (only the
+ *  fields the handler filters on) and assert the mock's result to the real row type —
+ *  a checked assertion, never an `as never` escape. */
+type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 const listAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const listRetiredAcceptanceRubrics = vi.mocked(getRetiredAcceptanceRubricsForPlan);
 const readScorecard = vi.mocked(readScorecardEvidence);
@@ -1128,7 +1132,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     ];
     listEvidence.mockImplementation(async (options) => pool
       .filter((row) => !options.specIds || options.specIds.includes(row.specId))
-      .slice(0, options.limit) as never);
+      .slice(0, options.limit) as EvidenceRow[]);
 
     const result = await call({
       slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
@@ -1163,7 +1167,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
       (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
       (!options.bindingIds || options.bindingIds.includes(row.id)),
-    ).slice(0, options.limit) as never);
+    ).slice(0, options.limit) as EvidenceRow[]);
 
     const result = await call({
       slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20, ...selector,
@@ -1274,7 +1278,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
       (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
       (!options.bindingIds || options.bindingIds.includes(row.id)),
-    ) as never);
+    ) as EvidenceRow[]);
 
     const result = await call({
       slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], ...selector,
@@ -1293,7 +1297,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   it('retains the hit-limit refusal when the selected plan item itself has too much evidence', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockImplementation(async (options) => Array.from({ length: options.limit ?? 1000 },
-      (_, index) => ({ id: index + 1, specId: 'SPEC-001' })) as never);
+      (_, index) => ({ id: index + 1, specId: 'SPEC-001' })) as EvidenceRow[]);
 
     const result = await call({
       slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
