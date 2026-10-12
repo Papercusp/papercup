@@ -438,7 +438,7 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
         const links = await sql<HostedUserRow[]>`
           SELECT hosted_user_id::text AS hosted_user_id
             FROM papercusp_auth.external_identities
-           WHERE provider = 'workos-dsync' AND subject = ${subject}
+           WHERE provider = 'workos-dsync' AND subject = ${subject} AND status = 'active'
              AND (${mutation.groupSubject ?? null}::text IS NULL OR
                (jsonb_typeof(profile->'authorized_directory_groups') = 'array' AND
                 (profile->'authorized_directory_groups') ? ${mutation.groupSubject ?? ''}))
