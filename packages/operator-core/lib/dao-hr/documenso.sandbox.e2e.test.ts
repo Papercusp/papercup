@@ -119,20 +119,34 @@ async function accountToken(page: Page) {
 }
 
 async function sign(page: Page, url: string) {
-  await uiPhase(page, 'insert signature and confirm signing consent', async () => {
+  await uiPhase(page, 'navigate signing link and reveal next field', async () => {
     await page.goto(url);
-    const signature = page.locator('[data-field-type="SIGNATURE"][data-inserted="false"]');
-    await signature.click();
-    await expect.poll(async () => await page.locator('[data-field-type="SIGNATURE"][data-inserted="true"]').count() > 0 ||
+    await page.getByRole('button', { name: 'Next Field', exact: true }).first().click();
+  });
+  await uiPhase(page, 'click provider canvas signature field', async () => {
+    // Envelope API v2 uses Konva canvas, not the legacy data-field-type DOM.
+    // Next Field positions this provider-owned overlay at the unsigned field.
+    // Click its screen center through the pointer; never inject canvas state.
+    const field = page.locator('#field-tooltip');
+    await field.waitFor({ state: 'visible' });
+    await field.scrollIntoViewIfNeeded();
+    const bounds = await field.boundingBox();
+    expect(Boolean(bounds && bounds.width > 0 && bounds.height > 0)).toBe(true);
+    await page.mouse.click(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+    await expect.poll(async () => await page.getByRole('button', { name: 'Complete', exact: true }).count() > 0 ||
       await page.getByRole('dialog').isVisible(), { timeout: 30_000 }).toBe(true);
+  });
+  await uiPhase(page, 'use signature pad when requested', async () => {
     if (await page.getByRole('dialog').isVisible()) {
       const dialog = page.getByRole('dialog');
       await dialog.getByRole('tab', { name: 'Type', exact: true }).click();
       await dialog.getByTestId('signature-pad-type-input').fill('NON-BINDING TEST SIGNATURE');
       await dialog.getByRole('button', { name: 'Sign', exact: true }).click();
     }
-    await expect.poll(() => page.locator('[data-field-type="SIGNATURE"][data-inserted="true"]').count(), { timeout: 30_000 }).toBe(1);
-    await page.getByRole('button', { name: 'Complete', exact: true }).click();
+    await expect.poll(() => page.getByRole('button', { name: 'Complete', exact: true }).count(), { timeout: 30_000 }).toBeGreaterThan(0);
+  });
+  await uiPhase(page, 'confirm document signing consent', async () => {
+    await page.getByRole('button', { name: 'Complete', exact: true }).first().click();
     const confirmation = page.getByRole('dialog');
     await confirmation.getByRole('button', { name: 'Sign', exact: true }).click();
     await expect.poll(() => confirmation.isVisible(), { timeout: 30_000 }).toBe(false);
