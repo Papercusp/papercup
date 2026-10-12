@@ -184,6 +184,30 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(out.results[1]).toEqual({ ok: false, id: "WI-missing", error: "not found" });
   });
 
+  it('preserves the exact checkpoint page and marks ordinary clipped checkpoints as recoverable', () => {
+    const page = {
+      offset: 0,
+      limit: 768,
+      totalChars: 10_000,
+      returnedChars: 768,
+      nextOffset: 768,
+      text: 'P'.repeat(768),
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const exact = shapeWorkItemsGet({
+        ...envelope([{ ok: true, id: 'WI-page', checkpointPage: page, checkpointContentHash: '123456789abc' }]),
+        __checkpointOnly: true,
+      }, tier) as Envelope;
+      expect(exact._shapeNote).toMatchObject({ checkpointOnly: true });
+      expect(exact.results[0]).toMatchObject({ checkpointPage: page, checkpointContentHash: '123456789abc' });
+      expect(exact.results[0]).not.toHaveProperty('checkpoint');
+
+      const ordinary = shapeWorkItemsGet(envelope([row({ checkpoint: 'C'.repeat(20_000) })]), tier) as Envelope;
+      expect(ordinary.results[0].checkpointTruncated).toBe(true);
+      expect(String(ordinary.results[0].checkpoint)).toContain('[TRUNCATED');
+    }
+  });
+
   it('preserves checkpoint check-row capacity in both payload tiers and compact fallback', () => {
     const checkpointChecks = { count: 10, cap: 12, remaining: 2 };
     for (const tier of ['trimmed', 'standard'] as const) {

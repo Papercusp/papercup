@@ -42,13 +42,13 @@ afterAll(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('loop turn-start producer to reconciler, real Postgres', () => {
-  it('holds the stamped running turn past delivery grace and retries the unstamped control', async () => {
+  it('requires loop-fire prompt-start proof even when generic delivery proof observes tool use', async () => {
     const now = Date.now();
     const fired = new Date(now - 10_000);
     const dispatched = new Date(now - 5_000);
     const cases = [
-      { id: 'rt-start-proof', owner: 'su-start-proof', stamped: true },
-      { id: 'rt-no-start-proof', owner: 'su-no-start-proof', stamped: false },
+      { id: 'rt-start-proof', owner: 'su-start-proof', stamped: true, genericPickupObserved: false },
+      { id: 'rt-no-start-proof', owner: 'su-no-start-proof', stamped: false, genericPickupObserved: true },
     ];
     for (const c of cases) {
       await sql`
@@ -61,12 +61,17 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
       const awaits = await sql<Array<{ id: number }>>`
         INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
         VALUES (${WS}, ${c.owner}, ${'test:' + c.id}) RETURNING id`;
+      // Generic event pickup can be observed from a PostToolUse hook in a turn that
+      // was already running when the delivery arrived. It is not loop-fire prompt-start proof.
+      const genericTurnProof = c.genericPickupObserved ? 'observed' : 'awaiting';
+      const genericTurnStartedAt = c.genericPickupObserved ? new Date(dispatched.getTime() + 1_000) : null;
       await sql`
         INSERT INTO harness_shared.event_wake_deliveries
           (workspace_id, await_id, subscriber_id, event_key, source, status,
-           channel, created_at, delivered_at)
+           channel, created_at, delivered_at, turn_proof, turn_started_at, pickup_deadline_at)
         VALUES (${WS}, ${awaits[0]!.id}, ${c.owner}, ${'test:' + c.id},
-                ${'loop:' + c.id}, 'delivered', 'psu-socket-inject', ${dispatched}, ${dispatched})`;
+                ${'loop:' + c.id}, 'delivered', 'inbox', ${dispatched}, ${dispatched},
+                ${genericTurnProof}, ${genericTurnStartedAt}, ${new Date(dispatched.getTime() + 600_000)})`;
       // Exercise the real producer and default PG telemetry writer, not a seeded marker.
       expect(await recordLoopTurnStart({
         owner: c.owner, workspaceId: WS, client: 'codex',
@@ -82,6 +87,13 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     expect(stamps).toHaveLength(1);
     expect(stamps[0]).toMatchObject({ owner_id: 'su-start-proof', summary: LOOP_TURN_START_MARKER });
     expect(stamps[0]!.created_at.getTime()).toBeGreaterThan(dispatched.getTime());
+
+    const genericProof = await sql<Array<{ turn_proof: string; turn_started_at: Date }>>`
+      SELECT turn_proof, turn_started_at FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${WS} AND subscriber_id = 'su-no-start-proof'`;
+    expect(genericProof).toHaveLength(1);
+    expect(genericProof[0]).toMatchObject({ turn_proof: 'observed' });
+    expect(genericProof[0]!.turn_started_at.getTime()).toBeGreaterThan(dispatched.getTime());
 
     const recordFire = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

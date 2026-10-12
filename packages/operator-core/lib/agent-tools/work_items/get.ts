@@ -285,8 +285,33 @@ async function withWorkItemsGetBudget<T>(
  */
 export const THREAD_WINDOW_MAX = 10;
 
+/** Exact checkpoint pages stay below the result door even after JSON escaping. */
+export const CHECKPOINT_PAGE_DEFAULT_CHARS = 512;
+export const CHECKPOINT_PAGE_MAX_CHARS = 768;
+
+function checkpointTextPage(checkpoint: string | null, requestedOffset: number, requestedLimit?: number) {
+  if (checkpoint === null) return null;
+  // Offsets are Unicode code points, so a page boundary never splits a surrogate pair.
+  const chars = Array.from(checkpoint);
+  const offset = Math.min(requestedOffset, chars.length);
+  const limit = Math.min(requestedLimit ?? CHECKPOINT_PAGE_DEFAULT_CHARS, CHECKPOINT_PAGE_MAX_CHARS);
+  const text = chars.slice(offset, offset + limit).join('');
+  const returnedChars = Array.from(text).length;
+  return {
+    offset,
+    limit,
+    totalChars: chars.length,
+    returnedChars,
+    nextOffset: offset + returnedChars < chars.length ? offset + returnedChars : null,
+    text,
+    ...(requestedLimit !== undefined && requestedLimit > CHECKPOINT_PAGE_MAX_CHARS
+      ? { limitClamped: { requested: requestedLimit, applied: CHECKPOINT_PAGE_MAX_CHARS } }
+      : {}),
+  };
+}
+
 const RESUME_ARGUMENT_CONSTRAINT =
-  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the full record)';
+  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the full record)';
 
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
@@ -347,14 +372,10 @@ const workItemsGetArgRedirects: Record<string, string> = {
   ),
   includeChecks:
     'checksOnly — set it to true for a narrow checkpoint-ledger read that returns stored check-row ids and claims without the full checkpoint body or work-item payload.',
-  // NOT aliased to `threadLimit`, on purpose — the plan's ALIAS-vs-BETTER-ERROR
-  // rule. Accepting `limit` would fuse two different questions: on an
-  // already-bulk tool a caller writing `limit` may mean "how many WORK-ITEMS"
-  // (which is `ids`) or "how many COMMENT posts" (`threadLimit`). Answering
-  // either one silently would return a different measurement than the one
-  // asked for, so the rejection stands and names BOTH destinations.
+  offset:
+    'checkpointOnly — set it to true for an exact checkpoint page; offset is a Unicode-code-point start position and the next page starts at checkpointPage.nextOffset.',
   limit:
-    `ids — …but only if you meant how many WORK-ITEMS: this tool is already bulk, so you pass the ids themselves (1–100), not a count. If you meant how many COMMENT posts, that is \`threadLimit\` (0–${THREAD_WINDOW_MAX}). \`limit\` is refused rather than aliased because those are two different questions and guessing would answer the wrong one.`,
+    `checkpointOnly — set it to true for an exact checkpoint page; limit is capped at ${CHECKPOINT_PAGE_MAX_CHARS} Unicode code points. It is not a count of work-items or comment posts (use ids or threadLimit for those).`,
   // Correct-as-designed: there is no terminal filter to enable. Say that
   // outright, so the caller stops hunting for the switch.
   include_terminal: TERMINAL_FILTER_REDIRECT,
@@ -648,6 +669,17 @@ const workItemsGetResultRowSchema = z.object({
   // states. Declare them so discovery teaches their real paths instead of
   // hiding the checkpoint and comment window behind passthrough.
   checkpoint: z.string().nullable().optional(),
+  checkpointPage: z.object({
+    offset: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
+    totalChars: z.number().int().nonnegative(),
+    returnedChars: z.number().int().nonnegative(),
+    nextOffset: z.number().int().nonnegative().nullable(),
+    text: z.string(),
+    limitClamped: z.object({ requested: z.number().int(), applied: z.number().int() }).optional(),
+  }).passthrough().nullable().optional(),
+  checkpointTruncated: z.boolean().optional(),
+  checkpointReadFailed: z.boolean().optional(),
   checkpointChecks: z.object({
     count: z.number().int().nonnegative(),
     cap: z.number().int().positive(),
@@ -743,8 +775,9 @@ export default defineTool({
   description:
     'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.',
   guidance: {
-    when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
+    when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact full checkpoint text, use the standalone `checkpointOnly:true` page mode. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
+      "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no checkpoint unless `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
       "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
       "`read.enrichmentMaxMs` includes timed-out and cancelled per-item enrichment up to the shared deadline. When present, `read.enrichmentDiagnostics` identifies pending/rejected enrichment legs and completed legs taking at least 1000ms; `enrichmentDiagnosticsOmitted` counts entries beyond the 32-row cap. These are diagnostics only and carry no arguments or result bodies.\\n\\n" +
@@ -811,8 +844,17 @@ export default defineTool({
         .describe(
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
+      checkpointOnly: z.boolean().optional().describe(
+        'standalone exact checkpoint text page for exactly one item; skips item payload and other enrichments. Pair with root-level offset (Unicode code points, default 0) and limit (default 512, hard cap 768); follow checkpointPage.nextOffset and compare checkpointContentHash across pages. checkpointPage:null means no stored checkpoint unless checkpointReadFailed is true.',
+      ),
+      offset: z.number().int().nonnegative().max(10_000_000).optional().describe(
+        'checkpointOnly page start measured in Unicode code points; omitted means 0. The returned checkpointPage.offset is clamped to totalChars.',
+      ),
+      limit: z.number().int().min(1).max(1_000_000).optional().describe(
+        'checkpointOnly page size in Unicode code points; omitted means 512. Larger requests are clamped to 768 and disclosed in checkpointPage.limitClamped.',
+      ),
       resume: z.boolean().optional().describe(
-        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Pass exactly one item (prefer id; a one-element ids array is accepted, but multi-id batches are rejected). Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Checks are at results[].resume.checks.rows (an array), not resume.checks; resume.checks.omitted counts saved rows excluded by the packet budget. Do not combine with detail, checksOnly, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.',
+        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Pass exactly one item (prefer id; a one-element ids array is accepted, but multi-id batches are rejected). Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Checks are at results[].resume.checks.rows (an array), not resume.checks; resume.checks.omitted counts saved rows excluded by the packet budget. Do not combine with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.',
       ),
       operationalBrief: z.boolean().optional().describe(
         'Add `operationalBrief` per row: claim/state, blockers, last verified evidence, next action and successor residue, projected from this same read. Unmeasured fields are explicit `unknown` with a reason, never zero. Forces a complete read; not with resume or checksOnly.',
@@ -854,6 +896,15 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     })
+    .refine((a) => a.checkpointOnly === true || (a.offset === undefined && a.limit === undefined), {
+      message: 'offset and limit are only valid with checkpointOnly:true; use ids or threadLimit for other windows',
+    })
+    .refine((a) => !a.checkpointOnly || (
+      mergeIds(a.id, a.ids).length === 1 && !a.attachments && !a.resume && !a.checksOnly &&
+      !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined && !a.operationalBrief
+    ), {
+      message: 'checkpointOnly is a standalone one-item read; omit other enrichment switches',
+    })
     .refine((a) => !a.attachments || (mergeIds(a.id, a.ids).length === 1 && !a.resume && !a.checksOnly && !a.operationalBrief && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
       message: 'attachments is a standalone one-item read; omit other enrichment switches',
     })
@@ -893,10 +944,11 @@ export default defineTool({
     // P-008: the operational brief projects from the whole row (payload for set_blocker
     // records, checkpoint, holder, planItemBlocked), so a requested brief forces the
     // complete read instead of letting a caller's pick narrow its inputs away.
-    const sourceSelection = args.operationalBrief
+    const sourceSelection = args.operationalBrief || args.checkpointOnly
       ? null
       : workItemsGetSourceSelection((ctx as SourceProjectionContext).sourceProjection);
     const checksOnly = args.checksOnly === true;
+    const checkpointOnly = args.checkpointOnly === true;
     const hasThreadLimit = args.threadLimit !== undefined;
     const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
     const effectiveThreadLimit = args.threadLimit === undefined ? undefined : Math.min(args.threadLimit, THREAD_WINDOW_MAX);
@@ -931,8 +983,8 @@ export default defineTool({
       sourceSelection,
       'workItem.posts', 'workItem.topics', 'workItem.links', 'workItem.detailOmitted',
     );
-    const readDetail = !args.resume && !checksOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
-    const sourceReadOptions = checksOnly
+    const readDetail = !args.resume && !checksOnly && !checkpointOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
+    const sourceReadOptions = checksOnly || checkpointOnly
       ? { includeBody: false, payloadProjection: 'none' as const }
       : args.resume || args.operationalBrief
         ? undefined
@@ -943,6 +995,7 @@ export default defineTool({
       !args.resume &&
       !args.attachments &&
       !checksOnly &&
+      !checkpointOnly &&
       !readDetail &&
       !boundedThread &&
       !needsPriorWork &&
@@ -1093,6 +1146,7 @@ export default defineTool({
               harness: args.harness ?? null,
               detail: readDetail,
               checksOnly,
+              checkpointOnly,
               ...(sourceReadOptions ? { sourceReadOptions } : {}),
             },
             tags: [
@@ -1139,6 +1193,37 @@ export default defineTool({
         }
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
+        }
+        if (checkpointOnly) {
+          stage.enrichmentStartedAtMs = Date.now();
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
+            getWorkItemCheckpointWithMeta({ harness: workItem.harness, workItemId: workItem.id }),
+          ).catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
+          stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
+          if (checkpointRead.readFailed) {
+            return {
+              ok: true as const,
+              id,
+              __checkpointOnly: true as const,
+              checkpointPage: null,
+              checkpointReadFailed: true as const,
+              checkpointAgeMs: null,
+              checkpointUpdatedAtMs: null,
+              checkpointContentHash: null,
+            };
+          }
+          const checkpoint = checkpointRead.checkpoint;
+          return {
+            ok: true as const,
+            id,
+            __checkpointOnly: true as const,
+            checkpointPage: checkpointTextPage(checkpoint, args.offset ?? 0, args.limit),
+            checkpointAgeMs: checkpointRead.updatedAtMs != null
+              ? Math.max(0, Date.now() - checkpointRead.updatedAtMs)
+              : null,
+            checkpointUpdatedAtMs: checkpointRead.updatedAtMs,
+            checkpointContentHash: checkpoint === null ? null : shortCarryHash(checkpoint),
+          };
         }
         if (args.resume) {
           stage.enrichmentStartedAtMs = Date.now();
@@ -1735,6 +1820,7 @@ export default defineTool({
       read,
       ...(args.resume ? { __resumeOnly: true } : {}),
       ...(args.checksOnly ? { __checksOnly: true } : {}),
+      ...(args.checkpointOnly ? { __checkpointOnly: true } : {}),
     });
   },
 });

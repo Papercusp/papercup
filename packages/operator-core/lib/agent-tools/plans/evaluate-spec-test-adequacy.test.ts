@@ -905,7 +905,56 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   });
 
   it('bounds blocked-criterion explanations and marks incomplete evidence in compact replay', async () => {
-    listClauses.mockResolvedValue([{ ...clause('active'), requiredTestLayers: ['unmeasured-layer-'.repeat(200)] }]);
+    const staleLiveBinding = {
+      id: 37231,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      specRevision: 1,
+      currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'manual' as const,
+      evidenceRef: 'manual:live-observation',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: 'sha256:old-environment',
+      },
+      coverageEvidenceRef: null,
+      testRunId: null,
+      testRunProvenance: null,
+      details: { evidencePlane: 'live' },
+      observedAt: '2026-10-01T12:00:00Z',
+      bindingFingerprint: 'sha256:binding',
+      createdBy: 'su-test',
+      createdAt: '2026-10-01T12:00:00Z',
+      currentness: {
+        comparisonSupplied: true,
+        provenance: 'server-measured' as const,
+        overall: 'stale' as const,
+        dimensions: {
+          spec: 'current' as const,
+          source: 'current' as const,
+          test: 'not-applicable' as const,
+          fixture: 'not-applicable' as const,
+          rubric: 'not-applicable' as const,
+          environment: 'stale' as const,
+          coverageEvidence: 'not-applicable' as const,
+          testRun: 'not-applicable' as const,
+        },
+        staleReasons: ['environment-stale'],
+        unknownReasons: [],
+      },
+    };
+    listClauses.mockResolvedValue([{
+      ...clause('active'),
+      requiredEvidence: ['live'],
+      requiredTestLayers: ['unmeasured-layer-'.repeat(200)],
+    }]);
+    listEvidence.mockResolvedValue([staleLiveBinding] as never);
     const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
     const summary = await call(base);
     const full = await call({ ...base, detail: 'full' });
@@ -915,6 +964,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(explanation.evidence).toContain('Required layer');
     expect(explanation.evidence.length).toBeLessThanOrEqual(1200);
     expect(explanation.evidenceTruncated).toBe(true);
+    expect(explanation.evidence).toContain('Required evidence plane(s) are absent from current bindings');
+    expect(explanation.evidence).toContain('evidencePlane="live"');
+    expect(explanation.evidence).toContain('id=37231');
+    expect(summary.rows[0].draggingBindingIds['correct-layer']).toContain(37231);
     expect(full.rows[0].ratings['correct-layer'].evidence.length).toBeGreaterThan(1200);
     expect(summary.rows[0].wouldBlock).toEqual(full.rows[0].wouldBlock);
   });

@@ -9,7 +9,9 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryWorkDeadline } from './op-deadline';
+import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
 
+const pgDiagnosticRows = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
@@ -22,7 +24,17 @@ vi.mock('../agent-tools/search/report-source', () => ({ createReportSearchSource
 /** The owner→own-session lookup runs through this tagged template. Default: the
  *  caller owns nothing, i.e. no exclusions. */
 const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await orig<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql }),
+    pgResultDiagnosticSnapshot: (pool: string, limit?: number) => {
+      const snapshot = actual.pgResultDiagnosticSnapshot(pool, limit);
+      return { ...snapshot, results: pgDiagnosticRows.slice(-(limit ?? 32)) as typeof snapshot.results };
+    },
+  };
+});
 // Partial mock over `importOriginal`, never a hand-listed factory: a factory
 // replaces the module wholesale, so ANY export a transitively-imported module
 // touches at load time (configureSearchDefaults via P-017, createEmbeddingSpace
@@ -84,6 +96,8 @@ const base = { queryText: QUERY, workspaceId: 'ws-1' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runHybridSearch.mockReset();
+  pgDiagnosticRows.length = 0;
   sql.mockResolvedValue([]);
   getFlag.mockResolvedValue(true);
   buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
@@ -179,6 +193,53 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       ['plan','doc','report'].map(source => expect.objectContaining({ source,status: 'not-run',rows: null,
         reason: 'knowledge source not granted by host' })),
     ));
+  });
+
+  it('joins terminal PG query identity and timing to one corpus source call', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    const { SEARCH_SOURCES } = await import('../agent-tools/search/sources');
+    const source = SEARCH_SOURCES.find(candidate => candidate.name === 'session_turn')!;
+    const mutableSource = source as unknown as { lexical?: typeof source.lexical };
+    const oldLexical = mutableSource.lexical;
+    let nextQueryId = 187;
+    mutableSource.lexical = async () => {
+      const context = currentStageDiagnosticContext();
+      expect(context?.attemptId).toBeTruthy();
+      pgDiagnosticRows.push({
+        pool: 'org-admin',
+        connectionId: 7,
+        queryId: nextQueryId++,
+        backendPid: 4812,
+        elapsedMs: 11,
+        preBuildMs: 2,
+        status: 'ok',
+        correlation: context,
+      });
+      return [];
+    };
+    try {
+      const result = await recallCorpusContext({ ...base, knowledgeSourcesAllowed: false });
+      const sourceCall = result.stages?.[0]?.lexical.sourceCalls?.find(call => call.source === 'session_turn');
+      expect(sourceCall?.queryDiagnostics).toMatchObject({
+        attemptId: expect.any(String),
+        timing: 'query-build-to-terminal-not-acquisition',
+        coverage: 'completed-query-results-only',
+        snapshotCapacity: 32,
+        queries: [expect.objectContaining({
+          connectionId: 7,
+          queryId: 187,
+          backendPid: 4812,
+          elapsedMs: 11,
+          preBuildMs: 2,
+          status: 'ok',
+        })],
+      });
+    } finally {
+      if (oldLexical) mutableSource.lexical = oldLexical;
+      else delete mutableSource.lexical;
+      runHybridSearch.mockReset();
+    }
   });
 
   it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {

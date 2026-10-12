@@ -119,8 +119,9 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
 // underlying reader is still never asked for more than the cap, and the clamp is
 // disclosed rather than silent.
 it('documents the threadLimit window and still accepts the in-range values', () => {
-  expect(get.description).toContain('`threadLimit`');
-  expect(get.description).toContain('(0–10)');
+  const when = String((get as unknown as { guidance?: { when?: string } }).guidance?.when ?? '');
+  expect(when).toContain('`threadLimit`');
+  expect(when).toContain('(0–10');
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 10 })).not.toThrow();
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 0 })).not.toThrow();
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: -1 })).toThrow();
@@ -161,6 +162,66 @@ it('EI-21885040199084336: accepts detail as the boolean-or-string-enum conventio
 it('accepts checksOnly as the narrow checkpoint-ledger read switch', () => {
   expect((parse({ id: 'WI-checks-only-schema', checksOnly: true }) as { checksOnly?: boolean }).checksOnly).toBe(true);
   expect((parse({ id: 'WI-checks-only-schema', checksOnly: false }) as { checksOnly?: boolean }).checksOnly).toBe(false);
+});
+
+it('checkpointOnly pages exact stored checkpoint text by Unicode code point and clamps the page size', async () => {
+  const stored = 'A😀BCDEF';
+  getWorkItem.mockResolvedValue({ id: 'WI-checkpoint-page', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: stored, updatedAtMs: 123 });
+
+  expect(() => parse({ id: 'WI-checkpoint-page', offset: 1 })).toThrow(/only valid with checkpointOnly/);
+  expect(() => parse({ id: 'WI-checkpoint-page', checkpointOnly: true, limit: 0 })).toThrow();
+  expect(() => parse({ id: 'WI-checkpoint-page', checkpointOnly: true, detail: true })).toThrow(/standalone/);
+  const outputSchema = z.toJSONSchema(get.result as never) as any;
+  expect(outputSchema.properties.results.items.properties.checkpointPage.anyOf[0]).toMatchObject({
+    type: 'object',
+    properties: expect.objectContaining({
+      offset: expect.objectContaining({ type: 'integer' }),
+      totalChars: expect.objectContaining({ type: 'integer' }),
+      nextOffset: expect.objectContaining({ anyOf: expect.any(Array) }),
+      text: expect.objectContaining({ type: 'string' }),
+    }),
+  });
+
+  const first = await one({ id: 'WI-checkpoint-page', harness: 'requested', checkpointOnly: true, offset: 1, limit: 2 });
+  expect(first).toMatchObject({
+    id: 'WI-checkpoint-page',
+    __checkpointOnly: true,
+    checkpointPage: {
+      offset: 1,
+      limit: 2,
+      totalChars: 7,
+      returnedChars: 2,
+      nextOffset: 3,
+      text: '😀B',
+    },
+    checkpointUpdatedAtMs: 123,
+    checkpointContentHash: shortCarryHash(stored),
+  });
+  expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledWith({ harness: 'canonical', workItemId: 'WI-checkpoint-page' });
+  expect(getWorkItemDetail).not.toHaveBeenCalled();
+  expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+
+  const clamped = await one({ id: 'WI-checkpoint-page', checkpointOnly: true, offset: 99, limit: 900 });
+  expect(clamped.checkpointPage).toMatchObject({
+    offset: Array.from(stored).length,
+    limit: 768,
+    returnedChars: 0,
+    nextOffset: null,
+    text: '',
+    limitClamped: { requested: 900, applied: 768 },
+  });
+});
+
+it('checkpointOnly keeps a failed checkpoint read distinct from no stored checkpoint', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-checkpoint-page-failed', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null, readFailed: true });
+  const result = await one({ id: 'WI-checkpoint-page-failed', checkpointOnly: true });
+  expect(result).toMatchObject({
+    checkpointPage: null,
+    checkpointReadFailed: true,
+    checkpointContentHash: null,
+  });
 });
 
 const env = async (x: unknown) => {
@@ -209,14 +270,14 @@ it('resume documents and enforces its standalone contract', () => {
   const argsShape = (get.args as { shape?: Record<string, { description?: string }> }).shape;
   const resumeDescription = String(argsShape?.resume?.description ?? '');
   const idsDescription = String(argsShape?.ids?.description ?? '');
-  const toolDescription = (get as unknown as { description?: string }).description ?? '';
-  expect(toolDescription).toContain('For `resume:true`, exactly one item is required');
-  expect(toolDescription).toContain('multi-id resume batches are rejected');
+  const callConstraint = (z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string })['x-papercusp-call-constraint'] ?? '';
+  expect(callConstraint).toContain('resume requires one item');
+  expect(callConstraint).toContain('multi-id batches are not supported');
   expect(idsDescription).toContain('With resume:true, provide one ID only');
   expect(resumeDescription).toContain('Standalone one-item continuation view');
   expect(resumeDescription).toContain('a one-element ids array is accepted');
   expect(resumeDescription).toContain('multi-id batches are rejected');
-  for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs', 'operationalBrief']) {
+  for (const excluded of ['detail', 'checksOnly', 'checkpointOnly', 'threadLimit', 'priorAttemptRefs', 'operationalBrief']) {
     expect(resumeDescription).toContain(excluded);
   }
   const json = z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string };

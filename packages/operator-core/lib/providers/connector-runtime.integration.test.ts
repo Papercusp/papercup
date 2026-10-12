@@ -785,6 +785,25 @@ describe('container readership and source scope (D-026)', () => {
     await syncOne(pot);
     expect(scopes).toEqual(['organization', 'pot']);
   });
+
+  it('gives a live-search (federated) source no sync pass, and the same source syncs once back on its own mode', async () => {
+    handler = async () => page([], null, false);
+    const src = await orgSource();
+    const [{ sync_mode: ownMode }] = await org.adminSql<{ sync_mode: string }[]>`
+      SELECT sync_mode FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${src}::uuid`;
+    expect(ownMode).not.toBe('federated');
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET sync_mode = 'federated' WHERE workspace_id = ${WS} AND id = ${src}::uuid`;
+    const skipped = await sync(src);
+    expect(skipped.sources).toEqual([]);
+    expect(calls).toEqual([]);
+
+    // Positive control: the same source, back on its own mode, gets its pass.
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET sync_mode = ${ownMode} WHERE workspace_id = ${WS} AND id = ${src}::uuid`;
+    expect(await syncOne(src)).toMatchObject({ outcome: 'synced' });
+    expect(calls).toHaveLength(1);
+  });
 });
 
 /**

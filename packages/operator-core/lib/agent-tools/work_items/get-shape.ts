@@ -583,6 +583,9 @@ function compactSingleRow(
     // two-number object, so it never meaningfully competes for that budget.
     ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
+    ...(typeof checkpoint === "string" && checkpoint.length > checkpointCap
+      ? { checkpointTruncated: true }
+      : {}),
     ...(r.checkpointChecks !== undefined
       ? { checkpointChecks: projectCheckpointChecks(r.checkpointChecks, caps, dropped) }
       : {}),
@@ -1113,6 +1116,9 @@ function projectRow(
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
+    ...(typeof checkpoint === "string" && checkpoint.length > checkpointChars
+      ? { checkpointTruncated: true }
+      : {}),
     // `completion` is the read-side alias for the persisted completion record.
     // Keep `hasCompletionEvidence` even when the evidence body is clipped or
     // compacted, so a tier artifact cannot be read as a real absence.
@@ -1309,6 +1315,36 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
   };
 }
 
+/** Exact checkpoint pages are already source-bounded; keep them whole and avoid
+ * passing the page through the ordinary checkpoint degradation ladder. */
+function shapeCheckpointOnly(data: Row): unknown {
+  const { __checkpointOnly: _marker, ...envelope } = data;
+  const results = Array.isArray(data.results) ? data.results : [];
+  return {
+    ...envelope,
+    results: results.map((raw) => {
+      if (!raw || typeof raw !== "object") return raw;
+      const row = raw as Row;
+      if (row.ok === false) return row;
+      return {
+        ok: row.ok ?? true,
+        id: row.id ?? null,
+        checkpointPage: row.checkpointPage ?? null,
+        ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+        checkpointAgeMs: row.checkpointAgeMs ?? null,
+        checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
+        ...(row.checkpointContentHash !== undefined
+          ? { checkpointContentHash: row.checkpointContentHash }
+          : {}),
+      };
+    }),
+    _shapeNote: {
+      checkpointOnly: true,
+      next: "Follow checkpointPage.nextOffset; restart from offset 0 if checkpointContentHash changes.",
+    },
+  };
+}
+
 export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
@@ -1316,6 +1352,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const { __resumeOnly: _marker, ...resume } = d;
     return resume; // The one-item producer budgets whole fields before the result door.
   }
+  if (d.__checkpointOnly === true) return shapeCheckpointOnly(d);
   if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));

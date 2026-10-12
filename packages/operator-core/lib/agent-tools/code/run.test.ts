@@ -264,6 +264,15 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('TypeScript annotations such as `: any` are not supported');
   });
 
+  it('documents the recursive execution doors excluded from the script facade', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('tools.code.run');
+    expect(scriptDescription).toContain('tools.orchestrate.run');
+  });
+
   it('lets malformed shell text reach the VM compile error instead of static arg preflight', async () => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
@@ -1593,6 +1602,18 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(allNamespaceCount).toBeGreaterThan(payload.facadeHelp.namespaces.length);
     // nothing captured on a failed run
     expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['code.run', 'return await tools.code.run({ script: "return 1;" });'],
+    ['orchestrate.run', 'return await tools.orchestrate.run({});'],
+  ])('explains why recursive execution ref %s is excluded', async (unknownRef, script) => {
+    const res = await codeRun().fn({ script }, mkCtx());
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.unknownRefs).toContain(unknownRef);
+    expect(payload.facadeHelp.note).toContain('deliberately excluded from this facade');
+    expect(payload.facadeHelp.note).toContain('Keep the sequence in this outer script');
   });
 
   it.each(['workItems.notARealMethod', 'work_items.notARealMethod', 'work_items:notARealMethod'])(

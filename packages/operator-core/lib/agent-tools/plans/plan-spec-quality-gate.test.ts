@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import type { TaskRow } from '../../task-manager/types';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from './spec-quality';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
@@ -73,11 +74,19 @@ function matchingCard(
   };
 }
 
-function auditPendingCard(clauses: SpecClauseRevision[]): ScorecardRow {
+function auditPendingCard(
+  clauses: SpecClauseRevision[],
+  dispatchReservation?: { key: string; reservedAt: string },
+): ScorecardRow {
   return {
     ...matchingCard(clauses),
     issueId: 'EI-quality-card-pending',
-    gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-20T00:03:00.000Z' },
+    gradingAudit: {
+      state: 'pending',
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-08-20T00:03:00.000Z',
+      ...(dispatchReservation ? { dispatchReservation } : {}),
+    },
   };
 }
 
@@ -406,6 +415,42 @@ describe('evaluatePlanSpecQualityGate', () => {
     });
     expect(result.message).toContain('grading-integrity');
     expect(result.message).toContain('EI-quality-card-pending');
+  });
+
+  it('names the auditor task and reservation time instead of asking the caller to dispatch a duplicate audit', async () => {
+    const clauses = [clause()];
+    const reservation = {
+      key: 'grading-audit:EI-quality-card-pending',
+      reservedAt: '2026-08-20T00:03:01.000Z',
+    };
+    const listTasks = vi.fn(async () => [{
+      taskId: 'task-grading-auditor',
+      class: 'agent-session',
+      state: 'running',
+      workItemId: 'EI-quality-card-pending',
+      detail: { label: reservation.key, coordOwnerId: 'su-reserved-auditor' },
+    }] as unknown as TaskRow[]);
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({
+        listClauses: vi.fn(async () => clauses),
+        listCards: vi.fn(async () => [auditPendingCard(clauses, reservation)]),
+        listTasks,
+      }),
+    );
+
+    expect(result.code).toBe('spec_quality_scorecard_grading_audit_pending');
+    expect(result.message).toContain("task 'task-grading-auditor'");
+    expect(result.message).toContain("owner 'su-reserved-auditor'");
+    expect(result.message).toContain(reservation.reservedAt);
+    expect(result.message).toContain('no further action is needed while it settles');
+    expect(result.message).toContain('No grading-audit await key is available');
+    expect(result.message).not.toContain('scorecards:emit');
+    expect(listTasks).toHaveBeenCalledWith({
+      states: ['pending', 'running'],
+      labelPrefix: reservation.key,
+      limit: 10,
+    });
   });
 
   it('reports the grading-audit-failed verdict distinctly from a pending one', async () => {

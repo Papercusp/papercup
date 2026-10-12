@@ -433,6 +433,26 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(plan([item]))).toEqual([]);
   });
 
+  it('does not treat a classification bucket as source work in a final acceptance item', () => {
+    const parsed = plan([
+      '- **P-009** `todo` Wait for main to turn green before final shipment verification.',
+      '- **P-010** `todo` Outcome pass condition: place every row in exactly one of: (a) claimable to implement; (b) claimable to validate; or (c) worked with item-specific evidence from the last 30 minutes. Final shipment verification. blocked-by: P-009',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('still flags actual source work when a final acceptance item is blocked by main', () => {
+    const parsed = plan([
+      '- **P-009** `todo` Wait for main to turn green before final shipment verification.',
+      '- **P-010** `todo` Implement the remaining source fix, then classify the result as exactly one of: (a) done; (b) blocked. Final shipment verification. blocked-by: P-009',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-010', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it('accepts an item-local deployed-only exception with a concrete staging limitation', () => {
     const parsed = plan([
       '- **P-001** `todo` Wait for :3070 before closing the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart.',

@@ -88,9 +88,14 @@ const LIVE_GATE_OPERATION_RE =
 // and "a green build" name the artifact a final check runs on.
 const NON_FINAL_TITLE_RE =
   /(?:\b(?:implement|add|write)\b|(?<!\b(?:a|an|the|this|that|which|whichever|each|every|any|same|new|latest|current|staging|green|release|released|deployed)[- ])\bbuild\b|\b(?:run|prove)\b.{0,140}\b(?:source|unit|integration|regression)\b)/i;
+// Classification lists describe possible outcomes, not obligations. A bucket such as
+// "claimable to implement" must not turn a final acceptance item into source work.
+const CLASSIFICATION_BUCKET_LIST_RE = /\bexactly\s+one\s+of\s*:/i;
 
 function hasNonFinalWorkInTitle(text: string): boolean {
-  return NON_FINAL_TITLE_RE.test(text.split(/\n|\s+—\s+note:/i, 1)[0] ?? '');
+  const firstLine = text.split(/\n|\s+—\s+note:/i, 1)[0] ?? '';
+  const obligationText = firstLine.split(CLASSIFICATION_BUCKET_LIST_RE, 1)[0] ?? '';
+  return NON_FINAL_TITLE_RE.test(obligationText);
 }
 
 // A plan slug is an IDENTIFIER, not dependency semantics. A ref such as

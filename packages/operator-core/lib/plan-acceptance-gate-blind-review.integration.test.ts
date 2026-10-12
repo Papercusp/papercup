@@ -14,7 +14,7 @@
  * passes force:{reason} (waives the code-truth family only) and the rubric-completion
  * flag is switched OFF for this file, so a plan that clears the blind door really ships.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 
 import setStatusTool from './agent-tools/plans/set-status';
@@ -88,10 +88,21 @@ function ctxAs(ownerId: string) {
 type ToolResult = { content?: Array<{ text: string }>; data?: { results: Record<string, unknown>[] } };
 
 async function flipItem(itemId: string, status: string): Promise<Record<string, unknown>> {
-  const res = (await runWithWorkspace(WS, () => setStatusTool.handler({
-    harness: HARNESS, slug: SLUG, item: itemId, status, note: 'blind-review fixture flip',
-  } as never, ctxAs(AUTHOR)))) as ToolResult;
-  return (res.data?.results?.[0] ?? JSON.parse(res.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  // set-status emits this intentional timing diagnostic only when a flip crosses
+  // its slow-path threshold. This fixture checks blind-review behavior; the
+  // separate latency investigation owns that signal. Keep every other warning red.
+  const warn = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+    if (typeof message === 'string' && message.startsWith('[plans:set-status] slow ')) return;
+    throw new Error('unexpected warning during blind-review fixture flip: ' + String(message));
+  });
+  try {
+    const res = (await runWithWorkspace(WS, () => setStatusTool.handler({
+      harness: HARNESS, slug: SLUG, item: itemId, status, note: 'blind-review fixture flip',
+    } as never, ctxAs(AUTHOR)))) as ToolResult;
+    return (res.data?.results?.[0] ?? JSON.parse(res.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  } finally {
+    warn.mockRestore();
+  }
 }
 
 async function blindReview(ownerId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {

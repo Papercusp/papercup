@@ -3356,6 +3356,30 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete.note).not.toContain('wider per-field limit');
     });
 
+    it('routes clipped work-item checkpoints to checkpointOnly pages', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'WI-checkpoint',
+          checkpoint: 'checkpoint prefix…[TRUNCATED +1200 chars — re-read with payloadTier:\'full\']',
+          checkpointTruncated: true,
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('checkpointOnly:true');
+      expect(envelope.incomplete.note).toContain('checkpointPage.nextOffset');
+      expect(envelope.incomplete.note).not.toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).not.toContain('retry now with payloadTier');
+    });
+
     it('routes a nested tools:invoke work_items:get textTruncated marker to priorAttemptRefs', () => {
       const text = JSON.stringify({
         results: [{

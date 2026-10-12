@@ -109,6 +109,14 @@ describe('codex overlay reaches live launch context (P-010)', () => {
     expect(rendered.text.length).toBeGreaterThan(0);
   });
 
+  it('renders the coord:send summary contract in the live Codex launch context', async () => {
+    const { text, baseSource, overlaySource } = await render('codex');
+    expect(baseSource).toBe(LIVE_BASE_SOURCE);
+    expect(overlaySource).toBe(join(LIVE_OVERLAY_DIR, 'papercusp-su.codex.md'));
+    expect(text).toContain('`summary` is REQUIRED at the top level for every single-message send.');
+    expect(text).toContain('It is the one-line inbox headline the recipient sees, even when `body` carries the full message.');
+  });
+
   it.each(CODEX_GUIDANCE)('a launched Codex session receives: %s', async (phrase) => {
     const { text } = await render('codex');
     expect(text).toContain(phrase);

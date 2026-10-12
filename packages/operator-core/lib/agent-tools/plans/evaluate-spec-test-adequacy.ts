@@ -77,6 +77,42 @@ function summarizeMeasurementEvidence(
 }
 const PASS_LIKE = new Set(['pass', 'not-applicable']);
 const COMPACT_FAILURE_EVIDENCE_CHARS = 1200;
+const COMPACT_FAILURE_BINDINGS_CHARS = 300;
+
+function compactFailureEvidence(evidence: string): { evidence: string; truncated: boolean } {
+  if (evidence.length <= COMPACT_FAILURE_EVIDENCE_CHARS) return { evidence, truncated: false };
+
+  // Correct-layer evidence can contain several successful sub-checks before a later
+  // required-plane failure. Keeping only the prefix made a compact replay say "pass"
+  // while its rating was fail. Keep both ends of the diagnostic statement and the
+  // start of the binding list (whose descriptions lead with immutable binding ids).
+  const bindingMarker = ' Bound evidence: ';
+  const markerAt = evidence.indexOf(bindingMarker);
+  const statement = markerAt >= 0 ? evidence.slice(0, markerAt) : evidence;
+  const bindings = markerAt >= 0 ? evidence.slice(markerAt + bindingMarker.length) : '';
+  const truncationMarker = ' …[middle omitted]… ';
+  const bindingBudget = bindings.length > 0
+    ? Math.min(COMPACT_FAILURE_BINDINGS_CHARS, bindings.length)
+    : 0;
+  const baseFixedChars = (markerAt >= 0 ? bindingMarker.length : 0) +
+    (bindings.length > bindingBudget ? 1 : 0);
+  const needsStatementTruncation = statement.length > COMPACT_FAILURE_EVIDENCE_CHARS - bindingBudget - baseFixedChars;
+  const fixedChars = baseFixedChars + (needsStatementTruncation ? truncationMarker.length : 0);
+  const statementBudget = COMPACT_FAILURE_EVIDENCE_CHARS - bindingBudget - fixedChars;
+  let compactStatement = statement;
+  if (statement.length > statementBudget) {
+    const headChars = Math.ceil(statementBudget / 2);
+    const tailChars = statementBudget - headChars;
+    compactStatement = `${statement.slice(0, headChars)}${truncationMarker}${statement.slice(-tailChars)}`;
+  }
+  const compactBindings = bindings.length > bindingBudget
+    ? bindings.slice(0, bindingBudget) + '…'
+    : bindings;
+  const compact = markerAt >= 0
+    ? `${compactStatement}${bindingMarker}${compactBindings}`
+    : compactStatement;
+  return { evidence: compact.slice(0, COMPACT_FAILURE_EVIDENCE_CHARS), truncated: true };
+}
 
 /**
  * P-007 (RSR-P-007-A): the per-clause verdict table a summary read returns. It keeps every
@@ -107,14 +143,16 @@ function summaryRow(row: EvaluatedRow) {
     ratings: Object.fromEntries(
       Object.entries(row.ratings).map(([criterion, entry]) => [
         criterion,
-        !PASS_LIKE.has(entry.rating)
-          ? {
-              rating: entry.rating,
-              evidence: entry.evidence.slice(0, COMPACT_FAILURE_EVIDENCE_CHARS),
-              ...(entry.evidence.length > COMPACT_FAILURE_EVIDENCE_CHARS ? { evidenceTruncated: true } : {}),
-              ...(entry.suggestion ? { suggestion: entry.suggestion } : {}),
-            }
-          : { rating: entry.rating },
+        (() => {
+          if (PASS_LIKE.has(entry.rating)) return { rating: entry.rating };
+          const compact = compactFailureEvidence(entry.evidence);
+          return {
+            rating: entry.rating,
+            evidence: compact.evidence,
+            ...(compact.truncated ? { evidenceTruncated: true } : {}),
+            ...(entry.suggestion ? { suggestion: entry.suggestion } : {}),
+          };
+        })(),
       ]),
     ),
   };

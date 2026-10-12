@@ -4,7 +4,7 @@ import { mkdir, rm, symlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
@@ -29,11 +29,12 @@ it('measures cold committed blobs through HTTP and preserves a real sidecar time
       const sourceReceiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
       const selectedCommit = process.env.VERIFY_TAURI_SOURCE_REF;
       assert.ok(sourceReceiptPath && selectedCommit, 'Independent selected committed source receipt and ref are required');
-      // Reuse the independent preparation receipt beside the source selection.
-      // Missing/full-closure gaps refuse here, before allocating private PG.
-      prepared = preparePrivateOperatorApiBundle(root, evidenceDir, { committedReader: {
-        sourceReceiptPath, selectedCommit, receiptPath: join(dirname(sourceReceiptPath), 'operator-api-preflight.json'),
-      } });
+      // The independently frozen input receipt beside the source selection has
+      // no predicted bundle digest. Build once at this recorder allocation;
+      // qualification consumes the retained bytes without a second build.
+      prepared = produceCommittedReaderPrivateApiBundle(root, evidenceDir, {
+        sourceReceiptPath, selectedCommit, inputReceiptPath: join(dirname(sourceReceiptPath), 'operator-api-preflight.json'),
+      });
     },
     execute: async (observe, evidenceDir) => {
       assert.ok(prepared?.selectedSource, 'Committed reader preparation must precede private runtime allocation');

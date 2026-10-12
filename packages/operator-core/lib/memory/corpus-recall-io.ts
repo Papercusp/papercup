@@ -27,8 +27,8 @@
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
+import { getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+import { runHybridSearch, type SearchHit, type SearchLegs, type SourceCallInstrumentation } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { createDocSearchSource, createPlanSearchSource } from '../agent-tools/search/knowledge-sources';
 import { createReportSearchSource } from '../agent-tools/search/report-source';
@@ -41,6 +41,7 @@ import {
 import { stampEmbedderMode } from '../search/embedder-mode-registry';
 import { rerankRows } from '../agent-tools/search/rerank';
 import { createMemoryWorkDeadline, MemoryTimeoutError, type MemoryWorkDeadline } from './op-deadline';
+import { createStageAttempt, withStageAttempt } from '../sync/hyperbee/stage-stall-log';
 import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
@@ -66,6 +67,35 @@ import {
 // assertion only — the alarm deliberately does not import it at runtime, which would
 // drag the whole live retrieval stack into the DBOS alarm process.
 export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
+
+/** Attribute terminal PG query timings to one exact corpus source/ranker call. */
+function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
+  const attempt = createStageAttempt({ rowId: '', onEvent: () => {} });
+  return {
+    run: action => withStageAttempt(attempt, action),
+    finish: outcome => {
+      attempt.finish(outcome);
+      try {
+        const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
+        const queries = snapshot.results
+          .filter(query => query.correlation?.attemptId === attempt.context.attemptId)
+          .map(({ connectionId, queryId, backendPid, elapsedMs, preBuildMs, status }) => ({
+            connectionId, queryId, backendPid, elapsedMs, preBuildMs, status,
+          }));
+        return {
+          attemptId: attempt.context.attemptId,
+          timing: 'query-build-to-terminal-not-acquisition',
+          coverage: 'completed-query-results-only',
+          snapshotCapacity: snapshot.capacity,
+          snapshotDropped: snapshot.dropped,
+          queries,
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
 
 /**
  * P-009 — the corpus leg's recency decay half-life.
@@ -699,6 +729,7 @@ async function recallCorpusContextInner(
           limit: retrievalDepth,
           mode: 'hybrid',
           embedder,
+          sourceCallInstrumentation: () => createCorpusSourceCallInstrumentation(),
           embedTimeoutMs: Math.min(embedBudget, stageBudget),
           sourceTimeoutMs: stageBudget,
           // Highlights ARE used — the teaser and the relevance guard both read the

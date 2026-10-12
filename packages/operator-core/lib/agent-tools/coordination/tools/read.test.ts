@@ -231,7 +231,7 @@ describe('coord:read', () => {
     const out = await run({ msg_id: 'mrh4' });
 
     expect(out).toMatchObject({ ok: true, found: false, message: null });
-    expect(out.detail).toContain('NOT a full msg_id');
+    expect(out.detail).toContain('NOT a recognized full msg_id');
   });
 
   it('WI-10005375: an escalation is returned with its sibling resolution FOLDED in', async () => {

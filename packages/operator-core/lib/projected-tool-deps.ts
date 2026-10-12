@@ -43,6 +43,7 @@ import { FLAGS } from '@papercusp/flags';
 
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
+import { observeFallback } from './degradation/fallback-observations';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { beginInFlightCall, endInFlightCall } from './in-flight-calls';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
@@ -2105,6 +2106,9 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt
   // (D-002). Enforce-vs-observe is the CAPABILITY_ENVELOPE flag (default OFF ⇒ shadow).
   checkCapabilityEnvelope: checkCapabilityEnvelopeImpl,
+  observeFallback: (mechanism, observation, ctx) => {
+    observeFallback(mechanism, observation, { workspaceId: ctx.workspaceId });
+  },
   // Event-reaction observation point (event-reaction-system D-001). Fires after
   // every tool settles; the host engine matches rules + schedules reactions.
   // Best-effort + non-blocking — swallow throws so a reaction never breaks its

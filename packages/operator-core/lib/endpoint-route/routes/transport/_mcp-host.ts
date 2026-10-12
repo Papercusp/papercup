@@ -4767,7 +4767,7 @@ export function registerMcpHost(server: McpServer): void {
             resultDoor: number | null;
             advisory: number | null;
             advisoryFlagReads: number;
-            scratchWrites?: { count: number } & ScratchWriteTimings;
+            scratchWrites?: { count: number; perSpill: ScratchWriteTimings[] } & ScratchWriteTimings;
           };
         } = {
           toolOutcome: null,
@@ -5048,12 +5048,21 @@ export function registerMcpHost(server: McpServer): void {
                       return;
                     }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
-                      count: 0, quotaWaitMs: 0, refreshWaitMs: 0,
+                      count: 0, perSpill: [], quotaWaitMs: 0, refreshWaitMs: 0,
                       quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
                       markerProbeMs: 0, localMutexWaitMs: 0, fsMutexAdmissionMs: 0,
                       writeMs: 0, totalMs: 0,
                     };
                     total.count += 1;
+                    total.perSpill.push({
+                      ...timings,
+                      ...(timings.awaitSubphaseTimingsMs
+                        ? { awaitSubphaseTimingsMs: { ...timings.awaitSubphaseTimingsMs } }
+                        : {}),
+                      ...(timings.quotaRecoveryDiagnostics
+                        ? { quotaRecoveryDiagnostics: { ...timings.quotaRecoveryDiagnostics } }
+                        : {}),
+                    });
                     for (const phase of [
                       'quotaWaitMs',
                       'refreshWaitMs',

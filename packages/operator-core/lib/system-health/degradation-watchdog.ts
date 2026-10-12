@@ -165,6 +165,10 @@ registerDegradationMechanism({
   description: 'Inbox and outbox reads whose primary paged query completed rather than retrying the full-read fallback after a paging error.',
 });
 registerDegradationMechanism({
+  mechanism: 'capability-envelope',
+  description: 'Applicable dispatcher capability evaluations that returned a measured policy verdict rather than allowing the call after an evaluator exception; unwired and exempt evaluations are excluded.',
+});
+registerDegradationMechanism({
   mechanism: 'improvement-watchdog-read', scopeKeyed: true,
   description: 'Improvement-watchdog lock, history and key-dedup reads that completed their primary operation rather than sweeping unlocked or using no-history/title-only defaults.',
 });

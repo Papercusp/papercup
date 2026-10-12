@@ -66,6 +66,14 @@ const REPORTER_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/repo
 const AFFECTED_TESTS_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/affected-tests.mjs'), 'utf8');
 const VERIFY_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/verify-tauri-headless.sh'), 'utf8');
 const RIG_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../papercusp-desktop/bin/lib/deb-hetzner-rig.sh'), 'utf8');
+// Reporter subprocesses below exercise Cargo argument forwarding and result recording, not
+// the host's disk state. Keep their admission policy independent of live headroom. The
+// refusal case sets an intentionally restrictive threshold and covers the real CLI gate.
+const PERMISSIVE_REPORTER_DISK_ENV = Object.freeze({
+  PAPERCUSP_DISK_ALARM_FREE_PCT: '0.001',
+  PAPERCUSP_DISK_ALARM_FREE_GB: '0.01',
+  PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB: '0.01',
+});
 
 describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
   it('explains libtest forwarding and rejects a missing manifest before running Cargo', () => {
@@ -107,7 +115,7 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
         ], {
           encoding: 'utf8', timeout: 10_000,
           env: {
-            ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`,
+            ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, PATH: `${root}:${process.env.PATH ?? ''}`,
             CARGO_TARGET_DIR: join(root, 'target'), CARGO_CLI_ARGV_FILE: argvFile,
             // Keep this fake-Cargo invocation away from the live test ledger.
             HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
@@ -164,7 +172,7 @@ describe('Cargo measured passing cases and layers (P-002)', () => {
         '--manifest-path', join(root, 'Cargo.toml'),
       ], {
         encoding: 'utf8', timeout: 90_000,
-        env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target'), CARGO_BUILD_JOBS: '1',
+        env: { ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, CARGO_TARGET_DIR: join(root, 'target'), CARGO_BUILD_JOBS: '1',
           HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
           PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile },
       });
@@ -617,6 +625,41 @@ describe('affected-runner Cargo selection (EI-21851033142703518)', () => {
 });
 
 describe('cargo disk admission (EI-21047688909295463)', () => {
+  it('refuses before spawning Cargo when the configured absolute disk floor is unmet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-admission-refusal-'));
+    const markerFile = join(root, 'cargo-spawned');
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    try {
+      writeFileSync(join(root, 'Cargo.toml'), '[package]\nname="admission-fixture"\nversion="0.0.0"\n');
+      mkdirSync(join(root, 'target'), { recursive: true });
+      writeFileSync(join(root, 'cargo'), [
+        '#!/usr/bin/env node',
+        "require('node:fs').writeFileSync(process.env.CARGO_CLI_MARKER_FILE, 'spawned');",
+      ].join('\n'), { mode: 0o755 });
+
+      const result = spawnSync(process.execPath, [
+        reporterPath, '--manifest-path', join(root, 'Cargo.toml'),
+      ], {
+        encoding: 'utf8', timeout: 15_000,
+        env: {
+          ...process.env,
+          PATH: `${root}:${process.env.PATH ?? ''}`,
+          CARGO_TARGET_DIR: join(root, 'target'),
+          CARGO_CLI_MARKER_FILE: markerFile,
+          HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          PAPERCUSP_DISK_ALARM_FREE_GB: '1000000000',
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(CARGO_DISK_REFUSAL_EXIT_CODE);
+      expect(result.stderr).toContain('REFUSED before spawning Cargo');
+      expect(existsSync(markerFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a new native suite below the standing 10% free-space floor', () => {
     const result = assessCargoDiskAdmission({
       totalBytes: 2_000 * GIB,
