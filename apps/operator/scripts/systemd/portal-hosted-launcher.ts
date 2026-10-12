@@ -173,6 +173,57 @@ export async function assertTutorialVoiceEnvironment(
   }
 }
 
+/** Exercise the same public, lesson-only brain before hosted acceptance starts.
+ * HTTP 200 alone is insufficient: backend login failures arrive inside SSE. */
+export async function assertTutorialAssistanceEnvironment(
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
+  if (env.PORTAL_TUTORIAL_VOICE_SERVED_E2E === "1") {
+    await assertTutorialVoiceEnvironment(env, fetchImpl);
+  }
+  if (env.PORTAL_TUTORIAL_SERVED_E2E !== "1") return;
+  let origin: URL;
+  try { origin = new URL(env.PORTAL_OPERATOR_ORIGIN ?? ""); }
+  catch { throw new Error("tutorial_help_operator_origin_required"); }
+  if (origin.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname)
+    || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/") {
+    throw new Error("tutorial_help_operator_origin_required");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  let response: Response | undefined;
+  try {
+    response = await fetchImpl(new URL("/api/agent-mcp/operator-converse", origin), {
+      method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
+      body: JSON.stringify({ messages: [{ role: "user", content: "Explain who bills infrastructure in this lesson." }],
+        trigger: "user_message", modality: "text", hostTrust: "public",
+        lessonContext: { version: 3, step: "billing", status: "ready" } }),
+    });
+    if (!response.ok || !response.headers.get("content-type")?.includes("text/event-stream")) {
+      throw new Error("tutorial_help_provider_unavailable");
+    }
+    const { parseSseStream } = await import("@papercusp/sse");
+    for await (const event of parseSseStream(response.body)) {
+      if (event.event === "error") throw new Error("tutorial_help_provider_unavailable");
+      if (event.event !== "done") continue;
+      const result = JSON.parse(event.data) as { answer?: unknown };
+      if (typeof result.answer !== "string" || !result.answer.trim()) {
+        throw new Error("tutorial_help_provider_unavailable");
+      }
+      return;
+    }
+    throw new Error("tutorial_help_provider_unavailable");
+  } catch {
+    // Provider diagnostics can contain credentials or private prompt data.
+    throw new Error("tutorial_help_provider_unavailable");
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+    await response?.body?.cancel().catch(() => {});
+  }
+}
+
 function readOptional(path: string | undefined): Record<string, string> {
   if (!path) return {};
   try {
@@ -224,9 +275,7 @@ async function main(): Promise<void> {
 
   const rewritten = await resolveIntegrationReferences(hosted, resolverModule.resolveHostedSecretRef);
   Object.assign(childEnv, rewritten);
-  if (childEnv.PORTAL_TUTORIAL_VOICE_SERVED_E2E === "1") {
-    await assertTutorialVoiceEnvironment(childEnv);
-  }
+  await assertTutorialAssistanceEnvironment(childEnv);
 
   // This maintained launcher is the service's supervision boundary. The Portal
   // checkout remains immutable/read-only here, and must not run a competing
