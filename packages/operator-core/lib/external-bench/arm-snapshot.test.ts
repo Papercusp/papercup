@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { priceFor } from '@papercusp/model-pricing';
 import {
   assertArmModelPin,
@@ -322,6 +323,47 @@ describe('no hard-coded model ids in external-bench code or runbooks (R-9 falsif
   const MODEL_ID_RE = /\b(?:claude-)?(?:opus|sonnet|haiku|fable)-\d+(?:[-.]\d+)*\b|\b(?:gpt|gemini|glm)-\d[\w.]*(?:-[a-z0-9.]+)*/gi;
   const SOURCE_RE = /\.(?:ts|mts|py|md|mdx)$/;
 
+  // Cutoff facts describe exact vendor model identities; they do not choose the
+  // evaluated model. Mask only their keyed literals, retaining every other pin
+  // in this same file and every literal in other benchmark sources/runbooks.
+  function selectionSource(file: string, source: string): string {
+    if (file !== 'contamination.ts') return source;
+    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+    const spans: Array<{ start: number; end: number }> = [];
+    const mask = (node: ts.Node) => spans.push({ start: node.getStart(parsed), end: node.end });
+    for (const statement of parsed.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== 'MODEL_TRAINING_CUTOFFS') continue;
+        const initializer = declaration.initializer;
+        if (!initializer || !ts.isCallExpression(initializer) || initializer.expression.getText(parsed) !== 'Object.freeze') continue;
+        const table = initializer.arguments[0];
+        if (!table || !ts.isObjectLiteralExpression(table) || initializer.arguments.length !== 1) continue;
+        for (const property of table.properties) {
+          if (!ts.isPropertyAssignment(property) || !ts.isStringLiteral(property.name) || !ts.isCallExpression(property.initializer)) continue;
+          const value = property.initializer;
+          if (!ts.isIdentifier(value.expression) || value.arguments.length !== 2) continue;
+          if (value.expression.text === 'openai') {
+            const id = value.arguments[0];
+            if (!id || !ts.isStringLiteral(id) || id.text !== property.name.text) continue;
+            mask(property.name);
+            mask(id);
+          } else if (value.expression.text === 'anthropic') {
+            mask(property.name);
+            const page = value.arguments[1];
+            if (!page || !ts.isCallExpression(page) || !ts.isIdentifier(page.expression) || page.expression.text !== 'anthropicModelPage') continue;
+            const slug = page.arguments[0];
+            if (page.arguments.length === 1 && slug && ts.isStringLiteral(slug) && property.name.text === `claude-${slug.text}`) mask(slug);
+          }
+        }
+      }
+    }
+    for (const span of spans.sort((a, b) => b.start - a.start)) {
+      source = source.slice(0, span.start) + source.slice(span.start, span.end).replace(/[^\n]/g, ' ') + source.slice(span.end);
+    }
+    return source;
+  }
+
   function sources(dir: string): string[] {
     const out: string[] = [];
     for (const name of readdirSync(dir)) {
@@ -344,7 +386,7 @@ describe('no hard-coded model ids in external-bench code or runbooks (R-9 falsif
   it('no non-test source names a concrete model id', () => {
     const hits: string[] = [];
     for (const file of sources(ROOT)) {
-      const lines = readFileSync(file, 'utf8').split('\n');
+      const lines = selectionSource(relative(ROOT, file), readFileSync(file, 'utf8')).split('\n');
       lines.forEach((line, i) => {
         const m = line.match(MODEL_ID_RE);
         if (m) hits.push(`${relative(ROOT, file)}:${i + 1}: ${m.join(', ')}`);
@@ -352,5 +394,16 @@ describe('no hard-coded model ids in external-bench code or runbooks (R-9 falsif
     }
     // Resolve the model from the registry (model-registry-snapshot.ts) instead of naming it.
     expect(hits).toEqual([]);
+  });
+
+  it('accepts sourced identity facts while detecting an evaluated pin in the same file', () => {
+    const facts = `export const MODEL_TRAINING_CUTOFFS = Object.freeze({
+      'gpt-5.4': openai('gpt-5.4', '2025-08-31'),
+      'claude-opus-4-8': anthropic('2026-01', anthropicModelPage('opus-4-8')),
+    });`;
+    expect(selectionSource('contamination.ts', facts).match(MODEL_ID_RE)).toBeNull();
+    expect(selectionSource('contamination.ts', `${facts}\nconst evaluatedModel = 'gpt-5.4';`).match(MODEL_ID_RE)).toEqual(['gpt-5.4']);
+    expect(selectionSource('runner.ts', facts).match(MODEL_ID_RE)).not.toBeNull();
+    expect(selectionSource('contamination.ts', `const OTHER_FACTS = {'gpt-5.4': '2025-08-31'};`).match(MODEL_ID_RE)).toEqual(['gpt-5.4']);
   });
 });

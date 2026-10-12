@@ -64,7 +64,7 @@ const openai = (id: string, knowledgeCutoff: string): TrainingCutoffFact =>
  * its source) rather than guessing. Ids are bare concrete ids, as {@link normalizeModelId} produces. Lookup is
  * exact: a dated snapshot id the vendor page does not name stays unknown rather than inheriting its alias's row.
  *
- * Priced ids with no row, deliberately: claude-opus-4-1, claude-opus-4-0 and claude-sonnet-4-0 are retired
+ * Priced ids with no row, deliberately: the retired Opus and Sonnet releases
  * (platform.claude.com model-deprecations) and no longer have a vendor model page to cite.
  */
 export const MODEL_TRAINING_CUTOFFS: Readonly<Record<string, TrainingCutoffFact>> = Object.freeze({
