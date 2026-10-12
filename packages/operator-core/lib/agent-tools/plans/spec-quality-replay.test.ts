@@ -70,6 +70,21 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
     expect(result).not.toHaveProperty('scorecardDraft');
   });
 
+  it('rejects a later clause-set hash paired with an earlier replay cutoff', async () => {
+    const laterEvaluation = evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',
+      planItemIds: ['P-001'], clauses: [newClause], classRef: 'plan-class-feature-ship' });
+    expect(Date.parse(newClause.acceptedAt)).toBeGreaterThan(Date.parse(replaySnapshot.clausesAsOf));
+
+    const replay = await call({ ...replayArgs, expectedSpecSetHash: laterEvaluation.specSetHash });
+    expect(replay).toMatchObject({
+      ok: false,
+      error: 'spec_set_hash_mismatch',
+      expectedSpecSetHash: laterEvaluation.specSetHash,
+      specSetHash: oldEvaluation.specSetHash,
+    });
+    expect(replay).not.toHaveProperty('scorecardDraft');
+  });
+
   it('issues a deterministic, already-reconstructed replay recipe for fresh grades', async () => {
     const first = await call({ slug: 'quality-plan', harness: 'papercusp' });
     const second = await call({ slug: 'quality-plan', harness: 'papercusp' });

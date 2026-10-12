@@ -89,6 +89,8 @@ import {
 } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { observeFallback } from '../../degradation/fallback-observations';
+import { broadcastSevereEvent } from '../../severe-event-broadcast';
+import { resolveAlarm } from '../../alarm-attention';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { managedSpawn } from '../../task-manager/managed-spawn';
 import { dirSizeBytes } from '../../storage/disk';
@@ -2043,6 +2045,22 @@ async function trackGitnexusDbCapacity(
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
       [ctx.installSlug, JSON.stringify({ gitnexus_health: next })],
     );
+    const dbConditionKey = `alarm:gitnexus-db-capacity:${ctx.installSlug}`;
+    if (usage.dbUtilization != null && Number.isFinite(usage.dbUtilization)) {
+      if (update.next.dbAlerted) await broadcastSevereEvent({
+        conditionKey: dbConditionKey, oneShot: true,
+        summary: `GitNexus DB for ${ctx.installSlug} is approaching its configured size ceiling`,
+      }).catch(() => false);
+      else await resolveAlarm(dbConditionKey, 'gitnexus-db-capacity');
+    }
+    const diskConditionKey = `alarm:gitnexus-index-disk:${ctx.installSlug}`;
+    if (indexDisk.status === 'over-ceiling') await broadcastSevereEvent({
+      conditionKey: diskConditionKey, oneShot: true,
+      summary: `GitNexus index for ${ctx.installSlug} exceeds its accepted on-disk ceiling`,
+    }).catch(() => false);
+    else if (indexDisk.status === 'within-budget' || indexDisk.status === 'accepted-exceedance') {
+      await resolveAlarm(diskConditionKey, 'gitnexus-index-disk');
+    }
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');
       const pct = Math.round((usage.dbUtilization ?? 0) * 1000) / 10;
@@ -3029,6 +3047,14 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
       [ctx.installSlug, JSON.stringify(s)],
     );
+    const conditionKey = `alarm:gitnexus-dependency-snapshot:${ctx.installSlug}`;
+    if (dependencySnapshotUsable(s.status)) {
+      await resolveAlarm(conditionKey, 'gitnexus-dependency-snapshot');
+    } else {
+      await broadcastSevereEvent({ conditionKey, oneShot: true,
+        summary: `GitNexus dependency snapshot for ${ctx.installSlug} is unusable: ${s.status}`,
+      }).catch(() => false);
+    }
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
@@ -3429,6 +3455,13 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
       [ctx.installSlug, JSON.stringify({ gitnexus_health: nextHealth })],
     );
+    const conditionKey = `alarm:gitnexus-reindex:${ctx.installSlug}`;
+    if (success) await resolveAlarm(conditionKey, 'gitnexus-reindex');
+    else if (update.next.consecutiveFailures >= GITNEXUS_FAILURE_ALERT_THRESHOLD) {
+      await broadcastSevereEvent({ conditionKey, oneShot: true,
+        summary: `GitNexus reindex for ${ctx.installSlug} has failed ${update.next.consecutiveFailures} consecutive ticks`,
+      }).catch(() => false);
+    }
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({

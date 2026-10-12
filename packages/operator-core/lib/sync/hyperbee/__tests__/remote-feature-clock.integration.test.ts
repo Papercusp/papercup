@@ -65,14 +65,14 @@ async function outbox(id: string) {
     WHERE workspace_id=${WS} AND table_name='harness_features_consolidated' AND key=${id}`;
   return r.n;
 }
-async function titles(payload: unknown): Promise<[string, string]> {
+async function titles(payload: postgres.JSONValue): Promise<[string, string]> {
   // Match the projection's PG tie-break, including PostgreSQL's jsonb text format.
   const rows = await sql`SELECT title, md5(concat_ws('|', 'feature', title, 'body', 'open',
     NULL::text, ${sql.json(payload)}::jsonb::text, NULL::text, NULL::text, NULL::text, NULL::text)) AS digest
     FROM (VALUES ('first'), ('second')) AS choices(title) ORDER BY digest`;
   return [rows[0].title, rows[1].title];
 }
-async function terminalWinner(payload: unknown): Promise<string> {
+async function terminalWinner(payload: postgres.JSONValue): Promise<string> {
   const [candidate] = await sql`SELECT 'terminal-' || n AS title FROM generate_series(0,100) AS n
     WHERE md5(concat_ws('|','feature','terminal-' || n,'body','done',NULL::text,
       ${sql.json(payload)}::jsonb::text,NULL::text,NULL::text,NULL::text,NULL::text))

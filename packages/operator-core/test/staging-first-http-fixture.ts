@@ -11,6 +11,7 @@ import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
+let disposeScenario: (() => Promise<void>) | undefined;
 async function stopHost() {
   if (!host) return;
   if (host.exitCode === null && host.signalCode === null) {
@@ -50,6 +51,11 @@ async function main() {
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
+  const committedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader'
+    ? await (await import('./committed-reader-http-scenario')).prepareCommittedReaderScenario({
+      workspace, harness, base, headers, evidenceDir,
+    }) : undefined;
+  disposeScenario = committedReader?.dispose;
   const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const bundle = join(evidenceDir, 'hono-host.mjs');
@@ -64,6 +70,8 @@ async function main() {
   }
   const bundleBytes = readFileSync(bundle);
   assert.ok(bundleBytes.includes(Buffer.from('staging-first-activation-guard.ts')), 'guard must be in the executed bundle');
+  if (committedReader) assert.ok(bundleBytes.includes(Buffer.from('committed-tree-reader.ts')),
+    'committed reader must be in the executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
   host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
@@ -83,6 +91,16 @@ async function main() {
   }
   assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (committedReader) {
+    const readerReceipt = await committedReader.execute(host.pid!);
+    await stopHost();
+    await committedReader.dispose();
+    disposeScenario = undefined;
+    await sql.end();
+    console.log('COMMITTED_READER_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
+      hostStopped: true, sourceSha256, bundleSha256, health, ...readerReceipt }));
+    return;
+  }
   const requests: Array<Record<string, unknown>> = [];
   const preparation = ['Finalize', 'Define', 'Specify', 'Select', 'Choose', 'Design'];
   const releasePlanes = ['main promotion', 'the deployed host', 'green-checkpoint'];
@@ -160,5 +178,6 @@ catch (error) {
   process.exitCode = 1;
 } finally {
   await stopHost();
+  await disposeScenario?.();
   await getOrgPg().sql.end({ timeout: 1 });
 }

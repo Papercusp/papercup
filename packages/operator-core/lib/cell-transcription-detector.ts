@@ -94,7 +94,7 @@ export const CONTEXT_WINDOW = 60;
  * sentence cannot turn a source citation into a deployment claim.
  */
 const SOURCE_HEAD_VALUE_PREFIX =
-  /\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?\s*(?:is|=|:)?\s*$/i;
+  /(?:\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?|\b(?:working\s+tree|worktree)\b[^\n]{0,40}\b(?:git\s+)?head(?:\s+(?:sha|commit))?)\s*(?:is|=|:)?\s*$/i;
 
 /**
  * If a source HEAD value is explicitly described as deployed/serving/live, it is
@@ -147,15 +147,15 @@ function isExplicitLockOrLeaseIdentifier(haystack: string, valueStart: number, v
 }
 
 /**
- * A work-item checkpoint's contentHash is an artifact fingerprint, not a Git or
- * deployment SHA. The label is often immediately adjacent to the value (for
- * example, `checkpoint 721...` or `(contentHash 562...)`), while an unrelated
- * phrase such as "live Vite locks" appears later in the same coord summary. Keep
- * this exclusion anchored to the value so that ordinary checkpoint prose does not
- * weaken the detector's state-claim context globally.
+ * Checkpoint, rubric-bar and package digests are artifact fingerprints, not Git or
+ * deployment SHAs. Their labels sit immediately before the value while unrelated
+ * pipeline words may appear nearby in the same coord message. Keep these
+ * exclusions anchored to the value so they cannot weaken state-claim context for
+ * an actual deployed commit elsewhere in the prose.
  */
 const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
-const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
+const ARTIFACT_HASH_VALUE_PREFIX =
+  /\b(?:content[- ]?hash|(?:(?:prior|next))?bar[- ]?hash|sha[- ]?256)\s*(?::|=)?\s*$/i;
 
 /**
  * Memory-store identifiers are often rendered as their leading eight hex digits.
@@ -190,7 +190,7 @@ function maskGeneratedCoordChunkHeaders(text: string): string {
 
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
-  return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
+  return CHECKPOINT_VALUE_PREFIX.test(before) || ARTIFACT_HASH_VALUE_PREFIX.test(before);
 }
 
 function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boolean {

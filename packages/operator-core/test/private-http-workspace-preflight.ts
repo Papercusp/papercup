@@ -120,11 +120,11 @@ export function preparePortalBrowserSource(argv: readonly string[]) {
 
 /** Resolve shared browser stores through one maintained package's exports map.
  * Directory aliases bypass adapter exports; duplicate installations split the
- * Nuqs context and Sonner's module-local toast/Toaster observer. */
+ * Nuqs and TanStack router contexts and Sonner's toast/Toaster observer. */
 export function portalBrowserPackagesPlugin(portalSourceRoot: string): Plugin {
   const fromPortal = createRequire(join(realpathSync(portalSourceRoot), 'package.json'));
   return { name: 'portal-browser-package-exports', setup(builder) {
-    builder.onResolve({ filter: /^(?:nuqs(?:\/.*)?|sonner)$/ }, ({ path }) => ({ path: fromPortal.resolve(path) }));
+    builder.onResolve({ filter: /^(?:nuqs(?:\/.*)?|sonner|@tanstack\/react-router)$/ }, ({ path }) => ({ path: fromPortal.resolve(path) }));
   } };
 }
 

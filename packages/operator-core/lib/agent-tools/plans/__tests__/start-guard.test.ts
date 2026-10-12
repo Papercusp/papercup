@@ -10,6 +10,10 @@
  * real plan row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseScratchReference } from '../../../scratch-reference';
 import { configurePlanAdmissionPolicySource } from '../plan-admission-gate';
 import {
   projectAcceptanceBarContractSnapshot,
@@ -963,6 +967,31 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
         },
       }),
     }));
+  });
+
+  it('returns an immutable receipt before trimmed HTTP shaping can hide a post-promotion refusal', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'plan-start-receipt-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    try {
+      admissionMocks.preflight.mockResolvedValueOnce({ ready: false, status: 'refused',
+        reason: 'floor-gated', message: 'P-001 is excluded.', diagnostic: 'detail '.repeat(4_000) });
+      const ctx = { ...(MAKE_CTX() as object), transport: 'http', contextTier: 'trimmed' };
+      const out = await tool.handler({ harness: 'papercup', slug: 'live-plan-2026-06-02' } as never, ctx as never) as any;
+      const body = JSON.parse(out.content[0].text);
+      expect(body.results[0]).toMatchObject({ error: 'admission_refused',
+        promotion: { promoted: 0, skipped: 0 }, admission: { ready: false, reason: 'floor-gated' } });
+      expect(body._projection.cursor.tool).toBe('capability:read');
+      const reference = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!;
+      const original = JSON.parse(reference.payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString());
+      expect(original.results[0].admission.diagnostic).toHaveLength(28_000);
+      expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+      expect(admissionMocks.preflight).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   it('keeps a mixed-family admission binding broad', async () => {

@@ -85,6 +85,8 @@
 
 import type { Sql } from 'postgres';
 import { observeFallback } from '../../degradation/fallback-observations';
+import { broadcastSevereEvent } from '../../severe-event-broadcast';
+import { resolveAlarm } from '../../alarm-attention';
 import { getOrgPg } from '@papercusp/db-org';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
@@ -319,6 +321,8 @@ export interface SilentHaltWakeMarker {
 }
 
 export interface SilentHaltSweepDeps {
+  broadcast?: typeof broadcastSevereEvent;
+  resolveCondition?: (key: string) => Promise<unknown>;
   /** Injectable for tests; defaults to the real candidate read. */
   readCandidates?: (workspaceId: string, sql: Sql) => Promise<SilentHaltCandidate[]>;
   /** Injectable for tests; defaults to the shared `getLoopStatuses` accessor. */
@@ -500,7 +504,12 @@ export async function sweepSilentHalts(opts: {
     pageCapReached: false,
     wakeCapReached: false,
   };
-  if (candidates.length === 0) return result;
+  const conditionKey = `alarm:silent-halt:${opts.workspaceId}`;
+  const resolveCondition = deps.resolveCondition ?? ((key: string) => resolveAlarm(key, 'silent-halt-reconcile'));
+  if (candidates.length === 0) {
+    if (!dryRun) await resolveCondition(conditionKey).catch(() => {});
+    return result;
+  }
 
   // One round-trip for every candidate's lastRealTurnAt, through the SAME accessor loop:status
   // uses — never a second local derivation of "produced a turn".
@@ -557,7 +566,23 @@ export async function sweepSilentHalts(opts: {
     });
   }
 
-  if (halted.length === 0 || dryRun) return result;
+  if (dryRun) return result;
+  if (halted.length === 0) {
+    // A missing/failed status read cannot establish recovery of the aggregate.
+    if (candidates.every((candidate) => statuses.has(candidate.ownerId))) {
+      await resolveCondition(conditionKey).catch(() => {});
+    }
+    return result;
+  }
+  // Refresh the condition before wake/page dedup or caps; an attempted wake is not recovery.
+  const event = {
+    source: 'silent-halt-reconcile', severity: 'high' as const,
+    summary: `${halted.length} autonomous session(s) silently halted while holding work`,
+    body: halted.map(({ candidate, verdict }) => `${candidate.ownerId}: ${verdict.reason}`).join('\n'),
+    conditionKey, oneShot: true,
+  };
+  if (deps.broadcast) await deps.broadcast(event).catch(() => false);
+  else await broadcastSevereEvent(event).catch(() => false);
 
   // ── P-003 wake-first rung (R1/R2) ──────────────────────────────────────────────
   // ONE wake attempt per (owner, disarm epoch) BEFORE any owner page. The dedupe

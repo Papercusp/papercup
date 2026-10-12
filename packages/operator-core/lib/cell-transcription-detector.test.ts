@@ -144,6 +144,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(hits[0]!.value).toBe('cd9b060');
   });
 
+  it('does not classify a worktree HEAD next to a staging mention as the deployed position', () => {
+    const text = 'My current worktree remains on staging at HEAD 14f32c7e05.';
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+  });
+
   it('DOES fire when a target commit is explicitly described as deployed', () => {
     const hits = detectCellTranscriptions('validate target commit abc1234 is deployed to :3070');
     expect(hits).toHaveLength(1);
@@ -168,6 +174,16 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(detectCellTranscriptions(text)).toEqual([]);
     expect(cellTranscriptionHint(text)).toBeNull();
   });
+
+  it.each(['barHash', 'priorBarHash', 'nextBarHash', 'sha256'])(
+    'does not classify a labeled %s artifact digest as a deployed SHA beside release context',
+    (label) => {
+      const text = `The release acceptance rubric ${label} 2e12616a568397f3`;
+      const collidingCommit = () => true;
+      expect(detectCellTranscriptions(text, { resolvesToCommit: collidingCommit })).toEqual([]);
+      expect(cellTranscriptionHint(text, { resolvesToCommit: collidingCommit })).toBeNull();
+    },
+  );
 
   it('does not classify a labeled memory ID prefix as a deployed SHA even if it resolves to a commit', () => {
     const text =

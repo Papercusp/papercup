@@ -5,6 +5,31 @@ import type { RailMigrationCase } from './rail-migration-cases';
 
 type Observation = { eligible: number; applied: number; reason: string; scope?: string | null };
 const prefix = 'packages/operator-core/lib/';
+
+
+/** Keep the real producer's database and delivery seams isolated from the shared fleet. */
+async function conditionMeasured(
+  run: (deps: {
+    broadcastSevereEvent: (input: { conditionKey?: string; oneShot?: boolean }) => Promise<boolean>;
+    resolveAlarm: (key: string) => Promise<boolean>;
+  }) => Promise<void>,
+): Promise<{ route: 'condition'; openedKeys: string[]; resolvedKeys: string[] }> {
+  const { expect } = await import('vitest');
+  const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+  await run({
+    broadcastSevereEvent: async ({ conditionKey, oneShot }) => {
+      expect(oneShot).toBe(true); expect(conditionKey).toMatch(/^alarm:/);
+      if (!open.has(conditionKey!)) openedKeys.push(conditionKey!);
+      open.add(conditionKey!); return true;
+    },
+    resolveAlarm: async (key) => {
+      if (open.delete(key)) resolvedKeys.push(key); return true;
+    },
+  });
+  expect(openedKeys.length).toBeGreaterThan(0);
+  expect(resolvedKeys).toEqual(openedKeys);
+  return { route: 'condition', openedKeys, resolvedKeys };
+}
 function variable(path: string, name: string, marker = ''): ts.VariableDeclaration {
   const file = source(path);
   let found: ts.VariableDeclaration | undefined;
@@ -339,3 +364,227 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
     return { route: 'condition', openedKeys, resolvedKeys };
   },
 }];
+
+ROUTINE_FALLBACK_MIGRATION_CASES.push({
+  id: 'gitnexus-capacity-original-alarms-repeat-unknown-and-measured-recovery', item: 'P-009', route: 'condition',
+  rowIds: [1, 2].map((n) => `owner-only-alarm|${prefix}harness/routines/gitnexus-reindex-action.ts|trackGitnexusDbCapacity|${n}`),
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const producer = await import('../harness/routines/gitnexus-reindex-action');
+    let health: Record<string, unknown> = {};
+    let unreadable = false, writeFails = false, pages = 0, resolutions = 0;
+    let usage: import('../harness/routines/gitnexus-reindex-action').GitnexusDbUsage = {
+      dbBytes: 90, dbMaxBytes: 100, dbUtilization: 0.9, dbHeadroomBytes: 10,
+    };
+    let disk = { status: 'over-ceiling', measuredMb: 100, budgetMb: 50, acceptedCeilingMb: null };
+    const sql = { unsafe: async (query: string, args: unknown[]) => {
+      if (unreadable) throw new Error('read unavailable');
+      if (query.startsWith('SELECT')) return [{ gh: health }];
+      if (writeFails) throw new Error('write unavailable');
+      health = JSON.parse(args[1] as string).gitnexus_health; return [];
+    } };
+    const track = execute(original(prefix + 'harness/routines/gitnexus-reindex-action.ts', 'async function trackGitnexusDbCapacity(', 'function'), {
+      ...rail, resolveAlarm: async (key: string) => { resolutions++; return rail.resolveAlarm(key); },
+      measureGitnexusDbUsage: () => usage, measureGitnexusIndexDisk: () => disk,
+      GITNEXUS_HEALTH_DEFAULT: producer.GITNEXUS_HEALTH_DEFAULT,
+      decideGitnexusDbHealthUpdate: producer.decideGitnexusDbHealthUpdate,
+      decideIndexDiskHealthUpdate: producer.decideIndexDiskHealthUpdate,
+      require: () => ({ getOrgPg: () => ({ sql }), notifyAttention: async () => { pages++; throw new Error('page unavailable'); } }),
+    }, 'trackGitnexusDbCapacity') as (ctx: unknown, root: string, threshold: number) => Promise<void>;
+    const tick = () => track({ installSlug: 'fixture', workspaceId: 'fixture' }, '/fixture', 0.8);
+    await tick(); await tick(); expect(pages).toBe(1); // Page failure cannot suppress either rail key.
+    usage = { ...usage, dbBytes: null, dbUtilization: null }; disk = { ...disk, status: 'not-measured' };
+    await tick(); expect(resolutions).toBe(0);
+    usage = { ...usage, dbBytes: 10, dbUtilization: 0.1 }; disk = { ...disk, status: 'within-budget' };
+    unreadable = true; await tick(); expect(resolutions).toBe(0);
+    unreadable = false; writeFails = true; await tick(); expect(resolutions).toBe(0);
+    writeFails = false; await tick(); expect(resolutions).toBe(2);
+  }),
+}, {
+  id: 'gitnexus-dependency-original-alarm-repeat-read-failure-and-usable-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/gitnexus-reindex-action.ts|trackDependencySnapshot|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const producer = await import('../harness/routines/gitnexus-reindex-action');
+    let status = 'missing', readFails = false, producerFails = false, pages = 0, resolutions = 0, ticks = 0;
+    const sql = { unsafe: async (query: string) => {
+      if (readFails) throw new Error('read unavailable');
+      return query.startsWith('SELECT') ? [{ ds: null }] : [];
+    } };
+    const track = execute(original(prefix + 'harness/routines/gitnexus-reindex-action.ts', 'async function trackDependencySnapshot(', 'function'), {
+      ...rail, resolveAlarm: async (key: string) => { resolutions++; return rail.resolveAlarm(key); },
+      pickIndexFreshness: () => ({ lastCommit: 'fixture' }), readRegistryEntry: () => ({}), registryPath: () => 'fixture',
+      readIndexMetaFreshness: () => ({}), dependencySnapshotBackend: () => 'fixture', logDependencySnapshotCheck() {},
+      dependencySnapshotUsable: producer.dependencySnapshotUsable, canaryBin: () => 'fixture',
+      refreshDependencySnapshot: async () => {
+        if (producerFails) throw new Error('refresh unreadable');
+        ticks++; return { next: { status, path: 'fixture' }, shouldAlert: ticks === 1, shouldResolve: status === 'fresh' };
+      },
+      require: () => ({ getOrgPg: () => ({ sql }), notifyAttention: async () => { pages++; throw new Error('page unavailable'); } }),
+    }, 'trackDependencySnapshot') as (ctx: unknown, root: string, name: string) => Promise<void>;
+    const tick = () => track({ installSlug: 'fixture', workspaceId: 'fixture' }, '/fixture', 'fixture');
+    await tick(); await tick(); expect(pages).toBe(1);
+    status = 'fresh'; readFails = true; await tick(); expect(resolutions).toBe(0);
+    readFails = false; producerFails = true; await tick(); expect(resolutions).toBe(0);
+    producerFails = false; await tick(); expect(resolutions).toBe(1);
+  }),
+}, {
+  id: 'gitnexus-finish-original-alarm-canary-failure-bookkeeping-error-and-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/gitnexus-reindex-action.ts|finishAnalyzeTick|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const producer = await import('../harness/routines/gitnexus-reindex-action');
+    let health = producer.GITNEXUS_HEALTH_DEFAULT, healthy = false, canaryFails = false;
+    let readFails = false, writeFails = false, resolutions = 0, pages = 0;
+    const sql = { unsafe: async (query: string, args: unknown[]) => {
+      if (readFails) throw new Error('read unavailable');
+      if (query.startsWith('SELECT')) return [{ gh: health }];
+      if (writeFails) throw new Error('write unavailable');
+      health = JSON.parse(args[1] as string).gitnexus_health; return [];
+    } };
+    const finish = execute(original(prefix + 'harness/routines/gitnexus-reindex-action.ts', 'async function finishAnalyzeTick(', 'function'), {
+      ...rail, resolveAlarm: async (key: string) => { resolutions++; return rail.resolveAlarm(key); },
+      readIndexStatsForHealth: () => ({ files: 1, embeddings: 1 }), analyzeEmbeddingsExpected: () => true,
+      buildAnalyzeArgs: () => [], runCanary: async () => {
+        if (canaryFails) throw new Error('probe unavailable'); return { healthy, degraded: false, summary: 'fixture' };
+      },
+      trackGitnexusDbCapacity: async () => {}, analyzeTickSucceeded: producer.analyzeTickSucceeded,
+      cleanStrandedParseCaches: async () => {}, readStrandedIncompleteIndex: () => null,
+      describeStrandedIncompleteIndex: () => '', classifyAnalyzeFailure: () => null,
+      describeAnalyzeFailure: () => '', cleanCrashResidue: () => null,
+      GITNEXUS_HEALTH_DEFAULT: producer.GITNEXUS_HEALTH_DEFAULT,
+      GITNEXUS_FAILURE_ALERT_THRESHOLD: producer.GITNEXUS_FAILURE_ALERT_THRESHOLD,
+      decideGitnexusHealthUpdate: producer.decideGitnexusHealthUpdate, trackDependencySnapshot: async () => {},
+      require: () => ({ getOrgPg: () => ({ sql }), notifyAttention: async () => { pages++; throw new Error('page unavailable'); } }),
+    }, 'finishAnalyzeTick') as (input: unknown) => Promise<void>;
+    const tick = () => finish({ ctx: { installSlug: 'fixture', workspaceId: 'fixture' }, root: '/fixture', repoName: 'fixture',
+      dbAlertRatio: 0.8, timeoutMs: 1000, r: { code: 0, timedOut: false, stdout: '', stderr: '' }, elapsedSec: 1, adopted: null });
+    await tick(); await tick(); expect(resolutions).toBe(0);
+    await tick(); await tick(); expect(pages).toBe(1); // Exit zero with a failed graph canary remains degraded.
+    healthy = true; canaryFails = true; await tick(); expect(resolutions).toBe(0);
+    canaryFails = false; readFails = true; await tick(); expect(resolutions).toBe(0);
+    readFails = false; writeFails = true; await tick(); expect(resolutions).toBe(0);
+    writeFails = false; await tick(); expect(resolutions).toBe(1);
+  }),
+}, {
+  id: 'history-refresh-original-streak-alarm-unreadable-persistence-and-measured-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/project-history-refresh-action.ts|<module>|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const producer = await import('../harness/routines/project-history-refresh-action');
+    let health = producer.PROJECT_HISTORY_HEALTH_DEFAULT, success = false;
+    let readFails = false, writeFails = false, resolutions = 0, pages = 0;
+    const sql = { unsafe: async (query: string, args: unknown[]) => {
+      if (readFails) throw new Error('read unavailable');
+      if (query.startsWith('SELECT')) return [{ ph: health }];
+      if (writeFails) throw new Error('write unavailable');
+      health = JSON.parse(args[1] as string).project_history_health; return [];
+    } };
+    const text = original(prefix + 'harness/routines/project-history-refresh-action.ts', 'health bookkeeping skipped', 'try');
+    const tick = () => execute(text, {
+      ...rail, resolveAlarm: async (key: string) => { resolutions++; return rail.resolveAlarm(key); },
+      ctx: { installSlug: 'fixture', workspaceId: 'fixture' }, config: { output: '/fixture/history' }, success,
+      r: { timedOut: false, code: success ? 0 : 1, stdout: '', stderr: '' }, timeoutMs: 1000,
+      PROJECT_HISTORY_HEALTH_DEFAULT: producer.PROJECT_HISTORY_HEALTH_DEFAULT,
+      PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD: producer.PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD,
+      decideProjectHistoryHealthUpdate: producer.decideProjectHistoryHealthUpdate,
+      require: () => ({ getOrgPg: () => ({ sql }), notifyAttention: async () => { pages++; throw new Error('page unavailable'); } }),
+    });
+    await tick(); expect(resolutions).toBe(0); await tick(); await tick(); expect(pages).toBe(1);
+    success = true; readFails = true; await tick(); expect(resolutions).toBe(0);
+    readFails = false; writeFails = true; await tick(); expect(resolutions).toBe(0);
+    writeFails = false; await tick(); expect(resolutions).toBe(1);
+  }),
+});
+
+ROUTINE_FALLBACK_MIGRATION_CASES.push({
+  id: 'fleet-ekg-original-alarm-refresh-after-page-and-measured-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}fleet-ekg/scan.ts|alarm|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const path = prefix + 'fleet-ekg/scan.ts';
+    let pages = 0, broadcasts = 0, resolves = 0, status = 'ok', healthy = false, dryRun = false;
+    let persisted: Array<{ id: number; feature: string; severity: string; attributed: boolean; alreadyNotified: boolean }> = [];
+    const findings = [{ feature: 'latency', severity: 'major', kind: 'numeric', score: 1, attributed: false }];
+    const delivery = {
+      broadcastSevereEvent: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
+        broadcasts++; return rail.broadcastSevereEvent(input);
+      },
+      resolveAlarm: async (key: string) => { resolves++; return rail.resolveAlarm(key); },
+      notifyAttention: async () => { pages++; throw new Error('owner page unavailable'); },
+    };
+    // Execute the original alarm callback, including its default production wiring.
+    const defaultDeps = execute(original(path, 'function defaultFleetEkgDeps(', 'function'), {
+      require: () => delivery,
+    }, 'defaultFleetEkgDeps') as (sql: unknown) => Record<string, unknown>;
+    const deps = { ...defaultDeps({}),
+      readSessions: async () => [], persistVectors: async () => {}, readCohort: async () => [],
+      readLedger: async () => [], persistShifts: async () => persisted, markNotified: async () => {},
+      nowMs: () => 10_000, log: () => {},
+    };
+    const run = execute(original(path, 'function runFleetEkgTick(', 'function'), {
+      MIN_SESSION_EVENTS: 10, ATTRIBUTION_LOOKBACK_MS: 1000,
+      detectDrift: () => ({ status, findings: healthy ? [] : findings, windowSessions: 30, baselineSessions: 50 }),
+      attributeFindings: (input: unknown) => input, alarmBody: () => 'measured shift',
+      require: () => ({ notifySyncInvalidate: async () => {} }),
+    }, 'runFleetEkgTick') as (workspace: string, deps: unknown, opts: unknown) => Promise<unknown>;
+    const tick = () => run('fixture-workspace', deps, { dryRun });
+    persisted = [{ id: 1, feature: 'latency', severity: 'major', attributed: false, alreadyNotified: false }];
+    await tick(); expect(pages).toBe(1); expect(broadcasts).toBe(1);
+    persisted[0].alreadyNotified = true;
+    await tick(); expect(pages).toBe(1); expect(broadcasts).toBe(2); expect(resolves).toBe(0);
+    status = 'insufficient-baseline'; healthy = true;
+    await tick(); expect(resolves).toBe(0);
+    status = 'ok'; dryRun = true;
+    await tick(); expect(resolves).toBe(0);
+    dryRun = false;
+    const read = deps.readCohort;
+    deps.readCohort = async () => { throw new Error('cohort unavailable'); };
+    await expect(tick()).rejects.toThrow('cohort unavailable'); expect(resolves).toBe(0);
+    deps.readCohort = read;
+    await tick(); expect(resolves).toBe(1);
+  }),
+}, {
+  id: 'silent-halt-original-sweep-page-failure-unknown-read-and-measured-recovery', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/silent-halt-reconcile.ts|sweepSilentHalts|1`],
+  run: () => conditionMeasured(async (rail) => {
+    const { expect } = await import('vitest');
+    const producer = await import('../harness/routines/silent-halt-reconcile');
+    const nowMs = 10_000_000;
+    const candidate = { ownerId: 'fixture-owner', workspaceId: 'fixture-workspace', routineId: 'fixture-loop',
+      intervalSec: 60, heartbeatAgeMs: 1000, inactiveForMs: 7_200_000, pendingAwaits: 0,
+      heldWorkItems: 1, modes: [{ mode: 'auto' }] };
+    let active = false, readFails = false, candidateReadFails = false, empty = false, dryRun = false;
+    let broadcasts = 0, resolves = 0, pages = 0;
+    const deps = { nowMs, wakeFirstEnabled: false,
+      readCandidates: async () => { if (candidateReadFails) throw new Error('candidates unavailable'); return empty ? [] : [candidate]; },
+      readLoopStatuses: async () => { if (readFails) throw new Error('status unavailable');
+        return new Map([[candidate.ownerId, { active, lastRealTurnAt: new Date(nowMs - 7_200_000).toISOString() }]]); },
+      readEngineLoopRows: async () => [], readHostClass: async () => null,
+      notify: async () => { pages++; throw new Error('owner page unavailable'); },
+      broadcast: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
+        broadcasts++; return rail.broadcastSevereEvent(input);
+      },
+      resolveCondition: async (key: string) => { resolves++; return rail.resolveAlarm(key); },
+    };
+    const run = execute(original(prefix + 'harness/routines/silent-halt-reconcile.ts', 'function sweepSilentHalts(', 'function'), {
+      ...rail, evaluateSilentHalt: producer.evaluateSilentHalt, hasAutonomyPosture: () => true,
+      disarmEpochToken: producer.disarmEpochToken, wakeMarkerSummary: producer.wakeMarkerSummary,
+      classifyEndedHolder: () => 'fixture-classification',
+      SILENT_HALT_MAX_WAKES_PER_SWEEP: producer.SILENT_HALT_MAX_WAKES_PER_SWEEP,
+      SILENT_HALT_MAX_PAGES_PER_SWEEP: producer.SILENT_HALT_MAX_PAGES_PER_SWEEP,
+    }, 'sweepSilentHalts') as (opts: unknown) => Promise<unknown>;
+    const tick = () => run({ workspaceId: candidate.workspaceId, sql: {}, deps, dryRun });
+    await tick(); await tick(); expect(broadcasts).toBe(2); expect(pages).toBe(2); expect(resolves).toBe(0);
+    // An exemption beside an unreadable status must preserve the previous condition.
+    candidate.pendingAwaits = 1; readFails = true;
+    await tick(); expect(resolves).toBe(0);
+    candidateReadFails = true;
+    await expect(tick()).rejects.toThrow('candidates unavailable'); expect(resolves).toBe(0);
+    candidateReadFails = false; readFails = false; candidate.pendingAwaits = 0; active = true;
+    dryRun = true; await tick(); expect(resolves).toBe(0);
+    dryRun = false; await tick(); expect(resolves).toBe(1);
+    // A complete successful empty census also measures the end of this predicate.
+    active = false; await tick(); empty = true; await tick(); expect(resolves).toBe(2);
+  }),
+});

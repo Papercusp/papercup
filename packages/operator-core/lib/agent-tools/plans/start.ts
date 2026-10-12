@@ -67,6 +67,7 @@ import { buildPromotedRows, upsertPromotedBlock } from '../coordination/tools/pr
 import { titleFromPlanItem } from '../../plan-workitem-promotion';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
+import { applyResultDoorAsync } from '../../result-door';
 import {
   planRevisionCapture,
   PlanRevisionUnavailableError,
@@ -1039,6 +1040,28 @@ export default defineTool({
       { keyOf: (slug) => ({ slug }) },
     );
 
-    return bulkContent(env);
+    // Approval/promotion can commit before an admission refusal. Generic tier
+    // shaping discards that receipt and advertises a plans:start replay. Save
+    // the original response through the existing lossless door first, on every
+    // agent-facing transport (including the HTTP CLI). Machine consumers keep
+    // the canonical data response; raw ToolResult serialization skips tiering.
+    const receiptCtx = ctx as typeof ctx & {
+      transport?: string;
+      transportCapExempt?: boolean;
+      requestedStructured?: boolean;
+      workspaceId?: string;
+    };
+    if (!receiptCtx.transport || receiptCtx.transportCapExempt || receiptCtx.requestedStructured) {
+      return bulkContent(env);
+    }
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    return applyResultDoorAsync(
+      { content: [{ type: 'text' as const, text: JSON.stringify(env) }] },
+      {
+        toolName: 'plans:start',
+        workspaceId: receiptCtx.workspaceId,
+        ownerId: resolveAgentIdentity(ctx).ownerId,
+      },
+    );
   },
 });

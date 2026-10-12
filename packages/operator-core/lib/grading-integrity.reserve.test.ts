@@ -232,6 +232,40 @@ describe('reservePendingGradingAudit', () => {
       expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
       expect(release?.values).toContain('2026-10-02T03:40:00.000Z');
     });
+
+    it('restores the prior lease and records retry backoff in the same compare-and-set release', async () => {
+      const { statements } = transactionHarness({ claim: false });
+      const backoff = {
+        until: '2026-10-12T02:02:10.272Z',
+        source: 'retry-window' as const,
+        code: 'generation_incompatible',
+        recordedAt: '2026-10-12T01:47:09.741Z',
+        reason: 'dispatcher build is older than the graded build',
+      };
+
+      const result = await releasePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        reservedAt: '2026-10-12T01:47:09.741Z',
+        restore: expiredLease,
+        backoff,
+      });
+
+      expect(result).toBe(false);
+      const payloadWrite = statements.find((statement) =>
+        statement.text.includes("'{observation,gradingAudit,dispatchReservation}'") &&
+        statement.text.includes("'{observation,gradingAudit,dispatchBackoff}'"),
+      );
+      const release = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'));
+      expect(payloadWrite?.text).toContain("'{observation,gradingAudit,lastDispatchReservation}'");
+      expect(payloadWrite?.text).not.toContain("payload #- '{observation,gradingAudit,dispatchReservation}'");
+      expect(payloadWrite?.values).toEqual([
+        JSON.stringify(expiredLease),
+        JSON.stringify(expiredLease),
+        JSON.stringify(backoff),
+      ]);
+      expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+      expect(release?.values).toContain('2026-10-12T01:47:09.741Z');
+    });
   });
 
   it('does not report a live reservation for a retracted card from a stale candidate snapshot', async () => {

@@ -22,6 +22,10 @@ import {
 import { resolveFleetParkResumePath } from '../../fleet-park-resume-path';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
 
+// Never publish synthetic halt conditions to the shared fleet.
+vi.mock('../../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../../alarm-attention', () => ({ resolveAlarm: vi.fn(async () => true) }));
+
 // The default host reader (D-006 (2)) discovers live psu hosts on disk. Tests that call
 // sweepSilentHalts without injecting readHostClass must never read the real ~/.papercusp/psu-pty.
 vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({

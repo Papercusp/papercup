@@ -29593,7 +29593,7 @@
           "POST"
         ]
       },
-      "description": "Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining). The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies.",
+      "description": "Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining).",
       "capabilities": [
         "coord:write"
       ],
@@ -29621,7 +29621,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "Started BAR: read the subject plan's `## Requirements`/`## Design`; map changes to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Prefer `dryRun:true, requestReview:{workItemId}` to post approval and start review in one call. Manual compatibility: post preview.approval and pass `reviewPreviewPost:'thread-post:<preview-id>'`. Follow review.next; after `approve thread-post:<preview-post-id>`, apply the same patch with `approvalRef:'thread-post:<answer-id>'`. Large previews return an approvalRef/receipt. The relevance router chooses the outside-lineage reviewer; never pick or message one yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs (no hash transcription). Full contract: /internal/docs/agent-insights/unified-requirement-contract."
+        "chaining": "Started BAR: read the subject plan's `## Requirements`/`## Design`; map changes to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Prefer `dryRun:true, requestReview:{workItemId}` to post approval and start review in one call. Manual compatibility: post preview.approval via work_items:comment (a thread post is readable on every surface; a payload needs payloadTier) and pass `reviewPreviewPost:'thread-post:<preview-id>'`. Follow review.next; after `approve thread-post:<preview-post-id>`, apply the same patch with `approvalRef:'thread-post:<answer-id>'`. Large previews return an approvalRef/receipt. The relevance router chooses the outside-lineage reviewer; never pick or message one yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs (no hash transcription). Full contract: /internal/docs/agent-insights/unified-requirement-contract."
       }
     },
     {

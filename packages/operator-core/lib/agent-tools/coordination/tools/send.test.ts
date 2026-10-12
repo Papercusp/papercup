@@ -211,6 +211,13 @@ vi.mock('../presence-fleet', () => ({
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
 vi.mock('../based-on', () => ({ BASED_ON_MAX_ENTRIES: 8, deriveBasedOn: vi.fn(async () => []) }));
+// `withBoundedTimeout` records each result through this sink; its unit tests
+// cover persistence. Keep this handler suite from flushing those observations
+// to real Postgres while exercising its many bounded enrichments.
+vi.mock('../../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 // P-011 / WI-6731: the premise RESOLVER is stubbed so the WIRING is asserted
 // without a PG round-trip (the resolver + its production probes are covered by
 // premise-resolve.test.ts / premise-probes.test.ts).
@@ -3759,10 +3766,78 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
       versionAtSend: `done@${Date.parse('2026-07-27T12:01:00.000Z')}`,
     }];
     basedOnM.mockResolvedValue(changed as never);
-    const result = await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+    const result = await body({
+      to: ['bee-1'],
+      summary: 'hi',
+      expects: 'none',
+      body: [{ text: 'This message relies on the cited item.', premises: ['WI-9001'] }],
+    });
     const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
     expect(opts.extra?.staleBasis).toEqual([expect.objectContaining({ ref: 'work-item:WI-9001', stateAtSend: 'done' })]);
     expect(result).toMatchObject({ results: [expect.objectContaining({ staleBasis: [expect.objectContaining({ ref: 'work-item:WI-9001' })] })] });
+  });
+
+  it('does not attach an unrelated stale read to a message with a different cited work-item', async () => {
+    const readAt = '2026-07-27T12:00:00.000Z';
+    const cited = {
+      ref: 'work-item:WI-6554700010008737',
+      via: 'work_items:get',
+      readAt,
+      versionAtSend: `open@${Date.parse(readAt)}`,
+    };
+    const unrelatedStale = {
+      ref: 'work-item:WI-10005908',
+      via: 'work_items:get',
+      readAt,
+      versionAtSend: `done@${Date.parse('2026-07-27T12:01:00.000Z')}`,
+    };
+    basedOnM.mockResolvedValue([cited, unrelatedStale] as never);
+
+    const result = await body({
+      to: ['bee-1'],
+      summary: 'The cited item remains open.',
+      expects: 'none',
+      why: { goalRef: 'WI-6554700010008737', note: 'This is the item being discussed.' },
+      body: [{ text: 'Current status is open.', premises: ['WI-6554700010008737#checkpoint'] }],
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.basedOn).toEqual([cited, unrelatedStale]);
+    expect(opts.extra).not.toHaveProperty('staleBasis');
+    expect(result).not.toMatchObject({ results: [expect.objectContaining({ staleBasis: expect.anything() })] });
+  });
+
+  it('still marks a cited work-item that changed after it was read', async () => {
+    const readAt = '2026-07-27T12:00:00.000Z';
+    const citedStale = {
+      ref: 'work-item:WI-6554700010008737',
+      via: 'work_items:get',
+      readAt,
+      versionAtSend: `done@${Date.parse('2026-07-27T12:01:00.000Z')}`,
+    };
+    const unrelatedStale = {
+      ref: 'work-item:WI-10005908',
+      via: 'work_items:get',
+      readAt,
+      versionAtSend: `done@${Date.parse('2026-07-27T12:02:00.000Z')}`,
+    };
+    basedOnM.mockResolvedValue([citedStale, unrelatedStale] as never);
+
+    const result = await body({
+      to: ['bee-1'],
+      summary: 'The cited item was completed.',
+      expects: 'none',
+      why: { goalRef: 'WI-6554700010008737' },
+      body: [{ text: 'Completion is now stale.', premises: ['WI-6554700010008737#completion'] }],
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.staleBasis).toEqual([
+      expect.objectContaining({ ref: 'work-item:WI-6554700010008737', stateAtSend: 'done' }),
+    ]);
+    expect(result).toMatchObject({
+      results: [expect.objectContaining({ staleBasis: [expect.objectContaining({ ref: 'work-item:WI-6554700010008737' })] })],
+    });
   });
 
   it('is stamped DERIVED, so adoption measurement can never count it as authored (D-072)', async () => {

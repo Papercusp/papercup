@@ -223,6 +223,13 @@ async function withOptionalSendEnrichment<T>(
   return value;
 }
 
+/** Normalize an explicitly cited work-item ref to the dependency-tag form. */
+function workItemBasisRef(ref: unknown): string | undefined {
+  if (typeof ref !== 'string') return undefined;
+  const match = /^(?:work-item:|wi:)?((?:WI|EI)-\d+)(?:#.*)?$/i.exec(ref.trim());
+  return match ? `work-item:${match[1]!.toUpperCase()}` : undefined;
+}
+
 /**
  * EI-21860312102671987: `sendMessage()` (the actual coord_event_log persist)
  * previously had NO deadline of its own — a bare `await`. Under client-side DB
@@ -1738,7 +1745,21 @@ async function sendOne(
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
-  const staleBasisStamps = staleBasis(basedOn);
+  // `basedOn` is the sender's bounded recent-read trace, so it can include an
+  // item from a prior unit of work in the same session. Only label a changed
+  // work-item as stale basis when this message cites it as a premise, goal, or
+  // completion claim; otherwise the stamp misattributes ambient session state
+  // to the current message.
+  const messageWorkItemRefs = new Set<string>(completionRefs);
+  for (const section of sections) {
+    for (const premise of section.premises ?? []) {
+      const ref = workItemBasisRef(premise);
+      if (ref) messageWorkItemRefs.add(ref);
+    }
+  }
+  const whyWorkItemRef = workItemBasisRef(msg.why?.goalRef);
+  if (whyWorkItemRef) messageWorkItemRefs.add(whyWorkItemRef);
+  const staleBasisStamps = staleBasis(basedOn).filter((stamp) => messageWorkItemRefs.has(stamp.ref));
   if (staleBasisStamps.length) extra[STALE_BASIS_FIELD] = staleBasisStamps;
   // coord-derived-fields-2026-08-31 P-004 (D-003's derived half): the sender's
   // REGISTERED waits — active events:await registrations + set_blocker records

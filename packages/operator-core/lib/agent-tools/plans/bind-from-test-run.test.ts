@@ -106,6 +106,7 @@ describe('subject files are the first ring of relative runtime imports', () => {
 });
 
 describe('deriveBindingFromTestRun', () => {
+  describe.each(['integration', 'e2e'])('isolated %s receipt derivation', testLayer => {
   const isolatedReceipts = [
     { runId: '20261008T164557Z-3031268', resultSha256: 'a'.repeat(64),
       sourceSha256: 'b'.repeat(64), lifecycleSha256: 'c'.repeat(64) },
@@ -114,7 +115,7 @@ describe('deriveBindingFromTestRun', () => {
   ];
   const isolatedExecution = (over: Record<string, unknown> = {}) => ({
     schemaVersion: 1, root, filePath: TEST, runGroupId: null, workspaceId: 'ws-1',
-    harnessSlug: 'web', testNamePattern: null, testLayer: 'integration', passed: 2,
+    harnessSlug: 'web', testNamePattern: null, testLayer, passed: 2,
     failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
     commitSha: 'abcdef0123456789', worktreeDirty: false,
     isolatedRuntimeReceipts: isolatedReceipts, ...over,
@@ -173,7 +174,8 @@ describe('deriveBindingFromTestRun', () => {
   });
 
   it.each([
-    ['nonintegration', { testLayer: 'unit' }],
+    ['unit layer', { testLayer: 'unit' }],
+    ['browser layer', { testLayer: 'browser' }],
     ['missing receipts', { isolatedRuntimeReceipts: undefined }],
     ['duplicate receipts', { isolatedRuntimeReceipts: [isolatedReceipts[0], isolatedReceipts[0]] }],
     ['malformed receipt', { isolatedRuntimeReceipts: [{ ...isolatedReceipts[0], resultSha256: 'invalid' }] }],
@@ -203,6 +205,8 @@ describe('deriveBindingFromTestRun', () => {
       execution_details: { ...isolatedExecution({ isolatedRuntimeReceipts: undefined }),
         runtimeEnvironmentBefore: snapshot, runtimeEnvironmentAfter: snapshot },
     }), root, 'run')).toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+  });
+
   });
 
   it('derives runtime selectors only from matching execution-time ledger witnesses', () => {

@@ -380,199 +380,118 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 
 
 > ⚠ **Neither `git blame` NOR a commit's SUBJECT (nor a `Co-Authored-By` trailer) is evidence
-> about a change in this repo — never cite one, least of all in an escalation.** git-sync sweeps
-> the WHOLE tree under ONE identity and labels it with whatever context was current, so blame
-> names the wrong person and the subject describes the sweeping agent's INTENT, not the diff.
-> For authorship use the commissioning work-item or a timestamp-correlated `sessions:search`;
-> if neither resolves, say "not attributable" — never name a person.
+> about a change in this repo — never cite one.** git-sync sweeps the WHOLE tree under ONE
+> identity. For authorship use the commissioning work-item or a timestamp-correlated
+> `sessions:search`; if neither resolves, say "not attributable" — never name a person.
 >
 > **Which commit carries your change → `TZ=UTC git log -1 --date=iso-strict-local --format='%cd %H %s' -- <path>`.
-> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same sweep, so
-> quoting it attributes your work to a stranger's diff. Only a `--date=*-local` format honours
-> `TZ`, which is what makes that stamp read `+00:00` and directly comparable to Papercusp's UTC
-> timestamps; keep `TZ=UTC` on `--since`/`--until` too.
+> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same sweep. Only a
+> `--date=*-local` format honours `TZ` (it is INERT on `%cd`/`%cI`); keep `TZ=UTC` on
+> `--since`/`--until` too.
 >
 > ⚠ **Containment is a CONTENT question, never a date or ancestry one.** `git rev-parse
 > <sha>:<path>` vs `git rev-parse staging:<path>` — equal blobs ⇒ it carries it.
-> `merge-base --is-ancestor` proves REACHABILITY only and stays true after a later sweep reverts
-> the same lines, so it is never evidence a fix is live. For "is my change live", ask
+> `merge-base --is-ancestor` proves REACHABILITY only. For "is my change live", ask
 > `dev:pipeline_position { path }` or `state:read { cell:'gate.greenCheckpoint.candidate', as:'<path>' }`.
->
-> ⛔ **Four of these misreport SILENTLY, each toward a confident WRONG conclusion — know the
-> signature, then look up the exact form before you act:** `HEAD` is a WALL-CLOCK moving baseline,
-> so `git show HEAD:<path>` minutes after an edit hands back YOUR OWN edit and a vacuous guard
-> reads identical to a sound one · `TZ=UTC` is INERT on `%cd`/`%cI` (a `-04:00` stamp read as UTC
-> is a silent 4h skew in gate triage) · a bare `rev-parse staging:<missing>` PRINTS the ref to
-> stdout before exiting 128, and a SUBMODULE has no `staging` ref at all · `git show
-> <ref>:<submodule path> > file` leaves a ZERO-BYTE file, so the positive control that must come
-> back non-zero returns 0 and the whole scan is believed. A submodule path needs its own check
-> INSIDE the submodule; equal blobs there prove the PATH is current, not the candidate — the
-> gitlink moves underneath it.
->
-> Exact commands, the measured incident behind each, and the gitlink-drift check:
-> [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
-
+> Silent-misreport traps (moving `HEAD`, `rev-parse` of a missing path, submodule paths) with
+> exact commands: [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
 > `git clean -fd`, not `git stash`. 
 
 **Never sit in a wait/poll loop for git-sync to "push your change" or the deploy to
-land — force it instead.** The pipeline is async: keep working, and locate your edit
-with `dev:pipeline_position` (not a browser). But when your *next step genuinely
-requires* a code change to be **live on `:3070`** before you can proceed (you must
-exercise it through the running operator), do **not** idle waiting for the scheduled
-commit→checkpoint→deploy. **Force the deploy now:**
+land — force it instead.** Keep working and locate your edit with `dev:pipeline_position`.
+When your *next step genuinely requires* the change **live on `:3070`**, force the deploy:
 `PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`.
-⚠ The `PAPERCUSP_ALLOW_DEV_RESTART=1` is **required** on the dev box — without it the
-restart step is *withheld* and deploy-cli's auto-rollback leaves `papercup-release`
-inconsistent (git files vs node_modules/build), which crash-loops `:3070` on
-`MODULE_NOT_FOUND` (recover: `systemctl --user stop papercup-dev-api.service` then re-run
-the command above with `--no-drain`). Blocking on git-sync / the green gate before
-continuing is the anti-pattern; force it and move on.
+⚠ The env var is **required** on the dev box — without it the restart is withheld and the
+rollback crash-loops `:3070` on `MODULE_NOT_FOUND` (recover: `systemctl --user stop
+papercup-dev-api.service`, then re-run with `--no-drain`).
 
 **"Is my change live, and if not what is the ONE thing blocking it" is ONE call — `dev:pipeline_position { path }` — never a hand-diff.** It answers three *different* questions that agents routinely conflate:
 
 | you want to know | read | not |
 |---|---|---|
-| is it live, and if not the ONE lever | `blockedOn` + `nextAction` (the `summary` now LEADS with them) | the row of position ticks — a boolean per stage cannot say whether that stage is *moving* |
-| is this leg stuck, or just slow | `stages[].health` (`advancing`/`stalled`/`disabled`/`broken`) | `positions.*` alone — that read a 2h52m push freeze as "not yet" |
+| is it live, and if not the ONE lever | `blockedOn` + `nextAction` | the row of position ticks |
+| is this leg stuck, or just slow | `stages[].health` (`advancing`/`stalled`/`disabled`/`broken`) | `positions.*` alone |
 | did my work reach origin | `gitSync.pushedRepos` | `gitSync.status` — `'synced'` is reachable with **nothing** pushed |
-| is the running process executing my code | `serving.startedSinceCodeChange` | `positions.deployed` — a git fact stating a process conclusion ("deployed ✓" ≠ live; filed 4× independently) |
-| is the gate judging MY code | `changeInCandidate.markerJudging` — pass `marker`, a literal string YOUR change introduced. `judgingContainsPath` answers only about THE PATH YOU PASSED, so its `true` is a verdict on your change only when that path is one you actually edited; read `missingReason` before believing a `false` (see below) | trusting a bare `true` from a fixed probe path reused across wakes — it reads `true` on nearly every call while saying NOTHING about whether your fix is in the candidate |
+| is the running process executing my code | `serving.startedSinceCodeChange` | `positions.deployed` — a git fact, not a process one |
+| is the gate judging MY code | `changeInCandidate.markerJudging` — pass `marker`, a literal string YOUR change introduced. `judgingContainsPath` answers only about THE PATH YOU PASSED, so its `true` is a verdict on your change only when that path is one you actually edited; read `missingReason` before believing a `false` | a bare `true` from a fixed probe path reused across wakes |
 | will the next tick commit my half-finished refactor | `sweepExposure` — `Edit`/`Write` files are held until your turn ends (`turnHeld`); across turns, `locks:acquire` | assuming Bash-written files are held — they are swept |
-
 
 `nextAction: null` is a **positive** answer ("waiting is correct"), never a missing one —
 do not invent a lever when the honest move is to wait. Full field-by-field guide:
 [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
 
 **About to ACT on one of these values — or quote it into a message, a plan, or a
-work-item? RE-READ it, don't copy it: `state:read { cell }`.** These same values are
-registered CELLS off the *same* resolver (`gitPipelinePosition()`), so this is a
-re-read, never a second source of truth: `gate.greenCheckpoint.candidate` ·
-`gate.greenCheckpoint.verdict` · `gate.greenCheckpoint.ownership` ·
-`git.mainBehindStaging` · `git.pipelinePosition` · `deploy.3070.sha` (omit `cell` to
-list them). Every one is a value that changes under
-you mid-turn, and a transcribed copy of one is how a correct observation becomes a
-confidently wrong report an hour later.
+work-item? RE-READ it, don't copy it: `state:read { cell }`** — `gate.greenCheckpoint.candidate` ·
+`gate.greenCheckpoint.verdict` · `gate.greenCheckpoint.ownership` · `git.mainBehindStaging` ·
+`git.pipelinePosition` · `deploy.3070.sha` (omit `cell` to list them). A transcribed copy goes
+stale mid-turn.
 
-✅ **You do not have to look any of that up — `dev:pipeline_position` HANDS YOU THE
-HANDLE.** Its result carries a `plane` block: one entry per volatile value, naming the
-`path` it sits at in that very payload, the `cell` that re-answers it, and a ready
-`reread` call. Copy the handle, not the number. Two things to actually read there:
+✅ **`dev:pipeline_position` HANDS YOU THE HANDLE:** its `plane` block names, per volatile
+value, the `cell` that re-answers it and a ready `reread` call. Copy the handle, not the number.
 
-- **The handle is already addressed to YOUR subject.** `git.pipelinePosition` and
-  `gate.greenCheckpoint.candidate` are per-path cells, so their entries carry
-  `as: '<the path you asked about>'`. Re-reading either WITHOUT that `as` answers about
-  a different subject — which is why a no-arg call emits `unreadable: { needs: 'path' }`
-  for those two and no handle at all, rather than one that looks authoritative and
-  resolves elsewhere.
-- **An entry appears even when the value is `null`.** That is deliberate: a null
-  deployed-sha or candidate is the reading you are *least* entitled to transcribe, so
-  it is the one that most needs a handle.
-
-The block is derived from each cell's own `changeSignal` declaration, so it cannot drift from the registry — a cell added, renamed or re-pathed shows up (or stops showing up) on its own (`state-plane-stamp.ts`).
-
-Two specifics worth knowing:
+- **The handle is already addressed to YOUR subject:** the per-path cells
+  (`git.pipelinePosition`, `gate.greenCheckpoint.candidate`) carry `as: '<the path you asked
+  about>'`; re-reading without it answers about a different subject. An entry appears even when
+  the value is `null`.
 
 - **"Is the gate red about MY change?"** — `state:read { cell:
-  'gate.greenCheckpoint.candidate', as: '<your path>' }`. It is per-path on purpose, and
-  its falsifier is a **blob containment** check against the candidate — the same
-  primary method the long recipe below prescribes, run for you. Its stated job is to
-  kill exactly one error: *"the gate is red" read as "the gate is red ABOUT MY
-  CHANGE."* That error, not the red itself, is what repeatedly costs hours here.
-- **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
-  poll loop and not a hand-built await.
+  'gate.greenCheckpoint.candidate', as: '<your path>' }`, a **blob containment** check against
+  the candidate. Never read "the gate is red" as "the gate is red ABOUT MY CHANGE."
+- **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a poll loop.
 
-⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`, default ON; P-013 / D-007). On the first real code red the gate opens ONE frozen repair queue, and every later run RESUMES that exact candidate rather than a newer tip. Turning it off restores the treadmill D-007 diagnosed, where each new cut re-admits the whole sweep and imports breakage faster than fixes land.
+⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`, default ON): on the first real code red the gate opens ONE frozen repair queue, and every later run RESUMES that exact candidate rather than a newer tip.
 
-So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`**, naming exactly the files you changed (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head itself, and the immutable candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks ride in, so a peer's concurrent edit in the same file stays out. An admission whose file imports a sibling you did not name is refused `admission-incomplete` naming that path — admit it too; **the tip is NEVER widened for you.**
+So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO repair worktree — wait for git-sync to commit it, then land it on the frozen lineage BY PATH: `release:repair-queue { op:'admit', paths:[...] }`** (dry run by default; `confirm:true` publishes). That lands your fix ON TOP of the frozen candidate (advancing `repairHead`); the queue re-tests that head itself, and the immutable candidate never moves. Admission is hunk-exact; a refusal `admission-incomplete` names a sibling to admit too — **the tip is NEVER widened for you.**
 
-Do NOT fire `release:checkpoint-run` to "try again" as a bypass: when a frozen queue exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses `queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet cut at tip. Do not hand-pin with `--candidate` either.
+Do NOT fire `release:checkpoint-run` to "try again" as a bypass: when a frozen queue exists, it applies the queue policy and resumes the exact frozen lineage (`ready-to-test` uses `queue.candidate`; `ready-to-verify` uses `queue.repairHead`; non-suite states refuse before launch). Only when no frozen queue exists does it cut a fresh candidate from the current quiet cut at tip. `release:repair-queue { op:'retire' }` is **not a "make the gate move" lever** — only for a provably unreachable-green queue.
 
-`release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a "make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its fixer is dead AND the fixes are absent from the frozen candidate (per path, `git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix is NOT in it). Then let the next run re-freeze; do not start re-cutting.
+✅ **"Is the freeze ON, and if not WHY" is a READ:** `gate_health.freezeAndConverge` → `{ enabled, state, reason, candidate }` (`off` = switched off; `none` = ON with nothing frozen). A surprising refusal is build-scoped: compare `refusal_provenance` with `/api/health` on `:3170` and `:3070`.
 
-✅ **"Is the freeze ON, and if not WHY" is a READ — do not grep run logs.** `gate_health.freezeAndConverge` returns `{ enabled, state, reason, candidate }`; `release:deploy status` renders it as one line. `state` is **`off` · `none` · `held` · `retired` · `converging`**, and **`reason` is load-bearing** — a state without its reason sends you back to the logs this read replaces.
-
-⚠ **`off` and `none` are NOT synonyms.** `off` = the mechanism is switched off, so reds do not freeze at all; `none` = it is ON and simply had no frozen candidate this tick, which is a green gate's normal state. A retire CLEARS the queue row, so `repairQueue` reads null exactly when it matters most: read the disposition, not the queue's absence.
-
-A surprising refusal is build-scoped: compare `refusal_provenance` with `/api/health` on `:3170` and `:3070` ([two-port A/B](/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer)) — **a deployed refusal can be stale while staging accepts the request.**
+Retire criteria, state table and the D-007/D-008/D-010 rationale: the `commit-discipline-freeze-and-converge-standard#evidence` corpus part.
 
 
-✅ **It DOES answer *"which sha is the run judging right now"*, AND it now names its own
-provenance — read `source.authoritative` before you act on the sha.** The cell returns
-`source: { value, authoritative, why }`: `'retriage-marker'` is authoritative (the run's OWN
-published `inFlightRetriage` marker — an observation of what it is judging), `'run-probe'` is
-NOT (on a MANUAL run its `/tmp` unit log, but on a CRON run it degrades to the checkpoint
-checkout's live HEAD, an inference that changes between two reads). A non-authoritative
-reading is also hoisted into the reply's `summary`, so you cannot miss it. Do not fire a
-manual re-run off an inferred candidate. Raw `harness_shared.routines` SQL is the LAST resort.
+✅ **It DOES answer *"which sha is the run judging right now"* — read `source.authoritative`
+before you act on the sha:** `'retriage-marker'` is authoritative; `'run-probe'` is an
+inference (on a CRON run, the checkpoint checkout's live HEAD). Do not fire a manual re-run off
+an inferred candidate.
 
 ⚠⚠ **THE PREMISE UNDER EVERY RECIPE BELOW: the candidate is cut from your LOCAL `staging`,
 NOT from `origin/staging`. The gate never fetches — so pushing is not a precondition for the
-gate to SELECT A CANDIDATE, or to RUN.**
+gate to SELECT A CANDIDATE, or to RUN.** PROMOTION is the other half: `pushGreenCandidateOrThrow`
+runs BEFORE `deps.advance(...)` and RETHROWS on failure, so while the push credential is broken
+**no green is recordable at all** (pinned by
+`packages/operator-core/lib/doc-claims/gate-promotion-push-precedes-advance.test.ts`).
 
-⚠ **That is scoped to the gate's INPUT on purpose — do NOT read it as "the push doesn't matter
-to the gate".** PROMOTION, the gate's OUTPUT, publishes the tested candidate to origin and is
-load-bearing BY DESIGN: `pushGreenCandidateOrThrow` runs BEFORE `deps.advance(...)` on every
-promotion path and RETHROWS on failure (swallowing it would let local `main` advance and emit a
-false deployable verdict). So while the push credential is broken, the run throws before any
-promotion decision — no advance, no `GATE_PROMOTION` trailer, and **no green is recordable at
-all**. Both halves hold at once, and you need both: an unpushed commit IS already in the
-candidate (every containment recipe below stands), AND a failing push hard-freezes promotion.
-Grep those symbols rather than a line number — the numbers this claim used to carry had already
-rotted. The ordering is pinned by
-`packages/operator-core/lib/doc-claims/gate-promotion-push-precedes-advance.test.ts`, so this
-text and `green-checkpoint.ts` cannot drift apart silently.
+green-checkpoint resolves it as `opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch`, and `integrationBranch` defaults to the literal `'staging'` (in `release-config.ts`). There is no `git fetch` invocation in `green-checkpoint.ts`, and its submodule resync is `submodule update --init --recursive`, never `--remote`. So the hop that matters for containment is **COMMIT** (git-sync's local commit), not the push.
 
+⚠ **A path inside a SUBMODULE needs its own containment check.** From the superproject,
+`git rev-parse <candidate>:<sub>/<path>` is ABSENT and `git log -S… -- <sub>/<path>` is empty —
+both read like *"my fix is not in the candidate"* (and **every DB migration lives in
+`libs/papercusp/libs/db/sql/`**). Ask the cell with the SUPERPROJECT-relative path:
+`state:read { cell: 'gate.greenCheckpoint.candidate', as: 'libs/papercusp/libs/db/sql/727-….sql' }`
+— it compares blobs inside the submodule at the gitlink the candidate pins
+(`changeInCandidate.submodule`; `missingReason:'newer-commit'` = the superproject gitlink bump is
+missing). ⛔ Not `git ls-remote`: the gate never fetches.
 
-green-checkpoint resolves it as `opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch`, and `integrationBranch` defaults to the literal `'staging'` (`overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging'`, in `release-config.ts`). Grep those expressions rather than a line number — the numbers this box used to carry had rotted to unrelated code by 2026-08-31 while the claim itself stayed true, which is the whole failure mode the derived-truth ladder warns about. There is no `git fetch` invocation anywhere in `green-checkpoint.ts`, and every `origin/` mention is either the post-green promotion push or prose about GitHub Actions' `origin/main` base-ref default — none resolves a candidate. Its submodule resync is `submodule update --init --recursive`, never `--remote`, so it materialises the gitlink the candidate already PINS instead of advancing it to a remote tip. The CLI path cuts the same way. So the hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is a separate, later concern that no containment test below depends on.
-
-
-⚠ **A path inside a SUBMODULE needs its own containment check — every blob recipe above answers about the wrong object.** The superproject tracks a submodule as ONE gitlink, so `git rev-parse <candidate>:<sub>/<path>` is ABSENT and `git log -S… -- <sub>/<path>` is empty regardless of what the submodule holds. Both read exactly like *"my fix is not in the candidate"*. Not a corner case: there are ~37 submodules here and **every DB migration lives in `libs/papercusp/libs/db/sql/`**, so the whole recurring class of migration gate-reds lands on it.
-
-✅ **The cell answers it — ask with the SUPERPROJECT-relative path, exactly as for any other file:**
-
-```
-state:read { cell: 'gate.greenCheckpoint.candidate', as: 'libs/papercusp/libs/db/sql/727-….sql' }
-```
-
-It resolves the gitlink the judged candidate PINS and compares blobs **inside** the submodule, so `changeInCandidate.judgingContainsPath` is a real verdict. Read `changeInCandidate.submodule` beside it: `{ path, relPath, judgingPin, nextPin }`. A `false` with `missingReason:'newer-commit'` means the **superproject gitlink bump** is what the candidate lacks — the hop that matters is git-sync's superproject COMMIT. An unreadable gitlink returns `resolver-failed` — a measurement that failed, never a verdict.
-
-⛔ **Do NOT reach for `git ls-remote origin refs/heads/staging` to answer this.** It is the natural next thought — *"the gate must see it on the remote"* — and it is wrong: the candidate is cut from LOCAL `staging` and the gate never fetches, so a committed-but-unpushed gitlink is ALREADY in the candidate. Asking the remote returns NOT-IN-CANDIDATE for a fix the gate can see.
-
-> ⛔ **`git show <ref>:<submodule path> > file` leaves a ZERO-BYTE file behind, so a POSITIVE
-> CONTROL built from it reports 0.** The shell creates the redirect BEFORE git runs, so the
-> `fatal: path '…' exists on disk, but not in 'HEAD'` (exit 128) still leaves an empty file, and
-> every later `grep -c` on it returns 0 — the exact reading that means "the string is already gone
-> / my pattern is wrong". So it defeats the one check meant to catch a broken instrument: the
-> control that MUST come back non-zero comes back zero, and the whole scan is then believed. Same
-> false-zero family as a `| head` SIGPIPE truncation or a wrong-relation SQL zero-row. Extract
-> INSIDE the submodule with a SUBMODULE-relative path, and check the exit status:
+> ⛔ **`git show <ref>:<submodule path> > file` leaves a ZERO-BYTE file behind**, so a positive
+> control built from it reports 0. Extract INSIDE the submodule and check the exit status:
 > `git -C libs/papercusp show "HEAD:plugins/design-phase/index.cjs" > /tmp/before.cjs || { echo EXTRACT-FAILED; exit 1; }`
 
-> ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
-> test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),
-> the test blob is identical in both refs while the gitlink moved underneath it — so containment
-> answers "not stale" on a red that is pure staleness. Diff the gitlinks too:
-> `git diff --raw <sha> staging | grep '^:160000'`. ⛔ And `git diff <sha> staging -- <sub>/<file>`
-> prints NOTHING for a submodule-backed path — a superproject diff carries only the gitlink — so the
-> empty result reads as "the subject did not change" and CONFIRMS the wrong conclusion.
+> ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is**: the gitlink can move
+> under an unchanged test blob. Diff the gitlinks too: `git diff --raw <sha> staging | grep '^:160000'`
+> (a superproject `git diff -- <sub>/<file>` prints nothing).
 
-Manual gitlink-resolution fallback (when the cell is unavailable, or you need a sha the gate is not judging): [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
+Manual fallback: [git evidence and containment recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 
+Get this wrong and you wait on a push that was never blocking, or fire a manual
+`release:checkpoint-run` that **discards a live auto-refire rescue** and costs a ~55min suite.
 
-Get this wrong and every recipe below still *runs*, but answers about the wrong object: an
-unpushed commit reads as "not in the candidate", the push leg looks like the thing blocking you,
-and the natural next move is either to wait for a push that was never blocking or to fire a
-manual `release:checkpoint-run` that **discards a live auto-refire rescue** and costs a ~55min
-suite.
+**Corroboration requires independent EVIDENCE, not independent recall.** This section's claim is pinned to the code by `packages/operator-core/lib/doc-claims/gate-candidate-ref.test.ts`.
 
-**Corroboration requires independent EVIDENCE, not independent recall.** Two agents agreeing is not confirmation when both merely inherited the same unstated convention. The claim in this box is pinned to the code by `packages/operator-core/lib/doc-claims/gate-candidate-ref.test.ts`, so a gate that legitimately starts reading a remote ref fails there and forces this text to be updated with it.
-
-⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
-expensive mistake, and no amount of care in the steps below can recover from it.**
+⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged.**
 
 ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
 
@@ -580,8 +499,7 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha plus **`source.authoritative` — read that FIRST**: a `run-probe` reading is an *inference* (on a CRON run, just the checkout's live HEAD), so never fire a manual re-run off one. Everything below is the FALLBACK for when it answers `unknown`. Field-by-field: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
-
+It returns the judged sha plus **`source.authoritative` — read that FIRST** (a `run-probe` reading is an *inference*). Everything below is the FALLBACK for when it answers `unknown`: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
 
 ## Ratified designs: implementation owes current passing visual evidence
 
@@ -592,16 +510,14 @@ After `design-phase.ratify_reference`, completion owes current passing `design-p
 
 ## Commit discipline: git-sync owns commit + push — you do neither
 
-🚨 **Never fire a manual `release:checkpoint-run` while a run is in its re-triage window.** That
-window is where a STALE red gets voided and the gate re-fires itself onto a newer tip;
-`green-checkpoint.ts:2566` states plainly that killing it "discards the rescue and costs a full
-suite". 
+🚨 **Never fire a manual `release:checkpoint-run` while a run is in its re-triage window** —
+that window voids a STALE red and re-fires onto a newer tip; killing it discards the rescue and
+costs a full suite.
 
-✅ **You no longer have to remember to check — the verb itself now refuses with the answer.** `release:checkpoint-run`'s `already_running` reply reads the marker and, when a refire is in flight for THAT run, leads its `note` with `🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN`, names both candidates (the one being judged **and** the one already discarded), lists the files the abandoned red named so you don't go fix them, and reports the budget via `in_flight_retriage.budget`/`at_cap`. Its containment check switches to the marker's candidate too, so `callerEditsInCandidate` answers about the sha actually being judged rather than the checkout HEAD inference. A marker written BEFORE that run started is deliberately NOT attributed to it (the run-lock is a singleton, so it belongs to an earlier run) and the pre-existing refusal is returned unchanged — `in_flight_retriage: null` means "no refire in flight", never "unknown".
+✅ **You no longer have to remember to check — the verb refuses with the answer:** its `already_running` reply leads with `🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN` when a refire is in flight for THAT run, names both candidates and the files the abandoned red named; `in_flight_retriage: null` means "no refire in flight", never "unknown".
 
-⚠ And when it does re-fire: **a passing affected-tests suite is NOT a green gate.** The lint/perf/
-desktop/delta gates and the `main` fast-forward still have to clear; an agent asserted "gate green"
-off the suite result that same morning and had to retract it.
+⚠ And when it does re-fire: **a passing affected-tests suite is NOT a green gate** — the
+lint/perf/desktop/delta gates and the `main` fast-forward still have to clear.
 
 ## Gate failure triage — re-run named files individually
 
@@ -952,70 +868,35 @@ the poll command, because the fix is one step earlier:
 
 > For anything that runs longer than ~1–2 min, start it with
 > **`capability:bash { run_in_background: true }`** and read it with
-> **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
-> matching lines enter your context — no `2>&1 | tail -60`.
+> **`capability:bash_output { bash_id, filter }`** — only matching lines enter your context.
 >
-> ⚠ **Duration is not the only trigger — LIFETIME is. If a process is what makes
-> an owner-facing deliverable VALID (an OAuth flow, a callback listener, a
-> tunnel, a signing session), background it however short it is.** A CLI child
-> dies with your session, and every carry-respawn and `claude --resume` IS a
-> session death, so the link you sent can be dead on arrival — and a dead one
-> looks identical to a live one. Say what its lifetime is bound to (EI-16611).
+> ⚠ **Duration is not the only trigger — LIFETIME is.** A process that makes an owner-facing
+> deliverable VALID (an OAuth flow, a callback listener, a tunnel) must be backgrounded however
+> short it is: a CLI child dies with your session, and every carry-respawn is a session death.
 
-⚠ **Filter background output at READ TIME, never at LAUNCH TIME.** Let the job
-write its stdout/stderr unfiltered to the durable log, then pass `filter` to
-`capability:bash_output`. A launch pipeline such as `cmd | grep -E '...'` (or
-`| head`) can leave the log empty or truncated if the job is killed before the
-consumer flushes its buffered stdout, losing the evidence you needed to debug
-the failure. Read-time filtering is repeatable with a different pattern and
-also works on the stranded-job recovery path. If launch-time filtering is
-unavoidable, use a line-buffered consumer such as `grep --line-buffered` or
-`stdbuf -oL`, but prefer keeping the durable log unfiltered.
+⚠ **Filter background output at READ TIME, never at LAUNCH TIME** — a launch pipeline
+(`cmd | grep …`, `| head`) can leave the durable log empty if the job is killed before the
+consumer flushes.
 
+⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: your own `bash -c` argv contains the pattern, so the poll matches ITSELF (`grep -v grep` does not save you, and across `ssh host '… pgrep -f …'` it can kill the remote shell — a silent `exit 255`). Wait on the PID (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>`), or bracket the first character: `pgrep -f '[l]int-tsc'`.
 
-⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f` matches the FULL command line, and your own `bash -c` argv contains the literal pattern, so the poll matches ITSELF and the condition stays true forever — the same self-match class as the documented `pkill -f` trap. `ps … | grep <pat>` loop conditions share the defect, and `grep -v grep` does NOT save you (the `bash -c` wrapper still matches). The PreToolUse gate now denies the loop form. Wait on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the loop) — or, if you genuinely must pattern-poll, bracket the first character so the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
+✅ **The purpose-built tool for a managed task is `processes:list { live:true }`.** For a host-visible shell, `node scripts/proc-guard.mjs check <pattern>` excludes your own ancestor chain, so it cannot self-match. ⚠ `capability:bash` can run in its own PID namespace: there `proc-guard` exits 2, and an empty `pgrep` or a missing `/proc/<pid>` says nothing about host liveness.
 
-⚠ **The same self-match trap applies across SSH.** In `ssh host 'for p in $(pgrep -f "DISPLAY=:111"); do sudo kill "$p"; done; <rest>'`, the remote shell's argv contains the literal pattern, so `pgrep -f` can match and kill that shell. SSH then reports the generic `exit 255` with no output, and every later command is silently skipped, leaving the remote host partially torn down. Bracket the first character (`pgrep -f '[D]ISPLAY=:111'`) or resolve PIDs by another identity, and keep the remote script single-quoted so the local shell cannot expand `$p` or other variables before SSH receives it. Treat `exit 255` with no output as a possible remote self-kill, not automatically as a network or authentication failure.
+⚠ **Three `find` traps on this box return a CONFIDENT, WELL-FORMED EMPTY result:** (1) bfs `-newermt` rejects human-relative values and can silently mis-parse absolute ones — use `git status --porcelain`, `TZ=UTC stat -c '%y %n' <paths>`, or an `@<unix-seconds>` predicate with stderr visible; (2) symlinked sibling hives (e.g. `sidestage`) are skipped without `-L` — prefer `git ls-files` / `grep -rl`; (3) ⛔ but NEVER an UNBOUNDED `find -L` over a broad root (`~`, `~/.papercusp`, `~/papercupai-workspace`) — it never finishes (WI-10000836): `find -L <root> -maxdepth 6 -name node_modules -prune -o -name '<file>' -print`.
 
+**AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL** — first run the same search for something you KNOW is in that haystack.
 
-✅ **The purpose-built tool for a managed task is `processes:list { live:true }`.** For a host-visible shell, `node scripts/proc-guard.mjs check <pattern>` walks the CALLER's own ancestor chain and excludes every pid in it before matching, so it cannot self-match no matter where the pattern appears in your command (the pgrep argument, an `echo` label, a comment, an `ls` path). For `green-checkpoint`, it also recognizes gate-owned identity markers (`GREEN_CHECKPOINT=1` together with `PC_HEAVY_RELEASE_GATE=1`) and the checkpoint systemd cgroup. Other patterns remain operational-argv matches, and a peer's prose or JSON payload is ignored.
+⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** — `pgrep -qf X && echo ALIVE || echo gone`
+prints **`gone`** on the usage error while the process is alive. Use `proc-guard` above,
+`pgrep -cf` (count), `pgrep -x <name>`, or `kill -0 <pid>` (EI-19446554284039165).
 
-`capability:bash` can run in a separate PID namespace with only its own processes. There `proc-guard` exits 2 with an explicit visibility error; a zero match from `pgrep` or a missing `/proc/<pid>` through that door says nothing about host liveness. Bracketing a `pgrep` pattern does not prevent self-matching when the literal also appears in a shell label, comment, or heredoc carried in the wrapper argv. Use `processes:list { live:true }` for managed work, or a verified host-visible tool for a whole-host census.
-
-
-⚠ **Three `find` traps on this box, all of which return a CONFIDENT, WELL-FORMED EMPTY result.**
-
-**1. Timestamps.** `find` here is **bfs 4.1.1**. With `-newermt` it REJECTS human-relative values (`12 minutes ago`, `-10 minutes`, `America/New_York`) and can SILENTLY mis-parse absolute ones (`2026-08-28 18:35:00 UTC`), under-reporting by hundreds of times. With stderr hidden, either case looks like a valid "nothing changed". For "files modified since T" use `git status --porcelain` or `TZ=UTC stat -c '%y %n' <paths>`; if you must use `find`, pass an epoch predicate (`@<unix-seconds>`) or an ISO-8601 timestamp with `Z`/a numeric offset, keep stderr visible, and corroborate with a positive control.
-
-**2. Symlinked sibling hives are SKIPPED.** Some "checkouts" under `~/papercupai-workspace/` (e.g. `sidestage`) are symlinks into `~/.papercusp/hives/`, and `find` does not descend a symlinked directory without `-L`. A workspace-wide `find -name '<file>'` silently omitted `sidestage`'s copy. For any cross-checkout search prefer `git ls-files` / `grep -rl`.
-
-**3. ⛔ But NEVER an UNBOUNDED `find -L` over a broad root** (`~`, `~/.papercusp`, `~/.papercusp/hives`, `~/papercupai-workspace`). Those roots reach ~50 checkouts whose `node_modules/@papercusp/*` symlink back into workspace packages, and bfs expands that DAG without bound — it never finishes and never errors. One such call ran 32 h and made the owner's desktop unusable (WI-10000836). The bash gate now DENIES `-L`/`-follow` from those roots unless bounded: `find -L <root> -maxdepth 6 -name node_modules -prune -o -name '<file>' -print`.
-
-**The general rule behind all three: AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL.** Before reporting "X does not exist", run the same search for something you KNOW is in that haystack. If the control also comes back empty, the instrument is broken, not the subject.
-
-
-⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
-fails via the EXIT CODE rather than a spurious match, so bracketing cannot help.
-`pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage error — a
-well-formed answer to the question you asked, while the process is very much alive
-(measured: it printed `gone` while `pgrep -cf` returned **13**). The natural next
-action is to conclude the job died and re-run it. Use `proc-guard` above, `pgrep -cf`
-(count), `pgrep -x <name>` (matches the process NAME, so argv cannot fool it at all),
-or `kill -0 <pid>` (EI-19446554284039165).
-
-
-⚠⚠ **The same self-match trap exists in SQL, and the bracket fix does NOT transfer.** A `pg_stat_activity` probe filtered by `query LIKE '%pattern%'` **matches its own backend**: `query` holds the currently-executing statement, and yours contains the pattern in its own `WHERE` clause. So it reports a hit whether or not the process you are hunting exists — measured, a marker string present in no real query anywhere returned exactly one row, the probing backend itself. ⛔ Bracketing (`'%[p]attern%'`) is a **grep** character class, not a SQL one (that is SQL Server); Postgres matches `[p]attern` literally, your statement still contains it verbatim, and it **still self-matches** — so the habit above fails here while looking like it was applied. Exclude yourself explicitly with `AND pid <> pg_backend_pid()`, or use **`dev:pg_active_queries`**, which takes no pattern and already excludes itself.
-
+⚠⚠ **The same self-match trap exists in SQL, and the bracket fix does NOT transfer.** A `pg_stat_activity` probe filtered by `query LIKE '%pattern%'` **matches its own backend**, and Postgres matches `'%[p]attern%'` literally. Exclude yourself with `AND pid <> pg_backend_pid()`, or use **`dev:pg_active_queries`**, which takes no pattern and already excludes itself.
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 
 ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
-process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
-single-shot probe answers a *different* question and fails toward a false "idle":
-`ps -o %cpu` is a process-LIFETIME average, and a first-iteration sampler has no prior
-sample to difference against. CPU usage *is* a delta; ask for one.
-
+process's CGROUP, never a single-shot reading** (`ps -o %cpu` is a process-LIFETIME average).
 
 The runnable recipe, and the two `/proc` methods that each report a confident FALSE IDLE on a
 process burning a full core:
@@ -1027,8 +908,6 @@ process burning a full core:
 
 ⚠ Corollary: **a liveness beat emitted BY the process being judged cannot report main-thread saturation** — a saturated Node main thread stops every `setInterval` while looking perfectly asynchronous. Observe from OUTSIDE (`/proc`).
 
-
-Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
 
 ## Feature flags + PostHog
 
@@ -1048,19 +927,12 @@ npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not
 ```
 
 ⚠ **ORDER MATTERS: typecheck LAST, after your FINAL edit — including the edit you made
-to fix a failing test.** The ordinary loop invalidates its own verdict: typecheck → run
-suites → a test fails → edit the TEST file → suites green → done. The clean verdict was
-banked BEFORE that last edit and never covered it, and the green suite cannot stand in for
-it, because vitest transforms via esbuild and never typechecks — a green run carries ZERO
-type information. So the loop ends holding a fresh green signal that is silent on types
-beside a stale clean one that is not, and they read as agreement. The resulting regression
-is type-only, invisible to `test:affected` by construction, and first surfaces at the fleet
-green-checkpoint hours later. Re-run `lint:tsc --files=` over the FULL changed set — source
-and test files — as the last thing you do.
+to fix a failing test.** Vitest transforms via esbuild and never typechecks, so a green run
+carries ZERO type information and an earlier clean typecheck never covered the last edit.
+Re-run `lint:tsc --files=` over the FULL changed set — source and test files — as the last
+thing you do.
 
-
-⚠ **The dual runs the other way too: a TYPECHECK cannot see a collapsed test fixture.** A multi-site identifier rename (`replace_all` across ~20 files) trips both halves at once, and each check is structurally blind to the other's defect — so "the tests were green" and "the typecheck was clean" are each individually insufficient after one, and each feels sufficient. A fixture that needs N *distinct* entities still typechecks perfectly once a rename collapses two of them onto one id; only RUNNING it surfaces the `Encountered two children with the same key` / `Found multiple elements with the text` failure. So after a multi-site rename run BOTH, for every workspace touched. And before collapsing a token inside a fixture, ask whether the test asserts N distinct entities — when a retired id needs replacing there, substitute a different REAL sibling rather than reusing the surviving id twice.
-
+⚠ **The dual runs the other way too: a TYPECHECK cannot see a collapsed test fixture.** After a multi-site identifier rename (`replace_all`), a fixture that needs N *distinct* entities still typechecks once two collapse onto one id; only RUNNING it surfaces `Encountered two children with the same key`. Run BOTH for every workspace touched, and substitute a different REAL sibling rather than reusing the surviving id twice.
 
 ⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —
 so "green" can mean "nothing ran". To see what your change actually selects, ask
@@ -1073,76 +945,42 @@ as a verdict). Or run the probe directly:**
 node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
 ```
 
-The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces,
-`AFFECTED_WS_CMD\t<workspace>\t<command>` per selected TASK, and
-`AFFECTED_GUARD\t<workspace>\t<script>\t<command>` for repo-wide invariant guards attached by
-the same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
-the intended fail-safe behavior for root-level changes.
+It emits `AFFECTED_WS\t<workspace>`, `AFFECTED_WS_CMD\t<workspace>\t<command>` per selected
+TASK, and `AFFECTED_GUARD\t<workspace>\t<script>\t<command>` for repo-wide guards (which may
+appear with zero `AFFECTED_WS` lines).
 
 ⛔ **Run the emitted command; never rebuild one from the workspace name.** `npm run
 --workspace <name> test` is WRONG for a standalone package (a submodule like
-`papercusp-desktop`, deliberately not in root `workspaces`): npm answers `No workspaces
-found` and **exits 1 having measured ZERO tests** — indistinguishable from a failing suite.
-The command field already handles it (`npm --prefix papercusp-desktop run --silent test` vs
-`--workspace` for genuine workspaces, EI-22152426246970496). A workspace with no
-`AFFECTED_WS_CMD` line has no selected task: running anything for it measures nothing.
+`papercusp-desktop`): npm answers `No workspaces found` and **exits 1 having measured ZERO
+tests**. A workspace with no `AFFECTED_WS_CMD` line has no selected task.
 
 ⚠ **The probe takes `--changed-paths`; the RUN takes it too — use it, or you measure one
-radius and run another.** A bare `npm run test:affected` derives its radius from git
-(committed vs `origin/main` + working tree + untracked), which on this SHARED tree is the
-whole fleet's work plus base drift — `origin/main` only fast-forwards on a green checkpoint,
-so it sits ~1,500 commits back and a 3-file edit selected 71 workspaces / 90 tasks
-(EI-20812741760514969). Every run now opens with one greppable
-`AFFECTED_DERIVATION source=… changedPaths=… committed=… workspaces=… tasks=…` line saying
-where its radius came from, plus a stderr banner when an unscoped set is tree-sized. That
-wide scope is CORRECT for the green-checkpoint gate (it certifies the whole candidate) and
-wrong for you: `source=explicit` is what verifying your own edit looks like.
+radius and run another.** A bare `npm run test:affected` derives its radius from git against
+`origin/main` (often ~1,500 commits back on this shared tree), which is correct for the gate
+and wrong for you. Every run opens with an `AFFECTED_DERIVATION source=…` line;
+`source=explicit` is what verifying your own edit looks like.
 
-
-⚠⚠ **A BARE `npm run lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
-`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`), so a clean bare run says
-NOTHING about an edit anywhere else, and grepping its output for your paths finds nothing because
-they were never compiled. **Always pass `--files=<the files you edited>`** — that form ROUTES each
-path to the baseline-gated leg that OWNS it (`apps/operator` → `lint:tsc:operator`, plus
-`:operator-vite`, `:orchestrator`, `:papercusp-libs`, `:scripts`, `:workspaces`). A `--files` set
-lying entirely outside operator-core RUNS the owning leg for you (`status=routed`); a MIXED set
-compiles only the in-scope files (`status=partial filesUnchecked=N`) and prints the exact command
-for the rest. Read the `LINT_TSC_RESULT status=`, not just the exit code — `partial` is not `clean`.
-
+⚠⚠ **A BARE `npm run lint:tsc` typechecks `packages/operator-core` ONLY**, so a clean bare
+run says NOTHING about an edit anywhere else. **Always pass `--files=<the files you edited>`** —
+that form ROUTES each path to the baseline-gated leg that OWNS it. Read the
+`LINT_TSC_RESULT status=`, not just the exit code — `partial` is not `clean`.
 
 **The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
 / re-typing one). 
 
-**Don't do that by hand — `npm run lint:required-field-strands`** AST-diffs your change against `HEAD` and names every exported type that gained a required field, nested paths included. It also catches a field TIGHTENED from optional to required, which strands sites just as hard. It is ADVISORY by design — adding a required field is usually correct, so the mere addition is never a failure; `--typecheck` runs `lint:tsc` and exits non-zero only on real stranded sites. Finding the sites was never the hard part — `tsc` already does that perfectly; the gap this closes is *knowing to run it*. ⚠ Do NOT "fix" the errors by making the new field optional: that silently reintroduces whatever under-reporting the required field was added to prevent.
+**Don't do that by hand — `npm run lint:required-field-strands`** AST-diffs your change against `HEAD` and names every exported type that gained (or tightened to) a required field; `--typecheck` exits non-zero only on real stranded sites. ⚠ Do NOT "fix" the errors by making the new field optional.
 
 **The behavioural sibling — adding a CALL to an injected collaborator strands call-COUNT
-assertions in ANOTHER workspace**, and nothing you run locally sees it: `lint:tsc` is clean
-(no type changed, only a runtime count) and `test:affected` selects by the workspaces your
-changed PATHS map into, so it cannot select the stranded fixtures by construction. One
-instance (WI-37582) cost ~3 gate reds and ~2h of frozen `main`.
-
-`npm run lint:behavioural-strands` is the detector; a PostToolUse hook fires it at the edit,
-which is the only moment it works — git-sync sweeps your edit into HEAD within minutes, and
-`--base HEAD` then diffs content that already contains it. Read the EXIT CODE, not the prose:
-0 = checked, no strands · 1 = strands named · 2 = NOT CHECKED (not a clean bill). The named
-set is a RANKING, not a boundary (`--wide` runs the full reachable band). If a downstream
-count assertion fails, UPDATE the count — deleting or loosening it removes the only thing
-that makes the next such change detectable.
-
-The detector also covers the value half of this runtime strand: rewriting the expression
-assigned to a returned or persisted output property can strand a downstream assertion even when the object
-shape and every type still agree. It joins on the PROPERTY NAME, not on one matcher spelling. A value trigger is advisory for the same
-reason as a call-count trigger: RUN the named tests, then update the expectation only when the
-new runtime contract is intentional; otherwise repair the writer. Pin the pre-edit commit
-with `--base <sha>` when git-sync may already have swept the edit into `HEAD`.
-
+assertions in ANOTHER workspace**, and neither `lint:tsc` nor `test:affected` can see it
+(WI-37582: ~3 gate reds). Rewriting a returned or persisted output property's value strands
+assertions the same way. `npm run lint:behavioural-strands` is the detector (a PostToolUse hook
+fires it at the edit; pin `--base <sha>` once git-sync has swept the edit). Read the EXIT CODE:
+0 = checked, no strands · 1 = strands named · 2 = NOT CHECKED. If a downstream count assertion
+fails, UPDATE the count — never delete or loosen it.
 
 **A migration that ADDS a column to a `harness_shared` table can silently strand a
-sibling `*.integration.test.ts` fixture** that hand-rolls that same table via an inline
-`CREATE TABLE` instead of applying real migrations — the fixture used to be
-schema-complete for every column it named and quietly falls one behind, and
-`test:affected` won't select the stale file (your migration's diff never touches it).
-
+sibling `*.integration.test.ts` fixture** that hand-rolls that table via an inline
+`CREATE TABLE`; `test:affected` won't select it.
 
 Schema/migration edits (`libs/papercusp/libs/db/**`) → `npm run
 test:integration-only` (integration suites only; the graph won't catch them).
