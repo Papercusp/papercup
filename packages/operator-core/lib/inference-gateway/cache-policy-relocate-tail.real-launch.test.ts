@@ -189,7 +189,10 @@ describe('gateway relocation over a real su launch request (P-015)', () => {
       const tailBlock = off.out.system.at(-1).text as string;
       for (const heading of PER_SESSION_HEADINGS) expect(tailBlock, heading).toContain(heading);
       expect(tailBlock).toContain('You were launched by **su-launcher-a**');
-      expect(off.out.messages[0].content).toEqual(original.messages[0].content);
+      // The cache policy may still upgrade marker ttls (cache_control); no block of content moves.
+      expect(off.out.messages[0].content.map((b: Body) => b.text)).toEqual(
+        original.messages[0].content.map((b: Body) => b.text),
+      );
       expect(systemText(off.out)).toBe(systemText(original).replace(PSU_CACHE_BOUNDARY, ''));
     } finally {
       if (prevEnv !== undefined) process.env.PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL = prevEnv;
