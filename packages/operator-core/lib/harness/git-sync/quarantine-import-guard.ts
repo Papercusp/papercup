@@ -320,6 +320,221 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   return offenders;
 }
 
+interface BoundModuleReference {
+  specifier: string;
+  names: string[];
+}
+
+/** Binding imports/re-exports consume names from a provider; side-effect imports do not. */
+function extractBoundModuleReferences(text: string): BoundModuleReference[] {
+  const bySpecifier = new Map<string, Set<string>>();
+  const add = (specifier: string, names: Iterable<string>) => {
+    let set = bySpecifier.get(specifier);
+    if (!set) bySpecifier.set(specifier, set = new Set());
+    for (const name of names) set.add(name);
+  };
+  const declarations = /\b(?:import|export)\s+(?:type\s+)?([^;'\"]*?)\s+from\s*['\"]([^'\"]+)['\"]/g;
+  for (const match of text.matchAll(declarations)) {
+    const clause = match[1]
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\r\n]*/g, '')
+      .trim();
+    const names = new Set<string>();
+    const named = /\{([^}]*)\}/.exec(clause);
+    if (named) {
+      const defaultBinding = clause.slice(0, named.index).replace(/,\s*$/, '').trim();
+      if (defaultBinding) names.add('default');
+      for (const entry of named[1].split(',')) {
+        const imported = entry.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
+        if (imported) names.add(imported);
+      }
+    } else if (clause.startsWith('*')) {
+      names.add('*');
+    } else if (clause) {
+      names.add('default');
+    }
+    if (names.size > 0) add(match[2], names);
+  }
+  // Dynamic imports and CommonJS require expose a module namespace to the caller.
+  for (const match of text.matchAll(/\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g)) add(match[1], ['*']);
+  for (const match of text.matchAll(/\brequire\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g)) add(match[1], ['*']);
+  return [...bySpecifier].map(([specifier, names]) => ({ specifier, names: [...names] }));
+}
+
+interface ExportSurface {
+  names: Set<string>;
+  starSources: Set<string>;
+}
+
+/** Names the current file directly exports; star re-exports remain opaque but tracked. */
+function extractExportSurface(text: string): ExportSurface {
+  const names = new Set<string>();
+  const starSources = new Set<string>();
+  const declarations = /\bexport\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g;
+  for (const match of text.matchAll(declarations)) names.add(match[1]);
+  if (/\bexport\s+default\b/.test(text) || /\bexport\s*=\s*/.test(text)) names.add('default');
+  const lists = /\bexport\s+(?:type\s+)?\{([^}]*)\}(?:\s*from\s*['\"][^'\"]+['\"])?/g;
+  for (const match of text.matchAll(lists)) {
+    for (const entry of match[1].split(',')) {
+      const namesInEntry = entry.trim().replace(/^type\s+/, '').split(/\s+as\s+/);
+      const exported = (namesInEntry[1] ?? namesInEntry[0]).trim();
+      if (exported) names.add(exported);
+    }
+  }
+  const stars = /\bexport\s+\*\s*(?:(?:as)\s+([A-Za-z_$][\w$]*)\s+)?from\s*['\"]([^'\"]+)['\"]/g;
+  for (const match of text.matchAll(stars)) {
+    if (match[1]) names.add(match[1]);
+    else starSources.add(match[2]);
+  }
+  return { names, starSources };
+}
+
+function removedConsumedExports(names: string[], before: ExportSurface, after: ExportSurface): string[] {
+  if (names.includes('*')) {
+    const removed = [...before.names].filter(name => !after.names.has(name));
+    for (const source of before.starSources) {
+      if (!after.starSources.has(source)) removed.push(`* from ${source}`);
+    }
+    return removed;
+  }
+  return names.filter(name => {
+    const wasExported = before.names.has(name) || (name !== 'default' && before.starSources.size > 0);
+    if (!wasExported || after.names.has(name)) return false;
+    // A name supplied only through the same star edge remains opaque but stable.
+    return name === 'default' || ![...before.starSources].some(source => after.starSources.has(source));
+  });
+}
+
+export interface StagedProviderGuardDeps {
+  /** Paths present in the exact commit index, not merely the working tree. */
+  stagedFiles: string[];
+  /** Excluded/held paths plus importers quarantined by the forward guard. */
+  heldImporters: string[];
+  /** Read a path from the current HEAD tree; null when absent or unreadable. */
+  readHeadText: (relPath: string) => Promise<string | null>;
+  /** Read a path from this commit's exact index; null when absent or unreadable. */
+  readIndexText: (relPath: string) => Promise<string | null>;
+  log?: (message: string) => void;
+}
+
+/**
+ * Hold staged providers that remove exports still consumed by a held importer's HEAD
+ * version. This is the reverse edge of detectQuarantineImporters: after a working-tree
+ * importer is excluded, HEAD keeps its old imports, so a provider must not publish an
+ * incompatible API by itself. New providers discovered here join the held set and are
+ * scanned to a fixed point. Only module-source paths and statically resolvable package or
+ * relative specifiers are considered; uncertain reads fail open like the forward guard.
+ */
+export async function detectStagedProvidersOfHeldImporters(
+  deps: StagedProviderGuardDeps,
+): Promise<ContentOffender[]> {
+  const stagedFiles = [...new Set(deps.stagedFiles)].filter(isScannableCandidate);
+  const heldQueue = [...new Set(deps.heldImporters)].filter(isScannableCandidate);
+  if (stagedFiles.length === 0 || heldQueue.length === 0) return [];
+
+  const stagedByModule = new Map<string, string[]>();
+  for (const path of stagedFiles) {
+    const key = normalizeModulePath(path);
+    const paths = stagedByModule.get(key) ?? [];
+    paths.push(path);
+    stagedByModule.set(key, paths);
+  }
+
+  const headCache = new Map<string, Promise<string | null>>();
+  const indexCache = new Map<string, Promise<string | null>>();
+  const readHeadText = (path: string): Promise<string | null> => {
+    let pending = headCache.get(path);
+    if (!pending) {
+      pending = deps.readHeadText(path).catch(error => {
+        deps.log?.(`[quarantine-provider-guard] could not read HEAD ${path} — skipping (fail open): ${errMsg(error)}`);
+        return null;
+      });
+      headCache.set(path, pending);
+    }
+    return pending;
+  };
+  const readIndexText = (path: string): Promise<string | null> => {
+    let pending = indexCache.get(path);
+    if (!pending) {
+      pending = deps.readIndexText(path).catch(error => {
+        deps.log?.(`[quarantine-provider-guard] could not read index ${path} — skipping (fail open): ${errMsg(error)}`);
+        return null;
+      });
+      indexCache.set(path, pending);
+    }
+    return pending;
+  };
+
+  // Resolve package aliases against HEAD's manifest: the held importer is the old HEAD
+  // text, so its old package export map defines where that specifier points.
+  const packages = new Map<string, RepositoryPackage>();
+  const manifestReads = new Map<string, Promise<RepositoryPackage | null>>();
+  const registerHeadPackage = async (path: string) => {
+    for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+      let pending = manifestReads.get(dir);
+      if (!pending) {
+        pending = (async () => {
+          try {
+            const text = await readHeadText(posix.join(dir, 'package.json'));
+            if (text === null) return null;
+            const manifest = JSON.parse(text);
+            if (typeof manifest.name !== 'string' || !manifest.exports) return null;
+            const declared = manifest.exports;
+            const exports = typeof declared === 'object' && !Array.isArray(declared)
+              && Object.keys(declared).some(key => key.startsWith('.')) ? declared : { '.': declared };
+            return { root: dir, name: manifest.name, exports };
+          } catch { return null; }
+        })();
+        manifestReads.set(dir, pending);
+      }
+      const pkg = await pending;
+      if (pkg) { packages.set(pkg.root, pkg); return; }
+      if (dir === '.') return;
+    }
+  };
+  await mapPool(stagedFiles, MAX_READ_CONCURRENCY, registerHeadPackage);
+
+  const heldSet = new Set(heldQueue);
+  const offenders = new Map<string, ContentOffender>();
+  for (let cursor = 0; cursor < heldQueue.length; cursor++) {
+    const importer = heldQueue[cursor];
+    const headText = await readHeadText(importer);
+    if (headText === null) continue;
+    for (const reference of extractBoundModuleReferences(headText)) {
+      const targets = reference.specifier.startsWith('.')
+        ? [resolveRelativeSpecifier(importer, reference.specifier)]
+        : [...packages.values()].flatMap(pkg => resolvePackageSpecifier(pkg, reference.specifier));
+      const providers = [...new Set(targets.flatMap(target => stagedByModule.get(target) ?? []))];
+      for (const provider of providers) {
+        if (heldSet.has(provider)) continue;
+        const [headProvider, stagedProvider] = await Promise.all([
+          readHeadText(provider),
+          readIndexText(provider),
+        ]);
+        if (headProvider === null || stagedProvider === null) continue;
+        const removed = removedConsumedExports(
+          reference.names,
+          extractExportSurface(headProvider),
+          extractExportSurface(stagedProvider),
+        );
+        if (removed.length === 0) continue;
+        heldSet.add(provider);
+        heldQueue.push(provider);
+        offenders.set(provider, {
+          file: provider,
+          detectorKey: 'quarantined-provider',
+          error:
+            `the HEAD version of held importer '${importer}' still consumes ${removed.join(', ')} ` +
+            `from '${reference.specifier}', but this staged provider removes those exports; ` +
+            `holding the provider so HEAD cannot land with an unresolved import.`,
+          fixerRole: 'content-fixer',
+        });
+      }
+    }
+  }
+  return [...offenders.values()];
+}
+
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
