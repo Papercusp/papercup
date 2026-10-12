@@ -4,7 +4,8 @@
  * The restricted-hold census judges whether code a restricted session wrote may run with network,
  * but its own ~5,600-module closure lives in the same shared tree. Every census spawn therefore
  * loads this loader BEFORE tsx, so a checkout ES module runs its committed (HEAD) bytes, a new
- * uncommitted module refuses, and checkout CommonJS refuses. This suite pins that contract on a
+ * uncommitted module refuses, and checkout CommonJS runs only when the text _compile receives is
+ * its committed blob (WI-6554700010009021). This suite pins that contract on a
  * scratch git repo (each verdict beside a no-loader control proving the dirty bytes are really
  * there), and then runs the REAL census CLI under the loader, forcing its closure-worker fork.
  *
@@ -35,7 +36,7 @@ const AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
 type AuditRecord = { via: 'esm' | 'cjs'; kind: string; file: string; rel: string | null;
   schemaVersion?: string; boundary?: string; pid?: number; threadId?: number; format?: string;
   inputSha256?: string; returnedSha256?: string | null; returnedByteLength?: number | null;
-  unresolved?: string[] };
+  unresolved?: string[]; refused?: boolean };
 const sha256 = (source: string): string => createHash('sha256').update(source).digest('hex');
 
 /** process.env without git's repository-selecting variables, so `git -C <dir>` means that dir. */
@@ -78,6 +79,10 @@ beforeAll(() => {
   put(fixture, 'ignored-entry.mjs', "import { g } from './gen/out.mjs';\nconsole.log(`G=${g}`);\n");
   put(fixture, 'cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./c.cjs');\n");
   put(fixture, 'c.cjs', "console.log('CJS-RAN');\n");
+  // WI-6554700010009021: CommonJS is judged at _compile, so these pin each CommonJS verdict.
+  put(fixture, 'req-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)(process.argv[2]);\n");
+  put(fixture, 'c-dirty.cjs', "console.log('CJS-HEAD');\n");
+  put(fixture, 'ts/c.cts', "const v: string = 'CTS';\nconsole.log(`CTS-RAN=${v}`);\n");
   put(fixture, 'cjs/package.json', '{ "type": "commonjs" }\n');
   put(fixture, 'cjs/[eval]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
   put(fixture, 'cjs/[stdin]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
@@ -112,6 +117,12 @@ beforeAll(() => {
   put(fixture, 'node_modules/dep/index.mjs', "export const d = 'DEP';\n");
   put(fixture, 'packages/workspace/value.mjs', "export const v = 'DIRTY';\n");
   put(fixture, 'packages/workspace/new.mjs', "console.log('WORKSPACE-NEW-RAN');\n");
+  put(fixture, 'packages/workspace/value.cjs', "console.log('WORKSPACE-CJS-DIRTY-RAN');\n");
+  put(fixture, 'c-dirty.cjs', "console.log('CJS-DIRTY');\n");
+  put(fixture, 'c-new.cjs', "console.log('CJS-NEW-RAN');\n");
+  // Real files named like Node's virtual wrappers, dirtied: no name-based exemption may run them.
+  put(fixture, 'cjs/[eval]-wrapper', "console.log('FILE-WRAPPER-RAN-DIRTY');\n");
+  put(fixture, 'cjs/[stdin]-wrapper', "console.log('FILE-WRAPPER-RAN-DIRTY');\n");
   symlinkSync(join(fixture, 'packages/workspace'), join(fixture, 'node_modules/workspace'), 'dir');
   // `--import tsx` resolves from the cwd; the real package lives under the repo's node_modules.
   symlinkSync(join(REPO, 'node_modules', 'tsx'), join(fixture, 'node_modules', 'tsx'), 'dir');
@@ -204,13 +215,23 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
   }, 60_000);
 
-  it.each(['c.cjs', 'cjs/[eval]-wrapper', 'cjs/[stdin]-wrapper'])('still refuses checkout CommonJS %s required from eval', (file) => {
+  it('runs committed checkout CommonJS required from eval', () => {
+    const loaded = run(['-e', "require('./c.cjs')"], {
+      ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`,
+    });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('CJS-RAN');
+  }, 60_000);
+
+  it.each(['c-dirty.cjs', 'cjs/[eval]-wrapper', 'cjs/[stdin]-wrapper'])('still refuses dirty checkout CommonJS %s required from eval', (file) => {
+    const control = run(['-e', `require(${JSON.stringify('./' + file)})`], cleanEnv());
+    expect(control.stdout).toMatch(/CJS-DIRTY|FILE-WRAPPER-RAN-DIRTY/);
     const loaded = run(['-e', `require(${JSON.stringify('./' + file)})`], {
       ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`,
     });
     expect(loaded.status, loaded.stderr).not.toBe(0);
     expect(loaded.stderr).toContain(`COMMITTED_SOURCE refused ${file}`);
-    expect(loaded.stdout).not.toMatch(/CJS-RAN|FILE-WRAPPER-RAN/);
+    expect(loaded.stdout).not.toMatch(/CJS-|FILE-WRAPPER-RAN/);
   }, 60_000);
 
   it('censusSpawnArgs puts the loader first and tsx second', () => {
@@ -346,14 +367,56 @@ describe('committed-source loader — a scratch checkout', () => {
     });
   }, 60_000);
 
-  it('refuses a checkout module loaded through CommonJS, which the ES hook cannot judge', () => {
-    const control = run(['cjs-entry.mjs'], cleanEnv());
-    expect(control.stdout).toContain('CJS-RAN');
+  // WI-6554700010009021: the ES hook never sees CommonJS, so _compile judges the text it is handed.
+  it('runs a committed checkout CommonJS module, judged at _compile', () => {
+    const audit = join(scratch, 'cjs-committed.audit');
+    const loaded = underLoader('cjs-entry.mjs', audit);
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('CJS-RAN');
+    expect(loaded.stderr).not.toContain('COMMITTED_SOURCE');
+    expect(readAudit(audit).find((record) => record.via === 'cjs' && record.rel === 'c.cjs')).toMatchObject({
+      kind: 'committed', refused: false,
+    });
+  }, 60_000);
 
-    const loaded = underLoader('cjs-entry.mjs');
+  it('refuses a dirty checkout CommonJS module rather than running either version', () => {
+    const control = run(['req-entry.mjs', './c-dirty.cjs'], cleanEnv());
+    expect(control.stdout).toContain('CJS-DIRTY');
+
+    const audit = join(scratch, 'cjs-dirty.audit');
+    const { prefix, env } = censusPrefix();
+    const loaded = run([...prefix, 'req-entry.mjs', './c-dirty.cjs'], env, audit);
     expect(loaded.status).not.toBe(0);
-    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused c.cjs');
-    expect(loaded.stdout).not.toContain('CJS-RAN');
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused c-dirty.cjs');
+    expect(loaded.stdout).not.toMatch(/CJS-DIRTY|CJS-HEAD/);
+    expect(readAudit(audit).find((record) => record.via === 'cjs' && record.rel === 'c-dirty.cjs')).toMatchObject({
+      kind: 'substituted', refused: true,
+    });
+  }, 60_000);
+
+  it('refuses an uncommitted checkout CommonJS module', () => {
+    const control = run(['req-entry.mjs', './c-new.cjs'], cleanEnv());
+    expect(control.stdout).toContain('CJS-NEW-RAN');
+
+    const { prefix, env } = censusPrefix();
+    const loaded = run([...prefix, 'req-entry.mjs', './c-new.cjs'], env);
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused c-new.cjs');
+    expect(loaded.stdout).not.toContain('CJS-NEW-RAN');
+  }, 60_000);
+
+  it('refuses committed TypeScript that tsx rewrites on the CommonJS path', () => {
+    const { prefix, env } = censusPrefix();
+    const loaded = run([...prefix, 'req-entry.mjs', './ts/c.cts'], env);
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused ts/c.cts');
+    expect(loaded.stdout).not.toContain('CTS-RAN');
+  }, 60_000);
+
+  it("runs committed TypeScript that Node strips inside _compile, so _compile's format argument is forwarded", () => {
+    const loaded = run(['--import', COMMITTED_SOURCE_LOADER, 'req-entry.mjs', './ts/c.cts'], cleanEnv());
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('CTS-RAN=CTS');
   }, 60_000);
 
   it.each([false, true])('refuses uncommitted workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
@@ -368,15 +431,15 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.stdout).not.toContain('WORKSPACE-ENTRY-RAN');
   }, 60_000);
 
-  it.each([false, true])('refuses CommonJS workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
+  it.each([false, true])('refuses dirty CommonJS workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
     const options = preserveSymlinks ? ['--preserve-symlinks'] : [];
     const control = run([...options, 'workspace-cjs-entry.mjs'], cleanEnv());
     expect(control.status, control.stderr).toBe(0);
-    expect(control.stdout).toContain('WORKSPACE-CJS-RAN');
+    expect(control.stdout).toContain('WORKSPACE-CJS-DIRTY-RAN');
     const loaded = run([...options, '--import', COMMITTED_SOURCE_LOADER, 'workspace-cjs-entry.mjs'], cleanEnv());
     expect(loaded.status, loaded.stderr).not.toBe(0);
     expect(loaded.stderr).toContain('COMMITTED_SOURCE refused packages/workspace/value.cjs');
-    expect(loaded.stdout).not.toContain('WORKSPACE-CJS-RAN');
+    expect(loaded.stdout).not.toContain('WORKSPACE-CJS-DIRTY-RAN');
   }, 60_000);
 
   it('reaches a child forked with execArgv: [] through NODE_OPTIONS, and only through it', () => {
@@ -480,6 +543,7 @@ describe('committed-source loader — the real census closure', () => {
     expect(judged.some((r) => r.rel === 'packages/operator-core/lib/agent-tools/testing/restricted-hold-preflight-cli.ts')).toBe(true);
     // The forked worker reached the loader through NODE_OPTIONS alone.
     expect(judged.some((r) => /mutation-probe-closure\.worker\.[mc]?[jt]s$/.test(r.rel ?? ''))).toBe(true);
-    expect(result.records.filter((r) => r.kind === 'commonjs' || r.kind === 'uncommitted')).toEqual([]);
+    // ES-only: no checkout module of the census reaches CommonJS at all, committed or not.
+    expect(result.records.filter((r) => r.via === 'cjs' || r.kind === 'uncommitted')).toEqual([]);
   }, 180_000);
 });

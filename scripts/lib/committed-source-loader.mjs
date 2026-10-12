@@ -15,8 +15,12 @@
 //                committed version (one stderr line names it);
 //   uncommitted  no HEAD blob and git does not ignore the path: it can only be new, uncommitted
 //                code, so loading it throws and the census fails closed;
-//   commonjs     a checkout module reached through CommonJS throws: that path never passes the ES
-//                load hook, so its bytes cannot be judged. The census closure is ES-only; the
+//   commonjs     a checkout module reached through CommonJS never passes the ES load hook, so the
+//                text Module.prototype._compile receives is judged instead: an exact HEAD match (or a
+//                git-ignored path) runs; anything else — dirty, uncommitted, or rewritten by a
+//                CommonJS loader hook such as tsx — throws, since CommonJS cannot safely swap in the
+//                HEAD text. Committed plugin adapters (libs/papercusp/plugins/*/index.cjs) therefore
+//                load in as-committed test trees. The census closure is still ES-only; the
 //                committed-source tests pin that by running the real census under this loader.
 // Outside every checkout (node's own modules) and under real node_modules dependencies, bytes
 // run as read. Workspace symlinks are judged at their real target, which may be tracked source.
@@ -233,25 +237,42 @@ function describeEntry(argv1) {
   return argv1.split(sep).pop() || null;
 }
 
-/** Refuse checkout modules compiled through CommonJS (registering thread). */
+/**
+ * Judge checkout modules compiled through CommonJS (registering thread). `_compile` receives the
+ * exact text about to be compiled, after every CommonJS extension hook (tsx's included) has had
+ * its say, so that text is judged against the HEAD blob like an ES module's bytes are. Only an
+ * exact committed match (or a git-ignored path) runs. Anything else refuses rather than
+ * substituting HEAD: a mismatch here may be a dirty file OR a loader transform (tsx compiling
+ * TypeScript), and raw HEAD text would bypass that transform, so fail-closed is the only safe
+ * answer (WI-6554700010009021).
+ */
 function guardCommonJs() {
   const compile = Module.prototype._compile;
-  Module.prototype._compile = function committedSourceCompile(content, filename) {
+  Module.prototype._compile = function committedSourceCompile(content, filename, ...rest) {
     // Node 25 compiles its own in-memory bridge for -e/-p and stdin through
     // _compile. These exact virtual module identities have no filesystem bytes
     // to judge. Real modules (including files named [eval]-wrapper) arrive with
     // a resolved filename and must still pass the checkout CommonJS fence.
     if ((this.id === '[eval]' || this.id === '[stdin]') && filename === `${this.id}-wrapper`) {
-      return compile.call(this, content, filename);
+      return compile.call(this, content, filename, ...rest);
     }
-    const where = locate(filename);
-    if (where.place === 'checkout' && !isIgnored(where.top, where.rel)) {
-      audit({ via: 'cjs', kind: 'commonjs', file: filename, rel: where.rel });
+    const verdict = judgeModuleBytes(filename, toBuffer(content));
+    if (verdict.kind === 'outside' || verdict.kind === 'dependency') {
+      return compile.call(this, content, filename, ...rest);
+    }
+    const refused = verdict.kind === 'substituted' || verdict.kind === 'uncommitted';
+    audit({ via: 'cjs', kind: verdict.kind, file: filename, rel: verdict.rel, refused });
+    if (verdict.kind === 'uncommitted') {
       throw new Error(
-        `${COMMITTED_SOURCE_MARKER} refused ${where.rel}: a checkout module was loaded through CommonJS, which bypasses the committed-source check`,
+        `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel}: a checkout module loaded through CommonJS has no committed version and git does not ignore it, so it may be a held restricted write (checkout ${verdict.top})`,
       );
     }
-    return compile.call(this, content, filename);
+    if (verdict.kind === 'substituted') {
+      throw new Error(
+        `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel}: a checkout module loaded through CommonJS differs from its HEAD blob (a dirty file, or text rewritten by a CommonJS loader hook such as tsx), and CommonJS cannot safely run the committed bytes instead`,
+      );
+    }
+    return compile.call(this, content, filename, ...rest);
   };
 }
 
