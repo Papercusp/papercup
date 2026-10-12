@@ -4320,6 +4320,7 @@ export async function trackGateStall(
     testPassReuse?: unknown;
     /** P-013: the round's phase breakdown; shape-checked here like testPassReuse. */
     roundPhases?: unknown;
+    alarm?: import('../../alarm-attention').AlarmAttentionDeps;
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
@@ -4411,6 +4412,12 @@ export async function trackGateStall(
     : undefined;
   const fixerLivenessUnknown = repairQueue?.fixerSpawnId != null && repairFixerAlive === null;
   const fixerSuccession = classifyFrozenRepairFixerSuccession(repairQueue, repairFixerAlive, Date.now());
+  // Resolve only a readable queue with measured succession or a measured end.
+  if (rows.length > 0 && (rows[0].rq == null || repairQueue != null) &&
+      (!repairQueue || repairQueue.phase !== 'awaiting-fixer' || repairFixerAlive === true)) {
+    const { resolveAlarm } = await import('../../alarm-attention');
+    await resolveAlarm(`alarm:release-fixer-succession:${ctx.installSlug}`, 'release-fixer-succession', options.alarm);
+  }
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
   // work landed on `main` through a path this routine never saw — a MANUAL detached run
@@ -4725,6 +4732,20 @@ export async function trackGateStall(
     if (repairHold) {
       if (ladder.shouldNotify && ladder.axis === 'fixer' && currentFixerSuccession) {
         try {
+          const broadcastSevereEvent = options.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+          await broadcastSevereEvent({
+            conditionKey: `alarm:release-fixer-succession:${ctx.installSlug}`,
+            summary: `Release repair fixer ${currentFixerSuccession.state} on ${ctx.installSlug}`,
+            body: `Restore fixer succession for ${currentFixerSuccession.candidate}; this repair hold produced no code verdict.`,
+            oneShot: true,
+          });
+        } catch (e) {
+          console.warn(
+            `${orchestratorStdoutTag()} fixer-succession condition broadcast failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+        // A condition-store failure cannot suppress the independent owner-delivery leg.
+        try {
           const { notifyAttentionOnce } = await import('../../attention-notify');
           const gapMins = Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000));
           const dead = currentFixerSuccession.state === 'dead';
@@ -4857,6 +4878,8 @@ export async function trackGateStall(
             .catch(() => undefined);
           const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
           await broadcastSevereEvent({
+            conditionKey: `alarm:release-gate-no-verdict:${ctx.installSlug}`,
+            oneShot: true,
             summary:
               `[${ctx.installSlug}] green-checkpoint is WEDGED on ${ctx.installSlug} — ${streak} consecutive run(s) ` +
               `ended without producing ANY verdict (latest: ${status}). This is NOT a red build: no failing test has been named.`,
@@ -4870,11 +4893,7 @@ export async function trackGateStall(
               `preflight condition (for example disk-headroom) must be cleared before re-fire; an unreported process ` +
               `exit instead requires diagnosing why the runner died before it could publish a result.`,
             category: 'severe-event',
-            // Deliberately NO conditionKey. `gate-red-streak:<harness>` mints exactly one claimable
-            // work-item whose whole framing is "the reds are yours to fix" — the response this
-            // alarm exists to prevent. Opening it here would hand someone a broken-build ticket for
-            // a gate that never judged a build. A plain severe event still reaches every agent's
-            // inbox, which is the loudness this needs.
+            // The apparatus episode has its own key; it never opens the code-red key.
           });
         }
       } catch (e) {
@@ -4887,6 +4906,16 @@ export async function trackGateStall(
     }
     await refreshGateRedStreakHeadline(ctx);
     return;
+  }
+  // Only a measured verdict ends a no-verdict episode. Cached/up-to-date,
+  // withheld and diagnostic ticks leave the apparatus condition open.
+  if (!recordOnly && !promotionPending &&
+      ['advanced', 'advanced-prefix', 'not-green'].includes(status)) {
+    const { resolveAlarm } = await import('../../alarm-attention');
+    await resolveAlarm(`alarm:release-gate-no-verdict:${ctx.installSlug}`, 'release-gate-no-verdict', options.alarm);
+    if (isGreen) {
+      await resolveAlarm(`alarm:release-fixer-dispatch:${ctx.installSlug}`, 'release-fixer-dispatch', options.alarm);
+    }
   }
   // EI-19329732364513693: stamp HOW STALE the judged candidate is into the same blob that
   // carries the verdict, so a reader never has to re-derive it (and so the overwhelmingly
@@ -5619,7 +5648,10 @@ export async function trackGateStall(
  * release-fixer's / a human's job (D-003), never a tracked-file write from this
  * routine. Fail-safe — the routine tick never depends on it.
  */
-async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSuspects?: string[]): Promise<void> {
+export async function trackFlakeHistory(
+  ctx: GateVerdictTarget, summary?: string, flakeSuspects?: string[],
+  deps: { sql?: postgres.Sql; nowMs?: () => number; alarm?: import('../../alarm-attention').AlarmAttentionDeps } = {},
+): Promise<void> {
   const flaked = new Set<string>();
   if (summary) {
     for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
@@ -5631,16 +5663,26 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSu
   // keyed by `<ws>::<file>` so the ledger distinguishes a chronically-flaky FILE from a
   // chronically-flaky workspace.
   for (const f of flakeSuspects ?? []) flaked.add(f);
-  if (flaked.size === 0) return;
   const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
+  const sql = deps.sql ?? getOrgPg().sql;
   const rows = (await sql.unsafe(
     `SELECT metadata->'flake_history' AS fh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
   )) as Array<{ fh: Record<string, { flakes?: number; lastFlakeAt?: number; notifiedAt?: number }> | null }>;
   const fh = rows[0]?.fh ?? {};
-  const now = Date.now();
+  const now = (deps.nowMs ?? Date.now)();
+  const conditionKey = (ws: string) => `alarm:release-gate-flake:${ctx.installSlug}:${ws}`;
+  const { resolveAlarm } = await import('../../alarm-attention');
+  for (const [ws, prev] of Object.entries(fh)) {
+    // The total stays cumulative for the existing UI. Recovery is a measured quiet
+    // interval, not one clean tick or a failed history read.
+    if (!flaked.has(ws) && typeof prev.lastFlakeAt === 'number' && Number.isFinite(prev.lastFlakeAt) &&
+        now - prev.lastFlakeAt >= releaseCheckpointConfig().flakeNotifyCooldownMs) {
+      await resolveAlarm(conditionKey(ws), 'release-gate-flake', deps.alarm);
+    }
+  }
+  if (flaked.size === 0) return;
   const newlyChronic: string[] = [];
   for (const ws of flaked) {
     const prev = fh[ws] ?? {};
@@ -5661,17 +5703,32 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSu
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug, JSON.stringify({ flake_history: fh })],
   );
+  // A notification cooldown never suppresses the condition's owning work item.
+  for (const ws of flaked) {
+    if ((fh[ws].flakes ?? 0) >= releaseCheckpointConfig().chronicFlakeCount) {
+      try {
+        const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+        await broadcastSevereEvent({
+          conditionKey: conditionKey(ws), summary: `Chronically-flaky release test: ${ws} on ${ctx.installSlug}`,
+          body: `${ws} has flaked ${fh[ws].flakes} times (failed then passed on retry). Quarantine it accountably and retain a de-quarantine follow-up.`,
+          oneShot: true,
+        });
+      } catch (e) { console.warn(`${orchestratorStdoutTag()} flake condition failed: ${String(e)}`); }
+    }
+  }
   if (newlyChronic.length > 0) {
     try {
       const { notifyAttention } = await import('../../attention-notify');
-      await notifyAttention({
+      const input = {
         kind: 'intervention',
         title: 'Chronically-flaky test(s) in the release gate',
         body: `${newlyChronic.join(', ')} has flaked ≥${releaseCheckpointConfig().chronicFlakeCount}× in the green-checkpoint suite (failed then passed on retry). Quarantine it accountably (quarantine.txt + a de-quarantine follow-up) so it stops risking gate stalls.`,
         importance: 'high',
         workspaceId: ctx.workspaceId,
         data: { workspaces: newlyChronic.join(',') },
-      });
+      } as const;
+      if (deps.alarm?.notify) await deps.alarm.notify({ title: input.title, body: input.body });
+      else await notifyAttention(input);
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} flake notify failed: ${e instanceof Error ? e.message : e}`);
     }
@@ -6994,6 +7051,10 @@ export async function dispatchReleaseFixer(
   failingTests?: string[],
   repairQueue?: FrozenCandidateRepairQueue,
   checkpointEvidence?: CheckpointEvidence,
+  deps: {
+    checkCandidate?: (root: string, candidate: string) => Promise<ReleaseFixerCandidateStaleCheck>;
+    alarm?: import('../../alarm-attention').AlarmAttentionDeps;
+  } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
   // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
   // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
@@ -7020,11 +7081,16 @@ export async function dispatchReleaseFixer(
   // to the pre-existing dispatch behavior) rather than silently swallowing a real red gate.
   const fixerRoot = integrationRootForDiagnostic();
   const staleCheck: ReleaseFixerCandidateStaleCheck = fixerRoot
-    ? await checkReleaseFixerCandidateStale(fixerRoot, candidate).catch(
+    ? await (deps.checkCandidate ?? checkReleaseFixerCandidateStale)(fixerRoot, candidate).catch(
         () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
       )
     : { candidateExists: true, candidatePromoted: false };
   if (isStaleReleaseFixerCandidate(staleCheck)) {
+    // A missing candidate is not recovery; a verified promoted candidate is.
+    if (staleCheck.candidatePromoted) {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      await resolveAlarm(`alarm:release-fixer-dispatch:${ctx.installSlug}`, 'release-fixer-dispatch', deps.alarm);
+    }
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +
         `(exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted}) — gate already resolved`,
@@ -7229,13 +7295,23 @@ export async function dispatchReleaseFixer(
     return null;
   }
 
+  // The condition is independent of the repeat owner-notification cooldown.
+  try {
+    const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+    await broadcastSevereEvent({
+      conditionKey: `alarm:release-fixer-dispatch:${ctx.installSlug}`,
+      summary: `Release gate held on ${ctx.installSlug} — fixer dispatched`,
+      body: `Candidate ${candidate.slice(0, 12)} has measured failures: ${(fixerTargets ?? []).join(', ')}.`,
+      oneShot: true,
+    });
+  } catch (e) { console.warn(`${orchestratorStdoutTag()} release-fixer condition failed: ${String(e)}`); }
   // P-003: a user-facing notification (native OS notification on desktop, mobile push).
   // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
   if (decision.notify) {
     try {
       const { notifyAttention } = await import('../../attention-notify');
       const selfHeal = decision.reason === 'self-heal';
-      await notifyAttention({
+      const input = {
         kind: 'intervention',
         title: selfHeal
           ? 'Release gate still held — prior fixer died, re-dispatched'
@@ -7250,7 +7326,9 @@ export async function dispatchReleaseFixer(
           failing: (fixerTargets ?? []).slice(0, 10).join(','),
           selfHeal: String(selfHeal),
         },
-      });
+      } as const;
+      if (deps.alarm?.notify) await deps.alarm.notify({ title: input.title, body: input.body });
+      else await notifyAttention(input);
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
     }
