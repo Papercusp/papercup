@@ -2178,6 +2178,62 @@ dependency_generation_release_copy_lock() {
   exec {fd}>&-
 }
 
+# green-main-cycle-time P-022: the gate's up-front preflight (--check-headroom)
+# also asks whether the host dependency-copy lock could be taken now, so a run
+# that can only fail on it refuses BEFORE setup instead of minutes into it.
+#   - free  -> reported, ok.
+#   - busy behind a LIVE holder younger than the waiter's own cap -> reported,
+#     ok. NOT a refusal: the copy path waits behind a healthy copy on its stall
+#     budget and then proceeds, so refusing would turn a wait that succeeds into
+#     a lost round. The line exists so a later mid-setup exit 77 can be
+#     attributed to a concurrent copy from evidence instead of inferred.
+#   - busy behind a live holder that has ALREADY held it for at least
+#     DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC -> wedged: exit 76 now.
+# Release never clears the .holder record, so a record whose pid is gone says
+# nothing about who holds the lock now; that case is reported as busy, never
+# wedged. The probe never writes the holder record and drops a lock it takes.
+dependency_generation_probe_copy_lock() {
+  local lock fd holder holder_pid since now held max_sec
+  if ! command -v flock >/dev/null 2>&1; then
+    dependency_generation_log 'DEPENDENCY_GENERATION_COPY_LOCK state=unserialized reason=flock-unavailable'
+    return 0
+  fi
+  lock="$(dependency_generation_copy_lock_file)"
+  if [ ! -e "$lock" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=free lock=$lock"
+    return 0
+  fi
+  # flock(2) needs no write access, so a read-only descriptor never creates or
+  # truncates the shared lock file.
+  if ! exec {fd}<"$lock"; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=unknown reason=cannot-open-lock lock=$lock"
+    return 0
+  fi
+  if flock -n "$fd"; then
+    exec {fd}<&-
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=free lock=$lock"
+    return 0
+  fi
+  exec {fd}<&-
+  max_sec="${DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC:-5400}"
+  case "$max_sec" in ''|*[!0-9]*) max_sec=5400 ;; esac
+  holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+  holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+  since="$( { sed -n 's/.*since=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+  if [ -z "$since" ] || [ -z "$holder_pid" ] || [ ! -d "/proc/$holder_pid" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=busy held=unknown max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+    return 0
+  fi
+  now="$(date +%s)"
+  held=$((now - since))
+  if [ "$held" -ge "$max_sec" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_LOCK_BUSY state=wedged held=${held}s max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+    return 76
+  fi
+  dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=busy held=${held}s max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+  return 0
+}
+
 # Pure: the free bytes a copy needs before it may start.
 dependency_generation_headroom_required() {
   printf '%s\n' "$(( $1 + $2 + $3 ))"
@@ -3669,12 +3725,16 @@ dependency_generation_main() {
   # now, so a run refuses before setup with the same typed exit 77 instead of
   # failing mid-materialization. It applies the copy path's own reserve + margin
   # (size unknown: no tree is named), reaps nothing, and never creates a store.
+  # P-022: it first probes the host copy lock (exit 76 only for a wedged holder;
+  # see dependency_generation_probe_copy_lock), so both typed setup refusals are
+  # answered before setup starts.
   if [ -n "$check_headroom" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
       dependency_generation_log '--check-headroom cannot be combined with another mode or --workspace-dir'
       return 2
     }
+    dependency_generation_probe_copy_lock || return $?
     DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
       dependency_generation_check_headroom '' "$integration_root/.dependency-generation-headroom-check"
     return $?
