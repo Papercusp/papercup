@@ -146,7 +146,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(replay.code, replay.out).toBe(0);
   });
 
-  it('historical: the descriptor names the full before-fix commit and no expression', () => {
+  it('historical: replay uses the recorded commit, command and exact original controls', () => {
     const { file, oldSha } = makeSubjectRepo();
     const { recorder, log } = makeRecorder();
     const test = `node ${recorder} {}`;
@@ -156,7 +156,9 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
         '--against-commit', oldSha,
         '--must-be-absent', 'guarded',
         '--positive-control', 'stable-control',
+        '--positive-control', 'control',
         '--calibration', 'grep -q "^stable-control$" {}',
+        '--subject-must-behave', 'grep -q "^stable-control$" {}',
         '--test', test,
       ],
       { PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always' },
@@ -173,8 +175,24 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       againstCommit: oldSha,
       subjectBeforeSha256: sha256(ORIGINAL),
       subjectAfterSha256: sha256(HISTORICAL),
+      testCommand: test,
+      historicalControls: {
+        mustBeAbsent: 'guarded', positiveControls: ['stable-control', 'control'],
+        calibrationCommand: 'grep -q "^stable-control$" {}',
+        subjectMustBehave: 'grep -q "^stable-control$" {}',
+      },
     });
     expect(oldSha).toMatch(/^[0-9a-f]{40}$/);
+    const controls = descriptor!.historicalControls!;
+    const replay = probe([
+      '--file', file, '--against-commit', descriptor!.againstCommit!,
+      '--must-be-absent', controls.mustBeAbsent,
+      ...controls.positiveControls.flatMap((literal) => ['--positive-control', literal]),
+      '--calibration', controls.calibrationCommand,
+      '--subject-must-behave', controls.subjectMustBehave!, '--test', descriptor!.testCommand!,
+    ], { PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always' });
+    expect(replay.code, replay.out).toBe(0);
+    expect(replay.out).toContain('mode=historical verdict=caught');
   });
 
   it('surviving historical mutant: baseline, mutant and consumption-control retain the SAME strict descriptor', () => {
@@ -213,6 +231,17 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       });
     }
     expect(out).toContain(`probeInvocationId=${descriptors[0]!.probeInvocationId}`);
+    const saved = descriptors[0]!;
+    const controls = saved.historicalControls!;
+    const replay = probe([
+      '--file', file, '--against-commit', saved.againstCommit!, '--test', saved.testCommand!,
+      '--must-be-absent', controls.mustBeAbsent,
+      ...controls.positiveControls.flatMap((literal) => ['--positive-control', literal]),
+      '--calibration', controls.calibrationCommand,
+    ], { PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always' });
+    expect(replay.code, replay.out).toBe(1);
+    expect(replay.out).toContain('mode=historical verdict=survived');
+    expect(replay.out).toContain('consumption control: the guard FAILED against a poisoned snapshot');
   });
 
   it('auto: withholds the export when the deployed reader is unreadable, and never forwards a stale caller value', () => {
@@ -251,9 +280,15 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     git(reader, ['add', 'libs/test-config']);
     git(reader, ['commit', '-qm', 'reader with parser']);
     const hashOnlyReader = git(reader, ['rev-parse', 'HEAD']);
-    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), 'export function parseMutationInvocationDescriptor(v: any) { return typeof v.testCommand === "string" ? v : undefined; }\n');
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), 'export function parseMutationInvocationDescriptor(v: any) { return typeof v.testCommand === "string" && v.historicalControls === undefined ? v : undefined; }\n');
     git(sub, ['add', 'src/mutation-descriptor.ts']);
-    git(sub, ['commit', '-qm', 'parser supports replayable command']);
+    git(sub, ['commit', '-qm', 'parser supports command only']);
+    git(reader, ['add', 'libs/test-config']);
+    git(reader, ['commit', '-qm', 'reader with command-only parser']);
+    const commandOnlyReader = git(reader, ['rev-parse', 'HEAD']);
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), readFileSync(resolve(__dirname, '../../../../../libs/test-config/src/mutation-descriptor.ts')));
+    git(sub, ['add', 'src/mutation-descriptor.ts']);
+    git(sub, ['commit', '-qm', 'parser supports historical replay']);
     git(reader, ['add', 'libs/test-config']);
     git(reader, ['commit', '-qm', 'reader with command parser']);
     const newReader = git(reader, ['rev-parse', 'HEAD']);
@@ -280,6 +315,11 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(hashOnly.code, hashOnly.out).toBe(0);
     expect(hashOnly.out).toContain('does not accept the replayable testCommand');
     expect(hashOnly.legs.every((l) => l.descriptor === null)).toBe(true);
+
+    const commandOnly = run(commandOnlyReader);
+    expect(commandOnly.code, commandOnly.out).toBe(0);
+    expect(commandOnly.out).toContain('does not accept the replayable testCommand/historicalControls');
+    expect(commandOnly.legs.every((l) => l.descriptor === null)).toBe(true);
 
     const after = run(newReader);
     expect(after.code, after.out).toBe(0);

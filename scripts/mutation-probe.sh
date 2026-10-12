@@ -1451,9 +1451,12 @@ mutation_descriptor_reader_ready() {
       subjectBeforeSha256: "a".repeat(64), subjectAfterSha256: "b".repeat(64),
       mutantDiff: "", mutantDiffTruncated: false, testCommandSha256: "c".repeat(64),
       testCommand: "test -f {}" };
-    process.exit(reader.parseMutationInvocationDescriptor?.(sample) ? 0 : 1);
+    const historical = { ...sample, mode: "historical", mutateExpression: null,
+      againstCommit: "a".repeat(40), historicalControls: { mustBeAbsent: "fixed",
+        positiveControls: ["stable"], calibrationCommand: "test -f {}" } };
+    process.exit([sample, historical].every(value => reader.parseMutationInvocationDescriptor?.(value)) ? 0 : 1);
   ' > /dev/null 2> "$SCRATCH/mutation-reader.err"; then
-    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha does not accept the replayable testCommand (D-009)"
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha does not accept the replayable testCommand/historicalControls (D-009)"
     return 1
   fi
   MUTATION_DESCRIPTOR_GATE="on: deployed reader $sha parses execution_details.mutation"
@@ -1475,11 +1478,22 @@ build_mutation_descriptor() {
   if [ "${#TEST_CMD}" -gt 8000 ]; then
     die "the --test template exceeds the replayable descriptor limit (8000 characters); use a maintained guard script"
   fi
+  if [ "$mode" = historical ]; then
+    local control
+    [ "${#MUST_BE_ABSENT}" -le 1024 ] || die "--must-be-absent exceeds the descriptor limit (1024 characters)"
+    [ "${#POSITIVE_CONTROLS[@]}" -le 32 ] || die "historical descriptor accepts at most 32 --positive-control literals"
+    for control in "${POSITIVE_CONTROLS[@]}"; do
+      [ "${#control}" -le 1024 ] || die "--positive-control exceeds the descriptor limit (1024 characters)"
+    done
+    [ "${#CALIBRATION_CMD}" -le 8000 ] || die "--calibration exceeds the replayable descriptor limit (8000 characters)"
+    [ "${#SUBJECT_MUST_BEHAVE}" -le 8000 ] || die "--subject-must-behave exceeds the replayable descriptor limit (8000 characters)"
+  fi
   diff -u --label "a/$subject" --label "b/$subject" "$before" "$after" > "$SCRATCH/mutation-descriptor.diff" 2>/dev/null
   MUTATION_DESCRIPTOR_JSON="$(
     MPD_MODE="$mode" MPD_SUBJECT="$subject" MPD_EXPR="$expression" MPD_COMMIT="$commit" \
     MPD_BEFORE="$before" MPD_AFTER="$after" MPD_DIFF="$SCRATCH/mutation-descriptor.diff" \
-    MPD_TEST="$TEST_CMD" MPD_MAX_DIFF="$MUTATION_DESCRIPTOR_MAX_DIFF_CHARS" node -e '
+    MPD_TEST="$TEST_CMD" MPD_MAX_DIFF="$MUTATION_DESCRIPTOR_MAX_DIFF_CHARS" \
+    MPD_ABSENT="$MUST_BE_ABSENT" MPD_CALIBRATION="$CALIBRATION_CMD" MPD_BEHAVIOR="$SUBJECT_MUST_BEHAVE" node -e '
       const fs = require("fs"), crypto = require("crypto"), e = process.env;
       const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
       const max = Number(e.MPD_MAX_DIFF);
@@ -1497,8 +1511,14 @@ build_mutation_descriptor() {
         mutantDiffTruncated: full.length > max,
         testCommandSha256: sha(e.MPD_TEST),
         testCommand: e.MPD_TEST,
+        ...(e.MPD_MODE === "historical" ? { historicalControls: {
+          mustBeAbsent: e.MPD_ABSENT,
+          positiveControls: process.argv.slice(1),
+          calibrationCommand: e.MPD_CALIBRATION,
+          ...(e.MPD_BEHAVIOR ? { subjectMustBehave: e.MPD_BEHAVIOR } : {}),
+        } } : {}),
       }));
-    ' 2>"$SCRATCH/mutation-descriptor.err"
+    ' "${POSITIVE_CONTROLS[@]}" 2>"$SCRATCH/mutation-descriptor.err"
   )" || MUTATION_DESCRIPTOR_JSON=""
   if [ -z "$MUTATION_DESCRIPTOR_JSON" ]; then
     log "mutation descriptor could not be built ($(head -1 "$SCRATCH/mutation-descriptor.err" 2>/dev/null)) — guard rows will carry no execution_details.mutation"
