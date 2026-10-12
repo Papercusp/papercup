@@ -285,6 +285,15 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     for (const source of bundled) expect(inputs).toContain(source);
   });
 
+  it('stages precision benchmark data fixtures beside the worker entry', () => {
+    const sourceDir = join(REPO_ROOT, 'packages/operator-core/lib/memory/bench/fixtures');
+    const outputDir = join(output, 'fixtures');
+    for (const fixture of ['corpus.v1.json', 'gold-set.v1.json']) {
+      expect(readFileSync(join(outputDir, fixture), 'utf8'), fixture)
+        .toBe(readFileSync(join(sourceDir, fixture), 'utf8'));
+    }
+  });
+
   it('names a gate metadata directory that cannot be created before publishing workers', () => {
     const blocked = join(output, 'gate-meta-blocked-by-file');
     writeFileSync(blocked, 'not a directory');

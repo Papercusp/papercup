@@ -430,6 +430,14 @@
     // WI-10005888: apps/operator/lib/public-docs-readiness.test.ts imports the public
     // manual's source contract.
     "apps/papercusp-docs/scripts/source-contract.mjs",
+    // EI-25703002383953643 — the import guard found these strict-TypeScript importers
+    // without an enrolled declaration. Keep the inferred surfaces generated so they
+    // cannot absorb TS7016: portal download, startup trace, workspace enrollment,
+    // and the release real-deps test's dependency-lock tree audit.
+    "apps/operator/bin/release/dependency-lock-tree-audit.mjs",
+    "apps/operator/scripts/portal-android-download-launcher.mjs",
+    "scripts/assert-workspace-links.mjs",
+    "scripts/lib/vitest-startup-trace.mjs",
     // WI-10007180: imported by the isolated reviewer fixture's TypeScript tests.
     "scripts/reviewer-operator-assert.mjs"
   ]

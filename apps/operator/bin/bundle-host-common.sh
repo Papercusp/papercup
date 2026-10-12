@@ -258,4 +258,29 @@ bundle_host_workers() {
   for output in "${HOST_WORKER_OUTPUTS[@]}"; do
     [ -s "$out_dir/$output" ] || { echo "FATAL: missing bundled worker $output" >&2; return 1; }
   done
+  # precision-bench-worker resolves corpus/gold-set data from fixtures/ next to
+  # its emitted bundle. esbuild includes the loader code but not these JSON files.
+  local fixtures_dir="$out_dir/fixtures" fixture_name fixture fixture_output
+  mkdir -p "$fixtures_dir" || {
+    echo "FATAL: cannot create precision benchmark fixture directory $fixtures_dir" >&2
+    return 1
+  }
+  for fixture_name in corpus.v1.json gold-set.v1.json; do
+    fixture="$repo_root/packages/operator-core/lib/memory/bench/fixtures/$fixture_name"
+    fixture_output="$fixtures_dir/$fixture_name"
+    tmp="$fixture_output.new.$$"
+    [ -s "$fixture" ] || {
+      echo "FATAL: missing precision benchmark runtime fixture $fixture" >&2
+      return 1
+    }
+    if ! cp "$fixture" "$tmp" || ! mv -f "$tmp" "$fixture_output"; then
+      rm -f "$tmp"
+      echo "FATAL: failed to stage precision benchmark runtime fixture $fixture into $fixtures_dir" >&2
+      return 1
+    fi
+    [ -s "$fixture_output" ] || {
+      echo "FATAL: staged precision benchmark runtime fixture is empty: $fixture_output" >&2
+      return 1
+    }
+  done
 }
