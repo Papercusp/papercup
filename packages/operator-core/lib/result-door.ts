@@ -528,10 +528,14 @@ export function buildProjectionHint(
   const asString = ` \`projection\` also accepts a JSON STRING.`;
   const searchIt = ` Search: \`capability:read { file_path, query:"terms" }\`.`;
   let shape: { json: unknown; lineCount: number };
+  let hasOversizedLine: boolean;
   try {
     // A caller-supplied classification is authoritative: it is the one the door
     // actually acted on when it wrote the spill. Only re-derive when absent.
     shape = preClassified ?? classifyProjectionBody(textItems);
+    hasOversizedLine = textItems.some(({ text }) =>
+      text.split(/\r?\n/).some((line) => Buffer.byteLength(line, 'utf8') > CAPABILITY_READ_MAX_BYTE_PAGE),
+    );
   } catch {
     // Fail-soft to the payload-agnostic wording rather than losing the hint.
     return (
@@ -543,6 +547,17 @@ export function buildProjectionHint(
     return (
       `${lead}JSON (${shape.lineCount} line(s)): \`projection: { pick: ["results[].id"] }\`; ` +
       `\`pick\` is what reduces it. \`pipe\` is all-or-nothing.${asString}${searchIt}`
+    );
+  }
+  // capability:read's scratch-reference guard runs inside the handler, before
+  // dispatch-level projection can shrink the returned content. A long line
+  // therefore cannot be rescued by the `pipe` hint below; route it through the
+  // exact byte-page cursor instead.
+  if (hasOversizedLine) {
+    return (
+      `${lead}${shape.lineCount} lines of non-JSON text include a line over ` +
+      `${CAPABILITY_READ_MAX_BYTE_PAGE} bytes; use capability:read cursor.args ` +
+      `(byte_offset+byte_limit; no raw) and follow next_cursor.`
     );
   }
   if (shape.lineCount > 1) {
