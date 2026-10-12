@@ -13,6 +13,7 @@ import {
   type HostedServiceContextRunner,
 } from '../auth/hosted/workos-lifecycle-postgres';
 import { WorkosLifecycleWorker } from '../auth/hosted/workos-lifecycle-worker';
+import { HostedDirectoryBindingManager } from '../auth/hosted/governance';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
 import {
   HostedRuntimeMembershipAuthority,
@@ -74,6 +75,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /auth/workos/webhook',
   'GET /hosted/browser/rest-query',
   'GET /hosted/browser/sse',
+  'POST /hosted/browser/fallback-observation',
   'POST /hosted/browser/workspace-hosts/connection',
   'POST /hosted/browser/workspace-hosts/provision',
   'POST /hosted/browser/workspace-hosts/action',
@@ -95,6 +97,8 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/revoke',
+  'PUT /hosted/organizations/:organizationId/members/:userId/directory-binding',
+  'DELETE /hosted/organizations/:organizationId/members/:userId/directory-binding',
   'POST /hosted/cli/device/code',
   'GET /hosted/cli/device',
   'POST /hosted/cli/device/decision',
@@ -478,6 +482,7 @@ export async function createHostedRuntime(
     identityDirectory,
     connectorGateway,
     providerDelegationManager,
+    directoryBindingManager: new HostedDirectoryBindingManager(runService),
     // psu CLI sign-in reads the org's workspaces with the same control-plane privilege the
     // first-workspace door uses; the organization always comes from the verified CLI token.
     cliStore: new PostgresHostedCliStore(

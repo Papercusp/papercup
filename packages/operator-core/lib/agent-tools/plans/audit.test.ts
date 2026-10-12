@@ -170,7 +170,7 @@ beforeEach(() => {
       blobSha: (path) => (path === 'src/gate.ts' ? '0123456789012345678901234567890123456789' : null),
     },
   });
-  mockRecord.mockResolvedValue({ auditSeq: 1, auditedSha: 'head-1' } as never);
+  mockRecord.mockResolvedValue({ auditSeq: 1, auditedSha: 'head-1' } as Awaited<ReturnType<typeof recordPlanAudit>>);
   mockResolveSourceRefs.mockResolvedValue([
     { ref: 'session_turn:codex:session-full-id:7', ok: true, source: 'index' },
   ]);

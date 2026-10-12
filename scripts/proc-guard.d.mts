@@ -20,11 +20,11 @@ export function parseArgv(raw: Buffer | string): string[];
  * Format a process command line for human-facing output without flooding a
  * terminal with a launcher's embedded work-item brief.
  *
- * @param {string} cmdline
+ * @param {string | string[]} cmdline
  * @param {{ verbose?: boolean }} [opts]
  * @returns {string}
  */
-export function formatProcessCmdline(cmdline: string, opts?: {
+export function formatProcessCmdline(cmdline: string | string[], opts?: {
     verbose?: boolean;
 }): string;
 /**

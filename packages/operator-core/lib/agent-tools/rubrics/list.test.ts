@@ -18,6 +18,7 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ owne
 vi.mock('../../rubrics', () => ({ listRubricsPage: vi.fn() }));
 
 import { listRubricsPage } from '../../rubrics';
+import type { Rubric } from '../../rubrics';
 const listPageM = vi.mocked(listRubricsPage);
 
 const listTool = (await import('./list')).default;
@@ -27,16 +28,25 @@ const bodyOf = async (args: unknown) => {
   return JSON.parse(out.content[0].text);
 };
 
-const rubric = (rubricId: string, criteriaCount: number) => ({
+/** A correctly-typed `Rubric` fixture, so page results need no cast (lint:mock-cast-escape). */
+const rubric = (rubricId: string, criteriaCount: number): Rubric => ({
   rubricId,
   workspaceId: 'default',
+  kind: 'standard',
+  gradingAuthority: 'independent',
   characteristic: 'agent-execution',
   title: rubricId,
   description: '',
-  criteria: Array.from({ length: criteriaCount }, (_, i) => ({ key: `c${i}`, title: `c${i}`, model: '', method: '' })),
+  criteria: Array.from({ length: criteriaCount }, (_, i) => ({
+    key: `c${i}`,
+    title: `c${i}`,
+    model: '',
+    method: '',
+    driftMarkers: '',
+  })),
   ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
   methodRef: null,
-  status: 'active' as const,
+  status: 'active',
   createdBy: null,
   proposedBy: null,
   ratifiedBy: null,
@@ -58,7 +68,7 @@ describe('rubrics:list — criteriaCount truthfulness', () => {
       rubrics: [rubric('dumb-agent-execution', 6), rubric('stretch-discipline', 4)],
       hasMore: false,
       nextOffset: null,
-    } as never);
+    });
     const b = await bodyOf({});
     expect(b.ok).toBe(true);
     expect(b.rubrics.map((r: { rubricId: string; criteriaCount: number }) => [r.rubricId, r.criteriaCount])).toEqual([
@@ -68,7 +78,7 @@ describe('rubrics:list — criteriaCount truthfulness', () => {
   });
 
   it('the summary row never carries a bare `criteria` field a caller could compute (criteria||[]).length against', async () => {
-    listPageM.mockResolvedValue({ rubrics: [rubric('has-criteria', 6)], hasMore: false, nextOffset: null } as never);
+    listPageM.mockResolvedValue({ rubrics: [rubric('has-criteria', 6)], hasMore: false, nextOffset: null });
     const b = await bodyOf({});
     expect(b.rubrics[0]).not.toHaveProperty('criteria');
     // the only criteria-shaped surface on a summary row is the truthful scalar
@@ -76,7 +86,7 @@ describe('rubrics:list — criteriaCount truthfulness', () => {
   });
 
   it('a genuinely criteria-less (draft) rubric still reports 0 honestly', async () => {
-    listPageM.mockResolvedValue({ rubrics: [rubric('empty-draft', 0)], hasMore: false, nextOffset: null } as never);
+    listPageM.mockResolvedValue({ rubrics: [rubric('empty-draft', 0)], hasMore: false, nextOffset: null });
     const b = await bodyOf({});
     expect(b.rubrics[0].criteriaCount).toBe(0);
   });
@@ -88,7 +98,7 @@ describe('rubrics:list — offset pagination', () => {
       rubrics: [rubric('page-two', 2)],
       hasMore: true,
       nextOffset: 1000,
-    } as never);
+    });
 
     const b = await bodyOf({ status: 'active', limit: 500, offset: 500 });
 

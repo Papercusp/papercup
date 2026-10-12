@@ -715,9 +715,14 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
   return verifyPrivateWorkspaceBrowserMount(input);
 }
 
+function conversationSearchControl(page: Page) {
+  return page.getByRole('region', { name: 'Conversation list', exact: true })
+    .getByRole('searchbox', { name: 'Search conversations', exact: true });
+}
+
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean; devRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean; devRead?: boolean; conversationsRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
@@ -728,6 +733,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   assert.ok(!options.supportRead || input.support, 'Support workflow requires the actual Support route');
   assert.ok(!options.cupboardRead || input.cupboard, 'Cupboard workflow requires the actual Cupboard route');
   assert.ok(!options.devRead || input.dev, 'Dev workflow requires the actual Dev route');
+  assert.ok(!options.conversationsRead || input.conversations, 'Conversation controls require the actual aggregate');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -838,7 +844,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       const name = requestUrl.searchParams.get('name');
       reads.push({ name, args: JSON.parse(requestUrl.searchParams.get('args') ?? '{}') });
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ rows: [] }));
+      response.end(JSON.stringify({ rows: options.conversationsRead && name === 'conversations.questionsList'
+        ? [input.selected, input.neighbor].map(id => ({ id, kind: 'question', state: 'open', scope: 'workspace',
+          harness_slug: null, title: id, asker_id: 'preflight-viewer', topics: [], created_ts: '2026-10-12T00:00:00Z' }))
+        : [] }));
     } else if (input.harnessSettings && pathname.endsWith('/blueprint-params')) {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ blueprintId: 'explicit-settings-component-fixture', params: {} }));
@@ -1151,9 +1160,24 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : page.getByRole('region', { name: input.harnessSettings ? 'ADV Settings workspace' : input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
     if (input.conversations) {
-      // The original aggregate hides search when its supplied population is
-      // empty. Wait for its resolved empty state, never a control it omits.
-      await page.getByText('No conversations', { exact: true }).waitFor();
+      if (options.conversationsRead) {
+        // Exercise the same accessible control as private acceptance against
+        // the real populated aggregate before allocating its database/API.
+        const rail = page.getByRole('region', { name: 'Conversation list', exact: true });
+        const search = conversationSearchControl(page);
+        await search.waitFor();
+        await rail.getByRole('button', { name: 'Open ' + input.selected, exact: true }).waitFor();
+        await rail.getByRole('button', { name: 'Open ' + input.neighbor, exact: true }).waitFor();
+        await search.fill(input.selected);
+        await page.waitForURL(value => value.searchParams.get('cq') === input.selected);
+        await rail.getByRole('button', { name: 'Open ' + input.neighbor, exact: true }).waitFor({ state: 'detached' });
+        await rail.getByRole('button', { name: 'Open ' + input.selected, exact: true }).waitFor();
+        await search.fill('');
+        await rail.getByRole('button', { name: 'Open ' + input.neighbor, exact: true }).waitFor();
+      } else {
+        // Empty aggregates omit search; populated controls are checked above.
+        await page.getByText('No conversations', { exact: true }).waitFor();
+      }
       for (const name of ['conversations.questionsList', 'conversations.deliberationList',
         'conversations.agentChatList', 'conversations.agentMessageList']) {
         assert.ok(reads.some(read => read.name === name), 'Conversations must load each original aggregate source: ' + name);
@@ -2147,7 +2171,7 @@ async function runPrivateConversationsPage(page: Page, context: BrowserContext, 
   assert.equal(await rail.getByRole('button', { name: /^Open / }).count(), 0);
   denyLists = false;
   await rail.getByRole('button', { name: 'Retry', exact: true }).focus(); await page.keyboard.press('Enter');
-  const search = rail.getByRole('textbox', { name: 'Search conversations', exact: true });
+  const search = conversationSearchControl(page);
   await search.waitFor();
   for (const row of seed.own.filter(row => row.id.includes('-selected-'))) {
     await search.fill(row.title); await page.waitForURL(value => value.searchParams.get('cq') === row.title);

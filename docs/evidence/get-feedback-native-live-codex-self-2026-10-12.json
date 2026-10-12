@@ -645,9 +645,391 @@
           "Exact native trial attribution is preserved. Native isolation, remaining backend matrix, original R6 cohort shortfall, independent rubric vetting and final R7 shipment remain open."
         ]
       },
-    "next": "The added Codex-to-Codex transport case now has separate committed positive/control/mutant qualification. Continue the remaining canonical issue-family and system/wake isolation coverage through maintained production seams; preserve native-fork/matrix observations, original R6 population and shortfall, independent vetting and exact R7 shipment requirements. Do not replay these settled guards solely for HEAD."
+    "releaseLeaseCommittedQualification": {
+      "workItemId": "EI-25792454845221765",
+      "priorArtifactSha256": "c1fa72d2c7052a24e8681713a9fd5f4e870ab48216f0914102db544dde2ac3f3",
+      "evidencePlane": "committed-tree-disposable-postgres",
+      "commitSha": "ec4366d0843c68dc1ad481a9b86ab476186b6ca8",
+      "source": {
+        "path": "packages/operator-core/lib/work-items.ts",
+        "sha256": "e12dce561ab61d093fb0be6e852a218febc01b918d8aa6ff5b1c002b1eab6529"
+      },
+      "detector": {
+        "path": "packages/operator-core/lib/work-items-release-claim-honesty.integration.test.ts",
+        "sha256": "e46b242b8b9bfe1d8a093e22e3534442158fb08d15f75706dda75c05f7c4397f"
+      },
+      "rootCause": "releaseWorkItem removed the pre-read holder's coordination lease before the guarded canonical ownership UPDATE; a refused release therefore changed the second ledger.",
+      "fix": "Reject a known foreign caller before linked plan-lane cleanup; await lease cleanup only after a successful canonical release, before notifying waiters.",
+      "detectorFailure": "Existing non-holder assertions checked the canonical owner without checking preservation of its coordination lease. The conventional real-PG suite now checks both and forces canonical UPDATE refusal after a matching pre-read.",
+      "fullSuite": {
+        "log": "/dev/shm/get-feedback-release-lease-clean-20261012T1700.log",
+        "sourceMap": "/dev/shm/get-feedback-release-lease-clean-20261012T1700.sources.json",
+        "sourceMapSha256": "1e95f3dca434a9675772b74df70e2aefea337cd0219674b76afb717b2bba7a7b",
+        "result": "/dev/shm/get-feedback-release-lease-clean-20261012T1700.result.json",
+        "resultSha256": "cd36a2c7da55d37837f2f423a63f7cfa0c342143dcf5631152ed91867c453788",
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0,
+        "ledgerScope": "The full-suite run's private ledger was not retained as a canonical scoped receipt. Keep its log/map/result separately from the independently read scoped mutation receipts."
+      },
+      "causalQualification": {
+        "method": "Maintained mutation-probe.sh copy-out overlay on the maintained lint-as-committed snapshot, with disposable PG and explicit reporter-only canonical test ledger.",
+        "testNamePattern": "non-holder non-force release is refused|refused canonical release preserves|issue-family equal claim endpoints",
+        "baseline": {
+          "testRunId": 21151953,
+          "passed": 4,
+          "failed": 0,
+          "skipped": 10
+        },
+        "unchangedCopy": {
+          "testRunId": 21151957,
+          "passed": 4,
+          "failed": 0,
+          "skipped": 10
+        },
+        "restoredBehavior": {
+          "testRunId": 21151960,
+          "passed": 0,
+          "failed": 4,
+          "skipped": 10
+        },
+        "mutation": "Remove the known-foreign early return, invoke releaseWorkItemLease immediately before emitReleased is defined, and disable its successful-release-only cleanup branch.",
+        "failureSites": [
+          169,
+          210,
+          263
+        ],
+        "actualObservation": "All four selected assertions observed null instead of the initial existing lease: foreign feature release, forced canonical refusal for feature and issue, and foreign issue release in the canonical ABA case. Baseline and unchanged-copy controls preserve the leases.",
+        "log": "/dev/shm/get-feedback-release-lease-mut-20261012T1703.log",
+        "logSha256": "5b30a644017c15860bace8626a2d75504997b83830685bf6d5f1b2101f564c3a",
+        "verdict": "caught",
+        "ledgerRead": "testing:runs workspace=papercusp-workspace,harness=papercusp,commitSha=ec4366d084,filePath=work-items-release-claim-honesty,source=mutation-probe,since=2026-10-12T17:02:00Z; exact 21151953,21151957,21151960 independently read",
+        "descriptor": "withheld by maintained compatibility check; the serving reader predates the mutation-descriptor parser"
+      },
+      "limits": [
+        "The named source and detector bytes are measured; the complete executed import graph remains unknown because late imports were not captured.",
+        "The scoped mutation receipts deliberately carry source=mutation-probe and are not release-gate failures.",
+        "The local pre-fix red and local 14-pass run remain historical local evidence, not retroactively committed evidence.",
+        "This supplemental guard does not establish native source immutability, the remaining native matrix, R6 usefulness/decision acceptance, independent rubric vetting or final R7 shipment."
+      ]
+    },
+    "next": "The added Codex-to-Codex guard and canonical feature/issue release-lease guards have separate committed positive/control/mutant qualification. Continue the remaining system/wake isolation coverage through maintained production seams; preserve native-fork/matrix observations, original R6 population and shortfall, independent vetting and exact R7 shipment requirements. Do not replay these settled guards solely for HEAD."
   },
   "projectDecision": "Retain the captured plan-only claim endpoints, exact nested reply/close physical binding and bounded actor/system-port/coordination/PTY observations as native-conversion evidence. Continue the remaining D-006 mutation/wake coverage before isolation acceptance. No mandatory reporting-only reconciliation or new monitoring surface is introduced.",
+  "d006SystemWakeExtension": {
+    "priorArtifactSha256": "a8f75f41901a630f27ec885219330c0438074c63c16e5dce1b36b87f9bb90ba6",
+    "evidencePlane": "retained-history plus local disposable-PG system-adapter integration",
+    "wakeDeliveryRead": {
+      "scope": {
+        "startInclusive": "2026-10-12T12:04:14Z",
+        "endExclusive": "2026-10-12T12:09:00Z",
+        "sourceOwnerId": "su-26e81472-29ed-4d18-8b4b-4520850d8aef",
+        "answeringOwnerId": "su-5e8e73ff-07bb-4934-a5cd-96129a72cc80",
+        "storageNamespace": "default"
+      },
+      "writerEvidence": [
+        "packages/operator-core/lib/events/await/store.ts:89",
+        "packages/operator-core/lib/events/await/store.ts:2198",
+        "packages/operator-core/lib/events/await/engine.ts:1197"
+      ],
+      "query": {
+        "sql": "SELECT id, workspace_id, subscriber_id, event_key, source, status, channel, attempts, created_at, delivered_at, turn_proof, turn_started_at FROM harness_shared.event_wake_deliveries WHERE workspace_id = 'default' AND subscriber_id IN ('su-26e81472-29ed-4d18-8b4b-4520850d8aef','su-5e8e73ff-07bb-4934-a5cd-96129a72cc80') AND created_at >= '2026-10-12T12:04:14Z' AND created_at < '2026-10-12T12:09:00Z' ORDER BY id",
+        "positiveControlSql": "SELECT id,workspace_id,subscriber_id,event_key,source,status FROM harness_shared.event_wake_deliveries WHERE workspace_id = 'default' AND id = 687748",
+        "allowUnscoped": false,
+        "maxRows": 50,
+        "timeoutMs": 15000
+      },
+      "result": {
+        "mode": "query",
+        "rowCount": 0,
+        "truncated": false,
+        "fields": [],
+        "elapsedMs": 21,
+        "rows": [],
+        "positiveControl": {
+          "rows": [
+            {
+              "id": "687748",
+              "workspace_id": "default",
+              "subscriber_id": "su-5850ab54-7fe5-4f6d-be53-c6da7f446aae",
+              "event_key": "coord:inbox-wake:su-5850ab54-7fe5-4f6d-be53-c6da7f446aae",
+              "source": "loop:rt_papercusp_loop_su_5850ab54_7fe5_4f6d_be53_c6da7f446aae",
+              "status": "delivered"
+            }
+          ],
+          "rowCount": 1,
+          "truncated": false,
+          "fields": [
+            "id",
+            "workspace_id",
+            "subscriber_id",
+            "event_key",
+            "source",
+            "status"
+          ],
+          "status": "passed"
+        },
+        "absence": {
+          "status": "verified",
+          "code": "positive-control-passed"
+        }
+      },
+      "receipt": {
+        "path": "/dev/shm/get-feedback-d006-wake-delivery-history-20261012T1730.json",
+        "sha256": "3ce240c0e9974f38b1aa9bfdd45d42383e70d3fdd6c9c5e69fe2b03f2fee9bca"
+      },
+      "limits": [
+        "The positive control proves this retained store/scope can return a recorded delivery; no source/child delivery row exists in the stated fixed window.",
+        "No captured pre-trial watch baseline or complete append-only delivery transition history follows. Failed pre-insert writes, pruning, out-of-store/direct wakes and native same-UID effects remain outside this population.",
+        "The initial papercusp-workspace predicate and its empty positive control confer no absence proof."
+      ]
+    },
+    "systemEventGuard": {
+      "testPath": "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts",
+      "case": "a system consult reply wakes the requester without consuming source or answerer watches (D-006)",
+      "method": "Production consultExpiryEmitReplyEvent -> actual emitAwaitedEvent/store/pump -> isolated real Unix sockets using maintained MultiSessionTestbed. Source/answerer inbox watches remain identical; requester receives exactly one system event. Both untouched hosts then receive their own exact positive-control wakes.",
+      "fullFileResult": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "exitCode": 0,
+        "log": "/dev/shm/get-feedback-d006-system-wake-local-20261012T1729.log",
+        "logSha256": "971b2ccb1babdc4872cedd35f853365714ea5c3c9d4011181b0180832ea97552"
+      },
+      "namedBytesMeasuredAfterRun": {
+        "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts": "580cadac8cfc8f3d2d8b0a00e26448cd1462561afce887225c75dfb4721a4f13",
+        "packages/operator-core/lib/consult/consult-expiry-adapters.ts": "eb48fde08f1aeb70e340850361874d63ec4a5c7c0c3ae5262c3569afc2dee645",
+        "packages/operator-core/lib/events/await/store.ts": "6b13b3acb509d0ee9787cc88844c342f0fae21233b734ada012e124190b664fd",
+        "packages/operator-core/lib/events/await/engine.ts": "b042450a8582e83448630876d51b3bc481b7c1fece54214daa2405f280508705"
+      },
+      "limits": [
+        "Local current-tree proof only: no committed/canonical test-run receipt or complete executed-source map was retained for this run.",
+        "Positive/control/mutant qualification at committed scope remains to be done for this NEW guard; existing settled transport/release proofs remain by reference.",
+        "No native-matrix, source filesystem immutability, R6 cohort/decision, independent rubric-vetting or exact shipment claim."
+      ]
+    },
+    "next": "Qualify only the new system-event guard using the maintained as-committed runner and copy-out mutation controls; preserve existing native trial/guard identities. Continue residual canonical system/direct/locks/native actions and native matrix acceptance."
+  },
+  "d006SystemWakeCommittedQualification": {
+    "priorArtifactSha256": "2f9f03e7419590c965b949d6f6b14e92b257ec1a4b0c4e367c6f61e8ea4ab86e",
+    "evidencePlane": "committed-tree-disposable-postgres-real-sockets",
+    "commitSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+    "testPath": "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts",
+    "case": "a system consult reply wakes the requester without consuming source or answerer watches (D-006)",
+    "namedCurrentBytes": {
+      "packages/operator-core/lib/consult/consult-expiry-adapters.ts": "eb48fde08f1aeb70e340850361874d63ec4a5c7c0c3ae5262c3569afc2dee645",
+      "packages/operator-core/lib/events/await/engine.ts": "b042450a8582e83448630876d51b3bc481b7c1fece54214daa2405f280508705",
+      "packages/operator-core/lib/events/await/store.ts": "6b13b3acb509d0ee9787cc88844c342f0fae21233b734ada012e124190b664fd",
+      "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts": "580cadac8cfc8f3d2d8b0a00e26448cd1462561afce887225c75dfb4721a4f13"
+    },
+    "fullSuite": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "log": {
+        "path": "/dev/shm/get-feedback-d006-system-clean-20261012T1749.log",
+        "sha256": "5d15706aff5e35308ec5fa5ccb92f9055a1deddf5272590f991e2f82aaf3ef3d"
+      },
+      "sourceMap": {
+        "path": "/dev/shm/get-feedback-d006-system-clean-20261012T1749.sources.json",
+        "sha256": "351c9c2fcfb65fcb6174386159acc7afd9b50a0f017a90d3736132c57b44b558"
+      },
+      "ledgerScope": "Original full-suite reporter sink incorrectly received resolveScriptPgUrl() object rather than its URL string. Its receipt records pg_unavailable; preserve this log/map pass without a canonical full-file receipt. Corrected controls below carry independently read canonical receipts."
+    },
+    "causalQualification": {
+      "method": "Maintained lint-as-committed snapshot plus mutation-probe.sh copy-out overlay, private Postgres, real Unix sockets and an explicitly validated reporter-only canonical ledger sink.",
+      "baseline": {
+        "testRunId": 21152850,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 3
+      },
+      "unchangedCopy": {
+        "testRunId": 21152855,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 3
+      },
+      "mutant": {
+        "testRunId": 21153360,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 3
+      },
+      "mutation": "In consultExpiryEmitReplyEvent, replace key: e.key with key: \"coord:inbox-wake:\" + (e.payload as { sourceOwnerId: string }).sourceOwnerId.",
+      "expectedBaseline": "Requester receives exactly one consult system event; source and answerer retain identical watches and each later receives its own exact positive-control wake.",
+      "expectedMutant": "Requester delivery assertion fails because the adapter selects the source inbox key instead of the registered consult reply key.",
+      "actualObservation": "Both controls pass. Mutant fails at wake-pump-isolation.integration.test.ts:176:65 with expected [] to deeply equal the requester delivery containing the consult reply key, consult-expiry-sweep source and delivered socket channel.",
+      "failureSite": 176,
+      "verdict": "caught",
+      "mutantParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "treeIntegrity": "Maintained probe verifies byte-identical subject after the overlay; named captured baseline/current adapter, test, store and engine hashes agree.",
+      "log": {
+        "path": "/dev/shm/get-feedback-d006-system-mut-20261012T1753.log",
+        "sha256": "96e88db43a00660ca322e7313e2346b344167bec42c94dc6e5ccc83e3b8e3e68"
+      },
+      "commandReceipt": {
+        "cwd": "/tmp/pcv/papercusp-lint-as-committed-90fa51f9cf-9TNSM9",
+        "command": [
+          "node",
+          "scripts/with-test-pg.mjs",
+          "--",
+          "bash",
+          "scripts/mutation-probe.sh",
+          "--file",
+          "packages/operator-core/lib/consult/consult-expiry-adapters.ts",
+          "--relocation",
+          "overlay",
+          "--mutate",
+          "s/key: e\\.key,/key: \"coord:inbox-wake:\" + (e.payload as { sourceOwnerId: string }).sourceOwnerId,/",
+          "--test",
+          "PROBE_SUBJECT={} PC_EXECUTED_SOURCE_MAP_OUT=/dev/shm/get-feedback-d006-system-mut-20261012T1753-${PAPERCUSP_MUTATION_PHASE}.sources.json PC_EXECUTED_SOURCE_MAP_RESULT=/dev/shm/get-feedback-d006-system-mut-20261012T1753-${PAPERCUSP_MUTATION_PHASE}.result.json npm run test:file -- packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts --testNamePattern \"a system consult reply\"",
+          "--expect",
+          "caught"
+        ],
+        "startedAt": "2026-10-12T17:47:43.223Z",
+        "finishedAt": "2026-10-12T17:52:40.740Z",
+        "exitCode": 0,
+        "signal": null,
+        "reporterSinkPreflight": "valid-postgresql-url-string",
+        "reporterSinkSource": "env",
+        "reporterSinkVia": "DATABASE_URL",
+        "commitSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990"
+      },
+      "ledgerRead": {
+        "path": "/dev/shm/get-feedback-d006-system-mut-20261012T1753.exact-ledger.json",
+        "sha256": "2e575b3cca21cd1f131660860a579ba92c3aabcfe6b0ac59c4c680f1060c3774",
+        "rows": [
+          {
+            "id": 21153360,
+            "workspaceId": "papercusp-workspace",
+            "harnessSlug": "papercusp",
+            "root": null,
+            "filePath": "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts",
+            "status": "fail",
+            "framework": "vitest",
+            "startedAt": "2026-10-12T17:52:08.698Z",
+            "finishedAt": "2026-10-12T17:52:13.033Z",
+            "durationMs": 4335,
+            "commitSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+            "runGroupId": null,
+            "source": "mutation-probe",
+            "branch": null,
+            "outputTail": "wake pump — C6 idempotency + cross-agent isolation (real PG) > a system consult reply wakes the requester without consuming source or answerer watches (D-006): expected [] to deeply equal [ ObjectContaining{…} ]\nactual: []\nexpected: [\n  ObjectContaining {\n    \"channel\": \"psu-socket-inject\",\n    \"eventKey\": \"consult:reply:conv-su-7512a0d2-29cc-4d20-9fd6-70c8694ce8a2\",\n    \"source\": \"consult-expiry-sweep\",\n    \"status\": \"delivered\",\n  },\n]",
+            "loopLagP95Ms": 20.8,
+            "rssMb": 417.6,
+            "saturationSuspect": false,
+            "worktreeDirty": false,
+            "isScratchConfig": false
+          },
+          {
+            "id": 21152855,
+            "workspaceId": "papercusp-workspace",
+            "harnessSlug": "papercusp",
+            "root": null,
+            "filePath": "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts",
+            "status": "pass",
+            "framework": "vitest",
+            "startedAt": "2026-10-12T17:50:37.865Z",
+            "finishedAt": "2026-10-12T17:51:07.679Z",
+            "durationMs": 29814,
+            "commitSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+            "runGroupId": null,
+            "source": "mutation-probe",
+            "branch": null,
+            "outputTail": null,
+            "loopLagP95Ms": 21.3,
+            "rssMb": 387,
+            "saturationSuspect": false,
+            "worktreeDirty": false,
+            "isScratchConfig": false
+          },
+          {
+            "id": 21152850,
+            "workspaceId": "papercusp-workspace",
+            "harnessSlug": "papercusp",
+            "root": null,
+            "filePath": "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts",
+            "status": "pass",
+            "framework": "vitest",
+            "startedAt": "2026-10-12T17:49:29.920Z",
+            "finishedAt": "2026-10-12T17:49:34.403Z",
+            "durationMs": 4483,
+            "commitSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+            "runGroupId": null,
+            "source": "mutation-probe",
+            "branch": null,
+            "outputTail": null,
+            "loopLagP95Ms": 59.2,
+            "rssMb": 700.4,
+            "saturationSuspect": false,
+            "worktreeDirty": false,
+            "isScratchConfig": false
+          }
+        ]
+      },
+      "descriptor": "Maintained compatibility check withheld mutation descriptor because deployed reader d740fc3802 predates its parser; descriptor linkage is not claimed."
+    },
+    "sourceCapture": {
+      "baseline": {
+        "path": "/dev/shm/get-feedback-d006-system-mut-20261012T1753-baseline.sources.json",
+        "sha256": "1b7e9be69f309fc919ad7635eb314736e1f80ee31e42a11018a21baf658d76f8",
+        "recordedSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+        "worktreeDirty": false,
+        "retainedRows": 0,
+        "diagnosticState": "passed",
+        "collectedSourceStatus": "stable",
+        "collectedSourceReasons": [],
+        "namedCollectedSources": {
+          "packages/operator-core/lib/consult/consult-expiry-adapters.ts": "eb48fde08f1aeb70e340850361874d63ec4a5c7c0c3ae5262c3569afc2dee645",
+          "packages/operator-core/lib/events/await/engine.ts": "b042450a8582e83448630876d51b3bc481b7c1fece54214daa2405f280508705",
+          "packages/operator-core/lib/events/await/store.ts": "6b13b3acb509d0ee9787cc88844c342f0fae21233b734ada012e124190b664fd",
+          "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts": "580cadac8cfc8f3d2d8b0a00e26448cd1462561afce887225c75dfb4721a4f13"
+        }
+      },
+      "copy-baseline": {
+        "path": "/dev/shm/get-feedback-d006-system-mut-20261012T1753-copy-baseline.sources.json",
+        "sha256": "1b7e9be69f309fc919ad7635eb314736e1f80ee31e42a11018a21baf658d76f8",
+        "recordedSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+        "worktreeDirty": false,
+        "retainedRows": 0,
+        "diagnosticState": "passed",
+        "collectedSourceStatus": "stable",
+        "collectedSourceReasons": [],
+        "namedCollectedSources": {
+          "packages/operator-core/lib/consult/consult-expiry-adapters.ts": "eb48fde08f1aeb70e340850361874d63ec4a5c7c0c3ae5262c3569afc2dee645",
+          "packages/operator-core/lib/events/await/engine.ts": "b042450a8582e83448630876d51b3bc481b7c1fece54214daa2405f280508705",
+          "packages/operator-core/lib/events/await/store.ts": "6b13b3acb509d0ee9787cc88844c342f0fae21233b734ada012e124190b664fd",
+          "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts": "580cadac8cfc8f3d2d8b0a00e26448cd1462561afce887225c75dfb4721a4f13"
+        }
+      },
+      "mutant": {
+        "path": "/dev/shm/get-feedback-d006-system-mut-20261012T1753-mutant.sources.json",
+        "sha256": "6df72fa2f2d64f58375fb52c15922f092e44126c1e221eda6ca29b135a60d876",
+        "recordedSha": "90fa51f9cfd4af37d9590ae577ac6463dd132990",
+        "worktreeDirty": false,
+        "retainedRows": 0,
+        "diagnosticState": "failed",
+        "collectedSourceStatus": "stable",
+        "collectedSourceReasons": [],
+        "namedCollectedSources": {
+          "packages/operator-core/lib/consult/consult-expiry-adapters.ts": "917d8643ff7bdbef350b295a88684dbdc9a31488de20ca97a223f1df8a26d361",
+          "packages/operator-core/lib/events/await/engine.ts": "b042450a8582e83448630876d51b3bc481b7c1fece54214daa2405f280508705",
+          "packages/operator-core/lib/events/await/store.ts": "6b13b3acb509d0ee9787cc88844c342f0fae21233b734ada012e124190b664fd",
+          "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts": "580cadac8cfc8f3d2d8b0a00e26448cd1462561afce887225c75dfb4721a4f13"
+        }
+      }
+    },
+    "limits": [
+      "Named source/test bytes and collected worker diagnostics are measured. Selected source-map rows are empty; the complete executed import/config/main-process graph remains unknown.",
+      "Three other tests were intentionally unselected for the causal controls. The separate committed full-file log establishes four-pass/zero-skip scope without a canonical full-file receipt.",
+      "This isolated production-seam guard does not measure native same-UID filesystem access, lock state, all system-direct effects or an additional native trial.",
+      "Original native artifacts, R6 immutable population 4/shortfall 4 and requester decision, independent rubric9 vetting/failed-audit wall and exact R7 shipment remain open."
+    ],
+    "next": "Continue D006 remaining canonical/direct/lock/filesystem and required native matrix acceptance; preserve settled native/CodexCodex/releaseLease/ABA/HTTP/SQL/CPU proofs by reference."
+  },
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }

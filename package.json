@@ -336,7 +336,6 @@
     "lint:di-seam-arity-strands:fail": "node scripts/check-di-seam-arity-strands.mjs --fail",
     "lint:deps-wiring-parity": "node scripts/check-deps-wiring-parity.mjs",
     "lint:deps-wiring-parity:fail": "node scripts/check-deps-wiring-parity.mjs --fail",
-    "lint:migration-fixture-drift:check": "node scripts/check-migration-fixture-drift.mjs --check --base HEAD",
     "lint:no-box-identity": "node scripts/check-no-box-identity.mjs",
     "lint:no-box-identity:all": "node scripts/check-no-box-identity.mjs --all",
     "lint:no-owner-name-tags": "node scripts/check-no-owner-name-tags.mjs",

@@ -199,6 +199,23 @@ export const smartQuotesDetector: ContentDetector = {
  * was unparseable (a 9-day-abandoned scratchpad probe with a trailing comma) — fixed in
  * the same change, so this adds coverage without newly quarantining anything.
  */
+/**
+ * An empty TypeScript source module parses successfully, so the parser and
+ * transform detectors cannot catch a source file that git-sync stages during
+ * a truncate/write window. Such a blob is syntactically valid but removes all
+ * exports and runtime behavior from the committed module.
+ */
+export const emptyTsSourceDetector: ContentDetector = {
+  key: 'empty-ts-source',
+  glob: '**/*.{ts,tsx,mts,cts}',
+  matches: (file) => /\.(ts|tsx|mts|cts)$/.test(file) && !DECLARATION_FILE_RE.test(file) && !isExcludedPath(file),
+  detect: (file, text) =>
+    text.length === 0
+      ? `TypeScript source file "${file}" is zero bytes; git-sync would publish an empty module. Restore its intended contents or remove it before commit.`
+      : null,
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
 export const tsParseDetector: ContentDetector = {
   key: 'ts-parse',
   glob: '**/*.{ts,tsx,mts,cts}',
@@ -658,6 +675,7 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // so the specific detector must record first. It also catches the SILENT form,
   // which ts-parse cannot see at all (the file parses).
   sqlCommentBacktickDetector,
+  emptyTsSourceDetector,
   esbuildTransformDetector,
   tsParseDetector,
   shellSyntaxDetector,

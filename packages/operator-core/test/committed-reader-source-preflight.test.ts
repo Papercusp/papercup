@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
-  resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle,
+  resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
   type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -80,6 +80,28 @@ function producerFixture(extraScript = '') {
   } });
   return { ...f, inputs, saveInputs, selected, produce, consume };
 }
+
+describe('private worker source selection before allocation', () => {
+  const committedEnv = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };
+  it('rejects a changed worker helper that the inherited loader would replace with HEAD', () => {
+    const f = fixture();
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
+      () => Buffer.from('older helper'))).toThrow(/different HEAD bytes: helper.ts/);
+  });
+  it('records exact matching committed inputs and fails closed when their HEAD read fails', () => {
+    const f = fixture();
+    expect(preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
+      () => Buffer.from('helper.ts'))).toEqual({ loader: 'committed-source',
+      files: [{ path: 'helper.ts', sha256: digest('helper.ts') }] });
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
+      () => { throw new Error('HEAD unreadable'); })).toThrow('HEAD unreadable');
+  });
+  it('preserves working-source execution without invoking a committed reader when no loader selects HEAD', () => {
+    const f = fixture(); const reader = vi.fn(() => { throw new Error('must not read HEAD'); });
+    expect(preparePrivateWorkerSources(f.root, ['helper.ts'], {}, reader).loader).toBe('working-source');
+    expect(reader).not.toHaveBeenCalled();
+  });
+});
 
 describe('retained committed reader producer and consumer', () => {
   it('builds once at the allocated path and consumes the original pinned artifacts without rebuilding', () => {

@@ -6,8 +6,13 @@
  * Postgres owns durability and immutability; these helpers own input validation,
  * secret exclusion, and the small amount of derived support-access state.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withHostedServiceContext } from '@papercusp/db-org';
+import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { isHostedPrincipal, type HostedPrincipal } from '../hosted-principal';
+import { hostedPermissionsForMembership } from '../hosted-role-permissions';
+import { workosDirectoryIdentitySubject } from './workos-lifecycle-worker';
+import type { HostedServiceContextRunner } from './workos-lifecycle-postgres';
 
 export type GovernanceJson =
   | null
@@ -184,7 +189,7 @@ export async function recordLegalAcceptance(input: LegalAcceptanceInput): Promis
     ) VALUES (
       ${organizationId}::uuid, ${userId}::uuid, ${input.documentKind},
       ${documentVersion}, ${input.acceptanceSource},
-      ${JSON.stringify(evidence)}::jsonb, ${acceptedAt}
+      ${JSON.stringify(evidence)}::text::jsonb, ${acceptedAt}
     )
     ON CONFLICT (organization_id, user_id, document_kind, document_version)
       DO NOTHING
@@ -217,24 +222,28 @@ export interface OrganizationAuditEventInput {
 
 export async function appendOrganizationAuditEvent(
   input: OrganizationAuditEventInput,
+  transaction?: Sql,
 ): Promise<string> {
   const metadata = input.metadata ?? {};
   assertGovernancePayloadSafe(metadata);
-  const { sql } = getOrgPg();
-  const rows = await sql<{ id: string }[]>`
+  const sql = transaction ?? getOrgPg().sql;
+  const id = randomUUID();
+  // Generate the key before INSERT so an append-only writer needs no SELECT
+  // privilege (PostgreSQL RETURNING would require it even for just the id).
+  await sql`
     INSERT INTO papercusp_auth.organization_audit_events (
-      organization_id, workspace_id, actor_kind, actor_id, action, purpose,
+      id, organization_id, workspace_id, actor_kind, actor_id, action, purpose,
       target_type, target_id, metadata, occurred_at
     ) VALUES (
+      ${id}::uuid,
       ${nonEmpty(input.organizationId, 'organizationId')}::uuid,
       ${input.workspaceId ?? null}::uuid,
       ${input.actorKind}, ${input.actorId ?? null},
       ${nonEmpty(input.action, 'action')}, ${nonEmpty(input.purpose, 'purpose')},
       ${input.targetType ?? null}, ${input.targetId ?? null},
-      ${JSON.stringify(metadata)}::jsonb, ${input.occurredAt ?? new Date()}
-    )
-    RETURNING id`;
-  return rows[0].id;
+      ${JSON.stringify(metadata)}::text::jsonb, COALESCE(${input.occurredAt ?? null}::timestamptz, now())
+    )`;
+  return id;
 }
 
 export async function createSupportAccessGrant(
@@ -303,7 +312,7 @@ export async function saveHostedUserPreferences(
       ${nonEmpty(input.organizationId, 'organizationId')}::uuid,
       ${nonEmpty(input.userId, 'userId')}::uuid,
       ${normalizeHostedLocale(input.locale)}, ${normalizeHostedTimeZone(input.timeZone)},
-      ${JSON.stringify(profile)}::jsonb, ${JSON.stringify(notifications)}::jsonb, now()
+      ${JSON.stringify(profile)}::text::jsonb, ${JSON.stringify(notifications)}::text::jsonb, now()
     )
     ON CONFLICT (organization_id, user_id) DO UPDATE
       SET locale = EXCLUDED.locale,
@@ -311,4 +320,109 @@ export async function saveHostedUserPreferences(
           profile = papercusp_auth.hosted_user_preferences.profile || EXCLUDED.profile,
           notification_preferences = EXCLUDED.notification_preferences,
           updated_at = now()`;
+}
+
+export interface DirectoryBindingInput {
+  organizationId: string;
+  userId: string;
+  externalOrganizationId: string;
+  directoryId: string;
+  directoryUserId: string;
+  authorizedGroupIds: readonly string[];
+  purpose: string;
+}
+
+export interface DirectoryBindingResult {
+  identityId: string;
+  subject: string;
+  authorizedGroupIds: string[];
+  status: 'active' | 'deactivated';
+  auditId: string;
+}
+
+export function validateDirectoryBinding(input: DirectoryBindingInput): DirectoryBindingInput & { authorizedGroupIds: string[] } {
+  const identifier = (value: unknown, field: string): string => {
+    if (typeof value !== 'string' || !value.trim() || value.length > 512) throw new TypeError(`directory_binding_invalid:${field}`);
+    return value.trim();
+  };
+  if (!Array.isArray(input.authorizedGroupIds) || input.authorizedGroupIds.length > 100) throw new TypeError('directory_binding_invalid:authorizedGroupIds');
+  const normalized = {
+    organizationId: identifier(input.organizationId, 'organizationId'), userId: identifier(input.userId, 'userId'),
+    externalOrganizationId: identifier(input.externalOrganizationId, 'externalOrganizationId'),
+    directoryId: identifier(input.directoryId, 'directoryId'), directoryUserId: identifier(input.directoryUserId, 'directoryUserId'),
+    authorizedGroupIds: [...new Set(input.authorizedGroupIds.map((id) => identifier(id, 'groupId')))].sort(),
+    purpose: identifier(input.purpose, 'purpose'),
+  };
+  assertGovernancePayloadSafe(normalized);
+  return normalized;
+}
+
+/** References describe revocation authority only. They never grant a role,
+ * link an email, or reactivate a removed identity or membership. */
+export class HostedDirectoryBindingManager {
+  constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  async set(principal: HostedPrincipal, raw: DirectoryBindingInput): Promise<DirectoryBindingResult> {
+    return this.change(principal, validateDirectoryBinding(raw), false);
+  }
+
+  async remove(principal: HostedPrincipal, raw: Omit<DirectoryBindingInput, 'authorizedGroupIds'>): Promise<DirectoryBindingResult> {
+    return this.change(principal, validateDirectoryBinding({ ...raw, authorizedGroupIds: [] }), true);
+  }
+
+  private async change(principal: HostedPrincipal, input: DirectoryBindingInput, remove: boolean): Promise<DirectoryBindingResult> {
+    if (!isHostedPrincipal(principal) || principal.activeOrganizationId !== input.organizationId || !principal.permissions.has('members:manage')) {
+      throw new Error('directory_binding_forbidden');
+    }
+    const subject = workosDirectoryIdentitySubject(input.externalOrganizationId, input.directoryId, input.directoryUserId);
+    return this.run<DirectoryBindingResult>(async (sql) => {
+      // Lock current authority in the write transaction; a previously resolved
+      // cookie is not durable administrator authority.
+      const organizations = await sql<{ id: string }[]>`
+        SELECT id FROM papercusp_auth.organizations
+         WHERE id = ${input.organizationId}::uuid AND identity_provider = 'workos'
+           AND external_organization_id = ${input.externalOrganizationId} AND status = 'active' FOR SHARE`;
+      if (!organizations[0]) throw new Error('directory_binding_organization_mismatch');
+      const actors = await sql<{ role: string; status: string }[]>`
+        SELECT membership.role, membership.status FROM papercusp_auth.organization_memberships AS membership
+        JOIN papercusp_auth.hosted_users AS actor ON actor.id = membership.user_id
+         WHERE membership.organization_id = ${input.organizationId}::uuid AND membership.user_id = ${principal.userId}::uuid
+           AND actor.status = 'active' FOR SHARE OF membership, actor`;
+      if (!actors[0] || !hostedPermissionsForMembership(actors[0]).has('members:manage')) throw new Error('directory_binding_forbidden');
+      const targets = await sql<{ id: string }[]>`
+        SELECT membership.id FROM papercusp_auth.organization_memberships AS membership
+        JOIN papercusp_auth.hosted_users AS target ON target.id = membership.user_id
+         WHERE membership.organization_id = ${input.organizationId}::uuid AND membership.user_id = ${input.userId}::uuid
+           AND target.status <> 'deleted' FOR SHARE OF membership, target`;
+      if (!targets[0]) throw new Error('directory_binding_member_not_found');
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`directory-binding:${subject}`}, 0))`;
+      const links = await sql<{ id: string; hosted_user_id: string; status: string; profile: Record<string, GovernanceJson> }[]>`
+        SELECT id, hosted_user_id, status, profile FROM papercusp_auth.external_identities
+         WHERE provider = 'workos-dsync' AND subject = ${subject} FOR UPDATE`;
+      const existing = links[0];
+      if (existing && existing.hosted_user_id !== input.userId) throw new Error('directory_binding_subject_conflict');
+      if (existing && existing.status !== 'active') throw new Error('directory_binding_inactive');
+      if (remove && !existing) throw new Error('directory_binding_not_found');
+      const profile = { ...(existing?.profile ?? {}), authorized_directory_groups: [...input.authorizedGroupIds] };
+      assertGovernancePayloadSafe(profile);
+      const rows = existing
+        ? await sql<{ id: string }[]>`
+            UPDATE papercusp_auth.external_identities SET profile = ${JSON.stringify(profile)}::text::jsonb,
+              status = ${remove ? 'deactivated' : 'active'},
+              deactivated_at = CASE WHEN ${remove} THEN now() ELSE NULL END, updated_at = now()
+             WHERE id = ${existing.id}::uuid RETURNING id`
+        : await sql<{ id: string }[]>`
+            INSERT INTO papercusp_auth.external_identities (hosted_user_id, provider, subject, profile)
+            VALUES (${input.userId}::uuid, 'workos-dsync', ${subject}, ${JSON.stringify(profile)}::text::jsonb) RETURNING id`;
+      const identityId = rows[0].id;
+      const auditId = await appendOrganizationAuditEvent({
+        organizationId: input.organizationId, actorKind: 'customer_user', actorId: principal.userId,
+        action: remove ? 'directory_binding.removed' : 'directory_binding.set', purpose: input.purpose,
+        targetType: 'external_identity', targetId: identityId,
+        metadata: { userId: input.userId, subject, previousGroups: existing?.profile.authorized_directory_groups ?? [],
+          authorizedGroups: [...input.authorizedGroupIds] },
+      }, sql);
+      return { identityId, subject, authorizedGroupIds: [...input.authorizedGroupIds], status: remove ? 'deactivated' : 'active', auditId };
+    });
+  }
 }

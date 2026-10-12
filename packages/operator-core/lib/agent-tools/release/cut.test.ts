@@ -206,7 +206,11 @@ describe('release:cut reclaim timing diagnostics', () => {
       options.onPhase?.({ phase: 'release-records', stage: 'finish', elapsedMs: 65_000, outcome: 'fulfilled' });
       return {} as never;
     });
-    reclaimRenderMock.mockReturnValueOnce({ counts: { reclaimable: 0, namedOnly: 0, protected: 0 } } as never);
+    // Partial render: only `counts` is read on this path. A checked assertion to the real
+    // return type, not an `as never` escape (lint:mock-cast-escape).
+    reclaimRenderMock.mockReturnValueOnce(
+      { counts: { reclaimable: 0, namedOnly: 0, protected: 0 } } as ReturnType<typeof renderReclaimPlan>,
+    );
     const log = vi.fn();
 
     const response = await tool.handler(

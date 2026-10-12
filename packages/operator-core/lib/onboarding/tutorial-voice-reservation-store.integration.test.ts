@@ -401,7 +401,7 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     await run(async tx => {
       expect(await validateTutorialVoiceLessonForUpdate(tx, input, provider)).toBe(true);
       expect(await validateTutorialVoiceLessonForUpdate(tx, { ...input,
-        lesson: { ...input.lesson, step: 'navigation' } }, provider)).toBe(false);
+        lesson: { version: 3, step: 'navigation', status: 'ready' } }, provider)).toBe(false);
       await expect(db.adminSql.begin(async writer => {
         await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
         await writer`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb

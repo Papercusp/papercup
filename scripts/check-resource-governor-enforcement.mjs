@@ -2240,6 +2240,43 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         !hasCalledResourceStartAlias(code);
     },
   },
+  {
+    path: "scripts/with-documenso-sandbox.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231), the same class as scripts/with-test-pg.mjs: an operator- or agent-invoked e2e harness wrapper (`node scripts/with-documenso-sandbox.mjs -- <command>`), never started by the operator, bg-host or a routine. It creates one private Docker network with a database, mail and Documenso app container, runs the wrapped command once, and removes every container and the network in `finally` before it returns. Its starts are six synchronous, timeout-bounded `spawnSync` calls to the Docker CLI and `openssl` (5-30 s) for readiness diagnostics, the test certificate and cleanup; `dockerAllocation`'s single injectable Docker CLI client, which is awaited until the daemon answers so cleanup cannot race a late allocation; and ONE wrapped command child. That child is `detached` only so the SIGINT/SIGTERM handler can signal its process group, and the wrapper awaits its exit. It holds no queue. When the source carries the Testcontainers Ryuk reaper, that reaper is the one thing that outlives the wrapper, by design and bounded: it is allocated through the same Docker client before anything else, with `--rm`, a 30 s no-client timeout and a 1 s reconnection timeout. So when the wrapper dies or closes its connection, the reaper removes this run's labelled containers and network, then exits and is removed. Without a reaper, nothing outlives the wrapper. Both shapes are pinned by matchesSource: exactly that start population, the process-group stop and the `finally` cleanup, plus the reaper's `--rm` and both timeouts when a reaper is present. An added start, alias or worker, a dropped cleanup, or an unbounded reaper falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const cleanupPinned = source.includes("REAPER_IMAGE")
+        ? source.includes("    try { await cleanup(); }\n    finally { reaper?.close(); }") &&
+          source.includes("await dockerAllocation(['run', '-d', '--rm', '--pull=never', '--name', name,") &&
+          source.includes("'-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);")
+        : source.includes("    await cleanup();");
+      return resourceStartCallCount(source) === 7 &&
+        [...code.matchAll(/\bspawnChild\s*\(/g)].length === 1 &&
+        source.includes("spawnChild = spawn, pendingAfterMs = 30_000,") &&
+        source.includes("child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,") &&
+        source.includes("try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already ended */ }") &&
+        cleanupPinned &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !/\b(?:fork|execFile|execFileSync)\s*\(/.test(code) &&
+        !/\bpromisify\s*\(/.test(code);
+    },
+  },
+  {
+    path: "packages/operator-core/lib/system-health/cluster-lag-watchdog.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for packages/operator-core/lib/system-health/cluster-lag-watchdog.ts (WI-6554700010009231): `pending` is the watchdog's per-worker recovery state, not a work queue. It maps a cluster worker id to whether that killed worker's exit has been observed. An entry is set only when the scan SIGKILLs a silent worker (and flipped on that worker's exit), and is deleted when the worker's heartbeat resumes or a replacement worker's first heartbeat arrives. So it holds at most one entry per cluster worker, carries no work to execute, and only decides whether the cluster-lag condition is still open; condition delivery is the separate ordered `delivery` chain. Pinned by matchesSource to that declaration, its heartbeat delete, and `pending` being the file's only queue-shaped write.",
+    matchesSource: (source) =>
+      source.includes("const pending = new Map<number, boolean>(); // worker id → exit observed") &&
+      source.includes("pending.delete(worker.id);") &&
+      [...stripCommentsAndStrings(source, "cluster-lag-watchdog.ts").matchAll(RESIDENT_QUEUE)]
+        .map((match) => match[1])
+        .join(",") === "pending,pending",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
@@ -2250,6 +2287,21 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-014 reviewed semantic disposition for semantic-dedup-probe-alarm.ts (WI-6554700010009231): the module-level `pending` Map holds one promise-chain TAIL per condition-key prefix, which serializes that prefix's alarm raise/recover delivery in arrival order. Each chained run belongs to the request that appended it, and that request awaits it; `finally` deletes the entry once the newest tail settles. So the map holds at most one entry per distinct prefix, the chain is never longer than the requests currently awaiting it, and nothing stays resident after they return. Pinned by matchesSource to that set/await/delete triple and to `pending` being the file's only queue-shaped write.",
+      matchesSource: (source) =>
+        source.includes("const pending = new Map<string, Promise<void>>();") &&
+        source.includes("pending.set(prefix, next);") &&
+        source.includes("try { await next; } finally { if (pending.get(prefix) === next) pending.delete(prefix); }") &&
+        [...stripCommentsAndStrings(source, "semantic-dedup-probe-alarm.ts").matchAll(RESIDENT_QUEUE)]
+          .map((match) => match[1])
+          .join(",") === "pending",
+    },
+  ],
   [
     "packages/operator-core/lib/endpoint-route/routes/transport/pgbouncer-pool-sample.mjs::resource-start-outside-admission",
     {

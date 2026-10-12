@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  validateDirectoryBinding,
   activeSupportAccessBanner,
   assertGovernancePayloadSafe,
   normalizeHostedLocale,
@@ -11,6 +12,16 @@ import {
 const NOW = new Date('2026-08-23T12:00:00.000Z');
 
 describe('hosted governance core', () => {
+  it('normalizes explicit immutable directory references and bounds group mappings', () => {
+    const input = { organizationId: 'org', userId: 'user', externalOrganizationId: 'workos-org',
+      directoryId: 'dir', directoryUserId: 'dsync-user', authorizedGroupIds: [' b ', 'a', 'b'], purpose: 'Directory setup' };
+    expect(validateDirectoryBinding(input).authorizedGroupIds).toEqual(['a', 'b']);
+    for (const field of ['directoryId', 'directoryUserId', 'externalOrganizationId', 'purpose'] as const) {
+      expect(() => validateDirectoryBinding({ ...input, [field]: '' })).toThrow(/directory_binding_invalid/);
+    }
+    expect(() => validateDirectoryBinding({ ...input, authorizedGroupIds: Array(101).fill('a') })).toThrow(/authorizedGroupIds/);
+    expect(() => validateDirectoryBinding({ ...input, purpose: 'Bearer abcdefghijklmnopqrstuvwxyz' })).toThrow(/credential-like/);
+  });
   it('rejects secret-bearing keys and values at any payload depth', () => {
     expect(() => assertGovernancePayloadSafe({ nested: { refresh_token: 'redacted' } }))
       .toThrow(/forbidden governance field/);

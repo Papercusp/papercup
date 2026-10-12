@@ -452,7 +452,7 @@ describe('P-008 predicate watch routing', () => {
   });
 
   it('happy path: await registers FIRST on the synthetic key, then the watch row, then ONE inline eval', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
     const awaitArg = vi.mocked(registerAwait).mock.calls[0][0] as Record<string, unknown>;
     expect(String(awaitArg.eventKey)).toMatch(/^predicate:[0-9a-f-]{36}$/);
@@ -469,7 +469,7 @@ describe('P-008 predicate watch routing', () => {
   });
 
   it('an inline first-eval ERROR unwinds the await and throws (no dangling waiter)', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     vi.mocked(evalPredicateWatch).mockResolvedValueOnce({ fired: false, matched: false, deactivated: false, error: 'role gate: denied' });
     await expect(call({ pattern: 'b', wake: true, predicate })).rejects.toThrow(/inline first eval.*role gate/s);
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 1, subscriberId: 'su-watcher' });
@@ -487,7 +487,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   };
 
   it('an identical active predicate JOINS the existing poller — no new row, no inline eval', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     vi.mocked(findMatchingActivePredicateWatch).mockResolvedValueOnce(existingRow as never);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
 
@@ -502,7 +502,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   });
 
   it('joining a row that is ALREADY true fires the new subscriber immediately, without a key-wide emit', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     vi.mocked(findMatchingActivePredicateWatch).mockResolvedValueOnce({ ...existingRow, lastEval: true, lastValue: 9 } as never);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
 
@@ -514,7 +514,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   });
 
   it('the dedup lookup is scoped by workspace/role/harness/tool/args/path/op/value/interval/once', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
     expect(findMatchingActivePredicateWatch).toHaveBeenCalledWith(
       expect.objectContaining({

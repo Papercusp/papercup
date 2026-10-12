@@ -28,15 +28,22 @@ const foldEscalation = vi.mocked(foldEscalationResolution);
 type EscalationFixture = Parameters<typeof foldEscalationResolution>[0];
 const tool = (await import('./read')).default;
 
-const envelope = (msgId: string, body = 'x'.repeat(2615)) => ({
-  msg_id: msgId,
-  from: 'su-l1',
-  to: ['su-leader'],
-  kind: 'note',
-  ts: '2026-07-12T00:00:00Z',
-  summary: 'root-cause report',
-  body,
-});
+/** The envelope a `found` resolution carries — derived from the resolver's own result type. */
+type FoundMessage = Extract<Awaited<ReturnType<typeof resolveMessageRef>>, { status: 'found' }>['message'];
+
+// `kind` must be a real CoordKind: the former `'note'` is not one, which is why every
+// `found` fixture below needed an `as never` escape. `satisfies` keeps the literal
+// (non-escalation, so the handler's only kind branch is not taken) and schema-checks it.
+const envelope = (msgId: string, body = 'x'.repeat(2615)) =>
+  ({
+    msg_id: msgId,
+    from: 'su-l1',
+    to: ['su-leader'],
+    kind: 'message',
+    ts: '2026-07-12T00:00:00Z',
+    summary: 'root-cause report',
+    body,
+  }) satisfies FoundMessage;
 
 async function run(args: unknown, ctx: unknown = {}) {
   const res = (await tool.handler(args as never, ctx as never)) as { data?: unknown; content?: { text: string }[] };
@@ -55,7 +62,7 @@ describe('coord:read', () => {
       msgId: 'mrh4rf15',
       message: full,
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4rf15' });
 
@@ -83,7 +90,7 @@ describe('coord:read', () => {
       msgId: 'known-private-message',
       message: envelope('known-private-message', 'private body'),
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const out = await run(
       { msg_id: 'known-private-message' },
@@ -104,7 +111,7 @@ describe('coord:read', () => {
       msgId: 'judge-evidence',
       message: full,
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const out = await run(
       { msg_id: 'judge-evidence' },
@@ -131,7 +138,7 @@ describe('coord:read', () => {
       msgId: 'broadcast',
       message: { ...envelope('broadcast', 'broadcast body'), to: ['*'] },
       resolvedFrom: 'exact',
-    } as never);
+    });
     const broadcast = await run(
       { msg_id: 'broadcast' },
       {
@@ -147,7 +154,7 @@ describe('coord:read', () => {
       msgId: 'unverified-alias',
       message: { ...envelope('unverified-alias', 'private body'), to: ['judge-session'] },
       resolvedFrom: 'exact',
-    } as never);
+    });
     const unverifiedAlias = await run(
       { msg_id: 'unverified-alias' },
       {
@@ -172,7 +179,7 @@ describe('coord:read', () => {
       msgId: 'reader-message',
       message: full,
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const out = await run({ msg_id: 'reader-message' }, { role: 'operator' });
 
@@ -189,7 +196,7 @@ describe('coord:read', () => {
       msgId: 'mrh4rf15-0000-abc',
       message: envelope('mrh4rf15-0000-abc', 'resolved'),
       resolvedFrom: 'prefix',
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4rf15' });
 
@@ -279,7 +286,7 @@ describe('coord:read structured response', () => {
       msgId: 'mrh4rf15',
       message: envelope('mrh4rf15'),
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
     const projected = lookupByMcpName('coord:read')!;

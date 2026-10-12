@@ -3275,6 +3275,33 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('content guard: quarantines a zero-byte TypeScript module while unrelated source commits, then recovers it', async () => {
+    writeFileSync(join(repo, 'empty-source.ts'), '');
+    writeFileSync(join(repo, 'unrelated.ts'), 'export const ready = true;\n');
+
+    const held = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(held.status).toBe('synced');
+    expect(held.contentErrors).toContainEqual(expect.objectContaining({
+      scope: 'superproject',
+      file: 'empty-source.ts',
+      detectorKey: 'empty-ts-source',
+      fixerRole: 'content-fixer',
+      error: expect.stringContaining('zero bytes'),
+    }));
+    expect(git(originDir, 'show', 'main:unrelated.ts')).toContain('ready = true');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('empty-source.ts');
+    expect(git(repo, 'status', '--porcelain', '--', 'empty-source.ts')).toContain('empty-source.ts');
+
+    writeFileSync(join(repo, 'empty-source.ts'), 'export const restored = true;\n');
+    const recovered = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', 'main:empty-source.ts')).toContain('restored = true');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('content guard is a no-op when no detector matches the dirty files (clean tree commits as today)', async () => {
     writeFileSync(join(repo, 'plain.txt'), 'no detector targets .txt\n');
     const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });

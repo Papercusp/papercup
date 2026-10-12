@@ -27,11 +27,14 @@ vi.mock('../../pot/contribute-upstream', () => ({ contributeUpstream: vi.fn() })
 vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_POT_SLUG: 'papercusp-platform' }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
+import type { AgentIdentity } from '../coordination/identity';
 import { contributeUpstream } from '../../pot/contribute-upstream';
 import { recordFlagAudit } from '../../flag-audit';
 const ident = vi.mocked(resolveAgentIdentity);
 const contribM = vi.mocked(contributeUpstream);
 const auditM = vi.mocked(recordFlagAudit);
+/** Partial identity — the handler reads only `source`. A checked assertion, not `as never`. */
+const identity = (source: AgentIdentity['source']) => ({ source }) as AgentIdentity;
 const tool = (await import('./contribute')).default;
 
 type Out = { content: { text: string }[] };
@@ -49,7 +52,7 @@ beforeEach(() => {
 
 describe('platform:contribute guards + delegation', () => {
   it('refuses a bee (fleet-spawn) — root-only — with no outward action', async () => {
-    ident.mockReturnValue({ source: 'fleet-spawn' } as never);
+    ident.mockReturnValue(identity('fleet-spawn'));
     const b = body(await call({ kind: 'knowledge-pack' }));
     expect(b).toMatchObject({ ok: false, error: 'platform_contribute_root_only' });
     expect(contribM).not.toHaveBeenCalled();
@@ -80,7 +83,7 @@ describe('platform:contribute guards + delegation', () => {
   });
 
   it('keeps reports root-only too, without invoking the contribution core', async () => {
-    ident.mockReturnValue({ source: 'fleet-spawn' } as never);
+    ident.mockReturnValue(identity('fleet-spawn'));
     expect(body(await call({ kind: 'report', confirm: true, report: { text: 'Export crashes' } })))
       .toMatchObject({ error: 'platform_contribute_root_only' });
     expect(contribM).not.toHaveBeenCalled();

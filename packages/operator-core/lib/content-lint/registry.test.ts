@@ -141,7 +141,7 @@ describe('rootRedirectArtifactDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all thirteen seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all fourteen seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       // EI-21230011589307899: ordered FIRST. Every other detector here guards a
       // BUILD, where a miss is repaired by the next commit; this one guards git
@@ -162,6 +162,9 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // message must be recorded first. It also catches the SILENT form, where
       // the file parses and ts-parse is structurally blind.
       'sql-comment-backtick',
+      // Empty source modules are parseable, so quarantine a zero-byte executable
+      // TS file before git-sync can publish an accidental truncate/write state.
+      'empty-ts-source',
       // EI-5240: the bundler's own transform verdict must run before the
       // TypeScript-only check, which can accept source that esbuild rejects.
       'esbuild-transform',

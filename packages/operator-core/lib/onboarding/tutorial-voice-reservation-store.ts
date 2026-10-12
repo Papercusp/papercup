@@ -28,17 +28,20 @@ export async function withTutorialVoiceTenantContext<T>(sql: Sql, context: Verif
     SELECT current_user AS role, current_setting('app.organization_id', true) AS organization,
       current_setting('app.user_id', true) AS "user", current_setting('app.workspace_id', true) AS workspace`;
   if (before?.role !== 'hosted_service') throw new Error('tutorial_service_context_required');
-  return transaction.savepoint(async scoped => {
+  // The read's result is carried out of the savepoint by closure: savepoint()'s
+  // return type is UnwrapPromiseArray<T>, which a generic T cannot resolve to T.
+  let result!: T;
+  await transaction.savepoint(async scoped => {
     const tx = scoped as unknown as Sql;
     await tx`SELECT set_config('app.organization_id', ${tenant.organizationId}, true),
       set_config('app.user_id', ${tenant.userId}, true), set_config('app.workspace_id', ${tenant.workspaceId ?? ''}, true)`;
     await tx.unsafe('SET LOCAL ROLE hosted_app');
-    const result = await read(tx);
+    result = await read(tx);
     await tx.unsafe('SET LOCAL ROLE hosted_service');
     await tx`SELECT set_config('app.organization_id', ${before.organization ?? ''}, true),
       set_config('app.user_id', ${before.user ?? ''}, true), set_config('app.workspace_id', ${before.workspace ?? ''}, true)`;
-    return result;
   });
+  return result;
 }
 
 /** Server composition supplies the provider, never an identity from a request.

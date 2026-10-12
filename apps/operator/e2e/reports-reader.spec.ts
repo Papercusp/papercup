@@ -2,6 +2,8 @@
 import { test, expect } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src/components/reports/reports-test-fixture';
+import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport } from './_reports-proof';
+import type { Page } from '@playwright/test';
 
 const report = {
   ...reportFullFixture,
@@ -12,7 +14,11 @@ const report = {
 const previous = { ...report, report_id: 'edition-1', supersedes_report_id: null, title: 'Original reader fixture', body_md: '## Original finding\n\nOriginal evidence.' };
 const summary = { ...reportSummaryFixture, title: report.title, summary: report.summary };
 
-test.beforeEach(async ({ page }) => {
+const finishReadiness = new WeakMap<Page, () => Promise<void>>();
+test.beforeEach(async ({ page }, testInfo) => { finishReadiness.set(page, await observeReportReadiness(page, testInfo)); });
+test.afterEach(async ({ page }) => { await finishReadiness.get(page)?.(); });
+
+async function stubReportFlags(page: Page) {
   await page.route('**/api/flags/bootstrap', route => route.fulfill({ contentType: 'application/json',
     body: JSON.stringify({ flags: { 'papercusp-reports-library': true }, evaluatedAt: Date.now(), source: 'override' }) }));
   await page.route('**/api/flags/stream', route => route.fulfill({ contentType: 'text/event-stream', body: ': fixture flags\n\n' }));
@@ -21,7 +27,10 @@ test.beforeEach(async ({ page }) => {
     if (route.request().method() === 'PATCH') await route.fulfill({ contentType: 'application/json', body: '{"payload":{}}' });
     else await route.continue();
   });
-});
+}
+
+test.describe('fixture refined reader', () => {
+test.beforeEach(async ({ page }) => { await stubReportFlags(page); });
 
 for (const width of [1440, 900, 390]) {
   test(`refined reader remains readable at ${width}px and its outline scrolls the report`, async ({ page }, testInfo) => {
@@ -71,3 +80,31 @@ for (const width of [1440, 900, 390]) {
     sync.assertServed('reports.list', 'reports.get', 'reports.lineage', 'userPreferences.current');
   });
 }
+});
+
+// With no input this always runs in CI using calibrated sync fixtures. An explicit
+// complete reports:get receipt exercises the same instrument against the real reader,
+// with no flags or report-data stubs. Select this case alone for a live acceptance run.
+test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
+  const input = process.env.OPERATOR_REPORT_PROOF_JSON;
+  const expected = input ? await readPublishedReportProof(input) : report;
+  await captureReportClipboard(page);
+  if (!input) {
+    await stubReportFlags(page);
+    await stubSyncQueries(page, name => {
+      if (name === 'reports.list' || name === 'reports.lineage') return [summary];
+      if (name === 'reports.get') return [report];
+      if (name === 'userPreferences.current') return [{ payload: {} }];
+      return undefined;
+    });
+  }
+  await navigateToPublishedReport(page, expected);
+  await verifyPublishedReportAndOfflineExport(page, expected, testInfo);
+});
+
+test('report proof rejects a successful HTTP response with an unrelated route', async ({ page }, testInfo) => {
+  await page.route('**/reports?*', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Operator</title><h1>Accounts</h1>' }));
+  const response = await page.goto('/reports?sel=edition-2');
+  expect(response?.status()).toBe(200);
+  await expect(verifyPublishedReportAndOfflineExport(page, report, testInfo, 250)).rejects.toThrow('The selected Reports reader must mount');
+});

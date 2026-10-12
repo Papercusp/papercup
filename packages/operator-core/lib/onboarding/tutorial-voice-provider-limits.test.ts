@@ -25,7 +25,7 @@ describe('server tutorial signed URL issuer', () => {
   function setup() {
     const events: string[] = [];
     const store = { reserve: vi.fn(async () => { events.push('reserve'); return reservation; }),
-      beginIssuance: vi.fn(async () => { events.push('attempt'); return 'attempt-one'; }),
+      beginIssuance: vi.fn(async (): Promise<string | null> => { events.push('attempt'); return 'attempt-one'; }),
       recordProviderConversation: vi.fn(async () => { events.push('receipt'); return true; }) };
     const transport = vi.fn(async () => { events.push('mint'); return Response.json({ signed_url: signedUrl }); });
     const disabled = vi.fn(async () => false);
@@ -51,7 +51,7 @@ describe('server tutorial signed URL issuer', () => {
     const s = setup(); read.mockResolvedValueOnce(null);
     expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
     expect(s.store.beginIssuance).not.toHaveBeenCalled(); expect(s.transport).not.toHaveBeenCalled();
-    const t = setup(); t.store.beginIssuance.mockResolvedValueOnce(null as never);
+    const t = setup(); t.store.beginIssuance.mockResolvedValueOnce(null);
     expect(await t.issue()).toEqual({ ok: false, reason: 'unavailable' }); expect(t.transport).not.toHaveBeenCalled();
   });
   it('retains the trusted receipt when cancellation arrives with the provider response', async () => {
