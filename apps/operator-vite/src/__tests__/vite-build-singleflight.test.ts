@@ -35,7 +35,7 @@ import { join, resolve } from 'node:path';
 
 const SCRIPT = resolve(__dirname, '../../bin/vite-build-singleflight');
 
-let tmp: string;
+let tmp = '';
 const children: ChildProcess[] = [];
 
 function launch(env: Record<string, string>): ChildProcess {
@@ -128,7 +128,10 @@ afterEach(() => {
       /* already gone */
     }
   }
-  if (tmp !== undefined) rmSync(tmp, { recursive: true, force: true });
+  if (tmp) {
+    rmSync(tmp, { recursive: true, force: true });
+    tmp = '';
+  }
 });
 
 describe('vite-build-singleflight — build serialization (EI-9836)', () => {
