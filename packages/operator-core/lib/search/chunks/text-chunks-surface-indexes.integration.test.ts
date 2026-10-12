@@ -1,4 +1,4 @@
-/** WI-10005483: execute migration1469 and exercise the real shared ANN builder. */
+/** WI-10005483 / D-048: execute the 1469→1470 chain and the real shared ANN builder. */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
@@ -6,15 +6,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { chunkAwareVectorLegSql, sharedChunkStore, withIterativeScan, type ChunkSurface } from '@papercusp/search';
 
-const SURFACES = ['work_items', 'plans', 'operator_turns', 'report'] as const;
+const SURFACES = ['work_items', 'plans', 'operator_turns'] as const;
+const SEEDED_SURFACES = [...SURFACES, 'report'] as const;
 const DIMS = 768;
 const QUERY = `[1,${Array(DIMS - 1).fill(0).join(',')}]`;
 const vector = (angle: number) => `[${Math.cos(angle)},${Math.sin(angle)},${Array(DIMS - 2).fill(0).join(',')}]`;
-const armed = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql/1469-text-chunks-surface-hnsw.sql');
-const MIGRATION = readFileSync(existsSync(armed) ? armed : `${armed}.DRAFT`, 'utf8');
+const migration = (file: string) => {
+  const armed = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql', file);
+  return readFileSync(existsSync(armed) ? armed : `${armed}.DRAFT`, 'utf8');
+};
+const MIGRATION = migration('1469-text-chunks-surface-hnsw.sql');
+const CORRECTION = migration('1470-drop-unused-report-chunk-hnsw.sql');
 const indexName = (surface: string) => `text_chunks_${surface}_embedding_hnsw_idx`;
 
-describe('migration1469 shared-surface HNSW indexes', () => {
+describe('migration1469→1470 shared-surface HNSW indexes', () => {
   let db: MigratedTestDb;
   let sql: postgres.Sql;
 
@@ -46,7 +51,7 @@ describe('migration1469 shared-surface HNSW indexes', () => {
   });
 
   beforeAll(async () => {
-    db = await createFreshTestDb({ prefix: 'chunksurface1469' });
+    db = await createFreshTestDb({ prefix: 'chunksurface1470' });
     sql = postgres(db.url, { max: 1, onnotice: () => {} });
     await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS vector;
       CREATE SCHEMA harness_shared;
@@ -68,7 +73,7 @@ describe('migration1469 shared-surface HNSW indexes', () => {
       embedding: vector(1.5 + i / 1000), embedding_profile: 'profile_ok', embedding_mode: 'gemma',
     }));
     await sql`INSERT INTO harness_shared.parents ${sql(parents)}`;
-    const chunks = [...SURFACES, 'consult_questions', 'other'].flatMap((name, j) =>
+    const chunks = [...SEEDED_SURFACES, 'consult_questions', 'other'].flatMap((name, j) =>
       Array.from({ length: 80 }, (_, i) => ({
         surface: name, parent_key: [String(i + 1)], chunk_idx: 0, anchor: `${name}-${i + 1}`,
         // A missing surface/profile predicate changes the answer, not just its plan.
@@ -84,14 +89,19 @@ describe('migration1469 shared-surface HNSW indexes', () => {
     await db?.drop();
   });
 
-  it('changes all four generic ANN chunk plans from the global to their surface index, and replays safely', async () => {
+  it('keeps three generic ANN surface indexes, removes the unused report index, and replays the chain safely', async () => {
     for (const name of SURFACES) {
       const before = await plan(name);
       expect(before).toContain('Index Scan using text_chunks_embedding_hnsw_idx');
       expect(before).not.toContain(indexName(name));
     }
     await sql.begin(async tx => { await tx.unsafe(MIGRATION); });
-    await sql.begin(async tx => { await tx.unsafe(MIGRATION); });
+    // Prove the correction removes an existing index, rather than vacuously
+    // succeeding because the fixture never created it.
+    expect((await sql`SELECT to_regclass('harness_shared.text_chunks_report_embedding_hnsw_idx') AS name`)[0].name)
+      .toBe('harness_shared.text_chunks_report_embedding_hnsw_idx');
+    await sql.begin(async tx => { await tx.unsafe(CORRECTION); });
+    await sql.begin(async tx => { await tx.unsafe(MIGRATION); await tx.unsafe(CORRECTION); });
     const rows = await sql<{ name: string; valid: boolean; ready: boolean; predicate: string }[]>`
       SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready,
         pg_get_expr(i.indpred, i.indrelid) AS predicate
@@ -105,6 +115,7 @@ describe('migration1469 shared-surface HNSW indexes', () => {
     }
     expect(rows.find(r => r.name === 'text_chunks_embedding_hnsw_idx')).toMatchObject({ valid: true, ready: true });
     expect(rows.find(r => r.name === indexName('consult_questions'))).toMatchObject({ valid: true, ready: true });
+    expect(rows.find(r => r.name === indexName('report'))).toBeUndefined();
   }, 120_000);
 
   it.each(SURFACES)('%s keeps eligible parents, the correct vector profile and best chunk anchors', async name => {
@@ -114,5 +125,20 @@ describe('migration1469 shared-surface HNSW indexes', () => {
     expect(rows.map(r => r.id)).toEqual(['2', '4', '6', '8', '10']);
     expect(rows.map(r => r.matched_anchor)).toEqual(['2', '4', '6', '8', '10'].map(id => `${name}-${id}`));
     rows.forEach((r, i) => expect(Number(r.distance)).toBeCloseTo(1 - Math.cos(.01 + (2 * i + 1) / 200 + SURFACES.indexOf(name) / 10000), 5));
+  });
+
+  it('keeps exact report chunk ranking and filters after retiring its unused ANN index', async () => {
+    const rows = await sql<{ id: string; distance: number }[]>`
+      SELECT p.id, MIN(c.embedding <=> ${QUERY}::vector) AS distance
+      FROM harness_shared.text_chunks c
+      JOIN harness_shared.parents p ON p.id = c.parent_key[1]
+      WHERE c.surface = 'report' AND p.eligible
+        AND c.embedding_profile = 'profile_ok' AND c.embedding_mode = 'gemma'
+      GROUP BY p.id ORDER BY distance LIMIT 5`;
+    expect(rows.map(r => r.id)).toEqual(['2', '4', '6', '8', '10']);
+    rows.forEach((r, i) => expect(Number(r.distance)).toBeCloseTo(
+      1 - Math.cos(.01 + (2 * i + 1) / 200 + SEEDED_SURFACES.indexOf('report') / 10000), 5));
+    expect((await sql`SELECT to_regclass('harness_shared.text_chunks_report_embedding_hnsw_idx') AS name`)[0].name)
+      .toBeNull();
   });
 });

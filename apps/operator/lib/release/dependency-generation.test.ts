@@ -670,6 +670,7 @@ describe('immutable dependency generation', () => {
       ).toEqual([
         'source-manifest-before',
         'cache-validation',
+        'lock-tree-audit',
         'source-manifest-after-cache',
       ]);
 
