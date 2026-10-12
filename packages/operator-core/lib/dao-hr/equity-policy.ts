@@ -332,7 +332,7 @@ export interface OfferEquityTerms {
 export function resolveOfferTermsFrom(
   policy: EquityPolicySettings,
   policyVersion: number | null,
-  input: { role: string; level: string; overrides?: unknown },
+  input: { role: string; level: string; overrides?: unknown; amendmentBase?: OfferEquityTerms },
 ): OfferEquityTerms {
   const role = text('role', input.role, 120);
   const level = text('level', input.level, 60);
@@ -345,8 +345,18 @@ export function resolveOfferTermsFrom(
     return value;
   };
   const fallback = policy.defaultGrants.find(g => g.role.toLowerCase() === role.toLowerCase() && g.level.toLowerCase() === level.toLowerCase());
-  const shares = overrides.shares === undefined ? fallback?.shares : within('shares', overrides.shares, b.sharesMin, b.sharesMax);
+  const base = input.amendmentBase;
+  // Prospective hiring defaults do not rewrite an existing signed engagement.
+  // Only a changed share amount is subject to today's offer bounds.
+  const shares = overrides.shares === undefined ? base?.shares ?? fallback?.shares :
+    base && overrides.shares === base.shares ? base.shares : within('shares', overrides.shares, b.sharesMin, b.sharesMax);
   if (shares === undefined) fail('invalid_input', `no default grant for ${role}/${level}; the offer must set shares`);
+  if (base) {
+    if ((overrides.vestingDays !== undefined && overrides.vestingDays !== base.vestingDays) ||
+      (overrides.cliffDays !== undefined && overrides.cliffDays !== base.cliffDays))
+      fail('invalid_input', 'An amendment preserves the signed vesting schedule.');
+    return { ...base, shares, policyVersion };
+  }
   const vestingDays = overrides.vestingDays === undefined ? policy.vestingDays : within('vestingDays', overrides.vestingDays, b.vestingDaysMin, b.vestingDaysMax);
   const cliffDays = overrides.cliffDays === undefined ? policy.cliffDays : within('cliffDays', overrides.cliffDays, b.cliffDaysMin, b.cliffDaysMax);
   if (cliffDays > vestingDays) fail('override_out_of_bounds', 'the cliff cannot be longer than the vesting length');
