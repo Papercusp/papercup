@@ -81,7 +81,7 @@ function enumerate(raw: string, file: string) {
       // annotations explicitly too; correcting their dispositions needs reviewed seed
       // amendments, while this census must still catch missed runtime fields.
       if (healthPath && ts.isIdentifier(node.name) && /^(?:alarm|alarming|alert|alerting|degraded|unhealthy|breached)$/.test(node.name.text) &&
-          !node.questionToken && node.type) {
+          (ts.isVariableDeclaration(node) || !node.questionToken) && node.type) {
         // A parameter's annotation may be followed by `) => ...` on the same line;
         // those closing tokens are part of the scanner's broad syntactic row span.
         const value = (masked.slice(node.type.getStart(sf)).match(/^[^,;\n}]+/)?.[0] ?? '').trim();
