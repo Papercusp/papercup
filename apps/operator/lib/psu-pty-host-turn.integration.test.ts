@@ -93,6 +93,82 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+it.each(['retry', 'late-native'] as const)(
+  'keeps a repainting tagged wake pending until native submission: %s',
+  async (scenario) => {
+    const root = mkdtempSync(join(tmpdir(), 'pty-submit-ack-'));
+    const projects = join(root, 'projects', 'fixture');
+    mkdirSync(projects, { recursive: true });
+    const transcript = join(projects, 'native.jsonl');
+    const ownerId = uniqueOwner(`SUBMIT-${scenario}`);
+    const sock = socketPathFor(ownerId);
+    const log = eventLogPathForOwner(ownerId);
+    const marker = '⟦turn-origin:wake-pump nonce:6554700010008912⟧';
+    const data = `${marker}\nverify the exact staged wake`;
+    const deliveryId = `submit-ack-${scenario}`;
+    const { io, captured } = fakeIo();
+    const childCode = [
+      "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "let line='',crs=0;process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\x04'){process.exit(0);return;}",
+      "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
+      "if(process.env.TEST_ACCEPT==='retry'&&crs===2){",
+      "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:line}})+'\\n');",
+      "process.stdout.write('NATIVE_ACCEPTED\\n');line='';}}});",
+      'setTimeout(()=>process.exit(0),18000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {},
+      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
+      }),
+    });
+    const events = () => existsSync(log)
+      ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const envelope = { mode: 'turn' as const, ownerId, data, deliveryId };
+      // Acceptance remains immediate even though the real submit pipeline is
+      // pending. The child's first Enter only repaints its unchanged composer.
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      expect(await waitForOutput(captured, 'REPAINT:1')).toBe(true);
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && !events().some((row) =>
+        row.kind === (scenario === 'retry' ? 'turn-delivered' : 'submit-verify-unconfirmed'))) await sleep(20);
+      if (scenario === 'retry') {
+        expect(captured()).toContain('NATIVE_ACCEPTED');
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'turn-delivered', confirmed: 'native', resubmits: 1 }));
+      } else {
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'submit-verify-unconfirmed', reason: 'native-submission-unconfirmed' }));
+        expect(events().some((row) => row.kind === 'turn-delivered')).toBe(false);
+        expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+        // A slow backend can persist the written prompt after verification's
+        // window. Reconcile that exact row without pasting the text again.
+        writeFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(),
+          message: { role: 'user', content: data } }) + '\n');
+      }
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+      expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(log, { force: true });
+    }
+  },
+  20_000,
+);
+
 it('defers an already-admitted wake before writing when carry becomes pending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
   const ownerId = uniqueOwner('QUEUED-CARRY');
@@ -1656,6 +1732,7 @@ function silentChildCode(ttlMs: number): string {
   // stdout and falsely look like output from a submitted turn.
   return (
     "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
+    "process.stdout.write('RAW_READY\\n');" +
     `process.stdin.resume();setTimeout(()=>process.exit(0),${ttlMs});`
   );
 }
@@ -1901,7 +1978,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const ownerId = uniqueOwner('SUBMIT-UNCONFIRMED');
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
-      const { io } = fakeIo();
+      const { io, captured } = fakeIo();
 
       let exitCode: number | null = null;
       let exitSignal: string | null = null;
@@ -1945,6 +2022,9 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
 
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
+      // Discovery exists before Node enters raw mode. Wait for that boundary
+      // so kernel line-discipline echo cannot stand in for child acceptance.
+      expect(await waitForOutput(captured, 'RAW_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
       expect(await injectIntoHost(host!.sock, { mode: 'turn', data: 'never-confirmed' })).toBe(true);
 
       // Wait for the verifier to spend its whole CR budget and give up. Polling
@@ -3280,6 +3360,18 @@ describe('owner keystrokes during submit verification (WI-10001508)', () => {
         const submitted = await waitForOutput(captured, 'SUBMIT:', 6000);
         expect(submitted, `captured=${JSON.stringify(captured().slice(-600))}`).toBe(true);
         expect(captured()).toContain('KICKOFF-CARRY');
+        // The initial CR can already produce SUBMIT before keyboard overlap
+        // aborts verification. Require the settled retry's receipt too, so an
+        // obsolete input baseline cannot spin forever behind a passing echo.
+        const settledDeadline = Date.now() + 6000;
+        while (Date.now() < settledDeadline) {
+          rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+          if (rows.some((row) => row.kind === 'turn-delivered')) break;
+          await sleep(25);
+        }
+        expect(rows.some((row) => row.kind === 'turn-delivered'),
+          `kinds=${JSON.stringify(rows.map((row) => row.kind))}`).toBe(true);
       } finally {
         if (typing) clearInterval(typing);
         await injectIntoHost(socketPathFor(ownerId), {

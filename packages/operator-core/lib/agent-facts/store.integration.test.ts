@@ -296,6 +296,38 @@ afterEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.agent_facts');
 });
 
+describe('wall lapse exact recovery reader', () => {
+  it('measures reassertion or explicit retraction, preserving evicted, absent and foreign identities', async () => {
+    const identity = { workspaceId: WS, scope: 'owner' as const, scopeRef: 'su-wall', key: 'wall:recovery' };
+    await assertFact({ ...identity, body: 'Owner action pending', createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 day' WHERE key = ${identity.key}`;
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed).toHaveLength(1);
+    expect(lapsed[0]).toMatchObject({ ...identity, sourceHive: null });
+    const read = () => listLapsedWallFacts({ recoveryFor: [identity] }, db.sql);
+    expect((await read())[0].recovered).toBe(false);
+    await assertFact({ ...identity, body: 'Wall reaffirmed', createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    expect((await read())[0].recovered).toBe(true);
+    expect(await listLapsedWallFacts({}, db.sql)).toEqual([]);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 day'
+      WHERE key = ${identity.key} AND superseded_at IS NULL`;
+    await retractFact({ ...identity, reason: 'Explicit owner disposition', retractedBy: 'su-int' }, db.sql);
+    expect((await read())[0].recovered).toBe(true);
+    await db.sql`UPDATE harness_shared.agent_facts SET evicted_at = now()
+      WHERE key = ${identity.key} AND superseded_at IS NULL`;
+    expect((await read())[0].recovered).toBe(false);
+    expect(await listLapsedWallFacts({ recoveryFor: [{ ...identity, scopeRef: 'su-other' }] }, db.sql)).toEqual([]);
+    expect(await listLapsedWallFacts({ recoveryFor: [{ ...identity, sourceHive: 'peer' }] }, db.sql)).toEqual([]);
+    await db.sql`INSERT INTO harness_shared.agent_facts
+      (workspace_id, scope, scope_ref, key, body, created_by, expires_at, source_hive)
+      VALUES (${WS}, 'owner', 'su-wall', ${identity.key}, 'Foreign wall still lapsed', 'su-peer',
+        now() - interval '1 day', 'peer')`;
+    expect((await listLapsedWallFacts({ recoveryFor: [{ ...identity, sourceHive: 'peer' }] }, db.sql))[0])
+      .toMatchObject({ sourceHive: 'peer', recovered: false });
+    expect(await listLapsedWallFacts({ recoveryFor: [] }, db.sql)).toEqual([]);
+  });
+});
+
 // P-008 (c) / D-012 / D-077 — the cell version is minted by the REAL stamp
 // trigger (mig 693) and must survive the fold, or the watermark surface has no
 // cursor to advance. This is the leg that would have silently no-op'd if the

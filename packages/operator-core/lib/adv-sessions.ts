@@ -20,6 +20,7 @@ import type { SuAgent } from './su-agents';
 import { caveat, type FieldCaveat } from './field-reliability';
 import { trackDetached } from './detached-imports';
 import { recordSessionIdentityReanchor } from './session-identity-attribution';
+import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 /**
  * Log a best-effort read/write failure UNLESS it's PG's undefined_table
@@ -1950,23 +1951,23 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       let rows: OwnerNativeSessionRow[];
       if (opts.advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
-        rows = await sql<OwnerNativeSessionRow[]>`
+        rows = await traceNamedQueryStage('native-session-verifier-owner-row-lookup', () => sql<OwnerNativeSessionRow[]>`
           SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
-        `;
+        `);
         if (rows.length === 0) {
           return { binding: 'foreign', boundSessionId: null, advSessionId: null };
         }
       } else {
         phase = 'owner_candidate_rows_lookup';
-        rows = await sql<OwnerNativeSessionRow[]>`
+        rows = await traceNamedQueryStage('native-session-verifier-owner-candidate-rows-lookup', () => sql<OwnerNativeSessionRow[]>`
           SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = ${opts.ownerId}
            ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
            LIMIT 20
-        `;
+        `);
       }
       phase = 'row_classification';
       return classifyOwnerNativeSessionRows(rows, opts.sessionId);
@@ -1976,30 +1977,32 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       // A bound match inside the request's RLS scope is sufficient. Negative
       // results need the existing global read to preserve cross-workspace
       // unbound/foreign semantics exactly.
-      const scoped = await withWorkspace(opts.workspaceId, classifyRows, {
-        readOnly: true,
-        acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
-        acquireRetries: 0,
-        statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
-        lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
-      });
+      const scoped = await traceNamedQueryStage('native-session-verifier-workspace-transaction', () =>
+        withWorkspace(opts.workspaceId!, classifyRows, {
+          readOnly: true,
+          acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+          acquireRetries: 0,
+          statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+          lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+        }));
       if (scoped.binding === 'bound') return scoped;
     }
 
-    return await boundedOrgTxn(classifyRows, {
-      readOnly: true,
-      acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
-      // postgres-js cannot cancel a begin that is still queued when the local
-      // acquisition deadline wins. This verifier runs before every MCP call, so
-      // retrying would add another pending org-admin acquisition per request.
-      // Fail closed on the first measured timeout instead of amplifying that queue.
-      acquireRetries: 0,
-      // This verifier runs before every MCP tool call, so an overly short global
-      // override can turn normal org-admin pool queuing into an auth failure.
-      // Keep query and lock budgets narrow after a connection has been acquired.
-      statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
-      lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
-    });
+    return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
+      boundedOrgTxn(classifyRows, {
+        readOnly: true,
+        acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+        // postgres-js cannot cancel a begin that is still queued when the local
+        // acquisition deadline wins. This verifier runs before every MCP call, so
+        // retrying would add another pending org-admin acquisition per request.
+        // Fail closed on the first measured timeout instead of amplifying that queue.
+        acquireRetries: 0,
+        // This verifier runs before every MCP tool call, so an overly short global
+        // override can turn normal org-admin pool queuing into an auth failure.
+        // Keep query and lock budgets narrow after a connection has been acquired.
+        statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+        lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+      }));
   } catch (error) {
     // Keep the original error and fail-closed behavior, but expose the last
     // verifier phase to the pre-dispatch telemetry seam without logging SQL or row data.

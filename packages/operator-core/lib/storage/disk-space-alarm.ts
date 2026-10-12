@@ -430,9 +430,9 @@ export function formatDiskEscalation(
     title:
       tier === 0
         ? ESCALATION_TITLE
-        : `${ESCALATION_TITLE} — worsening (tier ${tier}: under ${fmtGb(rungCeiling)} free)`,
+        : `${ESCALATION_TITLE} — worsening (tier ${tier}: under ${fmtGiB(rungCeiling)} free)`,
     body:
-      `${worst.path}: ${fmtGb(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGb(worst.totalBytes)})${others}. ` +
+      `${worst.path}: ${fmtGiB(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGiB(worst.totalBytes)})${others}. ` +
       (tier > 0
         ? `Free space has halved ${tier}× below the critical reserve since this alarm first fired — it re-escalates on each halving, not once per cooldown. `
         : '') +

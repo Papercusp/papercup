@@ -131,6 +131,104 @@ it('does not start a second corpus search after the parent prompt expired', asyn
   expect(runHybridSearch).toHaveBeenCalledOnce();
 });
 
+it('cancels the session_turn BM25 catalog read inside its bounded read-only transaction', async () => {
+  const { SEARCH_SOURCES } = await vi.importActual<typeof import('../agent-tools/search/sources')>('../agent-tools/search/sources');
+  const { resetBm25Availability } = await import('../search/lexical/rank');
+  resetBm25Availability();
+  const sessionTurn = SEARCH_SOURCES.find((source) => source.name === 'session_turn')!;
+  const controller = new AbortController();
+  const reason = new Error('source budget expired');
+  let resolveCatalogStart!: (source: string) => void;
+  const catalogStarted = new Promise<string>((resolve) => { resolveCatalogStart = resolve; });
+  const transactionQueries: string[] = [];
+  const rawQueries: string[] = [];
+  let rejectCatalog!: (error: unknown) => void;
+  const cancel = vi.fn(() => rejectCatalog(new Error('postgres query canceled')));
+
+  const tag = (source: 'raw' | 'transaction') => (strings: TemplateStringsArray) => {
+    const query = strings.join('?');
+    (source === 'raw' ? rawQueries : transactionQueries).push(query);
+    if (query.includes('FROM pg_index')) {
+      resolveCatalogStart(source);
+      const pending = new Promise<never>((_resolve, reject) => { rejectCatalog = reject; });
+      controller.signal.addEventListener('abort', () => rejectCatalog(reason), { once: true });
+      return Object.assign(pending, {
+        cancel,
+        executed: true,
+        active: true,
+      });
+    }
+    return Promise.resolve([]);
+  };
+  const tx = Object.assign(tag('transaction'), { unsafe: vi.fn(() => Promise.resolve([])) });
+  const begin = vi.fn(async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx));
+  const sourceSql = Object.assign(tag('raw'), {
+    begin,
+    unsafe: vi.fn(() => Promise.resolve([])),
+  }) as never;
+
+  const sourceCall = sessionTurn.lexical({
+    sql: sourceSql,
+    query: 'unique cancellation query',
+    workspaceId: 'ws-1',
+    scopeFilter: null,
+    limit: 3,
+    signal: controller.signal,
+  });
+  const sourceAssertion = expect(sourceCall).rejects.toBe(reason);
+
+  expect(await catalogStarted).toBe('transaction');
+  controller.abort(reason);
+  await sourceAssertion;
+
+  expect(begin).toHaveBeenCalledOnce();
+  expect(transactionQueries[0]).toMatch(/SET TRANSACTION READ ONLY/i);
+  expect(transactionQueries.some((query) => query.includes('FROM pg_index'))).toBe(true);
+  expect(rawQueries.some((query) => query.includes('FROM pg_index'))).toBe(false);
+  expect(cancel).toHaveBeenCalledOnce();
+  resetBm25Availability();
+});
+
+it('uses the owning SQL client cache so a second session_turn call skips only the availability transaction', async () => {
+  const { SEARCH_SOURCES } = await vi.importActual<typeof import('../agent-tools/search/sources')>('../agent-tools/search/sources');
+  const { resetBm25Availability } = await import('../search/lexical/rank');
+  resetBm25Availability();
+  const sessionTurn = SEARCH_SOURCES.find((source) => source.name === 'session_turn')!;
+  const transactionQueries: string[] = [];
+  let beginCount = 0;
+  const tx = Object.assign((strings: TemplateStringsArray) => {
+    const query = strings.join('?');
+    transactionQueries.push(query);
+    return Promise.resolve([]);
+  }, { unsafe: vi.fn(() => Promise.resolve([])) });
+  const sourceSql = Object.assign(
+    (strings: TemplateStringsArray) => Promise.resolve([]),
+    {
+      unsafe: vi.fn(() => Promise.resolve([])),
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => {
+        beginCount++;
+        return callback(tx);
+      },
+    },
+  ) as never;
+  const params = {
+    sql: sourceSql,
+    query: 'two words',
+    workspaceId: 'ws-1',
+    scopeFilter: null,
+    limit: 3,
+  };
+
+  await sessionTurn.lexical(params);
+  expect(beginCount).toBe(2); // availability miss + primary read
+  expect(transactionQueries.filter((query) => query.includes('FROM pg_index'))).toHaveLength(1);
+
+  await sessionTurn.lexical(params);
+  expect(beginCount).toBe(3); // cache hit adds no availability transaction
+  expect(transactionQueries.filter((query) => query.includes('FROM pg_index'))).toHaveLength(1);
+  resetBm25Availability();
+});
+
 describe('recallCorpusContext — the contract handed to the search engine', () => {
   it('reads the registered session/work-item and complete knowledge sources', async () => {
     runHybridSearch.mockResolvedValue(ok());

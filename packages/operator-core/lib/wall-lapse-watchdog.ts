@@ -24,6 +24,23 @@ import { listLapsedWallFacts, type LapsedWallFact } from './agent-facts/store';
 import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
+import { broadcastSevereEvent } from './severe-event-broadcast';
+
+const CONDITION_PREFIX = 'alarm:wall-lapse:';
+type WallIdentity = Pick<LapsedWallFact, 'workspaceId' | 'scope' | 'scopeRef' | 'key' | 'sourceHive'>;
+function wallConditionKey(fact: WallIdentity): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([
+    fact.workspaceId, fact.scope, fact.scopeRef ?? '', fact.key, fact.sourceHive ?? '',
+  ]));
+}
+
+async function readOpenWallConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('./agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter((condition) => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map((condition) => condition.condition_key);
+}
 
 /** Re-page on the same still-lapsed wall at most once per this many hours. */
 const WALL_LAPSE_DEBOUNCE_HOURS = 24;
@@ -83,6 +100,8 @@ export interface WallLapseSweepDeps {
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys?: () => Promise<string[]>;
   now?: number;
 }
 
@@ -104,10 +123,24 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
   } catch (e) {
     return [{ key: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) }];
   }
+  const keys = new Set(facts.map(wallConditionKey));
+  try {
+    for (const key of await (deps.readOpenConditionKeys ?? readOpenWallConditionKeys)()) keys.add(key);
+  } catch (e) {
+    console.warn(`[wall-fact-lapse] condition read failed (non-fatal): ${String(e)}`);
+  }
   for (const fact of facts) {
     try {
       const workspaceId = fact.workspaceId || 'default';
       const installSlug = fact.scope === 'harness' && fact.scopeRef ? fact.scopeRef : DEFAULT_INSTALL_SLUG;
+      const { summary, body } = formatWallLapseAlert(fact, now);
+      try {
+        const event = { conditionKey: wallConditionKey(fact), summary, body };
+        if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
+      } catch (e) {
+        console.warn(`[wall-fact-lapse] condition broadcast failed (non-fatal): ${String(e)}`);
+      }
       const firedRecently =
         (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
           workspaceId,
@@ -120,7 +153,6 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
         results.push({ key: fact.key, outcome: 'debounced', reason: 'fires-ledger debounce' });
         continue;
       }
-      const { summary, body } = formatWallLapseAlert(fact, now);
       console.warn(`[wall-fact-lapse] ALERT: ${summary}`);
       await (deps.recordFire ?? recordFire)({
         workspaceId,
@@ -137,6 +169,32 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
       results.push({ key: fact.key, outcome: 'alerted', reason: summary });
     } catch (e) {
       results.push({ key: fact.key, outcome: 'error', reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Read exact CURRENT fact identities, including explicit retractions and
+  // reassertions, after opening. A bounded candidate scan's absence cannot clear
+  // an episode, and the durable condition fold survives an operator restart.
+  const recoveryFor: WallIdentity[] = [];
+  for (const key of keys) {
+    if (!key.startsWith(CONDITION_PREFIX)) continue;
+    try {
+      const identity: unknown = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length)));
+      if (!Array.isArray(identity) || identity.length !== 5 || !identity.every((part) => typeof part === 'string')) continue;
+      const [workspaceId, scope, scopeRef, factKey, sourceHive] = identity;
+      if (!['workspace', 'role', 'owner', 'harness', 'work_item'].includes(scope) || !factKey.startsWith('wall:')) continue;
+      recoveryFor.push({ workspaceId, scope: scope as LapsedWallFact['scope'], scopeRef, key: factKey, sourceHive });
+    } catch { /* Unknown key format supplies no recovery evidence. */ }
+  }
+  if (recoveryFor.length > 0) {
+    try {
+      const measured = await (deps.listLapsedWallFacts ?? listLapsedWallFacts)({ recoveryFor });
+      for (const fact of measured) {
+        if (fact.recovered === true && keys.has(wallConditionKey(fact))) {
+          await resolveAlarm(wallConditionKey(fact), 'wall-lapse-watchdog', deps.rail);
+        }
+      }
+    } catch (e) {
+      console.warn(`[wall-fact-lapse] recovery read failed (non-fatal): ${String(e)}`);
     }
   }
   return results;

@@ -18,6 +18,7 @@ import {
   evaluateSpecTestAdequacy,
   latestLogicalEvidence,
   PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_RUBRIC_REF,
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
 import { resolveSourceBarTestRequirements, type SourceBarRubricCache } from './source-bar-test-requirements';
@@ -26,6 +27,8 @@ import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-
 import { getWorkItem } from '../../work-items';
 import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
+import { readScorecardEvidence } from '../../scorecards';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
 type MeasurementEvidenceSummary = {
   status: 'none' | 'measured' | 'partial' | 'unmeasured' | 'degraded';
@@ -284,6 +287,9 @@ export async function resolveEvaluatorClassRef(
 // RSR-P-008-A: the clause-pin rules are reported alongside any shape defect.
 export const argsSchema = refineEvenWithShapeIssues(z.object({
   harness: harnessArg,
+  scorecardId: z.string().trim().min(1).max(120).optional().describe(
+    'Replay a persisted spec-test-adequacy scorecard from its stored recipe and creation-time evidence. Pair with that recipe’s plan slug; do not combine with direct evaluation selectors.',
+  ),
   slug: z.string().min(1),
   classRef: z
     .enum(PLAN_CLASS_RUBRIC_REFS)
@@ -342,6 +348,31 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
       code: z.ZodIssueCode.custom,
       path: ['replaySnapshot'],
       message: 'replaySnapshot requires specRevision and specFingerprint',
+    });
+  }
+  if (
+    args.scorecardId !== undefined &&
+    [
+      args.classRef,
+      args.evaluatorBuild,
+      args.workItemIds,
+      args.evidenceRefs,
+      args.bindingIds,
+      args.specIds,
+      args.specRevision,
+      args.specFingerprint,
+      args.replaySnapshot,
+      args.planItemIds,
+      args.current,
+      args.includeDraft,
+      args.now,
+      args.limit,
+    ].some((value) => value !== undefined)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['scorecardId'],
+      message: 'scorecardId historical replay cannot be combined with direct evaluator selectors or overrides',
     });
   }
 });
@@ -517,7 +548,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For an audit of an existing spec-test-adequacy card, pass scorecardId with its plan slug; the evaluator loads the card’s stored recipe and replays its evidence as of card creation, returning historicalAuditOnly provenance. This historical result is not a current ship-read. Always check ok and rows.length before indexing rows[0].',
   guidance: {
     returns:
       'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
@@ -557,6 +588,169 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    if (args.scorecardId !== undefined) {
+      const workspaceId = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : '';
+      if (!workspaceId) {
+        return {
+          data: {
+            ok: false,
+            error: 'historical_replay_workspace_required',
+            count: 0,
+            remedy: 'Run the scorecard replay inside its source workspace so the card and its evidence stay tenant-scoped.',
+          },
+        };
+      }
+
+      let scorecardRead: Awaited<ReturnType<typeof readScorecardEvidence>>;
+      try {
+        scorecardRead = await runWithWorkspaceIfConcrete(
+          workspaceId,
+          () => readScorecardEvidence(args.scorecardId!),
+        );
+      } catch (error) {
+        return {
+          data: {
+            ok: false,
+            error: 'historical_scorecard_read_unavailable',
+            count: 0,
+            remedy: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      if (scorecardRead.kind === 'not_found') {
+        return { data: { ok: false, error: 'scorecard_not_found', count: 0, scorecardId: args.scorecardId } };
+      }
+      if (scorecardRead.kind === 'not_scorecard') {
+        return { data: { ok: false, error: 'target_is_not_scorecard', count: 0, scorecardId: args.scorecardId } };
+      }
+
+      const scorecard = scorecardRead.scorecard;
+      if (scorecard.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF) {
+        return {
+          data: {
+            ok: false,
+            error: 'scorecard_rubric_mismatch',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: `Historical replay requires rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}'.`,
+          },
+        };
+      }
+      const recipe = scorecard.rerunRecipe;
+      if (!recipe || recipe.evaluator !== 'plans:evaluate-spec-test-adequacy') {
+        return {
+          data: {
+            ok: false,
+            error: 'scorecard_rerun_recipe_unavailable',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: 'The scorecard does not contain a complete evaluator-owned replay recipe.',
+          },
+        };
+      }
+
+      const parsedRecipeArgs = argsSchema.safeParse(recipe.args);
+      if (
+        !parsedRecipeArgs.success ||
+        parsedRecipeArgs.data.scorecardId !== undefined ||
+        parsedRecipeArgs.data.slug !== recipe.selection.planSlug ||
+        parsedRecipeArgs.data.classRef !== recipe.classRef
+      ) {
+        return {
+          data: {
+            ok: false,
+            error: 'scorecard_rerun_recipe_invalid',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: 'The persisted recipe failed the evaluator schema or its plan/class identity checks.',
+          },
+        };
+      }
+      const recordedHarness = parsedRecipeArgs.data.harness ?? scorecard.sourceHive;
+      if (
+        args.slug !== recipe.selection.planSlug ||
+        (args.harness !== undefined && recordedHarness !== undefined && args.harness !== recordedHarness)
+      ) {
+        return {
+          data: {
+            ok: false,
+            error: 'scorecard_selector_mismatch',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: 'Use the plan slug and optional harness recorded in the scorecard recipe.',
+          },
+        };
+      }
+      const replayHarness = recordedHarness ?? args.harness;
+      if (!replayHarness) {
+        return {
+          data: {
+            ok: false,
+            error: 'historical_replay_harness_required',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: 'The scorecard recipe and source identity do not name a harness; pass its exact harness explicitly.',
+          },
+        };
+      }
+      const auditAsOf = new Date(scorecard.createdAt);
+      if (!Number.isFinite(auditAsOf.getTime())) {
+        return {
+          data: {
+            ok: false,
+            error: 'scorecard_creation_time_unavailable',
+            count: 0,
+            scorecardId: scorecard.issueId,
+          },
+        };
+      }
+
+      const evidenceRefs = [...new Set(recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef))].sort();
+      const replayArgs = {
+        ...parsedRecipeArgs.data,
+        harness: replayHarness,
+        specIds: parsedRecipeArgs.data.specIds ?? [recipe.selection.specId],
+        evidenceRefs: parsedRecipeArgs.data.evidenceRefs ?? evidenceRefs,
+        ...(parsedRecipeArgs.data.bindingIds === undefined && recipe.selection.bindingIds !== undefined
+          ? { bindingIds: recipe.selection.bindingIds }
+          : {}),
+        specRevision: parsedRecipeArgs.data.specRevision ?? recipe.selection.specRevision,
+        specFingerprint: parsedRecipeArgs.data.specFingerprint ?? recipe.selection.specFingerprint,
+        replaySnapshot: true as const,
+        ...(parsedRecipeArgs.data.current === undefined && recipe.current.supplied
+          ? { current: recipe.current.fingerprints }
+          : {}),
+      };
+      let replay: Record<string, unknown>;
+      try {
+        replay = await runWithWorkspaceIfConcrete(workspaceId, () =>
+          replaySpecTestAdequacyForHistoricalAudit({
+            args: argsSchema.parse(replayArgs),
+            selection: recipe.selection,
+            workspaceId,
+            auditAsOf,
+          }),
+        );
+      } catch (error) {
+        return {
+          data: {
+            ok: false,
+            error: 'historical_scorecard_replay_failed',
+            count: 0,
+            scorecardId: scorecard.issueId,
+            remedy: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      return {
+        data: {
+          ...replay,
+          count: typeof replay.count === 'number' ? replay.count : replay.ok === true ? 1 : 0,
+          scorecardId: scorecard.issueId,
+        },
+      };
+    }
+
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const liveEvaluatorBuild = getBuildInfo();

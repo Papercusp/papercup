@@ -2993,6 +2993,8 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     input,
     quotaBlocked,
     submitted,
+    requireNativeConfirmation = false,
+    inputAtStart,
     pollMs = 100,
     polls = 4,
     maxResubmits = 3,
@@ -3004,6 +3006,8 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     input?: (t: number) => number;
     quotaBlocked?: (t: number) => boolean;
     submitted?: (t: number) => boolean;
+    requireNativeConfirmation?: boolean;
+    inputAtStart?: number;
     pollMs?: number;
     polls?: number;
     maxResubmits?: number;
@@ -3028,6 +3032,8 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       lastInputAt: input ? () => input(t) : undefined,
       isQuotaBlocked: quotaBlocked ? () => quotaBlocked(t) : undefined,
       isSubmitted: submitted ? () => submitted(t) : undefined,
+      requireNativeConfirmation,
+      inputAtStart,
       writeCr: writeCr ?? (() => crs.push(t)),
       quietMs,
       pollMs,
@@ -3087,6 +3093,43 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     expect(exhaustedCalls).toEqual([]);
   });
 
+  it('does not certify composer repaints as native submission', async () => {
+    const { v, crs, exhaustedCalls } = rig({
+      output: (t) => t,
+      submitted: () => false,
+      requireNativeConfirmation: true,
+    });
+    expect(await v.verify()).toMatchObject({ exhausted: true, resubmits: 0 });
+    expect(crs).toEqual([]);
+    expect(exhaustedCalls).toHaveLength(1);
+  });
+
+  it('rejects repaint after swallowed Enter without ending the native proof window early', async () => {
+    const { v, crs, exhaustedCalls } = rig({
+      output: (t) => t >= 150 ? 150 : 0,
+      submitted: () => false,
+      requireNativeConfirmation: true,
+      maxResubmits: 1,
+      polls: 4,
+    });
+    expect(await v.verify()).toMatchObject({ polls: 4, resubmits: 1, exhausted: true });
+    expect(crs).toEqual([100]);
+    expect(exhaustedCalls).toEqual([{ polls: 4, resubmits: 1, outputObservedAfterResubmit: true }]);
+  });
+
+  it('accepts delayed native persistence after the CR retry cap without writing more text', async () => {
+    const { v, crs, exhaustedCalls } = rig({
+      output: (t) => t >= 150 ? 150 : 0,
+      submitted: (t) => t >= 400,
+      requireNativeConfirmation: true,
+      maxResubmits: 1,
+      polls: 5,
+    });
+    expect(await v.verify()).toMatchObject({ polls: 4, confirmed: 'native', exhausted: false });
+    expect(crs).toEqual([100]);
+    expect(exhaustedCalls).toEqual([]);
+  });
+
   it('reports exhaustion once when the bounded CR window ends without output', async () => {
     const { v, crs, exhaustedCalls } = rig({ output: () => 0, polls: 4, maxResubmits: 2 });
     const r = await v.verify();
@@ -3128,6 +3171,12 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     const r = await v.verify();
     expect(r.aborted).toBe('human-input');
     expect(crs).toEqual([100]); // the one pre-abort resubmit only
+  });
+
+  it('protects owner input arriving during the paste before verification begins', async () => {
+    const { v, crs } = rig({ output: () => 0, input: () => 50, inputAtStart: 0 });
+    expect(await v.verify()).toMatchObject({ aborted: 'human-input', resubmits: 0 });
+    expect(crs).toEqual([]);
   });
 
   it('quota wall present at submission aborts without a retry or fatal exhaustion', async () => {

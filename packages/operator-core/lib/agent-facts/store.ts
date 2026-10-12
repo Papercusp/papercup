@@ -3234,6 +3234,9 @@ export interface LapsedWallFact {
   body: string;
   createdBy: string;
   expiresAt: string;
+  sourceHive?: string | null;
+  /** Set only by an exact recovery read; absence is never recovery evidence. */
+  recovered?: boolean;
 }
 
 /**
@@ -3246,11 +3249,17 @@ export interface LapsedWallFact {
  * ever touch it.
  */
 export async function listLapsedWallFacts(
-  opts: { limit?: number } = {},
+  opts: { limit?: number; recoveryFor?: Array<Pick<LapsedWallFact,
+    'workspaceId' | 'scope' | 'scopeRef' | 'key' | 'sourceHive'>> } = {},
   inject?: Sql,
 ): Promise<LapsedWallFact[]> {
+  if (opts.recoveryFor?.length === 0) return [];
   const sql = sqlOf(inject);
-  const limit = opts.limit ?? 200;
+  const recovery = opts.recoveryFor !== undefined;
+  const identities = JSON.stringify((opts.recoveryFor ?? []).map((fact) => ({
+    ...fact, scopeRef: fact.scopeRef ?? '', sourceHive: fact.sourceHive ?? '',
+  })));
+  const limit = opts.limit ?? (recovery ? opts.recoveryFor!.length : 200);
   const rows = await sql<Array<{
     workspace_id: string;
     scope: FactScope;
@@ -3259,15 +3268,26 @@ export async function listLapsedWallFacts(
     body: string;
     created_by: string;
     expires_at: string;
+    source_hive: string | null;
+    recovered: boolean;
   }>>`
-    SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text
+    SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text,
+           source_hive,
+           ((retracted_at IS NOT NULL AND evicted_at IS NULL)
+             OR (retracted_at IS NULL AND expires_at > now())) AS recovered
       FROM harness_shared.agent_facts
      WHERE key LIKE ${WALL_KEY_PREFIX + '%'}
        -- P-008 (a): only the CURRENT version of a wall can be lapsed. A
        -- superseded version's expiry is a historical fact, not a page.
        AND superseded_at IS NULL
-       AND retracted_at IS NULL
-       AND expires_at < now()
+       AND (${recovery} OR (retracted_at IS NULL AND expires_at < now()))
+       AND (NOT ${recovery} OR EXISTS (
+         SELECT 1 FROM jsonb_to_recordset(${identities}::jsonb)
+           AS target("workspaceId" text, scope text, "scopeRef" text, key text, "sourceHive" text)
+          WHERE target."workspaceId" = workspace_id AND target.scope = agent_facts.scope
+            AND target."scopeRef" = coalesce(scope_ref, '') AND target.key = agent_facts.key
+            AND target."sourceHive" = coalesce(source_hive, '')
+       ))
      ORDER BY expires_at ASC
      LIMIT ${limit}`;
   return rows.map((r) => ({
@@ -3278,6 +3298,8 @@ export async function listLapsedWallFacts(
     body: r.body,
     createdBy: r.created_by,
     expiresAt: r.expires_at,
+    sourceHive: r.source_hive,
+    ...(recovery ? { recovered: r.recovered } : {}),
   }));
 }
 

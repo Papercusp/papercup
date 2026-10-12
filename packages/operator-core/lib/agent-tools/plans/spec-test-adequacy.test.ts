@@ -4288,6 +4288,35 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).toContain('disclosed-gap');
   });
 
+  it('does not treat evidence supersession scope as a proof coverage limitation', () => {
+    const base = evidence();
+    const observations = 'replace stale31980 only in the same test subject';
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('still blocks a real partial-proof limitation beside evidence supersession scope', () => {
+    const base = evidence();
+    const observations =
+      'replace stale31980 only in the same test subject. ' +
+      'The proof only tests partial sources; unauthorized refusal is not covered.';
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(observations);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
   it.each([
     'Recipe pins only the three actual captured expiry source files and the calibrated seeded test/fixture.',
     'The input inventory contains only production sources and test/expiry.integration.test.ts.',

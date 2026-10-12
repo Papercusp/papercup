@@ -103,6 +103,59 @@ async function issueState(id: string): Promise<string | null> {
 }
 
 describe('P-003: work_items:release honesty (non-force) — real two-ledger DB', () => {
+  it('D-006: equal claim endpoints retain a real release/reclaim ABA witness', async () => {
+    const id = 'F-CONSULT-ABA';
+    const owner = 'su-consult-source';
+    await seedFeature(id, owner);
+    await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+
+    // Observe the canonical writer in the disposable database. This fixture is
+    // intentionally separate from a production history or native-actor claim.
+    await sql.begin(async (tx) => {
+      hoisted.sql = tx;
+      try {
+        await tx`CREATE TEMP TABLE consult_claim_observation
+          (sequence bigserial, old_owner text, new_owner text) ON COMMIT DROP`;
+        await tx.unsafe(`CREATE FUNCTION pg_temp.observe_consult_claim() RETURNS trigger
+          LANGUAGE plpgsql AS $$ BEGIN
+            IF OLD.taken_by IS DISTINCT FROM NEW.taken_by THEN
+              INSERT INTO pg_temp.consult_claim_observation (old_owner, new_owner)
+                VALUES (OLD.taken_by, NEW.taken_by);
+            END IF;
+            RETURN NEW;
+          END $$`);
+        await tx.unsafe(`CREATE TRIGGER consult_claim_observer AFTER UPDATE
+          ON harness_shared.harness_features_consolidated FOR EACH ROW
+          EXECUTE FUNCTION pg_temp.observe_consult_claim()`);
+
+        const endpointOwner = async () => {
+          const [row] = await tx<{ taken_by: string | null }[]>`
+            SELECT taken_by FROM harness_shared.harness_features_consolidated
+            WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+          return row!.taken_by;
+        };
+        const before = await endpointOwner();
+        // A refused foreign release supplies the no-write positive control.
+        expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: 'su-consult-answerer' })).toBeNull();
+        expect(await tx`SELECT * FROM pg_temp.consult_claim_observation`).toHaveLength(0);
+
+        expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+        expect(await endpointOwner()).toBeNull();
+        expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+        expect(await endpointOwner()).toBe(before);
+        const transitions = await tx<{ old_owner: string | null; new_owner: string | null }[]>`
+          SELECT old_owner, new_owner FROM pg_temp.consult_claim_observation ORDER BY sequence`;
+        expect(transitions).toEqual([
+          { old_owner: owner, new_owner: null },
+          { old_owner: null, new_owner: owner },
+        ]);
+        await tx.unsafe('DROP TRIGGER consult_claim_observer ON harness_shared.harness_features_consolidated');
+      } finally {
+        hoisted.sql = sql;
+      }
+    });
+  });
+
   it('non-holder non-force release is refused (returns null; getWorkItem/classify tells release.ts to report not_holder) — taken_by UNCHANGED', async () => {
     await seedFeature('F-HELD-1', 'su-holder');
 

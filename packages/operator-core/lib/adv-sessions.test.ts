@@ -140,6 +140,41 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     expect(advSessionTableReads()).toHaveLength(0);
   });
 
+  it('captures relative verifier transaction and lookup timings without changing its acquire budget', async () => {
+    appSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+    const { namedQueryStageTimings, withNamedQueryDiagnosticContext } = await import('./agent-tools/db-diagnostic-correlation-wiring');
+
+    const result = await withNamedQueryDiagnosticContext('mcp.nativeSessionVerifier', async () => {
+      const binding = await classifyOwnerNativeSession({ ownerId, sessionId: nativeId, workspaceId: 'ws-timing' });
+      return { binding, timing: namedQueryStageTimings() };
+    }, 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e');
+
+    expect(result.binding).toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+    expect(result.timing?.stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'native-session-verifier-workspace-transaction',
+        elapsedMs: expect.any(Number),
+        outcome: 'fulfilled',
+      }),
+      expect.objectContaining({
+        stage: 'native-session-verifier-owner-candidate-rows-lookup',
+        elapsedMs: expect.any(Number),
+        outcome: 'fulfilled',
+      }),
+    ]));
+    expect(result.timing?.stages.length).toBeLessThanOrEqual(8);
+    expect(workspaceCalls[0]).toMatchObject({
+      workspaceId: 'ws-timing',
+      options: { acquireTimeoutMs: 7_500, acquireRetries: 0 },
+    });
+  });
+
   it.each([
     {
       label: 'unbound',

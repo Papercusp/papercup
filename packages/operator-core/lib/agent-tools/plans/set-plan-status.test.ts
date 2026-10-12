@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, type Mock } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,137 @@ import setPlanStatusTool from './set-plan-status';
 import { ACCEPTANCE_GRADING_SWEEP_ACTOR } from '../../acceptance-grader';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+
+const preflightMocks = vi.hoisted(() => ({
+  acceptance: vi.fn(), admission: vi.fn(), row: vi.fn(), scope: vi.fn(),
+  write: vi.fn(), capture: vi.fn(), launch: vi.fn(), resolveGrader: vi.fn(),
+}));
+vi.mock('../../plan-acceptance-gate', async (original) => ({
+  ...await original<typeof import('../../plan-acceptance-gate')>(),
+  evaluatePlanAcceptanceGate: preflightMocks.acceptance,
+}));
+vi.mock('./plan-admission-gate', async (original) => ({
+  ...await original<typeof import('./plan-admission-gate')>(),
+  checkPlanAdmission: preflightMocks.admission,
+}));
+vi.mock('./source', async (original) => ({
+  ...await original<typeof import('./source')>(),
+  getPlanRow: preflightMocks.row, resolvePlanScope: preflightMocks.scope,
+}));
+vi.mock('./with-plan-lock', async (original) => ({
+  ...await original<typeof import('./with-plan-lock')>(), withPlanLock: preflightMocks.write,
+}));
+vi.mock('./revisions', async (original) => ({
+  ...await original<typeof import('./revisions')>(), planRevisionCapture: preflightMocks.capture,
+}));
+vi.mock('../../acceptance-grader', async (original) => ({
+  ...await original<typeof import('../../acceptance-grader')>(),
+  launchAcceptanceGrader: preflightMocks.launch, resolveAcceptanceGrader: preflightMocks.resolveGrader,
+}));
+
+describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
+  const body = (status: string) => `---\nstatus: ${status}\n---\n# Plan\n`;
+  const refusal = {
+    error: 'plan_admission_refused', code: 'certificate_revision_mismatch',
+    hint: 'Renew the promotion admission certificate.', detail: 'Old certificate.',
+    planRevisionHash: 'revision-current', policyVersion: 1,
+  };
+  async function run(over: Record<string, unknown> = {}) {
+    const res = await setPlanStatusTool.handler(setPlanStatusTool.args.parse({
+      harness: 'member', slug: 'plan-a', status: 'shipped', dryRun: true, ...over,
+    }), {
+      workspaceId: 'ws-test', harnessSlug: 'member', uiClientId: 'su-shipper',
+      signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), metadata: vi.fn(),
+    } as never);
+    return (res as { data: { results: Record<string, unknown>[] } }).data.results[0]!;
+  }
+  function expectReadOnly() {
+    for (const mock of [preflightMocks.write, preflightMocks.capture, preflightMocks.launch, preflightMocks.resolveGrader]) {
+      expect(mock).not.toHaveBeenCalled();
+    }
+  }
+  beforeEach(() => {
+    for (const mock of Object.values(preflightMocks)) mock.mockReset();
+    preflightMocks.scope.mockResolvedValue({ workspaceId: 'ws-test', harnessSlug: 'home' });
+    preflightMocks.acceptance.mockResolvedValue({ satisfied: true });
+    preflightMocks.admission.mockResolvedValue({ admitted: true });
+    preflightMocks.row.mockResolvedValue({ content: body('ready') });
+  });
+
+  it('a passing acceptance gate cannot hide denied promotion admission', async () => {
+    preflightMocks.admission.mockResolvedValue({ admitted: false, refusal });
+    const result = await run();
+    expect(result).toMatchObject({ ok: false, dryRun: true, error: 'plan_admission_refused' });
+    expect(result).not.toHaveProperty('wouldShip', true);
+    expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'plan_admission_refused', repairAction: expect.any(Object) }),
+    ]));
+    expectReadOnly();
+  });
+
+  it.each([
+    ['mismatched expectedCurrent', { content: body('draft') }, 'unexpected_status'],
+    ['missing frontmatter status', { content: '# Legacy plan' }, 'no_status_line'],
+    ['missing plan row', null, 'not_found'],
+  ])('a passing acceptance gate cannot hide %s', async (_name, row, error) => {
+    preflightMocks.row.mockResolvedValue(row);
+    const result = await run({ expectedCurrent: 'ready' });
+    expect(result).toMatchObject({ ok: false, dryRun: true, error });
+    expect(result).not.toHaveProperty('wouldShip', true);
+    if (error === 'unexpected_status') expect(result).toHaveProperty('current', 'draft');
+    expectReadOnly();
+  });
+
+  it('reports acceptance, promotion and CAS blockers together without recruiting', async () => {
+    const acceptance = {
+      code: 'acceptance_ungraded', message: 'Needs independent grading.',
+      repairAction: { kind: 'independent-grading', instruction: 'Recruit via ship door.' },
+    };
+    preflightMocks.acceptance.mockResolvedValue({ satisfied: false, ...acceptance, blockers: [acceptance] });
+    preflightMocks.admission.mockResolvedValue({ admitted: false, refusal });
+    preflightMocks.row.mockResolvedValue({ content: body('draft') });
+    const result = await run({ expectedCurrent: 'ready' });
+    expect(result).toMatchObject({ ok: false, error: 'acceptance_ungraded', dryRun: true });
+    expect((result.blockers as { code: string }[]).map((b) => b.code)).toEqual([
+      'acceptance_ungraded', 'plan_admission_refused', 'unexpected_status',
+    ]);
+    expect(result.message).toContain('2 more independent check(s)');
+    expectReadOnly();
+  });
+
+  it('reports wouldShip only after independent guards pass in the resolved home scope', async () => {
+    expect(await run({ expectedCurrent: 'ready' })).toMatchObject({ ok: true, dryRun: true, wouldShip: true });
+    expect(preflightMocks.admission).toHaveBeenCalledWith({
+      slug: 'plan-a', door: 'promotion', opts: { workspaceId: 'ws-test', harnessSlug: 'home' }, readOnly: true,
+    });
+    expect(preflightMocks.row).toHaveBeenCalledWith('plan-a', { workspaceId: 'ws-test', harnessSlug: 'home' });
+    expectReadOnly();
+  });
+
+  it.each(['admission', 'row'] as const)('an unavailable %s read cannot establish wouldShip', async (read) => {
+    preflightMocks[read].mockRejectedValue(new Error('read unavailable'));
+    const result = await run();
+    expect(result).toMatchObject({
+      ok: false, dryRun: true,
+      error: read === 'admission' ? 'plan_admission_unavailable' : 'plan_source_unavailable',
+    });
+    expect(result).not.toHaveProperty('wouldShip', true);
+    expectReadOnly();
+  });
+
+  it('the actual writer still rejects a status change after a passing preflight', async () => {
+    expect(await run({ expectedCurrent: 'ready' })).toHaveProperty('wouldShip', true);
+    preflightMocks.capture.mockReturnValue({ afterWrite: vi.fn() });
+    preflightMocks.write.mockImplementation(async (_ctx, _opts, mutate) => {
+      const mutation = await mutate(body('draft'));
+      expect(mutation.newBody).toBeNull();
+      return { kind: 'written', value: mutation.value };
+    });
+    expect(await run({ dryRun: false, expectedCurrent: 'ready' })).toMatchObject({
+      ok: false, error: 'unexpected_status', current: 'draft',
+    });
+  });
+});
 
 describe('set-plan-status public lifecycle guidance', () => {
   it('documents the completion audit gate for shipped and done', () => {
@@ -209,7 +340,7 @@ describe('set-plan-status dryRun ship preflight (plan-verification-friction-redu
 
   it('a dryRun preflight returns before grader recruitment, the forced-past stamp and the status write', () => {
     const handler = handlerSource();
-    const preflight = handler.indexOf('if (args.dryRun) return shipGatePreflightResult(slug, gate);');
+    const preflight = handler.indexOf('return shipGatePreflightResult(slug, gate, guards);');
     expect(preflight).toBeGreaterThan(-1);
     for (const sideEffect of [
       'await launchAcceptanceGraderForGate(',

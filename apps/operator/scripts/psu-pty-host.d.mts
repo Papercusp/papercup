@@ -1940,6 +1940,8 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {() => number} [opts.lastInputAt]
  * @param {() => boolean} [opts.isQuotaBlocked]
  * @param {() => boolean} [opts.isSubmitted] exact native-transcript proof of this turn
+ * @param {boolean} [opts.requireNativeConfirmation] repaint cannot confirm a tagged turn
+ * @param {number} [opts.inputAtStart] owner-input baseline captured before the first write
  * @param {number} [opts.quietMs]
  * @param {number} [opts.pollMs]
  * @param {number} [opts.polls]
@@ -1949,12 +1951,14 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {(resubmits: number) => void} [opts.onResubmit]
  * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, requireNativeConfirmation, inputAtStart: inputBaseline, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
     lastOutputAt?: (() => number) | undefined;
     writeCr?: ((data: string) => void) | undefined;
     lastInputAt?: (() => number) | undefined;
     isQuotaBlocked?: (() => boolean) | undefined;
     isSubmitted?: (() => boolean) | undefined;
+    requireNativeConfirmation?: boolean | undefined;
+    inputAtStart?: number | undefined;
     quietMs?: number | undefined;
     pollMs?: number | undefined;
     polls?: number | undefined;
@@ -1970,7 +1974,8 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
-     *  exhausted = no output was observed after the maximum resubmits). */
+     *  exhausted = native proof is missing at the deadline, or the legacy
+     *  output-only recovery budget was spent without output). */
     verify(): Promise<{
         polls: number;
         resubmits: number;

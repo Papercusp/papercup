@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { acceptanceProblems, inventoryTree, manifestProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
+import { acceptanceProblems, inventoryTree, manifestProblems, scanSites } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
+const annotationReview = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-type-annotation-amendments-2026-10-11.json', import.meta.url)), 'utf8'));
+const baseline = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../scripts/condition-rail-baseline.json', import.meta.url)), 'utf8'));
 
 describe('condition-rail immutable audit manifest (P-017)', () => {
   it('pins the original row set and retains reasoned dispositions and routes', () => {
@@ -17,6 +20,75 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
     expect(manifest.rows.filter((row: { disposition: string }) => row.disposition === 'not-applicable')).toHaveLength(64);
     expect(manifestProblems(manifest, inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url))),
       { completedItems: RAIL_MIGRATION_COMPLETE_ITEMS })).toEqual([]);
+  }, 120_000);
+
+  it('applies exactly the 55 independently reviewed annotation exclusions and preserves runtime siblings', () => {
+    const approved = annotationReview.proposals;
+    expect(annotationReview).toMatchObject({ status: 'applied-reviewed',
+      seedRowsSha256: manifest.rowsSha256, reviewerRef: 'thread-post:1176052' });
+    expect(approved).toHaveLength(55);
+    const ids = approved.map((proposal: { rowId: string }) => proposal.rowId);
+    expect(new Set(ids).size).toBe(55);
+    expect(manifest.amendments.filter((entry: { reviewerRef: string }) => entry.reviewerRef === annotationReview.reviewerRef)
+      .map((entry: { rowId: string }) => entry.rowId).sort()).toEqual([...ids].sort());
+    const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+
+    const kinds: string[] = [];
+    for (const proposal of approved) {
+      expect(manifest.rows.find((seed: { id: string }) => seed.id === proposal.rowId))
+        .toMatchObject({ disposition: 'migrate', item: 'P-014', route: 'condition' });
+      expect(manifest.amendments.find((entry: { rowId: string }) => entry.rowId === proposal.rowId))
+        .toMatchObject({ change: proposal.change, author: proposal.author, reviewerRef: annotationReview.reviewerRef });
+      expect(baseline.rowIds).not.toContain(proposal.rowId);
+      const file = proposal.evidence.file;
+      const raw = readFileSync(fileURLToPath(new URL(`../../../../${file}`, import.meta.url)), 'utf8');
+      const site = scanSites(raw, file).find((candidate: { id: string }) => candidate.id === proposal.rowId);
+      expect(site, proposal.rowId).toBeDefined();
+      if (!site) throw new Error(`Missing reviewed annotation row ${proposal.rowId}`);
+      if (!site.onRail) expect(live.rows.find((row: { id: string }) => row.id === site.id)?.disposition).toEqual(proposal.change);
+
+      // The compiler independently distinguishes declarations from runtime health fields;
+      // the lexical inventory must keep these original identities for the immutable audit.
+      const source = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
+      const declarations: ts.Node[] = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isIdentifier(node) && node.text === 'alert' &&
+            source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 === site.line) {
+          declarations.push(node.parent);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      expect(declarations, proposal.rowId).toHaveLength(1);
+      const declaration = declarations[0];
+      expect(ts.SyntaxKind[declaration.kind], proposal.rowId).toBe(proposal.evidence.syntax);
+      expect(ts.isPropertyAssignment(declaration)).toBe(false);
+      kinds.push(ts.SyntaxKind[declaration.kind]);
+      if (ts.isVariableDeclaration(declaration)) {
+        expect(declaration.initializer && ts.isObjectLiteralExpression(declaration.initializer)).toBe(true);
+        const properties = (declaration.initializer as ts.ObjectLiteralExpression).properties;
+        expect(properties.some((property) => ts.isPropertyAssignment(property) &&
+          /^(alarm|alarming|alert|alerting|degraded|unhealthy|breached)$/.test(property.name.getText(source)))).toBe(false);
+      }
+    }
+    expect(kinds.filter((kind) => kind === 'Parameter')).toHaveLength(53);
+    expect(kinds.filter((kind) => kind === 'PropertySignature')).toHaveLength(1);
+    expect(kinds.filter((kind) => kind === 'VariableDeclaration')).toHaveLength(1);
+    for (const [file, enclosing] of [
+      ['goal-drain-fleet-watchdog.ts', 'readGoalPlanFleetObservation'],
+      ['goal-grading-backlog-sweep.ts', 'runGoalGradingBacklogSweepOnce'],
+    ]) {
+      const path = `packages/operator-core/lib/system-health/${file}`;
+      const id = `health-flag-no-condition|${path}|${enclosing}|1`;
+      expect(ids).not.toContain(id);
+      expect(manifest.amendments.find((entry: { rowId: string }) => entry.rowId === id)).toBeUndefined();
+      const site = scanSites(readFileSync(fileURLToPath(new URL(`../../../../${path}`, import.meta.url)), 'utf8'), path)
+        .find((candidate: { id: string }) => candidate.id === id);
+      expect(site, id).toBeDefined();
+      if (!site) throw new Error(`Missing runtime health-field row ${id}`);
+      if (!site.onRail) expect(live.rows.find((row: { id: string }) => row.id === id)?.disposition)
+        .toEqual({ disposition: 'migrate', item: 'P-014' });
+    }
   }, 120_000);
 
   const row = { id: 'owner-only-alarm|x.ts|check|1', disposition: 'migrate', item: 'P-007', route: 'condition' };

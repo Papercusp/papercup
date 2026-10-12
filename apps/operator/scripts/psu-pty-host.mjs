@@ -5202,6 +5202,8 @@ export function makeCarryRearmController({
  * @param {() => number} [opts.lastInputAt]
  * @param {() => boolean} [opts.isQuotaBlocked]
  * @param {() => boolean} [opts.isSubmitted] exact native-transcript proof of this turn
+ * @param {boolean} [opts.requireNativeConfirmation] repaint cannot confirm a tagged turn
+ * @param {number} [opts.inputAtStart] owner-input baseline captured before the first write
  * @param {number} [opts.quietMs]
  * @param {number} [opts.pollMs]
  * @param {number} [opts.polls]
@@ -5217,6 +5219,8 @@ export function makeSubmitVerifier({
   lastInputAt = () => 0,
   isQuotaBlocked = () => false,
   isSubmitted = () => false,
+  requireNativeConfirmation = false,
+  inputAtStart: inputBaseline,
   quietMs = SUBMIT_VERIFY_QUIET_MS,
   pollMs = SUBMIT_VERIFY_POLL_MS,
   polls = SUBMIT_VERIFY_POLLS,
@@ -5231,9 +5235,10 @@ export function makeSubmitVerifier({
   return {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
-     *  exhausted = no output was observed after the maximum resubmits). */
+     *  exhausted = native proof is missing at the deadline, or the legacy
+     *  output-only recovery budget was spent without output). */
     async verify() {
-      const inputAtStart = getIn() || 0;
+      const inputAtStart = inputBaseline ?? (getIn() || 0);
       let resubmits = 0;
       let outputObservedAfterResubmit = false;
       let outputAtLastResubmit = null;
@@ -5242,13 +5247,13 @@ export function makeSubmitVerifier({
       let i = 0;
       const quotaAbort = () => ({ polls: i, resubmits, aborted: 'quota-blocked', exhausted: false });
       const notifyExhausted = () => {
-        // A resubmit can legitimately wake a previously silent turn. Once any
-        // output is observed after a resubmit, this verifier must never turn a
-        // later quiet interval into a host-killing exhaustion signal.
+        // Preserve the legacy output-only heuristic for unsupported input.
+        // A tagged native-verifiable turn instead needs its exact user row;
+        // composer repaint cannot suppress an unconfirmed verdict.
         if (
           exhaustionNotified ||
-          outputObservedAfterResubmit ||
-          resubmits < maxResubmits
+          (!requireNativeConfirmation &&
+            (outputObservedAfterResubmit || resubmits < maxResubmits))
         ) {
           return;
         }
@@ -5287,8 +5292,12 @@ export function makeSubmitVerifier({
           return { polls: i + 1, resubmits, aborted: null, exhausted: false, confirmed: 'native' };
         }
         const quietFor = now() - outputAtPoll;
-        if (quietFor < quietMs) continue; // output flowing — a turn is running
+        if (quietFor < quietMs) continue; // avoid CRs while the terminal is active
         if (resubmits >= maxResubmits) {
+          // Native persistence can lag the TUI. Spend the remaining proof
+          // window without another CR; a repaint is neither acceptance nor
+          // permission to stop checking the exact turn.
+          if (requireNativeConfirmation) continue;
           notifyExhausted();
           break;
         }
@@ -5308,8 +5317,12 @@ export function makeSubmitVerifier({
       }
       // If the bounded poll window ends on the final resubmit, there is no
       // following iteration to observe a quiet poll. Treat the window itself as
-      // exhausted, but keep the same output-after-resubmit suppression rule.
+      // exhausted; only the legacy heuristic suppresses this on output.
       if (isQuotaBlocked()) return quotaAbort();
+      if ((getIn() || 0) > inputAtStart) return { polls: i, resubmits, aborted: 'human-input' };
+      if (isSubmitted()) {
+        return { polls: i, resubmits, aborted: null, exhausted: false, confirmed: 'native' };
+      }
       if (i >= polls) notifyExhausted();
       return { polls: i, resubmits, aborted: null, exhausted };
     },
@@ -10568,6 +10581,10 @@ export function hostThroughPty(o) {
       terminateOnExhaustion = submitExhaustionTerminatesHost(label),
       text = '',
       submittedAtMs = Date.now(),
+      // The initial attempt covers input during the paste. A deliberate
+      // re-verification after keyboard idle supplies a fresh input baseline,
+      // while submittedAtMs stays pinned to the native transcript boundary.
+      inputAtStart = submittedAtMs,
       // WI-10004943: turnWriteContext() captured when the write STARTED.
       writeContext = null,
     } = {},
@@ -10578,7 +10595,9 @@ export function hostThroughPty(o) {
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
+      inputAtStart,
       isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
+      requireNativeConfirmation: nativeProofAvailable,
       isSubmitted: () => nativeProofAvailable && Boolean(findNativeTranscriptMarker({
         agent: env.PAPERCUSP_AGENT,
         env,
@@ -10623,7 +10642,9 @@ export function hostThroughPty(o) {
           ),
           outputObservedAfterResubmit,
         };
-        if (terminateOnExhaustion && !quotaBlockDetector.isBlocked()) {
+        // Missing native proof is an uncertain written turn, not proof that
+        // the child is dead. Managed startup's stronger proof owns its timeout.
+        if (terminateOnExhaustion && !nativeProofAvailable && !quotaBlockDetector.isBlocked()) {
           terminateSubmitVerifyExhaustion(details);
           return;
         }
@@ -10633,7 +10654,7 @@ export function hostThroughPty(o) {
         // used to write, and says plainly that the session was left running.
         appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
           ...details,
-          reason: 'max-resubmits-without-output',
+          reason: nativeProofAvailable ? 'native-submission-unconfirmed' : 'max-resubmits-without-output',
           terminated: false,
         });
         try {
@@ -10647,40 +10668,18 @@ export function hostThroughPty(o) {
       },
     });
     const result = await verifier.verify();
-    if (result.aborted === 'quota-blocked') {
+    if (result.aborted) {
       appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
         label,
         polls: result.polls,
         resubmits: result.resubmits,
-        reason: 'quota-blocked',
+        reason: result.aborted,
         terminated: false,
       });
     } else if (!result.aborted && !result.exhausted) {
-      // P-007 — THE SUCCESS ROW, and the reason it did not exist before.
-      //
-      // Every other appendHostEvent kind in this host (51 distinct spellings,
-      // enumerated from source 2026-09-22) is a failure, drop, expiry, refusal,
-      // retry or lifecycle marker. The failure side of wake delivery was
-      // therefore fully instrumented while the DENOMINATOR was absent, so a
-      // delivery success rate was not computable at all — and with no rate, no
-      // fix to this path (P-003's verifier included) could be shown to work
-      // rather than merely asserted. That is the gap this row closes.
-      //
-      // The predicate is the verifier's OWN settled verdict, not a
-      // re-derivation of it: `aborted === null && exhausted === false` is
-      // reachable only by falling out of the poll window with output still
-      // flowing (`quietFor < quietMs` -> continue), or after a resubmit that
-      // demonstrably woke the turn. notifyExhausted() early-returns while
-      // `resubmits < maxResubmits`, so an ordinary quiet gap cannot set
-      // `exhausted`.
-      //
-      // Counting anything looser would invert the metric. In particular a bare
-      // `!result.aborted` folds the EXHAUSTED case — max resubmits with no
-      // output, i.e. the wake provably not delivered — into the numerator, so
-      // the reported delivery rate would climb as delivery actually failed.
-      // `aborted === 'human-input'` is excluded for the opposite reason: the
-      // owner typing mid-verify makes delivery genuinely undecidable here, and
-      // an undecidable case must not be counted as a success.
+      // Tagged supported turns require their exact native user row. Legacy
+      // untagged/unsupported input retains output-only verification; never
+      // mistake that weaker receipt for native acknowledgement.
       appendHostEvent(ownerId, 'turn-delivered', {
         label,
         polls: result.polls,
@@ -11297,6 +11296,7 @@ export function hostThroughPty(o) {
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
               text,
               submittedAtMs: turnWriteStartedAt,
+              inputAtStart: activity.snapshot().lastInputAt ?? 0,
               writeContext: kickoffWriteContext,
             });
           }
@@ -12001,6 +12001,7 @@ export function hostThroughPty(o) {
     if (pending.child !== child) return { available: false, started: false };
     const nativeRef = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
       marker: pending.marker, sinceMs: pending.submittedAtMs });
+    if (pending.submissionOnly) return { available: true, started: Boolean(nativeRef) };
     return nativeRef ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
       transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
       : { available: false, started: false };
@@ -13156,7 +13157,6 @@ export function hostThroughPty(o) {
       // line. Ungated raw/osc bypass it — a force-interrupt byte must land
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
-      let deferMutexRelease = false;
       const deferForOwnerInput = (reason) => {
         const pendingLength = ownerComposerGate.pendingLength();
         const extra = {
@@ -13804,35 +13804,27 @@ export function hostThroughPty(o) {
             nativeStartPending.delete(deliver.deliveryId);
             return { ok: true, reason: 'delivered' };
           }
-          // EI-18679050054551625 / WI-5872 follow-up: verifySubmitted()'s poll
-          // loop sleeps a FULL pollMs (default 5000ms, env
-          // PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) before its very first
-          // check, and can run up to `polls` iterations resubmitting a CR —
-          // it is a best-effort confirm-and-resubmit safety net, not a
-          // precondition for a truthful "delivered" ack (the actual write
-          // above already landed). Awaiting it here before acking meant the
-          // ACK protocol's round-trip always exceeded injectIntoHost()'s
-          // default 2000ms client timeout for every turn/reset delivery —
-          // observed as 9/10 psu-pty-host-turn.integration.test.ts cases red,
-          // each timing out at ~2000-2200ms despite the write having actually
-          // succeeded (confirmed via trace instrumentation: the handler
-          // reaches verifySubmitted and never returns before the client
-          // gives up). Ack "delivered" now; let verify+resubmit run as a
-          // background continuation, same pattern as the recycle/carry-
-          // respawn fix above — the inject mutex stays held
-          // (deferMutexRelease) until it finishes, preserving the "gate wait
-          // -> pty write -> submit verify" one-at-a-time invariant.
-          deferMutexRelease = true;
-          const releaseAfterVerify = releaseInject;
-          void verifySubmitted(`${msg.mode} inject`, {
+          // The socket already ACKed acceptance before this detached pipeline.
+          // Keep its IDs and mutex pending until submission verification settles.
+          // An uncertain tagged write must not be rewritten: its native user
+          // row can arrive later, as on a slow first request after a recycle.
+          const marker = leadingTurnOriginMarker(deliver.data);
+          const nativeProofAvailable = Boolean(marker) &&
+            nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+          if (nativeProofAvailable) {
+            const pending = { child, marker, submittedAtMs: turnWriteStartedAt, submissionOnly: true };
+            for (const id of coalescedDeliveryIds) nativeStartPending.set(id, pending);
+          }
+          const result = await verifySubmitted(`${msg.mode} inject`, {
             text: deliver.data,
             submittedAtMs: turnWriteStartedAt,
             writeContext: injectWriteContext,
-          })
-            .catch(() => {})
-            .finally(() => {
-              if (releaseAfterVerify) releaseAfterVerify();
-            });
+          });
+          const failure = submitVerificationFailureReason(result);
+          if (failure) {
+            return { ok: false, reason: nativeProofAvailable ? 'native-turn-start-unverified' : failure };
+          }
+          for (const id of coalescedDeliveryIds) nativeStartPending.delete(id);
         }
         return { ok: true, reason: 'delivered' };
       } catch (err) {
@@ -13854,14 +13846,9 @@ export function hostThroughPty(o) {
         // ACK below as a real outcome instead of a bare successful-looking close.
         return { ok: false, reason: 'error', error: String((err && err.message) || err).slice(0, 300) };
       } finally {
-        // EI-8822: always free the inject mutex — on success, an early return
-        // (defer/recycle/compact), OR a throw — so one inject never wedges the
-        // queue behind an unreleased lock. EI-18679050054551625: skip it here
-        // when deferMutexRelease is set — the turn/reset verify-in-background
-        // or recycle/carry-respawn-in-background continuation above owns
-        // releasing it once that continuation actually finishes, so the mutex
-        // still covers the full "gate wait -> write/recycle -> verify" span.
-        if (!deferMutexRelease && releaseInject) releaseInject();
+        // Cover the complete gate → write → verification interval, including
+        // failures, while the independent socket ACK remains immediate.
+        if (releaseInject) releaseInject();
       }
       };
       // EI-19311270129974785 / F03: the early ACK is only an acceptance

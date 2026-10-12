@@ -1220,6 +1220,257 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'wall-lapse-original-debounced-condition-and-exact-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/wall-lapse-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { wallLapseSweep } = await import('../wall-lapse-watchdog');
+    const { expect } = await import('vitest');
+    const fact: import('../agent-facts/store').LapsedWallFact = {
+      workspaceId: 'fixture', scope: 'owner', scopeRef: 'fixture-owner', key: 'wall:fixture',
+      body: 'Pending owner action', createdBy: 'fixture', expiresAt: '2020-01-01T00:00:00Z' };
+    let lapsed = true, recovered = false;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rail = { broadcast: async (event: { conditionKey?: string }) => {
+      open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolvedKeys.push(event.conditionKey); return true;
+    } };
+    const deps = { rail, readOpenConditionKeys: async () => [...open],
+      listLapsedWallFacts: async (opts?: { recoveryFor?: unknown[] }) => opts?.recoveryFor
+        ? (recovered ? [{ ...fact, recovered: true }] : []) : (lapsed ? [fact] : []),
+      recentWatchdogFires: async () => 1,
+      openEscalation: async () => { throw new Error('debounced legacy must not run'); } };
+    expect((await wallLapseSweep(deps))[0].outcome).toBe('debounced'); expect(open.size).toBe(1);
+    lapsed = false; await wallLapseSweep(deps); expect(open.size).toBe(1);
+    recovered = true; await wallLapseSweep({ ...deps }); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'kernel-leak-original-independent-signals-and-measured-trend-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { runKernelLeakCheckOnce } = await import('../system-health/kernel-leak-watchdog');
+    const { expect, vi } = await import('vitest');
+    const hour = 3_600_000, gib = 1024 ** 3;
+    const sample = (n: number, high: boolean): import('../system-health/kernel-leak-watchdog').KernelMemorySample => ({
+      bootId: 'fixture-boot', host: 'fixture-kernel', sampledAtMs: (7 + n) * hour, bootedAtMs: 0,
+      memTotalBytes: 100 * gib, sUnreclaimBytes: high ? (20 + n / 4) * gib : gib, slabBytes: 25 * gib,
+      dyingDescendants: high ? 1500 + n * 50 : 100 });
+    let rows = Array.from({ length: 14 }, (_, n) => sample(n, true));
+    let current: import('../system-health/kernel-leak-watchdog').KernelMemorySample | null = rows[13];
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rail = { broadcast: async (event: { conditionKey?: string }) => {
+      open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolvedKeys.push(event.conditionKey); return true;
+    } };
+    const deps = { rail, readSample: async () => current, store: async () => {}, prune: async () => {},
+      loadSeries: async () => rows, escalate: async () => { throw new Error('legacy unavailable'); } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runKernelLeakCheckOnce(deps); expect(open.size).toBe(3);
+      current = null; await runKernelLeakCheckOnce(deps); expect(resolvedKeys).toEqual([]);
+      current = { ...sample(13, false), dyingDescendants: null }; rows = [current];
+      await runKernelLeakCheckOnce(deps); expect(open.size).toBe(2);
+      rows = Array.from({ length: 14 }, (_, n) => sample(n, false)); current = rows[13];
+      await runKernelLeakCheckOnce(deps); expect(open.size).toBe(0);
+      expect(warn).toHaveBeenCalled();
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); }
+  },
+}, {
+  id: 'cluster-lag-original-silent-worker-and-confirmed-replacement-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/cluster-lag-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { startClusterLagWatchdog, CLUSTER_HEARTBEAT_TYPE } = await import('../system-health/cluster-lag-watchdog');
+    const { expect, vi } = await import('vitest');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const handlers: { message?: (worker: { id: number }, message: unknown) => void;
+      exit?: (worker: { id: number }) => void } = {};
+    const cluster = { on: (event: 'message' | 'exit', cb: never) => { handlers[event] = cb; } };
+    const beat = (id: number) => handlers.message?.({ id }, { type: CLUSTER_HEARTBEAT_TYPE });
+    const rail = {
+      broadcast: async (event: { conditionKey?: string }) => {
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.add(event.conditionKey!); return true;
+      },
+      resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      },
+    };
+    vi.useFakeTimers();
+    const wd = startClusterLagWatchdog({ cluster, rail, host: 'fixture-cluster', scanMs: 1_000, silenceMs: 2_000,
+      workerById: (id) => ({ id, kill: () => { throw new Error('kill still pending'); } }), log: () => {} });
+    try {
+      beat(1); vi.setSystemTime(Date.now() + 3_000);
+      await vi.advanceTimersByTimeAsync(1_000); await wd.settled();
+      expect([...open]).toEqual(['alarm:cluster-lag:fixture-cluster']);
+      beat(2); await vi.advanceTimersByTimeAsync(1_000); await wd.settled();
+      expect(resolvedKeys).toEqual([]);
+      handlers.exit?.({ id: 1 }); beat(2);
+      await vi.advanceTimersByTimeAsync(1_000); await wd.settled();
+      expect(resolvedKeys).toEqual([]);
+      beat(3); beat(2); await vi.advanceTimersByTimeAsync(1_000); await wd.settled();
+      expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { wd.stop(); vi.useRealTimers(); }
+  },
+}, {
+  id: 'service-restart-original-per-unit-breach-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { runRestartRateSweepOnce } = await import('../system-health/service-restart-rate-watchdog');
+    const { expect } = await import('vitest');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rail = {
+      broadcast: async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true; },
+      resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      },
+    };
+    let reading: import('../system-health/service-restart-rate-watchdog').RestartRateReading = {
+      unit: 'fixture.service', starts: 20, atLeast: false, unreadable: null };
+    const deps = { units: ['fixture.service'], rail, flagEnabled: async () => true,
+      readStarts: async () => reading, escalate: async () => { throw new Error('legacy failed'); } };
+    await runRestartRateSweepOnce(deps);
+    reading = { ...reading, starts: null, unreadable: 'journal failed' }; await runRestartRateSweepOnce(deps);
+    reading = { ...reading, starts: 1, atLeast: true, unreadable: null }; await runRestartRateSweepOnce(deps);
+    expect(resolvedKeys).toEqual([]);
+    expect(open.size).toBe(1);
+    reading = { ...reading, atLeast: false }; await runRestartRateSweepOnce(deps);
+    expect(open.size).toBe(0);
+    expect(openedKeys[0]).toContain(':fixture.service');
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'sync-read-budget-original-blind-breach-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { syncReadBudgetSweep } = await import('../harness/routines/sync-read-budget-watchdog');
+    const org = await import('@papercusp/db-org');
+    const legacy = await import('../pot/watchdog');
+    const { expect, vi } = await import('vitest');
+    const now = Date.parse('2026-10-12T00:00:00.000Z');
+    let mode: 'blind' | 'breach' | 'pending' | 'read-error' | 'producer-error' | 'healthy' = 'blind';
+    const sql = async (parts: TemplateStringsArray) => {
+      if (mode === 'read-error') throw new Error('snapshot unavailable');
+      if (parts.join('').includes('harness_shared.routines')) {
+        return mode === 'pending' ? [{ next_fire_at: new Date(now + 60_000), last_fired_at: null }] : [];
+      }
+      if (mode === 'blind' || mode === 'pending') return [];
+      return [{ computed_at: now, error: mode === 'producer-error' ? 'audit refresh failed' : null,
+        payload: { violations: mode === 'breach' ? [{ name: 'fixture.read', bytes: 200,
+          byteCeil: 100, overBytes: true, allowlisted: false }] : [], ratchetRegressions: [] } }];
+    };
+    const spies = [vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(legacy, 'claimWatchdogFire').mockResolvedValue(false)];
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const alarm = {
+      broadcast: async (event: { conditionKey?: string }) => {
+        open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+      },
+      resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      },
+    };
+    const opts = { workspaceId: 'fixture-ws', installSlug: 'fixture-pot', now };
+    try {
+      expect(await syncReadBudgetSweep(opts, alarm)).toMatchObject({ outcome: 'alerted', paged: false });
+      for (const unknown of ['read-error', 'pending', 'producer-error'] as const) {
+        mode = unknown; await syncReadBudgetSweep(opts, alarm);
+        expect(resolvedKeys).toEqual([]);
+      }
+      mode = 'breach'; spies[1].mockRejectedValue(new Error('legacy ledger unavailable'));
+      expect(await syncReadBudgetSweep(opts, alarm)).toMatchObject({ outcome: 'error' });
+      expect(openedKeys).toEqual(['alarm:sync-read-budget:fixture-ws:fixture-pot:blind',
+        'alarm:sync-read-budget:fixture-ws:fixture-pot:breach']);
+      expect([...open]).toEqual(['alarm:sync-read-budget:fixture-ws:fixture-pot:breach']);
+      mode = 'healthy';
+      expect(await syncReadBudgetSweep(opts, alarm)).toMatchObject({ outcome: 'healthy' });
+      expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { spies.forEach((spy) => spy.mockRestore()); }
+  },
+}, {
+  id: 'embed-latency-original-per-caller-breach-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/embed-latency-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { runEmbedLatencySweepOnce } = await import('../system-health/embed-latency-watchdog');
+    const { expect } = await import('vitest');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const alarm = {
+      broadcast: async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true; },
+      resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      },
+    };
+    const caller = { caller: 'fixture:embed', n: 20, ok: 20, timeout: 0, error: 0,
+      budgetMs: 1200, p50Ms: 20, p99Ms: 1900, maxMs: 2000 };
+    let callers = [caller];
+    const deps = { rail: alarm, flagEnabled: async () => true,
+      escalate: async () => { throw new Error('legacy failed'); },
+      readWindow: () => ({ windowMs: 3_600_000, embeds: callers.reduce((sum, row) => sum + row.n, 0),
+        callers, oldestSampleMs: 1, newestSampleMs: 2, truncatedByCapacity: false }) };
+    await expect(runEmbedLatencySweepOnce(deps)).rejects.toThrow('legacy failed');
+    callers = []; await runEmbedLatencySweepOnce(deps);
+    callers = [{ ...caller, n: 1, p99Ms: 200 }]; await runEmbedLatencySweepOnce(deps);
+    expect(resolvedKeys).toEqual([]);
+    expect(open.size).toBe(1);
+    callers = [{ ...caller, p99Ms: 200 }]; await runEmbedLatencySweepOnce(deps);
+    expect(open.size).toBe(0);
+    expect(openedKeys[0]).toContain(':fixture%3Aembed');
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'rubric-watchdog-original-staleness-and-proposal-dwell-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/rubric-staleness-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { rubricStalenessSweep, rubricProposalDwellSweep } = await import('../rubric-staleness-watchdog');
+    const { expect } = await import('vitest');
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    const alarm = {
+      broadcast: async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true; },
+      resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      },
+    };
+    const rubric = { rubricId: 'fixture-rubric', status: 'active', releaseGating: true,
+      updatedAt: '2026-07-13T00:00:00.000Z', proposedBy: 'su-proposer' } as unknown as import('../rubrics').Rubric;
+    let row = rubric;
+    let fresh = false, unavailable = false, unknown = false;
+    const deps = { alarm, listRubrics: async () => [row], now: Date.parse('2026-07-15T00:00:00.000Z'),
+      recentWatchdogFires: async () => 1,
+      checkScorecardFreshness: async () => {
+        if (unavailable) throw new Error('freshness unavailable');
+        return { status: unknown ? 'unknown-rubric' : fresh ? 'fresh' : 'stale', complete: fresh, count: fresh ? 1 : 0,
+          lastCompleteAt: null, lastEmittedAt: null } as import('../scorecard-freshness').ScorecardFreshness;
+      },
+      recordFire: async () => { throw new Error('legacy debounce failed'); },
+      openEscalation: async () => { throw new Error('legacy debounce failed'); },
+    };
+    const opts = { workspaceId: 'fixture-ws', installSlug: 'fixture-pot' };
+    await rubricStalenessSweep(opts, deps);
+    unknown = true; await rubricStalenessSweep(opts, deps);
+    unknown = false; unavailable = true; await rubricStalenessSweep(opts, deps);
+    expect(resolvedKeys).toEqual([]);
+    unavailable = false; fresh = true; await rubricStalenessSweep(opts, deps);
+    row = { ...rubric, status: 'proposed' }; await rubricProposalDwellSweep(opts, deps);
+    row = rubric; await rubricProposalDwellSweep(opts, deps);
+    expect(openedKeys).toEqual([
+      'alarm:rubric-staleness:fixture-ws:fixture-pot:fixture-rubric',
+      'alarm:rubric-proposal-dwell:fixture-ws:fixture-pot:fixture-rubric',
+    ]);
+    expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

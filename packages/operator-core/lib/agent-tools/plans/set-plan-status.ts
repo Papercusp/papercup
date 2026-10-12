@@ -56,7 +56,7 @@ import {
 } from '../../acceptance-grading-sweep-state';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
-import { resolvePlanScope } from './source';
+import { getPlanRow, resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import {
   evaluateIndependentVerificationGate,
@@ -664,15 +664,42 @@ export function acceptanceGraderRefusalFields(
  * names the other failing checks; a pass reports wouldShip plus any waiver the real ship
  * would record.
  */
-export function shipGatePreflightResult(slug: string, gate: PlanAcceptanceGateVerdict) {
-  if (!gate.satisfied) {
+type ShipPreflightGuardBlocker = {
+  code: string;
+  message: string;
+  repairAction: PlanAcceptanceRepairAction;
+  current?: string | null;
+  detail?: string;
+  planRevisionHash?: string;
+  policyVersion?: number;
+  admissionCode?: string;
+};
+
+export function shipGatePreflightResult(
+  slug: string,
+  gate: PlanAcceptanceGateVerdict,
+  guards: ShipPreflightGuardBlocker[] = [],
+) {
+  if (!gate.satisfied || guards.length > 0) {
+    const acceptanceBlockers = !gate.satisfied
+      ? gate.blockers ?? [{
+          code: gate.code ?? 'acceptance_gate_failed',
+          message: gate.message,
+          repairAction: gate.repairAction ?? { kind: 'diagnostic' as const, instruction: gate.message ?? 'Inspect the acceptance gate.' },
+        }]
+      : [];
+    const blockers = [...acceptanceBlockers, ...guards];
+    const primaryGuard = gate.satisfied ? guards[0] : undefined;
     return {
       ...gate,
+      ...(primaryGuard ?? {}),
+      satisfied: false,
       ok: false as const,
       slug,
       dryRun: true as const,
-      error: gate.code ?? 'acceptance_gate_failed',
-      message: messageWithAdditionalBlockers(gate.message, gate.blockers),
+      error: primaryGuard?.code ?? gate.code ?? 'acceptance_gate_failed',
+      blockers,
+      message: messageWithAdditionalBlockers(primaryGuard?.message ?? gate.message, blockers),
     };
   }
   return {
@@ -798,7 +825,50 @@ export default defineTool({
           }
           // P-001 preflight: report and return BEFORE any side effect — no grader
           // recruitment, no forced-past stamp, no frontmatter write.
-          if (args.dryRun) return shipGatePreflightResult(slug, gate);
+          if (args.dryRun) {
+            // Admission and frontmatter/CAS are independent of acceptance. Read them
+            // even on an acceptance refusal; otherwise each retry reveals one more
+            // blocker, or a passing acceptance check falsely promises wouldShip.
+            const guards: ShipPreflightGuardBlocker[] = [];
+            const diagnostic = (instruction: string): PlanAcceptanceRepairAction => ({
+              kind: 'diagnostic', instruction,
+              nextVerb: { name: 'plans:get', args: { slug, harness: subjectScope.harnessSlug } },
+            });
+            try {
+              const admission = await checkPlanAdmission({ slug, door: 'promotion', opts: subjectScope, readOnly: true });
+              if (!admission.admitted) {
+                guards.push({
+                  code: admission.refusal.error,
+                  admissionCode: admission.refusal.code,
+                  message: admission.refusal.hint,
+                  detail: admission.refusal.detail,
+                  planRevisionHash: admission.refusal.planRevisionHash,
+                  policyVersion: admission.refusal.policyVersion,
+                  repairAction: diagnostic(admission.refusal.hint),
+                });
+              }
+            } catch (error) {
+              const message = `Promotion admission could not be read: ${error instanceof Error ? error.message : String(error)}`;
+              guards.push({ code: 'plan_admission_unavailable', message, repairAction: diagnostic(message) });
+            }
+            try {
+              const row = await getPlanRow(slug, subjectScope);
+              const flip = row ? flipPlanFrontmatterStatus(row.content, status, args.expectedCurrent) : null;
+              const code = !row ? 'not_found' : flip?.code;
+              if (code === 'not_found' || code === 'no_status_line' || code === 'unexpected_status') {
+                const message = code === 'unexpected_status'
+                  ? `Expected plan status '${args.expectedCurrent}', but current frontmatter status is '${flip?.oldStatus}'. Read the plan and supply its current status before retrying.`
+                  : code === 'no_status_line'
+                    ? 'Plan has no frontmatter status line. Inspect the plan and repair its frontmatter before shipping.'
+                    : 'Plan was not found in the resolved subject scope.';
+                guards.push({ code, message, current: flip?.oldStatus ?? null, repairAction: diagnostic(message) });
+              }
+            } catch (error) {
+              const message = `Plan frontmatter could not be read: ${error instanceof Error ? error.message : String(error)}`;
+              guards.push({ code: 'plan_source_unavailable', message, repairAction: diagnostic(message) });
+            }
+            return shipGatePreflightResult(slug, gate, guards);
+          }
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(
               slug, gate, ctx, harnessSlug, undefined, undefined, args.current,

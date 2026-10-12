@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
   broadcastSevereEventResolved: vi.fn(async () => true) }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
@@ -420,7 +420,11 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
   });
 
   it('keeps ONE cooldown identity while the disk merely stays on the same rung (no spam)', () => {
-    expect(formatDiskEscalation([breach(17)]).title).toBe(formatDiskEscalation([breach(15)]).title);
+    const escalation = formatDiskEscalation([breach(17)]);
+    expect(escalation.title).toBe(formatDiskEscalation([breach(15)]).title);
+    expect(escalation.title).toContain('18.8 GiB');
+    expect(escalation.body).toContain('17.0 GiB free');
+    expect(escalation.body).toContain('1875.0 GiB');
     expect(formatDiskEscalation([breach(30)]).title).toBe('Disk critically low');
   });
 
@@ -481,6 +485,20 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
 });
 
 describe('diskPolicyFromEnv', () => {
+  const policyEnvKeys = [
+    'PAPERCUSP_DISK_ALARM_FREE_PCT',
+    'PAPERCUSP_DISK_ALARM_FREE_GB',
+    'PAPERCUSP_DISK_ALARM_FREE_INODES_PCT',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_PCT',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_GB',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB',
+  ];
+
+  beforeEach(() => {
+    for (const key of policyEnvKeys) vi.stubEnv(key, undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
   it('falls back to defaults when env is unset', () => {
     expect(diskPolicyFromEnv()).toEqual(DEFAULT_DISK_POLICY);
   });

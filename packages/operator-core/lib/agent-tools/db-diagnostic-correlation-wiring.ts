@@ -23,7 +23,9 @@ import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log'
 type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-holder-liveness' |
   'goal-mode-state' | 'goal-portfolio' | 'goal-stewardship' | 'goal-worklist-history' |
   'stewardship-dependencies' | 'stewardship-scorecards' | 'stewardship-rubrics' |
-  'stewardship-repairs' | 'stewardship-lineage' | 'scorecards-generation' | 'scorecards-rubric';
+  'stewardship-repairs' | 'stewardship-lineage' | 'scorecards-generation' | 'scorecards-rubric' |
+  'native-session-verifier-workspace-transaction' | 'native-session-verifier-global-transaction' |
+  'native-session-verifier-owner-row-lookup' | 'native-session-verifier-owner-candidate-rows-lookup';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;
   startedAt: number;

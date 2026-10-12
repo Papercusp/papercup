@@ -16,6 +16,7 @@ const acceptanceRubricMocks = vi.hoisted(() => ({
   retired: vi.fn(),
 }));
 const adhocContractMocks = vi.hoisted(() => ({ workItem: vi.fn(), contract: vi.fn() }));
+const scorecardMocks = vi.hoisted(() => ({ readEvidence: vi.fn() }));
 
 vi.mock('../../work-items', () => ({ getWorkItem: adhocContractMocks.workItem }));
 vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
@@ -51,9 +52,15 @@ vi.mock('../../rubrics', async (original) => ({
 vi.mock('../../build-info', () => ({
   getBuildInfo: vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' })),
 }));
+vi.mock('../../scorecards', async (original) => ({
+  ...(await original<typeof import('../../scorecards')>()),
+  readScorecardEvidence: scorecardMocks.readEvidence,
+}));
 
 import tool from './evaluate-spec-test-adequacy';
 import { replaySpecTestAdequacyForHistoricalAudit } from './evaluate-spec-test-adequacy';
+import { readScorecardEvidence } from '../../scorecards';
+import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { listSpecClauses } from './spec-clauses-store';
 import { listSpecEvidence } from './spec-evidence-store';
 import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from '../../rubrics';
@@ -62,6 +69,7 @@ const listClauses = vi.mocked(listSpecClauses);
 const listEvidence = vi.mocked(listSpecEvidence);
 const listAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const listRetiredAcceptanceRubrics = vi.mocked(getRetiredAcceptanceRubricsForPlan);
+const readScorecard = vi.mocked(readScorecardEvidence);
 
 type ToolOutput = { data: Record<string, any> };
 
@@ -621,6 +629,116 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     });
     expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0]!.ratings.freshness!.rating)
       .toBe('pass');
+  });
+
+  it('routes a scorecardId through its stored recipe and replays retracted bindings as of card creation', async () => {
+    const createdAt = '2026-10-12T07:19:17.178Z';
+    const recipe: SpecTestAdequacyRerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        evidenceRefs: ['test-run 20455199'],
+        bindingIds: [19999],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        bindingIds: [19999],
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+    readScorecard.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        issueId: 'EI-12345',
+        createdAt,
+        rubricRef: 'spec-test-adequacy',
+        sourceHive: 'papercusp',
+        rerunRecipe: recipe,
+      } as never,
+    });
+    listEvidence.mockResolvedValue([]);
+
+    const result = await call({ harness: 'papercusp', slug: 'plan-a', scorecardId: 'EI-12345' });
+
+    expect(readScorecard).toHaveBeenCalledWith('EI-12345');
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'historical_selection_empty',
+      count: 0,
+      scorecardId: 'EI-12345',
+    });
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'workspace-test',
+      bindingIds: [19999],
+      includeRetracted: true,
+      auditAsOf: new Date(createdAt),
+    }));
+    expect(listAcceptanceRubrics).not.toHaveBeenCalled();
+  });
+
+  it('rejects a scorecard replay when the caller supplies a different plan slug', async () => {
+    const recipe: SpecTestAdequacyRerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        evidenceRefs: ['test-run 20455199'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+    readScorecard.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        issueId: 'EI-12345',
+        createdAt: '2026-10-12T07:19:17.178Z',
+        rubricRef: 'spec-test-adequacy',
+        sourceHive: 'papercusp',
+        rerunRecipe: recipe,
+      } as never,
+    });
+
+    const result = await call({ harness: 'papercusp', slug: 'plan-b', scorecardId: 'EI-12345' });
+
+    expect(result).toMatchObject({ ok: false, error: 'scorecard_selector_mismatch', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
   });
 
   it('preserves every criterion rating through a trimmed MCP dispatch', async () => {
