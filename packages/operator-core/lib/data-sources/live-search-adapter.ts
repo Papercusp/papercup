@@ -4,8 +4,10 @@
  *
  * A data source can serve live queries instead of a sync. Such a source is a
  * `harness_shared.data_sources` row with `sync_mode = 'federated'`. Its adapter is
- * queried at read time and NOTHING is written to the documents corpus: Slack's
- * Real-time Search API, the first adapter, forbids storing its results.
+ * queried at read time and NOTHING is written to the documents corpus (a vendor's
+ * search API may forbid storing its results). Adapters come from provider packages
+ * that declare the `search.live` capability (cupboard-distributable-integrations-2026-10-10
+ * D-026 ruling 5); the call runs as the person searching.
  *
  * A live read passes the same three checks as a stored organization read
  * (documents-corpus.ts):
@@ -23,13 +25,23 @@
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
+import {
+  PROVIDER_SEARCH_LIVE_CAPABILITY,
+  providerLiveSearchResultIssue,
+  type HostFetch,
+  type ProviderLiveSearchResult,
+} from '@papercusp/plugin-sdk';
+import { DEFAULT_SOURCE_TOKEN_HARNESS } from '../external-triggers/source-store';
+import { HostFetchError } from '../integrations/host-fetch';
+import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { resolveProviderServices } from '../integrations/service-credentials';
+import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { authorizePersonalAccess, type PersonalAuthorization } from '../personal-vault/authorization';
 import { discloseDocuments } from '../personal-vault/disclosure-ledger';
 import type { DocumentLabel } from '../personal-vault/disclosure-labels';
 import { normalizePersonalSource } from '../personal-vault/store';
 import type { PersonalToolContext } from '../personal-vault/types';
 import { ORGANIZATION_CORPUS_SCOPE } from './documents-corpus';
-import { slackRealtimeSearchAdapter } from './slack-realtime-search';
 
 export const LIVE_SEARCH_VIA = 'live:search';
 export const LIVE_SEARCH_SYNC_MODE = 'federated';
@@ -73,10 +85,98 @@ export interface LiveSearchAdapter {
   search(input: LiveSearchInput): Promise<LiveSearchHit[]>;
 }
 
-/** Adapters shipped with the platform, keyed by data_sources.kind. Immutable. */
-export const BUILTIN_LIVE_SEARCH_ADAPTERS: ReadonlyMap<string, LiveSearchAdapter> = new Map([
-  [slackRealtimeSearchAdapter.kind, slackRealtimeSearchAdapter],
-]);
+/** A source's failure reason when the person searching has not stored their own per-person credential. */
+export const PRINCIPAL_CREDENTIAL_MISSING = 'principal_credential_missing';
+
+export interface ProviderLiveSearchAdapterOptions {
+  registry?: ProviderRegistry;
+  fetchImpl?: typeof fetch;
+}
+
+/** The install whose token store holds a source's credentials: `config.installSlug`, else the default. */
+function sourceTokenHarness(record: LiveSourceRecord): string {
+  const value = record.config.installSlug;
+  return typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_SOURCE_TOKEN_HARNESS;
+}
+
+function providerLiveSearchAdapter(sql: Sql, provider: RegisteredProvider, opts: ProviderLiveSearchAdapterOptions): LiveSearchAdapter {
+  const kind = normalizePersonalSource(provider.descriptor.id);
+  return {
+    kind,
+    async search(input) {
+      // host.fetch acts for the person searching, never for the source: a per-person setup
+      // credential resolves from their own stored value, and a person with none is refused.
+      const bound = createSourceHostFetch(sql, {
+        providerId: provider.descriptor.id,
+        workspaceId: input.record.workspaceId,
+        harness: sourceTokenHarness(input.record),
+        registry: opts.registry,
+        fetchImpl: opts.fetchImpl,
+        sourceIds: [input.record.id],
+        principalUserId: input.principalUserId,
+      });
+      // The provider may run out of process, so the refusal is recognised here, where it is
+      // raised, rather than from whatever error the provider reports back.
+      let principalMissing = false;
+      const fetch: HostFetch = async (request) => {
+        try {
+          return await bound(request);
+        } catch (error) {
+          if (error instanceof HostFetchError && error.code === 'principal-credential-missing') principalMissing = true;
+          throw error;
+        }
+      };
+      let result: unknown;
+      try {
+        const services = await resolveProviderServices(provider.descriptor.serviceCredentials);
+        result = await provider.adapter.invoke(
+          {
+            source: input.record.id,
+            capability: PROVIDER_SEARCH_LIVE_CAPABILITY,
+            args: { query: input.query, limit: input.limit },
+            config: input.record.config,
+            ...(services ? { services } : {}),
+          },
+          { fetch },
+        );
+      } catch (error) {
+        if (principalMissing) throw new Error(PRINCIPAL_CREDENTIAL_MISSING);
+        throw error;
+      }
+      const issue = providerLiveSearchResultIssue(result);
+      if (issue) throw new Error(`live_search_invalid_result: ${issue}`);
+      // Hits arrive best first; rank is the only relevance the contract carries.
+      return (result as ProviderLiveSearchResult).hits.map((hit, index) => ({
+        externalId: hit.externalId,
+        title: hit.title,
+        text: hit.text,
+        occurredAt: hit.occurredAt,
+        participants: hit.participants,
+        permalink: hit.permalink,
+        score: 1 / (index + 1),
+      }));
+    },
+  };
+}
+
+/**
+ * One adapter for each registered provider that declares `search.live`
+ * (cupboard-distributable-integrations-2026-10-10 D-026 ruling 5), keyed by data_sources.kind.
+ * No provider is named here: a package that declares the capability is searchable live.
+ */
+export async function providerLiveSearchAdapters(
+  sql: Sql,
+  opts: ProviderLiveSearchAdapterOptions = {},
+): Promise<ReadonlyMap<string, LiveSearchAdapter>> {
+  const registry = opts.registry ?? (await readyProviderRegistry());
+  const adapters = new Map<string, LiveSearchAdapter>();
+  for (const provider of registry.list()) {
+    if (!provider.descriptor.capabilities.includes(PROVIDER_SEARCH_LIVE_CAPABILITY)) continue;
+    const adapter = providerLiveSearchAdapter(sql, provider, { ...opts, registry });
+    adapters.set(adapter.kind, adapter);
+  }
+  return adapters;
+}
 
 export interface LiveSearchResult {
   id: string;
@@ -214,10 +314,10 @@ export async function searchLiveSources(
 
   const limit = Math.max(1, Math.min(20, params.limit ?? 10));
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
-  const adapters = params.adapters ?? BUILTIN_LIVE_SEARCH_ADAPTERS;
   const wanted = new Set((params.sources ?? []).map(normalizePersonalSource));
   const records = (await listLiveSources(sql, params.workspaceId))
     .filter((r) => !wanted.size || wanted.has(liveSourceKey(r)));
+  const adapters = params.adapters ?? (records.length ? await providerLiveSearchAdapters(sql) : new Map<string, LiveSearchAdapter>());
 
   const unmapped: string[] = [];
   const failed: LiveSourceFailure[] = [];

@@ -14,7 +14,14 @@
  *   - a throwing or slow provider is silence, never an error for the turn.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  PROVIDER_SEARCH_LIVE_CAPABILITY,
+  type ProviderAdapter,
+  type ProviderDescriptor,
+  type ProviderInvokeRequest,
+} from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import { upsertPrivacyRule } from '../personal-vault/disclosure-ledger';
 import { createPersonalGrant } from '../personal-vault/store';
 import {
@@ -33,6 +40,8 @@ import {
 } from './granted-sources-injection';
 import {
   liveDocumentId,
+  PRINCIPAL_CREDENTIAL_MISSING,
+  providerLiveSearchAdapters,
   searchLiveSources,
   type LiveSearchAdapter,
   type LiveSearchHit,
@@ -226,5 +235,109 @@ describe('live (federated) search through the injection path (R-12)', () => {
     expect(await build(alice, 50)).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.signal.aborted).toBe(true);
+  });
+});
+
+/**
+ * cupboard-distributable-integrations-2026-10-10 D-026 ruling 5: adapters come from provider
+ * packages declaring `search.live`, and the call's host.fetch acts for the person searching.
+ */
+describe('live search through provider packages (D-026)', () => {
+  const LIVE_HOST = 'live.fixture.test';
+  const liveDescriptor: ProviderDescriptor = {
+    id: 'slack',
+    contractVersion: 1,
+    datatypes: ['chat-message'],
+    capabilities: [PROVIDER_SEARCH_LIVE_CAPABILITY],
+    egressHosts: [LIVE_HOST],
+    setup: { credentials: [{ key: 'user_token', label: 'Your search token', perPrincipal: true, hosts: [LIVE_HOST] }] },
+  };
+  const quietDescriptor: ProviderDescriptor = {
+    id: 'quiet-fixture',
+    contractVersion: 1,
+    datatypes: ['chat-message'],
+    capabilities: ['chat.read'],
+    egressHosts: ['quiet.fixture.test'],
+  };
+  let behaviour: 'hits' | 'fetch' | 'malformed' = 'hits';
+  let invokes: ProviderInvokeRequest[] = [];
+  const liveAdapter: ProviderAdapter = {
+    describe: () => liveDescriptor,
+    syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
+    invoke: async (request, host) => {
+      invokes.push(request);
+      if (behaviour === 'fetch') await host.fetch({ source: request.source, request: { url: `https://${LIVE_HOST}/search` } });
+      if (behaviour === 'malformed') return { hits: [{ externalId: '' }] };
+      const { score: _score, ...first } = HIT;
+      return { hits: [first, { ...first, externalId: 'T1:CROADMAP:1727780000.000200', text: 'Second hit.' }] };
+    },
+  };
+  const quietAdapter: ProviderAdapter = {
+    describe: () => quietDescriptor,
+    syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
+    invoke: async () => ({ hits: [] }),
+  };
+  const noNetwork = (async () => {
+    throw new Error('live-search test: the request must be refused before any network call');
+  }) as unknown as typeof fetch;
+  let registry: ProviderRegistry;
+
+  beforeAll(async () => {
+    registry = createProviderRegistry();
+    await registry.register({ descriptor: liveDescriptor, adapter: liveAdapter, pluginName: 'live-fixture-plugin' });
+    await registry.register({ descriptor: quietDescriptor, adapter: quietAdapter, pluginName: 'quiet-fixture-plugin' });
+  });
+
+  beforeEach(() => {
+    behaviour = 'hits';
+    invokes = [];
+  });
+
+  async function searchViaPackages(userId: string) {
+    const adapters = await providerLiveSearchAdapters(org.adminSql, { registry, fetchImpl: noNetwork });
+    return searchLiveSources(org.adminSql, { workspaceId: WS, role: AGENT_ROLE }, {
+      workspaceId: WS, principalUserId: userId, agentOwnerId: AGENT, query: 'cobalt roadmap', adapters,
+    });
+  }
+
+  it('builds an adapter only for a provider declaring search.live', async () => {
+    const adapters = await providerLiveSearchAdapters(org.adminSql, { registry, fetchImpl: noNetwork });
+    expect([...adapters.keys()]).toEqual(['slack']);
+  });
+
+  it("invokes the provider's search.live with the query, limit and source config, ranking its hits in order", async () => {
+    const outcome = await searchViaPackages(alice);
+    expect(outcome).toMatchObject({ allowed: true, failed: [], unmapped: [] });
+    if (!outcome.allowed) throw new Error('expected an allowed outcome');
+    expect(outcome.results.map((r) => [r.externalId, r.score])).toEqual([
+      [HIT.externalId, 1],
+      ['T1:CROADMAP:1727780000.000200', 0.5],
+    ]);
+    expect(invokes).toEqual([
+      { source: dataSourceId, capability: PROVIDER_SEARCH_LIVE_CAPABILITY, args: { query: 'cobalt roadmap', limit: 10 }, config: { installSlug: 'acme' } },
+    ]);
+    expect(await corpusRows()).toBe(0);
+  });
+
+  it('reports principal_credential_missing when the person searching has not stored their own credential', async () => {
+    behaviour = 'fetch';
+    expect(await searchViaPackages(alice)).toMatchObject({
+      allowed: true, results: [], failed: [{ dataSourceId, source: 'slack', reason: PRINCIPAL_CREDENTIAL_MISSING }],
+    });
+    expect(invokes).toHaveLength(1);
+  });
+
+  it('fails the source soft when the provider returns a malformed result', async () => {
+    behaviour = 'malformed';
+    const outcome = await searchViaPackages(alice);
+    expect(outcome).toMatchObject({ allowed: true, results: [] });
+    if (!outcome.allowed) throw new Error('expected an allowed outcome');
+    expect(outcome.failed).toHaveLength(1);
+    expect(outcome.failed[0]!.reason).toMatch(/^live_search_invalid_result: /);
+  });
+
+  it('does not invoke the provider for a person with no mapped identity', async () => {
+    expect(await searchViaPackages(bob)).toMatchObject({ allowed: true, results: [], unmapped: ['slack'] });
+    expect(invokes).toEqual([]);
   });
 });
