@@ -115,8 +115,6 @@
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|2",
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|3",
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|4",
-    "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts|handler|1",
-    "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|2",
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
     "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",

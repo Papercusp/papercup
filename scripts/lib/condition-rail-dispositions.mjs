@@ -121,11 +121,6 @@ export const DISPOSITIONS = Object.freeze({
     'the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)',
   ),
   'log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|fallback': NA_FALLBACK_WAKE,
-  'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|fallback': na(
-    'no EL API key configured: a configuration choice that selects the PG spend source, not a runtime failure',
-  ),
-  'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|falling-back': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|fallback': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts': na(
