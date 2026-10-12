@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
-import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDiagnosticArtifacts, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
+import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
 import { PANEL_ORDER } from './system-health/types';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt, verifyPrivateInsightsDenialCoverage } from '../test/private-coord-receipt';
@@ -21,6 +22,67 @@ import { preflightPrivateStats } from '../test/portal-stats-fixture';
 import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport, verifyPrivateTestingReadScopes } from '../test/portal-roster-browser-fixture';
 
 const testingPots = { selected: 'testing-selected', neighbor: 'testing-neighbor', foreign: 'testing-foreign' };
+
+it('retains exact original private worker browser and selected persistence receipts after count pruning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-receipt-retention-'));
+  const originals = new Map([
+    ['phases/prepare/source.json', '{"source":"original"}\n'],
+    ['phases/prepare/operator-api-preflight.json', '{"api":"original input"}\n'],
+    ['phases/execute/lifecycle.json', '{"ended":true}\n'],
+    ['phases/execute/worker-result.json', '{"code":0,"output":"original worker"}\n'],
+    ['phases/execute/portal-browser-source.json', '{"bundle":"original browser"}\n'],
+    ['phases/execute/portal-browser-receipt.json', '{"keyboardSave":true}\n'],
+    ['phases/execute/portal-settings-persistence.json', '{"marker":"preserved"}\n'],
+  ]);
+  const retainedArtifacts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json',
+    'phases/execute/portal-settings-persistence.json'];
+  try {
+    const result = await runHarness({
+      contract: { name: 'isolated-receipt-retention', phases: [{ id: 'prepare' }, { id: 'execute' }, { id: 'teardown' }] },
+      evidenceRoot: root, runId: '20261012T000001Z-1', retainedArtifacts, guardRails: [],
+      runPhase: async ({ phase, evidenceDir }) => {
+        for (const [path, bytes] of originals) if (path.startsWith(`phases/${phase}/`))
+          writeFileSync(join(evidenceDir, path.split('/').at(-1)!), bytes);
+        if (phase === 'teardown') retainedArtifacts.push(...isolatedIntegrationDiagnosticArtifacts(join(evidenceDir, '../..')));
+        return { ok: true };
+      },
+    });
+    expect(result.verdict).toBe('pass');
+    await runHarness({
+      contract: { name: 'isolated-receipt-retention', phases: [{ id: 'execute' }] },
+      evidenceRoot: root, runId: '20261012T000002Z-2', guardRails: [], runPhase: async () => ({ ok: true }),
+    });
+    expect(await pruneRuns(root, 1, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }), reserveBytes: () => 400,
+    })).toContain(result.runId);
+    expect(() => readFileSync(join(result.evidenceDir, 'result.json'))).toThrow();
+    for (const [path, bytes] of originals)
+      expect(readFileSync(join(root, 'retained', result.runId, path), 'utf8')).toBe(bytes);
+    expect(JSON.parse(readFileSync(join(root, 'retained', result.runId, 'result.json'), 'utf8'))).toEqual(result);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it('allows modes without browser receipts but refuses a missing explicitly required selected receipt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-receipt-requirement-'));
+  try {
+    expect(isolatedIntegrationDiagnosticArtifacts(root)).toEqual([]);
+    const withoutBrowser = await runHarness({
+      contract: { name: 'isolated-receipt-requirement', phases: [{ id: 'execute' }] },
+      evidenceRoot: root, runId: '20261012T000002Z-2',
+      retainedArtifacts: isolatedIntegrationDiagnosticArtifacts(root), guardRails: [],
+      runPhase: async () => ({ ok: true }),
+    });
+    expect(withoutBrowser.verdict).toBe('pass');
+    const runId = '20261012T000003Z-3';
+    await expect(runHarness({
+      contract: { name: 'isolated-receipt-requirement', phases: [{ id: 'execute' }] },
+      evidenceRoot: root, runId, retainedArtifacts: ['phases/execute/portal-settings-persistence.json'], guardRails: [],
+      runPhase: async () => ({ ok: true }),
+    })).rejects.toThrow();
+    expect(() => readFileSync(join(root, 'retained', runId, 'result.json'))).toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it('preflights Stats workspace selection through real middleware with a cookie-only negative control', async () => {
   const evidence = mkdtempSync(join(tmpdir(), 'stats-request-contract-'));
   const workspace = 'test-runtime-stats-contract';

@@ -35,6 +35,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-harness-settings-private.e2e.test.ts',
+      retainedArtifacts: ['phases/prepare/operator-api-preflight.json', 'phases/execute/worker-result.json',
+        'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
+        'phases/execute/portal-settings-initial-store.json', 'phases/execute/portal-settings-wire.json',
+        'phases/execute/portal-settings-persistence.json'],
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/harness-registry.ts',

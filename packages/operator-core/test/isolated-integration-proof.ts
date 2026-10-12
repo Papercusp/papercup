@@ -428,6 +428,8 @@ function qualifyOriginalPreparation(handoff: CommittedReaderPreparationHandoff |
 
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
+  /** Required original receipts, relative to the run directory. Missing files fail retention. */
+  retainedArtifacts?: readonly string[];
   prepare?: (evidenceDir: string) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
   requiredPreparation?: CommittedReaderObservationIdentity;
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
@@ -442,6 +444,9 @@ export async function recordIsolatedIntegrationProof(options: {
   let observedChild: ChildProcess | undefined;
   let original: ReturnType<typeof qualifyOriginalPreparation> | undefined;
   let retainedPreparationDir: string | undefined;
+  const retainedArtifacts = [...new Set(['phases/prepare/source.json', 'phases/execute/lifecycle.json',
+    ...(options.requiredPreparation ? ['phases/prepare/verifier-source.json', 'phases/prepare/operator-api-inputs.json',
+      'phases/prepare/original-observations.json'] : []), ...(options.retainedArtifacts ?? [])])];
   const recheckPreparation = () => {
     if (!original) return;
     original.recheck();
@@ -453,9 +458,7 @@ export async function recordIsolatedIntegrationProof(options: {
     contract: { name: 'isolated-integration', phases: [
       { id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }, { id: 'teardown' },
     ] }, evidenceRoot: defaultEvidenceRoot('isolated-integration'),
-    retainedArtifacts: ['phases/prepare/source.json', 'phases/execute/lifecycle.json',
-      ...(options.requiredPreparation ? ['phases/prepare/verifier-source.json', 'phases/prepare/operator-api-inputs.json',
-        'phases/prepare/original-observations.json'] : [])],
+    retainedArtifacts,
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
         // Required originals must be validated and retained before allocating
@@ -523,6 +526,11 @@ export async function recordIsolatedIntegrationProof(options: {
         }
         assert.ok(lifecycle && ended && observedChild?.exitCode !== null);
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
+        // The runner snapshots these originals before count pruning. Modes that
+        // do not produce browser/input receipts must not acquire missing requirements.
+        const runDir = join(ctx.evidenceDir, '../..');
+        for (const receipt of isolatedIntegrationDiagnosticArtifacts(runDir))
+          if (!retainedArtifacts.includes(receipt)) retainedArtifacts.push(receipt);
       }
       return { ok: true };
     },
@@ -535,4 +543,12 @@ export async function recordIsolatedIntegrationProof(options: {
       .map(({ phase, step, reasonCode, detail }) => ({ phase, step, reasonCode, detail })),
   }));
   return result.runId;
+}
+
+/** Common small diagnostics emitted by the maintained private worker/browser boundary. */
+export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[] {
+  return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-inputs.json',
+    'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
+    'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
+    'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }
