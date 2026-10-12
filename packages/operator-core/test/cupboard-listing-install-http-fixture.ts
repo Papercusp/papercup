@@ -1,0 +1,151 @@
+/**
+ * Private-runtime fixture for plan cupboard-distributable-integrations-2026-10-10, SPEC-R-1-P-011:
+ * "The Slack and bug-triage packages are listed in the Cupboard and can be installed from that
+ * listing."
+ *
+ * Runs under `scripts/with-test-pg.mjs --isolated-runtime=operator-api`, which gives this process a
+ * private Postgres, HOME, PAPERCUSP_HOME and XDG directories, so nothing installed here reaches the
+ * operators that share this machine. It bundles and boots a private operator host, then installs
+ * each package through POST /api/cupboard/install-plugin by its PUBLIC Cupboard listing id (the
+ * request the Settings > Integrations install sends), with the review-then-accept two step. The
+ * live dependencies are real: the hosted Cupboard resolves the listing, and the package is cloned
+ * from its public GitHub mirror. No credentials are saved, so the Slack provider never dials Slack.
+ *
+ * Prints one CUPBOARD_LISTING_INSTALL_RECEIPT line on success; any assertion failure prints a
+ * CUPBOARD_LISTING_INSTALL_FAILURE line and exits 1.
+ */
+import assert from 'node:assert/strict';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+import { readProcessIdentity } from '../lib/process-identity';
+
+/** The public first-party listings P-011 published. */
+const LISTINGS = [
+  { name: 'slack', listingId: 'ccd90bf0-f04c-486d-93cd-2c84d8241efe',
+    githubUrl: 'https://github.com/Papercusp/papercusp-slack', providerId: 'slack' },
+  { name: '@papercupai/bug-triage', listingId: '508f85df-cb5a-4e92-9fdb-26c26eafd00f',
+    githubUrl: 'https://github.com/Papercusp/papercusp-bug-triage', providerId: null },
+] as const;
+
+let host: ChildProcess | undefined;
+let hostIdentity: ReturnType<typeof readProcessIdentity>;
+
+async function stopHost() {
+  if (!host) return;
+  if (host.exitCode === null && host.signalCode === null) {
+    const closed = new Promise<void>(done => host!.once('close', () => done()));
+    host.kill('SIGTERM');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([closed, new Promise<void>(done => { timer = setTimeout(done, 5_000); })]);
+    clearTimeout(timer);
+    if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
+    await closed;
+  }
+  assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private host survived cleanup');
+}
+
+interface PostResult { status: number; body: any }
+
+async function main() {
+  const e = process.env;
+  const workspace = e.PAPERCUSP_WORKSPACE_ID!;
+  const base = e.PAPERCUSP_OPERATOR_URL!;
+  assert.match(workspace, /^test-runtime-/);
+  assert.equal(e.PAPERCUSP_BACKGROUND_WORKERS, '0');
+  assert.notEqual(e.PAPERCUSP_PG_PORT, '5432');
+  assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)), 'must not target a shared operator');
+  const privateHome = e.PAPERCUSP_HOME;
+  assert.ok(privateHome && existsSync(privateHome), 'private PAPERCUSP_HOME required');
+  const root = resolve(import.meta.dirname, '../../..');
+  const evidenceDir = e.CUPBOARD_LISTING_INSTALL_EVIDENCE_DIR!;
+  assert.ok(evidenceDir, 'retained evidence directory required');
+
+  const bundle = join(evidenceDir, 'hono-host.mjs');
+  console.log('CUPBOARD_LISTING_INSTALL_PHASE bundle-start');
+  try {
+    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
+      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
+    writeFileSync(join(evidenceDir, 'build.log'), output);
+  } catch (error: any) {
+    writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
+    throw error;
+  }
+  const bundleBytes = readFileSync(bundle);
+  assert.ok(bundleBytes.includes(Buffer.from('install-plugin-core.ts')), 'install core must be in the executed bundle');
+  const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
+
+  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  host.stdout!.on('data', chunk => process.stdout.write(chunk));
+  host.stderr!.on('data', chunk => process.stderr.write(chunk));
+  hostIdentity = readProcessIdentity(host.pid!);
+  assert.ok(hostIdentity, 'private host kernel identity required');
+  const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
+  let health: any;
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    assert.equal(host.exitCode, null, 'private host exited before readiness');
+    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
+    try {
+      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
+      if (response.ok) { health = await response.json(); break; }
+    } catch { /* bounded readiness convergence; install requests never retry */ }
+    await new Promise(done => setTimeout(done, 250));
+  }
+  assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+  console.log('CUPBOARD_LISTING_INSTALL_PHASE request-ready');
+
+  const post = async (body: Record<string, unknown>): Promise<PostResult> => {
+    const response = await fetch(base + '/api/cupboard/install-plugin', { method: 'POST', headers,
+      body: JSON.stringify(body), signal: AbortSignal.timeout(180_000) });
+    return { status: response.status, body: await response.json().catch(() => null) };
+  };
+
+  const installs = [];
+  for (const listing of LISTINGS) {
+    const request = { listingId: listing.listingId };
+    const first = await post(request);
+    const review = first.body?.data?.review ?? first.body?.review;
+    assert.ok(review, `${listing.name}: no install review from the listing (status ${first.status}): `
+      + JSON.stringify(first.body).slice(0, 1_500));
+    assert.equal(first.status, 409, `${listing.name}: an unaccepted install must stop at the review`);
+    if (listing.providerId) assert.equal(review.provider?.id, listing.providerId, `${listing.name}: review provider`);
+    const second = await post({ ...request, acceptCapabilities: true, expectedReview: review });
+    assert.equal(second.status, 200, `${listing.name}: accepted install failed: ` + JSON.stringify(second.body).slice(0, 1_500));
+    const result = second.body;
+    assert.equal(result?.ok, true, `${listing.name}: install result not ok`);
+    assert.equal(result.name, listing.name, `${listing.name}: installed package name`);
+    // The provenance is what makes this an install FROM THE LISTING rather than from a URL.
+    assert.equal(result.provenance?.hadListing, true, `${listing.name}: provenance does not record a listing`);
+    assert.equal(result.provenance?.listing?.listingId, listing.listingId, `${listing.name}: provenance listing id`);
+    assert.equal(result.provenance?.listing?.githubUrl, listing.githubUrl, `${listing.name}: provenance source repo`);
+    // Independent of the response: the package landed inside the private home, with its manifest.
+    const installedTo = realpathSync(result.installedTo);
+    assert.ok(!relative(realpathSync(privateHome), installedTo).startsWith('..'),
+      `${listing.name}: installed outside the private home (${installedTo})`);
+    const manifest = JSON.parse(readFileSync(join(installedTo, 'papercusp.json'), 'utf8'));
+    assert.equal(manifest.name, listing.name, `${listing.name}: installed manifest name`);
+    assert.equal(manifest.distribution, 'cupboard', `${listing.name}: installed manifest distribution`);
+    installs.push({ name: listing.name, listingId: listing.listingId, firstStatus: first.status,
+      secondStatus: second.status, version: result.version, contentSource: result.provenance.contentSource,
+      contentFingerprint: result.provenance.contentFingerprint, githubUrl: result.provenance.listing.githubUrl,
+      providerId: result.provider?.id ?? null, triggerPack: Boolean(result.triggerPack) });
+    console.log('CUPBOARD_LISTING_INSTALL_PHASE installed ' + listing.name);
+  }
+
+  await stopHost();
+  console.log('CUPBOARD_LISTING_INSTALL_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
+    hostStopped: true, bundleSha256, health, installs }));
+}
+
+try { await main(); }
+catch (error) {
+  const assertion = error as { message?: string; stack?: string; actual?: unknown; expected?: unknown };
+  console.error('CUPBOARD_LISTING_INSTALL_FAILURE ' + JSON.stringify({ message: assertion.message ?? String(error),
+    stack: assertion.stack, actual: assertion.actual, expected: assertion.expected }));
+  process.exitCode = 1;
+} finally {
+  await stopHost();
+}
