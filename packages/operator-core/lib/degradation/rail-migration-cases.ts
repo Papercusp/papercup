@@ -1220,6 +1220,39 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'unservable-critical-original-exact-item-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { runUnservableCriticalSweepOnce } = await import('../system-health/unservable-critical-watchdog');
+    const { expect, vi } = await import('vitest');
+    const now = 1_800_000_000_000;
+    const item: import('../system-health/unservable-critical-watchdog').UnservableItemRow = {
+      itemId: 'WI-fixture', workspaceId: 'fixture', harnessSlug: 'fixture', title: 'Stranded critical',
+      severity: 'critical', floor: 'claim-hold', createdAtMs: now - 30 * 86_400_000,
+      lastWriteAtMs: now - 30 * 86_400_000 };
+    let candidates = [item], measured = [item];
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rail = { broadcast: async (event: { conditionKey?: string }) => {
+      open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolvedKeys.push(event.conditionKey); return true;
+    } };
+    const deps = { rail, readOpenConditionKeys: async () => [...open],
+      readRows: async (opts?: { recoveryFor?: unknown[] }) => opts?.recoveryFor ? measured : candidates,
+      flagEnabled: async () => true, now: () => now,
+      escalate: async () => { throw new Error('legacy unavailable'); } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runUnservableCriticalSweepOnce({} as never, deps); expect(open.size).toBe(1);
+      candidates = []; measured = [];
+      await runUnservableCriticalSweepOnce({} as never, { ...deps }); expect(open.size).toBe(1);
+      measured = [{ ...item, lastWriteAtMs: now - 86_400_000 }];
+      await runUnservableCriticalSweepOnce({} as never, { ...deps }); expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); }
+  },
+}, {
   id: 'wall-lapse-original-debounced-condition-and-exact-measured-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/wall-lapse-watchdog.ts|<module>|1'],
   run: async () => {

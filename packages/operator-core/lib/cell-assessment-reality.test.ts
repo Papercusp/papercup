@@ -80,6 +80,7 @@ import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
 import { assessWorkScope } from './work-scope-policy';
+import { assessVerificationHealth } from './verification-health';
 import {
   assessDirectiveStatus,
   deriveDirectiveStatus,
@@ -183,6 +184,9 @@ const GATE_OWNERSHIP_CELLS = BUILTIN_CELLS.filter(
 );
 const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'lsp:admission_snapshot',
+);
+const VERIFICATION_HEALTH_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'plans:verification-health',
 );
 
 // Exercise the actual daemon controller and state lens. A hand-authored code list
@@ -1167,6 +1171,23 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: DIRSTAT({ dispositionStatus: 'declined', dispositionedAtMs: 1 }),
     },
   ],
+  // verification-system-improvements-2026-10-10 P-002. The real assessor over the two
+  // readings it decides on; the breach-outranks-unmeasured row pins the precedence.
+  'verification.health': [
+    { label: 'a thresholded reading is breached', expect: assessVerificationHealth({ breaches: 1, unmeasuredCodes: [] }) },
+    {
+      label: 'a breach outranks an unmeasured reading',
+      expect: assessVerificationHealth({ breaches: 1, unmeasuredCodes: ['triageGaps'] }),
+    },
+    {
+      label: 'nothing breached, but a thresholded reading is unmeasured',
+      expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: ['staleAcceptanceUndispositioned'] }),
+    },
+    {
+      label: 'every thresholded reading measured and within threshold',
+      expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
+    },
+  ],
 };
 
 /**
@@ -1343,6 +1364,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'settled',
     'settled',
   ],
+  'verification.health': ['breached', 'breached', 'unmeasured', 'healthy'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1358,7 +1380,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(30);
+    expect(BUILTIN_CELLS).toHaveLength(31);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1371,7 +1393,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         WORK_SCOPE_CELLS.length +
         DIRECTIVE_CELLS.length +
         GATE_OWNERSHIP_CELLS.length +
-        LSP_ADMISSION_CELLS.length,
+        LSP_ADMISSION_CELLS.length +
+        VERIFICATION_HEALTH_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1385,6 +1408,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(DIRECTIVE_CELLS).toHaveLength(1);
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
     expect(LSP_ADMISSION_CELLS).toHaveLength(3);
+    expect(VERIFICATION_HEALTH_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1920,6 +1944,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       DIRSTAT({ dispositionStatus: null }),
       'work that happened and was never dispositioned must not read as never started',
     ],
+    [
+      'verification.health',
+      'health.breaches',
+      assessVerificationHealth({ breaches: 1, unmeasuredCodes: [] }),
+      assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
+      'a breached threshold must not read as healthy',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
@@ -2243,6 +2274,9 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     // shape with an injected ownership result. Keep this sweep off the live
     // single-fixer gate control plane; its pairing is checked structurally.
     ...GATE_OWNERSHIP_CELLS,
+    // plans:verification-health measures live plan + work-item SQL; its declared probe
+    // paths are run against a real read in verification-health-cell-probes.test.ts.
+    ...VERIFICATION_HEALTH_CELLS,
   ];
 
   /**
@@ -2262,6 +2296,8 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
       // P-007: assessDirectiveStatus is pure over a derived status and needs no live store;
       // the sweep cannot obtain a payload for it because orders:get is per-directive-id.
       'owner.directive.status',
+      // Live resolver needs Postgres; probe paths are covered by verification-health-cell-probes.test.ts.
+      'verification.health',
       // WI-2145092: its payload builder is pure (buildWorkScopeStatusPayload) and needs no
       // live store, and its hoisted list (`allowHarnesses`) is a plain projection of the row.
       'workspace.workScope',

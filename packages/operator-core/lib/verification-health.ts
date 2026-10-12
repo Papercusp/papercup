@@ -209,6 +209,19 @@ export interface VerificationHealth {
 /** `unmeasured`: nothing breached, but at least one thresholded reading is null. */
 export type VerificationHealthAssessment = 'healthy' | 'breached' | 'unmeasured';
 
+/**
+ * The `verification.health` cell's assessment, pure over the two readings it decides on.
+ * A breach outranks an unmeasured reading: a known-bad threshold is actionable even while
+ * another reading is missing. Exported so cell-assessment-reality.test.ts drives the REAL
+ * assessor through its control table instead of a hand-copied expression.
+ */
+export function assessVerificationHealth(
+  health: Pick<VerificationHealth, 'breaches' | 'unmeasuredCodes'>,
+): VerificationHealthAssessment {
+  if (health.breaches > 0) return 'breached';
+  return health.unmeasuredCodes.length > 0 ? 'unmeasured' : 'healthy';
+}
+
 export interface VerificationHealthReport {
   health: VerificationHealth;
   assessments: { verificationHealth: VerificationHealthAssessment };
@@ -467,11 +480,9 @@ export async function runVerificationHealth<S extends VerificationHealthSql>(
     measurementErrors,
     now,
   });
-  const assessment: VerificationHealthAssessment =
-    health.breaches > 0 ? 'breached' : health.unmeasuredCodes.length > 0 ? 'unmeasured' : 'healthy';
   return {
     health,
-    assessments: { verificationHealth: assessment },
+    assessments: { verificationHealth: assessVerificationHealth(health) },
     thresholds: VERIFICATION_HEALTH_THRESHOLDS,
     scope: { workspaceId: options.workspaceId, harnessSlug },
     measuredAt: now.toISOString(),

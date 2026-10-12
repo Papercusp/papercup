@@ -73,6 +73,21 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { isStructurallyUnclaimable } from '../claim-floor-classification';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+
+const CONDITION_PREFIX = 'alarm:unservable-critical:';
+type ItemIdentity = Pick<UnservableItemRow, 'workspaceId' | 'harnessSlug' | 'itemId'>;
+function itemConditionKey(item: ItemIdentity): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([item.workspaceId, item.harnessSlug, item.itemId]));
+}
+async function readOpenItemConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+const TERMINAL_STATES = ['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped'];
 
 export const UNSERVABLE_CRITICAL_SWEEP_INTERVAL_MS = 30 * 60_000;
 
@@ -128,6 +143,8 @@ export interface UnservableItemRow {
    *  not `createdAtMs` — is what the age floor is measured against; see
    *  {@link UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS}. */
   lastWriteAtMs: number;
+  /** Exact current row no longer satisfies the structural/severity/state predicate. */
+  recovered?: boolean;
 }
 
 export interface UnservableAlert {
@@ -162,6 +179,7 @@ export function scanUnservableCritical(
   const severities = opts.severities ?? UNSERVABLE_REPORTED_SEVERITIES;
   const alerts: UnservableAlert[] = [];
   for (const row of rows) {
+    if (row.recovered || !Number.isFinite(row.lastWriteAtMs) || !Number.isFinite(nowMs)) continue;
     if (!severities.includes(row.severity)) continue;
     // The floor set is NOT re-derived here: `readRows` has already kept only rows the
     // claim oracle refuses on a STRUCTURAL floor. Re-testing it here would be a fourth
@@ -185,10 +203,12 @@ export function scanUnservableCritical(
 }
 
 export interface UnservableSweepDeps {
-  readRows: () => Promise<UnservableItemRow[]>;
+  readRows: (opts?: { recoveryFor?: ItemIdentity[] }) => Promise<UnservableItemRow[]>;
   escalate: (alert: UnservableAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys: () => Promise<string[]>;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -222,7 +242,7 @@ async function defaultFlagEnabled(): Promise<boolean> {
  * `severity = ANY (...)` entirely.
  */
 function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
-  return async () => {
+  return async (opts = {}) => {
     // Deliberately NO floor predicate here. The SQL selects the whole candidate
     // population (non-terminal + reported severity — ~55 rows on this workspace) and the
     // CLAIM ORACLE decides which are stranded. That is the entire point of WI-2141964:
@@ -239,6 +259,7 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
         harness_slug: string | null;
         title: string | null;
         severity: string;
+        state: string;
         created_ms: string;
         last_write_ms: string;
       }[]
@@ -248,12 +269,20 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
              replace(scope, 'harness:', '') AS harness_slug,
              title,
              severity,
+             state,
              (extract(epoch FROM created_at) * 1000)::bigint AS created_ms,
              (extract(epoch FROM greatest(updated_at, coalesce(last_progress_at, updated_at)))
                * 1000)::bigint AS last_write_ms
         FROM harness_shared.engineer_issues
-       WHERE state NOT IN ('done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped')
-         AND severity = ANY (${UNSERVABLE_REPORTED_SEVERITIES as string[]})`;
+       WHERE (${opts.recoveryFor === undefined}
+              AND state NOT IN ('done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped')
+              AND severity = ANY (${UNSERVABLE_REPORTED_SEVERITIES as string[]}))
+          OR EXISTS (
+            SELECT 1 FROM jsonb_to_recordset(${sql.json(opts.recoveryFor ?? [])}::jsonb)
+              AS wanted("workspaceId" text, "harnessSlug" text, "itemId" text)
+            WHERE wanted."workspaceId" = workspace_id
+              AND wanted."harnessSlug" = replace(scope, 'harness:', '')
+              AND wanted."itemId" = issue_id)`;
     if (rows.length === 0) return [];
 
     const { explainIssueClaimFloors } = await import('../work-items');
@@ -274,11 +303,27 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
 
     const stranded: UnservableItemRow[] = [];
     for (const [harness, harnessRows] of byHarness) {
+      const toItem = (r: (typeof rows)[number], floor: string, recovered = false): UnservableItemRow => ({
+        itemId: r.issue_id, workspaceId: r.workspace_id, harnessSlug: harness,
+        title: r.title ?? '(untitled)', severity: r.severity, floor,
+        createdAtMs: Number(r.created_ms), lastWriteAtMs: Number(r.last_write_ms), recovered,
+      });
+      // Terminal and demoted exact rows supply positive recovery even when the
+      // claim oracle is unavailable. Deleted rows supply no evidence at all.
+      const candidates = harnessRows.filter(r => {
+        if (opts.recoveryFor && (TERMINAL_STATES.includes(r.state) ||
+            ['major', 'minor', 'nit'].includes(r.severity))) {
+          stranded.push(toItem(r, '', true));
+          return false;
+        }
+        return true;
+      });
+      if (candidates.length === 0) continue;
       let verdicts;
       try {
         verdicts = await explainIssueClaimFloors(
           harness,
-          harnessRows.map((r) => r.issue_id),
+          candidates.map((r) => r.issue_id),
         );
       } catch (e) {
         // One harness failing to resolve must not silence the whole sweep. Log and skip:
@@ -292,22 +337,18 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
         continue;
       }
       const floorById = new Map(verdicts.map((v) => [v.id, v.refusedBy]));
-      for (const r of harnessRows) {
-        const refusedBy = floorById.get(r.issue_id) ?? null;
+      for (const r of candidates) {
+        // An omitted oracle verdict is UNKNOWN, never an admissible row.
+        if (!floorById.has(r.issue_id)) continue;
+        const refusedBy = floorById.get(r.issue_id);
         // `null` here means ADMISSIBLE — a claimable-but-unclaimed critical item is a
         // prioritisation problem, not a structural strand, and must stay silent. (5 of
         // this workspace's aged criticals were exactly that when measured.)
-        if (!isStructurallyUnclaimable(refusedBy)) continue;
-        stranded.push({
-          itemId: r.issue_id,
-          workspaceId: r.workspace_id,
-          harnessSlug: harness,
-          title: r.title ?? '(untitled)',
-          severity: r.severity,
-          floor: refusedBy as string,
-          createdAtMs: Number(r.created_ms),
-          lastWriteAtMs: Number(r.last_write_ms),
-        });
+        if (!isStructurallyUnclaimable(refusedBy)) {
+          if (opts.recoveryFor && refusedBy === null) stranded.push(toItem(r, '', true));
+          continue;
+        }
+        stranded.push(toItem(r, refusedBy as string));
       }
     }
     return stranded;
@@ -380,6 +421,7 @@ function sweepDeps(sql: Sql, overrides: Partial<UnservableSweepDeps>): Unservabl
     escalate: defaultEscalate,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
+    readOpenConditionKeys: readOpenItemConditionKeys,
     ...overrides,
   };
 }
@@ -403,9 +445,24 @@ export async function runUnservableCriticalSweepOnce(
   }
   const rows = await deps.readRows();
   const alerts = scanUnservableCritical(rows, deps.now());
+  const keys = new Set(alerts.map(itemConditionKey));
+  try {
+    for (const key of await deps.readOpenConditionKeys()) keys.add(key);
+  } catch (e) {
+    console.warn(`[unservable-critical-watchdog] condition read failed (non-fatal): ${String(e)}`);
+  }
   let escalated = 0;
   let failed = 0;
   for (const alert of alerts) {
+    try {
+      const event = { conditionKey: itemConditionKey(alert), oneShot: true,
+        summary: `CRITICAL item ${alert.itemId} is structurally unclaimable and untouched for ${describeDays(alert.untouchedMs)}`,
+        body: `${alert.harnessSlug}: ${alert.title}\nFloor: ${alert.floor}. Remedy: ${remedyFor(alert)}` };
+      if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (e) {
+      console.warn(`[unservable-critical-watchdog] condition broadcast failed (non-fatal): ${String(e)}`);
+    }
     try {
       await deps.escalate(alert);
       escalated += 1;
@@ -416,6 +473,34 @@ export async function runUnservableCriticalSweepOnce(
           e instanceof Error ? e.message : String(e)
         }`,
       );
+    }
+  }
+  const recoveryFor: ItemIdentity[] = [];
+  for (const key of keys) {
+    if (!key.startsWith(CONDITION_PREFIX)) continue;
+    try {
+      const identity: unknown = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length)));
+      if (!Array.isArray(identity) || identity.length !== 3 ||
+          !identity.every(part => typeof part === 'string' && part.length > 0)) continue;
+      const [workspaceId, harnessSlug, itemId] = identity;
+      recoveryFor.push({ workspaceId, harnessSlug, itemId });
+    } catch { /* An unknown key is not measured recovery. */ }
+  }
+  if (recoveryFor.length > 0) {
+    try {
+      const measured = await deps.readRows({ recoveryFor });
+      const now = deps.now();
+      for (const item of measured) {
+        const key = itemConditionKey(item);
+        if (!keys.has(key)) continue;
+        if (item.recovered === true || (item.severity === 'critical' &&
+            Number.isFinite(now) && Number.isFinite(item.lastWriteAtMs) &&
+            now - item.lastWriteAtMs < UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS)) {
+          await resolveAlarm(key, 'unservable-critical-watchdog', deps.rail);
+        }
+      }
+    } catch (e) {
+      console.warn(`[unservable-critical-watchdog] recovery read failed (non-fatal): ${String(e)}`);
     }
   }
   return { scanned: rows.length, escalated, failed, skipped: false };

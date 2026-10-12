@@ -485,7 +485,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'papercusp-desktop/src-tauri/src/main.rs',
   'papercusp-desktop/src-tauri/src/native_console.rs',
   'papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs',
-  'papercusp-desktop/test/native-console-gnome.test.js',
+  'papercusp-desktop/test/native-console-gnome.test.mjs',
   'papercusp-desktop/test/monorepo-host-preflight.mjs',
   'scripts/lib/node-test-host-preflight.mjs',
   'packages/operator-core/lib/gnome-terminal-policy.json',

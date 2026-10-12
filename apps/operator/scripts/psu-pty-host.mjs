@@ -10702,7 +10702,8 @@ export function hostThroughPty(o) {
    * verifies the submit actually started a turn (WI-2930). Bails if a recycle
    * supersedes the child mid-flight.
    *
-   * Two callers: the RECYCLE carry-note (WI-1941) and the launch KICKOFF
+   * Callers include the RECYCLE carry-note (WI-1941), deferred turn re-arm,
+   * and the launch KICKOFF
    * (agent-launch-resume-primitives-2026-07-12 P-011/D-008) — a resumed or
    * forked session boots IDLE at its prompt with no first turn, and nothing
    * roster-gated can reach it (its presence rows were reaped when it died, so
@@ -10725,6 +10726,7 @@ export function hostThroughPty(o) {
     freshChildOwnerInputGeneration = null,
     abortBeforeWrite = null,
     prepareBeforeWrite = null,
+    onSubmitted = null,
     // WI-10004943 (d): when set (ms, measured from this call), a kickoff whose
     // budget expires while the Codex footer still reads `Starting` is HELD for
     // the session frame up to this ceiling instead of being dropped.
@@ -11125,6 +11127,7 @@ export function hostThroughPty(o) {
             );
           }
           let markerEchoFailureReason = null;
+          let submissionObserved = false;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
             const step = steps[stepIndex];
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
@@ -11141,7 +11144,13 @@ export function hostThroughPty(o) {
                   quotaBlockDetector.observeInput(chunks[i]);
                   authBlockDetector.observeInput(chunks[i]);
                   child.write(chunks[i]);
-                  if (chunks[i].includes('\r')) activeHeadlessCodexModelChoice?.complete();
+                  if (chunks[i].includes('\r')) {
+                    activeHeadlessCodexModelChoice?.complete();
+                    if (!submissionObserved) {
+                      submissionObserved = true;
+                      onSubmitted?.({ child: injectChild, submittedAtMs: turnWriteStartedAt });
+                    }
+                  }
                 } catch {
                   /* the child may have exited under us */
                 }
@@ -12006,6 +12015,15 @@ export function hostThroughPty(o) {
       transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
       : { available: false, started: false };
   };
+  const reconcileNativeStartPending = () => {
+    for (const [id, pending] of nativeStartPending) {
+      if (pending.child !== child || nativeStartProof(pending).started) {
+        if (pending.child === child) deliveryDedup.markCompleted(id);
+        nativeStartPending.delete(id);
+      }
+    }
+    return nativeStartPending.size > 0;
+  };
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
   // both pass the at-prompt gate and interleave their bytes into one pty input
@@ -12158,12 +12176,19 @@ export function hostThroughPty(o) {
         // would kill the child and destroy the very turn being delivered.
         const text = String(message?.data ?? '');
         if (!text) return { delivered: false, reason: 'no-text' };
+        const marker = leadingTurnOriginMarker(text);
+        const nativeProofAvailable = Boolean(marker) &&
+          nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+        let nativeSubmission = null;
         const outcome = await injectTurnAtPrompt({
           text,
           label: 'turn re-arm',
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
+          onSubmitted: (submission) => {
+            if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true };
+          },
           prepareBeforeWrite: async ({ deadline }) => {
             if (shouldDeferWakeForPendingRespawn(mode, carryRearm.pendingCount('carry-respawn'))) {
               appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
@@ -12171,10 +12196,20 @@ export function hostThroughPty(o) {
               });
               return { ok: false, reason: 'carry-respawn-pending' };
             }
+            if (reconcileNativeStartPending()) {
+              return { ok: false, reason: 'native-turn-start-pending' };
+            }
             return prepareCurrentCarryBinding(deadline);
           },
         });
-        return !outcome.delivered && outcome.reason === 'carry-respawn-pending'
+        // A submitted tagged wake can persist its native row after the bounded
+        // verifier expires. Retain its exact write context for late proof;
+        // neither this retry nor a later socket delivery may paste it again.
+        if (!outcome.delivered && nativeSubmission?.child === child) {
+          return { ...outcome, reason: 'native-turn-start-unverified', nativeSubmission };
+        }
+        return !outcome.delivered &&
+          ['carry-respawn-pending', 'native-turn-start-pending'].includes(outcome.reason)
           ? { ...outcome, retryable: true }
           : outcome;
       }
@@ -12193,8 +12228,15 @@ export function hostThroughPty(o) {
       for (const message of messages) {
         const deliveryId = message?.deliveryId;
         if (!deliveryId) continue;
-        if (outcome?.delivered) deliveryDedup.markCompleted(deliveryId);
-        else deliveryDedup.clearPending(deliveryId);
+        if (outcome?.delivered) {
+          deliveryDedup.markCompleted(deliveryId);
+          nativeStartPending.delete(deliveryId);
+        } else if (outcome?.nativeSubmission?.child === child) {
+          nativeStartPending.set(deliveryId, outcome.nativeSubmission);
+          deliveryDedup.markPending(deliveryId);
+        } else {
+          deliveryDedup.clearPending(deliveryId);
+        }
       }
     },
     capMs: carryRearmCapMs,
@@ -13668,13 +13710,7 @@ export function hostThroughPty(o) {
         }
         if (msg.mode === 'turn') {
           if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
-          for (const [id, pending] of nativeStartPending) {
-            if (pending.child !== child || nativeStartProof(pending).started) {
-              if (pending.child === child) deliveryDedup.markCompleted(id);
-              nativeStartPending.delete(id);
-            }
-          }
-          if (nativeStartPending.size > 0) return { ok: false, reason: 'deferred-native-turn-start' };
+          if (reconcileNativeStartPending()) return { ok: false, reason: 'deferred-native-turn-start' };
           if (deliver.requireNativeTurnStart &&
             (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
             return { ok: false, reason: 'stale-execution-generation' };

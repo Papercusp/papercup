@@ -25,7 +25,6 @@
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts|<module>|1",
     "health-flag-no-condition|packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts|reportSemanticDedupProbeUnavailable|1",
     "health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|1",
