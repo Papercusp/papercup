@@ -519,17 +519,20 @@ export function boundedExactTopK(sql: Sql, req: {
  * row at rank r in the exact list lands at position <= 2r, a BM25 rank-r row at <= 2r-1.
  * BM25 goes first because BM25 is the plan's ranking (R-1).
  *
- * Each returned row's `rank` is `1 / (RRF_K_DEFAULT + position)`, so the caller's
- * best-first order and its scores agree and no raw score of either list leaks (R-16).
+ * D-039: interleaving admits candidates; it must not charge that position again
+ * when this lexical list enters hybrid fusion. `fusionRank` carries the better
+ * original ordinal and `rank` is 1/(RRF_K_DEFAULT + fusionRank). The correlated
+ * lexical alternatives contribute one vote; overlap never supplies a second vote.
+ * The order remains best-first, with BM25 first at tied ordinals (R-16).
  */
 export function mergeExactAndBm25<T extends { rank: number }>(
   exact: readonly T[],
   bm25: readonly T[],
   key: (row: T) => string,
   limit: number,
-): T[] {
+): Array<T & { fusionRank: number }> {
   const cap = Math.max(0, limit);
-  const out: T[] = [];
+  const out: Array<T & { fusionRank: number }> = [];
   const seen = new Set<string>();
   for (let i = 0; i < Math.max(exact.length, bm25.length) && out.length < cap; i += 1) {
     for (const row of [bm25[i], exact[i]]) {
@@ -537,10 +540,10 @@ export function mergeExactAndBm25<T extends { rank: number }>(
       const k = key(row);
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push(row);
+      out.push({ ...row, fusionRank: i + 1, rank: 1 / (RRF_K_DEFAULT + i + 1) });
     }
   }
-  return out.map((row, i) => ({ ...row, rank: 1 / (RRF_K_DEFAULT + i + 1) }));
+  return out;
 }
 
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
