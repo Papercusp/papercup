@@ -682,8 +682,9 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * "end session" invisible to Papercusp: no lifecycle row, no lease cleanup, and
  * — most importantly — no handoff to the managed-host teardown path, so `psu
  * --resume` correctly found the old host still alive and refused a double host.
- * Register the SAME lifecycle-report.sh used by Claude. SessionEnd runs
- * synchronously because the script first asks activity:report whether this is a
+ * Register the SAME lifecycle-report.sh used by Claude. Stop also replays
+ * uncaught per-edit lock releases before a carry/turn boundary can strand them.
+ * SessionEnd runs synchronously because the script first asks activity:report whether this is a
  * genuine terminal end or a carry/reset continuation, then reuses the audited
  * admin fleet:kill route only for the terminal verdict (WI-41305).
  */
@@ -781,6 +782,7 @@ export function writeCodexLockHooks(
   const lifecycle = join(dir, 'lifecycle-report.sh');
   const sessionStart: CodexHook[] = [];
   const sessionEnd: CodexHook[] = [];
+  const lifecycleStop: CodexHook[] = [];
   if (opts.activitySid && existsSync(lifecycle)) {
     const lifecycleIdentity =
       `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` +
@@ -793,6 +795,15 @@ export function writeCodexLockHooks(
       hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
     });
     sessionEnd.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `${lifecycleIdentity} PAPERCUSP_ACTIVITY_SYNC=1 ${lifecycle}`,
+        },
+      ],
+    });
+    lifecycleStop.push({
       matcher: '.*',
       hooks: [
         {
@@ -1026,7 +1037,7 @@ export function writeCodexLockHooks(
       PreToolUse: preToolUse,
       PostToolUse: postToolUse,
       ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
-      ...(stop.length > 0 ? { Stop: stop } : {}),
+      ...(stop.length > 0 || lifecycleStop.length > 0 ? { Stop: [...lifecycleStop, ...stop] } : {}),
       ...(sessionStart.length > 0 ? { SessionStart: sessionStart } : {}),
       ...(sessionEnd.length > 0 ? { SessionEnd: sessionEnd } : {}),
       ...(preCompact.length > 0 ? { PreCompact: preCompact } : {}),
@@ -1127,7 +1138,7 @@ function repairSuCodexHomeIdentityImpl(
       const parsed = JSON.parse(hooksText) as {
         hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
       };
-      return ['SessionStart', 'SessionEnd'].every((event) =>
+      return ['SessionStart', 'SessionEnd', 'Stop'].every((event) =>
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>

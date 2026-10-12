@@ -517,6 +517,13 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='71'");
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+    const lifecycleStop = hooks.hooks.Stop.find((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('lifecycle-report.sh')),
+    );
+    expect(lifecycleStop).toBeTruthy();
+    expect(lifecycleStop.matcher).toBe('.*');
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(lifecycleStop.hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
     expect(hooks.hooks.PreCompact).toHaveLength(1);
     expect(hooks.hooks.PreCompact[0].matcher).toBe('^auto$');
     expect(hooks.hooks.PreCompact[0].hooks[0].timeout).toBe(600);
@@ -1702,6 +1709,13 @@ describe('writeSuCodexHome', () => {
       expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
     }
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+    const lifecycleStop = hooks.hooks.Stop.find((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('lifecycle-report.sh')),
+    );
+    expect(lifecycleStop).toBeTruthy();
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
+    expect(lifecycleStop.hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });
 
   it('repairs a same-owner managed home whose hooks omit lifecycle or managed PreCompact events', async () => {
@@ -1732,6 +1746,39 @@ describe('writeSuCodexHome', () => {
     expect(nextHooks.hooks.SessionEnd).toHaveLength(1);
     expect(nextHooks.hooks.PreCompact).toHaveLength(1);
     expect(nextHooks.hooks.PreCompact[0].matcher).toBe('^auto$');
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+  });
+
+  it('repairs a same-owner home missing only the Stop lifecycle lock cleanup hook', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'stop-lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-stop-lifecycle-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    oldHooks.hooks.Stop = oldHooks.hooks.Stop
+      .map((group: any) => ({
+        ...group,
+        hooks: group.hooks.filter((hook: any) => !hook.command.includes('lifecycle-report.sh')),
+      }))
+      .filter((group: any) => group.hooks.length > 0);
+    writeFileSync(hooksPath, JSON.stringify(oldHooks, null, 2));
+
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'stop-lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-stop-lifecycle-upgrade',
+    });
+
+    expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+    const nextHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    expect(nextHooks.hooks.Stop.some((group: any) =>
+      group.hooks.some((hook: any) => hook.command.includes('lifecycle-report.sh')),
+    )).toBe(true);
     expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 
@@ -1994,13 +2041,16 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(JSON.stringify(hooks.hooks.SessionStart)).toContain('lifecycle-report.sh');
   });
 
-  it('omits the Stop key entirely, and every identity port, without the dispatcher', async () => {
+  it('keeps lifecycle Stop cleanup but omits identity ports without the dispatcher', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 46, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-inject-46' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    expect(hooks.hooks.Stop).toBeUndefined();
+    expect(hooks.hooks.Stop.some((group: any) =>
+      group.hooks.some((hook: any) => hook.command.includes('lifecycle-report.sh')),
+    )).toBe(true);
     expect(injectEntries(hooks, 'PreToolUse')).toHaveLength(0);
+    expect(injectEntries(hooks, 'Stop')).toHaveLength(0);
     expect(injectEntries(hooks, 'SessionStart')).toHaveLength(0);
   });
 });
