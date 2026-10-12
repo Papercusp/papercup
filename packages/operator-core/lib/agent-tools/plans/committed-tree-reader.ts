@@ -86,6 +86,24 @@ export interface CommittedTreeDeps {
   exists?: (repo: string) => Promise<boolean>;
 }
 
+/** Admission and payload bounds are separate: a corpus need not fit in one batch. */
+export interface RepoFileSetReadLimits {
+  maxTotalBytes: number;
+  maxFileBytes: number;
+  maxBatchBytes: number;
+}
+
+export const REPO_FILE_SET_READ_LIMITS: Readonly<RepoFileSetReadLimits> = Object.freeze({
+  maxTotalBytes: 8 * 1024 * 1024,
+  maxFileBytes: 8 * 1024 * 1024,
+  maxBatchBytes: 8 * 1024 * 1024,
+});
+/** Fixture membership remains bounded by the recipe's existing 4096-match ceiling. */
+export const REPO_FIXTURE_READ_LIMITS: Readonly<RepoFileSetReadLimits> = Object.freeze({
+  ...REPO_FILE_SET_READ_LIMITS,
+  maxTotalBytes: 64 * 1024 * 1024,
+});
+
 export interface CommittedGlobLimits {
   maxMatches: number;
   maxDepth: number;
@@ -93,7 +111,6 @@ export interface CommittedGlobLimits {
 
 const BLOB_BATCH_TIMEOUT_MS = 15_000;
 const MAX_MEMOIZED_BLOBS = 50_000;
-const MAX_FILE_SET_BYTES = 8 * 1024 * 1024;
 const COMMIT_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 const blobDigests = pinModuleState('@papercusp/operator-core.committed-blob-digests', () => ({
@@ -304,20 +321,22 @@ const relativeTo = (repo: string, path: string) => (repo === '.' ? path : path.s
 const repoDir = (root: string, repo: string) => (repo === '.' ? root : posix.join(root, repo));
 
 /** `ls-tree -z` entries keyed by the path relative to the listed repository. */
-function parseLsTreeZ(output: string): Map<string, { mode: string; type: string; object: string }> {
-  const entries = new Map<string, { mode: string; type: string; object: string }>();
+function parseLsTreeZ(output: string): Map<string, { mode: string; type: string; object: string; size?: number }> {
+  const entries = new Map<string, { mode: string; type: string; object: string; size?: number }>();
   for (const record of output.split('\0')) {
     const tab = record.indexOf('\t');
     if (tab < 0) continue;
-    const [mode, type, object] = record.slice(0, tab).split(' ');
-    if (mode && type && object) entries.set(record.slice(tab + 1), { mode, type, object });
+    const [mode, type, object, bytes] = record.slice(0, tab).trim().split(/\s+/);
+    if (mode && type && object) entries.set(record.slice(tab + 1), {
+      mode, type, object, ...(bytes && /^\d+$/.test(bytes) ? { size: Number(bytes) } : {}),
+    });
   }
   return entries;
 }
 
-async function lsTree(git: GitRunner, dir: string, commit: string, paths: readonly string[], recursive = false) {
-  if (paths.length === 0) return new Map<string, { mode: string; type: string; object: string }>();
-  const args = ['ls-tree', '-z', ...(recursive ? ['-r'] : []), commit, '--', ...paths];
+async function lsTree(git: GitRunner, dir: string, commit: string, paths: readonly string[], recursive = false, includeSizes = false) {
+  if (paths.length === 0) return new Map<string, { mode: string; type: string; object: string; size?: number }>();
+  const args = ['ls-tree', '-z', ...(includeSizes ? ['-l'] : []), ...(recursive ? ['-r'] : []), commit, '--', ...paths];
   return parseLsTreeZ(await git(dir, args));
 }
 
@@ -385,6 +404,8 @@ export interface CommittedBlobLocation {
   object: string;
   mode: string;
   type: string;
+  /** Available when a caller requests size admission before payload reads. */
+  size?: number;
   /** True only for a regular file (a blob that is not a symlink). */
   isFile: boolean;
 }
@@ -401,6 +422,7 @@ export async function locateCommittedBlobs(
   commit: string,
   paths: readonly string[],
   deps: CommittedTreeDeps = {},
+  includeSizes = false,
 ): Promise<Map<string, CommittedBlobLocation | null>> {
   const git = deps.git ?? defaultGitRunner;
   const ownerOf = new Map<string, string>();
@@ -418,13 +440,14 @@ export async function locateCommittedBlobs(
       for (const path of repoPaths) located.set(path, null);
       continue;
     }
-    const entries = await lsTree(git, repoDir(root, repo), repoCommit, repoPaths.map((path) => relativeTo(repo, path)));
+    const entries = await lsTree(git, repoDir(root, repo), repoCommit, repoPaths.map((path) => relativeTo(repo, path)), false, includeSizes);
     for (const path of repoPaths) {
       const entry = entries.get(relativeTo(repo, path));
       located.set(
         path,
         entry
-          ? { repo, commitSha: repoCommit, object: entry.object, mode: entry.mode, type: entry.type, isFile: entry.type === 'blob' && entry.mode !== '120000' }
+          ? { repo, commitSha: repoCommit, object: entry.object, mode: entry.mode, type: entry.type,
+              ...(entry.size === undefined ? {} : { size: entry.size }), isFile: entry.type === 'blob' && entry.mode !== '120000' }
           : null,
       );
     }
@@ -442,20 +465,37 @@ export async function readCommittedFiles(
   commit: string,
   paths: readonly string[],
   deps: CommittedTreeDeps = {},
+  limits?: Readonly<RepoFileSetReadLimits>,
 ): Promise<Map<string, CommittedFile | null>> {
   const readBlobs = deps.readBlobs ?? defaultBlobBatchReader;
   const diagnostics = deps.diagnostics;
   if (diagnostics) diagnostics.reads += 1;
   const declared = [...new Set(paths)];
   const normalizedOf = new Map(declared.map((path) => [path, normalizedRepoPath(path)] as const));
-  const locations = await locateCommittedBlobs(root, commit, [...new Set(normalizedOf.values())], deps);
+  const locations = await locateCommittedBlobs(root, commit, [...new Set(normalizedOf.values())], deps, Boolean(limits));
   const blobOf = new Map<string, { repo: string; blob: string } | null>();
+  const sizes = new Map<string, number>();
+  let totalBytes = 0;
   for (const [path, location] of locations) {
     if (!location) {
       blobOf.set(path, null);
     } else if (!location.isFile) {
       throw new Error(`repo_measurement_not_file:${path}`);
     } else {
+      if (limits) {
+        if (!Number.isSafeInteger(location.size) || location.size! < 0) {
+          throw new Error(`repo_measurement_blob_size_unknown:${path}`);
+        }
+        const size = location.size!;
+        if (size > Math.min(limits.maxFileBytes, limits.maxBatchBytes)) {
+          throw new Error(`repo_measurement_too_large:${size}>${Math.min(limits.maxFileBytes, limits.maxBatchBytes)}`);
+        }
+        totalBytes += size;
+        if (totalBytes > limits.maxTotalBytes) {
+          throw new Error(`repo_measurement_too_large:${totalBytes}>${limits.maxTotalBytes}`);
+        }
+        sizes.set(location.object, size);
+      }
       blobOf.set(path, { repo: location.repo, blob: location.object });
     }
   }
@@ -473,27 +513,44 @@ export async function readCommittedFiles(
     unread.set(located.repo, (unread.get(located.repo) ?? new Set()).add(located.blob));
   }
   for (const [repo, blobs] of unread) {
-    if (diagnostics) {
-      diagnostics.batchAttempts += 1;
-      diagnostics.blobsRequested += blobs.size;
-      if (readBlobs !== defaultBlobBatchReader) diagnostics.batchRoutes.injected += 1;
-    }
-    try {
-      const contents = await (diagnostics && readBlobs === defaultBlobBatchReader
-        ? readBlobs(repoDir(root, repo), [...blobs], (route) => { diagnostics.batchRoutes[route] += 1; })
-        : readBlobs(repoDir(root, repo), [...blobs]));
-      if (diagnostics) diagnostics.blobsReturned += [...blobs].filter((blob) => contents.has(blob)).length;
-      for (const blob of blobs) {
-        const content = contents.get(blob);
-        if (!content) throw new Error(`repo_measurement_blob_missing:${blob}`);
-        if (gitBlobId(content) !== blob) throw new Error(`repo_measurement_blob_mismatch:${blob}`);
-        rememberDigest(blob, content);
-        if (diagnostics) diagnostics.blobsVerified += 1;
+    const batches: string[][] = [];
+    let batch: string[] = [];
+    let batchBytes = 0;
+    for (const blob of blobs) {
+      const bytes = sizes.get(blob) ?? 0;
+      if (limits && batch.length && batchBytes + bytes > limits.maxBatchBytes) {
+        batches.push(batch);
+        batch = [];
+        batchBytes = 0;
       }
-      if (diagnostics) diagnostics.batchSucceeded += 1;
-    } catch (error) {
-      if (diagnostics) diagnostics.batchFailed += 1;
-      throw error;
+      batch.push(blob);
+      batchBytes += bytes;
+    }
+    if (batch.length) batches.push(batch);
+    for (const batch of batches) {
+      if (diagnostics) {
+        diagnostics.batchAttempts += 1;
+        diagnostics.blobsRequested += batch.length;
+        if (readBlobs !== defaultBlobBatchReader) diagnostics.batchRoutes.injected += 1;
+      }
+      try {
+        const contents = await (diagnostics && readBlobs === defaultBlobBatchReader
+          ? readBlobs(repoDir(root, repo), batch, (route) => { diagnostics.batchRoutes[route] += 1; })
+          : readBlobs(repoDir(root, repo), batch));
+        if (diagnostics) diagnostics.blobsReturned += batch.filter((blob) => contents.has(blob)).length;
+        for (const blob of batch) {
+          const content = contents.get(blob);
+          if (!content) throw new Error(`repo_measurement_blob_missing:${blob}`);
+          if (gitBlobId(content) !== blob) throw new Error(`repo_measurement_blob_mismatch:${blob}`);
+          if (limits && content.length !== sizes.get(blob)) throw new Error(`repo_measurement_blob_size_mismatch:${blob}`);
+          rememberDigest(blob, content);
+          if (diagnostics) diagnostics.blobsVerified += 1;
+        }
+        if (diagnostics) diagnostics.batchSucceeded += 1;
+      } catch (error) {
+        if (diagnostics) diagnostics.batchFailed += 1;
+        throw error;
+      }
     }
   }
 
@@ -638,18 +695,14 @@ export async function fingerprintRepoFileSetAtCommit(
   commit: string,
   declaredPaths: readonly string[],
   deps: CommittedTreeDeps = {},
+  limits: Readonly<RepoFileSetReadLimits> = REPO_FILE_SET_READ_LIMITS,
 ): Promise<{ fingerprint: string; files: Array<{ path: string; sha256: string; gitBlob: string }> }> {
   const paths = [...new Set(declaredPaths)].sort();
-  const read = await readCommittedFiles(root, commit, paths, deps);
+  const read = await readCommittedFiles(root, commit, paths, deps, limits);
   const files: Array<{ path: string; sha256: string; gitBlob: string }> = [];
-  let totalBytes = 0;
   for (const path of paths) {
     const file = read.get(path);
     if (!file) throw new Error(`repo_measurement_absent_at_commit:${path}@${commit.slice(0, 12)}`);
-    totalBytes += file.size;
-    if (totalBytes > MAX_FILE_SET_BYTES) {
-      throw new Error(`repo_measurement_too_large:${totalBytes}>${MAX_FILE_SET_BYTES}`);
-    }
     files.push({ path, sha256: file.sha256, gitBlob: file.gitBlob });
   }
   return { fingerprint: repoFileSetFingerprint(files), files };

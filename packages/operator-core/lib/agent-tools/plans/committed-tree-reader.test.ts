@@ -22,6 +22,7 @@ import {
   parseCatFileBatch,
   readCommittedFiles,
   readHeadCommitFromFiles,
+  REPO_FIXTURE_READ_LIMITS,
   resolveMeasurementCommit,
   type BlobBatchReader,
 } from './committed-tree-reader';
@@ -172,6 +173,46 @@ describe('readHeadCommitFromFiles', () => {
 });
 
 describe('fingerprintRepoFileSetAtCommit', () => {
+  it('retains a full fixture corpus larger than 8MiB while every blob batch stays within 8MiB', async () => {
+    const fixturePaths = ['src/fixture-a.sql', 'src/fixture-b.sql', 'src/fixture-c.sql'];
+    fixturePaths.forEach((path, index) => writeFileSync(join(root, path), Buffer.alloc(3 * 1024 * 1024, index + 1)));
+    git(root, 'add', 'src');
+    git(root, 'commit', '-q', '-m', 'large calibration corpus');
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const batchBytes: number[] = [];
+    const readBlobs = vi.fn<BlobBatchReader>(async (dir, ids) => {
+      const blobs = await defaultBlobBatchReader(dir, ids);
+      batchBytes.push([...blobs.values()].reduce((sum, bytes) => sum + bytes.length, 0));
+      return blobs;
+    });
+    // Source/test admission still refuses before any payload is read.
+    await expect(fingerprintRepoFileSetAtCommit(root, commit, fixturePaths, { readBlobs }))
+      .rejects.toThrow(/repo_measurement_too_large/);
+    expect(readBlobs).not.toHaveBeenCalled();
+    const measured = await fingerprintRepoFileSetAtCommit(root, commit, fixturePaths, { readBlobs }, REPO_FIXTURE_READ_LIMITS);
+    expect(measured.files.map(file => file.path)).toEqual(fixturePaths);
+    expect(measured.fingerprint).toBe(expectedFingerprint(fixturePaths.map(path => ({ path, sha256: sha256(path) }))));
+    expect(batchBytes).toHaveLength(2);
+    expect(Math.max(...batchBytes)).toBeLessThanOrEqual(8 * 1024 * 1024);
+    expect(batchBytes.reduce((sum, bytes) => sum + bytes, 0)).toBe(9 * 1024 * 1024);
+    // Admission is also checked when every content digest is already memoized.
+    await expect(fingerprintRepoFileSetAtCommit(root, commit, fixturePaths, { readBlobs }))
+      .rejects.toThrow(/repo_measurement_too_large/);
+    expect(readBlobs).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['aggregate', 'individual'] as const)('refuses an oversized %s fixture from tree sizes before reading blobs', async (kind) => {
+    const fixturePaths = Array.from({ length: kind === 'aggregate' ? 9 : 1 }, (_, i) => `src/oversized-${i}.sql`);
+    const size = 8 * 1024 * 1024 + (kind === 'individual' ? 1 : 0);
+    const readBlobs = vi.fn<BlobBatchReader>();
+    const gitWithSizes: GitRunner = async (dir, args) => args[0] === 'ls-tree' && args.includes('-l')
+      ? fixturePaths.map((path, i) => `100644 blob ${String(i + 1).padStart(40, '0')} ${size}\t${path}\0`).join('')
+      : defaultGitRunner(dir, args);
+    await expect(fingerprintRepoFileSetAtCommit(root, git(root, 'rev-parse', 'HEAD'), fixturePaths,
+      { git: gitWithSizes, readBlobs }, REPO_FIXTURE_READ_LIMITS)).rejects.toThrow(/repo_measurement_too_large/);
+    expect(readBlobs).not.toHaveBeenCalled();
+  });
+
   it('produces the unchanged sha256-file-set-v1 fingerprint of a clean tree, superproject and submodule alike', async () => {
     const commit = git(root, 'rev-parse', 'HEAD');
     const measured = await fingerprintRepoFileSetAtCommit(root, commit, paths);
