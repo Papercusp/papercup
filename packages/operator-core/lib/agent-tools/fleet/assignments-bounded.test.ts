@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   unanswered: vi.fn(),
   loopStatuses: vi.fn(),
   lastToolCalls: vi.fn(),
+  productiveToolCalls: vi.fn(),
   schedulerClaims: vi.fn(),
   wakeModeOverrides: vi.fn(),
   defaultWakeMode: vi.fn(),
@@ -104,7 +105,7 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../fleet/assignments')>()),
   listFleetAssignments: mocks.listAssignments,
   lastToolCallAtByOwner: mocks.lastToolCalls,
-  lastProductiveToolCallAtByOwner: vi.fn(async () => new Map()),
+  lastProductiveToolCallAtByOwner: mocks.productiveToolCalls,
   resolveTerminalPlanItemResidue: mocks.residue,
 }));
 
@@ -197,6 +198,7 @@ beforeEach(() => {
   mocks.unanswered.mockResolvedValue(new Map());
   mocks.loopStatuses.mockResolvedValue(new Map());
   mocks.lastToolCalls.mockResolvedValue(new Map());
+  mocks.productiveToolCalls.mockResolvedValue(new Map());
   mocks.wakeModeOverrides.mockResolvedValue(new Map());
   mocks.defaultWakeMode.mockResolvedValue('auto');
   mocks.getPlanRow.mockResolvedValue(null);
@@ -330,6 +332,43 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(result.data.handlerElapsedMs).toBeGreaterThanOrEqual(137);
   });
 
+  it('bounds and reports a stalled productive-tool-call read used for member verdicts', async () => {
+    vi.useFakeTimers();
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.join(' '));
+    });
+    mocks.listAssignments.mockResolvedValue([liveRow()]);
+    mocks.productiveToolCalls.mockImplementation(() => new Promise<never>(() => {}));
+
+    const pending = fleetAssignmentsTool.handler(
+      { fleet: 'test-fleet', includeTimings: true } as never,
+      ctx,
+    ) as Promise<{
+      data: {
+        degraded?: boolean;
+        degradedLegs?: string[];
+        readTimings?: Array<{ phase: string; startOffsetMs: number; elapsedMs: number; outcome: string }>;
+      };
+    }>;
+
+    await vi.advanceTimersByTimeAsync(FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS);
+    const result = await pending;
+
+    expect(mocks.productiveToolCalls).toHaveBeenCalledTimes(1);
+    expect(result.data.degraded).toBe(true);
+    expect(result.data.degradedLegs).toContain('productiveToolCalls');
+    expect(result.data.readTimings).toContainEqual({
+      phase: 'productiveToolCalls',
+      startOffsetMs: expect.any(Number),
+      elapsedMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
+      outcome: 'timeout',
+    });
+    expect(warnings.join('\n')).toContain(
+      `fleet:assignments:productiveToolCalls exceeded ${FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS}ms`,
+    );
+  });
+
   it('returns an explicitly degraded fallback when the assignment query never settles', async () => {
     vi.useFakeTimers();
     const warnings: string[] = [];
@@ -421,6 +460,7 @@ describe('fleet:assignments bounded handler reads', () => {
       mocks.unanswered,
       mocks.loopStatuses,
       mocks.lastToolCalls,
+      mocks.productiveToolCalls,
       mocks.wakeModeOverrides,
       mocks.defaultWakeMode,
       mocks.residue,

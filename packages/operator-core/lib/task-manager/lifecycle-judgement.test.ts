@@ -407,6 +407,36 @@ describe('evaluateLifecycleCandidates', () => {
     expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
   });
 
+  it('does not let a taskId-filtered live read clear terminal residue', () => {
+    const candidate = evaluate({
+      rows: [row({
+        taskId: 'terminal-residue',
+        state: 'exited',
+        endedAt: new Date(NOW - 16 * 60_000).toISOString(),
+        scopeUnit: 'pc-terminal-residue.scope',
+      })],
+      residue: ['terminal-residue'],
+    }).candidates[0]!;
+    const expected = [
+      'processes:list { taskId, live:true } omits terminal ledger rows by construction because includeEnded defaults false',
+      'an empty tasks array is expected even when the old cgroup is still populated',
+      'Never treat a taskId-filtered empty result as absence evidence for terminal or unaccounted residue',
+      'processes:list { scopeUnit, live:true }',
+      'a matching live.exactScopeUnitMatches entry is positive liveness even when the ledger row is terminal',
+      'an empty exact-scope result alone remains unknown',
+      'If scopeUnit is missing or any required census/control check is unavailable, leave the decision unknown',
+    ];
+
+    const summary = lifecycleCandidateSummary(candidate);
+    const brief = lifecycleJudgeBrief([{ id: 'EI-1', taskId: candidate.taskId, harnessSlug: 'papercusp' }]);
+    for (const guidance of expected) {
+      expect(summary).toContain(guidance);
+      expect(brief).toContain(guidance);
+    }
+    expect(brief).toContain('For launcher-ended and old-and-idle only, use processes:list { taskId, live:true }');
+    expect(brief).not.toContain('For other kinds, use processes:list { taskId, live:true }');
+  });
+
   it('keeps the claim subject summary stable across reconciliation refreshes', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'changing-candidate', state: 'unaccounted', scopeUnit: 'pc-changing.scope' })],
@@ -748,7 +778,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v4:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v5:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });
