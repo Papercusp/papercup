@@ -69,10 +69,14 @@ export const SPEC_EVIDENCE_KINDS = [
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
-/** Same full Vitest title when only its generated ` > ` hierarchy joiner was authored as a space. */
+/** Same Vitest title when its hierarchy joiner or leading `it.each` string label is rendered differently. */
 export function hasSameCaseTitleIdentity(declaredCaseTitle: string, measuredCaseTitle: string): boolean {
   if (declaredCaseTitle === measuredCaseTitle) return true;
-  return declaredCaseTitle.split(' > ').join(' ') === measuredCaseTitle.split(' > ').join(' ');
+  const normalize = (title: string) => title
+    .split(' > ')
+    .map((segment) => segment.replace(/^'([^'\s]+)'(?=\s)/, '$1'))
+    .join(' ');
+  return normalize(declaredCaseTitle) === normalize(measuredCaseTitle);
 }
 
 /** Match a complete title or a complete suffix at a Vitest hierarchy boundary. */
