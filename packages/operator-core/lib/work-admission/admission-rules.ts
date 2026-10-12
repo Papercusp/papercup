@@ -32,23 +32,12 @@ export type AdmissionMatch = Record<string, Partial<Record<AdmissionMatchOp, unk
 /** Cap on records one backfill pass evaluates, so one call stays bounded. */
 export const ADMISSION_BACKFILL_MAX = 500;
 
-/**
- * What a matching rule does (migration 1392; slack-messages-to-bug-reports D-008): `admit` creates
- * the work, `suggest` creates nothing and only reports the match so a person can be offered to
- * file it. `suggest` exists for chat rules (data-sources/chat-admission-sink.ts) only.
- */
-export const ADMISSION_RULE_ACTIONS = ['admit', 'suggest'] as const;
-export type AdmissionRuleAction = (typeof ADMISSION_RULE_ACTIONS)[number];
-
-/** The source kinds a rule may name: records (P-020) and chat messages / threads (D-008). */
-export const ADMISSION_RULE_SOURCE_KINDS = [RECORD_SOURCE_KIND, 'chat-message', 'chat-thread'] as const;
-
 export interface AdmissionRule {
   id: string;
   workspaceId: string;
   dataSourceId: string;
+  /** Always 'record': rules admit ingested records (chat rules left with the Slack packages, cupboard-distributable-integrations D-025). */
   sourceKind: string;
-  action: AdmissionRuleAction;
   title: string;
   match: AdmissionMatch;
   harness: string;
@@ -86,7 +75,6 @@ function toRule(r: RuleDbRow): AdmissionRule {
     workspaceId: r.workspace_id,
     dataSourceId: r.data_source_id,
     sourceKind: r.source_kind,
-    action: r.action === 'suggest' ? 'suggest' : 'admit',
     title: r.title,
     match: r.match,
     harness: r.harness_slug,
@@ -216,10 +204,6 @@ export interface SetAdmissionRuleInput {
   match: unknown;
   harness: string;
   workKind?: AdmittedKind;
-  /** One of ADMISSION_RULE_SOURCE_KINDS; fixed at creation. Default 'record'. */
-  sourceKind?: string;
-  /** Default 'admit' on create; omitted on update = unchanged. 'suggest' is for chat rules only. */
-  action?: AdmissionRuleAction;
   createdBy: string;
   /** Update this rule instead of creating one. */
   id?: string;
@@ -243,62 +227,37 @@ export async function setAdmissionRule(input: SetAdmissionRuleInput, sql: Admiss
   const [source] = await sql<{ id: string }[]>`
     SELECT id FROM harness_shared.data_sources WHERE workspace_id = ${input.workspaceId} AND id = ${input.dataSourceId}`;
   if (!source) throw new Error(`admission_rule_invalid: no data source '${input.dataSourceId}' in this workspace`);
-  if (input.action !== undefined && !(ADMISSION_RULE_ACTIONS as readonly string[]).includes(input.action)) {
-    throw new Error(`admission_rule_invalid: action must be one of ${ADMISSION_RULE_ACTIONS.join(', ')}`);
-  }
   if (input.id) {
-    const [current] = await sql<{ source_kind: string }[]>`
-      SELECT source_kind FROM harness_shared.admission_rules
-       WHERE workspace_id = ${input.workspaceId} AND id = ${input.id} AND data_source_id = ${input.dataSourceId}`;
-    if (!current) throw new Error(`admission_rule_not_found:${input.id}`);
-    if (input.sourceKind !== undefined && input.sourceKind !== current.source_kind) {
-      throw new Error(`admission_rule_invalid: a rule's sourceKind is fixed (${current.source_kind}); create a new rule instead`);
-    }
-    assertActionFits(current.source_kind, input.action);
     const [row] = await sql<RuleDbRow[]>`
       UPDATE harness_shared.admission_rules
          SET title = ${title}, match = ${sql.json(input.match as never)}, harness_slug = ${input.harness},
              work_kind = ${workKind}, enabled = ${input.enabled ?? true},
-             action = COALESCE(${input.action ?? null}::text, action),
              lifecycle = COALESCE(${lifecycle === null ? null : sql.json(lifecycle as never)}::jsonb, lifecycle), updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND id = ${input.id} AND data_source_id = ${input.dataSourceId}
        RETURNING *`;
     if (!row) throw new Error(`admission_rule_not_found:${input.id}`);
     return toRule(row);
   }
-  const sourceKind = input.sourceKind ?? RECORD_SOURCE_KIND;
-  if (!(ADMISSION_RULE_SOURCE_KINDS as readonly string[]).includes(sourceKind)) {
-    throw new Error(`admission_rule_invalid: sourceKind must be one of ${ADMISSION_RULE_SOURCE_KINDS.join(', ')}`);
-  }
-  assertActionFits(sourceKind, input.action);
   const [row] = await sql<RuleDbRow[]>`
     INSERT INTO harness_shared.admission_rules
       (workspace_id, data_source_id, source_kind, action, title, match, harness_slug, work_kind, enabled, created_by, lifecycle)
     VALUES
-      (${input.workspaceId}, ${input.dataSourceId}, ${sourceKind}, ${input.action ?? 'admit'}, ${title},
+      (${input.workspaceId}, ${input.dataSourceId}, ${RECORD_SOURCE_KIND}, 'admit', ${title},
        ${sql.json(input.match as never)}, ${input.harness}, ${workKind}, ${input.enabled ?? true}, ${input.createdBy},
        ${sql.json((lifecycle ?? {}) as never)})
     RETURNING *`;
   return toRule(row!);
 }
 
-/** `suggest` only means something where a person can be offered the match: chat rules. */
-function assertActionFits(sourceKind: string, action: AdmissionRuleAction | undefined): void {
-  if (action === 'suggest' && sourceKind === RECORD_SOURCE_KIND) {
-    throw new Error("admission_rule_invalid: action 'suggest' applies to chat rules (chat-message, chat-thread) only");
-  }
-}
-
 export async function listAdmissionRules(
   workspaceId: string,
-  filter: { dataSourceId?: string; includeDisabled?: boolean; sourceKinds?: readonly string[] } = {},
+  filter: { dataSourceId?: string; includeDisabled?: boolean } = {},
   sql: AdmissionDb = getOrgPg().sql,
 ): Promise<AdmissionRule[]> {
   const rows = await sql<RuleDbRow[]>`
     SELECT * FROM harness_shared.admission_rules
      WHERE workspace_id = ${workspaceId}
        ${filter.dataSourceId ? sql`AND data_source_id = ${filter.dataSourceId}` : sql``}
-       ${filter.sourceKinds ? sql`AND source_kind = ANY(${[...filter.sourceKinds]}::text[])` : sql``}
        ${filter.includeDisabled ? sql`` : sql`AND enabled`}
      ORDER BY created_at`;
   return rows.map(toRule);
@@ -375,7 +334,7 @@ export async function applyAdmissionRule(
   if (!ruleRow) throw new Error(`admission_rule_not_found:${ruleId}`);
   const rule = toRule(ruleRow);
   if (!rule.enabled) throw new Error(`admission_rule_disabled:${ruleId}`);
-  // Chat rules run at ingest (data-sources/chat-admission-sink.ts); there are no records to scan.
+  // Only record rules have held records to scan (migration 1418 pins every rule to 'record').
   if (rule.sourceKind !== RECORD_SOURCE_KIND) throw new Error(`admission_rule_backfill_unsupported:${rule.sourceKind}`);
   const limit = Math.min(Math.max(1, deps.limit ?? ADMISSION_BACKFILL_MAX), ADMISSION_BACKFILL_MAX);
   const records = await sql<{ feature_id: string; payload: Record<string, unknown> | null }[]>`
@@ -417,7 +376,7 @@ export interface SetAdmissionRuleResult {
  * Sets a rule and, when it is an enabled record rule, applies it to the records its data source
  * already holds (linear-asana-task-sync D-012), so adding "delegated to Papercusp" admits the
  * delegated tickets synced before the rule existed. Admission is idempotent per record, so
- * re-setting a rule never duplicates work. Chat rules have no held records and are only set.
+ * re-setting a rule never duplicates work.
  */
 export async function setAdmissionRuleAndBackfill(
   input: SetAdmissionRuleInput,

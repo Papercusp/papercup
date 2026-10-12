@@ -21,27 +21,19 @@ import { getSessionUserOrDefault } from '../../auth';
 import { ADMITTED_KINDS, admitWorkItem, transitionAdmission, writeBackAdmission } from '../../work-admission/admit';
 import { TICKET_STATUS_CATEGORIES } from '../../data-sources/ticket-vocabulary';
 import { listAdmissionSourceKinds } from '../../work-admission/admission-sources';
-import { CHAT_RULE_PRESETS, chatRulePreset, type ChatRulePreset } from '../../data-sources/chat-admission-sink';
 import {
   ADMISSION_BACKFILL_MAX,
-  ADMISSION_RULE_ACTIONS,
-  ADMISSION_RULE_SOURCE_KINDS,
   applyAdmissionRule,
   disableAdmissionRule,
   listAdmissionRules,
   setAdmissionRuleAndBackfill,
   TICKET_RULE_PRESETS,
   ticketRulePreset,
-  type TicketRulePreset,
 } from '../../work-admission/admission-rules';
 // Side effect: registers the `record` admission source (ingested ticket records).
 import '../../work-admission/record-source';
-
-/** Rule presets: chat ones (channelId) and ticket ones (D-012, value for label/team/project). */
-const RULE_PRESETS = [...CHAT_RULE_PRESETS, ...TICKET_RULE_PRESETS] as const;
-const isChatPreset = (p: string): p is ChatRulePreset => (CHAT_RULE_PRESETS as readonly string[]).includes(p);
-const isTicketPreset = (p: string): p is TicketRulePreset => (TICKET_RULE_PRESETS as readonly string[]).includes(p);
-// P-021: registers the 'chat-message' and 'chat-thread' admission resolvers (D-030).
+// P-021: registers the 'chat-message' and 'chat-thread' admission resolvers (D-030), so a person
+// can promote a stored chat message or thread. Rules admit records only (migration 1468).
 import '../../data-sources/chat-admission-sources';
 
 const OPS = ['admit', 'write-back', 'transition', 'rules-set', 'rules-list', 'rules-disable', 'rules-apply'] as const;
@@ -87,14 +79,11 @@ export default defineTool({
         dataSourceId: z.string().min(1).max(200),
         title: z.string().min(1).max(300),
         match: z.record(z.string(), z.unknown()).optional(),
-        sourceKind: z.enum(ADMISSION_RULE_SOURCE_KINDS).optional().describe('Default record; chat-message / chat-thread for chat rules.'),
-        action: z.enum(ADMISSION_RULE_ACTIONS).optional().describe("Default admit; 'suggest' (chat) files nothing."),
         preset: z
-          .enum(RULE_PRESETS)
+          .enum(TICKET_RULE_PRESETS)
           .optional()
-          .describe('Shorthand for match. Chat (needs channelId, workKind defaults to bug); ticket: delegated-to-papercusp, assigned-to-papercusp, label/team/project (need value).'),
-        channelId: z.string().min(1).max(200).optional().describe('chat preset: the chat channel id.'),
-        value: z.string().min(1).max(200).optional().describe('label/team/project preset: the label, team key or project name.'),
+          .describe('Shorthand for match: delegated-to-papercusp, assigned-to-papercusp, label/team/project (need value).'),
+        value:z.string().min(1).max(200).optional().describe('label/team/project preset: the label, team key or project name.'),
         workKind: z.enum(ADMITTED_KINDS).optional(),
         enabled: z.boolean().optional(),
         lifecycle: z
@@ -137,10 +126,7 @@ type AdmitToolArgs = {
     dataSourceId: string;
     title: string;
     match?: Record<string, unknown>;
-    sourceKind?: (typeof ADMISSION_RULE_SOURCE_KINDS)[number];
-    action?: (typeof ADMISSION_RULE_ACTIONS)[number];
-    preset?: (typeof RULE_PRESETS)[number];
-    channelId?: string;
+    preset?: (typeof TICKET_RULE_PRESETS)[number];
     value?: string;
     workKind?: (typeof ADMITTED_KINDS)[number];
     enabled?: boolean;
@@ -207,12 +193,10 @@ async function runAdmitOp(args: AdmitToolArgs, ctx: AdmitToolCtx) {
         const ident = resolveAgentIdentity(ctx);
         try {
           const p = args.rule.preset;
-          const chat = p && isChatPreset(p) ? chatRulePreset(p, args.rule.channelId ?? '') : null;
-          const ticketMatch = p && isTicketPreset(p) ? ticketRulePreset(p, args.rule.value) : null;
-          if (p && (args.rule.match || args.rule.sourceKind)) {
-            throw new Error('admission_rule_invalid: give either a preset or sourceKind+match, not both');
+          if (p && args.rule.match) {
+            throw new Error('admission_rule_invalid: give either a preset or a match, not both');
           }
-          const match = chat?.match ?? ticketMatch ?? args.rule.match;
+          const match = p ? ticketRulePreset(p, args.rule.value) : args.rule.match;
           if (!match) return need('rule.match (or rule.preset)');
           // An enabled record rule also backfills the records its source already holds (D-012).
           const set = await setAdmissionRuleAndBackfill({
@@ -221,9 +205,7 @@ async function runAdmitOp(args: AdmitToolArgs, ctx: AdmitToolCtx) {
             title: args.rule.title,
             match,
             harness: args.harness,
-            workKind: args.rule.workKind ?? (chat ? 'bug' : undefined),
-            sourceKind: chat?.sourceKind ?? args.rule.sourceKind,
-            action: args.rule.action,
+            workKind: args.rule.workKind,
             createdBy: ident.ownerId,
             id: args.rule.id,
             enabled: args.rule.enabled,
