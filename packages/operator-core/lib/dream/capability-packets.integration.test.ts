@@ -13,6 +13,9 @@ import { DEFAULT_PACKER_EFFECTS, packerFacade } from '../code-intelligence/packe
 import type { CodeIntelAnswer } from '../code-intelligence/contracts';
 import { getPilotCapabilityManifest, getCurrentCapabilityManifest } from './capability-catalog';
 import { buildCapabilityPacket, verifyCapabilityPacket, type CapabilityPacketDeps } from './capability-packets';
+import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
+import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
+import { capabilityHash } from './capability-contracts';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -82,6 +85,44 @@ async function fixture(secretSource = false) {
 }
 
 describe('capability packets through the pinned secret-scanned packer', () => {
+  it('P022: enriches a source/test packet through the real compiler and scanner, then rejects edited evidence', async () => {
+    const f = await fixture(), implementation = f.input.unit.evidence[0]!, test = f.input.unit.evidence[1]!;
+    implementation.anchor = 'export function nativePacketTarget(value: number)';
+    test.anchor = "it('rejects negative values'";
+    const code = 'function nativePacketDouble(value: number) { return value * 2; }\n'
+      + implementation.anchor + ' { if (value < 0) throw new RangeError("negative"); return nativePacketDouble(value); }\n';
+    await writeFile(join(f.root, implementation.path), code);
+    await writeFile(join(f.root, test.path), 'import { nativePacketTarget } from "./source";\n'
+      + test.anchor + ', () => { expect(() => nativePacketTarget(-1)).toThrow(); });\n');
+    const claim = (text: string, evidenceId: string) => ({ text, status: 'observed' as const, evidenceIds: [evidenceId] });
+    f.input.unit.purpose = [claim('Reject negative input before computing a doubled value.', implementation.id)];
+    f.input.unit.mechanism = [claim('An explicit range check throws before multiplication.', implementation.id)];
+    f.input.unit.evaluation = [claim('The cited test exercises the negative input contract.', test.id)];
+    f.input.unit.contracts.inputs = [claim('A numeric value.', implementation.id)];
+    f.input.unit.contracts.outputs = [claim('The doubled nonnegative value.', implementation.id)];
+    f.input.unit.contracts.failureModes = [claim('Negative input throws a RangeError.', implementation.id)];
+    const compiler: CodeIntelAnswer[] = [];
+    f.deps.graph = async (root, repositoryId, name, filePath, paths) => {
+      const answer = await firstPartyCallersOffthread({ root, repositoryId, vendorDir: LSP_VENDOR_DIR,
+        name, filePath, paths, op: 'context', limit: 12 }, { budgetMs: 20_000 });
+      compiler.push(answer);
+      return answer;
+    };
+    const result = await buildCapabilityPacket(f.input, f.deps);
+    expect(result.status, JSON.stringify(result)).toBe('ready');
+    if (result.status !== 'ready') throw new Error(result.reason);
+    expect(result.packet.graph, JSON.stringify({ graph: result.packet.graph, compiler })).toMatchObject({ status: 'measured', claimValidation: 'manifest-evidence-only',
+      candidates: [{ symbol: 'nativePacketTarget', path: implementation.path, sourceHash: capabilityHash(code),
+        capabilityStatus: 'candidate-only' }], relationships: expect.arrayContaining([
+        expect.objectContaining({ origin: 'compiler', runtimeExecution: 'unknown',
+          kind: 'callees', source: expect.objectContaining({ path: implementation.path }),
+          target: expect.objectContaining({ path: implementation.path, line1: 1 }) }),
+      ]) });
+    expect(result.packet.unit.contracts.failureModes).toEqual(f.input.unit.contracts.failureModes);
+    expect(await verifyCapabilityPacket(result.packet, f.input, f.deps)).toEqual({ fresh: true });
+    await writeFile(join(f.root, implementation.path), code.replace('value * 2', 'value * 3'));
+    expect((await verifyCapabilityPacket(result.packet, f.input, f.deps)).fresh).toBe(false);
+  }, 120_000);
   it.each(getCurrentCapabilityManifest().units.slice(getPilotCapabilityManifest().units.length))(
     'DREAM-CATALOGUE-EVIDENCE: builds and revalidates current repository evidence for $id',
     async (unit) => {
