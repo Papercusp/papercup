@@ -46,6 +46,15 @@ const ran = (results: Array<[string, 'pass' | 'fail' | 'unmeasured']>): FixPrech
 });
 
 describe('precheckPopulation (P-006 / R6)', () => {
+  it('WI-8351 treats immutable dependency-selected node tests as imported-red candidates without altering signature proofs', () => {
+    const pop = precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: ['component'],
+      affectedTestFiles: ['lib/red.test.ts', 'component/test/pair.node-test.ts', 'parent.test.mjs'] });
+    expect(pop.signatureTestFiles).toEqual(['lib/red.test.ts']);
+    expect(pop.admittedTestFiles).toEqual(['component/test/pair.node-test.ts', 'parent.test.mjs']);
+    expect(pop.canProveDoesNotFix).toBe(true);
+    expect(evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'pass'], ['component/test/pair.node-test.ts', 'fail'],
+      ['parent.test.mjs', 'pass']]))).toMatchObject({ ok: false, code: 'admission-imports-red' });
+  });
   it('splits signature test files from admitted-outside-signature test files and ignores non-test paths', () => {
     const pop = precheckPopulation({
       signature: [sig('lib/red.test.ts'), sig('lib/red.test.ts'), sig('lib/other.test.ts')],
