@@ -46,6 +46,7 @@ export const sourceQualificationManifestSchema = z.object({
   // A manifest may add dependencies to the mandatory six; none may be dropped.
   sourceHashes: z.record(repoPath, z.string().regex(/^[0-9a-f]{64}$/)),
   repos: z.record(z.string(), commitId),
+  embeddingProfile: z.object({ mode: z.string().min(1), profileId: z.string().min(1) }).strict(),
   runs: z.array(z.object({ seed: z.string().min(1), artifactPath: repoPath })).length(3),
 }).passthrough().superRefine((m, ctx) => {
   for (const p of BM25_EXECUTED_SOURCE_PATHS) if (!m.sourceHashes[p])
@@ -57,6 +58,20 @@ export const sourceQualificationManifestSchema = z.object({
 });
 export type SourceQualificationManifest = z.infer<typeof sourceQualificationManifestSchema>;
 export type ExecutedSourceSnapshot = MeasurementPin & { rootCommit: string | null; observedAt: string };
+
+/** A manifest qualifies the complete R-13 sample and its exact registered space. */
+export function qualificationConfigurationProblems(manifest: SourceQualificationManifest, options: {
+  pairsPerSource: number; sources: readonly string[]; profile?: { mode: string; profileId?: string }; explicitDatabase: boolean;
+}): string[] {
+  const reasons: string[] = [];
+  if (!options.explicitDatabase) reasons.push('judged runs require explicit HARNESS_ADMIN_DATABASE_URL');
+  if (!Number.isInteger(options.pairsPerSource) || options.pairsPerSource < 60) reasons.push('judged runs require at least60 pairs per source');
+  if (options.sources.length !== 2 || !options.sources.includes('work_item') || !options.sources.includes('session_turn'))
+    reasons.push('judged runs require both work_item and session_turn, exactly once');
+  if (options.profile?.mode !== manifest.embeddingProfile.mode || options.profile?.profileId !== manifest.embeddingProfile.profileId)
+    reasons.push('registered query embedding profile differs from manifest');
+  return reasons;
+}
 
 /** Fail closed on unknown provenance as well as known dirt or movement. */
 export function qualifyExecutedSource(before: ExecutedSourceSnapshot, after: ExecutedSourceSnapshot,

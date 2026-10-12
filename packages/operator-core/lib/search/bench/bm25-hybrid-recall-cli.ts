@@ -68,6 +68,7 @@ import {
   overallLatencyVerdict,
   overallVerdict,
   qualifyExecutedSource,
+  qualificationConfigurationProblems,
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
@@ -445,6 +446,9 @@ async function main(): Promise<number> {
   const manifestPath = argValue('--qualification-manifest');
   const manifestBytes = manifestPath ? fs.readFileSync(manifestPath) : undefined;
   const manifest = manifestBytes ? sourceQualificationManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8'))) : undefined;
+  if (manifest && (!process.env.HARNESS_ADMIN_DATABASE_URL?.trim() || perSource < 60 ||
+    sourceNames.length !== 2 || !sourceNames.includes('work_item') || !sourceNames.includes('session_turn')))
+    throw new Error('judged runs require an explicit database and at least60 pairs for both sources, exactly once');
   if (manifest && (replayFrom || !manifest.runs.some(r => r.seed === seed && path.resolve(sourceRoot, r.artifactPath) === path.resolve(out))))
     throw new Error('qualification requires the prospectively declared seed and artifact path, without replay');
   const sourcePaths = manifest ? Object.keys(manifest.sourceHashes) : BM25_EXECUTED_SOURCE_PATHS;
@@ -520,6 +524,11 @@ async function main(): Promise<number> {
   if (!queryEmbeddingProfile?.profileId) {
     console.error('[r13] REFUSING TO RUN: the query embedder has no registered exact embedding profile.');
     return 2;
+  }
+  if (manifest) {
+    const reasons = qualificationConfigurationProblems(manifest, { pairsPerSource: perSource, sources: sourceNames,
+      profile: queryEmbeddingProfile, explicitDatabase: !!process.env.HARNESS_ADMIN_DATABASE_URL?.trim() });
+    if (reasons.length) throw new Error(reasons.join('; '));
   }
   const preparedQueries = createPrecomputedHybridQueries(embedder);
 

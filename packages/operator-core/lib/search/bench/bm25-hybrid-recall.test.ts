@@ -31,6 +31,7 @@ import {
   overallLatencyVerdict,
   overallVerdict,
   qualifyExecutedSource,
+  qualificationConfigurationProblems,
   pairedCounts,
   rankOf,
   redactPairsForArtifact,
@@ -57,6 +58,7 @@ describe('executed source qualification', () => {
     repos: [{ repo: '.', head: commit, gitlink: null }], errors: [] });
   const manifest = () => sourceQualificationManifestSchema.parse({ schemaVersion: 1, rootCommit: commit,
     sourceHashes: Object.fromEntries(BM25_EXECUTED_SOURCE_PATHS.map(p => [p, sha])), repos: { '.': commit },
+    embeddingProfile: { mode: 'gemma', profileId: 'gemma-embeddinggemma-300m-768@v1' },
     runs: [1, 2, 3].map(i => ({ seed: `prospective-${i}`, artifactPath: `docs/evidence/run-${i}.json` })) });
 
   it('qualifies only identical clean bytes and committed pins before and after', () => {
@@ -98,6 +100,14 @@ describe('executed source qualification', () => {
     expect(sourceQualificationManifestSchema.safeParse(repeated).success).toBe(false);
     const unsafe = manifest(); unsafe.sourceHashes['../outside'] = sha;
     expect(sourceQualificationManifestSchema.safeParse(unsafe).success).toBe(false);
+  });
+  it('refuses judged admission for a different or unknown space, small samples, missing sources, or an implicit database', () => {
+    const expected = manifest();
+    const options = { pairsPerSource: 60, sources: ['work_item', 'session_turn'], profile: expected.embeddingProfile, explicitDatabase: true };
+    expect(qualificationConfigurationProblems(expected, options)).toEqual([]);
+    for (const patch of [{ profile: undefined }, { profile: { mode: 'gemma', profileId: 'another-profile' } },
+      { pairsPerSource: 59 }, { sources: ['work_item'] }, { sources: ['work_item', 'work_item'] }, { explicitDatabase: false }])
+      expect(qualificationConfigurationProblems(expected, { ...options, ...patch }).length).toBeGreaterThan(0);
   });
 });
 
