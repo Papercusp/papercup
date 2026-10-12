@@ -88,20 +88,34 @@ async function authenticatedAccount(page: Page, email: string) {
 }
 
 async function accountToken(page: Page) {
-  return uiPhase(page, 'create team-scoped provider API token', async () => {
+  const team = await uiPhase(page, 'find authenticated provider team', async () => {
     await page.goto(baseUrl + '/');
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toMatch(/^\/t\/[^/]+\//);
-    const team = new URL(page.url()).pathname.match(/^\/t\/([^/]+)\//)![1]!;
+    return new URL(page.url()).pathname.match(/^\/t\/([^/]+)\//)![1]!;
+  });
+  await uiPhase(page, 'open team API token dialog', async () => {
     await page.goto(baseUrl + '/t/' + team + '/settings/tokens');
     await page.getByRole('button', { name: 'Create token', exact: true }).click();
-    const dialog = page.getByRole('dialog');
+  });
+  const dialog = page.getByRole('dialog');
+  await uiPhase(page, 'submit team API token form', async () => {
     await dialog.locator('input[name="tokenName"]').fill('DAO HR non-binding sandbox');
     await dialog.getByRole('button', { name: 'Create token', exact: true }).click();
-    const token = await dialog.locator('input[name="createdToken"]').inputValue();
-    expect(token.length).toBeGreaterThan(20);
-    await dialog.getByRole('button', { name: 'Done', exact: true }).click();
-    return token;
   });
+  let token = '';
+  await uiPhase(page, 'read created provider token', async () => {
+    // Upstream createApiToken emits `api_${alphaid(16)}`: exactly 20
+    // characters. Assert a boolean so a failure never prints the credential.
+    await expect.poll(async () => {
+      token = await dialog.locator('input[name="createdToken"]').inputValue();
+      return token.startsWith('api_') && token.length === 20;
+    }, { timeout: 30_000 }).toBe(true);
+  });
+  await uiPhase(page, 'close created-token dialog', async () => {
+    await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect.poll(() => dialog.isVisible(), { timeout: 30_000 }).toBe(false);
+  });
+  return token;
 }
 
 async function sign(page: Page, url: string) {
