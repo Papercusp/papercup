@@ -492,3 +492,32 @@ test('a successful response RESETS the streak — a flapping proxy that recovers
     'the successful response RESET the transport-failure streak — a single post-recovery failure does not re-open the circuit',
   );
 });
+
+// WI-6554700010009426 (2026-10-12 mass-resume collapse): an ADMITTED attempt that dies on the wire spent
+// its slot and produced nothing. Before the fix only a mid-relay death contracted the claude lane, so a
+// herd of TTFB/transport failures left the window wide open and every abort re-uploaded its whole body
+// onto a saturated uplink. The window must contract on the transport failure itself — and must NOT
+// contract when the same traffic is clean (the control, so this cannot pass vacuously).
+test('an admitted transport failure CONTRACTS the claude admission window; clean traffic does not', async () => {
+  const dead = new Set<string>(['DEAD']);
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD'), acct('OK')]),
+    fetchImpl: egressFetch(dead),
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+  });
+  port = await gw.listen(0);
+  const initial = gw.stats().admission.maxConcurrent;
+  // Control: a clean request through the healthy account leaves the window where it was.
+  const clean = await post({ 'x-papercusp-account': 'OK' });
+  assert.equal(clean.status, 200);
+  assert.equal(gw.stats().admission.maxConcurrent, initial, 'a clean success does not contract the window');
+  // A transport failure on DEAD (then failover to OK) must contract it.
+  const res = await post({ 'x-papercusp-account': 'DEAD' });
+  assert.equal(res.status, 200, 'the request still fails over and is served');
+  assert.ok(
+    gw.stats().admission.maxConcurrent < initial,
+    `the admitted transport failure contracted the claude window (${initial} → ${gw.stats().admission.maxConcurrent})`,
+  );
+});

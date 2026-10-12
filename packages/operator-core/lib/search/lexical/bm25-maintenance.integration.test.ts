@@ -7,9 +7,10 @@
  * left alone, and an index that bm25_needs_compaction reports as eligible is compacted within
  * the per-run step budget until it no longer needs it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { BM25_MAX_BLOAT_RATIO, runBm25Maintenance } from './bm25-maintenance';
+import { createDedicatedOrgPg, _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
+import { BM25_MAX_BLOAT_RATIO, estimateBm25LiveBytes, parseBm25SegmentTotals, runBm25Maintenance } from './bm25-maintenance';
 import { resetBm25Availability } from './rank';
 import { rankWorkItemIds, seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from './test-pg/bm25-test-db';
 
@@ -28,6 +29,82 @@ afterAll(async () => {
 });
 
 describe('index maintenance workflow body (P-006)', () => {
+  it('counts required metapage and page-map storage in a fresh small index live-byte estimate', async () => {
+    await sql.unsafe(`CREATE TABLE harness_shared.fresh_small_probe (id int, body text);
+      INSERT INTO harness_shared.fresh_small_probe SELECT g, 'heron wading bird' FROM generate_series(1, 257) g;
+      CREATE INDEX fresh_small_probe_bm25 ON harness_shared.fresh_small_probe USING bm25 (body)
+        WITH (text_config = 'english', compaction = 'manual');`);
+    const [{ bytes, summary }] = await sql<{ bytes: string; summary: string }[]>`
+      SELECT pg_relation_size('harness_shared.fresh_small_probe_bm25'::regclass)::text AS bytes,
+        public.bm25_summarize_index('harness_shared.fresh_small_probe_bm25') AS summary`;
+    const totals = parseBm25SegmentTotals(summary)!;
+    expect(totals).toMatchObject({ segments: 1, alive: 257, docs: 257 });
+    // pg_textsearch 1.5.x stores block0 metadata and a page-map block in
+    // addition to the segment's data pages, even immediately after CREATE.
+    expect(Number(bytes)).toBe((totals.pages + 2) * 8192);
+    console.info('BM25_FRESH_SMALL_STORAGE ' + JSON.stringify({ bytes: Number(bytes), totals,
+      estimatedLiveBytes: estimateBm25LiveBytes(totals) }));
+    expect(estimateBm25LiveBytes(totals)).toBe(Number(bytes));
+  });
+
+  it('reclaims actual small-index bloat under default settings while leaving a fresh small index alone', async () => {
+    const qualified = 'harness_shared.small_reclaim_probe_bm25';
+    try {
+      await sql.unsafe(`CREATE TABLE harness_shared.small_reclaim_probe (id serial, body text);
+        CREATE INDEX small_reclaim_probe_bm25 ON harness_shared.small_reclaim_probe USING bm25 (body)
+          WITH (text_config = 'english', compaction = 'manual');`);
+      for (let s = 0; s < 4; s++) {
+        await sql`INSERT INTO harness_shared.small_reclaim_probe (body)
+          SELECT 'smalltok' || md5(g::text) FROM generate_series(${s * 100 + 1}::int, ${(s + 1) * 100}::int) g`;
+        await sql`SELECT public.bm25_spill_index(${qualified})`;
+      }
+      const result = await runBm25Maintenance(sql);
+      expect(result.errors).toEqual([]);
+      expect(result.reclaimed?.index).toBe(qualified);
+      expect(result.reclaimed!.beforeBytes).toBeLessThan(8 * 1024 * 1024);
+      expect(result.reclaimed!.afterBytes).toBeLessThan(result.reclaimed!.beforeBytes);
+      expect(result.pendingReclaims).not.toContain('harness_shared.fresh_small_probe_bm25');
+      const [{ bytes, summary }] = await sql<{ bytes: string; summary: string }[]>`
+        SELECT pg_relation_size(${qualified}::regclass)::text AS bytes, public.bm25_summarize_index(${qualified}) AS summary`;
+      expect(Number(bytes) / estimateBm25LiveBytes(parseBm25SegmentTotals(summary)!)).toBeLessThan(1.5);
+      expect((await runBm25Maintenance(sql)).reclaimed).toBeNull();
+    } finally {
+      await sql.unsafe('DROP TABLE IF EXISTS harness_shared.small_reclaim_probe');
+    }
+  });
+
+  it('holds session settings and advisory locks on one backend, then releases the lock when its dedicated client closes', async () => {
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', `postgres://postgres@${db.connection.host}:${db.connection.port}/${db.runTag}`);
+    vi.stubEnv('PAPERCUSP_PGBOUNCER', '1');
+    _resetUrlCacheForTests();
+    const { sql: direct } = createDedicatedOrgPg('bm25-session-proof', { max: 1, sessionAffinity: true });
+    const key = `bm25-session-proof:${db.runTag}`;
+    try {
+      const [before] = await direct<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+      await direct`SET lock_timeout = '23s'`;
+      const [{ acquired }] = await direct<{ acquired: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${key})) AS acquired`;
+      expect(acquired).toBe(true);
+      for (let i = 0; i < 3; i++) {
+        const [after] = await direct<{ pid: number; timeout: string }[]>`
+          SELECT pg_backend_pid() AS pid, current_setting('lock_timeout') AS timeout`;
+        expect(after).toEqual({ pid: before.pid, timeout: '23s' });
+      }
+      const [{ blocked }] = await sql<{ blocked: boolean }[]>`SELECT NOT pg_try_advisory_lock(hashtext(${key})) AS blocked`;
+      expect(blocked).toBe(true);
+    } finally {
+      await direct.end({ timeout: 5 });
+      vi.unstubAllEnvs();
+      _resetUrlCacheForTests();
+    }
+    const verifier = await sql.reserve();
+    try {
+      expect((await verifier<{ acquired: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${key})) AS acquired`)[0].acquired).toBe(true);
+    } finally {
+      await verifier`SELECT pg_advisory_unlock(hashtext(${key}))`;
+      verifier.release();
+    }
+  });
+
   const wiIndexOutcome = async (): Promise<string[]> =>
     (await sql<{ outcome: string }[]>`
       SELECT outcome FROM harness_shared.bm25_ensure_indexes() WHERE corpus_index = 'work_items_bm25'`).map(r => r.outcome);
@@ -207,18 +284,19 @@ describe('index maintenance workflow body (P-006)', () => {
       expect(await needs()).toBe(true);
 
       // A zero budget reports the debt without touching the index.
-      const first = await runBm25Maintenance(sql, { maxCompactionSteps: 0 });
+      const compactionOnly = { reclaimMinBytes: Number.MAX_SAFE_INTEGER };
+      const first = await runBm25Maintenance(sql, { ...compactionOnly, maxCompactionSteps: 0 });
       expect(first.errors).toEqual([]);
       expect(first.compacted.find(c => c.index === idx)).toEqual({ index: idx, steps: 0, stillNeeds: true });
       expect((await levels())[0]).toBe(3);
 
-      const second = await runBm25Maintenance(sql);
+      const second = await runBm25Maintenance(sql, compactionOnly);
       expect(second.errors).toEqual([]);
       expect(second.compacted.find(c => c.index === idx)).toEqual({ index: idx, steps: 1, stillNeeds: false });
       expect((await levels())[0]).toBe(0);
       expect(await needs()).toBe(false);
 
-      const third = await runBm25Maintenance(sql);
+      const third = await runBm25Maintenance(sql, compactionOnly);
       expect(third.compacted.find(c => c.index === idx)).toBeUndefined();
 
       // Every row survives the merges and still matches.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { calculatePilotEconomics, PILOT_COST_CATEGORIES, type PilotCostLine, type PilotPriceSheet } from './unit-economics';
+import { calculatePilotEconomics, PILOT_COST_CATEGORIES, type PilotCostLine, type PilotPriceSheet,
+  type PilotOutcomeObservation, type PilotOutcomePopulation } from './unit-economics';
 
 const time = 1_000_000;
 const provenance = { evidenceRef: 'fixture:observed-cost', measuredAtMs: time };
@@ -23,6 +24,107 @@ function sheet(overrides: Partial<PilotPriceSheet> = {}): PilotPriceSheet {
 function replace(base: PilotPriceSheet, category: PilotCostLine['category'], patch: Partial<PilotCostLine>): PilotPriceSheet {
   return { ...base, lines: base.lines.map((row) => row.category === category ? { ...row, ...patch } : row) };
 }
+
+describe('bounded pilot outcome projection (synthetic observations, not customer acceptance)', () => {
+  const observation = (caseId: string, patch: Partial<PilotOutcomeObservation> = {}): PilotOutcomeObservation => ({
+    caseId, decision: 'accepted', reviewerRef: 'reviewer:fixture', reviewDurationMs: 30_000,
+    reworkCount: 0, repeatUse: false, evidenceRef: `fixture:${caseId}`, measuredAtMs: time, ...patch,
+  });
+  const population = (patch: Partial<PilotOutcomePopulation> = {}): PilotOutcomePopulation => ({
+    trialRef: 'trial:fixture', caseIds: ['case-1', 'case-2'],
+    observations: [observation('case-1'), observation('case-2', { decision: 'rejected', reviewDurationMs: 20_000,
+      reworkCount: 2, repeatUse: true })], costCaseIds: ['case-2', 'case-1'], costEvidenceRef: 'fixture:case-costs', ...patch,
+  });
+  const project = (outcomes = population(), base = sheet()) => calculatePilotEconomics({ ...base, outcomes }).outcomes!;
+
+  it('uses the full case and cost census with independently calculated measured aggregates', () => {
+    const base = replace(replace(sheet(), 'compute', { quantity: 3 }), 'support', { quantity: 1 });
+    expect(project(population(), base)).toEqual({
+      trialRef: 'trial:fixture', caseCount: 2, observedCases: 2, missingCaseIds: [], decidedCases: 2,
+      acceptedCases: 1, acceptanceBps: 5000, knownReviewDurationMs: 50_000, reviewDurationMs: 50_000,
+      knownReworkCount: 2, reworkCount: 2, knownRepeatUseCases: 1, repeatUseCases: 1,
+      totalCostMicros: 4_000_000, costPerAcceptedCaseMicros: 4_000_000, gaps: [],
+      evidenceRefs: ['fixture:case-1', 'fixture:case-2', 'fixture:case-costs'],
+    });
+    expect(calculatePilotEconomics(base)).not.toHaveProperty('outcomes');
+  });
+  it('includes customer-direct cost and rounds the result average up once', () => {
+    const base = replace(sheet({ inferenceMode: 'customer-key', consumptionPriceCents: 0,
+      lines: sheet().lines.map(row => row.category.startsWith('inference-') || row.category.startsWith('cache-')
+        ? { ...row, payer: 'customer-direct' as const } : row) }), 'inference-output', {
+      quantity: 3, rate: { ...provenance, unit: 'fixture-unit', unitsPerRate: 1, microsPerRate: 1, kind: 'provider-billed' },
+    });
+    expect(project(population({ observations: [observation('case-1'), observation('case-2')] }), base))
+      .toMatchObject({ totalCostMicros: 3, acceptedCases: 2, costPerAcceptedCaseMicros: 2 });
+  });
+  it('keeps missing case observations in the denominator and retains partial sums as partial', () => {
+    const result = project(population({ observations: [observation('case-1')] }));
+    expect(result).toMatchObject({ caseCount: 2, observedCases: 1, missingCaseIds: ['case-2'], decidedCases: 1,
+      acceptedCases: 1, acceptanceBps: null, knownReviewDurationMs: 30_000, reviewDurationMs: null,
+      knownReworkCount: 0, reworkCount: null, knownRepeatUseCases: 0, repeatUseCases: null,
+      costPerAcceptedCaseMicros: null });
+    expect(result.gaps).toContain('missing-observations');
+  });
+  it('preserves each missing human measurement as unknown, independently of a known accepted decision', () => {
+    const result = project(population({ observations: [observation('case-1', {
+      reviewDurationMs: null, reworkCount: null, repeatUse: null }), observation('case-2')] }));
+    expect(result).toMatchObject({ acceptedCases: 2, acceptanceBps: 10_000,
+      knownReviewDurationMs: 30_000, reviewDurationMs: null, knownReworkCount: 0, reworkCount: null,
+      knownRepeatUseCases: 0, repeatUseCases: null });
+    expect(result.gaps).toEqual(['missing-review-duration', 'missing-rework', 'missing-repeat-use']);
+  });
+  it('preserves observed zero and refuses to divide empty or unaccepted populations', () => {
+    expect(project(population({ observations: ['case-1', 'case-2'].map(id => observation(id, { reviewDurationMs: 0 })) })))
+      .toMatchObject({ reviewDurationMs: 0, reworkCount: 0, repeatUseCases: 0, costPerAcceptedCaseMicros: 0 });
+    expect(project(population({ caseIds: [], observations: [], costCaseIds: [] })))
+      .toMatchObject({ acceptanceBps: null, reviewDurationMs: null, totalCostMicros: null, costPerAcceptedCaseMicros: null });
+    expect(project(population({ observations: ['case-1', 'case-2'].map(id => observation(id, { decision: 'rejected' })) })))
+      .toMatchObject({ acceptanceBps: 0, acceptedCases: 0, costPerAcceptedCaseMicros: null });
+    expect(project(population({ observations: [observation('case-1', { decision: null }), observation('case-2')] })))
+      .toMatchObject({ acceptanceBps: null, decidedCases: 1, costPerAcceptedCaseMicros: null });
+  });
+  it.each([null, ['case-1'], ['case-1', 'case-2', 'foreign']])('keeps absent or mismatched cost coverage unknown: %j', costCaseIds => {
+    const result = project(population({ costCaseIds, costEvidenceRef: costCaseIds === null ? null : 'fixture:cost' }));
+    expect(result).toMatchObject({ totalCostMicros: null, costPerAcceptedCaseMicros: null });
+    expect(result.gaps).toContain('cost-population-unbound');
+  });
+  it('withholds measured result cost for provisional and unpriced cost sheets', () => {
+    for (const base of [replace(sheet(), 'compute', { quantity: 1, rate: null }),
+      replace(sheet(), 'compute', { quantity: 1, rate: { ...sheet().lines[0]!.rate!, kind: 'estimate' } })]) {
+      expect(project(population(), base)).toMatchObject({ totalCostMicros: null, costPerAcceptedCaseMicros: null });
+      expect(project(population(), base).gaps).toContain('cost-not-measured');
+    }
+  });
+  it('rejects duplicate and cross-population records instead of silently changing counts', () => {
+    for (const patch of [{ caseIds: ['case-1', 'case-1'] }, { costCaseIds: ['case-1', 'case-1'] },
+      { observations: [observation('case-1'), observation('case-1')] }, { observations: [observation('foreign')] }]) {
+      expect(() => project(population(patch))).toThrow();
+    }
+  });
+  it('rejects malformed counters, attribution, evidence, freshness and oversized populations', () => {
+    for (const patch of [{ reviewDurationMs: -1 }, { reworkCount: 0.5 }, { reviewDurationMs: NaN },
+      { reworkCount: Infinity }, { reviewerRef: null }, { decision: 'fake' }, { repeatUse: 1 },
+      { evidenceRef: '' }, { measuredAtMs: time + 1 }, { measuredAtMs: time - 1001 },
+      { reviewDurationMs: undefined }, { extra: 'untrusted' }]) {
+      expect(() => project(population({ observations: [observation('case-1', patch as Partial<PilotOutcomeObservation>)] })))
+        .toThrow();
+    }
+    expect(() => project(population({ caseIds: Array.from({ length: 501 }, (_, n) => `case-${n}`) }))).toThrow();
+    expect(() => project(population({ observations: Array(501).fill(observation('case-1')) }))).toThrow();
+    expect(() => project(population({ costCaseIds: null }))).toThrow('cost evidence requires cost population');
+    expect(() => project(population({ costEvidenceRef: null }))).toThrow('cost evidence');
+    expect(() => project(population({ observations: [observation('case-1', { reviewerRef: null, decision: null })] })))
+      .toThrow('reviewer attribution');
+  });
+  it('rejects aggregate overflow and accepts exactly the evidence age boundary', () => {
+    for (const key of ['reviewDurationMs', 'reworkCount'] as const) {
+      expect(() => project(population({ observations: [observation('case-1', { [key]: Number.MAX_SAFE_INTEGER }),
+        observation('case-2', { [key]: 1 })] }))).toThrow('overflow');
+    }
+    expect(project(population({ observations: [observation('case-1', { measuredAtMs: time - 1000 }), observation('case-2')] })))
+      .toMatchObject({ decidedCases: 2 });
+  });
+});
 
 describe('pilot unit economics (synthetic arithmetic fixtures, not customer measurements)', () => {
   it.each([

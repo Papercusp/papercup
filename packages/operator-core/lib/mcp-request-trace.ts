@@ -1,5 +1,6 @@
 /** Shared, bounded correlation contract for the local MCP proxy → operator hop. */
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { headersFromExtra, urlFromExtra } from '@papercusp/tooldef-mcp';
 import type { ScratchWriteProgress, ScratchWriteTimings } from './scratch-gc';
@@ -59,7 +60,78 @@ export interface McpRequestTraceEvent {
     advisoryFlagReads: number;
     /** Cumulative phases across this request's spill writes; concurrent writes may overlap. */
     scratchWrites?: ScratchWriteTimings & { count: number };
+    /**
+     * Request-correlated async PSU host-discovery operation totals. Function totals are
+     * nested and overlap (for example findLiveHostAsync includes pathExistsAsync), so
+     * they are attribution counters, not additive partitions of request time.
+     */
+    operationTimings?: McpRequestOperationTimings;
   };
+}
+
+export type McpRequestTraceOperation =
+  | 'findLiveHostAsync'
+  | 'listLiveHostsAsync'
+  | 'pidIsPsuHostAsync'
+  | 'pathExistsAsync';
+
+export interface McpRequestOperationCounter {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+}
+
+export type McpRequestOperationTimings = Partial<Record<McpRequestTraceOperation, McpRequestOperationCounter>>;
+
+export interface McpRequestTraceExecutionContext {
+  operationTimings: McpRequestOperationTimings;
+}
+
+const mcpRequestTraceExecution = pinModuleState(
+  '@papercusp/operator-core.mcp-request-trace.execution',
+  () => new AsyncLocalStorage<McpRequestTraceExecutionContext>(),
+);
+
+export function createMcpRequestTraceExecutionContext(): McpRequestTraceExecutionContext {
+  return { operationTimings: {} };
+}
+
+export function runWithMcpRequestTraceExecution<T>(
+  context: McpRequestTraceExecutionContext,
+  work: () => T,
+): T {
+  return mcpRequestTraceExecution.run(context, work);
+}
+
+/** Record one awaited-operation boundary under the active MCP request, when present. */
+export function recordMcpRequestTraceOperation(
+  operation: McpRequestTraceOperation,
+  elapsedMs: number,
+): void {
+  try {
+    const context = mcpRequestTraceExecution.getStore();
+    if (!context) return;
+    const duration = Number.isFinite(elapsedMs) ? Math.round(Math.max(0, elapsedMs) * 1000) / 1000 : 0;
+    const counter = context.operationTimings[operation] ??= { count: 0, totalMs: 0, maxMs: 0 };
+    counter.count += 1;
+    counter.totalMs = Math.round((counter.totalMs + duration) * 1000) / 1000;
+    counter.maxMs = Math.max(counter.maxMs, duration);
+  } catch {
+    // Instrumentation must never change the traced operation's result.
+  }
+}
+
+export function mcpRequestTraceOperationTimings(
+  context: McpRequestTraceExecutionContext,
+): McpRequestOperationTimings | undefined {
+  try {
+    if (Object.keys(context.operationTimings).length === 0) return undefined;
+    return Object.fromEntries(
+      Object.entries(context.operationTimings).map(([operation, counter]) => [operation, { ...counter }]),
+    ) as McpRequestOperationTimings;
+  } catch {
+    return undefined;
+  }
 }
 
 type McpSessionSurfaceTraceInput = Pick<

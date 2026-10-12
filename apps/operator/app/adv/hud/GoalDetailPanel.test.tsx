@@ -19,7 +19,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
-import { readTypedPropertyCollection } from '@papercusp/operator-core/lib/typed-properties';
+import { readTypedPropertyCollection, type TypedPropertySchemaDocument } from '@papercusp/operator-core/lib/typed-properties';
 import type { GoalDetailInput } from './goal-detail-model';
 
 /* P-023: the popup's two expand buttons reach the DESKTOP shell for full
@@ -239,7 +239,9 @@ describe('GoalDetailPanel', () => {
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
     const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
     const ids = kind === 'plans' ? ['plan:alpha/first', 'plan:beta/second'] : ['mint', 'chamomile'];
-    const schema = {
+    // Typed so its enum fields (editable_by, collection.source/order) keep their
+    // literal types; an un-annotated literal widens them to string, which tsc rejects.
+    const schema: TypedPropertySchemaDocument = {
       [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', editable_by: 'both',
         collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
           order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },

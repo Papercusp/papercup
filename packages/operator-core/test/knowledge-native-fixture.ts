@@ -133,9 +133,28 @@ async function main() {
       eligibleSql: `p.workspace_id = '${workspace}'` }] });
     const source = createReportSearchSource({ ownerId: owner, potSlug: workspace },
       { harnessSlugs: [workspace], automatic: true });
-    const control = await source.lexical!({ sql, workspaceId: workspace, scopeFilter: null, limit: 20,
-      query: 'zephyrquartz diagnostic snapshot recovery evidence' });
-    assert.deepEqual(control.map(hit => hit.row.source_id), [reports[0].reportId], 'known fixture must reach the real search source');
+    const lexical = async (query: string) => source.lexical!({ sql, workspaceId: workspace,
+      scopeFilter: null, limit: 20, query });
+    const unique = await lexical('zephyrquartz');
+    const control = await lexical('zephyrquartz diagnostic snapshot recovery evidence');
+    const shared = await lexical('diagnostic snapshot recovery evidence');
+    const privateControl = await lexical('amberquartz');
+    const visibleIds = reports.slice(0, 2).map(report => report.reportId);
+    writeFileSync(join(evidenceDir, 'lexical-source-control.json'), JSON.stringify({
+      owner, visibleIds, deniedIds: reports.slice(2).map(report => report.reportId),
+      unique, control, shared, privateControl,
+    }));
+    // The unique token calibrates exact retrieval independently of the selected
+    // lexical engine. BM25 may also match the sibling report's shared words.
+    assert.deepEqual(unique.map(hit => hit.row.source_id), [reports[0].reportId],
+      'unique fixture token must reach only its report; see lexical-source-control.json');
+    assert.ok(control.some(hit => hit.row.source_id === reports[0].reportId),
+      'known fixture must reach the real search source; see lexical-source-control.json');
+    assert.ok(control.every(hit => visibleIds.includes(hit.row.source_id)),
+      'any-term matches must remain reader-visible; see lexical-source-control.json');
+    assert.deepEqual(shared.map(hit => hit.row.source_id).sort(), [...visibleIds].sort(),
+      'shared terms must retrieve both reader-visible reports and deny the other reader');
+    assert.deepEqual(privateControl, [], 'the other reader\'s unique token must remain private');
     const warmReport = await publishReport(sql, { workspaceId: workspace, visibility: 'workspace',
       title: 'Warm corpus control', bodyMd: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.' },
     { authorOwnerId: 'su-private-knowledge-warmup', harnessSlug: workspace });

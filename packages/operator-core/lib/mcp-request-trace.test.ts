@@ -1,13 +1,58 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildMcpSessionSurfaceTraceEvent,
+  createMcpRequestTraceExecutionContext,
   logMcpRequestTrace,
+  mcpRequestTraceOperationTimings,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
+  recordMcpRequestTraceOperation,
+  runWithMcpRequestTraceExecution,
   resolveMcpRequestTraceId,
 } from './mcp-request-trace';
+
+describe('MCP request operation timing attribution', () => {
+  it('keeps async operation counts and durations on the owning request context', async () => {
+    const first = createMcpRequestTraceExecutionContext();
+    const second = createMcpRequestTraceExecutionContext();
+
+    await runWithMcpRequestTraceExecution(first, async () => {
+      recordMcpRequestTraceOperation('findLiveHostAsync', 12.3456);
+      await Promise.resolve();
+      recordMcpRequestTraceOperation('pathExistsAsync', 4.25);
+      recordMcpRequestTraceOperation('pathExistsAsync', 5.5);
+    });
+    await runWithMcpRequestTraceExecution(second, async () => {
+      recordMcpRequestTraceOperation('listLiveHostsAsync', 20);
+    });
+
+    expect(mcpRequestTraceOperationTimings(first)).toEqual({
+      findLiveHostAsync: { count: 1, totalMs: 12.346, maxMs: 12.346 },
+      pathExistsAsync: { count: 2, totalMs: 9.75, maxMs: 5.5 },
+    });
+    expect(mcpRequestTraceOperationTimings(second)).toEqual({
+      listLiveHostsAsync: { count: 1, totalMs: 20, maxMs: 20 },
+    });
+    expect(mcpRequestTraceOperationTimings(createMcpRequestTraceExecutionContext())).toBeUndefined();
+  });
+
+  it('ignores invalid durations and returns a detached settlement snapshot', () => {
+    const context = createMcpRequestTraceExecutionContext();
+    runWithMcpRequestTraceExecution(context, () => {
+      recordMcpRequestTraceOperation('pidIsPsuHostAsync', Number.NaN);
+    });
+
+    const snapshot = mcpRequestTraceOperationTimings(context);
+    expect(snapshot).toEqual({ pidIsPsuHostAsync: { count: 1, totalMs: 0, maxMs: 0 } });
+    runWithMcpRequestTraceExecution(context, () => recordMcpRequestTraceOperation('pidIsPsuHostAsync', 3));
+    expect(snapshot).toEqual({ pidIsPsuHostAsync: { count: 1, totalMs: 0, maxMs: 0 } });
+    expect(mcpRequestTraceOperationTimings(context)).toEqual({
+      pidIsPsuHostAsync: { count: 2, totalMs: 3, maxMs: 3 },
+    });
+  });
+});
 
 describe('resolveMcpRequestTraceId (WI-6554700010008586)', () => {
   it('returns the proxy-minted header when present', () => {

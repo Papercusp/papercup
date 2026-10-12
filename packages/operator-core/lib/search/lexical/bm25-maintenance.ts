@@ -48,6 +48,7 @@
  * A throw out of a DBOS step would exhaust maxRecoveryAttempts and stop the schedule.
  */
 import type { Sql } from 'postgres';
+import { createDedicatedOrgPg } from '@papercusp/db-org';
 import { readBm25Indexes, resetBm25Availability } from './rank';
 
 /** Outcomes of `bm25_ensure_indexes()` that mean "build this one concurrently". */
@@ -162,9 +163,12 @@ export const BM25_MAINTENANCE_DEFAULT_STEPS = 4;
 export const ENSURE_DEFER_EVERY_BUILD = -2;
 /** Under R-7's 1.5x bar, so a rebuilt index lands near 1.0x of a fresh build. */
 export const BM25_MAX_BLOAT_RATIO = 1.4;
-/** Below this the absolute waste is a few MB and a rebuild is not worth its churn. */
-export const BM25_RECLAIM_MIN_BYTES = 8 * 1024 * 1024;
+/** D013 covers every index; the ratio and one-rebuild budget bound churn. */
+export const BM25_RECLAIM_MIN_BYTES = 8192;
 const PAGE_BYTES = 8192;
+// pg_textsearch 1.5.x segment.c/write_page_index_internal: 24-byte PG
+// page header, 16-byte TpPageIndexSpecial, and 4-byte BlockNumber entries.
+const BM25_PAGE_MAP_ENTRIES = (PAGE_BYTES - 24 - 16) / 4;
 /**
  * Session advisory lock held around every CONCURRENTLY build (step 2) and rebuild (step 4),
  * so two overlapping maintenance runs on any host of one database never run DDL on the same
@@ -202,19 +206,36 @@ export function parseBm25SegmentTotals(summary: string): Bm25SegmentTotals | nul
   return { segments: Number(m[1]), pages: Number(m[2]), docs, alive: m[4] === undefined ? docs : Number(m[4]) };
 }
 
-/** Estimated bytes a fresh rebuild would take: segment pages scaled by the alive share. */
+/**
+ * Estimated fresh-build bytes: whole live data pages plus required metapage
+ * and page-map storage. Segment Total pages exclude those metadata blocks;
+ * omitting them labels a fresh one-page segment as 3x bloated.
+ */
 export function estimateBm25LiveBytes(t: Bm25SegmentTotals): number {
   if (t.docs <= 0) return 0;
-  return Math.round(t.pages * PAGE_BYTES * (t.alive / t.docs));
+  const livePages = Math.ceil(t.pages * (t.alive / t.docs));
+  const pageMapPages = Math.ceil(livePages / BM25_PAGE_MAP_ENTRIES);
+  return (livePages + pageMapPages + 1) * PAGE_BYTES;
 }
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Production tick: session locks and SET/RESET must bypass transaction pooling. */
+export async function runOrgBm25Maintenance(): Promise<Bm25MaintenanceReport> {
+  const { sql } = createDedicatedOrgPg('bm25-maintenance', { max: 1, sessionAffinity: true });
+  try {
+    return await runBm25Maintenance(sql);
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
 /**
  * One maintenance run against `sql`, which must be a pool or a reservable handle,
- * never a transaction (step 2 needs CREATE INDEX CONCURRENTLY).
+ * never a transaction or a transaction-pooling proxy (step 2 needs session
+ * affinity and CREATE INDEX CONCURRENTLY). Production uses runOrgBm25Maintenance.
  */
 export async function runBm25Maintenance(
   sql: Sql,

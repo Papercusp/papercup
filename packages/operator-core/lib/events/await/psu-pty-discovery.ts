@@ -32,6 +32,7 @@ import {
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { mapWithConcurrency } from '../../gym/concurrency';
+import { recordMcpRequestTraceOperation } from '../../mcp-request-trace';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
@@ -724,11 +725,14 @@ export async function selfCompactionAvailabilityAsync(
 }
 
 async function pathExistsAsync(p: string): Promise<boolean> {
+  const startedAt = performance.now();
   try {
     await fsp.access(p);
     return true;
   } catch {
     return false;
+  } finally {
+    recordMcpRequestTraceOperation('pathExistsAsync', performance.now() - startedAt);
   }
 }
 
@@ -737,12 +741,15 @@ async function pathExistsAsync(p: string): Promise<boolean> {
  *  thread. */
 async function pidIsPsuHostAsync(pid: number): Promise<boolean> {
   if (!pid) return false;
+  const startedAt = performance.now();
   try {
     const cmdline = (await fsp.readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ');
     return /psu-(launcher|pty-host)/.test(cmdline);
   } catch {
     // Match pidIsPsuHost: only fail open when /proc itself is absent (non-Linux).
     return !(await pathExistsAsync('/proc'));
+  } finally {
+    recordMcpRequestTraceOperation('pidIsPsuHostAsync', performance.now() - startedAt);
   }
 }
 
@@ -756,6 +763,7 @@ export async function findLiveHostAsync(
   dir: string = PSU_PTY_DIR,
   opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
 ): Promise<PsuPtyHost | null> {
+  const startedAt = performance.now();
   startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
   const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
@@ -774,6 +782,8 @@ export async function findLiveHostAsync(
     }
   } catch {
     /* missing, unreadable or partial discovery file — treat as no host */
+  } finally {
+    recordMcpRequestTraceOperation('findLiveHostAsync', performance.now() - startedAt);
   }
   return null;
 }
@@ -801,37 +811,43 @@ export async function listLiveHostsAsync(
   dir: string = PSU_PTY_DIR,
   opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
 ): Promise<PsuPtyHost[]> {
+  const startedAt = performance.now();
   startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
   let files: string[];
   try {
     files = (await fsp.readdir(dir)).filter(isDiscoveryRecordFileName);
   } catch {
+    recordMcpRequestTraceOperation('listLiveHostsAsync', performance.now() - startedAt);
     return [];
   }
   // Desktop presence may scan thousands of lingering host records. Keep each
   // host's async metadata/socket/proc checks parallel but bounded; a serial
   // loop multiplied slow filesystem probes, while Promise.all would flood them.
-  const out = await mapWithConcurrency(files, LIVE_HOST_SCAN_CONCURRENCY, async (f): Promise<PsuPtyHost | null> => {
-    try {
-      const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
-      if (
-        h &&
-        h.ownerId &&
-        h.sock &&
-        h.pid &&
-        (await pathExistsAsync(h.sock)) &&
-        pidAlive(h.pid) &&
-        (await verify(h.pid))
-      ) {
-        return h;
+  try {
+    const out = await mapWithConcurrency(files, LIVE_HOST_SCAN_CONCURRENCY, async (f): Promise<PsuPtyHost | null> => {
+      try {
+        const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
+        if (
+          h &&
+          h.ownerId &&
+          h.sock &&
+          h.pid &&
+          (await pathExistsAsync(h.sock)) &&
+          pidAlive(h.pid) &&
+          (await verify(h.pid))
+        ) {
+          return h;
+        }
+      } catch {
+        /* unreadable / partial write — skip this host */
       }
-    } catch {
-      /* unreadable / partial write — skip this host */
-    }
-    return null;
-  });
-  return out.filter((h): h is PsuPtyHost => h !== null);
+      return null;
+    });
+    return out.filter((h): h is PsuPtyHost => h !== null);
+  } finally {
+    recordMcpRequestTraceOperation('listLiveHostsAsync', performance.now() - startedAt);
+  }
 }
 
 async function safeUnlinkAsync(p: string): Promise<void> {

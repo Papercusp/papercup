@@ -176,6 +176,26 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
 
 export type RosterSnapshot = Awaited<ReturnType<typeof readAdvRosterUncached>>;
 
+/** The closed header needs live counts, thinking, machines and fleet colors,
+ * not session transcripts, checkpoints or ended-session history. Reuse the
+ * same snapshot so the badge and its expanded roster share lifecycle truth. */
+export function projectAdvRoster(snapshot: RosterSnapshot, view: 'full' | 'header' = 'full') {
+  if (view === 'full') return snapshot;
+  return {
+    active: snapshot.active.filter((agent) => agent.sessionState === 'live').map((agent) => ({
+      ownerId: agent.ownerId,
+      sessionState: agent.sessionState,
+      transcriptFresh: agent.transcriptFresh,
+      thinking: agent.thinking,
+      machineLabel: agent.machineLabel,
+      isLocal: agent.isLocal,
+      fleetSlug: agent.fleetSlug,
+      fleetColor: agent.fleetColor,
+    })),
+    ...(snapshot.degradedFields ? { degradedFields: snapshot.degradedFields } : {}),
+  };
+}
+
 /**
  * Stale-while-revalidate cache for the fan-out above (EI-22091013068319789).
  *

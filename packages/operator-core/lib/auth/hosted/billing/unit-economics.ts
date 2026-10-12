@@ -51,6 +51,44 @@ export interface PilotPriceSheet {
   }) | null;
   readonly targetPlatformMarginBps: number;
   readonly targetConsumptionMarginBps: number;
+  /** Optional observed case census. This does not establish customer approval. */
+  readonly outcomes?: PilotOutcomePopulation;
+}
+export interface PilotOutcomeObservation extends CostProvenance {
+  readonly caseId: string;
+  readonly decision: 'accepted' | 'rejected' | 'rework' | null;
+  readonly reviewerRef: string | null;
+  readonly reviewDurationMs: number | null;
+  readonly reworkCount: number | null;
+  readonly repeatUse: boolean | null;
+}
+export interface PilotOutcomePopulation {
+  readonly trialRef: string;
+  /** Frozen eligible population, including unsuccessful and unreviewed cases. */
+  readonly caseIds: readonly string[];
+  readonly observations: readonly PilotOutcomeObservation[];
+  /** Exact cases covered by this sheet's costs; null means unbound cost. */
+  readonly costCaseIds: readonly string[] | null;
+  readonly costEvidenceRef: string | null;
+}
+export interface PilotOutcomeMetrics {
+  readonly trialRef: string;
+  readonly caseCount: number;
+  readonly observedCases: number;
+  readonly missingCaseIds: readonly string[];
+  readonly decidedCases: number;
+  readonly acceptedCases: number;
+  readonly acceptanceBps: number | null;
+  readonly knownReviewDurationMs: number;
+  readonly reviewDurationMs: number | null;
+  readonly knownReworkCount: number;
+  readonly reworkCount: number | null;
+  readonly knownRepeatUseCases: number;
+  readonly repeatUseCases: number | null;
+  readonly totalCostMicros: number | null;
+  readonly costPerAcceptedCaseMicros: number | null;
+  readonly gaps: readonly string[];
+  readonly evidenceRefs: readonly string[];
 }
 export interface PilotMargin {
   readonly revenueMicros: number;
@@ -75,6 +113,7 @@ export interface PilotEconomics {
   readonly paymentFeeCents: number | null;
   readonly platform: PilotMargin;
   readonly consumption: PilotMargin;
+  readonly outcomes?: PilotOutcomeMetrics;
 }
 
 const MAX = BigInt(Number.MAX_SAFE_INTEGER);
@@ -104,6 +143,107 @@ function bps(value: number, name: string): bigint {
   const amount = integer(value, name);
   if (amount >= BPS) throw new Error(`invalid ${name}`);
   return amount;
+}
+
+/** Project attributed observations, never infer human measurements from usage.
+ * Costs cover the entire frozen population, including unsuccessful cases.
+ * Evidence refs are supplied observations, not authenticated trial acceptance.
+ */
+function pilotOutcomeMetrics(sheet: PilotPriceSheet, state: PilotEconomics['state'],
+  totalCost: bigint): PilotOutcomeMetrics {
+  const population = sheet.outcomes!;
+  const outcomeId = (value: string, name: string): void => {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(value)) {
+      throw new Error(`invalid pilot outcome ${name}`);
+    }
+  };
+  const census = (ids: readonly string[], name: string): Set<string> => {
+    if (!Array.isArray(ids) || ids.length > 500) throw new Error(`invalid pilot outcome ${name} population`);
+    ids.forEach((id) => outcomeId(id, name));
+    const result = new Set(ids);
+    if (result.size !== ids.length) throw new Error(`duplicate pilot outcome ${name}`);
+    return result;
+  };
+  outcomeId(population.trialRef, 'trial');
+  const cases = census(population.caseIds, 'case');
+  if (!Array.isArray(population.observations) || population.observations.length > 500) {
+    throw new Error('invalid pilot outcome observation population');
+  }
+  const seen = new Set<string>(), evidence = new Set<string>(), gaps: string[] = [];
+  let accepted = 0, decided = 0, repeated = 0;
+  let review = 0n, rework = 0n;
+  let measuredReview = 0, measuredRework = 0, measuredRepeat = 0;
+  const keys = ['caseId', 'decision', 'reviewerRef', 'reviewDurationMs', 'reworkCount',
+    'repeatUse', 'evidenceRef', 'measuredAtMs'];
+  for (const row of population.observations) {
+    if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).some((key) => !keys.includes(key))) {
+      throw new Error('invalid pilot outcome observation');
+    }
+    outcomeId(row.caseId, 'case');
+    if (!cases.has(row.caseId)) throw new Error('pilot outcome outside case population');
+    if (seen.has(row.caseId)) throw new Error('duplicate pilot outcome observation');
+    seen.add(row.caseId);
+    outcomeId(row.evidenceRef, 'evidence');
+    integer(row.measuredAtMs, 'pilot outcome observation time');
+    if (row.measuredAtMs > sheet.asOfMs || sheet.asOfMs - row.measuredAtMs > sheet.maximumEvidenceAgeMs) {
+      throw new Error('stale pilot outcome observation');
+    }
+    evidence.add(row.evidenceRef);
+    if (row.decision !== null && !['accepted', 'rejected', 'rework'].includes(row.decision)) {
+      throw new Error('invalid pilot outcome decision');
+    }
+    if (row.reviewerRef !== null) outcomeId(row.reviewerRef, 'reviewer');
+    if ((row.decision !== null || row.reviewDurationMs !== null) && row.reviewerRef === null) {
+      throw new Error('pilot outcome requires reviewer attribution');
+    }
+    if (row.decision !== null) decided++;
+    if (row.decision === 'accepted') accepted++;
+    if (row.reviewDurationMs !== null) {
+      review += integer(row.reviewDurationMs, 'pilot outcome review duration'); measuredReview++;
+    }
+    if (row.reworkCount !== null) {
+      rework += integer(row.reworkCount, 'pilot outcome rework'); measuredRework++;
+    }
+    if (row.repeatUse !== null) {
+      if (typeof row.repeatUse !== 'boolean') throw new Error('invalid pilot outcome repeat use');
+      measuredRepeat++; if (row.repeatUse) repeated++;
+    }
+  }
+  const missingCaseIds = [...cases].filter((id) => !seen.has(id));
+  const count = cases.size, complete = count > 0;
+  if (!complete) gaps.push('no-cases');
+  if (missingCaseIds.length) gaps.push('missing-observations');
+  if (decided !== count) gaps.push('missing-decisions');
+  if (measuredReview !== count) gaps.push('missing-review-duration');
+  if (measuredRework !== count) gaps.push('missing-rework');
+  if (measuredRepeat !== count) gaps.push('missing-repeat-use');
+  let costBound = false;
+  if (population.costCaseIds !== null) {
+    const costCases = census(population.costCaseIds, 'cost case');
+    outcomeId(population.costEvidenceRef!, 'cost evidence');
+    evidence.add(population.costEvidenceRef!);
+    costBound = costCases.size === count && [...costCases].every((id) => cases.has(id));
+  } else if (population.costEvidenceRef !== null) {
+    throw new Error('pilot outcome cost evidence requires cost population');
+  }
+  if (!costBound) gaps.push('cost-population-unbound');
+  if (state !== 'measured') gaps.push('cost-not-measured');
+  if (accepted === 0) gaps.push('no-accepted-cases');
+  const costKnown = complete && costBound && state === 'measured';
+  return {
+    trialRef: population.trialRef, caseCount: count, observedCases: seen.size, missingCaseIds,
+    decidedCases: decided, acceptedCases: accepted,
+    acceptanceBps: complete && decided === count ? Math.floor(accepted * 10_000 / count) : null,
+    knownReviewDurationMs: safe(review, 'pilot outcome review duration'),
+    reviewDurationMs: complete && measuredReview === count ? safe(review, 'pilot outcome review duration') : null,
+    knownReworkCount: safe(rework, 'pilot outcome rework'),
+    reworkCount: complete && measuredRework === count ? safe(rework, 'pilot outcome rework') : null,
+    knownRepeatUseCases: repeated, repeatUseCases: complete && measuredRepeat === count ? repeated : null,
+    totalCostMicros: costKnown ? safe(totalCost, 'pilot outcome cost') : null,
+    costPerAcceptedCaseMicros: costKnown && decided === count && accepted > 0
+      ? safe(ceil(totalCost, BigInt(accepted)), 'pilot outcome result cost') : null,
+    gaps, evidenceRefs: [...evidence].sort(),
+  };
 }
 
 /** Exact fee-aware floor, including the fee's whole-cent rounding. */
@@ -264,5 +404,7 @@ export function calculatePilotEconomics(sheet: PilotPriceSheet): PilotEconomics 
     quoteAllowed: state === 'measured' && platform.targetMet && (consumptionRevenue === 0n ? sums.consumption === 0n : consumption.targetMet),
     reasons, costs, customerDirectKnownCostMicros: safe(sums['customer-direct'], 'customer direct cost'),
     paymentFeeCents: feeCents === null ? null : safe(feeCents, 'payment fee'), platform, consumption,
+    ...(sheet.outcomes === undefined ? {} : { outcomes: pilotOutcomeMetrics(sheet, state,
+      sums.platform + sums.consumption + sums['customer-direct']) }),
   };
 }

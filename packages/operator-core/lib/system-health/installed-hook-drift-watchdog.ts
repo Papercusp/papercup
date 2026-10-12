@@ -303,6 +303,13 @@ export function startInstalledHookDriftWatchdog(opts: { intervalMs?: number } = 
             `[installed-hook-drift-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
         })
+        // The installed rtk binary belongs to the same installed agent runtime
+        // (WI-6554700010009291): both RTK seams fail open, so only this alarm
+        // makes a lost binary visible.
+        .then(() => import('./rtk-liveness').then((m) => m.runRtkLivenessCheckOnce()))
+        .catch((e) => {
+          console.warn(`[rtk-liveness] check failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+        })
         .finally(() => {
           sweeping = false;
         });

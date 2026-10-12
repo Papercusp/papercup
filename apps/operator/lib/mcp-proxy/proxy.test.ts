@@ -4102,40 +4102,61 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
     });
   }, 10_000);
 
-  it("SUBJECT: upstream SSE closure at an event boundary answers the pending id with a JSON-RPC error and ends promptly", async () => {
-    await withLedger(async (readRecords) => {
-      const proxy = await proxyFor(sseUpstream("die-at-boundary"));
-      // Before the fix this stayed open for the whole budget.
-      const r = await callTool(port(proxy), 1_500);
-      expect(r.outcome).toBe("end");
-      const events = r.body
-        .split("\n")
-        .filter((l) => l.startsWith("data: "))
-        .map((l) => JSON.parse(l.slice("data: ".length)));
-      expect(events).toHaveLength(1);
-      expect(events[0].error.message).toContain(
-        "upstream connection for this tools/call closed before the response completed",
-      );
-      expect(events[0].error.message).not.toContain("operator process");
-      expect(events[0]).toMatchObject({
-        jsonrpc: "2.0",
-        id: 7,
-        error: {
-          code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
-          data: {
-            kind: "upstream_died_mid_stream",
-            forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+  it("SUBJECT: upstream SSE closure at an event boundary answers the pending id with a JSON-RPC error, records rejection, and ends promptly", async () => {
+    const traceInfo = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await withLedger(async (readRecords) => {
+        const proxy = await proxyFor(sseUpstream("die-at-boundary"));
+        // Before the fix this stayed open for the whole budget.
+        const r = await callTool(port(proxy), 1_500);
+        expect(r.outcome).toBe("end");
+        const events = r.body
+          .split("\n")
+          .filter((l) => l.startsWith("data: "))
+          .map((l) => JSON.parse(l.slice("data: ".length)));
+        expect(events).toHaveLength(1);
+        expect(events[0].error.message).toContain(
+          "upstream connection for this tools/call closed before the response completed",
+        );
+        expect(events[0].error.message).not.toContain("operator process");
+        expect(events[0]).toMatchObject({
+          jsonrpc: "2.0",
+          id: 7,
+          error: {
+            code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
+            data: {
+              kind: "upstream_died_mid_stream",
+              forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+            },
           },
-        },
+        });
+        const rec = readRecords().find((x) => x.kind === "upstream_died_mid_stream");
+        expect(rec).toMatchObject({
+          status: 200,
+          clientResolution: "jsonrpc_error_events",
+          forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+        });
+        expect(rec?.traceId).toBe(events[0].error.data.traceId);
+
+        const traceLine = traceInfo.mock.calls
+          .map(([line]) => String(line))
+          .find((line) => line.includes('"stage":"proxy_response_finished"'));
+        expect(traceLine).toBeDefined();
+        if (!traceLine) throw new Error("proxy response-finish trace was not emitted");
+        const traceEvent = JSON.parse(
+          traceLine.slice("[mcp-request-trace] ".length),
+        ) as Record<string, unknown>;
+        expect(traceEvent).toMatchObject({
+          traceId: events[0].error.data.traceId,
+          toolName: "tools/call",
+          stage: "proxy_response_finished",
+          outcome: "rejected",
+          httpStatus: 200,
+        });
       });
-      const rec = readRecords().find((x) => x.kind === "upstream_died_mid_stream");
-      expect(rec).toMatchObject({
-        status: 200,
-        clientResolution: "jsonrpc_error_events",
-        forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
-      });
-      expect(rec?.traceId).toBe(events[0].error.data.traceId);
-    });
+    } finally {
+      traceInfo.mockRestore();
+    }
   }, 10_000);
 
   it("SUBJECT: upstream SSE closure mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {

@@ -286,7 +286,19 @@ describe('<AgentsRunningPill>', () => {
     expect(H.queryOpts).toMatchObject({
       queryName: 'advRoster.list',
       pollIntervalMs: 5_000,
+      args: { workspaceId: null, endedLimit: 50, view: 'header' },
     });
+  });
+
+  it('loads the full roster when opened and returns to the compact badge read when closed', () => {
+    const view = render(<Pill />);
+    expect(H.queryOpts?.args).toMatchObject({ view: 'header' });
+    nuqs.open = true;
+    view.rerender(<Pill />);
+    expect(H.queryOpts?.args).toEqual({ workspaceId: null, endedLimit: 50 });
+    nuqs.open = false;
+    view.rerender(<Pill />);
+    expect(H.queryOpts?.args).toMatchObject({ view: 'header' });
   });
 
   // [owner 2026-09-15] "if there are no agents running the pill disappears

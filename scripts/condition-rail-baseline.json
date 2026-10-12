@@ -14,7 +14,6 @@
     "bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
@@ -33,9 +32,7 @@
     "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|claimWatchdogFire|1",
     "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1",
-    "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1",
-    "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|1",
-    "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|2"
+    "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1"
   ],
   "amendments": [
     {

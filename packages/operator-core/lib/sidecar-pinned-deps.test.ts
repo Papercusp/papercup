@@ -78,9 +78,10 @@ function codeOnly(src: string): string {
  * the pure lane shares one fork across thousands of files — an unbounded hang here wedges
  * all of them until the batch watchdog fires.
  */
-function runLib(args: string[], env?: NodeJS.ProcessEnv): { code: number; out: string; err: string } {
+function runLib(args: string[], env?: NodeJS.ProcessEnv, cwd?: string): { code: number; out: string; err: string } {
   const r = spawnSync('bash', [HELPER_PATH, ...args], {
     encoding: 'utf8',
+    cwd,
     env: env ? { ...process.env, ...env } : process.env,
     timeout: 60_000,
     killSignal: 'SIGKILL',
@@ -230,18 +231,85 @@ process.exit(result.status ?? 1);`);
   });
 
   describe('papercusp_pinned_deps_snapshot — the floor the overlay stands on', () => {
+    it('preserves hardlink identity when the donor is given as a relative path', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const source = join(donor, 'node_modules/dep/index.js');
+      write(source, 'package');
+      const r = runLib(['snapshot', 'donor', snapshot], undefined, t);
+      expect(r.code, r.err).toBe(0);
+      expect(statSync(join(snapshot, 'node_modules/dep/index.js')).ino).toBe(statSync(source).ino);
+    });
+
+    it.each(['completed', 'staging'])('removes disposable caches from a retained %s copy', retained => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      expect(runLib(['snapshot', donor, snapshot, 'copy']).code).toBe(0);
+      const retainedTree = join(snapshot, retained === 'completed' ? 'node_modules' : 'node_modules.pinned-deps-tmp');
+      if (retained === 'staging') {
+        write(join(retainedTree, 'dep/index.js'), 'package');
+        write(join(donor, 'node_modules/dep/index.js'), 'updated package');
+      }
+      const directories = [retainedTree, join(retainedTree, 'dep')];
+      const originalTimes = directories.map(path => statSync(path));
+      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+        write(join(retainedTree, cache, 'stale.js'), 'stale cache');
+        write(join(retainedTree, 'dep', cache, 'stale.js'), 'stale cache');
+      }
+      // A completed copy must reject cache-only residue even when ordinary
+      // package metadata matches; directory timestamp drift must not mask it.
+      directories.forEach((path, index) => utimesSync(path, originalTimes[index].atime, originalTimes[index].mtime));
+      const r = runLib(['snapshot', donor, snapshot, 'copy']);
+      expect(r.code, r.err).toBe(0);
+      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe(
+        retained === 'staging' ? 'updated package' : 'package',
+      );
+    });
+
+    it.each(['hardlink', 'copy'])('excludes mutable tool caches from %s snapshots', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      write(join(donor, 'node_modules/vite/index.js'), 'real package');
+      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      for (const cache of caches) {
+        write(join(donor, 'node_modules', cache, 'changing.js'), 'temporary');
+        write(join(donor, 'node_modules/dep', cache, 'changing.js'), 'temporary');
+      }
+      const r = runLib(['snapshot', donor, snapshot, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+      expect(readFileSync(join(snapshot, 'node_modules/vite/index.js'), 'utf8')).toBe('real package');
+      for (const cache of caches) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+    });
+
+    it('does not validate disposable cache links as package dependencies', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      mkdirSync(join(donor, 'node_modules/.vite-temp'));
+      symlinkSync('already-removed.mjs', join(donor, 'node_modules/.vite-temp/module.mjs'));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code, r.err).toBe(0);
+      expect(existsSync(join(snapshot, 'node_modules/.vite-temp'))).toBe(false);
+    });
+
     it('preserves the failed copy diagnostic and refuses both fresh and stale success receipts', () => {
       const t = fixture();
       const donor = join(t, 'donor');
       const snapshot = join(t, 'snapshot');
       write(join(donor, 'node_modules', 'dep', 'index.js'), 'donor');
       write(join(snapshot, '.papercusp-pinned-deps'), 'stale success');
-      const shim = join(t, 'bin', 'cp');
-      write(shim, '#!/usr/bin/env bash\necho "cp: fixture hardlink path: Permission denied" >&2\nexit 17\n');
+      const shim = join(t, 'bin', 'rsync');
+      write(shim, '#!/usr/bin/env bash\necho "rsync: fixture hardlink path: Permission denied" >&2\nexit 17\n');
       chmodSync(shim, 0o755);
       const result = runLib(['snapshot', donor, snapshot], { PATH: `${dirname(shim)}:${process.env.PATH}` });
       expect(result.code).toBe(1);
-      expect(result.err).toContain('cp: fixture hardlink path: Permission denied');
+      expect(result.err).toContain('rsync: fixture hardlink path: Permission denied');
       expect(result.err).toContain('FAILED to snapshot node_modules (exit=17)');
       expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
       expect(existsSync(join(snapshot, 'node_modules'))).toBe(false);

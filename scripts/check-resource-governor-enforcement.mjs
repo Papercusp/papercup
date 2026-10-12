@@ -1049,6 +1049,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for packages/operator-core/lib/system-health/compute.ts: this system-health probe/run is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
   },
   {
+    path: "packages/operator-core/lib/system-health/rtk-liveness.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass for packages/operator-core/lib/system-health/rtk-liveness.ts: one synchronous `rtk --version` probe per hourly installed-hook-drift sweep (WI-6554700010009291), capped at a 5-second timeout and awaited in-line; it starts no resident work and runs no user command.",
+  },
+  {
     path: "packages/operator-core/lib/system-health/desktop-perf-scheduled-run.ts",
     code: "resource-start-outside-admission",
     disposition: "upstream",

@@ -73,6 +73,60 @@ const iso = toIso;
  * does not publish them in MCP `outputSchema`, so typed callers cannot discover
  * them and guidance can silently drift away from the registered contract.
  */
+const testCaseResultSchema = z.object({
+  caseKey: z.string(),
+  occurrence: z.number().int().positive(),
+  status: z.enum(['pass', 'fail', 'skip']),
+  durationMs: z.number().int().nonnegative().nullable(),
+  errorTail: z.string().nullable(),
+});
+
+export type TestCaseResult = z.infer<typeof testCaseResultSchema>;
+
+type CaseSql = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * The per-case rows (migration 1478) of the given test_runs ids, in module order. A run
+ * with no case rows maps to null: the reporter did not record its cases (a run before
+ * 1478, a collection error, a pending case), which is unknown, never "zero cases".
+ * A ledger without the table answers 'not-migrated' for every run.
+ */
+export async function loadTestCaseResults(
+  sql: CaseSql,
+  testRunIds: readonly number[],
+): Promise<{ byRun: Map<number, TestCaseResult[]>; notMigrated: boolean }> {
+  const byRun = new Map<number, TestCaseResult[]>();
+  if (testRunIds.length === 0) return { byRun, notMigrated: false };
+  let rows: Array<{
+    test_run_id: string;
+    case_key: string;
+    occurrence: number;
+    status: TestCaseResult['status'];
+    duration_ms: number | null;
+    error_tail: string | null;
+  }>;
+  try {
+    rows = await sql`
+      SELECT test_run_id::text, case_key, occurrence, status, duration_ms, error_tail
+        FROM harness_shared.test_case_runs
+       WHERE test_run_id = ANY(${testRunIds.map(String)}::bigint[])
+       ORDER BY test_run_id, case_index`;
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === '42P01') return { byRun, notMigrated: true };
+    throw error;
+  }
+  for (const r of rows) {
+    const id = Number(r.test_run_id);
+    const list = byRun.get(id) ?? [];
+    list.push({
+      caseKey: r.case_key, occurrence: r.occurrence, status: r.status,
+      durationMs: r.duration_ms, errorTail: r.error_tail,
+    });
+    byRun.set(id, list);
+  }
+  return { byRun, notMigrated: false };
+}
+
 const testingRunResultSchema = z
   .object({
     id: z.number().int().positive(),
@@ -114,6 +168,8 @@ const testingRunResultSchema = z
     worktreeDirty: z.boolean(),
     isScratchConfig: z.boolean(),
     outputTailTruncated: z.boolean().optional(),
+    cases: z.array(testCaseResultSchema).nullable().optional(),
+    casesUnavailableReason: z.enum(['not-recorded', 'not-migrated']).optional(),
   })
   .passthrough();
 
@@ -467,6 +523,12 @@ export default defineTool({
         'Collapse to the most recent run per file. Defaults true, or false when `filePath` or `testRunIds` is given.',
       ),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
+    cases: z
+      .boolean()
+      .optional()
+      .describe(
+        'Attach each returned row\'s per-case results (harness_shared.test_case_runs): { caseKey (describe/it title path), occurrence, status, durationMs, errorTail }. Row listings only; ignored for rollups.',
+      ),
   }),
   result: z
     .object({
@@ -512,6 +574,7 @@ export default defineTool({
     rollup?: 'commit' | 'runGroup';
     latestPerFile?: boolean;
     limit?: number;
+    cases?: boolean;
   }) {
     const { sql } = getOrgPg();
     // Exact-ID lookups are evidence receipt reads: do not silently return only
@@ -719,6 +782,13 @@ export default defineTool({
     const sourceFilterHint = sourceOmissionHint(omittedBySourceFilter, args.source);
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    const caseResults = args.cases ? await loadTestCaseResults(sql, rows.map((r) => Number(r.id))) : null;
+    const casesFor = (id: number) => {
+      if (!caseResults) return {};
+      if (caseResults.notMigrated) return { cases: null, casesUnavailableReason: 'not-migrated' as const };
+      const list = caseResults.byRun.get(id);
+      return list ? { cases: list } : { cases: null, casesUnavailableReason: 'not-recorded' as const };
+    };
     return {
       data: {
         count: rows.length,
@@ -758,6 +828,7 @@ export default defineTool({
           saturationSuspect: isSaturationSuspect(r.loop_lag_p95_ms),
           worktreeDirty: r.worktree_dirty,
           isScratchConfig: r.is_scratch_config,
+          ...casesFor(Number(r.id)),
           };
         }),
       },

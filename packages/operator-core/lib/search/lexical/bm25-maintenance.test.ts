@@ -3,14 +3,38 @@
  * decision D-010): reading segment totals out of `bm25_summarize_index`, the live-bytes estimate the
  * bloat ratio divides by, and the report line.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+const dedicated = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ createDedicatedOrgPg: dedicated.create }));
 import {
   estimateBm25LiveBytes,
   formatBm25MaintenanceReport,
   orderBuildCandidates,
   parseBm25SegmentTotals,
+  runOrgBm25Maintenance,
   type Bm25MaintenanceReport,
 } from './bm25-maintenance';
+
+describe('production maintenance connection lifetime', () => {
+  it('uses a dedicated session-affine connection and closes it on an engine skip', async () => {
+    const sql = Object.assign(vi.fn().mockResolvedValue([{ corpus_index: null, outcome: 'skipped:library-not-preloaded' }]), {
+      end: vi.fn().mockResolvedValue(undefined),
+    });
+    dedicated.create.mockReturnValue({ sql });
+    expect((await runOrgBm25Maintenance()).engineSkipped).toBe('skipped:library-not-preloaded');
+    expect(dedicated.create).toHaveBeenLastCalledWith('bm25-maintenance', { max: 1, sessionAffinity: true });
+    expect(sql.end).toHaveBeenCalledWith({ timeout: 5 });
+  });
+
+  it('closes the dedicated client when the database step fails', async () => {
+    const sql = Object.assign(vi.fn().mockRejectedValue(new Error('ensure refused')), {
+      end: vi.fn().mockResolvedValue(undefined),
+    });
+    dedicated.create.mockReturnValue({ sql });
+    expect((await runOrgBm25Maintenance()).errors).toEqual(['ensure: ensure refused']);
+    expect(sql.end).toHaveBeenCalledOnce();
+  });
+});
 
 describe('orderBuildCandidates', () => {
   it('tries never-attempted builds before indexes whose earlier build died, so one failing index cannot starve the rest', () => {
@@ -135,9 +159,14 @@ describe('parseBm25SegmentTotals', () => {
 });
 
 describe('estimateBm25LiveBytes', () => {
-  it('scales segment pages by the alive share', () => {
+  it('scales data pages by the alive share and counts whole pages plus mandatory metadata', () => {
     const t = { segments: 6, pages: 740, docs: 31372, alive: 26143 };
-    expect(estimateBm25LiveBytes(t)).toBe(Math.round(740 * 8192 * (26143 / 31372)));
+    expect(estimateBm25LiveBytes(t)).toBe((Math.ceil(740 * (26143 / 31372)) + 2) * 8192);
+  });
+
+  it('keeps the fresh one-page segment floor and additional page-map blocks', () => {
+    expect(estimateBm25LiveBytes({ segments: 1, pages: 1, docs: 257, alive: 257 })).toBe(3 * 8192);
+    expect(estimateBm25LiveBytes({ segments: 1, pages: 2039, docs: 5000, alive: 5000 })).toBe(2042 * 8192);
   });
 
   it('is zero for an index with no docs', () => {

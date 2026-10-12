@@ -88,7 +88,6 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/release/staging-fix-proposal-cli.ts': na(
     'a CLI proposing a staging fix for owner review at normal importance; a proposal, not a failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts': migrate('P-014'),
 
   // ── log-only-fallback ─────────────────────────────────────────────────────────────────────
   'log-only-fallback|apps/operator/app/_components/voice/voice-mode.ts': na(
@@ -223,7 +222,6 @@ export const DISPOSITIONS = Object.freeze({
     'digest lane that summarizes the system watchdog’s persisted ticks for the scout digest; a reader of watchdog output, not a watchdog',
   ),
   'bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts': migrate('P-014'),

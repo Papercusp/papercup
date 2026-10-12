@@ -1200,6 +1200,46 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
   });
 
+  // WI-6554700010009426: on 2026-10-12 a mass-resume herd drove ~8,900 codex OAuth TTFB/transport
+  // failures while the codex admission window kept EXPANDING (it only ever heard 429s and successes),
+  // so the gateway kept admitting full-body re-uploads onto a saturated uplink for ~35 min. An admitted
+  // OAuth attempt that dies on the wire must contract the codex window; clean traffic must not.
+  it('an admitted codex OAuth transport failure CONTRACTS the codex admission window; clean traffic does not', async () => {
+    const cliAccounts = [
+      { accountId: 'oauth-a', home: await makeCodexHome('oauth-a') },
+      { accountId: 'oauth-b', home: await makeCodexHome('oauth-b') },
+    ];
+    let failNext = false;
+    const wire = `data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`;
+    const fetchImpl = vi.fn(async () => {
+      if (failNext) {
+        failNext = false;
+        throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } });
+      }
+      return new Response(wire, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async () => ({ text: 'unused', inputTokens: 1, outputTokens: 1 }),
+      codexOAuthProxy: true, fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const initial = gw.stats().codexAdmission.maxConcurrent;
+    const clean = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true });
+    expect(clean.status).toBe(200);
+    await clean.text();
+    expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
+    failNext = true;
+    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(gw.stats().egressFailsByAccount).not.toEqual({});
+    expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
+  });
+
   it('a streaming ChatGPT CLI bridge failover carries final route metadata in response.completed', async () => {
     const cliAccounts = [
       { accountId: 'chatgpt-a', home: '/tmp/chatgpt-a' },

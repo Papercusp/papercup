@@ -5269,6 +5269,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 }
               }
               // This is the proxy's flush boundary, not proof the remote client consumed the body.
+              let upstreamDiedMidStream = false;
               if (fwd.rpcMethods.includes("tools/call")) {
                 res.once("finish", () => {
                   const httpStatus = res.statusCode;
@@ -5278,7 +5279,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                     stage: "proxy_response_finished",
                     elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
                     outcome:
-                      httpStatus >= 200 && httpStatus < 300
+                      !upstreamDiedMidStream &&
+                      httpStatus >= 200 &&
+                      httpStatus < 300
                         ? "success"
                         : "rejected",
                     httpStatus,
@@ -5307,6 +5310,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               });
               ures.once("close", () => {
                 if (ures.complete || res.writableEnded || res.destroyed) return;
+                upstreamDiedMidStream = true;
                 const isSse = String(ures.headers["content-type"] ?? "")
                   .toLowerCase()
                   .includes("text/event-stream");

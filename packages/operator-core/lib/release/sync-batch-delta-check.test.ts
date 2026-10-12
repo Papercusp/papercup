@@ -13,6 +13,7 @@ import { parseConfirmOutput } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
   evaluateRadius,
+  grownWindowCommitCap,
   parseAffectedProbe,
   parseFailingFilesLine,
   parseSyncBatches,
@@ -531,5 +532,199 @@ describe('parseConfirmOutput (deps leg)', () => {
   it('matched=0 and an absent line are BOTH undetermined (null), never false', () => {
     expect(parseConfirmOutput('TEST_FILE_ROUTE_ERROR requested=1 matched=0\nTEST_FILE_RESULT requested=1 matched=0 status=failed\n')).toBeNull();
     expect(parseConfirmOutput('vitest never reached its terminal line\n')).toBeNull();
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-011. Measured 2026-10-12: the cursor sat on ONE
+// window for 24h (0 of ~291 ticks evaluated) because the affected leg ran first, hit
+// its 25-minute timeout, and the early return discarded the typecheck verdict; the
+// next tick re-ran the identical window into the identical timeout.
+describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion window shrink', () => {
+  const C1 = '1'.repeat(40);
+  const C2 = '2'.repeat(40);
+  const C3 = '3'.repeat(40);
+  const C4 = '4'.repeat(40);
+  const START = 'f'.repeat(40);
+  const TYPE_ERROR_FILE = 'packages/foo/src/c1.ts';
+  const fourCommitsNewestFirst = () => [
+    makeBatch({ sha: C4, paths: ['packages/foo/src/c4.ts'] }),
+    makeBatch({ sha: C3, paths: ['packages/foo/src/c3.ts'] }),
+    makeBatch({ sha: C2, paths: ['packages/foo/src/c2.ts'] }),
+    makeBatch({ sha: C1, paths: [TYPE_ERROR_FILE] }),
+  ];
+  const affectedTimeout = {
+    ok: false,
+    failing: null,
+    diagnostic: { outcome: 'timeout' as const, durationMs: 1_501_514, exitCode: null },
+  };
+
+  it('files a typecheck red BEFORE the affected leg runs, and keeps it when that leg times out', async () => {
+    const calls: string[] = [];
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => {
+          calls.push('tsc');
+          return { ok: false, failing: [TYPE_ERROR_FILE] };
+        },
+        runAffected: async () => {
+          calls.push('affected');
+          return affectedTimeout;
+        },
+        fileRed: async (f) => {
+          calls.push(`file:${f.conditionKey}`);
+          state.filed.push(f);
+          return { ok: true, id: 'WI-1' };
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+
+    const key = conditionKeyForRed(TYPE_ERROR_FILE);
+    expect(calls).toEqual(['tsc', `file:${key}`, 'affected']);
+    expect(res.filed.map((f) => f.file)).toEqual([TYPE_ERROR_FILE]);
+    expect(state.filed.map((f) => f.conditionKey)).toEqual([key]);
+    // Not measured ⇒ the cursor is held, but the typecheck red is HELD with it.
+    expect(res.status).toBe('skipped');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.updatedAtMs).toBe(1);
+    expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+  });
+
+  it('halves the window on an affected timeout, so the next tick judges an older, smaller prefix', async () => {
+    let affectedPaths: string[] = [];
+    let affectedResult: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = affectedTimeout;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runAffected: async (paths) => {
+          affectedPaths = [...paths];
+          return affectedResult;
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+
+    const first = await runSyncBatchDeltaCheck(deps);
+    expect(first.reason).toBe('affected-tests-budget-exhausted: window halved from 4 to 2 commit(s)');
+    expect(first.diagnostic).toBe('outcome=timeout durationMs=1501514 exitCode=unknown');
+    expect(affectedPaths).toHaveLength(4);
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+
+    // Still too slow at 2: halve again to 1.
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(affectedPaths).toHaveLength(2);
+    expect(new Set(affectedPaths)).toEqual(new Set([TYPE_ERROR_FILE, 'packages/foo/src/c2.ts']));
+    expect(second.reason).toBe('affected-tests-budget-exhausted: window halved from 2 to 1 commit(s)');
+    expect(state.cursor?.windowCommitCap).toBe(1);
+
+    // The smaller window measures: the cursor ADVANCES past the oldest commit only,
+    // and the learned cap grows back (1 -> 2) instead of resetting to the static 40.
+    affectedResult = { ok: true, failing: [] };
+    const third = await runSyncBatchDeltaCheck(deps);
+    expect(third.status).toBe('green');
+    expect(affectedPaths).toEqual([TYPE_ERROR_FILE]);
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+  });
+
+  it('explicitly skips a SINGLE commit that exhausts the affected budget and advances past it', async () => {
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C1,
+        listBatches: async () => [makeBatch({ sha: C1, paths: [TYPE_ERROR_FILE] })],
+        runAffected: async () => affectedTimeout,
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('leg-timeout');
+    expect(res.diagnostic).toBe('outcome=timeout durationMs=1501514 exitCode=unknown');
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.lastSkipReason).toContain('leg-timeout: commit 111111111111 explicitly skipped');
+    expect(state.cursor?.lastSkipReason).toContain('affected-tests leg exhausted its budget on this single commit');
+    expect(state.cursor?.windowCommitCap).toBe(1);
+    expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ evaluated: false, status: 'leg-timeout' });
+  });
+
+  it('a typecheck that exhausts its budget halves the window without spending the affected leg', async () => {
+    let affectedRuns = 0;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => ({
+          ok: false,
+          failing: [],
+          diagnostic: { outcome: 'timeout', durationMs: 600_000, exitCode: null },
+        }),
+        runAffected: async () => {
+          affectedRuns += 1;
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(affectedRuns).toBe(0);
+    expect(res.reason).toBe('lint-tsc-budget-exhausted: window halved from 4 to 2 commit(s)');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+  });
+
+  it('an undetermined affected run that did NOT exhaust its budget holds without shrinking the window', async () => {
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runAffected: async () => ({
+          ok: false,
+          failing: null,
+          diagnostic: { outcome: 'nonzero-exit', durationMs: 4_000, exitCode: 1 },
+        }),
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.reason).toBe('affected-run-missing-terminal-break-set');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBeUndefined();
+  });
+
+  it('a held typecheck red is not re-filed by the next tick that re-reports it', async () => {
+    let affectedResult: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = affectedTimeout;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => ({ ok: false, failing: [TYPE_ERROR_FILE] }),
+        runAffected: async () => affectedResult,
+        // Re-verification of a held red is undetermined here, so it stays held
+        // without a refresh; the point is that the new tsc report is not a NEW filing.
+        confirmOne: async () => null,
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    affectedResult = { ok: true, failing: [] };
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(second.status).toBe('green');
+    expect(state.filed).toHaveLength(1);
+    expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
+  });
+});
+
+describe('grownWindowCommitCap', () => {
+  it('doubles a learned cap after a measured run and drops it once back at the static cap', () => {
+    expect(grownWindowCommitCap(undefined, 40)).toBeUndefined();
+    expect(grownWindowCommitCap(1, 40)).toBe(2);
+    expect(grownWindowCommitCap(16, 40)).toBe(32);
+    expect(grownWindowCommitCap(20, 40)).toBeUndefined();
+    expect(grownWindowCommitCap(39, 40)).toBeUndefined();
   });
 });

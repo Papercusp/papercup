@@ -93,9 +93,12 @@ import {
 } from '@papercusp/tooldef-mcp';
 import {
   buildMcpSessionSurfaceTraceEvent,
+  createMcpRequestTraceExecutionContext,
   logMcpRequestTrace,
+  mcpRequestTraceOperationTimings,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
+  runWithMcpRequestTraceExecution,
   resolveMcpRequestTraceId,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
@@ -3908,6 +3911,7 @@ export function registerMcpHost(server: McpServer): void {
       // generated fallback for direct/native callers, then carry the same value
       // through request, dispatch and deadline evidence without logging args.
       const traceId = resolveMcpRequestTraceId(extra);
+      const traceExecution = createMcpRequestTraceExecutionContext();
       const trace = (
         stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
         details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
@@ -4816,18 +4820,22 @@ export function registerMcpHost(server: McpServer): void {
           postDispatchStartedAtMs: null,
           phaseTimingsMs: { resultDoor: null, advisory: null, advisoryFlagReads: 0 },
         };
-        const settlementPhaseTimings = () => ({
-          phaseTimingsMs: {
-            postDispatchToSettlement:
-              raced.postDispatchStartedAtMs === null
-                ? null
-                : Math.max(0, Date.now() - raced.postDispatchStartedAtMs),
-            resultDoor: raced.phaseTimingsMs.resultDoor,
-            advisory: raced.phaseTimingsMs.advisory,
-            advisoryFlagReads: raced.phaseTimingsMs.advisoryFlagReads,
-            ...(raced.phaseTimingsMs.scratchWrites ? { scratchWrites: raced.phaseTimingsMs.scratchWrites } : {}),
-          },
-        });
+        const settlementPhaseTimings = () => {
+          const operationTimings = mcpRequestTraceOperationTimings(traceExecution);
+          return {
+            phaseTimingsMs: {
+              postDispatchToSettlement:
+                raced.postDispatchStartedAtMs === null
+                  ? null
+                  : Math.max(0, Date.now() - raced.postDispatchStartedAtMs),
+              resultDoor: raced.phaseTimingsMs.resultDoor,
+              advisory: raced.phaseTimingsMs.advisory,
+              advisoryFlagReads: raced.phaseTimingsMs.advisoryFlagReads,
+              ...(raced.phaseTimingsMs.scratchWrites ? { scratchWrites: raced.phaseTimingsMs.scratchWrites } : {}),
+              ...(operationTimings ? { operationTimings } : {}),
+            },
+          };
+        };
         const readAdvisoryFlag = async (flag: Parameters<typeof getFlag>[0]): Promise<boolean> => {
           const startedAtMs = Date.now();
           try {
@@ -5576,7 +5584,9 @@ export function registerMcpHost(server: McpServer): void {
           try {
             // Result projection/door remain on the receiving transport, but
             // the whole wrapper/handler and its transaction run on the owner.
-            if (nativeMcpToolAddress(dispatchSpawnCtx)) return await runDispatch(baseCtx);
+            if (nativeMcpToolAddress(dispatchSpawnCtx)) {
+              return await runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(baseCtx));
+            }
             return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
               // The outer race may have answered while acquisition or
               // principal synthesis was still in flight. Do not enter the
@@ -5592,7 +5602,7 @@ export function registerMcpHost(server: McpServer): void {
               dispatchStarted = true;
               raced.innerDispatchStarted = true;
               trace('inner_dispatch_started', { deadlineMs });
-              return runDispatch(ctx);
+              return runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(ctx));
             });
           } catch (error) {
             // An uncertain remote attempt can already own the invocation row.

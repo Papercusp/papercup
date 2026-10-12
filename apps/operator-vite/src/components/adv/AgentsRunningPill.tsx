@@ -199,7 +199,7 @@ export default function AgentsRunningPill() {
   const [open, setOpen] = useQueryState('agentsRoster', parseAsBoolean.withDefault(false));
   const { data } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: advRosterArgs(null),
+    args: open ? advRosterArgs(null) : { ...advRosterArgs(null), view: 'header' },
     // `transcriptFresh` is derived from transcript mtimes rather than a database row,
     // so no SSE invalidation can announce either edge of its 10s activity
     // window. Keep this always-mounted header observer on a small explicit
@@ -264,6 +264,7 @@ export default function AgentsRunningPill() {
      a session by its unique id is not browsing — a human holding an id wants
      that session whatever state it is in. */
   const instantIdMatches = useMemo<SearchSessionResult[]>(() => {
+    if (!open) return [];
     const token = q.length >= 2 ? parseSessionIdQuery(q) : null;
     if (!token) return [];
     const out: SearchSessionResult[] = [];
@@ -280,7 +281,7 @@ export default function AgentsRunningPill() {
       });
     }
     return out;
-  }, [data, q]);
+  }, [data, q, open]);
 
   // Always mounted, even at zero ([owner 2026-09-15] "it should instead say
   // 0 agents running"): an absent pill read as "the feature is missing" during
