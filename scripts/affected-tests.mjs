@@ -112,6 +112,7 @@ import {
   reuseCandidates,
   reuseSoundnessAlarms,
   reuseRunnerIdentity,
+  judgedTreeProofFormat,
   recordGateReuseDecision,
   selectReusablePasses,
   testReuseAuditRate,
@@ -5878,6 +5879,9 @@ async function armTestPassReuse(taskList) {
   const maxAgeMs = testReuseMaxAgeMs();
   const auditRate = testReuseAuditRate();
   const nowMs = Date.now();
+  // WI-6554700010008741: proof identity must match the recorder in this judged checkout, which
+  // may be older than the selector carried by the gate runner.
+  const judgedProofFormat = judgedTreeProofFormat(ROOT);
   const loaded = new Map();
   /** @type {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} */
   const reuseTotals = { tasks: 0, summaries: [], savedMs: 0, unmeasured: 0 };
@@ -5942,6 +5946,7 @@ async function armTestPassReuse(taskList) {
         runnerIdentity,
         nowMs,
         maxAgeMs,
+        ...(judgedProofFormat == null ? {} : { proofFormat: judgedProofFormat }),
         auditRate,
         inertGlobalChange,
         testConfigMainProcess,
