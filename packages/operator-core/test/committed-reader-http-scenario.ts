@@ -7,16 +7,65 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import type { Server, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { createWorkItem } from '../lib/work-items';
+import { issuesScopeWorkspace } from '../lib/issues-engineer';
+import { activeWorkspaceId } from '../lib/workspace-registry';
+import { systemDistinctId } from '../lib/flag-distinct-id';
+import { potExistence, resolveWorkItemPot } from '../lib/pot-membership';
 import { readProcessIdentity } from '../lib/process-identity';
+import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { setSpecClause } from '../lib/agent-tools/plans/spec-clauses-store';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, bindSpecEvidence } from '../lib/agent-tools/plans/spec-evidence-store';
 
 type Options = { workspace: string; harness: string; base: string;
   headers: Record<string, string>; evidenceDir: string };
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+/** Measure the original setup before a bundle, sidecar, or HTTP experiment. */
+export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' | 'harness' | 'evidenceDir'>) {
+  assert.match(o.workspace, /^test-runtime-/);
+  const { sql } = getOrgPg();
+  const scope = await resolvePlanScope({ harnessSlug: o.harness });
+  const flags = {
+    potMembership: await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system'),
+    issuesPerWorkspace: await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId()),
+  };
+  const item = await createWorkItem({ kind: 'task', title: 'Private committed reader setup diagnostic',
+    harness: o.workspace, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
+  const rows = await sql`SELECT workspace_id, harness_slug, feature_id, item_kind
+    FROM harness_shared.work_items WHERE feature_id = ${item.id}`;
+  const visible = await withWorkspace(scope.workspaceId, tx => tx`
+    SELECT workspace_id, harness_slug, feature_id FROM harness_shared.work_items
+    WHERE feature_id = ${item.id}`);
+  const exact = await withWorkspace(scope.workspaceId, tx => tx`
+    SELECT feature_id FROM harness_shared.work_items
+    WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+      AND feature_id = ${item.id}`);
+  const pot = await potExistence(o.workspace, o.workspace);
+  const resolvedPot = await resolveWorkItemPot({ rawSlug: o.workspace, workspaceId: issuesScopeWorkspace() });
+  const registry = await loadHarnessRegistry(o.workspace, { fresh: true });
+  const measurement = { workspace: o.workspace, harness: o.harness, itemId: item.id,
+    scope, activeWorkspace: activeWorkspaceId(), issuesWorkspace: issuesScopeWorkspace(), flags,
+    pot, resolvedPot, registry: registry.projects.map(({ slug, hive_slug, harness_kind }) => ({ slug, hive_slug, harness_kind })),
+    rows, visible, exact };
+  // Persist before the binding or any corrective setup, so a failure retains the distinguishing evidence.
+  await writeFile(join(o.evidenceDir, 'committed-reader-setup.json'), JSON.stringify(measurement, null, 2), { flag: 'wx' });
+  const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader-setup:S-001',
+    planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
+    behavior: 'Private fixture work-items and evidence bindings share one resolved Pot scope.',
+    lifecycleStatus: 'draft', mutationRequired: false, actorId: 'private-http-fixture' });
+  assert.equal(clause.status, 'created', JSON.stringify(clause));
+  const binding = await bindSpecEvidence({ harnessSlug: o.harness, workItemId: item.id,
+    specId: 'private-reader-setup:S-001', evidenceKind: 'manual', evidenceRef: 'setup-only',
+    sourceFingerprint: sha256('setup-only'), actorId: 'private-http-fixture' });
+  const receipt = { ...measurement, binding, bundleStarted: false, httpStarted: false, sidecarStarted: false };
+  await writeFile(join(o.evidenceDir, 'committed-reader-setup-receipt.json'), JSON.stringify(receipt, null, 2), { flag: 'wx' });
+  return receipt;
+}
 
 export async function prepareCommittedReaderScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
