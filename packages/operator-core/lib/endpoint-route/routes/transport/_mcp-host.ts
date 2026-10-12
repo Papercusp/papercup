@@ -4984,7 +4984,7 @@ export function registerMcpHost(server: McpServer): void {
                   onScratchWritePending: (timeout) => backfillResultDoorOutputRef({
                     workspaceId: dispatchSpawnCtx.workspaceId,
                     spawnId: dispatchSpawnCtx.spawnId,
-                    toolName,
+                    toolName: nestedTargetToolName ?? toolName,
                     runId: dispatchSpawnCtx.runId ?? null,
                     mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                     outputRef: timeout.spillUri,
@@ -5010,7 +5010,7 @@ export function registerMcpHost(server: McpServer): void {
                     return backfillResultDoorOutputRef({
                       workspaceId: dispatchSpawnCtx.workspaceId,
                       spawnId: dispatchSpawnCtx.spawnId,
-                      toolName,
+                      toolName: nestedTargetToolName ?? toolName,
                       runId: dispatchSpawnCtx.runId ?? null,
                       mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                       outputRef: settlement.spillUri,
@@ -5203,7 +5203,7 @@ export function registerMcpHost(server: McpServer): void {
               void backfillResultDoorOutputRef({
                 workspaceId: dispatchSpawnCtx.workspaceId,
                 spawnId: dispatchSpawnCtx.spawnId,
-                toolName,
+                toolName: nestedTargetToolName ?? toolName,
                 runId: dispatchSpawnCtx.runId ?? null,
                 mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                 outputRef: doorMeta.spillUri ?? null,
