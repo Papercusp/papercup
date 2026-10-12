@@ -399,7 +399,7 @@ const learningStoreCases: RailMigrationCase[] = [{
     const { expect } = await import('vitest');
     const path = 'packages/operator-core/lib/learning/pot-gate/store.ts';
     const observations: ScoutReadObservation[] = [];
-    let errorCode: string | null = '42P01', rolledBack = false, savepoints = 0, warnings = 0;
+    let errorCode: string | null = '42P01', rolledBack = false, savepoints = 0;
     const sql = Object.assign(async () => {
       if (errorCode) throw Object.assign(new Error('scope read failed'), { code: errorCode });
       return [];
@@ -410,7 +410,6 @@ const learningStoreCases: RailMigrationCase[] = [{
     const helper = execute(original(path, 'async function failOpenOnMissingRelation', 'function'), {
       warnedMissingRelation: false,
       isMissingRelation: execute(original(path, 'function isMissingRelation', 'function'), { UNDEFINED_TABLE: '42P01' }, 'isMissingRelation'),
-      console: { warn: () => { warnings++; } },
       observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
         expect(mechanism).toBe('scout-state-read'); expect(options.workspaceId).toBe('fixture');
         if (!row.applied) expect(rolledBack).toBe(true);
@@ -425,7 +424,7 @@ const learningStoreCases: RailMigrationCase[] = [{
       expect(await read(sql, { workspaceId: 'fixture', potSlug: 'pot' })).toEqual(index === 0 ? null : []);
       expect(observations.at(-1)?.scope).toBe(`store:${['getPotLearningScope', 'listPotLearningScope', 'disabledPotSlugs'][index]}`);
     }
-    expect(warnings).toBe(1); // Warning throttling must not throttle observations.
+    expect(observations).toHaveLength(3); // The warn-once branch must not throttle observations.
     errorCode = null; rolledBack = false;
     for (const [index, read] of readers.entries()) {
       expect(await read(sql, { workspaceId: 'fixture', potSlug: 'pot' })).toEqual(index === 0 ? null : []);
@@ -1299,6 +1298,8 @@ RAIL_MIGRATION_CASES.push({
     const producer = await import('../release/idle-repair-queue-actuator');
     const actions = await import('../harness/routines/release-actions');
     const ownership = await import('../coord/gate-ownership');
+    const checkpoint = await import('../release-checkpoint-launch');
+    const deploy = await import('../release-deploy-launch');
     const queue = { schemaVersion: 1, phase: 'awaiting-fixer', candidate: 'a'.repeat(40),
       base: 'b'.repeat(40), repairHead: 'c'.repeat(40), affectedTestProofGroup: 'coverage', attempts: 0,
       openedAtMs: 1, updatedAtMs: 1, fixerSpawnId: null, failingTests: ['red.test.ts'], signature: [] } as const;
@@ -1322,10 +1323,13 @@ RAIL_MIGRATION_CASES.push({
     const read = vi.spyOn(actions, 'readFrozenCandidateRepairQueueState').mockResolvedValue({ status: 'value', queue } as never);
     const mocks = [read, vi.spyOn(actions, 'dispatchReleaseFixer').mockResolvedValue(null),
       vi.spyOn(ownership, 'readGateOwnership').mockResolvedValue(null as never),
+      vi.spyOn(deploy, 'integrationRoot').mockReturnValue('/coverage-isolated'),
+      vi.spyOn(checkpoint, 'isCheckpointRunLockHeldCheap').mockReturnValue({ held: false, elapsedSec: null }),
       vi.spyOn(console, 'warn').mockImplementation(() => {})];
     try {
       const opts = { installSlug: 'coverage', workspaceId: 'coverage', nowMs: () => 10 * 60 * 60_000, alarm };
       await producer.checkIdleRepairQueue(sql, opts);
+      expect(checkpoint.isCheckpointRunLockHeldCheap).toHaveBeenCalledWith('/coverage-isolated');
       expect(openedKeys).toEqual(['alarm:idle-repair-queue:coverage']);
       const before = structuredClone(episode);
       read.mockResolvedValue({ status: 'unknown', queue: null } as never);
