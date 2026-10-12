@@ -58,6 +58,7 @@ import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, Dol
 import { Select } from '@/app/harness/Select';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { StatusPill } from '../ui';
+import { frontierSweVersionLabel } from '@papercusp/operator-core/lib/external-bench/frontier-swe-version';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
 import {
@@ -1281,6 +1282,12 @@ function RunStatusPill({ status }: { status: string | undefined }) {
   return <StatusPill tone={runStatusTone(status)} label={label} />;
 }
 
+/** P-016 / FSWE-P016-BADGE: the FrontierSWE corpus version a run's task set loads, so a v2 run never reads as v1. */
+export function FrontierSweVersionBadge({ taskSetId }: { taskSetId: string | null | undefined }) {
+  const label = frontierSweVersionLabel(taskSetId);
+  return label ? <StatusPill tone="neutral" label={label} /> : null;
+}
+
 function fmtShortDate(value: string | undefined): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -1790,7 +1797,7 @@ function PreservedRunsView() {
             triggerStyle={{ maxWidth: 300 }}
             options={filteredRuns.map((r) => ({
               value: r.id,
-              label: `${r.id} · ${armLabel(r.arm)} · ${r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—'} · ${r.status}`,
+              label: [r.id, armLabel(r.arm), frontierSweVersionLabel(r.taskSetId), r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—', r.status].filter(Boolean).join(' · '),
             }))}
           />
         </label>
@@ -1810,6 +1817,7 @@ function PreservedRunsView() {
               <div className="pc-preserved__meta" aria-label="Selected run metadata">
                 <span>{armLabel(s.arm)}</span>
                 <span>{detail.taskSetId || 'task set unknown'}</span>
+                <FrontierSweVersionBadge taskSetId={detail.taskSetId || selRun?.taskSetId} />
                 <span>{selRun?.source || detail.source || 'store'}</span>
                 <span>{fmtShortDate(selRun?.createdAt || detail.run.startedAt)}</span>
               </div>

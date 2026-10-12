@@ -42,7 +42,7 @@ const H = vi.hoisted(() => ({
   mutatePaths: [] as string[],
   queryCalls: [] as Array<{ queryName: string; args: unknown }>,
 }));
-const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
+const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
@@ -106,7 +106,7 @@ vi.mock('@/app/harness/Select', () => ({
   ),
 }));
 
-import AdvEvalsTab, { toFrontierPoints, toComparePerTask, normalizeEvalReport } from './AdvEvalsTab';
+import AdvEvalsTab, { toFrontierPoints, toComparePerTask, normalizeEvalReport, FrontierSweVersionBadge } from './AdvEvalsTab';
 
 beforeEach(() => {
   nuqsState.evalView = 'external';
@@ -503,5 +503,39 @@ describe('<AdvEvalsTab> with suites loaded', () => {
     expect(screen.getByTestId('viz-compare-baseline-c-bestofn')).toBeTruthy();
     // The B-native Compare got the one comparable task pivoted in.
     expect(screen.getByTestId('viz-compare-baseline-b-native').getAttribute('data-n')).toBe('1');
+  });
+});
+
+describe('FSWE-P016-BADGE: FrontierSWE version badge on the Evaluation run list', () => {
+  const run = (id: string, taskSetId: string) => ({
+    id, arm: 'p', taskSetId, status: 'graded', source: 'store', resolvedPct: 0.5, costUsd: 1, createdAt: '2026-10-12T00:00:00Z',
+  });
+
+  it('labels every v2 run in the run list "FrontierSWE v2", never v1 or unversioned', () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = 'run-v2a';
+    H.results['evals.benchRuns'] = {
+      ...blank(),
+      data: [run('run-v2a', 'frontier-swe-v2'), run('run-v2b', 'frontier-swe-v2-cpu'), run('run-v1', 'frontier-swe'), run('run-other', 'swe-bench-pro')],
+    };
+    render(<AdvEvalsTab />);
+    const select = screen.getByLabelText('Preserved run') as HTMLSelectElement;
+    const label = (id: string) => Array.from(select.options).find(o => o.value === id)!.textContent ?? '';
+    expect(label('run-v2a')).toContain('FrontierSWE v2');
+    expect(label('run-v2b')).toContain('FrontierSWE v2');
+    expect(label('run-v1')).toContain('FrontierSWE v1');
+    expect(label('run-v1')).not.toContain('v2');
+    expect(label('run-other')).not.toContain('FrontierSWE');
+  });
+
+  it('renders the badge for FrontierSWE task sets and nothing for any other set', () => {
+    const view = render(<FrontierSweVersionBadge taskSetId="frontier-swe-v2-pilot" />);
+    expect(view.container.textContent).toContain('FrontierSWE v2');
+    view.rerender(<FrontierSweVersionBadge taskSetId="frontier-swe-cpu" />);
+    expect(view.container.textContent).toContain('FrontierSWE v1');
+    view.rerender(<FrontierSweVersionBadge taskSetId="swe-bench-pro" />);
+    expect(view.container.textContent).toBe('');
+    view.rerender(<FrontierSweVersionBadge taskSetId={undefined} />);
+    expect(view.container.textContent).toBe('');
   });
 });
