@@ -141,6 +141,7 @@ type PortalRosterBrowserInput = {
   support?: boolean;
   cupboard?: boolean;
   dev?: boolean;
+  devSeed?: { selectedMarker: string; neighborMarker: string; foreignMarker: string; neighborWorkspace: string };
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -1835,6 +1836,87 @@ async function runPrivateOverviewPage(page: Page, context: BrowserContext, input
   return receipt;
 }
 
+async function runPrivateDevPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const seed = input.devSeed!;
+  url.searchParams.set('tab', 'api'); url.searchParams.set('devWs', input.workspace); url.searchParams.set('rail', 'closed');
+  url.searchParams.set('ctxWs', input.workspace); url.searchParams.set('ctxH', 'papercusp');
+  url.searchParams.set('ctxRole', 'operator'); url.searchParams.set('ctxRun', 'private-dev'); url.searchParams.set('ctxSpawn', 'private-dev');
+  const reads: Array<{ url: string; status: number; args: unknown; body: string }> = [];
+  const denials: Array<{ status: number; body: string }> = [];
+  const writes: string[] = [];
+  const captures = new Set<Promise<void>>();
+  let denyNext = false;
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/') && request.method() !== 'GET'
+      && new URL(request.url()).pathname !== '/api/agent-tools/dev/activity') writes.push(request.url());
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname !== '/api/agent-tools/dev/activity') return;
+    const capture = response.text().then(body => {
+      reads.push({ url: response.url(), status: response.status(), args: response.request().postDataJSON(), body });
+      writeFileSync(join(input.evidence, 'portal-dev-reads.json'), JSON.stringify(reads, null, 2));
+    });
+    captures.add(capture); void capture.catch(() => {});
+    void capture.then(() => captures.delete(capture), () => captures.delete(capture));
+  });
+  await page.route('**/api/agent-tools/dev/activity?*', async route => {
+    if (!denyNext) return route.continue();
+    denyNext = false;
+    const upstream = await context.request.post(route.request().url(), {
+      headers: { 'content-type': 'application/json', host: 'foreign-dev.invalid' }, data: route.request().postData()! });
+    const body = await upstream.text();
+    denials.push({ status: upstream.status(), body });
+    writeFileSync(join(input.evidence, 'portal-dev-denials.json'), JSON.stringify(denials, null, 2));
+    verifyPrivateHudHostDenial(upstream.status(), body);
+    await route.fulfill({ response: upstream, body });
+  });
+  const filter = () => page.getByPlaceholder('Filter tools…', { exact: true });
+  const ids = () => page.locator('.pc-dev-form-row').filter({ hasText: 'workspaceIds' }).locator('textarea');
+  const limit = () => page.locator('.pc-dev-form-row').filter({ hasText: 'limit' }).locator('input');
+  const invoke = async () => { await page.getByRole('button', { name: 'Invoke', exact: true }).focus(); await page.keyboard.press('Enter'); };
+  const fill = async (scope: string) => { await ids().fill(JSON.stringify([scope])); await limit().fill('100'); };
+  const assertSelected = async (marker: string, excluded: string[]) => {
+    await page.waitForFunction(value => document.querySelector('.pc-dev-api-response')?.textContent?.includes(value), marker);
+    const text = await page.locator('.pc-dev-api-response').innerText();
+    for (const value of excluded) assert.equal(text.includes(value), false, 'activity UI must exclude ' + value);
+    assert.equal(await page.getByText('HTTP 403', { exact: true }).count(), 0);
+  };
+  const assertScope = () => {
+    for (const [key, value] of Object.entries({ app: 'dev', ws: input.workspace, tab: 'api', devWs: input.workspace,
+      rail: 'closed', q: 'dev:activity', tool: 'dev:activity', ctxWs: input.workspace, ctxH: 'papercusp',
+      ctxRole: 'operator', ctxRun: 'private-dev', ctxSpawn: 'private-dev' }))
+      assert.equal(new URL(page.url()).searchParams.get(key), value, 'Dev must preserve ' + key);
+  };
+  await page.goto(url.href); await filter().fill('dev:activity');
+  await page.locator('.pc-dev-api-tool').filter({ hasText: 'dev:activity' }).focus(); await page.keyboard.press('Enter');
+  await page.getByRole('heading', { name: 'dev:activity', exact: true }).waitFor();
+  assert.equal(await page.locator('.pc-dev-right').count(), 0);
+  await fill(input.workspace); await invoke(); await assertSelected(seed.selectedMarker, [seed.neighborMarker, seed.foreignMarker]);
+  await fill(seed.neighborWorkspace); await invoke(); await assertSelected(seed.neighborMarker, [seed.selectedMarker, seed.foreignMarker]);
+  await fill(input.workspace); denyNext = true; await invoke();
+  await page.getByText('HTTP 403', { exact: true }).waitFor();
+  assert.match(await page.locator('.pc-dev-api-response').innerText(), /host_not_allowed/);
+  assert.equal((await page.locator('.pc-dev-api-response').innerText()).includes(seed.neighborMarker), false);
+  await invoke(); await assertSelected(seed.selectedMarker, [seed.neighborMarker, seed.foreignMarker]); assertScope();
+  await page.reload(); await page.getByRole('heading', { name: 'dev:activity', exact: true }).waitFor(); assertScope();
+  assert.equal(await page.locator('.pc-dev-api-response').count(), 0, 'reload must not replay a diagnostic invocation');
+  await fill(input.workspace); denyNext = true; await invoke(); await page.getByText('HTTP 403', { exact: true }).waitFor();
+  await invoke(); await assertSelected(seed.selectedMarker, [seed.neighborMarker, seed.foreignMarker]);
+  await Promise.all(captures);
+  assert.deepEqual(reads.map(read => read.status), [200, 200, 403, 200, 403, 200]);
+  for (const [index, read] of reads.entries()) {
+    assert.deepEqual(read.args, { workspaceIds: [index === 1 ? seed.neighborWorkspace : input.workspace], limit: 100 });
+    assert.equal(new URL(read.url).searchParams.get('workspace'), input.workspace);
+    assert.equal(new URL(read.url).searchParams.get('role'), 'operator');
+  }
+  assert.deepEqual(writes, []); assert.equal(denials.length, 2);
+  await page.screenshot({ path: join(input.evidence, 'portal-dev-verified.png'), fullPage: true });
+  return { workspace: input.workspace, authMethod: 'private-native-diagnostic-with-cookie', scopedActivity: true,
+    neighborDistinct: true, keyboardTool: true, schemaInvocation: true, deepLinkReload: true, shellQueryPreserved: true,
+    warmHostDenialRecovery: true, coldHostDenialRecovery: true, writes,
+    scope: 'Actual Dev route and public diagnostic HTTP projection on disposable PG; workspaceIds is a query filter. Host guard is measured; cookie tenant authorization, hosted/provider proof and complete Dev tab coverage remain unverified' };
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
@@ -1896,7 +1978,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.workflows ? '/?app=workflows&q=retained-shell-search'
+    const url = new URL(input.dev ? '/?app=dev&q=retained-shell-search'
+      : input.workflows ? '/?app=workflows&q=retained-shell-search'
       : input.learning ? '/?app=learning&q=retained-shell-search'
       : input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
       : input.overview ? '/?app=overview&q=retained-shell-search'
@@ -1916,6 +1999,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.devSeed) {
+      const receipt = await runPrivateDevPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'actual Dev controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.gitSeed) {
       const receipt = await runPrivateGitPage(page, context, input.gitSeed, url, evidence);
       assert.deepEqual(pageErrors, [], 'actual Git dock, graph and detail must stay browser-safe');
