@@ -1,4 +1,4 @@
-/** Private request/response acceptance for the immutable gitlink inventory guard. */
+/** Private request/response acceptance for inventory and same-repository admission routing. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -38,6 +38,7 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   const evidenceDir = e.ADMISSION_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
+  const ordinary = e.ADMISSION_HTTP_CASE === 'ordinary';
   const sources = ['packages/operator-core/lib/agent-tools/release/repair-queue.ts',
     'packages/operator-core/lib/release/admission-jobs.ts',
     'packages/operator-core/lib/release/admission-offthread.ts',
@@ -62,6 +63,55 @@ async function main() {
     git(cwd, 'config', 'user.name', 'Private admission fixture');
   };
   init(fixture);
+  let servedRoot = fixture;
+  let candidate: string;
+  let sourceCommit: string;
+  const admittedPath = ordinary ? 'test/ordinary.test.mjs' : 'component';
+  if (ordinary) {
+    // Fixture tools exercise real materialization and a real Node test. Production
+    // dependency-generation capacity is deliberately outside this routing case.
+    const files: Record<string, string> = {
+      'scripts/npm-install-safe.mjs': `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+const result = spawnSync(args[0], args.slice(1), { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;
+`,
+      'apps/operator/bin/release/setup-release-checkout.sh': `#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ref) admission_ref="$2"; shift 2 ;;
+    --integration) admission_integration="$2"; shift 2 ;;
+    --release) admission_release="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+git -C "$admission_integration" worktree add --detach "$admission_release" "$admission_ref"
+`,
+      'scripts/test-files.mjs': `import { spawnSync } from 'node:child_process';
+const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', process.argv[2]], { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;
+`,
+      'test/ordinary.test.mjs': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\ntest('private ordinary admission', () => assert.equal(false, true));\n",
+    };
+    for (const [path, contents] of Object.entries(files)) {
+      mkdirSync(join(fixture, path, '..'), { recursive: true });
+      writeFileSync(join(fixture, path), contents);
+    }
+    git(fixture, 'add', '.');
+    git(fixture, 'commit', '-q', '-m', 'private ordinary frozen candidate');
+    candidate = git(fixture, 'rev-parse', 'HEAD');
+    writeFileSync(join(fixture, admittedPath), files[admittedPath]!.replace('assert.equal(false, true)', 'assert.equal(true, true)'));
+    git(fixture, 'add', admittedPath);
+    git(fixture, 'commit', '-q', '-m', 'private ordinary test fix');
+    sourceCommit = git(fixture, 'rev-parse', 'HEAD');
+    servedRoot = join(e.TMPDIR!, 'ordinary-served-build');
+    git(fixture, 'worktree', 'add', '--detach', servedRoot, sourceCommit);
+    assert.notEqual(servedRoot, fixture);
+    assert.equal(git(servedRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'), join(fixture, '.git'));
+  } else {
   const child = join(fixture, 'component');
   mkdirSync(child);
   init(child);
@@ -74,17 +124,18 @@ async function main() {
   git(fixture, 'add', 'parent.test.mjs');
   git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${oldPin},component`);
   git(fixture, 'commit', '-q', '-m', 'private frozen candidate');
-  const candidate = git(fixture, 'rev-parse', 'HEAD');
-  const lineageRef = 'refs/papercusp/frozen/' + candidate;
-  git(fixture, 'update-ref', lineageRef, candidate);
+  candidate = git(fixture, 'rev-parse', 'HEAD');
   writeFileSync(join(child, 'api.mjs'), 'export const value = 2;\n');
   git(child, 'add', 'api.mjs');
   git(child, 'commit', '-q', '-m', 'private gitlink update');
   git(fixture, 'update-index', '--cacheinfo', `160000,${git(child, 'rev-parse', 'HEAD')},component`);
   git(fixture, 'commit', '-q', '-m', 'private integration source');
-  const sourceCommit = git(fixture, 'rev-parse', 'HEAD');
+  sourceCommit = git(fixture, 'rev-parse', 'HEAD');
+  }
+  const lineageRef = 'refs/papercusp/frozen/' + candidate;
+  git(fixture, 'update-ref', lineageRef, candidate);
   const queue = createFrozenCandidateRepairQueue({ candidate, base: candidate,
-    failingTests: ['component::test'], nowMs: Date.now() });
+    failingTests: [ordinary ? admittedPath : 'component::test'], nowMs: Date.now() });
   assert.deepEqual(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue))), queue,
     'private queue fixture must satisfy the current persisted contract before bundling');
   const { sql } = getOrgPg();
@@ -112,7 +163,8 @@ async function main() {
     'inventory guard missing from admission worker bundle');
   assert.deepEqual(fingerprint(), sourceBefore, 'source moved during preparation');
   host = spawn(process.execPath, [prepared.path], { cwd: root,
-    env: { ...e, PAPERCUSP_INTEGRATION_ROOT: fixture, PAPERCUSP_INTEGRATION_BRANCH: 'staging' },
+    env: { ...e, PAPERCUSP_INTEGRATION_ROOT: servedRoot, PAPERCUSP_INTEGRATION_BRANCH: 'staging',
+      ...(ordinary ? { PAPERCUSP_CHECKPOINT_LOG_DIR: join(evidenceDir, 'checkpoint-logs') } : {}) },
     stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
@@ -132,20 +184,56 @@ async function main() {
   }
   assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
   console.log('ADMISSION_HTTP_PHASE request-ready');
-  const args = { op: 'admit', paths: ['component'], wholeBlob: true, sourceCommit, confirm: true,
-    reason: 'Private current-build immutable gitlink inventory acceptance',
+  const args = { op: 'admit', paths: [admittedPath], wholeBlob: true, sourceCommit, confirm: true,
+    reason: ordinary ? 'Private same-repository ordinary test admission acceptance'
+      : 'Private current-build immutable gitlink inventory acceptance',
     expectedCandidate: candidate, expectedRepairHead: candidate, expectedUpdatedAtMs: queue.updatedAtMs };
+  let requestNumber = 0;
+  const admit = async (input: typeof args) => {
   const request = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,
-    body: JSON.stringify({ name: 'release:repair-queue', args, harness: workspace,
+    body: JSON.stringify({ name: 'release:repair-queue', args: input, harness: workspace,
       callerSid: 'private-admission-http-fixture', confirmed: true }), signal: AbortSignal.timeout(120_000) });
   const envelope = await request.json() as any;
-  writeFileSync(join(evidenceDir, 'admission-request.json'), JSON.stringify({ args, status: request.status, envelope }));
+  writeFileSync(join(evidenceDir, `admission-request-${++requestNumber}.json`),
+    JSON.stringify({ args: input, status: request.status, envelope }));
   assert.equal(request.status, 200, JSON.stringify(envelope));
   assert.equal(envelope.ok, true, JSON.stringify(envelope));
   assert.notEqual(envelope.result?.isError, true, JSON.stringify(envelope));
   const serialized = envelope.result?.content?.find((item: { type: string; text?: string }) =>
     item.type === 'text' && item.text?.trim().startsWith('{'));
-  const response = envelope.result?.structuredContent ?? (serialized ? JSON.parse(serialized.text) : envelope.result?.data ?? envelope.result);
+  return envelope.result?.structuredContent ?? (serialized ? JSON.parse(serialized.text) : envelope.result?.data ?? envelope.result);
+  };
+  let response = await admit(args);
+  let ordinaryProof: Record<string, unknown> | undefined;
+  if (ordinary) {
+    assert.equal(response.pending, true, JSON.stringify(response));
+    assert.equal(response.admitted, false, JSON.stringify(response));
+    const operationId = response.precheckOperation?.operationId;
+    assert.ok(operationId, 'managed precheck operation identity required');
+    const precheckDeadline = Date.now() + 90_000;
+    let settled: ReturnType<typeof parseFrozenCandidateRepairQueue> | undefined;
+    while (Date.now() < precheckDeadline) {
+      settled = parseFrozenCandidateRepairQueue(await readQueue());
+      assert.equal(settled.admissionPrecheck?.operationId, operationId);
+      if (settled.admissionPrecheck?.status !== 'running') break;
+      await new Promise(done => setTimeout(done, 250));
+    }
+    const precheck = settled?.admissionPrecheck;
+    assert.equal(precheck?.status, 'passed', JSON.stringify(precheck));
+    assert.equal(precheck?.verdict?.ran, true, JSON.stringify(precheck));
+    assert.deepEqual(precheck?.verdict?.passing, [admittedPath]);
+    assert.equal(settled?.repairHead, candidate, 'background precheck must not publish');
+    assert.equal(git(fixture, 'rev-parse', lineageRef), candidate);
+    response = await admit({ ...args, expectedUpdatedAtMs: settled!.updatedAtMs });
+    assert.equal(response.ok, true, JSON.stringify(response));
+    assert.equal(response.admitted, true, JSON.stringify(response));
+    const after = parseFrozenCandidateRepairQueue(await readQueue());
+    assert.notEqual(after.repairHead, candidate);
+    assert.equal(git(fixture, 'rev-parse', lineageRef), after.repairHead);
+    assert.match(git(fixture, 'show', after.repairHead + ':' + admittedPath), /assert.equal\(true, true\)/);
+    ordinaryProof = { operationId, precheck, admittedPath, servedRoot, canonicalRoot: fixture,
+      materialization: 'fixture-tools', noBackgroundPublication: true, finalRepairHead: after.repairHead };
+  } else {
   assert.equal(response.ok, false, JSON.stringify(response));
   assert.equal(response.admitted, false, JSON.stringify(response));
   assert.equal(response.reason, 'admission-precheck-unavailable', JSON.stringify(response));
@@ -153,10 +241,11 @@ async function main() {
   assert.match(response.builtCommit, /^[a-f0-9]{40}$/);
   assert.deepEqual(await readQueue(), before, 'refused inventory changed the private queue');
   assert.equal(git(fixture, 'rev-parse', lineageRef), candidate, 'refused inventory published the private lineage');
+  }
   assert.deepEqual(fingerprint(), sourceBefore, 'source changed during acceptance');
   await stopHost();
   console.log('ADMISSION_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true, health, response,
-    queueUnchanged: true, lineageUnchanged: true, sourceUnchanged: true, sourceBefore,
+    queueUnchanged: !ordinary, lineageUnchanged: !ordinary, sourceUnchanged: true, sourceBefore, ordinaryProof,
     bundleSha256: digest(prepared.path), workerSha256: digest(worker) }));
 }
 
