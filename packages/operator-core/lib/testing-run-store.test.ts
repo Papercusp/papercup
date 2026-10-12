@@ -1676,6 +1676,82 @@ describe('durable detached snapshot lifecycle', () => {
     expect(updates[0]?.[0]).toBe('error');
   });
 
+  it('merges bounded terminal failure output from test_runs once without changing the verdict', async () => {
+    const runId = 'terminal-failed-ledger-output';
+    const finishedAt = new Date(1_700_000_010_000);
+    const ledgerRows = [
+      ...Array.from({ length: 4 }, (_, index) => ({
+        file_path: 'lib/failing-' + index + '.test.ts',
+        status: 'fail',
+        finished_at: new Date(1_700_000_001_000 + index * 1_000),
+        output_tail: 'x'.repeat(4_096),
+      })),
+      {
+        file_path: 'lib/zz-unsafe-transaction.test.ts',
+        status: 'fail',
+        finished_at: new Date(1_700_000_006_000),
+        output_tail: 'UNSAFE_TRANSACTION',
+      },
+      {
+        file_path: 'lib/zz-passing.test.ts',
+        status: 'pass',
+        finished_at: new Date(1_700_000_007_000),
+        output_tail: 'passing output must not be merged',
+      },
+    ];
+    const durableSnapshot: Record<string, unknown> = {
+      run_id: runId,
+      task_id: 'task-terminal-failure',
+      kind: 'vitest',
+      label: 'detached failed run',
+      file_path: null,
+      command: ['node', 'scripts/test-files.mjs'],
+      status: 'fail',
+      exit_code: 1,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: finishedAt,
+      output: 'router progress\nexit 1',
+      truncated: false,
+      task_state: 'exited',
+      task_exit_code: 1,
+      task_ended_at: finishedAt,
+    };
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{ ...durableSnapshot }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        durableSnapshot.output = values[3];
+        durableSnapshot.truncated = values[4];
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({
+      runId,
+      status: 'fail',
+      exitCode: 1,
+      finishedAt: finishedAt.getTime(),
+      truncated: true,
+    });
+    expect(recovered?.output).toContain('UNSAFE_TRANSACTION');
+    expect(recovered?.output).not.toContain('passing output must not be merged');
+    expect(recovered?.output.length).toBeLessThanOrEqual(16 * 1024);
+    expect(updates).toHaveLength(1);
+
+    const repeated = await store.getRunAsync(runId, sql);
+    expect(repeated?.output).toBe(recovered?.output);
+    expect(repeated).toMatchObject({ status: 'fail', exitCode: 1, finishedAt: finishedAt.getTime() });
+    expect(updates).toHaveLength(1);
+  });
+
   it('rechecks a withheld Vitest PASS when exact requested-file ledger rows arrive later', async () => {
     const runId = 'terminal-pass-ledger-late';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
