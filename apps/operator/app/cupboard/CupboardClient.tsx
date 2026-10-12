@@ -319,7 +319,15 @@ export default function CupboardClient() {
         setKindFacets(data.kind_facets && typeof data.kind_facets === 'object' ? data.kind_facets : null);
       }
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+      if (!ctrl.signal.aborted && (err as Error).name !== 'AbortError') {
+        // A failed current read invalidates the previous cards and their actions,
+        // including a rejected pagination read. Retry starts from the same URL
+        // filters with a fresh first page; an obsolete aborted read cannot clear it.
+        listingsRef.current = [];
+        setListings([]);
+        setNextCursor(null);
+        setTotal(null);
+        setKindFacets(null);
         setError(String(err));
       }
     } finally {

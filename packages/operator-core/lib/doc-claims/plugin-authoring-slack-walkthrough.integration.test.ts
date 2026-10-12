@@ -19,11 +19,11 @@ import {
   BUILD_PUBLISH_HEADING,
   EXPORTER_SCRIPT,
   exporterUsageFlags,
-  judgeSlackWalkthrough,
+  judgeChatProviderWalkthrough,
   PACKAGE_DIR_PREFIX,
   WALKTHROUGH_PACKAGES,
   type WalkthroughFacts,
-} from './plugin-authoring-slack-walkthrough';
+} from './plugin-authoring-chat-provider-walkthrough';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -63,7 +63,7 @@ describe('authoring guide: Slack + bug-triage build-and-publish walkthrough', ()
   });
 
   it('every claim in the walkthrough holds against the live tree', () => {
-    const verdict = judgeSlackWalkthrough(markdown, liveFacts());
+    const verdict = judgeChatProviderWalkthrough(markdown, liveFacts());
     expect(verdict.violations).toEqual([]);
     expect(verdict.ok).toBe(true);
     expect(verdict.checkedPaths.length).toBeGreaterThanOrEqual(8);
@@ -72,7 +72,7 @@ describe('authoring guide: Slack + bug-triage build-and-publish walkthrough', ()
   });
 
   it("the guide's export command builds a publishable mirror for both packages", () => {
-    const verdict = judgeSlackWalkthrough(markdown, liveFacts());
+    const verdict = judgeChatProviderWalkthrough(markdown, liveFacts());
     const command = verdict.exportCommands.find((c) => c.flags.some((f) => f.flag === 'push'));
     expect(command, 'guide gives an export + push command').toBeDefined();
     for (const name of WALKTHROUGH_PACKAGES) {
@@ -98,7 +98,7 @@ describe('authoring guide: Slack + bug-triage build-and-publish walkthrough', ()
 
   describe('falsifiability: drifted guides and drifted code each fail', () => {
     const facts = liveFacts();
-    const fails = (doc: string, f: WalkthroughFacts = facts) => judgeSlackWalkthrough(doc, f).violations;
+    const fails = (doc: string, f: WalkthroughFacts = facts) => judgeChatProviderWalkthrough(doc, f).violations;
 
     it('a flag the exporter does not accept', () => {
       const drifted = markdown.replace('--push https://github.com/Papercusp/papercusp-slack.git', '--publish https://github.com/Papercusp/papercusp-slack.git');

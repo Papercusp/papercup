@@ -411,6 +411,44 @@ describe('gatherOnDesktopSessions — WI-1967 windowSignalUnknown (Windows conse
 });
 
 describe('gatherOnDesktopSessions targeted owner lookup', () => {
+  it('bounds per-owner host checks for a full presence roster', async () => {
+    const owners = Array.from({ length: 24 }, (_, i) => `su-owner-${i}`);
+    const rows = owners.map((ownerId, i) => ({
+      id: i + 1,
+      coord_owner_id: ownerId,
+      session_id: `session-${i}`,
+      window_id: null,
+      pid: null,
+    }));
+    let activeLookups = 0;
+    let maxActiveLookups = 0;
+    const findHost = vi.fn(async (ownerId: string) => {
+      activeLookups++;
+      maxActiveLookups = Math.max(maxActiveLookups, activeLookups);
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      activeLookups--;
+      return { ownerId, pid: 200 + owners.indexOf(ownerId) };
+    });
+
+    const result = await gatherOnDesktopSessions({
+      ownerIds: owners,
+      nowMs: 1_000,
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 100, title: 'Terminal' }],
+        listCandidates: async () => rows,
+        findHost,
+        listHosts: async () => [],
+        readStat: async (pid) => `${pid} (psu-pty-host) S 100 1 0 0 0 0 0`,
+      },
+    });
+
+    expect(maxActiveLookups).toBeGreaterThan(1);
+    expect(maxActiveLookups).toBeLessThanOrEqual(8);
+    expect(findHost).toHaveBeenCalledTimes(owners.length);
+    expect(result.owners).toEqual(new Set(owners));
+  });
+
   it('uses per-owner host lookup and does not seed the full-roster cache', async () => {
     const windows: OpenWindow[] = [{ wid: '0x1', pid: 100, title: 'Terminal' }];
     const targetCandidate = {

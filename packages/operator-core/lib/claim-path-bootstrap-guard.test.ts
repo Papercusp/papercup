@@ -105,6 +105,20 @@ export function classify(raw: string, fileName: string): Classification {
   return handBuilt ? { kind: 'violation' } : { kind: 'not-claim-path' };
 }
 
+/** A release fixture that registers real awaits also executes the inbox pump. */
+export function releaseWakeFixtureGaps(raw: string, fileName: string): string[] {
+  const code = stripCommentsAndStrings(raw, fileName) as string;
+  const commentless = stripCommentsOnly(raw, fileName) as string;
+  if (!/\breleaseWorkItem\s*\(/.test(code) || !/\bregisterAwait\s*\(/.test(code)
+    || /\bcreateOrgTestDb\s*\(/.test(code)) return [];
+  const gaps: string[] = [];
+  if (!/\bapplyEventSubstrateMigrationsForTest\s*\(/.test(code)) gaps.push('event substrate');
+  if (!DISCLOSURE_LEDGER_HELPER_RE.test(code)) gaps.push('disclosure ledger');
+  if (!/\bapplyMigrationForTest\s*\(/.test(code)
+    || !/['"][^'"\n]*038-operator-settings\.sql['"]/.test(commentless)) gaps.push('wake settings');
+  return gaps;
+}
+
 function integrationTests(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules') continue;
@@ -123,6 +137,7 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
     return {
       rel,
       verdict: classify(raw, full),
+      releaseWakeGaps: releaseWakeFixtureGaps(raw, full),
       viaTool: importsClaimTool(stripCommentsOnly(raw, full) as string, full),
     };
   });
@@ -164,6 +179,25 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
 
   it('includes the real delegated lifecycle fixture in the protected population', () => {
     expect(results.find((r) => r.rel === 'delegated-tasks.integration.test.ts')?.verdict.kind).toBe('ok');
+  });
+
+  it('protects real release-await fixtures from missing inbox-pump schemas', () => {
+    expect(results.find((r) => r.rel === 'work-items-release-request.integration.test.ts')?.releaseWakeGaps).toEqual([]);
+    expect(results.filter((r) => r.releaseWakeGaps.length).map((r) => ({ file: r.rel, gaps: r.releaseWakeGaps }))).toEqual([]);
+  });
+
+  it('detects removal of each release-await substrate without accepting comments as provisioning', () => {
+    const file = path.join(HERE, 'work-items-release-request.integration.test.ts');
+    const raw = readFileSync(file, 'utf8');
+    for (const [call, gap] of [
+      ['applyEventSubstrateMigrationsForTest', 'event substrate'],
+      ['applyDisclosureLedgerForTest', 'disclosure ledger'],
+      ['applyMigrationForTest', 'wake settings'],
+    ]) {
+      const mutated = raw.replace(new RegExp(`\\b${call}\\s*\\(`, 'g'), `omitted_${call}(`);
+      expect(releaseWakeFixtureGaps(`${mutated}\n// ${call}(db.sql);`, file)).toContain(gap);
+    }
+    expect(releaseWakeFixtureGaps(raw.replace('038-operator-settings.sql', 'missing-settings.sql'), file)).toContain('wake settings');
   });
 
   it('allowlist entries still exist and still need the exemption', () => {

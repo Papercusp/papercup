@@ -697,7 +697,12 @@ export async function assemblePresenceSnapshot(
       ? Promise.resolve()
       : timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
           gatherOnDesktopSessions({
-            ...(targeted ? { ownerIds: localAllIds } : {}),
+            // This snapshot already knows its complete local owner set. Keep
+            // desktop attribution within those rows instead of making a broad
+            // presence read scan every PSU-PTY discovery record on disk. The
+            // reaper still uses the unfiltered census because it must protect
+            // desktop sessions that are absent from the current presence rows.
+            ownerIds: localAllIds,
             onDiagnostic: (diagnostic) => reportDiagnostic({
               phase: 'enrichment',
               name: `gatherOnDesktopSessions.${diagnostic.name}`,

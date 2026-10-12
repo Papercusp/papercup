@@ -219,6 +219,18 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(snap.summary.stale).toBe(1);
   });
 
+  it('bounds desktop discovery to the complete local roster, including stale rows', async () => {
+    const localRows = [row('su-local-active', false), row('su-local-stale', true)];
+    listPresenceMock.mockResolvedValue(localRows);
+    federatedMock.mockResolvedValue([{ ...row('su-federated', false), federated: true }]);
+
+    await assemblePresenceSnapshot(RESOLVED, {});
+
+    expect(desktopSessionsMock).toHaveBeenCalledWith(expect.objectContaining({
+      ownerIds: ['su-local-active', 'su-local-stale'],
+    }));
+  });
+
   it('fuzzy owner match (substring) still works through the early filter', async () => {
     const snap = await assemblePresenceSnapshot(RESOLVED, { owner: 'bbb' });
     expect(snap.active.map((r) => (r as { ownerId?: string }).ownerId)).toEqual(['su-bbb']);
@@ -229,6 +241,9 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(sweepMock).toHaveBeenCalledTimes(1);
     expect(desktopSessionsMock).toHaveBeenCalledTimes(1);
+    expect(desktopSessionsMock).toHaveBeenCalledWith(expect.objectContaining({
+      ownerIds: ['su-aaa', 'su-bbb', 'su-ccc'],
+    }));
     expect(tier1Mock).toHaveBeenCalledWith(['su-aaa', 'su-bbb']); // active locals
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-aaa', 'su-bbb', 'su-ccc']); // all locals
     expect(snap.summary.active).toBe(2);

@@ -327,6 +327,7 @@ export function parsePpidFromStat(stat: string): number | null {
 const ANCESTRY_MAX_DEPTH = 32;
 /** Bound independent live-host ancestry walks so a large roster does not serialize /proc reads. */
 const DESKTOP_ANCESTRY_CONCURRENCY = 8;
+const DESKTOP_HOST_LOOKUP_CONCURRENCY = 8;
 
 async function defaultReadStat(pid: number): Promise<string | null> {
   try {
@@ -533,13 +534,17 @@ export async function gatherOnDesktopSessions(
         if (targetedOwnerIds !== undefined) {
           const ownersToResolve = targetedOwnerIds.filter((ownerId) => !sets.owners.has(ownerId));
           const findHost = opts.deps?.findHost ?? findLiveHostAsync;
-          hosts = (await Promise.all(ownersToResolve.map(async (ownerId) => {
-            try {
-              return await timeStep('findLiveHost', () => findHost(ownerId));
-            } catch {
-              return null;
-            }
-          }))).filter((host): host is { ownerId: string; pid: number } => host !== null);
+          hosts = (await mapWithConcurrency(
+            ownersToResolve,
+            DESKTOP_HOST_LOOKUP_CONCURRENCY,
+            async (ownerId) => {
+              try {
+                return await timeStep('findLiveHost', () => findHost(ownerId));
+              } catch {
+                return null;
+              }
+            },
+          )).filter((host): host is { ownerId: string; pid: number } => host !== null);
         } else {
           try {
             hosts = await timeStep('listLiveHosts', async () =>

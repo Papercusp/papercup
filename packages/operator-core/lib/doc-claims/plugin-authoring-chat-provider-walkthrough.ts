@@ -1,6 +1,9 @@
 /**
- * Judge the Slack + bug-triage walkthrough in the provider and trigger-pack
- * authoring guide (`plugins/provider-and-trigger-pack-authoring`).
+ * Judge the chat-provider worked example (the Slack + bug-triage walkthrough)
+ * in the provider and trigger-pack authoring guide
+ * (`plugins/provider-and-trigger-pack-authoring`). The module is named for the
+ * guide section, not the provider, so app code stays outside the shrink-only
+ * provider census (lib/integrations/provider-specific-census.test.ts).
  *
  * The guide tells an author how to build, export, push and list the two
  * Cupboard-distributed chat packages. Every runnable or checkable claim in that
@@ -99,7 +102,7 @@ export function citedPublishArgs(text: string): string[] {
     .filter((name) => name.length > 0);
 }
 
-export function judgeSlackWalkthrough(markdown: string, facts: WalkthroughFacts): WalkthroughVerdict {
+export function judgeChatProviderWalkthrough(markdown: string, facts: WalkthroughFacts): WalkthroughVerdict {
   if (markdown.trim().length < 2000) {
     throw new Error('Refusing to judge a short/empty authoring-guide read');
   }
