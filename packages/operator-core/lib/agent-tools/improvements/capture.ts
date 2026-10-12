@@ -908,7 +908,12 @@ export default defineTool({
           .object({
             kind: z.enum(OBSERVATION_KINDS).optional(),
             scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
-            confidence: z.enum(['low', 'med', 'high']).optional(),
+            confidence: z
+              .enum(['low', 'med', 'high'])
+              .optional()
+              .describe(
+                "Evidence strength for this observation: low, med, or high. Do not use the fact-registry confidence labels verified/provisional/suspected; those belong to facts:assert.",
+              ),
             refs: z
               .array(z.string().max(200))
               .max(12)

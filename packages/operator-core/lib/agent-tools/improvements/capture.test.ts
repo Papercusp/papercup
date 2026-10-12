@@ -1834,6 +1834,25 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it('documents observation confidence separately from fact-registry confidence', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: {
+        observation?: { properties?: { confidence?: { description?: string; enum?: string[] } } };
+      };
+    };
+    const confidence = json.properties?.observation?.properties?.confidence;
+    expect(confidence?.enum).toEqual(['low', 'med', 'high']);
+    expect(confidence?.description).toContain('Evidence strength for this observation');
+    expect(confidence?.description).toContain('verified/provisional/suspected');
+    expect(confidence?.description).toContain('facts:assert');
+
+    expect(argsSchema.safeParse({
+      title: 'fact confidence is not observation confidence',
+      lane: 'observation',
+      observation: { confidence: 'verified' },
+    }).success).toBe(false);
+  });
+
   it('accepts a test-failure observation kind (EI-21565027021959535)', () => {
     const r = argsSchema.safeParse({
       title: 'test failure note',
