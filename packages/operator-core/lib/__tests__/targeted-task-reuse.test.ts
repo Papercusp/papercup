@@ -10,6 +10,7 @@ import {
   isUnitVitestTaskScript,
   LANE_SCRIPTS,
   resolveWorkspacePackage,
+  restoreCandidateCheckpointForReuse,
 } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { decideReuseSkip, parseReuseSkipList } from '@papercusp/test-config/test-pass-reuse-skip';
 import { gateReuseObservations, recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
@@ -74,6 +75,14 @@ export function classifyLanes(_root, files) {
   return { stateful: files.filter((file) => !file.includes('pure')) };
 }
 `);
+}
+
+function independentGitRoot() {
+  const directory = mkdtempSync(join(tmpdir(), 'targeted-reuse-integration-'));
+  temps.push(directory);
+  const initialized = spawnSync('git', ['init', '-q'], { cwd: directory, encoding: 'utf8' });
+  if (initialized.status !== 0) throw new Error(String(initialized.stderr));
+  return directory;
 }
 
 /** The injection seams, typed from the module's own declaration (fakes are partial on purpose). */
@@ -197,6 +206,62 @@ describe('resolveWorkspacePackage', () => {
       scripts: { [SCRIPT]: 'vitest run --passWithNoTests' },
     });
     expect(resolveWorkspacePackage(root, '@fixture/absent')).toBeNull();
+  });
+});
+
+describe('restoreCandidateCheckpointForReuse', () => {
+  it('restores dirty output for the ordinary candidate suite only with a matching candidate and isolated roots', () => {
+    fixture();
+    const integrationRoot = independentGitRoot();
+    const releaseRoot = independentGitRoot();
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(String(result.stderr));
+      return String(result.stdout ?? '');
+    };
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@example.invalid']);
+    git(['config', 'user.name', 'Test']);
+    writeFileSync(join(root, 'tracked.txt'), 'committed contents\n');
+    git(['add', '.']);
+    git(['commit', '-qm', 'candidate checkpoint']);
+    const judgedSha = git(['rev-parse', 'HEAD']).trim();
+    writeFileSync(join(root, 'tracked.txt'), 'test output mutation\n');
+    writeFileSync(join(root, 'untracked-output.txt'), 'test output\n');
+    const env = {
+      GREEN_CHECKPOINT: '1',
+      PAPERCUSP_TEST_RUN_COMMIT: judgedSha,
+      PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT: root,
+      PC_TEST_REUSE_INTEGRATION_ROOT: integrationRoot,
+      PC_TEST_REUSE_RELEASE_ROOT: releaseRoot,
+    };
+
+    const restored = restoreCandidateCheckpointForReuse({ root, judgedSha, env });
+
+    expect(restored).toEqual({ ok: true, restored: true });
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('committed contents\n');
+    expect(existsSync(join(root, 'untracked-output.txt'))).toBe(false);
+    expect(git(['status', '--porcelain', '--ignore-submodules=none'])).toBe('');
+  });
+
+  it('leaves a dirty candidate untouched when the gate candidate identity mismatches', () => {
+    fixture();
+    writeFileSync(join(root, 'tracked.txt'), 'preserve this unverified output\n');
+
+    const restored = restoreCandidateCheckpointForReuse({
+      root,
+      judgedSha: HEAD,
+      env: {
+        GREEN_CHECKPOINT: '1',
+        PAPERCUSP_TEST_RUN_COMMIT: 'b'.repeat(40),
+        PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT: root,
+        PC_TEST_REUSE_INTEGRATION_ROOT: root,
+        PC_TEST_REUSE_RELEASE_ROOT: root,
+      },
+    });
+
+    expect(restored).toEqual({ ok: false, reason: 'candidate-checkpoint-identity-unverified' });
+    expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('preserve this unverified output\n');
   });
 });
 
@@ -510,6 +575,7 @@ describe('armTargetedTaskReuse', () => {
 
     it('restores dirty files in an opted-in disposable checkpoint before deciding reuse', async () => {
       fixture();
+      const integrationRoot = independentGitRoot();
       const git = (args: string[]) => {
         const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
         if (result.status !== 0) throw new Error(String(result.stderr));
@@ -532,9 +598,12 @@ describe('armTargetedTaskReuse', () => {
         expectedSha,
         env: baseEnv(),
         restoreDirtyCheckpoint: true,
+        checkpointRoot: root,
+        integrationRoot,
+        releaseRoot: integrationRoot,
         deps: deps({
-          git: (_root: string, args: string[]) => {
-            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+          git: (cwd: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
             return result.status === 0 ? String(result.stdout ?? '') : null;
           },
           loadProofs: async () => ({
@@ -594,9 +663,12 @@ describe('armTargetedTaskReuse', () => {
         expectedSha,
         env: baseEnv(),
         restoreDirtyCheckpoint: true,
+        checkpointRoot: root,
+        integrationRoot: subRoot,
+        releaseRoot: subRoot,
         deps: deps({
-          git: (_root: string, args: string[]) => {
-            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+          git: (cwd: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
             return result.status === 0 ? String(result.stdout ?? '') : null;
           },
           loadProofs: async () => ({
@@ -620,6 +692,7 @@ describe('armTargetedTaskReuse', () => {
 
     it('does not restore a dirty checkout when its HEAD differs from the expected SHA', async () => {
       fixture();
+      const integrationRoot = independentGitRoot();
       const git = (args: string[]) => {
         const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
         if (result.status !== 0) throw new Error(String(result.stderr));
@@ -641,9 +714,12 @@ describe('armTargetedTaskReuse', () => {
         expectedSha: 'c'.repeat(40),
         env: baseEnv(),
         restoreDirtyCheckpoint: true,
+        checkpointRoot: root,
+        integrationRoot,
+        releaseRoot: integrationRoot,
         deps: deps({
-          git: (_root: string, args: string[]) => {
-            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+          git: (cwd: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
             return result.status === 0 ? String(result.stdout ?? '') : null;
           },
         }),
@@ -652,6 +728,46 @@ describe('armTargetedTaskReuse', () => {
       expect(actualSha).not.toBe('c'.repeat(40));
       expect(armed.lines[0]).toContain('reason=head-mismatch');
       expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('preserve this mismatch\n');
+      expect(git(['status', '--porcelain'])).not.toBe('');
+      armed.finish();
+    });
+
+    it('does not restore when the configured checkpoint root is the integration checkout', async () => {
+      fixture();
+      const git = (args: string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(String(result.stderr));
+        return String(result.stdout ?? '');
+      };
+      git(['init', '-q']);
+      git(['config', 'user.email', 'test@example.invalid']);
+      git(['config', 'user.name', 'Test']);
+      writeFileSync(join(root, 'tracked.txt'), 'committed contents\n');
+      git(['add', '.']);
+      git(['commit', '-qm', 'checkpoint source']);
+      const expectedSha = git(['rev-parse', 'HEAD']).trim();
+      writeFileSync(join(root, 'tracked.txt'), 'preserve shared source\n');
+
+      const armed = await armTargetedTaskReuse({
+        root,
+        workspace: WS,
+        script: SCRIPT,
+        expectedSha,
+        env: baseEnv(),
+        restoreDirtyCheckpoint: true,
+        checkpointRoot: root,
+        integrationRoot: root,
+        releaseRoot: root,
+        deps: deps({
+          git: (cwd: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+            return result.status === 0 ? String(result.stdout ?? '') : null;
+          },
+        }),
+      });
+
+      expect(armed.lines[0]).toContain('reason=checkpoint-root-unverified');
+      expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('preserve shared source\n');
       expect(git(['status', '--porcelain'])).not.toBe('');
       armed.finish();
     });

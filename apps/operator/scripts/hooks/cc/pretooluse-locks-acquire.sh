@@ -24,7 +24,9 @@
 # On success we exit 0 with NO stdout — "no decision, proceed with the
 # client's normal flow" — and cache the lock_id by tool_use_id so the
 # matching PostToolUse hook can release only paths newly acquired by this
-# edit. A same-owner already-held grant gets no release cache.
+# edit. The owner and native session id sidecars also let Stop perform a
+# session-scoped cleanup if PostToolUse did not consume the cache entry. A
+# same-owner already-held grant gets no release cache.
 #
 # Claude also sends transcript_path on PreToolUse. When the matching assistant
 # message contains two or more native file-edit tool_use blocks, all of those
@@ -174,6 +176,9 @@ cwd = payload.get('cwd') or os.getcwd()
 env_sid = os.environ.get('PAPERCUSP_SID')
 lock_sid = os.environ.get('PAPERCUSP_LOCK_SID')
 session_id = payload.get('session_id')
+native_session_id = session_id
+if not isinstance(native_session_id, str) or not native_session_id:
+    native_session_id = os.environ.get('PAPERCUSP_NATIVE_SESSION_ID')
 
 
 def diagnostic_lock_sid():
@@ -1431,7 +1436,7 @@ ORPHAN_EXPIRED_SEC = float(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_EXPIRED_SEC') 
 ORPHAN_RELEASE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_RELEASE_MAX') or 25)
 ORPHAN_PRUNE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_PRUNE_MAX') or 200)
 ORPHAN_SCAN_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_SCAN_MAX') or 2000)
-_ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.batch',
+_ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.session', '.batch',
                     '.edited', '.files', '.done', '.checked', '.attest')
 
 
@@ -1774,6 +1779,9 @@ def _grant(granted):
             # abandoned claim from a peer's — only the owner can release it.
             with open(os.path.join(cache_dir, tool_use_id + '.owner'), 'w') as f:
                 f.write(owner)
+            if isinstance(native_session_id, str) and native_session_id:
+                with open(os.path.join(cache_dir, tool_use_id + '.session'), 'w') as f:
+                    f.write(native_session_id)
             if len(repo_domains) == 1:
                 with open(os.path.join(cache_dir, tool_use_id + '.domain'), 'w') as f:
                     f.write(next(iter(repo_domains)))

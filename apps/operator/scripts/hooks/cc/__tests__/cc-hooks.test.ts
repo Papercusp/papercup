@@ -652,6 +652,7 @@ async function runLifecycleAgainstDisposition(
   disposition: "terminal" | "continuation",
   advSessionId?: string,
   roleEnv: Record<string, string> = {},
+  eventName: "SessionEnd" | "Stop" = "SessionEnd",
 ) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const server = createServer((req, res) => {
@@ -670,20 +671,28 @@ async function runLifecycleAgainstDisposition(
       requests.push({ path: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
       if (req.url?.startsWith("/api/mcp")) {
+        const params = body.params as
+          | { name?: string; arguments?: Record<string, unknown> }
+          | undefined;
+        const resultText =
+          params?.name === "locks:release"
+            ? JSON.stringify({
+                ok: true,
+                released: Array.isArray(params.arguments?.paths)
+                  ? params.arguments.paths
+                  : [],
+                held_before: 1,
+              })
+            : JSON.stringify({
+                ok: true,
+                session_end_disposition: disposition,
+              });
         res.end(
           JSON.stringify({
             jsonrpc: "2.0",
             id: 1,
             result: {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    ok: true,
-                    session_end_disposition: disposition,
-                  }),
-                },
-              ],
+              content: [{ type: "text", text: resultText }],
             },
           }),
         );
@@ -701,6 +710,8 @@ async function runLifecycleAgainstDisposition(
       ...process.env,
       HOME: home,
       PAPERCUSP_SID: "su-lifecycle-terminal",
+      PAPERCUSP_LOCK_SID: "",
+      CODEX_HOME: "",
       PAPERCUSP_AGENT: "codex",
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
       ...(advSessionId ? { PAPERCUSP_ADV_SESSION_ID: advSessionId } : {}),
@@ -710,7 +721,7 @@ async function runLifecycleAgainstDisposition(
   });
   child.stdin.end(
     payload({
-      hook_event_name: "SessionEnd",
+      hook_event_name: eventName,
       session_id: "codex-thread-1",
       cwd: repo,
     }),
@@ -834,6 +845,52 @@ describe("cc lifecycle hook — operator-independent paths", () => {
       (requests[0].body.params as { arguments?: Record<string, unknown> })
         .arguments,
     ).toMatchObject({ role: "judge" });
+  });
+  it("Stop with a continuation releases only same-owner locks from that native session", async () => {
+    const stopCache = fs.mkdtempSync(join(os.tmpdir(), "lifecycle-stop-locks-"));
+    const seedLock = (
+      toolUseId: string,
+      lockId: string,
+      owner: string,
+      sessionId: string,
+      path: string,
+    ) => {
+      fs.writeFileSync(join(stopCache, `${toolUseId}.lock`), `${lockId}\n`);
+      fs.writeFileSync(join(stopCache, `${toolUseId}.paths`), JSON.stringify([path]));
+      fs.writeFileSync(join(stopCache, `${toolUseId}.owner`), owner);
+      fs.writeFileSync(join(stopCache, `${toolUseId}.session`), sessionId);
+    };
+    const currentSession = "codex-thread-1";
+    seedLock("owned-tu", "lock-owned", "su-lifecycle-terminal", currentSession, "owned.ts");
+    seedLock("other-session-tu", "lock-other-session", "su-lifecycle-terminal", "another-session", "other-session.ts");
+    seedLock("other-owner-tu", "lock-other-owner", "su-peer", currentSession, "other-owner.ts");
+
+    try {
+      const { exitCode, requests } = await runLifecycleAgainstDisposition(
+        "continuation",
+        undefined,
+        { PAPERCUSP_LOCKS_CACHE_DIR: stopCache },
+        "Stop",
+      );
+      const lockReleases = requests.filter(
+        (request) =>
+          (request.body.params as { name?: string } | undefined)?.name ===
+          "locks:release",
+      );
+      expect(exitCode).toBe(0);
+      expect(requests.some((request) => request.path === "/api/admin/coordination/fleet/kill")).toBe(false);
+      expect(lockReleases).toHaveLength(1);
+      expect(lockReleases[0].body.params).toMatchObject({
+        name: "locks:release",
+        arguments: { lock_id: "lock-owned", paths: ["owned.ts"] },
+      });
+      expect(fs.existsSync(join(stopCache, "owned-tu.lock"))).toBe(false);
+      expect(fs.existsSync(join(stopCache, "owned-tu.session"))).toBe(false);
+      expect(fs.existsSync(join(stopCache, "other-session-tu.lock"))).toBe(true);
+      expect(fs.existsSync(join(stopCache, "other-owner-tu.lock"))).toBe(true);
+    } finally {
+      fs.rmSync(stopCache, { recursive: true, force: true });
+    }
   });
 });
 

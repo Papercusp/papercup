@@ -12,6 +12,9 @@
 # classifies it with the existing carry/reset guards, and only a genuine terminal
 # verdict reuses the audited admin fleet:kill route to reap an otherwise-live
 # managed host (WI-41305). All paths remain fail-open + always-empty-stdout.
+# On Stop, replay the PostToolUse lock-release hook only for cached edits stamped
+# with this native session id; that hook also verifies the cached owner before it
+# releases the exact lock id and paths.
 #
 # Attached: Claude `SessionStart` + `SessionEnd` settings.json entries; managed
 # Codex homes register the same two events in hooks.json (verified against the
@@ -21,6 +24,7 @@ set -euo pipefail
 
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
+CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"
 
 if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
@@ -50,6 +54,73 @@ esac
 # this is the client half that keeps the foreign report from being sent at all.
 if python3 "$(dirname "$0")/pc_nested_cli.py" >/dev/null 2>&1; then
   exit 0
+fi
+
+# A completed native edit can miss PostToolUse while the client is stopping.
+# Recover only this session's remaining per-tool cache entries through the same
+# exact-path release implementation used by PostToolUse. The callee verifies
+# owner+session again, so a shared cache cannot release a peer's lock.
+if [ "$EVENT_NAME" = "Stop" ]; then
+  python3 - "$CACHE_DIR" "$(dirname "$0")/posttooluse-locks-release.sh" 3<<<"$INPUT" <<'PYEOF' >/dev/null 2>&1 || true
+import json, os, subprocess, sys
+
+cache_dir, release_hook = sys.argv[1:3]
+sys.path.insert(0, os.path.dirname(release_hook))
+from mcp_response import read_hook_payload  # noqa: E402
+
+try:
+    event = json.loads(read_hook_payload())
+except Exception:
+    sys.exit(0)
+if not isinstance(event, dict):
+    sys.exit(0)
+session_id = event.get('session_id') or event.get('sessionId')
+if not isinstance(session_id, str) or not session_id:
+    session_id = os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or ''
+if not session_id:
+    sys.exit(0)
+
+try:
+    entries = sorted(os.scandir(cache_dir), key=lambda entry: entry.name)
+except Exception:
+    sys.exit(0)
+for entry in entries:
+    if not entry.name.endswith('.session'):
+        continue
+    tool_use_id = entry.name[:-len('.session')]
+    lock_path = os.path.join(cache_dir, tool_use_id + '.lock')
+    if not os.path.isfile(lock_path):
+        continue
+    # Claude's native edit batch has one shared union lock owned by
+    # PostToolBatch. Never replay individual PostToolUse releases for it.
+    if os.path.exists(os.path.join(cache_dir, tool_use_id + '.batch')):
+        continue
+    try:
+        with open(entry.path) as f:
+            cached_session_id = f.read().strip()
+    except Exception:
+        continue
+    if cached_session_id != session_id:
+        continue
+    release_payload = {
+        'hook_event_name': 'Stop',
+        'tool_use_id': tool_use_id,
+        'session_id': session_id,
+    }
+    try:
+        subprocess.run(
+            ['bash', release_hook],
+            input=json.dumps(release_payload),
+            text=True,
+            env=os.environ.copy(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        pass
+PYEOF
 fi
 
 report() {

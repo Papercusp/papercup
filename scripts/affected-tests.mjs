@@ -119,7 +119,10 @@ import {
   testReuseMaxAgeMs,
   writeReuseSkipList,
 } from "./lib/test-pass-reuse.mjs";
-import { LANE_SCRIPTS as SHARED_LANE_SCRIPTS } from "./lib/targeted-task-reuse.mjs";
+import {
+  LANE_SCRIPTS as SHARED_LANE_SCRIPTS,
+  restoreCandidateCheckpointForReuse,
+} from "./lib/targeted-task-reuse.mjs";
 import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
 import {
   decideRetry,
@@ -5785,6 +5788,23 @@ async function armTestPassReuse(taskList) {
     dirtyPaths = null;
   }
   if (dirtyPaths === null) return off("checkout-status-unknown");
+  if (dirtyPaths.length > 0) {
+    // setupTree uses --prepare-existing for the isolated checkpoint checkout, so previous
+    // verification tasks can leave tracked/untracked output behind. The parent runner supplies
+    // these roots only for the candidate suite; the shared helper verifies the actual Git roots
+    // and exact judged HEAD before running any destructive command.
+    const restored = restoreCandidateCheckpointForReuse({
+      root: ROOT,
+      judgedSha,
+      env: process.env,
+    });
+    if (restored.ok) {
+      dirtyPaths = [];
+      if (restored.restored) outSync(`PASS_REUSE_CHECKPOINT_RESTORED sha=${judgedSha.slice(0, 12)}`);
+    } else {
+      outSync(`PASS_REUSE_CHECKPOINT_RESTORE applied=false reason=${restored.reason}`);
+    }
+  }
   if (dirtyPaths.length > 0) {
     return off(
       `dirty-checkout(${dirtyPaths.length}: ${dirtyPaths

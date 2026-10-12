@@ -33,7 +33,7 @@
 // numbers must not be folded into it.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -196,6 +196,130 @@ const defaultDeps = {
   removeTempDir: (dir) => rmSync(dir, { recursive: true, force: true }),
 };
 
+/**
+ * Restore an explicitly identified, isolated checkpoint checkout before reuse.
+ * The caller must supply the configured checkpoint and integration roots; this function
+ * verifies that both resolve to distinct Git worktree roots and that `root` is exactly the
+ * checkpoint worktree before it runs any destructive Git command. It then requires HEAD to
+ * equal `expectedSha`, restores tracked files and initialized submodules, removes untracked
+ * test output, and confirms the checkout is clean. Any uncertainty fails closed.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string|null} o.expectedSha exact candidate SHA expected at HEAD
+ * @param {string} o.checkpointRoot configured disposable checkpoint checkout
+ * @param {string} o.integrationRoot protected integration checkout
+ * @param {string} o.releaseRoot protected release checkout
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot, integrationRoot, releaseRoot, deps = {} }) {
+  const d = { ...defaultDeps, ...deps };
+  const canonicalPath = (candidate) => {
+    try {
+      return realpathSync(candidate);
+    } catch {
+      return null;
+    }
+  };
+  const gitRoot = (candidate) => {
+    const output = d.git(candidate, ["rev-parse", "--show-toplevel"]);
+    if (typeof output !== "string" || !output.trim()) return null;
+    return canonicalPath(output.trim());
+  };
+
+  const rootPath = canonicalPath(root);
+  const checkpointPath = canonicalPath(checkpointRoot);
+  const integrationPath = canonicalPath(integrationRoot);
+  const releasePath = canonicalPath(releaseRoot);
+  const actualRoot = gitRoot(root);
+  const actualCheckpoint = gitRoot(checkpointRoot);
+  const actualIntegration = gitRoot(integrationRoot);
+  const actualRelease = gitRoot(releaseRoot);
+  const pathContains = (parent, candidate) => {
+    const relative = path.relative(parent, candidate);
+    return relative === "" ||
+      (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  if (
+    !rootPath ||
+    !checkpointPath ||
+    !integrationPath ||
+    !releasePath ||
+    !actualRoot ||
+    !actualCheckpoint ||
+    !actualIntegration ||
+    !actualRelease ||
+    rootPath !== checkpointPath ||
+    actualRoot !== rootPath ||
+    actualCheckpoint !== checkpointPath ||
+    actualIntegration !== integrationPath ||
+    actualRelease !== releasePath ||
+    pathContains(checkpointPath, integrationPath) ||
+    pathContains(integrationPath, checkpointPath) ||
+    pathContains(checkpointPath, releasePath) ||
+    pathContains(releasePath, checkpointPath) ||
+    actualRoot === actualIntegration ||
+    actualRoot === actualRelease
+  ) {
+    return { ok: false, reason: "checkpoint-root-unverified" };
+  }
+
+  const head = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
+  if (!head || head !== expectedSha) return { ok: false, reason: "head-mismatch" };
+  const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+  if (status == null) return { ok: false, reason: "checkout-status-unknown" };
+  if (!status.trim()) return { ok: true, restored: false };
+
+  const restoreSteps = [
+    ["reset", "--hard", head],
+    // Restore initialized submodule worktrees to the gitlink revisions recorded at HEAD;
+    // resetting each submodule's current HEAD alone could leave it on the wrong revision.
+    ["submodule", "update", "--init", "--recursive", "--force"],
+    ["submodule", "foreach", "--recursive", "git clean -fd"],
+    ["clean", "-fd"],
+  ];
+  for (const args of restoreSteps) {
+    if (d.git(root, args) == null) return { ok: false, reason: "checkpoint-restore-failed" };
+  }
+  const cleanStatus = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+  if (cleanStatus == null) return { ok: false, reason: "checkout-status-unknown" };
+  if (cleanStatus.trim()) return { ok: false, reason: "checkpoint-remains-dirty" };
+  return { ok: true, restored: true };
+}
+
+/**
+ * Apply the candidate-suite identity gate before restoring the configured disposable checkpoint.
+ * This is shared with the repair-task path so both callers enforce one root/sha safety contract.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string} o.judgedSha candidate SHA read by the affected-test runner
+ * @param {NodeJS.ProcessEnv} [o.env] candidate-suite environment
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreCandidateCheckpointForReuse({ root, judgedSha, env = process.env, deps = {} }) {
+  if (
+    env.GREEN_CHECKPOINT !== "1" ||
+    !judgedSha ||
+    env.PAPERCUSP_TEST_RUN_COMMIT !== judgedSha ||
+    !env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT ||
+    !env.PC_TEST_REUSE_INTEGRATION_ROOT ||
+    !env.PC_TEST_REUSE_RELEASE_ROOT
+  ) {
+    return { ok: false, reason: "candidate-checkpoint-identity-unverified" };
+  }
+  return restoreDisposableCheckpoint({
+    root,
+    expectedSha: judgedSha,
+    checkpointRoot: env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT,
+    integrationRoot: env.PC_TEST_REUSE_INTEGRATION_ROOT,
+    releaseRoot: env.PC_TEST_REUSE_RELEASE_ROOT,
+    deps,
+  });
+}
+
 function withTimeout(promise, ms, what) {
   let timer;
   return Promise.race([
@@ -227,6 +351,9 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  * @param {string} [o.scope]        log label for where the run came from (e.g. `repair-head`)
  * @param {boolean} [o.restoreDirtyCheckpoint] Restore dirty files only for a disposable,
  *   isolated checkpoint checkout already verified at `expectedSha`; never enable for shared trees.
+ * @param {string} [o.checkpointRoot] configured disposable checkpoint checkout
+ * @param {string} [o.integrationRoot] protected integration checkout
+ * @param {string} [o.releaseRoot] protected release checkout
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
@@ -237,7 +364,7 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  *   finish: () => string[],
  * }>}
  */
-export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", restoreDirtyCheckpoint = false, deps = {} }) {
+export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", restoreDirtyCheckpoint = false, checkpointRoot, integrationRoot, releaseRoot, deps = {} }) {
   const d = { ...defaultDeps, ...deps };
   const label = `${workspace}::${script}`;
   const out = { ...env };
@@ -314,25 +441,19 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   if (status == null) return off("checkout-status-unknown");
   let dirty = status.split("\n").filter((l) => l.trim().length > 0);
   if (dirty.length > 0 && restoreDirtyCheckpoint) {
-    // runGateAtRef may enter through setup-release-checkout.sh --prepare-existing, which
-    // intentionally preserves the disposable checkpoint checkout. Previous verification tasks
-    // can leave tracked or untracked files there, so restore only after HEAD was checked above.
-    // This opt-in is for that private checkpoint tree; shared development checkouts stay fail-open.
-    const restoreSteps = [
-      ["reset", "--hard", head],
-      // Restore initialized submodule worktrees to the gitlink revisions recorded at HEAD;
-      // resetting each submodule's current HEAD alone could leave it on the wrong revision.
-      ["submodule", "update", "--init", "--recursive", "--force"],
-      ["submodule", "foreach", "--recursive", "git clean -fd"],
-      ["clean", "-fd"],
-    ];
-    for (const args of restoreSteps) {
-      if (d.git(root, args) == null) return off("checkpoint-restore-failed");
-    }
-    const cleanStatus = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
-    if (cleanStatus == null) return off("checkout-status-unknown");
-    dirty = cleanStatus.split("\n").filter((l) => l.trim().length > 0);
-    if (dirty.length === 0) lines.push(`TARGETED_CHECKPOINT_RESTORED sha=${head.slice(0, 12)}`);
+    // --prepare-existing intentionally preserves source files. Share the same exact-root,
+    // distinct-integration-root, expected-HEAD contract as the candidate-suite path.
+    const restored = restoreDisposableCheckpoint({
+      root,
+      expectedSha: head,
+      checkpointRoot,
+      integrationRoot,
+      releaseRoot,
+      deps: { git: d.git },
+    });
+    if (!restored.ok) return off(restored.reason);
+    dirty = [];
+    if (restored.restored) lines.push(`TARGETED_CHECKPOINT_RESTORED sha=${head.slice(0, 12)}`);
   }
   if (dirty.length > 0) return off(`dirty-checkout(${dirty.length})`);
   // WI-6554700010008589: match the JUDGED tree's recorder, not this module's constant. Its proofs and
