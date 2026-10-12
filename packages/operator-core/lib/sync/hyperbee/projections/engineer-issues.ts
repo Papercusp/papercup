@@ -635,6 +635,8 @@ interface IssueUpsertInput {
  */
 interface IssueWrite {
   input: IssueUpsertInput;
+  /** Authenticated receiver attribution, never supplied by the wire document. */
+  receiverAdmitted: boolean;
   /** Keep receiver attribution through snapshot grouping and resident-row landing. */
   sourceHive: string | null;
   /** WI-6327: the wire's creation instant, the only one the EI-13285 guard trusts. Null fails open. */
@@ -709,6 +711,8 @@ function issueWrite(
     createdTs: row.created_ts ?? null,
     payload: row.payload,
     sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey ?? null,
+    receiverAdmitted: provenance.origin === 'remote' && !!provenance.authorPubkey
+      && provenance.sourceLogKeyHex === provenance.authorPubkey,
   };
 }
 
@@ -987,6 +991,7 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
  */
 async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
   const rowsJson = JSON.stringify(writes.map((w) => w.input));
+  const receivers = writes.filter((w) => w.receiverAdmitted);
   await sql`
       INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
@@ -1035,7 +1040,16 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
         ELSE EXCLUDED.payload
       END,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin        = EXCLUDED.origin,
+      -- WI-6554700010008773 / forward draft 1467: stamp the issue-only token
+      -- here, after LWW/reopen admission. INSERT and EXCLUDED retain ordinary
+      -- remote provenance so the reopen predicate below cannot be bypassed.
+      -- The paired identities also preserve attribution in mixed snapshot groups.
+      origin        = CASE WHEN EXCLUDED.origin = 'remote' AND EXISTS (
+        SELECT 1 FROM unnest(${receivers.map((w) => w.input.harness_slug)}::text[],
+                             ${receivers.map((w) => w.input.feature_id)}::text[]) AS receiver(harness_slug, feature_id)
+        WHERE receiver.harness_slug = EXCLUDED.harness_slug
+          AND receiver.feature_id = EXCLUDED.feature_id
+      ) THEN 'remote:engineer-issues' ELSE EXCLUDED.origin END,
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc,
       updated_ts    = EXCLUDED.updated_ts,

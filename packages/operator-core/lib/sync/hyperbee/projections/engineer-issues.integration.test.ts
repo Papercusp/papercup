@@ -99,6 +99,21 @@ beforeAll(async () => {
       mask text[] := ARRAY['fed_ts', 'fed_hlc', 'origin', 'author_pubkey', 'updated_at', '_search', 'version', 'local_disposition'];
       generated_columns text[];
     BEGIN
+      -- Typed receiver seam (1467). This legacy-schema fixture retains its
+      -- original bookkeeping mask; the complete migrated trigger stack and
+      -- causal negative controls live in remote-issue-clock.integration.test.ts.
+      IF NEW.origin = 'remote:engineer-issues' THEN
+        IF TG_OP <> 'UPDATE' OR TG_TABLE_NAME <> 'work_items' THEN
+          RAISE EXCEPTION 'issue receiver token requires a work_items UPDATE';
+        END IF;
+        IF COALESCE(OLD.item_kind, '') NOT IN ('bug', 'change', 'task')
+           OR COALESCE(NEW.item_kind, '') NOT IN ('bug', 'change', 'task')
+           OR NULLIF(NEW.author_pubkey, '') IS NULL THEN
+          RAISE EXCEPTION 'issue receiver token requires issue-family publisher provenance';
+        END IF;
+        NEW.origin := 'remote';
+        RETURN NEW;
+      END IF;
       IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN
         RETURN NEW;
       END IF;
