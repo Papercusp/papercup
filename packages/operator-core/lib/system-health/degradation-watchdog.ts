@@ -166,7 +166,11 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'workspace-routing-read', scopeKeyed: true,
-  description: 'Workspace route and issue-partition decisions that measured their primary inventory or flag rather than choosing a local-only or shared-partition default after a read failure.',
+  description: 'Workspace route, recipient and issue-partition decisions that measured their primary inventory, recipient set or flag rather than selecting a fallback after a read failure.',
+});
+registerDegradationMechanism({
+  mechanism: 'coordination-delivery', scopeKeyed: true,
+  description: 'Eligible directed delegation deliveries that wrote the brief and obtained a positive wake result rather than falling back after a staged, missed or failed delivery.',
 });
 registerDegradationMechanism({
   mechanism: 'work-item-lock-reclaim',
