@@ -26,7 +26,7 @@ describe('sidebar audit to report', () => {
   it('submits workspace scope without narrowing it to the visible selection', async () => {
     vi.stubGlobal('fetch', h.fetch);h.fetch.mockResolvedValue(reply({ run: { id: 'workspace-run' } }, 202));
     render(<PlanAuditActions planSlugs={['alpha']} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Audit workspace', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Audit workspace' }));
     await waitFor(() => expect(h.set).toHaveBeenCalledWith('workspace-run'));
     expect(JSON.parse(h.fetch.mock.calls[0][1].body)).toEqual({ scope: 'workspace' });
   });

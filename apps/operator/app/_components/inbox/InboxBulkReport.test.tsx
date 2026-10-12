@@ -543,7 +543,7 @@ describe("<InboxBulkReport>", () => {
       intake('retained-intake', { outcome: 'auto_resolved', intakeDecision: {
         disposition: 'retain', reason: 'Preserve the observation', decidedBy: 'reviewer', owner: 'agent',
         targetRef: null, missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
-        workKind: null, acceptance: null, sourceRevision: 'src-v1:fixture',
+        workKind: null, acceptance: null, reproduction: null, sourceRevision: 'src-v1:fixture',
       } }),
       intake('rejected-intake', { outcome: 'dismissed' }),
       runItem({ itemId: 'unrelated-message', outcome: 'pending', actionId: null }),
@@ -561,7 +561,7 @@ describe("<InboxBulkReport>", () => {
       runItem({ itemId: 'triage-decided', outcome: 'auto_resolved', actionId: 'apply-intake', intakeDecision: {
         disposition: 'merge', reason: 'Same bounded-parser defect', decidedBy: 'reviewer', owner: 'agent',
         targetRef: 'WI-canonical', missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
-        workKind: null, acceptance: null, sourceRevision: 'src-v1:fixture',
+        workKind: null, acceptance: null, reproduction: null, sourceRevision: 'src-v1:fixture',
       } }),
     ];
     const groups = buildInboxBulkReviewGroups(items, new Map());

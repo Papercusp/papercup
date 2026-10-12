@@ -49,7 +49,7 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     const onOpenInGui = vi.fn();
     renderModal({ conversationOwnerId: 'selected-history-owner', onOpenInGui });
     const button = screen.getByTestId('agent-history-open-conversation');
-    expect(screen.getByRole('button', { name: 'Open conversation', exact: true })).toBe(button);
+    expect(screen.getByRole('button', { name: 'Open conversation' })).toBe(button);
     expect(screen.queryByTestId('resume-terminal-btn')).toBeNull();
     fireEvent.click(button);
     expect(onOpenInGui).toHaveBeenCalledExactlyOnceWith('selected-history-owner');

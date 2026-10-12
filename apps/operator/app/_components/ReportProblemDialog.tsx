@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { Checkbox } from '../harness/Checkbox';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { WorkItemRow } from '../adv/harnesses/WorkItemsPanel';
+import type { WorkItemDetailRow } from '../adv/harnesses/DetailPanel';
 import { CHAT_WORK_ITEM_POPUP_PARAM, encodeScopedRef } from './chat/chat-ref-popup-params';
 import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
 import { useShortcutAction } from '../../lib/hotkeys';
@@ -295,7 +296,7 @@ export default function ReportProblemDialog() {
 
 /** Existing sync invalidation is the subscription; no polling or contact address. */
 export function ReportProblemUpdate({ id, workspaceId, onOpen }: { id: string; workspaceId: string; onOpen: () => void }) {
-  const { data } = useSyncQuery<WorkItemRow>({ queryName: 'workItems.detail', args: { harnessSlug: PLATFORM_POT_SLUG, id } });
+  const { data } = useSyncQuery<WorkItemDetailRow>({ queryName: 'workItems.detail', args: { harnessSlug: PLATFORM_POT_SLUG, id } });
   const report = data?.[0]?.reporterStatus;
   const event = report?.status === 'fixed' && report.release
     ? { key: `release:${report.release.completionRef}:${report.release.artifactCommit}`, text: report.label }

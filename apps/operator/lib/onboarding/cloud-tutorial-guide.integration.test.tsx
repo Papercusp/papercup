@@ -54,16 +54,16 @@ describe("Full-product guide accessibility composition", () => {
       await screen.findByRole("heading", { name: "Welcome to Papercusp" });
 
       for (const lesson of PRODUCT_TUTORIAL_LESSONS) {
-        const navigation = screen.getByRole("button", { name: lesson.title, exact: true });
+        const navigation = screen.getByRole("button", { name: lesson.title });
         navigation.focus(); fireEvent.click(navigation);
-        const heading = await screen.findByRole("heading", { name: lesson.title, exact: true });
+        const heading = await screen.findByRole("heading", { name: lesson.title });
         await waitFor(() => expect(document.activeElement).toBe(heading));
         expect(navigation.getAttribute("aria-current")).toBe("step");
         const help = screen.getByText("Help with this lesson", { exact: true });
         const disclosure = help.closest("details")!;
         disclosure.open = true; fireEvent(disclosure, new Event("toggle"));
         expect(screen.getByText(lesson.help, { exact: true })).toBeTruthy();
-        const question = screen.getByRole("textbox", { name: "Lesson question", exact: true });
+        const question = screen.getByRole("textbox", { name: "Lesson question" });
         question.focus(); fireEvent.change(question, { target: { value: `Explain ${lesson.title}` } });
         expect(document.activeElement).toBe(question);
         expect((question as HTMLTextAreaElement).value).toBe(`Explain ${lesson.title}`);
@@ -78,9 +78,9 @@ describe("Full-product guide accessibility composition", () => {
         field.focus(); fireEvent.change(field, { target: { value: "My product input" } });
         expect(document.activeElement).toBe(field);
         expect((field as HTMLInputElement).value).toBe("My product input");
-        expect(screen.queryByRole("heading", { name: lesson.title, exact: true })).toBeNull();
+        expect(screen.queryByRole("heading", { name: lesson.title })).toBeNull();
         fireEvent.click(resume);
-        const restored = await screen.findByRole("heading", { name: lesson.title, exact: true });
+        const restored = await screen.findByRole("heading", { name: lesson.title });
         await waitFor(() => expect(document.activeElement).toBe(restored));
       }
       expect(writes.every(patch => Array.isArray(patch.reviewedLessonIds) && patch.reviewedLessonIds.length === 0)).toBe(true);

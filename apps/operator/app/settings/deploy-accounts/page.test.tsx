@@ -112,7 +112,7 @@ describe('Deploy accounts — browser login completion', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fetch = loginFetch('completed');
     render(<DeployAccountsPage />);
-    if (provider === 'Codex') fireEvent.click(screen.getByRole('tab', { name: 'Codex', exact: true }));
+    if (provider === 'Codex') fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
     fireEvent.click(screen.getByRole('button', { name: 'Get authorize link' }));
     await screen.findByRole('link', { name: /open the/ });
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
