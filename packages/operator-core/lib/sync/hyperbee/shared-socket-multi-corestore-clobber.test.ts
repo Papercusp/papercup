@@ -39,12 +39,13 @@
  * which must keep working — so a red here is specifically the multi-store
  * clobber, never a broken harness.
  */
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
+import { performance } from 'node:perf_hooks';
 // This is the exact stream a Hyperswarm connection hands to `store.replicate(socket)`,
 // so the probe must use it. Upstream ships no types; the shim lives with the rest of the
 // Holepunch shims in ./holepunch.d.ts, so the `NoiseSecretStream` annotation below is a
@@ -55,7 +56,56 @@ import { __resetRemoteCoreHostsForTest, registerStoreMachine } from './remote-co
 
 const cleanups: Array<() => void> = [];
 
-afterEach(() => {
+// WI-8533: a whole-test timeout used to hide which setup/replication await
+// stalled. Keep the pending row too: afterEach can report it when Vitest times
+// out before the promise settles. Each operation captures its test's array so
+// a late settlement cannot overwrite the next test's diagnostic state.
+interface PhaseMeasurement {
+  name: string;
+  startedAt: number;
+  cpuStart: NodeJS.CpuUsage;
+  wallMs?: number;
+  cpuMs?: number;
+  state: 'pending' | 'fulfilled' | 'rejected';
+}
+let phases: PhaseMeasurement[] = [];
+beforeEach(() => { phases = []; });
+
+async function phase<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  const row: PhaseMeasurement = {
+    name, startedAt: performance.now(), cpuStart: process.cpuUsage(), state: 'pending',
+  };
+  phases.push(row);
+  try {
+    const result = await operation();
+    row.state = 'fulfilled';
+    return result;
+  } catch (error) {
+    row.state = 'rejected';
+    throw error;
+  } finally {
+    const cpu = process.cpuUsage(row.cpuStart);
+    row.wallMs = performance.now() - row.startedAt;
+    row.cpuMs = (cpu.user + cpu.system) / 1_000;
+  }
+}
+
+afterEach(({ task }) => {
+  if (task.result?.state === 'fail' || process.env.PAPERCUSP_SOCKET_PHASE_TRACE === '1') {
+    // CPU is this worker process's usage during the phase, not host load or
+    // proof of CPU contention. An unresolved phase remains explicitly pending.
+    const measurements = phases.map((row) => {
+      const cpu = process.cpuUsage(row.cpuStart);
+      return {
+        phase: row.name,
+        state: row.state,
+        wallMs: Math.round(row.wallMs ?? performance.now() - row.startedAt),
+        processCpuMs: Math.round(row.cpuMs ?? (cpu.user + cpu.system) / 1_000),
+      };
+    });
+    // eslint-disable-next-line no-console
+    console.log(`[WI-8533 phases] ${JSON.stringify({ test: task.name, measurements })}`);
+  }
   while (cleanups.length) {
     try {
       cleanups.pop()!();
@@ -93,7 +143,7 @@ function makeStore(prefix: string): Corestore {
  * `outerStream.noiseStream` and throws `Invalid stream` without one.
  */
 async function noiseStreamPair(): Promise<[NoiseSecretStream, NoiseSecretStream]> {
-  const [rawA, rawB] = await rawSocketPair();
+  const [rawA, rawB] = await phase('socket.loopback-connect', () => rawSocketPair());
   const a = new NoiseSecretStream(true, rawA);
   const b = new NoiseSecretStream(false, rawB);
   cleanups.push(() => {
@@ -102,10 +152,10 @@ async function noiseStreamPair(): Promise<[NoiseSecretStream, NoiseSecretStream]
       b.destroy();
     } catch {}
   });
-  await Promise.all([
+  await phase('socket.noise-handshake', () => Promise.all([
     new Promise<void>((r) => a.on('connect', () => r())),
     new Promise<void>((r) => b.on('connect', () => r())),
-  ]);
+  ]));
   return [a, b];
 }
 
@@ -156,8 +206,8 @@ async function waitFor(fn: () => boolean, timeoutMs = 5_000): Promise<boolean> {
 }
 
 async function seedLog(store: Corestore, hbKey: string): Promise<string> {
-  const own = await openOwnLog(store);
-  await own.append({
+  const own = await phase(`seed.${hbKey}.open`, () => openOwnLog(store));
+  await phase(`seed.${hbKey}.append`, () => own.append({
     type: 'put',
     table: 'features_consolidated',
     hbKey,
@@ -165,15 +215,14 @@ async function seedLog(store: Corestore, hbKey: string): Promise<string> {
     ts: 10,
     schema_version: 1,
     author_pubkey: 'A',
-  });
+  }));
   return own.keyHex;
 }
 
-// Per-test budgets are 90s+, not 30s. Setup (four corestores, seeding, a noise
-// handshake) is CPU-bound, and under green-checkpoint load THE DEFECT case once
-// passed its 30s budget although each waitFor is capped at 4s. TEMPORARY
-// MITIGATION: the durable fix is to find which await stretches, tracked as
-// WI-6554700010008533. A real hang still fails, only later.
+// TEMPORARY MITIGATION: THE DEFECT case exceeded its former 30s budget; its
+// causal phase is still unknown (WI-6554700010008533). The 90s budget is not a
+// root-cause fix. Failures now report completed and pending measured phases;
+// PAPERCUSP_SOCKET_PHASE_TRACE=1 also emits them for focused diagnostic runs.
 describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
   it('CONTROL: one corestore per side over a real socket serves its log fine', async () => {
     const serveStore = makeStore('ssc-ctl-serve-');
@@ -199,15 +248,15 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
   it('THE DEFECT: a SECOND corestore replicating the same socket makes the FIRST store’s log unservable (peersCount stays 0 on a live connection)', async () => {
     // Serve side: two "harnesses" sharing one socket, exactly like the rig.
     const serveFirst = makeStore('ssc-serve-1-');
-    await serveFirst.ready();
+    await phase('serveFirst.ready', () => serveFirst.ready());
     const serveSecond = makeStore('ssc-serve-2-');
-    await serveSecond.ready();
+    await phase('serveSecond.ready', () => serveSecond.ready());
 
     // Fetch side: mirror topology, so each store can hold its peer's handle.
     const fetchFirst = makeStore('ssc-fetch-1-');
-    await fetchFirst.ready();
+    await phase('fetchFirst.ready', () => fetchFirst.ready());
     const fetchSecond = makeStore('ssc-fetch-2-');
-    await fetchSecond.ready();
+    await phase('fetchSecond.ready', () => fetchSecond.ready());
 
     const keyFirst = await seedLog(serveFirst, 'H1-1');
     const keySecond = await seedLog(serveSecond, 'H2-1');
@@ -220,15 +269,17 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     fetchFirst.replicate(sockFetch);
     fetchSecond.replicate(sockFetch);
 
-    await waitFor(() => false, 250);
+    await phase('replication.settle', () => waitFor(() => false, 250));
 
     // Production ordering: the peer log is admitted (opened) long after the
     // connection is established.
-    const remoteFirst = await openRemoteLog(fetchFirst, keyFirst);
-    const remoteSecond = await openRemoteLog(fetchSecond, keySecond);
+    const remoteFirst = await phase('remoteFirst.open', () => openRemoteLog(fetchFirst, keyFirst));
+    const remoteSecond = await phase('remoteSecond.open', () => openRemoteLog(fetchSecond, keySecond));
 
-    const firstAttached = await waitFor(() => (remoteFirst.peersCount?.() ?? 0) > 0, 4_000);
-    const secondAttached = await waitFor(() => (remoteSecond.peersCount?.() ?? 0) > 0, 4_000);
+    const firstAttached = await phase('remoteFirst.attach', () =>
+      waitFor(() => (remoteFirst.peersCount?.() ?? 0) > 0, 4_000));
+    const secondAttached = await phase('remoteSecond.attach', () =>
+      waitFor(() => (remoteSecond.peersCount?.() ?? 0) > 0, 4_000));
 
     // Report both so a failure names WHICH store lost the pair() race.
     // eslint-disable-next-line no-console
