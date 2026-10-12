@@ -17,6 +17,7 @@ export interface RailMigrationCase {
 }
 
 import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
+import { original, execute } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
@@ -125,6 +126,185 @@ for (const kind of ['plan-item-claim', 'work-item-claim', 'work-item-replica'] a
         expect(warn).toHaveBeenCalledTimes(20);
         return { route: 'observation', mechanism: 'swarm-authority-route', observations };
       } finally { rpc.setPeerRpcTransport(previousTransport); sink.mockRestore(); warn.mockRestore(); }
+    },
+  });
+}
+
+RAIL_MIGRATION_CASES.push({
+  id: 'storage-slug-original-resolver-error-and-verified-unpotted-recovery', item: 'P-011', route: 'observation',
+  mechanism: 'work-item-storage-resolution',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/pot-membership.ts|workItemStorageSlug|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    let result: string | null = null;
+    let fail = true;
+    const producer = execute(original('packages/operator-core/lib/pot-membership.ts', 'function workItemStorageSlug(', 'function'), {
+      resolveWorkItemPot: async () => { if (fail) throw new Error('resolver unavailable'); return result; },
+      observeFallback: (mechanism: string, row: typeof observations[number]) => {
+        expect(mechanism).toBe('work-item-storage-resolution'); observations.push(row); return true;
+      },
+    }, 'workItemStorageSlug') as (slug: string, workspace: string) => Promise<string>;
+    expect(await producer('member', 'fixture')).toBe('member');
+    fail = false;
+    expect(await producer('member', 'fixture')).toBe('member'); // verified unpotted tenant
+    result = 'pot-home';
+    expect(await producer('member', 'fixture')).toBe('pot-home');
+    expect(observations.map((row) => [row.applied, row.reason])).toEqual([
+      [0, 'pot-resolution-failed'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'work-item-storage-resolution', observations };
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'substrate-binding-original-required-hive-failure-and-configured-local-recovery', item: 'P-011', route: 'observation',
+  mechanism: 'substrate-binding-resolution',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|defaultResolveSwarmBinding|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    let fail = false;
+    let hive: object | null = null;
+    let home: string | null = 'pot-home';
+    let projectDir = '/fixture';
+    let config: { topic?: string; github_repository_id: number } | null = { github_repository_id: 1 };
+    const producer = execute(original('packages/operator-core/lib/sync/hyperbee/boot-all.ts', 'function defaultResolveSwarmBinding(', 'function'), {
+      require: (path: string) => path.endsWith('hive-federation') ? {
+        resolveHiveSwarmBinding: async () => { if (fail) throw new Error('identity unavailable'); return hive; },
+        potHomeSlugForHarness: async () => home,
+      } : { resolveHarnessPaths: async () => ({ projectDir }) },
+      loadSharedConfigFromProjectDir: () => config,
+      observeFallback: (mechanism: string, row: typeof observations[number]) => {
+        expect(mechanism).toBe('substrate-binding-resolution'); observations.push(row); return true;
+      },
+    }, 'defaultResolveSwarmBinding') as (workspace: string, slug: string) => Promise<unknown>;
+    expect(await producer('fixture', 'member')).toBeNull();
+    fail = true; expect(await producer('fixture', 'member')).toBeNull();
+    fail = false; projectDir = '/tmp/papercusp-unresolved/member';
+    expect(await producer('fixture', 'member')).toBeNull();
+    projectDir = '/fixture'; config = null;
+    expect(await producer('fixture', 'member')).toBeNull(); // verified local-only
+    config = { topic: 'a'.repeat(64), github_repository_id: 1 };
+    expect(await producer('fixture', 'member')).toEqual({ kind: 'topic', topic_hex: 'a'.repeat(64) });
+    config = { github_repository_id: 1 }; home = null;
+    expect(await producer('fixture', 'member')).toEqual({ kind: 'gh', github_repository_id: 1 });
+    hive = { kind: 'topic', topic_hex: 'b'.repeat(64) };
+    expect(await producer('fixture', 'member')).toEqual(hive);
+    expect(observations.map((row) => row.reason)).toEqual([
+      'hive-binding-unresolved', 'binding-read-failed', 'harness-path-unresolved', 'applied', 'applied', 'applied', 'applied',
+    ]);
+    return { route: 'observation', mechanism: 'substrate-binding-resolution', observations };
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'substrate-boot-original-latch-timeout-decided-route-and-cached-exclusion', item: 'P-011', route: 'observation',
+  mechanism: 'substrate-boot-routing',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|bootSingleHarness|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const text = original('packages/operator-core/lib/sync/hyperbee/boot-all.ts', 'function bootSingleHarness(', 'function');
+    for (const timedOut of [true, false]) {
+      const handles = new Map();
+      const inflight = new Map();
+      let boots = 0;
+      const producer = execute(text, {
+        key: (workspace: string, slug: string) => `${workspace}:${slug}`, handles, inflight,
+        routingDecisionFailure: null, routingDecisionPending: timedOut ? new Promise(() => {}) : null,
+        SUBSTRATE_ROUTING_WAIT_MS: 1, setTimeout: (callback: () => void, ms: number) => { if (ms === 1) callback(); return { unref() {} }; },
+        defaultBootHarness: null, defaultInProcessBootAllowed: () => true, defaultSkipSendSideWiring: true,
+        bootHarnessSubstrate: async () => { boots++; return {}; }, defaultMergeCursorStoreFactory: null,
+        createPgMergeCursorStore: () => ({}), process: { env: {} }, workspaceRootForId: () => '/fixture',
+        evictionTrackingEnabled: false, disarmSubstrateWakeKeepalive: async () => {},
+        observeFallback: (mechanism: string, row: typeof observations[number]) => {
+          expect(mechanism).toBe('substrate-boot-routing'); observations.push(row); return true;
+        },
+      }, 'bootSingleHarness') as (workspace: string, slug: string, opts: object) => Promise<{ state: string }>;
+      const opts = { resolveSwarmBinding: async () => null };
+      expect((await producer('fixture', 'member', opts)).state).toBe('booted');
+      expect((await producer('fixture', 'member', opts)).state).toBe('already-booted');
+      expect(boots).toBe(1);
+    }
+    expect(observations.map((row) => [row.applied, row.reason])).toEqual([[0, 'routing-decision-timeout'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'substrate-boot-routing', observations };
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'substrate-activation-original-failed-plan-partial-registry-and-recovery', item: 'P-011', route: 'observation',
+  mechanism: 'substrate-activation-plan',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|resolveActivationDeferrals|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    let fail = true;
+    let enabled = true;
+    let projects = [{ slug: 'one' }, { slug: 'two' }];
+    const policy = await import('../sync/hyperbee/substrate-active-set-policy');
+    const producer = execute(original('packages/operator-core/lib/sync/hyperbee/boot-all.ts', 'function resolveActivationDeferrals(', 'function'), {
+      require: (path: string) => {
+        if (path === '@papercusp/flags/server') return { getFlag: async () => enabled };
+        if (path === '@papercusp/flags') return { FLAGS: { LAZY_SUBSTRATE_BOOT: 'lazy' } };
+        if (path.endsWith('harness-registry')) return { loadHarnessRegistry: async () => { if (fail) throw new Error('registry unavailable'); return { projects }; } };
+        if (path.endsWith('substrate-active-set-policy')) return policy;
+        if (path.endsWith('substrate-active-set-facts')) return { gatherActivationFacts: async (entries: object[]) =>
+          entries.map((entry) => ({ ...entry, pendingOutboxRows: 0, lastPresenceMs: null, pinned: false })) };
+        throw new Error(`unexpected dependency ${path}`);
+      },
+      observeFallback: (mechanism: string, row: typeof observations[number]) => {
+        expect(mechanism).toBe('substrate-activation-plan'); observations.push(row); return true;
+      },
+    }, 'resolveActivationDeferrals') as (pairs: object[], opts: object) => Promise<Set<string>>;
+    const pairs = [{ wsId: 'fixture', slug: 'one' }, { wsId: 'fixture', slug: 'two' }];
+    const opts = { activationFactDeps: {} };
+    expect((await producer(pairs, opts)).size).toBe(0);
+    fail = false; projects = [{ slug: 'one' }];
+    expect([...await producer(pairs, opts)]).toEqual(['fixture::one']);
+    projects.push({ slug: 'two' });
+    expect((await producer(pairs, opts)).size).toBe(2);
+    await producer([], opts); enabled = false; await producer(pairs, opts);
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [2, 0, 'activation-plan-failed'], [2, 1, 'registry-entry-missing'], [2, 2, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'substrate-activation-plan', observations };
+  },
+});
+
+for (const cleanup of [false, true]) {
+  const mechanism = cleanup ? 'substrate-sidecar-cleanup' : 'substrate-sidecar-boot';
+  RAIL_MIGRATION_CASES.push({
+    id: `${mechanism}-original-wrapper-failed-and-primary`, item: 'P-011', route: 'observation', mechanism,
+    rowIds: [`log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts|bootSubstrateWithFallback|${cleanup ? 2 : 1}`],
+    run: async () => {
+      const { expect } = await import('vitest');
+      const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+      let enabled = true;
+      let failBoot = true;
+      let failStop = true;
+      let stops = 0;
+      const producer = execute(original('packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts', 'function bootSubstrateWithFallback(', 'function'), {
+        getFlag: async (flag: string) => flag === 'sidecar' ? enabled : false,
+        FLAGS: { SUBSTRATE_SIDECAR: 'sidecar', SUBSTRATE_MERGE_CURSOR_PG: 'cursor' },
+        createPgMergeCursorStore: () => ({}), maybeStartSubstrateEvictionReaper: async () => false, keepalive: null,
+        setSubstrateBootDefaults() {}, bootAllHarnessesForActiveWorkspace: async () => ({ booted: 1 }),
+        spawnSubstrateSidecar: async () => { if (failBoot) throw new Error('spawn failed'); },
+        stopSubstrateSidecar: async () => { stops++; if (failStop) throw new Error('stop failed'); },
+        registerSidecarShutdownHooks() {}, ensureSidecarRespawnReconcileRegistered() {},
+        getSubstrateIpcClient: () => ({ call: async () => ({}) }), closeInProcessBootedHarnesses: async () => [],
+        observeFallback: (name: string, row: typeof observations[number]) => {
+          if (name === mechanism) observations.push(row); return true;
+        },
+      }, 'bootSubstrateWithFallback') as () => Promise<{ usedSidecar: boolean }>;
+      expect((await producer()).usedSidecar).toBe(false);
+      failStop = false; expect((await producer()).usedSidecar).toBe(false);
+      failBoot = false; expect((await producer()).usedSidecar).toBe(true);
+      const before = observations.length;
+      enabled = false; expect((await producer()).usedSidecar).toBe(false);
+      expect(observations).toHaveLength(before); expect(stops).toBe(2);
+      expect(observations.map((row) => row.applied)).toEqual(cleanup ? [0, 1] : [0, 0, 1]);
+      return { route: 'observation', mechanism, observations };
     },
   });
 }

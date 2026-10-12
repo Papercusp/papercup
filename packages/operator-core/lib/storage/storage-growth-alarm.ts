@@ -60,6 +60,10 @@ import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
+// `tool-invocations` keeps a 14-day history used by activity and correction readers.
+// A live 2026-10-12 sample measured 22.3 GiB; the last-7d call rate projects ~32 GiB
+// after the full window turns over, so 48 GiB leaves room for normal variation.
+const TOOL_INVOCATIONS_CEILING_GIB = 48;
 /** The marker phrase that makes "nothing prunes this" MACHINE-READABLE. The
  *  unpruned-by-design set is derived from it rather than maintained beside the
  *  map, so a new blanket exemption cannot slip past the subset guard below by
@@ -73,11 +77,12 @@ function envNum(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
-/** Absolute ceiling (GiB) above which a PG category is flagged. The bloat-queue
- *  (substrate_outbox) is the EI-126 102 GB class — it should stay small while
- *  draining, so a much tighter ceiling. Both env-overridable. */
+/** Absolute ceiling (GiB) above which a PG category is flagged. The
+ *  tool-invocations and substrate-outbox categories have workload-specific
+ *  ceilings; the general and outbox values remain env-overridable. */
 export function categoryCeilingBytes(id: string): number {
   if (id === 'substrate-outbox') return envNum('PAPERCUSP_STORAGE_ALARM_OUTBOX_GB', 3) * GIB;
+  if (id === 'tool-invocations') return TOOL_INVOCATIONS_CEILING_GIB * GIB;
   return envNum('PAPERCUSP_STORAGE_ALARM_DEFAULT_GB', 10) * GIB;
 }
 
@@ -376,8 +381,8 @@ export function detectUndeclaredDiskGrowth(
   return { undeclared, incomplete: truncated };
 }
 
-function fmtGb(bytes: number): string {
-  return `${(bytes / GIB).toFixed(1)} GB`;
+function fmtGiB(bytes: number): string {
+  return `${(bytes / GIB).toFixed(1)} GiB`;
 }
 
 /** Pure breach detection over a usage snapshot — unit-testable without PG. Only
@@ -425,7 +430,7 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
   const lines = breaches
     .map(
       (b) =>
-        `• ${b.label} (${b.id}): ${fmtGb(b.bytes)} > ${fmtGb(b.ceilingBytes)} ceiling${b.trimmable ? '' : ' — read-only/federated'}`,
+        `• ${b.label} (${b.id}): ${fmtGiB(b.bytes)} > ${fmtGiB(b.ceilingBytes)} ceiling${b.trimmable ? '' : ' — read-only/federated'}`,
     )
     .join('\n');
   return {
@@ -433,7 +438,7 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
     message: `Storage growth alarm — ${breaches.length} table(s) over threshold`,
     description:
       `These Postgres tables crossed their size ceiling (the silent-growth guard for the EI-126 102 GB class):\n${lines}\n\n` +
-      `Review in Settings → Storage. Tune a ceiling via PAPERCUSP_STORAGE_ALARM_DEFAULT_GB / PAPERCUSP_STORAGE_ALARM_OUTBOX_GB.`,
+      `Review in Settings → Storage. Tune general and outbox ceilings via PAPERCUSP_STORAGE_ALARM_DEFAULT_GB / PAPERCUSP_STORAGE_ALARM_OUTBOX_GB; tool-invocations uses its 48 GiB 14-day-history ceiling.`,
   };
 }
 
@@ -446,13 +451,13 @@ export function formatGrowthEscalation(breaches: StorageBreach[]): { title: stri
   return {
     title: STORAGE_GROWTH_ESCALATION_TITLE,
     body:
-      `${worst.label} (${worst.id}) is ${fmtGb(worst.bytes)} over its ${fmtGb(worst.ceilingBytes)} ceiling. ` +
+      `${worst.label} (${worst.id}) is ${fmtGiB(worst.bytes)} over its ${fmtGiB(worst.ceilingBytes)} ceiling. ` +
       `${action}`,
   };
 }
 
 function fmtSize(bytes: number): string {
-  return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.round(bytes / (1024 * 1024))} MB`;
+  return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GiB` : `${Math.round(bytes / (1024 * 1024))} MiB`;
 }
 
 /** Build ONE aggregated toast for the undeclared sweep. Pure — unit-testable.

@@ -54,9 +54,10 @@ function pgRow(id: string, gb: number, extra: Partial<StorageUsageRow> = {}): St
 }
 
 describe('categoryCeilingBytes', () => {
-  it('defaults to 10 GiB and a tighter 3 GiB for the substrate-outbox bloat-queue', () => {
+  it('uses workload-specific ceilings without widening the general 10 GiB limit', () => {
     expect(categoryCeilingBytes('decision-ledger')).toBe(10 * GIB);
     expect(categoryCeilingBytes('substrate-outbox')).toBe(3 * GIB);
+    expect(categoryCeilingBytes('tool-invocations')).toBe(48 * GIB);
   });
 });
 
@@ -66,8 +67,14 @@ describe('detectBreaches', () => {
       pgRow('decision-ledger', 12), // > 10 GiB default → breach
       pgRow('agent-activity', 6), //   < 10 GiB → ok
       pgRow('substrate-outbox', 4), // > 3 GiB outbox ceiling → breach
+      pgRow('tool-invocations', 22.3), // 14-day history is below its measured-workload ceiling
     ]);
     expect(breaches.map((b) => b.id).sort()).toEqual(['decision-ledger', 'substrate-outbox']);
+  });
+
+  it('still flags tool-invocations above its 48 GiB retained-history ceiling', () => {
+    expect(detectBreaches([pgRow('tool-invocations', 48)])).toEqual([]);
+    expect(detectBreaches([pgRow('tool-invocations', 48.1)]).map((b) => b.id)).toEqual(['tool-invocations']);
   });
 
   it('does NOT flag the substrate-outbox queue while it is small (the EI-126 guard, pre-runaway)', () => {
@@ -94,8 +101,8 @@ describe('formatBreachToast', () => {
     expect(t.level).toBe('warning');
     expect(t.message).toContain('1 table(s)');
     expect(t.description).toContain('Substrate outbox (substrate-outbox)');
-    expect(t.description).toContain('5.0 GB');
-    expect(t.description).toContain('3.0 GB ceiling');
+    expect(t.description).toContain('5.0 GiB');
+    expect(t.description).toContain('3.0 GiB ceiling');
   });
 });
 

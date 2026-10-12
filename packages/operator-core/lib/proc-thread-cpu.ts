@@ -258,15 +258,19 @@ export interface MainThreadActivity {
 /**
  * Linux wait-channel names that identify a thread parked behind block I/O.
  *
- * The exact-zero CPU and D-state checks are load-bearing: a name alone is not
- * enough to establish that the main thread is the parked subject rather than
- * a stale or misread `/proc` sample.
+ * The parked CPU classification and D-state checks are load-bearing: a name
+ * alone is not enough to establish that the main thread is the parked subject
+ * rather than a stale or misread `/proc` sample. Requiring exactly zero CPU
+ * rejects measured low-CPU storage waits that the classifier already marks
+ * parked.
  */
 const HOST_IO_WAIT_WCHAN_RE = /^(?:iterate_dir|lookup_slow|rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|(?:__)?jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
 
 /**
  * Decide whether a sentinel kill should be suppressed because the main thread
  * is demonstrably waiting on host storage rather than wedged in JavaScript.
+ * The CPU classifier's parked category is the safety boundary; it includes
+ * valid low-but-nonzero CPU measurements.
  *
  * SIGKILL cannot relieve a block-device queue or swap-thrash wait. Suppressing
  * it keeps the host from adding a restart/materialization storm to the I/O
@@ -277,8 +281,7 @@ export function isConfirmedHostIoWait(activity: MainThreadActivity): boolean {
   const wchan = activity.wchan?.trim();
   return (
     activity.state === 'D' &&
-    activity.cpuMs === 0 &&
-    activity.cores === 0 &&
+    activity.cpuKind === 'parked' &&
     Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan))
   );
 }

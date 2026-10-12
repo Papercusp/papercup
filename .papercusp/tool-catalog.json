@@ -14824,7 +14824,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | trace | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. Impact walks dependents downstream or callees upstream; trace follows directed calls to target. max_depth/max_paths/limit bound traversal, with per-hop source versions, explicit truncation and unknown runtime execution. Context joins calls/imports/heritage/members/overrides/field accesses. Other languages and selectors receive explicit unsupported results.",
+      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. contracts joins static HTTP/RPC/event producer-consumer evidence over explicit registered harnesses in the authenticated workspace, with source versions, mismatched consumers and unknown middleware/runtime execution. Impact/trace use max_depth/max_paths/limit and per-hop provenance. Other languages and selectors receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],

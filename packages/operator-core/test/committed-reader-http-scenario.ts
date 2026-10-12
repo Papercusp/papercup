@@ -11,6 +11,8 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
+import { insertHiveIfAbsent } from '../lib/hive-store';
+import { generateEd25519KeypairDer } from '../lib/identity/ed25519';
 import { createWorkItem } from '../lib/work-items';
 import { issuesScopeWorkspace } from '../lib/issues-engineer';
 import { activeWorkspaceId } from '../lib/workspace-registry';
@@ -25,9 +27,24 @@ type Options = { workspace: string; harness: string; base: string;
   headers: Record<string, string>; evidenceDir: string };
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 
-/** Measure the original setup before a bundle, sidecar, or HTTP experiment. */
+/** Reuse the maintained private Pot setup before either reader creates an item. */
+async function preparePrivateReaderPot(workspace: string, harness: string) {
+  assert.match(workspace, /^test-runtime-/);
+  const scope = await resolvePlanScope({ harnessSlug: harness });
+  assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
+  const owner = generateEd25519KeypairDer();
+  await insertHiveIfAbsent({ workspaceId: workspace, homeSlug: workspace,
+    pubkeyBase64: owner.pubkeyBase64, keychainId: 'disposable-committed-reader-owner' }, getOrgPg().sql);
+  assert.equal((await potExistence(workspace, workspace)).state, 'exists');
+  // The bare workspace is a global scope label. A concrete member resolves to
+  // the real private Pot through the production membership resolver.
+  assert.equal(await resolveWorkItemPot({ rawSlug: harness, workspaceId: workspace }), workspace);
+}
+
+/** Verify setup before a bundle, sidecar, or HTTP experiment. */
 export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' | 'harness' | 'evidenceDir'>) {
   assert.match(o.workspace, /^test-runtime-/);
+  await preparePrivateReaderPot(o.workspace, o.harness);
   const { sql } = getOrgPg();
   const scope = await resolvePlanScope({ harnessSlug: o.harness });
   const flags = {
@@ -35,7 +52,7 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
     issuesPerWorkspace: await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId()),
   };
   const item = await createWorkItem({ kind: 'task', title: 'Private committed reader setup diagnostic',
-    harness: o.workspace, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
+    harness: o.harness, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
   const rows = await sql`SELECT workspace_id, harness_slug, feature_id, item_kind
     FROM harness_shared.work_items WHERE feature_id = ${item.id}`;
   const visible = await withWorkspace(scope.workspaceId, tx => tx`
@@ -46,13 +63,13 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
       AND feature_id = ${item.id}`);
   const pot = await potExistence(o.workspace, o.workspace);
-  const resolvedPot = await resolveWorkItemPot({ rawSlug: o.workspace, workspaceId: issuesScopeWorkspace() });
+  const resolvedPot = await resolveWorkItemPot({ rawSlug: o.harness, workspaceId: issuesScopeWorkspace() });
   const registry = await loadHarnessRegistry(o.workspace, { fresh: true });
   const measurement = { workspace: o.workspace, harness: o.harness, itemId: item.id,
     scope, activeWorkspace: activeWorkspaceId(), issuesWorkspace: issuesScopeWorkspace(), flags,
     pot, resolvedPot, registry: registry.projects.map(({ slug, hive_slug, harness_kind }) => ({ slug, hive_slug, harness_kind })),
     rows, visible, exact };
-  // Persist before the binding or any corrective setup, so a failure retains the distinguishing evidence.
+  // Persist before binding, so a setup failure retains the distinguishing evidence.
   await writeFile(join(o.evidenceDir, 'committed-reader-setup.json'), JSON.stringify(measurement, null, 2), { flag: 'wx' });
   const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader-setup:S-001',
     planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
@@ -62,13 +79,31 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
   const binding = await bindSpecEvidence({ harnessSlug: o.harness, workItemId: item.id,
     specId: 'private-reader-setup:S-001', evidenceKind: 'manual', evidenceRef: 'setup-only',
     sourceFingerprint: sha256('setup-only'), actorId: 'private-http-fixture' });
-  const receipt = { ...measurement, binding, bundleStarted: false, httpStarted: false, sidecarStarted: false };
+  assert.equal(binding.status, 'created', JSON.stringify(binding));
+  assert.equal(exact.length, 1, 'private create and binding must use the same partition');
+  const wrongHome = `${o.workspace}-wrong-pot`;
+  const owner = generateEd25519KeypairDer();
+  await insertHiveIfAbsent({ workspaceId: o.workspace, homeSlug: wrongHome,
+    pubkeyBase64: owner.pubkeyBase64, keychainId: 'disposable-wrong-scope-owner' }, sql);
+  const home = registry.projects.find(project => project.slug === o.workspace);
+  assert.ok(home);
+  await saveHarnessRegistry({ ...registry, projects: [...registry.projects,
+    { slug: wrongHome, path: home.path, hive_slug: wrongHome }] }, o.workspace);
+  const wrongScope = await resolvePlanScope({ harnessSlug: wrongHome });
+  assert.deepEqual(wrongScope, { workspaceId: o.workspace, harnessSlug: wrongHome });
+  const wrongBinding = await bindSpecEvidence({ harnessSlug: wrongHome, workItemId: item.id,
+    specId: 'private-reader-setup:S-001', evidenceKind: 'manual', evidenceRef: 'wrong-scope',
+    sourceFingerprint: sha256('wrong-scope'), actorId: 'private-http-fixture' });
+  assert.equal(wrongBinding.status, 'work_item_not_found', JSON.stringify(wrongBinding));
+  const receipt = { ...measurement, binding, wrongScope, wrongBinding,
+    bundleStarted: false, httpStarted: false, sidecarStarted: false };
   await writeFile(join(o.evidenceDir, 'committed-reader-setup-receipt.json'), JSON.stringify(receipt, null, 2), { flag: 'wx' });
   return receipt;
 }
 
 export async function prepareCommittedReaderScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
+  await preparePrivateReaderPot(o.workspace, o.harness);
   const dir = await mkdtemp(join(tmpdir(), 'reader-http-'));
   const sockets = new Set<Socket>();
   let server: Server | undefined;
@@ -114,7 +149,7 @@ export async function prepareCommittedReaderScenario(o: Options) {
   await saveHarnessRegistry({ ...registry, projects: [...registry.projects,
     { slug: rootHarness, path: repo, hive_slug: o.workspace }] }, o.workspace);
   const item = await createWorkItem({ kind: 'task', title: 'Private committed reader HTTP fixture',
-    harness: o.workspace, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
+    harness: o.harness, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
   const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader:S-001',
     planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
     behavior: 'Cold HTTP evidence reads preserve committed bytes and remain available after a sidecar timeout.',

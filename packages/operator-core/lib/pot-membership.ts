@@ -33,6 +33,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { potHomeSlugForHarness } from './hive-federation';
+import { observeFallback } from './degradation/fallback-observations';
 
 /**
  * The canonical dogfood / platform Pot slug + its legacy-alias canonicalizer now
@@ -179,8 +180,11 @@ export async function workItemStorageSlug(
   logLabel = 'work-item-storage-slug',
 ): Promise<string> {
   try {
-    return (await resolveWorkItemPot({ rawSlug: harnessSlug, workspaceId })) ?? harnessSlug;
+    const slug = (await resolveWorkItemPot({ rawSlug: harnessSlug, workspaceId })) ?? harnessSlug;
+    observeFallback('work-item-storage-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
+    return slug;
   } catch (e) {
+    observeFallback('work-item-storage-resolution', { eligible: 1, applied: 0, reason: 'pot-resolution-failed', scope: `${workspaceId}:${harnessSlug}` });
     console.warn(
       `[${logLabel}] pot resolve failed for "${harnessSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
     );

@@ -268,6 +268,7 @@ describe('isConfirmedHostIoWait', () => {
   it('recognizes the recorded rq_qos_wait false-kill diagnostic', () => {
     expect(
       isConfirmedHostIoWait({
+        cpuKind: 'parked',
         state: 'D',
         cpuMs: 0,
         cores: 0,
@@ -290,13 +291,58 @@ describe('isConfirmedHostIoWait', () => {
       'iterate_dir',
       'lookup_slow',
     ]) {
-      expect(isConfirmedHostIoWait({ state: 'D', cpuMs: 0, cores: 0, wchan })).toBe(true);
+      expect(isConfirmedHostIoWait({ cpuKind: 'parked', state: 'D', cpuMs: 0, cores: 0, wchan })).toBe(true);
     }
+  });
+
+  it('accepts the measured low-nonzero parked lookup_slow wait and rejects a nearby partial sample', () => {
+    // The observed D-state lookup_slow sample accumulated 50 ms of CPU over
+    // 24,023 ms. That is about 0.00208 cores, inside classifyThreadCpu's
+    // existing parked boundary.
+    const measured = classifyThreadCpu({
+      baselineTicks: 1000,
+      currentTicks: 1005,
+      elapsedMs: 24_023,
+      userHz: 100,
+    });
+    expect(measured.kind).toBe('parked');
+    expect(measured.cpuMs).toBe(50);
+    expect(measured.cores).toBeCloseTo(50 / 24_023, 8);
+    expect(
+      isConfirmedHostIoWait({
+        cpuKind: measured.kind,
+        state: 'D',
+        cpuMs: measured.cpuMs,
+        cores: measured.cores,
+        wchan: 'lookup_slow',
+      }),
+    ).toBe(true);
+
+    // 0.051 cores sits just above the 0.05 parked boundary and must keep the
+    // normal sentinel kill path available even with the same D-state/wchan.
+    const partial = classifyThreadCpu({
+      baselineTicks: 1000,
+      currentTicks: 1051,
+      elapsedMs: 10_000,
+      userHz: 100,
+    });
+    expect(partial.kind).toBe('partial');
+    expect(partial.cores).toBeCloseTo(0.051, 8);
+    expect(
+      isConfirmedHostIoWait({
+        cpuKind: partial.kind,
+        state: 'D',
+        cpuMs: partial.cpuMs,
+        cores: partial.cores,
+        wchan: 'lookup_slow',
+      }),
+    ).toBe(false);
   });
 
   it('does not suppress the recorded spinning/futex wedge', () => {
     expect(
       isConfirmedHostIoWait({
+        cpuKind: 'spinning',
         state: 'R',
         cpuMs: 910,
         cores: 0.91,
@@ -306,12 +352,13 @@ describe('isConfirmedHostIoWait', () => {
   });
 
   it.each([
-    { state: 'D', cpuMs: 1, cores: 0, wchan: 'rq_qos_wait' },
-    { state: 'S', cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' },
-    { state: 'D', cpuMs: 0, cores: 0, wchan: 'futex_do_wait' },
-    { state: 'D', cpuMs: null, cores: null, wchan: 'rq_qos_wait' },
-    { state: 'D', cpuMs: 0, cores: 0, wchan: null },
-  ])('requires all host-I/O discriminator fields (%o)', (activity) => {
+    { cpuKind: 'partial', state: 'D', cpuMs: 51, cores: 0.051, wchan: 'rq_qos_wait' },
+    { cpuKind: 'parked', state: 'S', cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' },
+    { cpuKind: 'parked', state: 'D', cpuMs: 0, cores: 0, wchan: 'futex_do_wait' },
+    { cpuKind: 'unknown', state: 'D', cpuMs: null, cores: null, wchan: 'rq_qos_wait' },
+    { state: 'D', cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' },
+    { cpuKind: 'parked', state: 'D', cpuMs: 0, cores: 0, wchan: null },
+  ])('requires a parked D-state sample on a recognized storage channel (%o)', (activity) => {
     expect(isConfirmedHostIoWait(activity)).toBe(false);
   });
 });
