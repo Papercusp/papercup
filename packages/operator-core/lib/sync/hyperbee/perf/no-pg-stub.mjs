@@ -74,6 +74,7 @@ const stub = (name) => {
 // no-pg-stub-covers-db-org-imports.test.ts — do not prune by hand.
 export const _resetForTests = stub('_resetForTests');
 export const _resetStoreIdentityForTests = stub('_resetStoreIdentityForTests');
+export const acquireTicketSnapshot = stub('acquireTicketSnapshot');
 export const buildConnectionOptions = stub('buildConnectionOptions');
 export const consumeEvents = stub('consumeEvents');
 export const createDedicatedOrgPg = stub('createDedicatedOrgPg');
@@ -133,6 +134,7 @@ export const potsForGoal = stub('potsForGoal');
 export const recordEphemeralFire = stub('recordEphemeralFire');
 export const recordPgResult = stub('recordPgResult');
 export const restoreRawJsonbSerializer = stub('restoreRawJsonbSerializer');
+export const retryBeforeCallbackStarts = stub('retryBeforeCallbackStarts');
 export const retryOnRetryableDbDeadline = stub('retryOnRetryableDbDeadline');
 export const RoutineRow = stub('RoutineRow');
 // Inert for the same reason as `setAdminPoolStatementTimeoutProvider` below — see that note

@@ -147,7 +147,7 @@ describe('no-pg-stub covers every @papercusp/db-org named import in the peer-chi
 
   it('keeps diagnostic bindings linkable while rejecting accidental database use', async () => {
     const stub = (await import(new URL('./no-pg-stub.mjs', import.meta.url).href)) as Record<string, unknown>;
-    for (const name of ['pgDiagnosticIdentity', 'recordPgResult'] as const) {
+    for (const name of ['pgDiagnosticIdentity', 'recordPgResult', 'acquireTicketSnapshot', 'retryBeforeCallbackStarts'] as const) {
       const binding = stub[name];
       expect(binding).toBeTypeOf('function');
       expect(() => (binding as () => unknown)()).toThrow(`reached via \`${name}\``);
