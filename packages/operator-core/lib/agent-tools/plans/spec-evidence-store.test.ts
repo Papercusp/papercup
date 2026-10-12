@@ -1997,7 +1997,7 @@ describe('listSpecEvidence timestamp normalization', () => {
         const aliased = await readWithoutCallerCurrent(current);
         expect(aliased?.currentness).toEqual(omitted?.currentness);
         expect(aliased?.currentness.overall).toBe(state === 'unchanged' ? 'current' : state === 'moved' ? 'stale' : 'unknown');
-        expect(aliased?.serverMeasurement.status).toBe(state === 'unavailable' ? 'unavailable' : 'measured');
+        expect(aliased?.serverMeasurement?.status).toBe(state === 'unavailable' ? 'unavailable' : 'measured');
         if (state === 'unchanged') expect(aliased?.currentness.provenance).toBe('server-measured');
         if (state === 'moved') expect(aliased?.currentness.staleReasons).toContain('source-stale');
         if (state === 'unavailable') expect(aliased?.currentness.unknownReasons).toEqual(expect.arrayContaining([expect.stringMatching(/^server-measurement-unavailable:/)]));
