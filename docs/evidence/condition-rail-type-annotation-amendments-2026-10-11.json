@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "proposed-not-applied",
+  "status": "applied-reviewed",
   "seedRowsSha256": "a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4",
   "proposals": [
     {
@@ -828,5 +828,6 @@
         "declaration": "alert: UnservableAlert"
       }
     }
-  ]
+  ],
+  "reviewerRef": "thread-post:1176052"
 }
