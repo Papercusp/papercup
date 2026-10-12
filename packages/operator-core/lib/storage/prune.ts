@@ -28,6 +28,7 @@ import { dirSizeBytes, gatherProtectedSessionIdentity, listDiskEntries } from '.
 import {
   defaultSessionDirRoots,
   discoverSessionDirCandidates,
+  findUnarchivedSessionDirs,
   planSessionDirGc,
 } from '../session-dir-gc';
 import { readRegistry } from '../workspace-registry';
@@ -291,11 +292,19 @@ async function pruneDiskSessions(
   }
   const days = Math.max(req.olderThanDays ?? 0, cat.minOlderThanDays ?? 0);
   const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
+  const provisional = planSessionDirGc({
+    candidates,
+    protectedIdentity: gather.identity,
+    nowMs: Date.now(),
+    retentionMs: days * 86400000,
+  });
+  const unarchivedPaths = await findUnarchivedSessionDirs(provisional.remove);
   const plan = planSessionDirGc({
     candidates,
     protectedIdentity: gather.identity,
     nowMs: Date.now(),
     retentionMs: days * 86400000,
+    unarchivedPaths,
   });
   for (const c of plan.remove) {
     const size = dirSizeBytes(c.path);
