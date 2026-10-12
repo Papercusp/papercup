@@ -1116,6 +1116,7 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
 function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
   return [
+    `Currentness guard: at the start of the audit and immediately before emitting, require scorecard.gradingAuditCurrentness.state to be 'current'. If it is 'stale' or 'unknown', report its reason and stop without grading or emitting; the pending-audit dispatcher must refresh the stamp first.`,
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,

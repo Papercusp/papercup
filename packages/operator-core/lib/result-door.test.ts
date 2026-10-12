@@ -3681,6 +3681,22 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     expect(footer).toContain('`projection` cannot help');
     expect(footer).toContain('capability:read');
     expect(footer).not.toContain('op:"grep"');
+    // A line search over one line returns that same line, so the search route is not advertised.
+    expect(footer).not.toContain('query:"terms"');
+  });
+
+  it('advertises the one-call saved-result search on JSON and multi-line spills (token-efficiency P-005)', () => {
+    const jsonHint = buildProjectionHint([{ text: '{"a":1}' }], 'plans:get');
+    const textHint = buildProjectionHint([{ text: 'line one\nline two\nline three' }], 'plans:get');
+    for (const hint of [jsonHint, textHint]) {
+      expect(hint).toContain('capability:read { file_path, query:"terms" }');
+    }
+    // The JSON variant's `next` shares a budget with the retained preview (WI-5656): adding the search
+    // route was paid for by trimming, so it must not grow past its pre-P-005 length of 356 chars.
+    expect(jsonHint.length).toBeLessThanOrEqual(356);
+    // And it reaches the real spill footer, after the projection advice.
+    const footer = footerFor([{ type: 'text', text: longJson(BUDGET_CHARS * 2) }]);
+    expect(footer.indexOf('query:"terms"')).toBeGreaterThan(footer.indexOf('`pick` is what reduces it'));
   });
 
   it('the hint is derived from the body, not fixed: the same tool gets DIFFERENT advice for JSON vs text', () => {

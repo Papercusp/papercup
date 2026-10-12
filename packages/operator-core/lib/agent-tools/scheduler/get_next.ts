@@ -56,7 +56,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
-import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { OrgTxnTimeoutError, type CandidateWaitSnapshot } from '../../pg-bounded-txn';
 import { liveLockedPaths } from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
@@ -389,6 +389,7 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
   pgCode: string;
   timeoutSource: 'pg' | 'caller-budget';
   message: string;
+  candidateWaitSnapshot?: CandidateWaitSnapshot;
 } {
   // EI-21831306274538775: `pgCode: '57014'` here does NOT prove PostgreSQL timed out. The
   // claim ladder SYNTHESIZES the same typed error when its own wall-clock budget expires,
@@ -412,11 +413,12 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
     retryable: true,
     pgCode: error.pgCode,
     timeoutSource: error.timeoutSource,
+    ...(error.candidateWaitSnapshot ? { candidateWaitSnapshot: error.candidateWaitSnapshot } : {}),
     message: callerBudget
-      ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.message}. ` +
+      ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.messageWithoutBlockerHint}. ` +
         'Retry now; no claim was returned. ' +
         callerBudgetAdvice
-      : `scheduler:get_next claim hit a PostgreSQL timeout (${error.pgCode}): ${error.message}. ` +
+      : `scheduler:get_next claim hit a PostgreSQL timeout (${error.pgCode}): ${error.messageWithoutBlockerHint}. ` +
         'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
 }
@@ -1928,6 +1930,7 @@ export default defineTool({
           // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
           // view is empty" signal a fleet leader wants pushed, so opt in.
           checkIdleDrainOnMiss: true,
+          captureCandidateWait: true,
           signal,
         });
         void observeLateSchedulerClaim(operation, signal, (settlement) => {
@@ -1967,6 +1970,9 @@ export default defineTool({
             lastClaimStepElapsedMs: elapsedMs,
             pgCode: claim.error.pgCode,
             timeoutSource: claim.error.timeoutSource,
+            ...(claim.error.candidateWaitSnapshot
+              ? { candidateWaitSnapshot: claim.error.candidateWaitSnapshot }
+              : {}),
           },
         });
         return {

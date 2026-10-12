@@ -7,7 +7,13 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors'
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readScorecardEvidence, type ScorecardEvidenceRow } from '../../scorecards';
+import {
+  classifyGradingAuditCurrentness,
+  readScorecardEvidence,
+  type ScorecardEvidenceRow,
+} from '../../scorecards';
+import { getRubricWithoutSeeding } from '../../rubrics';
+import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
@@ -213,6 +219,14 @@ const scorecardEvidenceSchema = z.object({
     auditIssueId: z.string().optional(),
     auditor: z.string().optional(),
     auditedAt: z.string().optional(),
+  }).passthrough().optional(),
+  gradingAuditCurrentness: z.object({
+    state: z.enum(['current', 'stale', 'unknown']),
+    reason: z.string(),
+    recordedRevision: z.number().nullable(),
+    currentRevision: z.number().nullable(),
+    recordedCriteriaHash: z.string().nullable(),
+    currentCriteriaHash: z.string().nullable(),
   }).passthrough().optional(),
   provisional: z.object({
     violatableKeys: z.array(z.string()),
@@ -440,7 +454,16 @@ export default defineTool({
         if (result.kind === 'not_scorecard') {
           return { data: { ok: false as const, error: `'${issueId}' is not a scorecard` } };
         }
-        return { data: boundedEvidenceRead(result.scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)) };
+        const scorecard = result.scorecard.gradingAudit
+          ? {
+              ...result.scorecard,
+              gradingAuditCurrentness: classifyGradingAuditCurrentness(
+                result.scorecard.gradingAudit,
+                await getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null),
+              ),
+            }
+          : result.scorecard;
+        return { data: boundedEvidenceRead(scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)) };
       } catch (error) {
         if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
           return {

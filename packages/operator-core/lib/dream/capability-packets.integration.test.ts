@@ -16,6 +16,7 @@ import { buildCapabilityPacket, verifyCapabilityPacket, type CapabilityPacketDep
 import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
 import { capabilityHash } from './capability-contracts';
+import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -85,6 +86,62 @@ async function fixture(secretSource = false) {
 }
 
 describe('capability packets through the pinned secret-scanned packer', () => {
+  it('P023: supplies version-bound sampler hints from real compiler packets while keeping disconnected random candidates', async () => {
+    const f = await fixture();
+    f.deps.graph = (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({
+      root, repositoryId, vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', limit: 12,
+    }, { budgetMs: 20_000 });
+    const packets = [];
+    for (const [name, domain] of [['producer', 'memory'], ['consumer', 'code'], ['disconnected', 'planning']] as const) {
+      const unit = structuredClone(f.input.unit);
+      unit.id = `capability:${name}`; unit.granularity = 'capability'; unit.homeDomain = domain; unit.branch = name;
+      unit.evidence[0]!.path = `${name}.ts`;
+      unit.evidence[0]!.anchor = `export function ${name}(value: number)`;
+      unit.evidence[1]!.path = `${name}.test.ts`;
+      unit.evidence[1]!.anchor = `it('${name} rejects negative input'`;
+      const ref = unit.evidence[0]!.id;
+      const claim = (text: string) => ({ text, status: 'observed' as const, evidenceIds: [ref] });
+      unit.contracts = { inputs: [], outputs: [], events: [], state: [], guarantees: [], prerequisites: [], failureModes: [], resourceConstraints: [] };
+      if (name === 'producer') unit.contracts.outputs = [claim('A nonnegative numeric value.')];
+      if (name === 'consumer') unit.contracts.inputs = [claim('A nonnegative numeric value.')];
+      await writeFile(join(f.root, unit.evidence[0]!.path), unit.evidence[0]!.anchor
+        + ' { if (value < 0) throw new RangeError("negative"); return value * 2; }\n');
+      await writeFile(join(f.root, unit.evidence[1]!.path), `import { ${name} } from './${name}';\n`
+        + unit.evidence[1]!.anchor + `, () => { expect(() => ${name}(-1)).toThrow(); });\n`);
+      const artifact = join(f.root, `${name}.xml`);
+      const deps = { ...f.deps, pack: (rootPath: string, include: string[]) => packerFacade('pack', {
+        rootPath, include, format: 'xml', compress: false,
+      }, { ...DEFAULT_PACKER_EFFECTS, writeArtifact: async (body) => { await writeFile(artifact, body); return artifact; } }) };
+      const built = await buildCapabilityPacket({ ...f.input, unit }, deps);
+      expect(built.status, JSON.stringify(built)).toBe('ready');
+      if (built.status !== 'ready') throw new Error(built.reason);
+      expect(built.packet.graph?.status).toBe('measured');
+      packets.push(built.packet);
+    }
+    const manifest = { ...getPilotCapabilityManifest(), revision: f.input.manifestRevision, units: packets.map(p => p.unit) };
+    const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.input.scope, manifest, packets },
+      (packet, input) => verifyCapabilityPacket(packet, input, f.deps));
+    expect(snapshot.eligible, JSON.stringify(snapshot.exclusions)).toHaveLength(3);
+    const opts = { seed: 'p023', promptVersion: 'p023-current', now: Date.now(), arity: 2 as const };
+    const structural = sampleCapabilityCombination(snapshot, { ...opts, policy: { strategyWeights: [1, 0, 0] } });
+    expect(structural.status).toBe('selected');
+    if (structural.status !== 'selected') throw new Error(structural.reason);
+    expect(structural.selection.relation).toMatchObject({ kind: 'producer-consumer',
+      aVersion: structural.selection.a.contentVersion, bVersion: structural.selection.b.contentVersion });
+    const seen = new Set<string>();
+    for (let i = 0; i < 30; i++) {
+      const control = sampleCapabilityCombination(snapshot, { ...opts, seed: `control:${i}`, mode: 'random-control' });
+      if (control.status !== 'selected') throw new Error(control.reason);
+      expect(control.selection.relation).toBeNull();
+      seen.add(control.selection.a.packet.unit.id); seen.add(control.selection.b.packet.unit.id);
+    }
+    expect(seen.has('capability:disconnected')).toBe(true);
+    await writeFile(join(f.root, 'producer.ts'), 'export function producer(value: number) { return value * 3; }\n');
+    const stale = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.input.scope, manifest, packets },
+      (packet, input) => verifyCapabilityPacket(packet, input, f.deps));
+    expect(stale.eligible.some(e => e.packet.unit.id === 'capability:producer')).toBe(false);
+  }, 120_000);
+
   it('P022: enriches a source/test packet through the real compiler and scanner, then rejects edited evidence', async () => {
     const f = await fixture(), implementation = f.input.unit.evidence[0]!, test = f.input.unit.evidence[1]!;
     implementation.anchor = 'export function nativePacketTarget(value: number)';

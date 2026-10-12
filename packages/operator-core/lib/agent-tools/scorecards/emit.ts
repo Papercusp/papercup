@@ -47,6 +47,7 @@ import {
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
+  classifyGradingAuditCurrentness,
   acquireGradingAuditSubjectMutex,
   auditVerdictFromRatings,
   listScorecards,
@@ -2675,6 +2676,19 @@ export async function emitScorecard(
         return {
           ok: false as const,
           error: `audit subject '${args.subject.ref}' carries no gradingAudit stamp — only terminal standard-rubric cards emitted under the audit gate are auditable`,
+        };
+      }
+      const gradingAuditCurrentness = classifyGradingAuditCurrentness(gradedObservation.gradingAudit, {
+        rubricId: rubric.rubricId,
+        revision: rubric.revision,
+        criteriaHash: rubric.criteriaHash,
+      });
+      if (gradingAuditCurrentness.state !== 'current') {
+        return {
+          ok: false as const,
+          error:
+            `audit subject '${args.subject.ref}' carries a ${gradingAuditCurrentness.state} gradingAudit stamp ` +
+            `(${gradingAuditCurrentness.reason}); re-open it through the pending-audit dispatcher before settling a new audit`,
         };
       }
       const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;

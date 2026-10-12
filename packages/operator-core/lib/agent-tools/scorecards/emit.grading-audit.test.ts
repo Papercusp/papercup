@@ -195,6 +195,8 @@ const GRADED_CARD = {
         state: 'pending',
         metaRubricRef: 'grading-integrity',
         stampedAt: '2026-08-17T12:00:00.000Z',
+        rubricRevision: 1,
+        criteriaHash: 'rubric-hash-v1',
       },
     },
   },
@@ -712,6 +714,29 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res.ok).toBe(false);
     expect((res as { code?: string }).code).toBe('grading_audit_reservation_mismatch');
     expect((res as { error?: string }).error).toContain('does not match its latest dispatch reservation epoch');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale grading-audit stamp before filing an unrecordable audit card', async () => {
+    getIssue.mockResolvedValue({
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          gradingAudit: {
+            ...GRADED_CARD.payload.observation.gradingAudit,
+            rubricRevision: 1,
+            criteriaHash: 'hash-before-edit',
+          },
+        },
+      },
+    });
+
+    const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
+
+    expect(res).toMatchObject({ ok: false });
+    expect((res as { error?: string }).error).toContain('stale gradingAudit stamp (criteria-hash-mismatch)');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -1542,7 +1567,13 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       payload: {
         observation: {
           ...GRADED_CARD.payload.observation,
-          gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
+          gradingAudit: {
+            state: 'passed',
+            metaRubricRef: 'grading-integrity',
+            stampedAt: 'x',
+            rubricRevision: 1,
+            criteriaHash: 'rubric-hash-v1',
+          },
         },
       },
     });
@@ -1563,6 +1594,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
             auditIssueId: 'EI-AUDIT-OLD',
             auditor: 'su-old-auditor',
             stampedAt: '2026-08-17T12:00:00.000Z',
+            rubricRevision: 1,
+            criteriaHash: 'rubric-hash-v1',
           },
         },
       },

@@ -632,6 +632,22 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     })).resolves.toMatchObject({ approvedBy: 'su-reviewer', approvalRef: 'thread-post:123' });
   });
 
+  it('attributes an unparseable receipt to the referenced preview post', async () => {
+    let call = 0;
+    const sql = (() => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-25T00:00:00.000Z' }]
+        : [{ author_id: 'su-requester', body: 'Preview posted without an approval receipt.' }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).rejects.toThrow('acceptance_bar_preview_unparseable: referenced preview thread-post:456');
+  });
+
   it('resolves one pretty-printed approval object embedded in preview prose', async () => {
     let call = 0;
     const preview = [

@@ -22,6 +22,7 @@ const OWN = 'e'.repeat(64);
 let db: OrgTestDb;
 let sql: postgres.Sql;
 let baselineStamp: string;
+let baselineCompletion: string;
 let sequence = 0;
 
 beforeAll(async () => {
@@ -29,6 +30,8 @@ beforeAll(async () => {
   sql = db.adminSql;
   const [r] = await sql`SELECT pg_get_functiondef('harness_shared.stamp_local_federated_write()'::regprocedure) AS body`;
   baselineStamp = r.body;
+  const [completion] = await sql`SELECT pg_get_functiondef('harness_shared.stamp_work_item_completion_event_intent()'::regprocedure) AS body`;
+  baselineCompletion = completion.body;
   await sql.unsafe(readFileSync(DRAFT, 'utf8'));
 }, 240_000);
 afterAll(async () => { await db?.cleanup(); }, 30_000);
@@ -69,6 +72,15 @@ async function titles(payload: unknown): Promise<[string, string]> {
     FROM (VALUES ('first'), ('second')) AS choices(title) ORDER BY digest`;
   return [rows[0].title, rows[1].title];
 }
+async function terminalWinner(payload: unknown): Promise<string> {
+  const [candidate] = await sql`SELECT 'terminal-' || n AS title FROM generate_series(0,100) AS n
+    WHERE md5(concat_ws('|','feature','terminal-' || n,'body','done',NULL::text,
+      ${sql.json(payload)}::jsonb::text,NULL::text,NULL::text,NULL::text,NULL::text))
+      > md5(concat_ws('|','feature','open','body','open',NULL::text,
+      ${sql.json(payload)}::jsonb::text,NULL::text,NULL::text,NULL::text,NULL::text)) LIMIT 1`;
+  expect(candidate).toBeDefined();
+  return candidate.title;
+}
 
 describe('remote feature equal-key apply clock (real PG, draft 1466)', () => {
   for (const withHlc of [false, true]) for (const explicitPayload of [false, true]) {
@@ -81,10 +93,12 @@ describe('remote feature equal-key apply clock (real PG, draft 1466)', () => {
         for (const title of order) await apply(op(feature(id, title, payload), 1500, hlc));
         expect(await state(id)).toMatchObject({ title: winner, origin: 'remote', author_pubkey: AUTHOR,
           fed_ts: '1500', fed_hlc: hlc ?? null });
+        expect((await state(id)).payload).toEqual(payload ?? {});
         expect(await outbox(id)).toBe(0);
         const nextHlc = withHlc ? '000000000001600:00000:publisher' : undefined;
         await apply(op(feature(id, 'intermediate', payload), 1600, nextHlc));
         expect(await state(id)).toMatchObject({ title: 'intermediate', origin: 'remote', fed_ts: '1600', fed_hlc: nextHlc ?? null });
+        expect((await state(id)).payload).toEqual(payload ?? {});
         await apply(op(feature(id, 'stale', payload), 1400, withHlc ? '000000000001400:00000:publisher' : undefined));
         expect((await state(id)).title).toBe('intermediate');
         expect(await outbox(id)).toBe(0);
@@ -170,28 +184,140 @@ describe('remote feature equal-key apply clock (real PG, draft 1466)', () => {
       for (const order of [[loser, winner], [winner, loser]]) {
         const id = `F-REMOTE-CLOCK-${++sequence}`;
         for (const title of order) await apply(op(feature(id, title, payload)));
-        expect(await state(id)).toMatchObject({ title: winner, origin: 'remote', fed_ts: '1500', fed_hlc: null, payload });
+        expect(await state(id)).toMatchObject({ title: winner, origin: 'remote', fed_ts: '1500', fed_hlc: null });
+        expect((await state(id)).payload).toEqual(payload);
       }
     } finally {
       await sql.unsafe('ALTER TABLE harness_shared.work_items ENABLE TRIGGER stamp_before_fed_work_item_completion_event_intent_trg');
     }
   });
 
-  it('does not mint a local completion intent for an equal-key remote terminal winner', async () => {
-    const [candidate] = await sql`SELECT 'terminal-' || n AS title FROM generate_series(0,100) AS n
-      WHERE md5(concat_ws('|','feature','terminal-' || n,'body','done',NULL::text,'{}',NULL::text,NULL::text,NULL::text,NULL::text))
-          > md5(concat_ws('|','feature','open','body','open',NULL::text,'{}',NULL::text,NULL::text,NULL::text,NULL::text))
-      LIMIT 1`;
-    expect(candidate).toBeDefined();
-    for (const terminalFirst of [false, true]) {
+  for (const withHlc of [false, true]) for (const explicitPayload of [false, true]) {
+    it(`keeps exact publisher payload for a remote terminal winner in both orders (hlc=${withHlc}, payload=${explicitPayload})`, async () => {
+      const payload = explicitPayload ? { scenario: 'remote-close' } : undefined;
+      const title = await terminalWinner(payload ?? {});
+      const hlc = withHlc ? '000000000001500:00000:publisher' : undefined;
+      for (const terminalFirst of [false, true]) {
+        const id = `F-REMOTE-CLOCK-${++sequence}`;
+        const open = feature(id, 'open', payload);
+        const terminal = { ...feature(id, title, payload), status: 'done' };
+        for (const row of terminalFirst ? [terminal, open] : [open, terminal]) await apply(op(row, 1500, hlc));
+        expect(await state(id)).toMatchObject({ title, status: 'done', origin: 'remote', author_pubkey: AUTHOR,
+          fed_ts: '1500', fed_hlc: hlc ?? null });
+        expect((await state(id)).payload).toEqual(payload ?? {});
+        expect(await outbox(id)).toBe(0);
+      }
+    });
+  }
+
+  for (const withHlc of [false, true]) {
+    it(`accepts remote acknowledgement removal and reopen over a resident intent (hlc=${withHlc})`, async () => {
+      const hlc = withHlc ? '000000000001600:00000:publisher' : undefined;
+      for (const status of ['done', 'open']) {
+        const id = `F-REMOTE-CLOCK-${++sequence}`;
+        const payload = { scenario: 'remote-ack-cycle' };
+        const intent = '12345678-1234-4234-8234-123456789abc';
+        const pending = { ...payload, _completionEventIntentId: intent };
+        await apply(op({ ...feature(id, 'resident', payload), status: 'done' }));
+        // Seed publisher state through the existing moved-clock path. The next
+        // real receiver apply stays at this same key and has no local fire receipt.
+        await sql`UPDATE harness_shared.work_items SET payload=${sql.json(pending)},fed_ts=1600,
+          fed_hlc=${hlc ?? null} WHERE workspace_id=${WS} AND feature_id=${id}`;
+        expect(await state(id)).toMatchObject({ status: 'done', origin: 'remote', fed_ts: '1600' });
+        expect((await state(id)).payload).toEqual(pending);
+        const [fire] = await sql`SELECT count(*)::int AS n FROM harness_shared.event_key_fires
+          WHERE event_key=${`work-item:done:${id}`}`;
+        expect(fire.n).toBe(0);
+        const [winner] = await sql`SELECT 'remote-cycle-' || n AS title FROM generate_series(0,100) AS n
+          WHERE md5(concat_ws('|','feature','remote-cycle-' || n,'body',${status}::text,NULL::text,
+            ${sql.json(payload)}::jsonb::text,NULL::text,NULL::text,NULL::text,NULL::text))
+            > md5(concat_ws('|','feature','resident','body','done',NULL::text,
+            ${sql.json(pending)}::jsonb::text,NULL::text,NULL::text,NULL::text,NULL::text)) LIMIT 1`;
+        expect(winner).toBeDefined();
+        await apply(op({ ...feature(id, winner.title, payload), status }, 1600, hlc));
+        expect(await state(id)).toMatchObject({ title: winner.title, status, origin: 'remote',
+          author_pubkey: AUTHOR, fed_ts: '1600', fed_hlc: hlc ?? null });
+        expect((await state(id)).payload).toEqual(payload);
+        expect(await outbox(id)).toBe(0);
+        const nextHlc = withHlc ? '000000000001700:00000:publisher' : undefined;
+        await apply(op({ ...feature(id, 'later-cycle', payload), status }, 1700, nextHlc));
+        expect(await state(id)).toMatchObject({ title: 'later-cycle', status, origin: 'remote',
+          fed_ts: '1700', fed_hlc: nextHlc ?? null });
+        expect((await state(id)).payload).toEqual(payload);
+        expect(await outbox(id)).toBe(0);
+      }
+    });
+  }
+
+  it('retains the deliberate INSERT policy for publisher-supplied completion intents', async () => {
+    for (const status of ['open', 'done']) {
       const id = `F-REMOTE-CLOCK-${++sequence}`;
-      const open = feature(id, 'open', {});
-      const terminal = { ...feature(id, candidate.title, {}), status: 'done' };
-      for (const row of terminalFirst ? [terminal, open] : [open, terminal]) await apply(op(row));
-      expect(await state(id)).toMatchObject({ title: candidate.title, status: 'done', origin: 'remote',
-        fed_ts: '1500', fed_hlc: null, payload: {} });
+      const payload = { scenario: 'remote-insert-intent' };
+      await apply(op({ ...feature(id, 'remote-insert', { ...payload,
+        _completionEventIntentId: '12345678-1234-4234-8234-123456789abc' }), status }));
+      expect(await state(id)).toMatchObject({ status, origin: 'remote', author_pubkey: AUTHOR,
+        fed_ts: '1500', fed_hlc: null });
+      expect((await state(id)).payload).toEqual(payload);
       expect(await outbox(id)).toBe(0);
     }
+  });
+
+  it('keeps local close/reopen cycles and requires a matching durable acknowledgement', async () => {
+    const id = `F-REMOTE-CLOCK-${++sequence}`;
+    const payload = { scenario: 'local-close' };
+    await apply(op(feature(id, 'local-close', payload)));
+    await sql`UPDATE harness_shared.work_items SET status='done' WHERE workspace_id=${WS} AND feature_id=${id}`;
+    const first = await state(id);
+    const firstIntent = first.payload._completionEventIntentId;
+    expect(firstIntent).toMatch(/^[0-9a-f-]{36}$/);
+    expect(first).toMatchObject({ origin: 'local', status: 'done' });
+    expect(Number(first.fed_ts)).toBeGreaterThan(1500);
+    expect(first.fed_hlc).not.toBeNull();
+    await sql`UPDATE harness_shared.work_items SET status='open' WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(payload);
+    await sql`UPDATE harness_shared.work_items SET status='done' WHERE workspace_id=${WS} AND feature_id=${id}`;
+    const secondIntent = (await state(id)).payload._completionEventIntentId;
+    expect(secondIntent).toMatch(/^[0-9a-f-]{36}$/);
+    expect(secondIntent).not.toBe(firstIntent);
+    const pending = { ...payload, _completionEventIntentId: secondIntent };
+    await sql`UPDATE harness_shared.work_items SET payload=${sql.json({ ...payload, _completionEventIntentId: 'forged' })}
+      WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(pending);
+    await sql`UPDATE harness_shared.work_items SET payload=${sql.json(payload)} WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(pending);
+    await sql`INSERT INTO harness_shared.event_key_fires (workspace_id,event_key,last_payload)
+      VALUES ('default',${`work-item:done:${id}`},${sql.json({ completionIntentId: firstIntent })})`;
+    await sql`UPDATE harness_shared.work_items SET payload=${sql.json(payload)} WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(pending);
+    await sql`UPDATE harness_shared.event_key_fires SET last_payload=${sql.json({ completionIntentId: secondIntent })}
+      WHERE workspace_id='default' AND event_key=${`work-item:done:${id}`}`;
+    await sql`UPDATE harness_shared.work_items SET payload=${sql.json(payload)} WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(payload);
+    await sql`UPDATE harness_shared.work_items SET payload=${sql.json(pending)} WHERE workspace_id=${WS} AND feature_id=${id}`;
+    expect((await state(id)).payload).toEqual(payload);
+    expect(await outbox(id)).toBeGreaterThan(0);
+  });
+
+  it('causal negative control: only the old completion normalizer mints an intent on the same remote close', async () => {
+    const payload = { scenario: 'completion-control' };
+    const title = await terminalWinner(payload);
+    const id = `F-REMOTE-CLOCK-${++sequence}`;
+    await apply(op(feature(id, 'open', payload)));
+    await sql.unsafe(baselineCompletion);
+    try {
+      await apply(op({ ...feature(id, title, payload), status: 'done' }));
+      const row = await state(id);
+      expect(row).toMatchObject({ origin: 'remote', fed_ts: '1500', fed_hlc: null });
+      expect(row.payload._completionEventIntentId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(row.payload).not.toEqual(payload);
+    } finally {
+      await sql.unsafe(readFileSync(DRAFT, 'utf8'));
+    }
+    const restoredId = `F-REMOTE-CLOCK-${++sequence}`;
+    await apply(op(feature(restoredId, 'open', payload)));
+    await apply(op({ ...feature(restoredId, title, payload), status: 'done' }));
+    expect((await state(restoredId)).payload).toEqual(payload);
+    expect(await outbox(restoredId)).toBe(0);
   });
 
   it('causal negative control: the old trigger restamps the same winning update', async () => {
@@ -249,7 +375,9 @@ describe('remote feature equal-key apply clock (real PG, draft 1466)', () => {
         WHERE new_row->>'feature_id'=${id} ORDER BY n`;
       console.info('WI8759-COMPLETION-TRIGGER-TRACE', JSON.stringify({ names, trace, result: await state(id) }));
       expect(trace).toHaveLength(2);
-      expect(await state(id)).toMatchObject({ status: 'done', origin: 'remote', fed_ts: '1500', payload: {} });
+      expect(trace.map(row => row.payload)).toEqual([{}, {}]);
+      expect(await state(id)).toMatchObject({ status: 'done', origin: 'remote', fed_ts: '1500' });
+      expect((await state(id)).payload).toEqual({});
     } finally {
       await sql.unsafe(`DROP TRIGGER stamp_before_fed_work_item_completion_event_intent_tra ON harness_shared.work_items;
         DROP TRIGGER stamp_before_fed_work_item_completion_event_intent_trh ON harness_shared.work_items;

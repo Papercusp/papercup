@@ -53,6 +53,7 @@ const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
 const { drainDetached } = await import('../../detached-imports');
 const { getReport } = await import('../../report-library');
+const { captureAcceptanceVerdict } = await import('../../report-capture');
 
 /** The acceptance-rubric AUTHOR — the implementer, the only party who may record a verdict. */
 const AUTHOR = 'su-p003-author';
@@ -270,6 +271,20 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
       expect(JSON.parse(verdict![1])).toEqual({
         ratings: persisted!.observation.ratings, acceptance: persisted!.observation.acceptance,
       });
+
+      // The outer emit replay below is an unchanged-evidence fast path. Invoke
+      // the real adapter too, using the persisted card's author and verdict.
+      const capturedId = await captureAcceptanceVerdict({ workspaceId: activeWorkspaceId(),
+        ownerId: persisted!.created_by, harnessSlug: 'papercusp', sessionRef: persisted!.created_by,
+        issueId: persisted!.issue_id, rubricRef: RUBRIC, title: args.title as string, planSlug: SUBJECT_PLAN,
+        body: args.body as string, ratings: persisted!.observation.ratings,
+        acceptance: persisted!.observation.acceptance });
+      const retryFailures = capturedId ? [] : await db.adminSql`SELECT title, body
+        FROM harness_shared.engineer_issues WHERE title = 'Reports automatic capture failed'`;
+      expect(capturedId, JSON.stringify(retryFailures)).toBe(report!.reportId);
+      expect(await getReport(db.adminSql, activeWorkspaceId(), capturedId!, { isOwner: true })).toEqual(report);
+      expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library
+        WHERE workspace_id = ${activeWorkspaceId()} AND request_key = ${requestKey}`).toEqual(rows);
 
       const replay = await emitScorecard(args as never, producer as never);
       expect(replay, JSON.stringify(replay)).toMatchObject({

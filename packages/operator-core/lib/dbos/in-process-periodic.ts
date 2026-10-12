@@ -26,6 +26,7 @@
  * gotcha: DBOS dedup'd by workflow-id; in-process does not).
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
+import { observeFallback } from '../degradation/fallback-observations';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
 import nodeCluster from 'node:cluster';
 import { managedSetInterval, type ManagedHandle, type TimerClassification } from '@papercusp/scheduled-registry';
@@ -1108,6 +1109,11 @@ const releaseRequestSweepCheck: PeriodicCheck = {
           ownerId: row.holderNow ?? resolved.holder,
           paths: row.paths,
           goalRef: row.id,
+        });
+        if (lockRelease.skipped === null) observeFallback('routine-capability-read', {
+          eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'lock-release-unavailable',
+          scope: 'release-request-locks',
         });
         if (lockRelease.failures > 0) {
           console.warn(

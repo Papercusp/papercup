@@ -46,10 +46,10 @@
 import { readFileSync } from 'node:fs';
 import { observeFallback } from './degradation/fallback-observations';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, relative } from 'node:path';
+import { basename, dirname, resolve, relative } from 'node:path';
 
-/** This file lives at packages/operator-core/lib/, so paths under it are expressible. */
-const LIB_DIR = dirname(fileURLToPath(import.meta.url));
+/** Directory of this module at runtime (packages/operator-core/lib or apps/operator/dist-host). */
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LIB_PREFIX = 'packages/operator-core/lib/';
 const WORKFLOW_REL = 'dbos/routines-workflow.ts';
 
@@ -97,11 +97,11 @@ export function dispatchedSweepSpecifiers(source: string): string[] {
 }
 
 /** Resolve a workflow-relative specifier to a repo-relative .ts path, or null. */
-function toRepoRelative(spec: string, existsAt: (abs: string) => boolean): string | null {
-  const abs = resolve(LIB_DIR, dirname(WORKFLOW_REL), spec);
+function toRepoRelative(spec: string, existsAt: (abs: string) => boolean, libDir: string): string | null {
+  const abs = resolve(libDir, dirname(WORKFLOW_REL), spec);
   for (const candidate of [`${abs}.ts`, resolve(abs, 'index.ts')]) {
     if (!existsAt(candidate)) continue;
-    const rel = relative(LIB_DIR, candidate);
+    const rel = relative(libDir, candidate);
     // A target outside operator-core/lib cannot be expressed as a lib-relative path;
     // skip rather than emit a wrong one.
     if (rel.startsWith('..')) return null;
@@ -120,17 +120,35 @@ const fileExists = (abs: string): boolean => {
 };
 
 /**
+ * The operator host bundles this module into apps/operator/dist-host, but the
+ * dispatcher source remains in the source-only operator-core package. Resolve
+ * that package from the bundle directory before deriving sweep paths.
+ */
+export function operatorCoreLibDirFromModuleDir(
+  moduleDir: string,
+): string {
+  const isOperatorHostBundle =
+    basename(moduleDir) === 'dist-host' &&
+    basename(dirname(moduleDir)) === 'operator' &&
+    basename(dirname(dirname(moduleDir))) === 'apps';
+  return isOperatorHostBundle ? resolve(moduleDir, '../../../packages/operator-core/lib') : moduleDir;
+}
+
+const LIB_DIR = operatorCoreLibDirFromModuleDir(MODULE_DIR);
+
+/**
  * The dispatched sweep set as repo-relative paths, minus the explicit allowlist.
  * `source`/`existsAt` are injectable so the guard test can drive a synthetic dispatcher.
  */
 export function dispatchedSweepPaths(
   source?: string,
   existsAt: (abs: string) => boolean = fileExists,
+  libDir: string = LIB_DIR,
 ): string[] {
-  const text = source ?? readFileSync(resolve(LIB_DIR, WORKFLOW_REL), 'utf8');
+  const text = source ?? readFileSync(resolve(libDir, WORKFLOW_REL), 'utf8');
   const paths = new Set<string>();
   for (const spec of dispatchedSweepSpecifiers(text)) {
-    const rel = toRepoRelative(spec, existsAt);
+    const rel = toRepoRelative(spec, existsAt, libDir);
     if (rel && !NOT_BG_HOST_DISPATCHED.has(rel)) paths.add(rel);
   }
   return [...paths].sort();

@@ -25,6 +25,7 @@ const { activeWorkspaceId } = await import('./workspace-registry');
 const { createWorkItem, getWorkItem } = await import('./work-items');
 const { drainDetached } = await import('./detached-imports');
 const { getReport, publishReport } = await import('./report-library');
+const { captureAuditCompletion } = await import('./report-capture');
 const { modeById, axisKeyFor } = await import('./modes/registry');
 const { default: complete } = await import('./agent-tools/work_items/complete');
 const { PROJECTED_DEPS } = await import('./projected-tool-deps');
@@ -157,6 +158,19 @@ describe('Reports audit producer against migrated private PostgreSQL', () => {
       // is removed by completion before publication, not from the caller copy.
       expect(JSON.parse(report!.bodyMd.match(/```json\n([\s\S]*?)\n```/)![1]))
         .toEqual({ ...note, status: 'done' });
+      // Preserve the exact normalized producer payload while re-entering the
+      // adapter with the persisted item's source identity. Replaying complete
+      // alone can be short-circuited by its terminal-state idempotency guard.
+      const normalizedCompletion = { ...note, status: 'done' };
+      const capturedId = await captureAuditCompletion({ workspaceId: activeWorkspaceId(), ownerId: stored!.terminalOwner!,
+        harnessSlug: stored!.harness, sessionRef: SESSION, itemId: stored!.id, completionRef: reference,
+        title: stored!.title, completion: normalizedCompletion });
+      const retryFailures = capturedId ? [] : await db.adminSql`SELECT title, body
+        FROM harness_shared.engineer_issues WHERE title = 'Reports automatic capture failed'`;
+      expect(capturedId, JSON.stringify(retryFailures)).toBe(report!.reportId);
+      expect(await getReport(db.adminSql, activeWorkspaceId(), capturedId!, { isOwner: true })).toEqual(report);
+      expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`)
+        .toEqual(rows);
       expect(await dispatch('work_items:complete', args)).toMatchObject({ ok: true });
       await drainDetached();
       expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`)

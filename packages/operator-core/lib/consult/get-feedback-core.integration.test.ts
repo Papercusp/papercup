@@ -930,6 +930,34 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('round-trips native constraints through durable request recovery and rejects retry/tamper changes', async () => {
+    const nativeConsult = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } as const;
+    const fixture = makeDeps(routeOf([cand('native-persisted-expert')]));
+    const request: GetFeedbackRequest = { ...baseReq, requestKey: 'native-persisted-constraints', nativeConsult };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const changed = await acceptFeedbackRequestCore({ ...request,
+      nativeConsult: { ...nativeConsult, targetBackend: 'claude' } }, fixture.deps);
+    expect(changed).toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: async (payload, context) => {
+        expect(payload.nativeConsult).toEqual(nativeConsult);
+        return getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context });
+      } });
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ nativeConsult,
+      request: { payload: { nativeConsult } } });
+
+    const second = await acceptFeedbackRequestCore({ ...request, requestKey: 'native-tamper-constraints' }, fixture.deps);
+    if ('error' in second) throw new Error(second.error);
+    await rootSql`UPDATE harness_shared.consult_state
+      SET routing = jsonb_set(routing, '{request,payload,nativeConsult,targetBackend}', '"claude"'::jsonb)
+      WHERE workspace_id = ${WS} AND conversation_id = ${second.conversation_id}`;
+    const execute = vi.fn();
+    await expect(continueFeedbackRequestCore(WS, second.conversation_id, { getSql: () => rootSql, now: () => NOW, execute }))
+      .rejects.toThrow('consult-request-provenance-mismatch');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('keeps one request per retry while expired feedback and launch failures remain separate cohorts', async () => {
     const workspaceId = `${WS}-cohort-regression`;
     const fixture = makeDeps(routeOf([cand('cohort-expert')]));

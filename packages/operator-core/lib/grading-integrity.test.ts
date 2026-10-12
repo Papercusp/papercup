@@ -1858,6 +1858,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain('never pass the wrapper to a scorecard field reader');
     // EI-24583166035391772: the brief must name fields scorecards:get actually returns.
     expect(brief).toContain('scorecard.auditTarget');
+    expect(brief).toContain("scorecard.gradingAuditCurrentness.state to be 'current'");
+    expect(brief).toContain("If it is 'stale' or 'unknown'");
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');

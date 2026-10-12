@@ -3823,7 +3823,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       expect(args.evidenceRefs).toEqual([legacy.evidenceRef, selected.evidenceRef].sort());
       expect(args.bindingIds).toEqual([18874, 18924]);
       expect(recipe!.selection.bindingIds).toEqual([18874, 18924]);
-      const rerunCurrent = Array.isArray(args.current)
+      const rerunCurrent = typeof args.current === 'boolean' ? undefined : Array.isArray(args.current)
         ? args.current
         : args.current?.supplied
           ? args.current.fingerprints

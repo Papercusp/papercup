@@ -11055,6 +11055,25 @@ export function hostThroughPty(o) {
             }
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
             if (freshChildWasInterrupted()) return { delivered: false, reason: 'fresh-child-owner-input', attempts };
+            // A local command such as Claude's `/mcp` can report success before
+            // the command turn has returned to its prompt. The busy verdict
+            // above predates that command, so re-establish settlement only for
+            // preparations that actually issued a local command.
+            if (prepared.settleAfterPreparation === true) {
+              const settled = await agentBusyGate.waitAtPrompt(
+                Math.max(0, deadline - Date.now()),
+                null,
+                abortBeforeWrite,
+              );
+              if (settled.boundary === 'abort-before-write') {
+                return { delivered: false, reason: 'first-turn-started', attempts };
+              }
+              if (settled.deferred) {
+                dropReason = 'prewrite-agent-busy';
+                break;
+              }
+              if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            }
           }
           // Preparation can itself wait (for example, a role MCP reconnect).
           // Recheck both menu machines and the composer at the actual write
@@ -11560,7 +11579,11 @@ export function hostThroughPty(o) {
                 attempts: result.attempts,
                 detail: result.detail,
               });
-              return { ok: result.ok, reason: 'role-mcp-unavailable' };
+              return {
+                ok: result.ok,
+                reason: 'role-mcp-unavailable',
+                settleAfterPreparation: result.ok,
+              };
             } finally {
               tap.close();
             }
@@ -15494,7 +15517,11 @@ export function hostThroughPty(o) {
                 detail: result.detail,
               },
             );
-            return { ok: result.ok, reason: 'carry-mcp-unavailable' };
+            return {
+              ok: result.ok,
+              reason: 'carry-mcp-unavailable',
+              settleAfterPreparation: result.ok,
+            };
           } finally {
             tap.close();
           }

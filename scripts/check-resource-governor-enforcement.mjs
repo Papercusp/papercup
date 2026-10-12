@@ -1869,6 +1869,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/lib/release-task-journal.mts: its two execFileSync calls are bounded, awaited git show/ls-tree metadata reads against one pinned source SHA; they start no resident worker or queue and must complete before the journal identity can be accepted.",
   },
   {
+    path: "scripts/measure-startup-cache.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/measure-startup-cache.ts (plan token-efficiency-prompts-cache-and-behavior-2026-10-11 P-001): its single spawnSync is one synchronous, awaited, unit-scoped `journalctl --grep startup-cache-evidence/v1` read with a 120s timeout, run by an operator on demand. It starts no worker, no detached child and no resident queue, and the measurement instrument must stay runnable while productive capacity is pressured. journal-read.ts was not reused because its 1,000-line result cap is below one day of gateway evidence lines.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("spawnSync('journalctl', args,") &&
+        source.includes("timeout: 120_000") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+    },
+  },
+  {
     path: "scripts/lib/stale-swap-leftovers.mjs",
     code: "unbounded-resident-queue",
     disposition: "semantic",

@@ -1545,7 +1545,7 @@ describe('handler — graceful degrade + result shape', () => {
     expect(fullSchema).toContain('"slugs"');
   });
 
-  it('falls back to a bounded compact schema when one full hit exceeds the result budget', async () => {
+  it('returns a full schema when an explicit full payload tier exceeds the inline result budget', async () => {
     expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
     const { schemaByTool } = buildCorpus();
     const bindSpecSchema = schemaByTool.get('plans:bind-spec-evidence');
@@ -1559,13 +1559,11 @@ describe('handler — graceful degrade + result shape', () => {
     const hit = out.hits.find((candidate) => candidate.tool === 'plans:bind-spec-evidence');
 
     expect(hit).toBeDefined();
-    expect(hit?.argSchema).not.toBe(JSON.stringify(bindSpecSchema));
-    expect(hit?.argSchema).toContain(
-      'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
-    );
-    expect(out).toHaveProperty('truncated', true);
-    expect(out.howToCall).toContain('Full argument schemas exceeded the response budget');
-    expect(Buffer.byteLength(JSON.stringify(out), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(hit?.argSchema).toBe(JSON.stringify(bindSpecSchema));
+    expect(() => JSON.parse(hit?.argSchema ?? '')).not.toThrow();
+    expect(out).toHaveProperty('truncated', false);
+    expect(out.howToCall).not.toContain('Full argument schemas exceeded the response budget');
+    expect(Buffer.byteLength(JSON.stringify(out), 'utf8')).toBeGreaterThan(DISCOVERY_RESULT_MAX_BYTES);
   });
 });
 

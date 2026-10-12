@@ -33,6 +33,7 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 const { activeWorkspaceId } = await import('./workspace-registry');
 const { drainDetached } = await import('./detached-imports');
 const { getReport } = await import('./report-library');
+const { captureCoordReport } = await import('./report-capture');
 const { resetCoordLog } = await import('./agent-tools/coordination/log');
 const { default: send } = await import('./agent-tools/coordination/tools/send');
 
@@ -100,6 +101,16 @@ describe('Reports coordination producer against migrated private PostgreSQL', ()
         // Explicit local scope has no pot origin; identity remains server-stamped.
         origin: { authorOwnerId: OWNER, harnessSlug: null, authorSessionRef: OWNER } });
       expect(report!.bodyMd).toBe(`## Measured plan (wip)\nExact measured summary.\n- P-012: Stored report verified (done) — wi:WI-fixture\n\n\nSource reference: ${messageId}\n`);
+
+      // Re-enter the adapter itself after the real producer has settled. An
+      // outer send replay can return early without exercising capture again.
+      const capturedId = await captureCoordReport({ workspaceId: activeWorkspaceId(), ownerId: OWNER,
+        harnessSlug: null, sessionRef: OWNER, msgId: messageId, summary: 'Reports producer fixture',
+        report: messages[0].body.report as typeof reportBlock });
+      expect(capturedId).toBe(report!.reportId);
+      expect(await getReport(db.adminSql, activeWorkspaceId(), capturedId!, { isOwner: true })).toEqual(report);
+      expect(await db.adminSql`SELECT report_id FROM harness_shared.report_library WHERE request_key = ${requestKey}`)
+        .toEqual(reports);
 
       await sendCard('human', 'reports-producer-retry');
       const retried = await db.adminSql<Array<{ report_id: string }>>`

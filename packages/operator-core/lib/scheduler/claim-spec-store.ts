@@ -669,6 +669,8 @@ export async function getNextForBee(args: {
   rigAvailable?: boolean;
   /** Abort the in-flight claim transaction when the scheduler caller's deadline fires. */
   signal?: AbortSignal;
+  /** Enable one bounded, target-PID wait snapshot for candidate feature tier 1. */
+  captureCandidateWait?: boolean;
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
@@ -946,6 +948,7 @@ export async function getNextForBee(args: {
         ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
         ...(args.states ? { states: args.states } : {}),
         ...(args.rigAvailable ? { rigAvailable: true } : {}),
+        ...(args.captureCandidateWait ? { captureCandidateWait: true } : {}),
         ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
         signal: args.signal,
         onResolutionStep: claimStep,

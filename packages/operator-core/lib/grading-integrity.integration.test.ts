@@ -146,6 +146,7 @@ it('retires cancelled missions from real private ledgers and preserves a pending
       return rows.map((row) => ({ issueId: row.feature_id, rubricRef: 'spec-test-adequacy',
         gradingAudit: row.audit })) as ScorecardRow[];
     },
+    listWorkspaceWideLoopStanddownOwners: async () => new Set(),
     killTask, launch, now: () => now.getTime(),
   });
   expect(killTask.mock.calls.map(([id]) => id).sort()).toEqual(tasks.slice(0, 2).map((t) => t.taskId).sort());

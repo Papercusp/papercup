@@ -506,7 +506,7 @@ export default function AdvEvalsTab() {
         </div>
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
-          {suites.length > 0 ? (
+          {!suitesSync.error && suites.length > 0 ? (
             <label className="pc-evals__suitepick">
               <Gauge size={12} aria-hidden />
               <span className="pc-evals__suitelabel">suite</span>
@@ -538,7 +538,12 @@ export default function AdvEvalsTab() {
         </div>
       </div>
 
-      {view === 'throughput' ? (
+      {suitesSync.error ? (
+        <p className="pc-evals__empty" role="alert">
+          Could not load benchmark suites: {suitesSync.error instanceof Error
+            ? suitesSync.error.message : String(suitesSync.error)}
+        </p>
+      ) : view === 'throughput' ? (
         <ThroughputView runId={runId} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />
       ) : view === 'value' ? (
         <ValueView runId={runId} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />

@@ -348,7 +348,18 @@ export async function resolveAcceptanceBarApproval(
     receiptBody = previewPost.body;
   }
   let body: unknown;
-  try { body = JSON.parse(approvalReceiptJsonSource(receiptBody)); } catch { throw new Error("acceptance_bar_approval_unparseable: the approval post must contain JSON or start with `approve thread-post:<preview-post-id>` as its first non-empty line, with any explanation following it."); }
+  try {
+    body = JSON.parse(approvalReceiptJsonSource(receiptBody));
+  } catch {
+    if (previewPointer) {
+      throw new Error(
+        `acceptance_bar_preview_unparseable: referenced preview thread-post:${previewPointer[1]} must contain the approval JSON receipt.`,
+      );
+    }
+    throw new Error(
+      'acceptance_bar_approval_unparseable: the approval post must contain JSON or start with `approve thread-post:<preview-post-id>` as its first non-empty line, with any explanation following it.',
+    );
+  }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;

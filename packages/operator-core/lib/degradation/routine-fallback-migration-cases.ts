@@ -64,9 +64,15 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
   run: () => measured('routine-capability-read', 'loop-checkpoint-scope', async (observeFallback) => {
     const text = statementRange(prefix + 'agent-tools/loop/checkpoint.ts', 'const routineProbe =', 'const activeRoutine =');
     const { withBoundedTimeout } = await import('../bounded-timeout');
-    for (const fail of [true, false]) await execute(text, { observeFallback, withBoundedTimeout,
-      ownerId: 'fixture', CONTINUATION_READ_BUDGET_MS: 1000, routineProbeFailed: false,
-      getLoopStatus: async () => { if (fail) throw new Error('read failed'); return { active: false }; } });
+    const { expect, vi } = await import('vitest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const fail of [true, false]) await execute(text, { observeFallback, withBoundedTimeout,
+        ownerId: 'fixture', CONTINUATION_READ_BUDGET_MS: 1000, routineProbeFailed: false,
+        getLoopStatus: async () => { if (fail) throw new Error('read failed'); return { active: false }; } });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('armed-routine scope probe failed: read failed'));
+    } finally { warn.mockRestore(); }
   }),
 }, {
   id: 'dbos-lifecycle-grant-failed-and-verified-primary', item: 'P-009', route: 'observation',
@@ -146,5 +152,124 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
       expect(match().test('path0')).toBe(outcome === 'primary');
       expect(reads).toBe(1);
     }
+  }),
+}, {
+  id: 'release-request-lock-release-error-primary-and-skipped-exclusion', item: 'P-009', route: 'observation',
+  mechanism: 'routine-capability-read', rowIds: [row('dbos/in-process-periodic.ts', 'tick')],
+  run: () => measured('routine-capability-read', 'release-request-locks', async (observeFallback) => {
+    const { expect } = await import('vitest');
+    const text = statementRange(prefix + 'dbos/in-process-periodic.ts', 'const lockRelease =', 'const reclaimHolder =');
+    let decisions = 0;
+    const record = (name: string, observation: Observation) => { decisions++; return observeFallback(name, observation); };
+    for (const result of [{ failures: 1, skipped: null }, { failures: 0, skipped: null },
+      { failures: 0, skipped: 'missing-owner' }, { failures: 0, skipped: 'no-paths' }]) {
+      await execute(text, { observeFallback: record, row: { id: 'fixture', holderNow: 'fixture', paths: [] },
+        resolved: { holder: 'fixture' }, releaseReclaimedWorkItemLocks: async () => result });
+    }
+    expect(decisions).toBe(2);
+  }),
+}, {
+  id: 'smoke-test-persisted-failure-repeat-pass-and-write-failure', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}endpoint-route/routes/internal/smoke-test-event.ts|handler|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { z } = await import('zod');
+    const path = prefix + 'endpoint-route/routes/internal/smoke-test-event.ts';
+    const file = source(path);
+    let handler: ts.MethodDeclaration | undefined;
+    const visit = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node) && node.name.getText(file) === 'handler') handler = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (!handler) throw new Error('missing original smoke event handler');
+    const BodySchema = await execute(`return ${variable(path, 'BodySchema').initializer!.getText(file)};`, { z });
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let status = 'fail', priorStatus: string | undefined, writeFails = false, notifications = 0, attempts = 0;
+    const db = {
+      select: (fields: Record<string, string>) => ({ from: () => ({ where: () => ({ limit: async () =>
+        'harness_slug' in fields ? [{ harness_slug: 'fixture' }] : priorStatus ? [{ status: priorStatus }] : [] }) }) }),
+      insert: () => ({ values: () => ({ onConflictDoUpdate: async () => {
+        if (writeFails) throw new Error('persist unavailable'); priorStatus = status;
+      } }) }),
+    };
+    const run = await execute(`return {${handler.getText(file)}}.handler;`, {
+      BodySchema, Response, getOrgPg: () => ({ db }), ti: { token: 'token', harnessSlug: 'slug' }, hs: {},
+      eq: () => true, dsql: () => null, activeWorkspaceId: () => 'fixture-workspace',
+      notifySyncInvalidate: async () => {}, notifyAttention: async () => { notifications++; },
+      broadcastSevereEvent: async ({ conditionKey }: { conditionKey: string }) => {
+        attempts++; if (!open.has(conditionKey)) openedKeys.push(conditionKey); open.add(conditionKey); return true;
+      },
+      resolveAlarm: async (key: string) => { if (open.delete(key)) resolvedKeys.push(key); return true; },
+    }) as (req: Request) => Promise<Response>;
+    const request = () => new Request('http://fixture/internal/smoke-test-event', {
+      method: 'POST', headers: { authorization: 'Bearer fixture', 'content-type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    expect((await run(request())).status).toBe(200);
+    expect((await run(request())).status).toBe(200);
+    expect(attempts).toBe(2); expect(notifications).toBe(1);
+    status = 'pass'; writeFails = true;
+    await expect(run(request())).rejects.toThrow('persist unavailable');
+    expect(resolvedKeys).toEqual([]);
+    writeFails = false;
+    expect((await run(request())).status).toBe(200);
+    expect(openedKeys).toEqual(['alarm:smoke-test:fixture']);
+    expect(resolvedKeys).toEqual(openedKeys);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'loop-dead-man-original-owner-page-rail-rearm-and-unreadable-preservation', item: 'P-009', route: 'condition',
+  rowIds: [`owner-only-alarm|${prefix}harness/routines/loop-dead-man.ts|checkLoopDeadMan|1`],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const producer = await import('../harness/routines/loop-dead-man');
+    const attention = await import('../attention-notify');
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let row = { armed_ms: 1000, fire_count: 5, fire_count_at_arm: 0, target_owner_id: 'fixture', workspace_id: 'fixture' };
+    let readFails = false, pageFails = true;
+    const sql = async () => { if (readFails) throw new Error('read unavailable'); return [row]; };
+    const deps: import('../harness/routines/loop-dead-man').LoopDeadManDeps = {
+      autoPause: async () => {}, getModes: async () => [{ mode: 'auto' } as never],
+      broadcast: async ({ conditionKey, oneShot }) => {
+        expect(oneShot).toBe(true); if (!open.has(conditionKey!)) openedKeys.push(conditionKey!);
+        open.add(conditionKey!); return true;
+      },
+      resolve: async ({ conditionKey }) => { if (open.delete(conditionKey)) resolvedKeys.push(conditionKey); return true; },
+    };
+    const page = vi.spyOn(attention, 'notifyAttention').mockImplementation(async () => {
+      if (pageFails) throw new Error('page unavailable');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const input = { sql: sql as never, routineId: 'fixture', maxFires: 5, nowMs: 10_000 };
+      expect((await producer.checkLoopDeadMan(input, deps)).escalated).toBe(false);
+      expect(openedKeys).toEqual(['alarm:loop-dead-man:fixture']);
+      expect(page).toHaveBeenCalledOnce();
+      readFails = true;
+      await expect(producer.checkLoopDeadMan(input, deps)).rejects.toThrow('read unavailable');
+      expect(resolvedKeys).toEqual([]);
+      readFails = false; row = { ...row, armed_ms: Number.NaN, fire_count: 0 };
+      await producer.checkLoopDeadMan(input, deps); expect(resolvedKeys).toEqual([]);
+      pageFails = false; row = { ...row, armed_ms: 9000, fire_count: 5, fire_count_at_arm: 5 };
+      expect((await producer.checkLoopDeadMan(input, deps)).breach).toBe(false);
+      expect(resolvedKeys).toEqual(openedKeys);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); page.mockRestore(); }
+  },
+}, {
+  id: 'routines-pool-critical-floor-and-ordinary-admission', item: 'P-009', route: 'observation',
+  mechanism: 'routine-scheduler-admission', rowIds: [row('dbos/routines-workflow.ts', 'routinesTickImpl')],
+  run: () => measured('routine-scheduler-admission', 'dispatch', async (observeFallback) => {
+    const { expect } = await import('vitest');
+    const text = statementRange(prefix + 'dbos/routines-workflow.ts', 'const pool =', 'const { sql } =');
+    let shedRecords = 0;
+    for (const pool of ['critical', 'warm', 'ok']) await execute(text, {
+      observeFallback, poolPressure: async () => pool, lastPoolProbeMs: () => 100,
+      recordPoolShed: () => 1, lastPoolProbeRawMs: () => 100, lastPoolProbeLoopDelayMs: () => 10,
+      CRITICAL_PROBE_MS: 1000, activeWorkspaceId: () => 'fixture',
+      recordPoolShedEvent: () => { shedRecords++; },
+    });
+    expect(shedRecords).toBe(1);
   }),
 }];

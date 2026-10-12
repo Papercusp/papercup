@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { observeFallback } from '../degradation/fallback-observations';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import {
@@ -1148,6 +1149,10 @@ async function routinesTickImpl(): Promise<void> {
   const pool = await poolPressure();
   const poolProbeMs = lastPoolProbeMs();
   const poolCritical = pool === 'critical';
+  // Measure the admission policy chosen, not a claim about successful routine execution
+  // or the cause of the probe latency. A critical decision retains only the safety floor.
+  observeFallback('routine-scheduler-admission', { eligible: 1, applied: poolCritical ? 0 : 1,
+    reason: poolCritical ? 'critical-floor-only' : 'applied', scope: 'dispatch' });
   if (poolCritical) {
     const shedCount = recordPoolShed();
     const probeRawMs = lastPoolProbeRawMs();

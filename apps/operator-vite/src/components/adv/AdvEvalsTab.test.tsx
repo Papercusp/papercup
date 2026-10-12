@@ -238,6 +238,22 @@ describe('<AdvEvalsTab> shell + routing', () => {
     expect(nuqsSetters.evalView).toHaveBeenCalledWith('throughput');
   });
 
+  it.each([false, true])('shows a denied suite read and withholds empty or stale results (cached=%s)', (cached) => {
+    seedSuites(cached ? [{ suite: 'denied-suite', runId: 'denied-run',
+      passAt1ByArm: { papercusp: 0.75 } }] : [], { error: new Error('HTTP 403: fixture denial') });
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not load benchmark suites: HTTP 403');
+    expect(screen.queryByText('No benchmark runs yet')).toBeNull();
+    expect(view.container.querySelector('.pc-evals__scoreboard')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload the evaluation data' }));
+    expect(H.results['evals.suites'].invalidate).toHaveBeenCalledOnce();
+    H.results['evals.suites'].error = null;
+    view.rerender(<AdvEvalsTab />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    if (cached) expect(view.container.querySelector('.pc-evals__scoreboard')).not.toBeNull();
+    else expect(screen.getByText('No benchmark runs yet')).toBeTruthy();
+  });
+
   it('throughput view (no suites) shows its own L2 empty card', () => {
     nuqsState.evalView = 'throughput';
     render(<AdvEvalsTab />);

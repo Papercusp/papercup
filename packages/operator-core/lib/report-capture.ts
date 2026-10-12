@@ -1,9 +1,10 @@
 /** Adapt existing persisted verdicts/cards to the same immutable publisher. */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { canonicalJson } from '@papercusp/hash-chain';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 import type { ReportKind, ReportSubject } from './report-library';
-import { listReports } from './report-library';
+import { listReports, ReportRequestConflictError } from './report-library';
 import { publishReportWithEffects } from './report-publication';
 import { reportsLibraryDisabled } from './agent-tools/reports/_shared';
 
@@ -14,16 +15,50 @@ interface CaptureOrigin {
   sessionRef?: string | null;
 }
 
+// Only the generated final JSON block may vary in member order when a
+// persisted verdict is rehydrated. Prose and the exact source citation remain
+// byte identities; this never loosens the ordinary immutable publisher.
+function structuredCaptureIdentity(bodyMd: string, ref: string): string | null {
+  const opening = '\n```json\n';
+  const closing = `\n\`\`\`\n\nSource reference: ${ref}\n`;
+  const start = bodyMd.lastIndexOf(opening);
+  if (start < 0 || !bodyMd.endsWith(closing)) return null;
+  try {
+    return bodyMd.slice(0, start + opening.length)
+      + canonicalJson(JSON.parse(bodyMd.slice(start + opening.length, -closing.length))) + closing;
+  } catch { return null; }
+}
+
 async function capture(origin: CaptureOrigin, source: string, ref: string, title: string,
   bodyMd: string, kind: ReportKind, subject: ReportSubject = { kind: 'none' }) {
   if (!origin.workspaceId || origin.workspaceId === '*' || !origin.ownerId || await reportsLibraryDisabled()) return null;
   try {
-    const { report } = await publishReportWithEffects(getOrgPg().sql, {
+    const sql = getOrgPg().sql;
+    const input = {
       workspaceId: origin.workspaceId, title, bodyMd: `${bodyMd}\n\nSource reference: ${ref}\n`, kind,
       subject, source: `capture:${source}`, visibility: 'owner', tags: [`capture:${source}`],
       requestKey: `capture:${source}:${createHash('sha256').update(ref).digest('hex')}`,
-    }, { authorOwnerId: origin.ownerId, harnessSlug: origin.harnessSlug,
-      authorSessionRef: origin.sessionRef ?? ref }, message => console.warn(message));
+    } as const;
+    const stamped = { authorOwnerId: origin.ownerId, harnessSlug: origin.harnessSlug,
+      authorSessionRef: origin.sessionRef ?? ref };
+    const publish = (storedBody = input.bodyMd) => publishReportWithEffects(sql,
+      { ...input, bodyMd: storedBody, tags: [...input.tags] }, stamped, message => console.warn(message));
+    let result;
+    try { result = await publish(); }
+    catch (error) {
+      if (!(error instanceof ReportRequestConflictError) || !['acceptance', 'audit'].includes(source)) throw error;
+      const [saved] = await sql<Array<{ body_md: string }>>`
+        SELECT body_md FROM harness_shared.report_library
+        WHERE workspace_id = ${origin.workspaceId} AND author_owner_id = ${origin.ownerId}
+          AND COALESCE(request_scope, 'author:' || COALESCE(author_owner_id, '')) = ${`author:${origin.ownerId}`}
+          AND request_key = ${input.requestKey} AND source = ${input.source}`;
+      const identity = structuredCaptureIdentity(input.bodyMd, ref);
+      if (!saved || identity === null || structuredCaptureIdentity(saved.body_md, ref) !== identity) throw error;
+      // Keep the historical bytes and citation. The publisher still verifies
+      // title, subject, visibility, source, tags and origin on this retry.
+      result = await publish(saved.body_md);
+    }
+    const { report } = result;
     return report.reportId;
   } catch (error) {
     // The original card/verdict already exists. Preserve its control-plane

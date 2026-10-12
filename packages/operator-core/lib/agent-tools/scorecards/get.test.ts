@@ -14,8 +14,16 @@ import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 
-const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
+const { doorConstantsMock, gradingAuditRubricMock } = vi.hoisted(() => ({
+  doorConstantsMock: vi.fn(),
+  gradingAuditRubricMock: vi.fn(),
+}));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
+
+vi.mock('../../rubrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rubrics')>();
+  return { ...actual, getRubricWithoutSeeding: (...args: unknown[]) => gradingAuditRubricMock(...args) };
+});
 
 vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
@@ -107,6 +115,7 @@ describe('scorecards:get evidence-first projection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
+    gradingAuditRubricMock.mockResolvedValue(null);
     resetResultDoorAggregatesForTests();
   });
 
@@ -152,6 +161,43 @@ describe('scorecards:get evidence-first projection', () => {
     });
     expect(page.success).toBe(true);
     expect(resultContract.safeParse({ ok: true, scorecard: {} }).success).toBe(false);
+  });
+
+  it('surfaces read-time grading-audit stamp currentness', async () => {
+    const gradingAudit = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-06T00:00:00.000Z',
+      rubricRevision: 10,
+      criteriaHash: 'hash-before-edit',
+    };
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: { ...scorecard, gradingAudit },
+    } as never);
+    gradingAuditRubricMock.mockResolvedValue({
+      rubricId: 'grading-integrity',
+      revision: 12,
+      criteriaHash: 'hash-current',
+    });
+
+    const result = await getTool.handler({ issueId: scorecard.issueId } as never, makeDispatchContext());
+
+    expect(result).toMatchObject({
+      data: {
+        ok: true,
+        scorecard: {
+          gradingAuditCurrentness: {
+            state: 'stale',
+            reason: 'criteria-hash-mismatch',
+            recordedRevision: 10,
+            currentRevision: 12,
+            recordedCriteriaHash: 'hash-before-edit',
+            currentCriteriaHash: 'hash-current',
+          },
+        },
+      },
+    });
   });
 
   it('keeps a complete criterion page inside the outer model-facing result door', async () => {

@@ -44,23 +44,33 @@ describe('OrgTxnTimeoutError timeoutSource (EI-21831306274538775)', () => {
 });
 
 describe('getNextContentionResult surfaces the cause (EI-21831306274538775)', () => {
-  it('reports a PostgreSQL timeout without inferring contention', () => {
-    const out = getNextContentionResult(
-      new OrgTxnTimeoutError(
-        '57014',
-        new Error('canceling statement due to statement timeout'),
-        'observed head blocker pid 42',
-      ),
+  it('reports a PostgreSQL timeout without copying a global blocker snapshot to the caller', () => {
+    const error = new OrgTxnTimeoutError(
+      '57014',
+      new Error('canceling statement due to statement timeout'),
+      'observed head blocker pid 42 with query SELECT sensitive_value FROM private_table',
     );
+    error.candidateWaitSnapshot = {
+      status: 'sampled',
+      targetPid: 42,
+      waitEventType: 'Lock',
+      waitEvent: 'transactionid',
+      blockingPids: [7],
+      statementCapMs: 5_000,
+      sampleAfterMs: 4_000,
+    };
+    const out = getNextContentionResult(error);
     expect(out.timeoutSource).toBe('pg');
     expect(out.retryable).toBe(true);
     expect(out.message).toContain('PostgreSQL timeout (57014)');
     expect(out.message).not.toContain('contention');
     expect(out.message).not.toContain('database stalled');
     expect(out.message).not.toContain('likely blocked by pid');
-    expect(out.message).toContain('separate-connection blocker snapshot');
-    expect(out.message).toContain('not confirmed to block this operation');
-    expect(out.message).toContain('observed head blocker pid 42');
+    expect(out.message).toContain('statement_timeout');
+    expect(out.message).not.toContain('separate-connection blocker snapshot');
+    expect(out.message).not.toContain('observed head blocker pid 42');
+    expect(out.message).not.toContain('sensitive_value');
+    expect(out.candidateWaitSnapshot).toEqual(error.candidateWaitSnapshot);
   });
 
   it('reports a ladder-budget timeout WITHOUT blaming PG, and says where to look instead', () => {
