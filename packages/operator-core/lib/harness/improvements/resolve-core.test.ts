@@ -499,3 +499,62 @@ describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
     expect(heal).not.toHaveBeenCalled();
   });
 });
+
+// WI-6554700010009273: migrations 1474/1477 refuse a row ENTERING `blocked` unless it already
+// names its blocker, and the leader-triage park names it with a fresh payload.blockedReason. So the
+// reason must be written BEFORE the status flip (status-first was refused outright), and it must be
+// withdrawn when the flip does not stick so it cannot vouch for a later, unrelated `blocked` write.
+describe('resolveImprovement — leader-triage park writes its reason before the status flip', () => {
+  function orderedDeps(current: EngineerIssue | null) {
+    const d = deps(current);
+    const log: string[] = [];
+    const merge = d.mergeIssuePayload;
+    const flip = d.setIssueState;
+    d.mergeIssuePayload = async (id, patch, opts) => {
+      log.push(opts?.unset ? `unset:${opts.unset.join(',')}` : `merge:${Object.keys(patch).join(',')}`);
+      return merge(id, patch, opts);
+    };
+    d.setIssueState = async (...args) => {
+      log.push(`state:${args[1]}`);
+      return flip(...args);
+    };
+    return { d, log };
+  }
+
+  it('stamps blockedReason + a current blockedAt, then flips to blocked', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-5' }));
+    const before = Date.now();
+    const r = await resolveImprovement({ id: 'EI-5', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(r).toMatchObject({ ok: true, state: 'blocked', routedToLeaderTriage: true });
+    expect(log.indexOf('merge:blockedReason,blockedAt')).toBeGreaterThanOrEqual(0);
+    expect(log.indexOf('merge:blockedReason,blockedAt')).toBeLessThan(log.indexOf('state:blocked'));
+    const stamp = d.rec.payloads.find((p) => 'blockedReason' in p.patch)!.patch;
+    expect(Date.parse(String(stamp.blockedAt))).toBeGreaterThanOrEqual(before - 1000);
+    expect(log).not.toContain('unset:blockedReason,blockedAt');
+    expect(d.rec.released).toEqual(['EI-5']);
+  });
+
+  it('withdraws the reason when the flip no-ops (remote-owned / missing row) and still releases the claim', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-6' }));
+    d.setIssueState = async () => {
+      log.push('state:blocked');
+      return null;
+    };
+    await resolveImprovement({ id: 'EI-6', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(log.indexOf('unset:blockedReason,blockedAt')).toBeGreaterThan(log.indexOf('state:blocked'));
+    expect(d.rec.released).toEqual(['EI-6']);
+  });
+
+  it('withdraws the reason and releases the claim when the database refuses the flip', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-7' }));
+    d.setIssueState = async () => {
+      log.push('state:blocked');
+      throw Object.assign(new Error('work-item EI-7 cannot enter status blocked without naming its blocker'), { code: '23514' });
+    };
+    await expect(
+      resolveImprovement({ id: 'EI-7', outcome: 'needs-human', summary: 'needs a schema migration' }, d),
+    ).rejects.toThrow(/cannot enter status blocked/);
+    expect(log.indexOf('unset:blockedReason,blockedAt')).toBeGreaterThan(log.indexOf('state:blocked'));
+    expect(d.rec.released).toEqual(['EI-7']);
+  });
+});

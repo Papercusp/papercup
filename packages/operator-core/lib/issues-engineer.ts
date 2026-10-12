@@ -4155,12 +4155,14 @@ export async function markLeaderTriage(
   // WI-6554700010009155: the reason is written BEFORE the status flips. Migration 1474's
   // trigger refuses a row ENTERING `blocked` without a named blocker, and a leader-triage park
   // names its blocker with this reason — so status-first would be refused. If the flip then
-  // no-ops (remote-owned or missing row), the reason is withdrawn so it can never later vouch
-  // for an unrelated `blocked` write.
+  // no-ops (remote-owned or missing row) or throws, the reason is withdrawn so it can never later
+  // vouch for an unrelated `blocked` write (migration 1477 also limits a reason to 15 minutes).
   await mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
-  const updated = await setIssueState(id, 'blocked', by);
-  if (!updated) {
-    await mergeIssuePayload(id, { blockedReason: null, blockedAt: null });
+  let updated: EngineerIssue | null = null;
+  try {
+    updated = await setIssueState(id, 'blocked', by);
+  } finally {
+    if (!updated) await mergeIssuePayload(id, {}, { unset: ['blockedReason', 'blockedAt'] });
   }
   return updated;
 }
