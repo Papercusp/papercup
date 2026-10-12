@@ -168,12 +168,13 @@ function cancellableTransaction(
  * EI-19404770733829453: a bare "canceling statement due to lock timeout" names no
  * cause, so every caller who hits it either retries blindly or goes hand-querying
  * `pg_stat_activity`. When `blockerHint` is available (best-effort — see
- * `describeContentionAtFailure` below), it is folded into `.message` so the error
- * ITSELF says what blocked it (e.g. a long-running migration holding a table lock)
- * instead of leaving that diagnosis to whoever reads the stack trace next.
+ * `describeContentionAtFailure` below), it is retained as a separately labeled
+ * snapshot. That diagnostic uses a fresh connection and does not establish which
+ * backend, if any, blocked the timed-out operation.
  */
 export class OrgTxnTimeoutError extends Error {
   readonly pgCode: string;
+  /** Best-effort fresh-connection snapshot; it does not prove this operation waited on that backend. */
   readonly blockerHint?: string;
   /**
    * EI-21831306274538775 — did PostgreSQL actually raise this SQLSTATE (`'pg'`), or did a
@@ -206,8 +207,12 @@ export class OrgTxnTimeoutError extends Error {
         ? `${subject} was abandoned after exceeding the CALLER's own time budget (reported as pg ${pgCode} so it is never mistaken for "nothing matched"; PostgreSQL itself did not time out) — retry shortly`
         : pgCode === '55P03'
           ? `${subject} timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly`
-          : `${subject} exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly`;
-    super(blockerHint ? `${base} — ${blockerHint}` : base);
+          : `${subject} exceeded its time budget (pg 57014 statement_timeout) — retry shortly`;
+    super(
+      blockerHint
+        ? `${base} — separate-connection blocker snapshot (not confirmed to block this operation): ${blockerHint}`
+        : base,
+    );
     this.name = 'OrgTxnTimeoutError';
     this.pgCode = pgCode;
     this.cause = cause;
@@ -285,7 +290,7 @@ async function describeContentionAtFailure(client: OrgSql, pool?: string): Promi
     const q = (head.q ?? '').trim() || '(query text unavailable)';
     const blockedCount = rows.filter((r) => !r.unblocked).length;
     return (
-      `likely blocked by pid ${head.pid} (running ${age}; current/last statement — ` +
+      `observed head blocker pid ${head.pid} (running ${age}; current/last statement — ` +
       `lock may have been taken by an earlier statement in this transaction): ${q}` +
       (blockedCount > 0 ? ` — ${blockedCount} other backend(s) also waiting` : '')
     );

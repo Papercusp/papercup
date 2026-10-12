@@ -526,12 +526,16 @@ describe('boundedOrgTxn', () => {
     ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('pid 1644480');
+    expect((err as OrgTxnTimeoutError).blockerHint).not.toContain('likely blocked by pid');
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('current/last statement');
     expect((err as OrgTxnTimeoutError).blockerHint).toContain(
       'lock may have been taken by an earlier statement in this transaction',
     );
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('SELECT id, confidence');
-    expect((err as OrgTxnTimeoutError).message).toContain('likely blocked by pid 1644480');
+    expect((err as OrgTxnTimeoutError).message).toContain('separate-connection blocker snapshot');
+    expect((err as OrgTxnTimeoutError).message).toContain('not confirmed to block this operation');
+    expect((err as OrgTxnTimeoutError).message).toContain('observed head blocker pid 1644480');
+    expect((err as OrgTxnTimeoutError).message).not.toContain('likely blocked by pid');
     expect((err as OrgTxnTimeoutError).message).toContain('1 other backend(s) also waiting');
     expect(diagnosticSql).toContain('a.datname = current_database()');
     expect(diagnosticSql).toContain('b.datname = current_database()');
