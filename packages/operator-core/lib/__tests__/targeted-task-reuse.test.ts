@@ -480,7 +480,9 @@ describe('armTargetedTaskReuse', () => {
       expect(second.report.numFailedTests).toBe(1);
       expect(second.report.numPassedTests).toBe(1);
     } finally { armed.finish(); }
-  }, 30_000);
+    // Two sequential spawnSync children at 30s each: the parent must outlive BOTH child
+    // budgets, or the child timeout is unreachable (lint:test-timing-budgets).
+  }, 90_000);
 
   it('reports what the recorder did after the task ran', async () => {
     fixture();
