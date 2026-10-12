@@ -47,6 +47,8 @@ export interface ObserveFallbackOptions {
   processTag?: string;
   /** Event time; defaults to now. */
   observedAt?: Date;
+  /** Optional exact per-call join key; does not affect scope-based aggregation. */
+  correlationId?: string | null;
 }
 
 /** Per-reason aggregate over a window — the reader's row shape. */
@@ -100,6 +102,7 @@ interface PendingRow {
   reason: string;
   scope: string | null;
   process_tag: string | null;
+  correlation_id: string | null;
   observed_at: Date;
 }
 
@@ -223,6 +226,12 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     warnThrottled(`refused observation for '${String(mechanism).slice(0, 80)}': ${problem}`);
     return false;
   }
+  if (opts.correlationId != null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(opts.correlationId)) {
+    state.rejected += 1;
+    state.totalRejected += 1;
+    warnThrottled('refused observation with an invalid correlation id');
+    return false;
+  }
   if (state.pending.length >= FALLBACK_BUFFER_MAX) {
     state.pending.shift();
     state.dropped += 1;
@@ -238,6 +247,7 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     reason: decision.reason.trim(),
     scope: decision.scope ?? null,
     process_tag: opts.processTag ?? null,
+    correlation_id: opts.correlationId ?? null,
     observed_at: opts.observedAt ?? new Date(),
   });
   installExitHook();
@@ -249,7 +259,7 @@ async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
   const values = rows.map(({ sql: _ignored, ...r }) => r);
   await sql`
     INSERT INTO harness_shared.fallback_observations
-      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'observed_at')}
+      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at')}
   `;
 }
 
