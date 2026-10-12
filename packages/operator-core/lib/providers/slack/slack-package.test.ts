@@ -15,13 +15,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+  PROVIDER_SEARCH_LIVE_CAPABILITY,
   providerAppRegistrationUrl,
   providerCredentialForHost,
+  providerLiveSearchResultIssue,
+  providerPrincipalCredentialForHost,
   validateProviderDeclaration,
   type HostFetchRequest,
   type HostFetchResponse,
 } from '@papercusp/plugin-sdk';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
+import { assertProviderRecords, classifyProviderSyncError } from '../connector-runtime';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const PACKAGE_DIR = resolve(REPO_ROOT, 'libs/papercusp/plugins/slack');
@@ -109,6 +113,22 @@ describe('slack package manifest', () => {
     ]);
     expect(definition.settings.interactivity).toEqual({ is_enabled: true });
   });
+
+  it('declares channel readership, live search and a per-person user token that only search uses (D-026)', () => {
+    expect(manifest.provider.membership).toEqual({ identityProvider: 'slack', containers: true });
+    expect(manifest.provider.capabilities).toContain(PROVIDER_SEARCH_LIVE_CAPABILITY);
+    // The source credential for slack.com stays the bot token; the user token is per person.
+    expect(providerCredentialForHost(manifest.provider, 'slack.com')?.key).toBe('bot_token');
+    const userToken = providerPrincipalCredentialForHost(manifest.provider, 'slack.com');
+    expect(userToken).toMatchObject({ key: 'user_token', perPrincipal: true, hosts: ['slack.com'] });
+    const matches = (value: string) => new RegExp(`^(?:${userToken?.pattern})$`).test(value);
+    expect(matches(fakeToken('xoxp'))).toBe(true);
+    expect(matches(fakeToken('xoxb'))).toBe(false);
+    // The app asks for the user scopes assistant.search.context reads with.
+    expect(manifest.provider.setup.appRegistration.definition.oauth_config.scopes.user).toEqual(
+      expect.arrayContaining(['search:read.public', 'search:read.private', 'search:read.mpim', 'search:read.im']),
+    );
+  });
 });
 
 /** A host.fetch that must not be called: plain posts and ignored gestures read nothing from Slack. */
@@ -151,6 +171,10 @@ describe('ingress.normalize', () => {
     expect(result.records).toHaveLength(1);
     const [record] = result.records;
     expect(record).toMatchObject({ datatype: 'chat-message', nativeId: 'C42:1712345678.000200', event: 'message', version: 'message:C42:1712345678.000200' });
+    // The channel is the record's readership container on an organization source (D-026), and the
+    // host's record check accepts it because the descriptor declares containers.
+    expect(record.aclRef).toBe('C42');
+    expect(() => assertProviderRecords(result.records, { descriptor: manifest.provider })).not.toThrow();
     expect(record.payload).toMatchObject({
       id: 'Ev01',
       channelId: 'C42',
@@ -507,6 +531,243 @@ describe('chat.reply', () => {
   });
 });
 
+/**
+ * A fake Slack workspace behind host.fetch for syncPage: channel list pages, members per channel,
+ * history pages per channel (keyed `channel` or `channel:cursor`), replies per thread. A route may
+ * be a function so a test can answer with a refusal or a rate limit.
+ */
+type SlackRoute = unknown | ((url: URL) => HostFetchResponse);
+function fakeWorkspace(routes: {
+  list?: SlackRoute[];
+  members?: Record<string, SlackRoute>;
+  history?: Record<string, SlackRoute>;
+  replies?: Record<string, SlackRoute>;
+}) {
+  const seen: string[] = [];
+  const answer = (route: SlackRoute | undefined, url: URL): HostFetchResponse => {
+    if (route === undefined) return json({ ok: false, error: `unexpected:${url.pathname}${url.search}` });
+    return typeof route === 'function' ? (route as (u: URL) => HostFetchResponse)(url) : json({ ok: true, ...(route as object) });
+  };
+  const fetchSlack = async (request: HostFetchRequest) => {
+    const url = new URL(request.url);
+    seen.push(`${url.pathname.replace('/api/', '')}?${url.searchParams}`);
+    const channel = url.searchParams.get('channel') ?? '';
+    const cursor = url.searchParams.get('cursor');
+    if (url.pathname === '/api/conversations.list') return answer(routes.list?.[cursor ? Number(cursor) : 0], url);
+    if (url.pathname === '/api/conversations.members') return answer(routes.members?.[cursor ? `${channel}:${cursor}` : channel], url);
+    if (url.pathname === '/api/conversations.history') return answer(routes.history?.[cursor ? `${channel}:${cursor}` : channel], url);
+    if (url.pathname === '/api/conversations.replies') return answer(routes.replies?.[`${channel}:${url.searchParams.get('ts')}`], url);
+    return json({ ok: false, error: 'unknown_method' });
+  };
+  return { seen, fetchSlack };
+}
+
+const ORG = { source: 'src-org', mode: 'backfill', scope: 'organization' } as const;
+const cursorState = (page: { nextCursor: string | null }) => JSON.parse(page.nextCursor ?? 'null');
+
+describe('syncPage (organization history and channel readership, D-026)', () => {
+  it('gives a personal source nothing to crawl and reads nothing from Slack', async () => {
+    for (const scope of [undefined, 'personal', 'pot']) {
+      expect(await provider.syncPage({ source: 'src-1', cursor: null, mode: 'backfill', ...(scope ? { scope } : {}) }, noFetch))
+        .toEqual({ records: [], nextCursor: null, hasMore: false });
+    }
+  });
+
+  it('starts with a membership page: every member channel with its complete members, then queues them for backfill', async () => {
+    const slack = fakeWorkspace({
+      list: [
+        {
+          channels: [
+            { id: 'C1', name: 'general', is_member: true },
+            { id: 'C2', name: 'random', is_member: false },
+            { id: 'C3', name: 'old', is_member: true, is_archived: true },
+          ],
+          response_metadata: { next_cursor: '1' },
+        },
+        { channels: [{ id: 'G4', name: 'secret', is_member: true, is_private: true }] },
+      ],
+      members: {
+        C1: { members: ['U1', 'U2'], response_metadata: { next_cursor: 'm2' } },
+        'C1:m2': { members: ['U3'] },
+        G4: { members: ['U1'] },
+      },
+    });
+    const page = await provider.syncPage({ ...ORG, cursor: null }, slack.fetchSlack);
+    expect(page.records).toEqual([]);
+    expect(page.membership).toEqual({
+      // Every record names its channel, so nobody reads through the source-wide list.
+      members: [],
+      containers: [
+        { ref: 'C1', title: '#general', members: [{ providerUserId: 'U1' }, { providerUserId: 'U2' }, { providerUserId: 'U3' }] },
+        { ref: 'G4', title: '#secret', members: [{ providerUserId: 'U1' }] },
+      ],
+    });
+    expect(page.hasMore).toBe(true);
+    expect(cursorState(page)).toEqual({ queue: ['C1', 'G4'], seen: ['C1', 'G4'] });
+    // Non-member and archived channels are never read.
+    expect(slack.seen.filter((call) => call.startsWith('conversations.members'))).toHaveLength(3);
+    expect(slack.seen.some((call) => /channel=C2|channel=C3/.test(call))).toBe(false);
+  });
+
+  it('walks one history page at a time, thread replies included, as history records of the channel', async () => {
+    const slack = fakeWorkspace({
+      history: {
+        C1: {
+          messages: [
+            { ts: '1712345678.000200', user: 'U1', text: 'The export 500s', thread_ts: '1712345678.000200', reply_count: 1 },
+            { ts: '1712345600.000100', subtype: 'channel_join', user: 'U2', text: '<@U2> has joined the channel' },
+            { ts: '1712345500.000100', subtype: 'bot_message', bot_id: 'B9', text: 'Deploy finished' },
+            { ts: '1712345400.000100', user: 'U3', text: 'edited words', edited: { ts: '1712345450.000000' } },
+            { ts: '1712345300.000100', user: 'U3', text: '' },
+          ],
+          response_metadata: { next_cursor: 'h2' },
+        },
+        'C1:h2': { messages: [{ ts: '1712340000.000100', user: 'U1', text: 'first post' }] },
+      },
+      replies: {
+        'C1:1712345678.000200': {
+          messages: [
+            { ts: '1712345678.000200', user: 'U1', text: 'The export 500s', thread_ts: '1712345678.000200' },
+            { ts: '1712345700.000300', user: 'U2', text: 'Repro on staging', thread_ts: '1712345678.000200' },
+          ],
+        },
+      },
+    });
+    const first = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1', 'G4'], seen: ['C1', 'G4'] }) }, slack.fetchSlack);
+    expect(first.membership).toBeUndefined();
+    expect(first.records.map((r: { nativeId: string }) => r.nativeId)).toEqual([
+      'C1:1712345678.000200',
+      'C1:1712345700.000300',
+      'C1:1712345500.000100',
+      'C1:1712345400.000100',
+    ]);
+    for (const record of first.records) {
+      // A backfilled message is never a new-message event, so message workflows do not fire on it.
+      expect(record).toMatchObject({ datatype: 'chat-message', event: 'history', aclRef: 'C1' });
+      expect(validateDatatypePayload(CHAT_MESSAGE_SCHEMA, record.payload).ok).toBe(true);
+    }
+    expect(() => assertProviderRecords(first.records, { descriptor: manifest.provider })).not.toThrow();
+    const [root, reply, bot, edited] = first.records;
+    expect(root.payload).toMatchObject({ channelId: 'C1', threadId: '1712345678.000200', sender: 'U1', text: 'The export 500s', occurredAt: '2024-04-05T19:34:38.000Z' });
+    expect(reply.payload).toMatchObject({ threadId: '1712345678.000200', sender: 'U2', text: 'Repro on staging' });
+    expect(bot.payload).toMatchObject({ sender: 'B9', extensions: { slack: { subtype: 'bot_message' } } });
+    // An edit is a new version, so the stored document follows it.
+    expect(edited.version).toBe('history:C1:1712345400.000100:1712345450.000000');
+    expect(root.version).toBe('history:C1:1712345678.000200:1712345678.000200');
+    expect(first.hasMore).toBe(true);
+    expect(cursorState(first)).toEqual({ queue: ['C1', 'G4'], seen: ['C1', 'G4'], page: 'h2' });
+
+    const second = await provider.syncPage({ ...ORG, cursor: first.nextCursor }, slack.fetchSlack);
+    expect(second.records.map((r: { nativeId: string }) => r.nativeId)).toEqual(['C1:1712340000.000100']);
+    expect(second.hasMore).toBe(true);
+    expect(cursorState(second)).toEqual({ queue: ['G4'], seen: ['C1', 'G4'] });
+  });
+
+  it('finishes the backfill on the last channel, and skips a channel whose history is gone', async () => {
+    const slack = fakeWorkspace({
+      history: {
+        // The page cursor in flight reaches Slack with the request.
+        'C1:h9': () => json({ ok: false, error: 'not_in_channel' }),
+        G4: { messages: [{ ts: '1712345678.000200', user: 'U1', text: 'last' }] },
+      },
+    });
+    const skipped = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1', 'G4'], seen: ['C1', 'G4'], page: 'h9' }) }, slack.fetchSlack);
+    expect(skipped).toMatchObject({ records: [], hasMore: true });
+    expect(cursorState(skipped)).toEqual({ queue: ['G4'], seen: ['C1', 'G4'] });
+    const last = await provider.syncPage({ ...ORG, cursor: skipped.nextCursor }, slack.fetchSlack);
+    expect(last.records).toHaveLength(1);
+    expect(last.hasMore).toBe(false);
+    expect(cursorState(last)).toEqual({ queue: [], seen: ['C1', 'G4'] });
+  });
+
+  it('after the backfill, refreshes membership each pass and backfills only channels it has not seen', async () => {
+    const slack = fakeWorkspace({
+      list: [{ channels: [{ id: 'C1', name: 'general', is_member: true }, { id: 'C5', name: 'new', is_member: true }] }],
+      members: { C1: { members: ['U1'] }, C5: { members: ['U2'] } },
+    });
+    const page = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: JSON.stringify({ queue: [], seen: ['C1', 'G4'] }) }, slack.fetchSlack);
+    // G4 is gone from the snapshot, so its readers are removed (the host empties lists a full snapshot no longer names).
+    expect(page.membership.containers.map((c: { ref: string }) => c.ref)).toEqual(['C1', 'C5']);
+    expect(page.hasMore).toBe(true);
+    expect(cursorState(page)).toEqual({ queue: ['C5'], seen: ['C1', 'C5'] });
+
+    const settled = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: JSON.stringify({ queue: [], seen: ['C1', 'C5'] }) }, slack.fetchSlack);
+    expect(settled.hasMore).toBe(false);
+    expect(cursorState(settled)).toEqual({ queue: [], seen: ['C1', 'C5'] });
+  });
+
+  it('starts over from membership on a cursor it cannot read', async () => {
+    const slack = fakeWorkspace({ list: [{ channels: [] }] });
+    const page = await provider.syncPage({ ...ORG, cursor: 'not-json' }, slack.fetchSlack);
+    expect(page).toEqual({ records: [], membership: { members: [], containers: [] }, nextCursor: JSON.stringify({ queue: [], seen: [] }), hasMore: false });
+  });
+
+  it('raises Slack rate limits and auth refusals as the signals the host interprets', async () => {
+    const limited = fakeWorkspace({ list: [() => json({ ok: false }, 429, { 'retry-after': '30' })] });
+    const rateLimit = await provider.syncPage({ ...ORG, cursor: null }, limited.fetchSlack).catch((error: unknown) => error);
+    expect(classifyProviderSyncError(rateLimit)).toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 30 });
+
+    const revoked = fakeWorkspace({ history: { C1: () => json({ ok: false, error: 'token_revoked' }) } });
+    const auth = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1'], seen: ['C1'] }) }, revoked.fetchSlack)
+      .catch((error: unknown) => error);
+    expect(classifyProviderSyncError(auth)).toMatchObject({ kind: 'auth' });
+  });
+});
+
+describe('search.live (assistant.search.context with the searching person\'s token, D-026)', () => {
+  it('asks Slack for the best messages the person can see and returns well-formed hits', async () => {
+    const seen: HostFetchRequest[] = [];
+    const result = await provider.invokeCapability(
+      { source: 'src-org', capability: PROVIDER_SEARCH_LIVE_CAPABILITY, args: { query: '  export 500  ', limit: 50 } },
+      async (request: HostFetchRequest) => {
+        seen.push(request);
+        return json({
+          ok: true,
+          results: {
+            messages: [
+              { author_user_id: 'U1', team_id: 'T1', channel_id: 'C1', channel_name: 'general', message_ts: '1712345678.000200', content: ' The export 500s ', permalink: 'https://example.slack.com/archives/C1/p1712345678000200' },
+              { channel_id: 'D9', message_ts: '1712345700.000100', content: 'in a DM' },
+              { channel_id: 'C1', message_ts: 'not-a-ts', content: 'dropped' },
+              { channel_id: 'C1', message_ts: '1712345800.000100', content: '   ' },
+            ],
+          },
+        });
+      },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ url: 'https://slack.com/api/assistant.search.context', method: 'POST' });
+    // No token in the request: the host injects the person's own user token for slack.com.
+    expect(seen[0].headers?.authorization).toBeUndefined();
+    expect(JSON.parse(seen[0].body ?? '{}')).toEqual({
+      query: 'export 500',
+      channel_types: ['public_channel', 'private_channel', 'mpim', 'im'],
+      content_types: ['messages'],
+      limit: 20,
+      sort: 'score',
+    });
+    expect(providerLiveSearchResultIssue(result)).toBeNull();
+    expect(result.hits).toEqual([
+      {
+        externalId: 'C1:1712345678.000200',
+        title: '#general',
+        text: 'The export 500s',
+        occurredAt: '2024-04-05T19:34:38.000Z',
+        participants: ['U1'],
+        permalink: 'https://example.slack.com/archives/C1/p1712345678000200',
+      },
+      { externalId: 'D9:1712345700.000100', title: 'channel D9', text: 'in a DM', occurredAt: '2024-04-05T19:35:00.000Z', participants: [], permalink: null },
+    ]);
+  });
+
+  it('refuses an empty query before any request, and names Slack refusals', async () => {
+    await expect(provider.searchLive(noFetch, { query: '   ', limit: 5 })).rejects.toThrow('slack_search_query_invalid');
+    const refused = await provider.searchLive(async () => json({ ok: false, error: 'missing_scope' }), { query: 'x', limit: 5 })
+      .catch((error: { message: string; data?: unknown }) => error);
+    expect(refused.message).toBe('slack_assistant_search_context_missing_scope');
+    expect(refused.data).toEqual({ kind: 'auth' });
+  });
+});
+
 describe('daemon.mjs (JSON-RPC over stdio)', () => {
   it('describes the manifest provider and routes chat.reply through host.fetch with its call token and source', async () => {
     const child = spawn(process.execPath, ['daemon.mjs'], { cwd: PACKAGE_DIR, stdio: ['pipe', 'pipe', 'inherit'] });
@@ -556,6 +817,20 @@ describe('daemon.mjs (JSON-RPC over stdio)', () => {
       expect(click.result).toEqual({ records: [] });
       expect(hostFetches).toHaveLength(2);
       expect(hostFetches[1]).toMatchObject({ callToken: 'call-126', source: 'src-1', request: { url: 'https://slack.com/api/views.open', method: 'POST' } });
+      // An organization source's sync reads Slack through the sync call's own host.fetch.
+      const orgPage = await call(7, 'provider.syncPage', {
+        callToken: 'call-127',
+        request: { source: 'src-org', cursor: null, mode: 'backfill', scope: 'organization' },
+      });
+      expect(orgPage.result).toEqual({
+        records: [],
+        membership: { members: [], containers: [] },
+        nextCursor: JSON.stringify({ queue: [], seen: [] }),
+        hasMore: false,
+      });
+      expect(hostFetches).toHaveLength(3);
+      expect(hostFetches[2]).toMatchObject({ callToken: 'call-127', source: 'src-org' });
+      expect(hostFetches[2].request.url).toMatch(/^https:\/\/slack\.com\/api\/conversations\.list\?/);
     } finally {
       child.kill();
     }
