@@ -520,7 +520,10 @@ async function needsCompaction(sql: Sql, qualified: string): Promise<boolean> {
 }
 
 /** One log line per run; quiet when there was nothing to do. */
-export function formatBm25MaintenanceReport(r: Bm25MaintenanceReport): string | null {
+export function formatBm25MaintenanceReport(
+  r: Bm25MaintenanceReport,
+  interval?: { startedAtMs: number; finishedAtMs: number; durationMs: number },
+): string | null {
   const parts: string[] = [];
   if (r.engineSkipped) parts.push(`engine ${r.engineSkipped}`);
   const created = r.ensure.filter(e => e.outcome === 'created').map(e => e.corpusIndex);
@@ -539,5 +542,8 @@ export function formatBm25MaintenanceReport(r: Bm25MaintenanceReport): string | 
     parts.push(`retire ${t.table}.${t.column} ${t.outcome}${freed}${t.outcome === 'retired' ? '' : ` (${t.detail ?? ''})`}`);
   }
   if (r.errors.length) parts.push(`errors: ${r.errors.join(' | ')}`);
-  return parts.length ? `[bm25-maintenance] ${parts.join('; ')}` : null;
+  if (!parts.length) return null;
+  const line = `[bm25-maintenance] ${parts.join('; ')}`;
+  if (!interval) return line;
+  return `${line}; startedAt=${new Date(interval.startedAtMs).toISOString()} finishedAt=${new Date(interval.finishedAtMs).toISOString()} durationMs=${interval.durationMs}`;
 }
