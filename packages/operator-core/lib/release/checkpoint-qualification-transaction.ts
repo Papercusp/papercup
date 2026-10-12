@@ -1842,6 +1842,16 @@ type StoredQualificationMutationOptions = {
   historicalRecovery?: HistoricalPreSuiteRecoveryInput;
 };
 
+// Qualification writes must ride through short PostgreSQL restart windows while
+// retaining one hard acquisition ceiling. Keep pool-pressure deadline retries
+// disabled here so the 15 safe setup retries share this 135s cap.
+const QUALIFICATION_STORE_TXN_OPTIONS = {
+  acquireTimeoutMs: 135_000,
+  acquireRetries: 0,
+  connectionSetupRetries: 15,
+  connectionSetupBackoffMs: 1_000,
+} as const;
+
 async function mutateStoredQualification(
   target: GateVerdictTarget,
   change: (
@@ -2012,7 +2022,7 @@ async function mutateStoredQualification(
            AND target_role = 'system:green-checkpoint'`;
       await persistTerminalEvent();
       return reconciliation ? { ...transition, repairQueueReconciliation: reconciliation } : transition;
-    });
+    }, QUALIFICATION_STORE_TXN_OPTIONS);
   } catch (error) {
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
   }
@@ -2335,7 +2345,7 @@ export async function cancelStoredQualification(
          RETURNING metadata`;
       if (updatedRows.length === 0) return { status: 'conflict' as const, transaction: current };
       return transition;
-    });
+    }, QUALIFICATION_STORE_TXN_OPTIONS);
   } catch (error) {
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
   }

@@ -188,6 +188,22 @@ describe('stored historical pre-suite recovery', () => {
   });
 });
 
+describe('stored qualification acquisition retry policy', () => {
+  it('keeps safe setup retries inside one bounded 135s acquisition window', async () => {
+    transactionHarness({});
+
+    await beginStoredQualification(target, successor);
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledTimes(1);
+    expect(h.boundedOrgTxn.mock.calls[0]?.[1]).toEqual({
+      acquireTimeoutMs: 135_000,
+      acquireRetries: 0,
+      connectionSetupRetries: 15,
+      connectionSetupBackoffMs: 1_000,
+    });
+  });
+});
+
 describe('beginStoredQualification terminal repair-queue reconciliation', () => {
   it('atomically clears the exact predecessor queue and repair inconclusive while installing the successor', async () => {
     const current = terminalQualification();
