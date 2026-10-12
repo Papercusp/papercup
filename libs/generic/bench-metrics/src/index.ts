@@ -102,6 +102,20 @@ export {
   type CapabilityRollup,
 } from './capability-attribution';
 
+// Observed capability availability/delivery/use evidence + the lift-admission gate (fairness C4).
+export {
+  CAPABILITY_EVIDENCE_META_KEY,
+  readCapabilityEvidence,
+  mergeCapabilityEvidence,
+  withCapabilityEvidence,
+  classifyExercise,
+  admitCapabilityLift,
+  type CapabilityExerciseEvidence,
+  type CapabilityLiftAdmission,
+  type ExerciseClass,
+  type LiftRefusal,
+} from './capability-exercise';
+
 // Mandatory C1–C10 pre-claim fairness-audit table (capability-injection redesign / P-011 / C10).
 export {
   buildFairnessAudit,

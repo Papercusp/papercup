@@ -23016,7 +23016,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For an audit of an existing spec-test-adequacy card, pass scorecardId with its plan slug; the evaluator loads the card’s stored recipe and replays its evidence as of card creation, returning historicalAuditOnly provenance. This historical result is not a current ship-read. Always check ok and rows.length before indexing rows[0].",
+      "description": "Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs; bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. replaySnapshot requires specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Check ok and rows.length before indexing.",
       "capabilities": [
         "plans:read"
       ],
@@ -28993,7 +28993,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility before citing a link.",
+      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Claim saved or delivered only after readback succeeds. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
       "capabilities": [
         "reports:write"
       ],
@@ -29056,7 +29056,7 @@
       "guidance": {
         "when": "For completed audits, reviews, analyses, postmortems, status digests, or proposals.",
         "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, `coord:send` for agent messages, and `docs:author` for reusable procedures.",
-        "chaining": "After publish, call `reports:get { id: report_id }`; verify the complete body and visibility before citing a descriptive Markdown link. Use the returned same-origin path in Papercusp/Tauri; an absolute URL requires a verified GUI origin. Never guess or request an origin or cite a bare id. For corrections, read the original and publish with `supersedes`. Link maintained procedures via `docs:author` and `docs:get` rather than copying private incident details."
+        "chaining": "After `reports:publish`, follow reports:publish → reports:get { id: report_id } → verify. Read back the complete body and intended visibility. Claim saved or delivered only after readback succeeds. For corrections, read the original and publish with `supersedes`, then use the new report_id → verify the correction → cite it. Use the returned same-origin path directly in Papercusp/Tauri as the descriptive Markdown link target (the Reports reader uses `/reports?sel=<report_id>`). Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link or cite a bare id. Link maintained procedures via `docs:author` and `docs:get` rather than copying private incident details."
       }
     },
     {

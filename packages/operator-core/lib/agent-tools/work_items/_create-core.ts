@@ -788,19 +788,8 @@ export async function createOneWorkItem(
       // (the gate's whole point is "the probe actually ran"), not only issue-family.
       if (issueAdmission || args.goalDedupGate) {
         semanticLeg = dupes ? 'ok' : 'unavailable';
-        // EI-22170937574367219: every failure path in semantic-dupe-guard.ts was
-        // silent (fail-open by design, but with no publisher) — the only signal was
-        // whichever agent happened to hit the goal-gate's dedup_unavailable refusal.
-        // Fire-and-forget, deduplicated (bumps one open escalation's repeat count
-        // rather than spamming); never awaited on the create's hot path.
-        if (semanticLeg === 'unavailable') {
-          // Resolve through the shared scope helper, not `args.harness ?? ctx.harnessSlug`:
-          // a raw `*` is TRUTHY but is not a registered harness, so it would tag this
-          // escalation with a slug that resolves to nothing and read as a clean empty result.
-          void reportSemanticDedupProbeUnavailable({
-            harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
-          }).catch(() => {});
-        }
+        // Publish after the index-coverage and lexical checks below. A non-null
+        // semantic result alone does not establish complete index coverage.
       }
       if (dupes && dupes.soft.length > 0) {
         burstCandidates = dupes.soft;
@@ -871,6 +860,12 @@ export async function createOneWorkItem(
       : args.goalDedupGate
         ? { lexical: 'skipped', semantic: semanticLeg, degraded: semanticLeg !== 'ok' }
         : undefined;
+    if (shouldScreen && dedupCoverage) {
+      void reportSemanticDedupProbeUnavailable({
+        harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
+        coverage: dedupCoverage,
+      }).catch(() => {});
+    }
     // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the DRAIN
     // degraded-coverage refusal is retired — a degraded probe files anyway, with
     // the degradation stamped on the row (payload.dedupCoverage below). The

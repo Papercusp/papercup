@@ -97,6 +97,44 @@ describe('shared adequacy-card binding evidence', () => {
       expect(result.scorecardDraft.ratings.traceability.evidence).toContain(`id=${row.id}`);
     }
   });
+
+  it('renders one shared-binding entry per immutable binding id when projections differ', () => {
+    const first = evidence({ id: 39099, evidenceRef: 'surface:shared-first' });
+    const second = successfulTestBinding('shared-binding.integration.test.ts', {
+      testCases: ['acting in TeamChat shows the selected result', 'is a clean workspace starts empty'],
+    });
+    second.id = 39100;
+    const duplicateProjection = {
+      ...second,
+      details: {
+        ...second.details,
+        adequacy: {
+          ...(second.details.adequacy as Record<string, unknown>),
+          testCases: ['is a clean workspace starts empty', 'acting in TeamChat shows the selected result'],
+        },
+      },
+    };
+    const disclosureProjection = {
+      ...duplicateProjection,
+      details: { ...duplicateProjection.details, note: 'reviewed' },
+    };
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [first, second],
+      disclosedGapEvidence: [first, disclosureProjection],
+      classRef: 'plan-class-feature-ship',
+    });
+    const sharedBindings = result.scorecardDraft.body.slice(
+      result.scorecardDraft.body.indexOf('Shared binding evidence'),
+    );
+
+    expect(sharedBindings.match(/id=39100, binding=B\d+/g) ?? []).toHaveLength(1);
+    expect(sharedBindings).not.toContain('id=39100, binding=B3');
+    expect(sharedBindings).toContain('id=39099, binding=B1');
+    expect(sharedBindings).toContain('id=39100, binding=B2');
+    expect(result.scorecardDraft.ratings.traceability.evidence).toContain('id=39100, binding=B2');
+  });
 });
 
 describe('supersession of measured passing case scopes', () => {

@@ -562,6 +562,14 @@ export function workItemsGetSourceReadOptions(
     // Selecting the whole result collection/row includes the complete workItem,
     // so source narrowing would be lossy.
     if (pick === 'results' || /^results(?:\[\]|\[\d+\])$/.test(pick)) return undefined;
+    // The result-door projection layer expands this common shorthand to
+    // `results[].workItem.summary` after the handler has read its source row.
+    // Account for it here too so a body projection cannot silently become the
+    // empty placeholder returned by a bodyless issue read.
+    if (pick === 'summary') {
+      includeBody = true;
+      continue;
+    }
     const path = resultRowPath(pick);
     if (path === null || path === '') continue;
 

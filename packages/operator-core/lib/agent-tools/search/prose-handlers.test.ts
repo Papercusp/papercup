@@ -296,6 +296,19 @@ describe('search:fulltext — invocation stage attribution', () => {
   });
 });
 
+describe('search:semantic — exact retrieval observation receipt', () => {
+  it('stores the engine correlation id and exact leg verdict in invocation metadata', async () => {
+    const tool = (await import('./semantic')).default;
+    const metadata = vi.fn();
+    await tool.handler({ query: 'memory admission', scope: ['session_turn'] } as never, CTX({ metadata }) as never);
+
+    const correlationId = hybridCalls.at(-1)?.ctx.correlationId;
+    const receipt = metadata.mock.lastCall?.[0].searchSemanticRead;
+    expect(correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(receipt).toMatchObject({ correlationId, legs: { degraded: false } });
+  });
+});
+
 describe('search:fulltext — scope normalization', () => {
   it('no scope → the 4 default sources, in canonical order', async () => {
     const tool = (await import('./fulltext')).default;

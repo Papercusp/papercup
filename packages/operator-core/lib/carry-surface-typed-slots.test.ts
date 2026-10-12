@@ -229,6 +229,34 @@ describe('EI-19988500685566622: negation and third-party-subject suppression', (
   });
 });
 
+describe('EI-25663783345644648: matcher vocabulary and visible trigger', () => {
+  const matcherDescription =
+    'Current source `packages/operator-core/lib/carry-surface-typed-slots.ts` OWNER_QUESTION_RES patterns look for ' +
+    'ask owner/human, question for owner/human, waits/blocks on owner, owner input/answer/decision/etc., or owner ' +
+    'decide/confirm/answer/approve/choose.';
+
+  it('does not treat the detector\'s explicit trigger enumeration as an owner question', () => {
+    expect(lintOwnerQuestionSlots(matcherDescription)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('still flags a real ask in a later sentence after the matcher description', () => {
+    expect(lintOwnerQuestionSlots(`${matcherDescription} Separately, ask the owner about the retention window.`).flagged)
+      .toBe(true);
+  });
+
+  it('reports the exact trigger when the display-capped line prefix hides it', () => {
+    const retainedNext =
+      '[self-imposed] On the next wake, read coord inbox for the leader’s exact host/run receipt. If absent, ' +
+      'continue a bounded search for host1690631 activity metadata and loaded_build_identity without repeating the ' +
+      'broad log window. Keep dependency headroom work nondestructive, do not run VH retention before the owner answer, ' +
+      'and do not scheduler:get_next until both held items are terminal.';
+    const result = lintOwnerQuestionSlots(retainedNext);
+    expect(result.flagged).toBe(true);
+    expect(result.matches[0]).toMatchObject({ kind: 'owner-question-prose', matchedText: 'owner answer' });
+    expect(result.matches[0].line).not.toContain('owner answer');
+  });
+});
+
 describe('ownerQuestionSlotField', () => {
   it('undefined on clean; { flagged, note, matches } when flagged', () => {
     expect(ownerQuestionSlotField('routine note')).toBeUndefined();

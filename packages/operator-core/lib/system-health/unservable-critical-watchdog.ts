@@ -62,8 +62,8 @@
  *  - `managedSetInterval`, never a bare setInterval, so it is visible in
  *    `schedule:inventory`.
  *  - Runtime gate FLAGS.UNSERVABLE_CRITICAL_WATCHDOG (default ON), per tick.
- *  - Dedup delegated to openEscalation's (dedupKind, subjectSignature) PG dedup,
- *    keyed on the item id — one open escalation per stranded item, no new state.
+ *  - Item-specific condition episodes use the shared severe-event rail, with
+ *    exact current-row recovery. The legacy escalation retains its PG dedup.
  *  - The classifier is a PURE function over rows so its thresholds are testable
  *    without a database.
  */

@@ -21,6 +21,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const dedupEdgeMocks = vi.hoisted(() => ({
   persist: vi.fn(async (input: { candidates?: readonly { id: string }[] }) => input.candidates?.length ?? 0),
 }));
+const coverageAlarm = vi.hoisted(() => ({ report: vi.fn(async (_detail: unknown) => {}) }));
+vi.mock('./semantic-dedup-probe-alarm', () => ({ reportSemanticDedupProbeUnavailable: coverageAlarm.report }));
 vi.mock('./dedup-edges', () => ({ persistDedupEdges: dedupEdgeMocks.persist }));
 
 const occurrenceMocks = vi.hoisted(() => ({
@@ -112,6 +114,7 @@ const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
 });
 
 beforeEach(() => {
+  coverageAlarm.report.mockClear();
   guardM.mockReset();
   guardM.mockResolvedValue(null);
   recentM.mockReset();
@@ -170,6 +173,8 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     });
     if (refused.ok) throw new Error('unreachable');
     expect(refused.message).toContain('semantic coverage is partial');
+    expect(coverageAlarm.report).toHaveBeenCalledWith({ harnessSlug: 'papercusp',
+      coverage: { lexical: 'ok', semantic: 'partial', degraded: true } });
     expect(createM).not.toHaveBeenCalled();
 
     const ordinary = await createOneWorkItem(
@@ -297,6 +302,8 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
+    expect(coverageAlarm.report).toHaveBeenCalledWith({ harnessSlug: 'papercusp',
+      coverage: { lexical: 'ok', semantic: 'ok', degraded: false } });
     // P-002 item d: the informed pass is still informed — but the candidates go to
     // the promoter's substrate, not back to the forcing caller.
     expect(dedupEdgeMocks.persist).toHaveBeenCalledWith(

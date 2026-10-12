@@ -51,6 +51,8 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 import {
   detectInstalledHookDrift,
   formatHookDriftSummary,
@@ -122,6 +124,8 @@ export interface InstalledHookDriftSweepDeps {
   detect: (opts: { canonicalDir: string; installedDir: string }) => HookDriftReport;
   escalateDrift: (report: HookDriftReport) => Promise<void>;
   escalateNotMeasured: (info: { reason: string; canonicalDir?: string; installedDir?: string }) => Promise<void>;
+  host: () => string;
+  rail?: AlarmAttentionDeps;
 }
 
 function sweepDeps(overrides: Partial<InstalledHookDriftSweepDeps>): InstalledHookDriftSweepDeps {
@@ -131,6 +135,7 @@ function sweepDeps(overrides: Partial<InstalledHookDriftSweepDeps>): InstalledHo
     detect: (opts) => detectInstalledHookDrift(opts),
     escalateDrift: defaultEscalateDrift,
     escalateNotMeasured: defaultEscalateNotMeasured,
+    host: os.hostname,
     ...overrides,
   };
 }
@@ -204,30 +209,62 @@ export async function runInstalledHookDriftSweepOnce(
   overrides: Partial<InstalledHookDriftSweepDeps> = {},
 ): Promise<InstalledHookDriftSweepOutcome> {
   const deps = sweepDeps(overrides);
-
-  const canonical = deps.resolveCanonical();
+  const prefix = `alarm:installed-hook-drift:${encodeURIComponent(deps.host())}:`;
+  const blindKey = prefix + 'blind';
+  const open = async (conditionKey: string, summary: string, body: string) => {
+    try {
+      const event = { conditionKey, summary, body, oneShot: true };
+      if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (e) {
+      console.warn(`[installed-hook-drift] condition broadcast failed (non-fatal): ${String(e)}`);
+    }
+  };
+  const notMeasured = async (info: { reason: string; canonicalDir?: string; installedDir?: string }): Promise<InstalledHookDriftSweepOutcome> => {
+    await open(blindKey, `Installed hook drift NOT MEASURED: ${info.reason}`,
+      `Canonical: ${info.canonicalDir ?? 'unknown'}\nInstalled: ${info.installedDir ?? 'unknown'}`);
+    try { await deps.escalateNotMeasured(info); }
+    catch (e) { console.warn(`[installed-hook-drift] legacy escalation failed (non-fatal): ${String(e)}`); }
+    return { verdict: 'not-measured', reason: info.reason, escalated: 1 };
+  };
+  let canonical: CanonicalDirResolution;
+  try { canonical = deps.resolveCanonical(); }
+  catch (e) { return notMeasured({ reason: String(e) }); }
   if (!canonical.ok) {
-    await deps.escalateNotMeasured({ reason: canonical.reason });
-    return { verdict: 'not-measured', reason: canonical.reason, escalated: 1 };
+    return notMeasured({ reason: canonical.reason });
   }
-
-  const installedDir = deps.resolveInstalled();
-  const report = deps.detect({ canonicalDir: canonical.dir, installedDir });
+  let installedDir: string;
+  let report: HookDriftReport;
+  try {
+    installedDir = deps.resolveInstalled();
+    report = deps.detect({ canonicalDir: canonical.dir, installedDir });
+  } catch (e) { return notMeasured({ reason: String(e), canonicalDir: canonical.dir }); }
 
   // Fail-closed branch FIRST: a refusal carries drifted:[] and would otherwise
   // read as clean. See DESIGN DECISION 1.
   if (report.refused) {
     const reason = String(report.refused);
-    await deps.escalateNotMeasured({
+    return notMeasured({
       reason,
       canonicalDir: report.canonicalDir,
       installedDir: report.installedDir,
     });
-    return { verdict: 'not-measured', reason, escalated: 1 };
+  }
+  if (report.checked.length === 0 || (!report.clean && report.drifted.length === 0)) {
+    return notMeasured({ reason: 'no-complete-hook-comparison', canonicalDir: report.canonicalDir,
+      installedDir: report.installedDir });
+  }
+  const driftKey = prefix + 'drift:' + encodeURIComponent(installedDir);
+  if (report.drifted.some(hook => hook.status === 'unreadable')) {
+    await open(blindKey, 'Installed hook drift NOT MEASURED: unreadable hook bytes', formatHookDriftSummary(report));
+  } else {
+    await resolveAlarm(blindKey, 'installed-hook-drift', deps.rail);
   }
 
   if (report.drifted.length > 0) {
-    await deps.escalateDrift(report);
+    await open(driftKey, 'Installed agent hooks diverged from canonical', formatHookDriftSummary(report));
+    try { await deps.escalateDrift(report); }
+    catch (e) { console.warn(`[installed-hook-drift] legacy escalation failed (non-fatal): ${String(e)}`); }
     return {
       verdict: 'drifted',
       checked: report.checked.length,
@@ -235,7 +272,7 @@ export async function runInstalledHookDriftSweepOnce(
       escalated: 1,
     };
   }
-
+  if (report.clean) await resolveAlarm(driftKey, 'installed-hook-drift', deps.rail);
   return { verdict: 'clean', checked: report.checked.length, escalated: 0 };
 }
 

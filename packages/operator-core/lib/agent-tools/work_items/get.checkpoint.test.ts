@@ -469,6 +469,36 @@ describe('work_items:get — checkpoint field', () => {
     });
   });
 
+  it('includes the issue body before the result-door expands the summary shorthand', async () => {
+    const item = {
+      id: 'WI-summary-shorthand',
+      harness: 'papercusp',
+      family: 'issue',
+      kind: 'bug',
+      title: 'summary projection',
+      summary: 'The authoritative issue body.',
+      state: 'open',
+    };
+    getWorkItem.mockImplementation(async (_id, _harness, options) =>
+      options?.includeBody === false ? { ...item, summary: '' } : item,
+    );
+
+    const result = await get.handler(
+      { id: item.id } as never,
+      { ...ctx, sourceProjection: { pick: ['summary'] } } as never,
+    ) as Out;
+
+    expect(workItemsGetSourceReadOptions({ pick: ['summary'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(getWorkItem).toHaveBeenCalledWith(item.id, undefined, {
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(result.data.results[0].workItem.summary).toBe(item.summary);
+  });
+
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
     getWorkItem.mockResolvedValue({
       id: 'WI-checks-only',

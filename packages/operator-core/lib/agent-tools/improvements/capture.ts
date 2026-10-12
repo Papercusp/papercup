@@ -1650,7 +1650,7 @@ export default defineTool({
         !args.checkDuplicatesOnly &&
         effectiveLane !== 'observation' &&
         (result as { ok?: boolean }).ok !== false &&
-        resultCoverage?.degraded === true
+        resultCoverage !== undefined
       ) {
         void reportDedupCoverageDegraded({
           source: 'improvements:capture',
@@ -1899,7 +1899,7 @@ export default defineTool({
           : undefined;
       const responseResult = responseIssue !== capturedIssue || responseReviewState !== initialReviewState
         ? {
-            ...(result as Record<string, unknown>),
+            ...(result as unknown as Record<string, unknown>),
             ...(responseIssue ? { issue: responseIssue } : {}),
             ...(responseReviewState ? { reviewState: responseReviewState } : {}),
           }

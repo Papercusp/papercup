@@ -435,7 +435,7 @@ describe('improvements:capture degraded dedup alert', () => {
     });
   });
 
-  it('does not alarm for check-only probes or complete coverage', async () => {
+  it('preserves check-only exclusion and forwards complete coverage for measured recovery', async () => {
     mockCapture
       .mockResolvedValueOnce({
         ok: true,
@@ -456,12 +456,17 @@ describe('improvements:capture degraded dedup alert', () => {
       { title: 'dedup coverage check', kind: 'bug', checkDuplicatesOnly: true },
       { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
     );
+    expect(dedupAlarm.report).not.toHaveBeenCalled();
     await callTool(
       { title: 'complete dedup coverage test', kind: 'bug' },
       { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
     );
 
-    expect(dedupAlarm.report).not.toHaveBeenCalled();
+    expect(dedupAlarm.report).toHaveBeenCalledOnce();
+    expect(dedupAlarm.report).toHaveBeenCalledWith({
+      source: 'improvements:capture', harnessSlug: 'papercusp',
+      coverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+    });
   });
 });
 

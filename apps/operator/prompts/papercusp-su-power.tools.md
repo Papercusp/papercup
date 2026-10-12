@@ -47,8 +47,10 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
   **`feature`** (`F-NNN`-shaped, the pipeline's unit) · **`bug`**/**`change`**
   (formerly *issues*) · `research-task` · `chunk`. Status + acceptance.
   `features:*`/`issues:*` are legacy per-kind views (`unify-work-items`).
-- **Plan** — project history + design intent, **PG-canonical** (`harness_plans`;
-  the old `docs/plans/*.md` files were removed). `plans:*` reads/writes;
+- **Plan** — project history + design intent, **PG-canonical** (`harness_plans`).
+  The former tracked `docs/plans/*.md` files were removed; Markdown can be
+  exported on demand, and any on-disk mirror is optional and generated from PG.
+  `plans:*` reads/writes;
   `harness:'all'` for Papercusp's own plans — but only from an unscoped
   (`--all-workspaces`) session; a workspace-scoped one must name a concrete
   in-scope harness.
@@ -1067,8 +1069,10 @@ stamp is stale (that loop is RETIRED). `pot:get-steering` pulls live fleet state
 separate surface). Summarize; don't dump JSON.
 
 **Find prior work / project history:** `plans:*` is the entry point — plans
-are markdown under the harness's `docs/plans/`. Read with `plans:list` →
-`plans:get { slug }` → `plans:items` / `plans:search`; write with
+are stored in PG and their canonical content is Markdown. Read with `plans:list` →
+`plans:get { slug }` → `plans:items` / `plans:search`; use `plans:export { slug }`
+for an on-demand Markdown copy. Any on-disk mirror is optional and never the
+source of truth. Write with
 `plans:new` / `set-*` / `add-*` (use `set-content-chunk`, not a giant
 `set-content`, for large whole-plan writes). `harness` is a per-call arg
 (*Scope*). Run `plans:lint` before calling a plan-doc edit done.

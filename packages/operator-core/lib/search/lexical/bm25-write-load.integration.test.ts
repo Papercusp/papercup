@@ -143,7 +143,14 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
     while (loading) {
       const r = await runBm25Maintenance(sql);
       maintenanceErrors.push(...r.errors);
-      if (r.reclaimed) reclaims.push(r.reclaimed);
+      if (r.reclaimed) {
+        reclaims.push(r.reclaimed);
+        // A successful reclaim can shrink the index before the size poll below.
+        // Its pre-reclaim measurement is the witness that the load crossed the floor.
+        if (r.reclaimed.index === 'harness_shared.work_items_bm25') {
+          maxWorkItemsBytes = Math.max(maxWorkItemsBytes, r.reclaimed.beforeBytes);
+        }
+      }
       maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
       await sleep(1_000);
     }
@@ -165,7 +172,12 @@ async function runWriteLoad(): Promise<WriteLoadRun> {
     maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
     const r = await runBm25Maintenance(sql);
     maintenanceErrors.push(...r.errors);
-    if (r.reclaimed) reclaims.push(r.reclaimed);
+    if (r.reclaimed) {
+      reclaims.push(r.reclaimed);
+      if (r.reclaimed.index === 'harness_shared.work_items_bm25') {
+        maxWorkItemsBytes = Math.max(maxWorkItemsBytes, r.reclaimed.beforeBytes);
+      }
+    }
     const busy = r.reclaimed || r.pendingReclaims.length > 0 || r.compacted.some(c => c.stillNeeds || c.steps > 0);
     if (!busy) break;
   }
@@ -217,6 +229,10 @@ describe('BM25 under sustained concurrent writes (P-008)', () => {
     // so the size bar cannot pass by never exercising the reclaim path.
     expect(maxWorkItemsBytes).toBeGreaterThanOrEqual(BM25_RECLAIM_MIN_BYTES);
     expect(reclaims.some(r => r.index === 'harness_shared.work_items_bm25')).toBe(true);
+    // Regression: keep the growth witness even when every post-reclaim poll is smaller.
+    for (const reclaimed of reclaims.filter(r => r.index === 'harness_shared.work_items_bm25')) {
+      expect(maxWorkItemsBytes).toBeGreaterThanOrEqual(reclaimed.beforeBytes);
+    }
     expect(sizes.map(s => s.index)).toContain('harness_shared.work_items_bm25');
     expect(sizes.filter(s => s.ratio > SIZE_BOUND)).toEqual([]);
   });
