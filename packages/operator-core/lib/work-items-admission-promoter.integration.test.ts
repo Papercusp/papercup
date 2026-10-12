@@ -7,6 +7,7 @@ import { createImplementationReadiness, sealImplementationAcceptance, countWorkI
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
+import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
 import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntimeVintage, resetRuntimeVintageStore } from './runtime-vintage';
 
 const h = vi.hoisted(() => ({
@@ -63,6 +64,7 @@ const {
   readAdmissionMergeSnapshots,
   readPendingBatch,
   readWorkItemAdmissionSnapshot,
+  readWorkItemAdmissionQueueHealth,
   readWorkItemAdmissionProducerPressure,
   readWorkItemReadinessProjection,
   readPromoterLiveness,
@@ -248,17 +250,27 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-admission-promoter');
   h.sql = db.sql;
   await db.sql.unsafe(DDL);
+  // Promoter fallbacks are real buffered writes, so its disposable schema must
+  // include that dependency instead of failing asynchronously in another case.
+  for (const migration of ['1458-fallback-observations.sql', '1471-retrieval-search-correlation.sql']) {
+    await db.sql.unsafe(readFileSync(new URL(`../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8'));
+  }
+  const [fallbackSchema] = await db.sql`SELECT data_type FROM information_schema.columns
+    WHERE table_schema = 'harness_shared' AND table_name = 'fallback_observations' AND column_name = 'correlation_id'`;
+  expect(fallbackSchema?.data_type).toBe('uuid');
 }, 60_000);
 
 afterAll(async () => {
+  await flushFallbackObservations();
   resetRuntimeVintageStore();
   await db?.cleanup();
 });
 
 beforeEach(async () => {
+  await flushFallbackObservations();
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
-    harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
+    harness_shared.work_item_occurrences, harness_shared.routines, harness_shared.fallback_observations RESTART IDENTITY`;
   h.scopeTerms = undefined;
   h.scopePolicy = undefined;
   h.scopeDecisions.length = 0;
@@ -2910,10 +2922,54 @@ describe('work-item admission promoter (real Postgres)', () => {
       source: 'p005-queue-health',
       level: 'normal',
       pending: 1,
-      latencySampleSize: 2,
-      p95Ms: 4800,
+      // The cumulative snapshot above retains the historical fixture samples;
+      // current pressure only samples first claims within one liveness window.
+      latencySampleSize: 0,
+      p95Ms: null,
       maxIdeators: null,
     });
+  });
+
+  it('restores producer capacity after terminal backlog drains without erasing historical latency (EI-25814378379068278)', async () => {
+    for (const status of ['done', 'dropped', 'resolved']) await seedItem({ id: `EI-terminal-${status}`, status });
+    await seedItem({ id: 'EI-observation' });
+    await db.sql`UPDATE harness_shared.work_items SET lane = 'observation' WHERE feature_id = 'EI-observation'`;
+    await seedItem({ id: 'EI-live' });
+    await seedItem({ id: 'EI-old-slow', admission: 'admitted', status: 'done' });
+    await seedItem({ id: 'EI-recent-fast', admission: 'admitted', status: 'done' });
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '11 days',
+      first_claimed_at = now() - interval '1 day' WHERE feature_id = 'EI-old-slow'`;
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '3 minutes',
+      first_claimed_at = now() - interval '1 minute' WHERE feature_id = 'EI-recent-fast'`;
+
+    const health = await readWorkItemAdmissionQueueHealth({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    expect(health.pending).toBe(5);
+    expect(health.promotedToFirstClaim.sampleSize).toBe(2);
+    expect(health.promotedToFirstClaim.p95Ms).toBeGreaterThan(180 * 60_000);
+    expect(health.producerPressure).toMatchObject({
+      pending: 1, latencyWindowMs: 90 * 60_000,
+      promotedToFirstClaim: { sampleSize: 1, p50Ms: 120_000, p95Ms: 120_000 },
+    });
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'normal', pending: 1, maxIdeators: null });
+
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'EI-live'`;
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'normal', pending: 0 });
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '4 hours',
+      first_claimed_at = now() - interval '1 minute' WHERE feature_id = 'EI-recent-fast'`;
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'deep', pending: 0, maxIdeators: 1 });
+  });
+
+  it('persists buffered fallback observations in the disposable promoter database (EI-25815421487979701)', async () => {
+    const correlationId = '93cec0c7-780e-449c-8c49-236654daeb08';
+    expect(observeFallback('admission.fixture-dependency', { eligible: 2, applied: 0, reason: 'fixture-probe' },
+      { sql: db.sql, workspaceId: WS, correlationId })).toBe(true);
+    expect(await flushFallbackObservations()).toMatchObject({ failed: 0 });
+    const rows = await db.sql`SELECT eligible, applied, reason, correlation_id
+      FROM harness_shared.fallback_observations WHERE mechanism = 'admission.fixture-dependency'`;
+    expect(rows).toEqual([{ eligible: 2, applied: 0, reason: 'fixture-probe', correlation_id: correlationId }]);
   });
 
   it('rolls queue health up over the admission-pipeline population, never an unadmitted row payload (WI-10003692)', async () => {
