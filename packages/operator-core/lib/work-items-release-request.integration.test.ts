@@ -20,7 +20,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import {
+  applyDisclosureLedgerForTest,
   applyEventSubstrateMigrationsForTest,
+  applyMigrationForTest,
   COORD_SUBSCRIPTION_SUBSTRATE,
   createFreshPgDb,
   type FreshPgDb,
@@ -124,6 +126,13 @@ beforeAll(async () => {
     label: 'work-items-release-request.integration.test.ts',
     ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
+  // The real await pump resolves wake mode and seals its inbox message. Replay
+  // their maintained schemas so missing stores cannot turn delivery into a
+  // fail-soft fallback while the event latch itself still appears successful.
+  await applyMigrationForTest(db.sql, new URL(
+    '../../../libs/papercusp/libs/db/sql/archive/038-operator-settings.sql', import.meta.url,
+  ).pathname);
+  await applyDisclosureLedgerForTest(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(POTS_DDL);
 }, 180_000);

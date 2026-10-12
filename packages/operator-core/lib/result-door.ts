@@ -521,15 +521,12 @@ export function buildProjectionHint(
   // tokens per 6d to fix a correctness bug. Every variant below is now AT OR
   // UNDER the constant's 420. Keep it that way: measure a wording change here,
   // do not eyeball it.
-  const lead = ` ⓘ Get only what you need in ONE call instead of paging this spill: `;
-  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-005: the spill itself is searchable in
-  // one call (capability:read `query`, read-query.ts), replacing the ~5 base64 page reads per spill
-  // measured 2026-10-12. It rides the JSON and multi-line variants but not the single-line one,
-  // where a line search returns the same one line. The JSON variant PAID for it by trimming its own
-  // wording (356 → 353 chars): its `next` shares a budget with the retained preview (WI-5656), and a
-  // net +60 chars measurably evicted the `_projection.omitted` samples on an events:status result.
-  const searchIt = ` Or search it: capability:read { file_path, query:"terms" }.`;
+  const lead = ' ⓘ ';
+  // Keep these hints short: `next` shares the output budget with the retained
+  // preview. A longer variant evicted `_projection.omitted` samples from an
+  // events:status result, hiding which history rows were cut (EI-25740925774324505).
   const asString = ` \`projection\` also accepts a JSON STRING.`;
+  const searchIt = ` Search: \`capability:read { file_path, query:"terms" }\`.`;
   let shape: { json: unknown; lineCount: number };
   try {
     // A caller-supplied classification is authoritative: it is the one the door
@@ -544,23 +541,20 @@ export function buildProjectionHint(
   }
   if (shape.json) {
     return (
-      `${lead}\`projection: { pick: ["results[].id"] }\`. JSON on ${shape.lineCount} line(s), so ` +
-      `\`pick\` is what reduces it; \`pipe\` is all-or-nothing (a no-match returns an EMPTY ` +
-      `body that reads like a working filter).${asString}${searchIt}`
+      `${lead}JSON (${shape.lineCount} line(s)): \`projection: { pick: ["results[].id"] }\`; ` +
+      `\`pick\` is what reduces it. \`pipe\` is all-or-nothing.${asString}${searchIt}`
     );
   }
   if (shape.lineCount > 1) {
     return (
-      `${lead}\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. This body ` +
-      `is ${shape.lineCount} lines of non-JSON text, so the line-operators are what reduce it: grep ` +
-      `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count, applied in ` +
-      `order. \`pick\` does not apply here (it selects JSON fields).${asString}${searchIt}`
+      `${lead}${shape.lineCount} lines of non-JSON text: \`projection: { pipe: [{ op:"grep", pattern:"..." }, ` +
+      `{ op:"head", n:20 }] }\`; \`pick\` does not apply. grep (fixed/ignoreCase/invert/before/after/context), ` +
+      `head, tail, sort, uniq, cut, count.${asString}${searchIt}`
     );
   }
   return (
-    ` ⓘ \`projection\` cannot help here: a single non-JSON line, so \`pick\` (JSON fields) and the ` +
-    `\`pipe\` line-operators are both all-or-nothing on it. Page the spill with a bounded read, or ` +
-    `re-call ${toolName} with narrower arguments.`
+    `${lead}\`projection\` cannot help with one non-JSON line; \`pick\` and \`pipe\` cannot narrow it. Page the spill or re-call ` +
+    `${toolName} with narrower arguments.`
   );
 }
 

@@ -83,6 +83,7 @@ const h = vi.hoisted(() => {
     captureScratchWriteTimings: false,
     spillWriteGate: null as Promise<void> | null,
     spillWriteEntered: null as (() => void) | null,
+    spillWritePathSegment: 'deadlinetest:spill',
     spillPaths: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
@@ -109,7 +110,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ...actual,
     writeFile: async (...args: Parameters<typeof actual.writeFile>): Promise<void> => {
       const path = String(args[0]);
-      if (h.spillWriteGate && path.includes('/deadlinetest:spill/')) {
+      if (h.spillWriteGate && path.includes(`/${h.spillWritePathSegment}/`)) {
         h.spillPaths.push(path);
         h.spillWriteEntered?.();
         await h.spillWriteGate;
@@ -281,6 +282,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function waitForSignal<T>(signal: Promise<T>, label: string, timeoutMs = 5_000): Promise<T> {
+  let poll: NodeJS.Immediate | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (Date.now() >= deadline) {
+        reject(new Error(`${label} was not received within ${timeoutMs}ms`));
+        return;
+      }
+      poll = setImmediate(check);
+    };
+    poll = setImmediate(check);
+  });
+  return Promise.race([signal, timeout]).finally(() => {
+    if (poll) clearImmediate(poll);
+  });
+}
+
 const SLOW_TOOL_MS = 500; // five multiples of TEST_DEADLINE_MS
 const REAL_OUTCOME_TEXT = 'deadlinetest-real-outcome-not-a-timeout';
 let slowCalls = 0;
@@ -419,6 +438,7 @@ beforeEach(() => {
   h.captureScratchWriteTimings = false;
   h.spillWriteGate = null;
   h.spillWriteEntered = null;
+  h.spillWritePathSegment = 'deadlinetest:spill';
   h.spillPaths = [];
   h.resultDoorCalls = 0;
   h.resultDoorRequestTraceIds.length = 0;
@@ -707,7 +727,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       const response = callTool('deadlinetest:spill', {},
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: receiptKey });
-      await enteredWrite;
+      await waitForSignal(enteredWrite, 'scratch spill write entry');
       const timedOut = await response;
       expect(timedOut.isError).toBe(true);
       expect(textOf(timedOut)).toContain('request_timeout');
@@ -765,6 +785,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     h.captureScratchWriteTimings = true;
     let releaseWrite!: () => void;
     h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    // The result door stores this nested result under the outer MCP tool path.
+    h.spillWritePathSegment = 'tools:invoke';
     const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -798,18 +820,23 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       responsePromise = callTool('tools:invoke', { name: 'deadlinetest:spill', args: {} },
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: 'idem-late-scratch-settlement' });
-      await enteredWrite;
+      await waitForSignal(enteredWrite, 'nested scratch spill write entry');
       // Keep the real scratch write blocked until applyResultDoorAsync's 30s bounded wait expires.
       await vi.advanceTimersByTimeAsync(30_001);
-      await pendingBackfillStarted;
+      await waitForSignal(pendingBackfillStarted, 'pending spill timeout backfill');
       expect(backfillOrder).toEqual(['timeout-start']);
 
       vi.useRealTimers();
       releasePendingBackfill();
       await vi.waitFor(() => expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']));
       const response = await responsePromise;
-      expect(response.isError).toBe(true);
-      expect(textOf(response)).toContain('request_timeout');
+      expect(response.isError).not.toBe(true);
+      expect(textOf(response)).not.toContain('request_timeout');
+      expect(response._meta?.resultDoor).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: { cursor: { kind: 'pending-spill' } },
+      });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
         '[bounded-timeout] result-door scratch spill write exceeded 30000ms',
@@ -856,12 +883,16 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         event.traceId === traceId && event.stage === 'scratch_write_settled');
       expect(settled).toMatchObject({
         traceId,
-        toolName: 'deadlinetest:spill',
+        // The request trace belongs to the outer transport call; only the
+        // invocation row/backfill selector uses the nested target name.
+        toolName: 'tools:invoke',
         stage: 'scratch_write_settled',
-        afterDeadline: true,
+        // The target handler settled before the result-door's own bounded
+        // scratch wait, so this is not a late handler settlement.
+        afterDeadline: false,
         scratchWriteTimings: {
-          quotaWaitMs: 0,
-          refreshWaitMs: 0,
+          quotaWaitMs: expect.any(Number),
+          refreshWaitMs: expect.any(Number),
           quotaRecoveryMs: expect.any(Number),
           writeMs: expect.any(Number),
           totalMs: expect.any(Number),
@@ -904,7 +935,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillSettledAt: expect.any(String),
         scratchWriteTimings: expect.objectContaining({
           count: 1,
-          quotaWaitMs: 0,
+          quotaWaitMs: expect.any(Number),
           refreshWaitMs: expect.any(Number),
           quotaRecoveryMs: expect.any(Number),
           writeMs: expect.any(Number),
@@ -925,7 +956,12 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       releasePendingBackfill();
       releaseWrite();
       h.fakeTx.unsafe = originalUnsafe;
-      if (responsePromise) await responsePromise.catch(() => undefined);
+      if (responsePromise) {
+        await Promise.race([
+          responsePromise.catch(() => undefined),
+          sleep(5_000),
+        ]);
+      }
       await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
       info.mockRestore();

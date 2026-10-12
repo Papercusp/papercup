@@ -142,8 +142,16 @@ const INDEPENDENT_CLAUSE_SUBJECT_RE =
   /^(?:a|an|the|both|each|every|this|that|these|those|class-[a-z0-9-]+)\b/i;
 const IMPLEMENTATION_PRESENCE_RE =
   /\b(?:(?:is|are|was|were)\s+)?(?:present|implemented|exists?)\s+in\s+(?:the\s+)?(?:current\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\b/i;
+// `has` is often the present-perfect auxiliary (`the shared tree has moved`).
+// Keep source-presence detection for possessive uses, but don't treat common
+// regular or irregular past participles after `has` as claims about code contents.
+const PAST_PARTICIPLE_AFTER_HAS =
+  '(?:[a-z]+ed|been|become|built|done|driven|fallen|found|given|gone|grown|held|kept|known|led|left|made|run|seen|set|shown|taken|written)';
 const IMPLEMENTATION_CONTAINS_RE =
-  /\b(?:the\s+)?(?:current\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\s+(?:contains?|includes?|has)\b/i;
+  new RegExp(
+    '\\b(?:the\\s+)?(?:current\\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\\s+(?:contains?|includes?|has(?!\\s+' + PAST_PARTICIPLE_AFTER_HAS + '\\b))\\b',
+    'i',
+  );
 const GENERIC_NON_FALSIFIABLE_RE =
   /^(?:(?:it|this|the (?:feature|flow|system))\s+)?(?:works|behaves|functions)(?:\s+(?:correctly|properly|as expected))?[.!]?$/i;
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|to be determined|as appropriate|somehow)\b/i;

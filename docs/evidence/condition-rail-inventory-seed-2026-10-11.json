@@ -3689,5 +3689,36 @@
       "route": "condition"
     }
   ],
-  "amendments": []
+  "amendments": [
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "refusal branch aborts before spawning and explicitly refuses the PATH fallback; the scanner matched negated fallback wording, not a fallback decision"
+      },
+      "reason": "Independent exact-site review found a fail-closed refusal, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision"
+      },
+      "reason": "Independent exact-site review found a successful seeding diagnostic, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision"
+      },
+      "reason": "Independent exact-site review found a fail-closed error diagnostic, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    }
+  ]
 }

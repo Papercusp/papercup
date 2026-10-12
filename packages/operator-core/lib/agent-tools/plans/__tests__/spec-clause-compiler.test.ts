@@ -277,9 +277,20 @@ describe('compileSpecClauses', () => {
     expect(specBehaviorNonFalsifiableReason('The current source code contains a matching handler.')).toBe(
       'behavior asserts source-code presence instead of an observable outcome',
     );
+    expect(specBehaviorNonFalsifiableReason('The current implementation has a matching handler.')).toBe(
+      'behavior asserts source-code presence instead of an observable outcome',
+    );
     expect(specBehaviorNonFalsifiableReason('The expected handler is present in the current source code.')).toBe(
       'behavior asserts source-code presence instead of an observable outcome',
     );
+  });
+
+  it.each([
+    'The operation succeeds after the shared tree has moved past the checkpoint.',
+    'The operation succeeds after the shared repository has changed.',
+    'The operation succeeds after the implementation has been updated.',
+  ])('does not mistake present-perfect outcome wording for source-code presence: %s', (behavior) => {
+    expect(specBehaviorNonFalsifiableReason(behavior)).toBeNull();
   });
 
   it.each(['receives', 'received', 'is receiving'])('rejects independently missing output objects under %s', (verb) => {

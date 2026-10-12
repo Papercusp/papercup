@@ -629,6 +629,22 @@ export function verifyVerifierSourceSync(dest, expected, options = {}) {
   }
 }
 
+/** Transport the independently verified archive receipt into native reporters.
+ * A successful parent preflight alone does not give a child source provenance.
+ * @param {{ root: string, receiptPath: string, env?: NodeJS.ProcessEnv }} options
+ */
+export function verifierSourceChildEnv({ root, receiptPath, env = process.env }) {
+  const sourceRoot = realpathSync(root);
+  const receipt = realpathSync(receiptPath);
+  const receiptRel = relative(sourceRoot, receipt);
+  if (receiptRel !== '..' && !receiptRel.startsWith(`..${sep}`)) {
+    throw new PreviewError('verifier source receipt must be outside the archive', 2);
+  }
+  const expected = JSON.parse(readFileSync(receipt, 'utf8'));
+  verifyVerifierSourceSync(sourceRoot, expected, { runtimeArtifacts: true });
+  return { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
+}
+
 async function listFiles(dir) {
   const out = [];
   async function walk(d) {

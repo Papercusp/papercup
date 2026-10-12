@@ -30,10 +30,12 @@ import {
   validateVerifierInputs,
   runCli,
   verifyVerifierSource,
+  verifierSourceChildEnv,
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { captureTestSourceSnapshot } from './testing-worktree';
 
 let tmp: string;
 let fx: Superproject;
@@ -217,6 +219,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       inputs: [SHIPPED.find((p) => p !== input)!], inputsFile }))
       .rejects.toThrow(kind === 'dirty' ? /dirty tested-input mismatch/ : /ENOENT/);
     expect(existsSync(dest)).toBe(false);
+  });
+
+  it('transports independent verifier provenance to a child and refuses stale or internal receipts', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-child-env-fixture'));
+    const dest = join(tmp, 'verifier-child-env-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const receiptPath = join(tmp, 'verifier-child-env.receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const env = verifierSourceChildEnv({ root: dest, receiptPath, env: {
+      PATH: process.env.PATH, VERIFY_TAURI_SOURCE_RECEIPT: '/stale/receipt', VERIFY_TAURI_SOURCE_REF: 'stale',
+    } });
+    expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe(receiptPath);
+    expect(env.VERIFY_TAURI_SOURCE_REF).toBe(receipt.sourceCommit);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', env.VERIFY_TAURI_SOURCE_RECEIPT!);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', env.VERIFY_TAURI_SOURCE_REF!);
+    try {
+      expect(captureTestSourceSnapshot(dest)).toEqual({ commit: receipt.sourceCommit, porcelain: '' });
+    } finally { vi.unstubAllEnvs(); }
+    expect(() => verifierSourceChildEnv({ root: dest, receiptPath: join(dest, '.verifier-source.json') }))
+      .toThrow('receipt must be outside the archive');
+    writeFileSync(join(dest, input), 'changed after preflight');
+    expect(() => verifierSourceChildEnv({ root: dest, receiptPath })).toThrow(`changed ${input}`);
   });
 
   it('measures pinned source and gitlinks before export, ignoring dirty and untracked bytes', async () => {

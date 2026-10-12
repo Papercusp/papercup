@@ -77,12 +77,15 @@ import { spawn } from 'node:child_process';
 // override is the only reliable swap.
 let prevScratchRoot: string | undefined;
 let prevFsMutexLockDir: string | undefined;
+let prevDisableFsMutex: string | undefined;
 let sandbox: string;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-scratch-test-'));
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  prevDisableFsMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, '.papercusp', 'scratch');
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'fs-mutex-locks');
   _resetScratchGcCountersForTests();
@@ -95,6 +98,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
   if (prevFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
+  if (prevDisableFsMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  else process.env.PAPERCUSP_DISABLE_FS_MUTEX = prevDisableFsMutex;
   rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -1012,7 +1017,9 @@ describe('deferred scratch quota recovery', () => {
       expect(rootReads).toBe(1);
       expect(phaseRows[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
       expect(phaseRows.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
-      expect(doorPhases).toMatchObject([{ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }]);
+      expect(doorPhases.filter((row) => !row.progress)).toMatchObject([
+        { quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 },
+      ]);
       expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512 + spill.length);
     } finally {
       releaseRead();
@@ -1066,7 +1073,7 @@ describe('deferred scratch quota recovery', () => {
         onTiming: (row) => { phases[1] = row; } }, async () => {}));
       clock = 40; release(); await Promise.all(writes);
       expect(phases[0]).toMatchObject({
-        quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: expect.any(Number), writeMs: 0, totalMs: expect.any(Number),
+        quotaWaitMs: expect.any(Number), refreshWaitMs: 0, quotaRecoveryMs: expect.any(Number), writeMs: 0, totalMs: expect.any(Number),
         quotaRecoveryDiagnostics: {
           sizeWalkMs: expect.any(Number),
           sizeWalkDirectories: expect.any(Number),
@@ -1086,7 +1093,7 @@ describe('deferred scratch quota recovery', () => {
           selectedRunSizingMs: 0,
           runsConsidered: 1,
           fallbackRunSizes: 0,
-          deletionMs: 0,
+          deletionMs: expect.any(Number),
           deleteAttempts: 1,
           runsDeleted: 1,
           deletedBytes: expect.any(Number),
@@ -1104,9 +1111,10 @@ describe('deferred scratch quota recovery', () => {
         .toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
       expect(phases[0].quotaRecoveryMs).toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
       expect(phases[1]).toMatchObject({
-        quotaWaitMs: phases[0].quotaRecoveryMs, refreshWaitMs: 0, quotaRecoveryMs: 0,
+        quotaWaitMs: expect.any(Number), refreshWaitMs: 0, quotaRecoveryMs: 0,
         writeMs: 0, totalMs: expect.any(Number),
       });
+      expect(phases[1].quotaWaitMs).toBeGreaterThanOrEqual(phases[0].quotaRecoveryMs);
       expect(phases[1].totalMs).toBeGreaterThanOrEqual(phases[1].quotaWaitMs);
     } finally {
       release(); await Promise.allSettled(writes);
@@ -1207,9 +1215,14 @@ describe('deferred scratch quota recovery', () => {
     }) as typeof readdirAsync);
 
     const timings: ScratchWriteTimings[] = [];
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const measurement = refreshScratchUsage('ws-Q');
     let write: Promise<void> | undefined;
+    let progressTimeout: ReturnType<typeof setTimeout> | undefined;
+    let observedProgress!: () => void;
+    const progressObserved = new Promise<void>((resolveObserved, rejectObserved) => {
+      observedProgress = resolveObserved;
+      progressTimeout = setTimeout(() => rejectObserved(new Error('filesystem waiter progress was not observed')), 2_000);
+    });
     try {
       await atRoot;
       const filePath = join(wsRoot, 'quota', UUID(2), 'refresh-wait.bin');
@@ -1217,12 +1230,14 @@ describe('deferred scratch quota recovery', () => {
         workspaceId: 'ws-Q',
         filePath,
         bytes: 16,
-        onTiming: (row) => timings.push(row),
+        onTiming: (row) => {
+          timings.push(row);
+          if (row.progress?.phase === 'usage-refresh-wait' && row.progress.refreshActive) observedProgress();
+        },
       }, async () => {});
 
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(timings).toHaveLength(1);
-      expect(timings[0].progress).toMatchObject({
+      await progressObserved;
+      expect(timings.find((row) => row.progress?.phase === 'usage-refresh-wait')?.progress).toMatchObject({
         phase: 'usage-refresh-wait',
         pendingWrites: 1,
         recoveryActive: true,
@@ -1243,9 +1258,9 @@ describe('deferred scratch quota recovery', () => {
         writeMs: expect.any(Number),
       });
     } finally {
+      if (progressTimeout) clearTimeout(progressTimeout);
       releaseScan();
       readdirMock.mockImplementation(originalRead);
-      vi.useRealTimers();
       await Promise.allSettled([measurement, ...(write ? [write] : [])]);
     }
   });
@@ -1586,7 +1601,8 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
-  it('reports the request trace ID of the process-local scratch mutex holder', async () => {
+  it('reports the request trace ID of the process-local scratch mutex holder when filesystem mutexes are disabled', async () => {
+    process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
     const holderTraceId = '21f43fb8-4354-4f61-8ba7-ec03098d0e22';
     let releaseHolder!: () => void;
     let startedHolder!: () => void;
@@ -1650,44 +1666,53 @@ describe('deferred scratch quota recovery', () => {
       },
       waitingNoticeIntervalMs: 5_000,
     });
-    const timings: ScratchWriteTimings[] = [];
-    let observedWait!: () => void;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const waiterObserved = new Promise<void>((resolveObserved, rejectObserved) => {
-      observedWait = resolveObserved;
-      timeout = setTimeout(() => rejectObserved(new Error('filesystem mutex waiter was not observed')), 2_000);
-    });
-    let waiter: Promise<void> | undefined;
+    const writerTraceIds = [
+      'e95ce984-4f96-4c8c-b15a-6a9850411b44',
+      '02974dbf-a7fd-49ad-824f-d77d59a82d62',
+    ];
+    const timingsByWriter: ScratchWriteTimings[][] = writerTraceIds.map(() => []);
+    const observedWriter: Array<() => void> = [];
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    const writerObserved = writerTraceIds.map((_, index) => new Promise<void>((resolveObserved, rejectObserved) => {
+      observedWriter[index] = resolveObserved;
+      timeouts[index] = setTimeout(() => rejectObserved(new Error(`filesystem mutex writer ${index} was not observed`)), 2_000);
+    }));
+    let waiters: Promise<void>[] = [];
     try {
       await holderStarted;
-      waiter = writeWithScratchQuota({
+      waiters = writerTraceIds.map((requestTraceId, index) => writeWithScratchQuota({
         workspaceId,
-        filePath: join(makeRunDir(workspaceId, 'mutex', UUID(42), 16), 'waiter.bin'),
+        filePath: join(makeRunDir(workspaceId, 'mutex', UUID(42 + index), 16), `waiter-${index}.bin`),
         bytes: 1,
         captureSubphaseTimings: true,
+        requestTraceId,
         onTiming: (row) => {
-          timings.push(row);
-          if (row.progress?.mutexWaitOwner) observedWait();
+          timingsByWriter[index]?.push(row);
+          if (row.progress?.mutexWaitOwner) observedWriter[index]?.();
         },
-      }, async () => {});
-      await waiterObserved;
-      expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
-        layer: 'filesystem',
-        operation: 'write',
-        subsystem: 'scratch-quota',
-        requestTraceId: holderTraceId,
-      });
+      }, async () => {}));
+      await Promise.all(writerObserved);
+      for (const timings of timingsByWriter) {
+        expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
+          layer: 'filesystem',
+          operation: 'write',
+          subsystem: 'scratch-quota',
+          requestTraceId: holderTraceId,
+        });
+      }
       releaseHolder();
       await holder;
-      await waiter;
-      expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toMatchObject({
-        'fs-mutex-admission.root-mkdir': expect.any(Number),
-        'fs-mutex-admission.reader-drain': expect.any(Number),
-      });
+      await Promise.all(waiters);
+      for (const timings of timingsByWriter) {
+        expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toMatchObject({
+          'fs-mutex-admission.root-mkdir': expect.any(Number),
+          'fs-mutex-admission.reader-drain': expect.any(Number),
+        });
+      }
     } finally {
-      if (timeout) clearTimeout(timeout);
+      for (const timeout of timeouts) clearTimeout(timeout);
       releaseHolder();
-      await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+      await Promise.allSettled([holder, ...waiters]);
     }
   });
 

@@ -31,10 +31,10 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     expect(unit).toContain('ExecStopPost=%h/.config/kopia/home-snapshot.sh --cleanup');
     expect(unitSection).toContain('StartLimitIntervalSec=8h');
     expect(unitSection).toContain('StartLimitBurst=8');
-    expect(serviceSection).toContain('SuccessExitStatus=75');
-    expect(serviceSection).toContain('Restart=on-abnormal');
-    expect(serviceSection).toContain('RestartForceExitStatus=75');
+    expect(serviceSection).toContain('Restart=on-failure');
     expect(serviceSection).toContain('RestartSec=30min');
+    expect(serviceSection).not.toContain('SuccessExitStatus=75');
+    expect(serviceSection).not.toContain('RestartForceExitStatus=75');
   });
 
   testIfInstalled('passes bash syntax validation without starting a snapshot', () => {

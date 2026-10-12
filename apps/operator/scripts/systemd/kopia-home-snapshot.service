@@ -12,12 +12,9 @@ StartLimitBurst=8
 
 [Service]
 Type=oneshot
-# The guard's EX_TEMPFAIL (75) means this scheduled snapshot did not run. Treat
-# it as successful for OnFailure reporting while a retry is pending, then force
-# a retry after 30 minutes. Other nonzero exits remain failures and alert.
-SuccessExitStatus=75
-Restart=on-abnormal
-RestartForceExitStatus=75
+# Keep EX_TEMPFAIL (75) a failure so it remains visible if the bounded retry
+# window is exhausted. systemd keeps an automatic restart pending between tries.
+Restart=on-failure
 RestartSec=30min
 # Deliberately heavier de-prioritisation than kopia-snapshots.service (Nice=10,
 # best-effort/7). That unit runs about every 30 min; this one walks the WHOLE

@@ -1482,6 +1482,13 @@ describe('applyResultDoor', () => {
   });
 
   it('preserves exact event identity through an explicit projection before history overflow', () => {
+    // Exercise the tight-budget edge deterministically. The output hint shares
+    // this budget with the retained event identity and omission diagnostics.
+    doorConstantsMock.mockReturnValue({
+      ...BAKED_DOOR_CONSTANTS,
+      maxTurnFloorTokens: 7_000,
+      maxTurnCapTokens: 7_000,
+    });
     const event = 'harness:papercusp:explicit-event-projection';
     const original = JSON.stringify({
       ok: true,
