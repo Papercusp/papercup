@@ -79,6 +79,26 @@ describe('dev:pg_health completed-result delivery', () => {
     });
     expect(data.processDiagnostics.pools[1].results).toEqual([]);
   });
+  it.each([
+    { label: 'is explicitly configured', value: '24', expected: '24' },
+    { label: 'is unset', value: undefined, expected: null },
+  ])('reports the raw PAPERCUSP_DB_POOL_MAX override when it $label', async ({ value, expected }) => {
+    const previous = process.env.PAPERCUSP_DB_POOL_MAX;
+    if (value === undefined) delete process.env.PAPERCUSP_DB_POOL_MAX;
+    else process.env.PAPERCUSP_DB_POOL_MAX = value;
+
+    try {
+      const { data } = await run({ localOnly: true });
+      expect(data.acquisitionDiagnostics).toMatchObject({
+        source: 'current-process',
+        pid: process.pid,
+        poolConfiguration: { PAPERCUSP_DB_POOL_MAX: expected },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_DB_POOL_MAX;
+      else process.env.PAPERCUSP_DB_POOL_MAX = previous;
+    }
+  });
   it('delivers safe current-process records through the public production reader', async () => {
     recordResult();
 

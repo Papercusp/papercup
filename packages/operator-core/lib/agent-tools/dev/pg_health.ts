@@ -23,7 +23,7 @@ export default defineTool({
     'PostgreSQL version + connection counts, bounded completed-query diagnostics and separate registered acquisition snapshots from this process. localOnly skips the database health query.',
   capability: 'intel:read',
   guidance: {
-    when: `Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results and registered acquisition tickets without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.`,
+    when: `Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results, registered acquisition tickets, and raw PAPERCUSP_DB_POOL_MAX override without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.`,
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
     seeAlso: [
       'dev:pg_active_queries (currently-running queries)',
@@ -84,6 +84,10 @@ export default defineTool({
         capturedAt: new Date().toISOString(),
         coverage: 'registered-acquisition-tickets-in-selected-pools-only' as const,
         limitations: 'Logical acquisition tickets, not physical connection occupancy. Unregistered clients and other processes are not covered; an empty snapshot does not prove health. Active tickets are bounded and sanitized by the existing registry.',
+        poolConfiguration: {
+          PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_DB_POOL_MAX ?? null,
+          note: 'Raw per-process environment override only; null means unset and does not report the profile-derived effective pool max.',
+        },
         pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => ({
           counters: acquireSnapshot(pool),
           tickets: acquireTicketSnapshot(pool),
