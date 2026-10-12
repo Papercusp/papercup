@@ -319,7 +319,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '    possible: summarizeWindows(hotFrameWindows, "possibleStartUs", "possibleEndUs"),',
             '    definite: summarizeWindows(hotFrameWindows, "definiteStartUs", "definiteEndUs"),',
             '  } : null;',
-            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, mapFrameNames: mapFrameNames.slice(0, 8), usefulSamples, timeDeltaCount: timeDeltasUs.length, sampleOffsetCount: sampleOffsetsUs.length, timeDeltaSumUs, timeDeltaMinUs: sortedTimeDeltasUs[0] ?? null, timeDeltaMedianUs: sortedTimeDeltasUs[Math.floor(sortedTimeDeltasUs.length / 2)] ?? null, timeDeltaMaxUs: sortedTimeDeltasUs.at(-1) ?? null, profileDuration, workWindow: workWindow ? { ...workWindow, ...timedWork } : null, hotFrameWindows: timedHotFrameWindows, sampleLeafCounts: rankCounts(leafCounts), sampleFrameCounts: rankCounts(frameCounts), samplePathCounts: rankCounts(pathCounts).slice(0, 8), ...(sampleChains ? { sampleChains } : {}), bytes: Buffer.byteLength(JSON.stringify(profile)) };',
+            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, mapFrameNames: mapFrameNames.slice(0, 8), usefulSamples, timeDeltaCount: timeDeltasUs.length, sampleOffsetCount: sampleOffsetsUs.length, sampleOffsetStartUs: sampleOffsetsUs[0] ?? null, sampleOffsetEndUs: sampleOffsetsUs.at(-1) ?? null, timeDeltaSumUs, timeDeltaMinUs: sortedTimeDeltasUs[0] ?? null, timeDeltaMedianUs: sortedTimeDeltasUs[Math.floor(sortedTimeDeltasUs.length / 2)] ?? null, timeDeltaMaxUs: sortedTimeDeltasUs.at(-1) ?? null, profileDuration, workWindow: workWindow ? { ...workWindow, ...timedWork } : null, hotFrameWindows: timedHotFrameWindows, sampleLeafCounts: rankCounts(leafCounts), sampleFrameCounts: rankCounts(frameCounts), samplePathCounts: rankCounts(pathCounts).slice(0, 8), ...(sampleChains ? { sampleChains } : {}), bytes: Buffer.byteLength(JSON.stringify(profile)) };',
             '}',
             'async function captureInspector(durationMs) {',
             '  const rotate = setInterval(() => { void recorder.update(true, true); }, 40);',
@@ -352,7 +352,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '    const controlStart = inspectorControl.startCallWindow;',
             '    const controlWorkWindow = { possibleStartUs: elapsedUs(controlStart.returnedNs, workStartNs), definiteStartUs: elapsedUs(controlStart.startedNs, workStartNs), definiteEndUs: elapsedUs(controlStart.returnedNs, workEndNs), possibleEndUs: elapsedUs(controlStart.startedNs, workEndNs) };',
             '    const controlHotFrameWindowsUs = includeSampleChains ? hotFrameWindowsNs.map(([startedNs, endedNs]) => ({ possibleStartUs: elapsedUs(controlStart.returnedNs, startedNs), definiteStartUs: elapsedUs(controlStart.startedNs, startedNs), definiteEndUs: elapsedUs(controlStart.returnedNs, endedNs), possibleEndUs: elapsedUs(controlStart.startedNs, endedNs) })) : undefined;',
-            '    inspectorControlCapture = { profile: summarize(profile, controlWorkWindow, false, controlHotFrameWindowsUs) };',
+            '    inspectorControlCapture = { profile: summarize(profile, controlWorkWindow, false, controlHotFrameWindowsUs), hotFrameWindowsUs: controlHotFrameWindowsUs };',
             '    inspectorControl.session.disconnect();',
             '  }',
             '  const workload = { hotFrameCalls: hotFrameCalls - beforeWork.hotFrameCalls, churnedFunctions: churnedFunctions - beforeWork.churnedFunctions };',
@@ -552,6 +552,8 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           usefulSamples: number;
           timeDeltaCount: number;
           sampleOffsetCount: number;
+          sampleOffsetStartUs: number | null;
+          sampleOffsetEndUs: number | null;
           timeDeltaMinUs: number | null;
           timeDeltaMedianUs: number | null;
           timeDeltaMaxUs: number | null;
@@ -591,18 +593,20 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             definite: TimedSampleSummary;
           };
         };
+        type TimedWindow = {
+          possibleStartUs: number;
+          definiteStartUs: number;
+          definiteEndUs: number;
+          possibleEndUs: number;
+        };
         type TimedCapture = {
           workStartOffsetMs?: number;
           workload?: { hotFrameCalls: number; churnedFunctions: number };
           timing?: { startCallUs: number; workDurationUs: number; stopCallUs: number };
           durationMs?: number;
           workerGapMaxMs: number;
-          hotFrameWindowsUs?: Array<{
-            possibleStartUs: number;
-            definiteStartUs: number;
-            definiteEndUs: number;
-            possibleEndUs: number;
-          }>;
+          inspectorControl?: { profile: TimedProfile; hotFrameWindowsUs?: TimedWindow[] };
+          hotFrameWindowsUs?: TimedWindow[];
           profile: TimedProfile;
         };
         const summarizeCapture = (capture: TimedCapture) => {
@@ -615,35 +619,55 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             sampleFrameCounts: samples.sampleFrameCounts.slice(0, 6),
             samplePathCounts: samples.samplePathCounts.slice(0, 4),
           });
+          const summarizeProfile = (timedProfile: TimedProfile, hotFrameWindowsUs?: TimedWindow[]) => ({
+            samples: timedProfile.samples,
+            nodes: timedProfile.nodes,
+            hotSamples: timedProfile.hotSamples,
+            mapSamples: timedProfile.mapSamples,
+            usefulSamples: timedProfile.usefulSamples,
+            timeDeltaCount: timedProfile.timeDeltaCount,
+            sampleOffsetCount: timedProfile.sampleOffsetCount,
+            sampleOffsetStartUs: timedProfile.sampleOffsetStartUs,
+            sampleOffsetEndUs: timedProfile.sampleOffsetEndUs,
+            timeDeltaSumUs: timedProfile.timeDeltaSumUs,
+            timeDeltaMinUs: timedProfile.timeDeltaMinUs,
+            timeDeltaMedianUs: timedProfile.timeDeltaMedianUs,
+            timeDeltaMaxUs: timedProfile.timeDeltaMaxUs,
+            profileDuration: timedProfile.profileDuration,
+            workWindow: timedProfile.workWindow ? {
+              possibleStartUs: timedProfile.workWindow.possibleStartUs,
+              definiteStartUs: timedProfile.workWindow.definiteStartUs,
+              definiteEndUs: timedProfile.workWindow.definiteEndUs,
+              possibleEndUs: timedProfile.workWindow.possibleEndUs,
+              possible: summarizeTimedSamples(timedProfile.workWindow.possible),
+              definite: summarizeTimedSamples(timedProfile.workWindow.definite),
+            } : null,
+            hotFrameWindows: timedProfile.hotFrameWindows ? {
+              possible: summarizeTimedSamples(timedProfile.hotFrameWindows.possible),
+              definite: summarizeTimedSamples(timedProfile.hotFrameWindows.definite),
+            } : null,
+            hotFrameWindowBoundsUs: hotFrameWindowsUs?.length ? {
+              count: hotFrameWindowsUs.length,
+              possibleStartUs: Math.min(...hotFrameWindowsUs.map(window => window.possibleStartUs)),
+              definiteStartUs: Math.min(...hotFrameWindowsUs.map(window => window.definiteStartUs)),
+              definiteEndUs: Math.max(...hotFrameWindowsUs.map(window => window.definiteEndUs)),
+              possibleEndUs: Math.max(...hotFrameWindowsUs.map(window => window.possibleEndUs)),
+            } : null,
+            ...(timedProfile.sampleChains ? { sampleChains: timedProfile.sampleChains } : {}),
+          });
           return {
             workStartOffsetMs: capture.workStartOffsetMs ?? null,
             workload: capture.workload,
             timing: capture.timing ?? null,
             durationMs: capture.durationMs ?? null,
             workerGapMaxMs: capture.workerGapMaxMs,
-            profile: {
-              samples: profile.samples,
-              nodes: profile.nodes,
-              hotSamples: profile.hotSamples,
-              mapSamples: profile.mapSamples,
-              usefulSamples: profile.usefulSamples,
-              timeDeltaCount: profile.timeDeltaCount,
-              sampleOffsetCount: profile.sampleOffsetCount,
-              timeDeltaSumUs: profile.timeDeltaSumUs,
-              timeDeltaMinUs: profile.timeDeltaMinUs,
-              timeDeltaMedianUs: profile.timeDeltaMedianUs,
-              timeDeltaMaxUs: profile.timeDeltaMaxUs,
-              profileDuration: profile.profileDuration,
-              workWindow: profile.workWindow ? {
-                possibleStartUs: profile.workWindow.possibleStartUs,
-                definiteStartUs: profile.workWindow.definiteStartUs,
-                definiteEndUs: profile.workWindow.definiteEndUs,
-                possibleEndUs: profile.workWindow.possibleEndUs,
-                possible: summarizeTimedSamples(profile.workWindow.possible),
-                definite: summarizeTimedSamples(profile.workWindow.definite),
-              } : null,
-              ...(profile.sampleChains ? { sampleChains: profile.sampleChains } : {}),
-            },
+            profile: summarizeProfile(profile, capture.hotFrameWindowsUs),
+            ...(capture.inspectorControl ? {
+              inspectorControl: summarizeProfile(
+                capture.inspectorControl.profile,
+                capture.inspectorControl.hotFrameWindowsUs,
+              ),
+            } : {}),
           };
         };
         const summarizeStrategy = (result: {
