@@ -367,6 +367,26 @@ export async function preparePrivateDocsBrowserDocuments(repoRoot: string, selec
 
 /** Match with-test-pg's six-character runtime allocation and the native fixture's
  * existing conservative socket limit before paying for PG startup/migrations. */
+export function preparePrivateWorkerSources(root: string, paths: string[], env: NodeJS.ProcessEnv = process.env,
+  readCommitted: (path: string) => Uint8Array = path => execFileSync('git', ['show', 'HEAD:' + path],
+    { cwd: root, maxBuffer: 16 * 1024 * 1024, timeout: 10_000 })) {
+  const committed = (env.NODE_OPTIONS ?? '').includes('committed-source-loader.mjs');
+  assert.ok(paths.length > 0, 'Private worker source population is required');
+  const files = [...new Set(paths)].map(path => {
+    assert.ok(!isAbsolute(path) && !path.split('/').includes('..') && !path.includes('\\'),
+      'Private worker source must be repository-relative: ' + path);
+    const bytes = readFileSync(join(root, path));
+    const sha256 = digestBytes(bytes);
+    if (committed) {
+      assert.equal(digestBytes(readCommitted(path)), sha256,
+        'Private worker would execute different HEAD bytes: ' + path
+        + '; publish the authorized source through git-sync before private allocation');
+    }
+    return { path, sha256 };
+  });
+  return { loader: committed ? 'committed-source' : 'working-source', files };
+}
+
 export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
   assert.ok(isAbsolute(scratchRoot), 'Private roster scratch root must be absolute');
   const socket = join(scratchRoot, 'papercusp-test-runtime-XXXXXX', 'tmp', 'rs-XXXXXX', 'su-rs-123456789-neighbor.sock');
@@ -403,7 +423,7 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
 }) {
   assertPrivatePreparationEvidence();
   const selected = options?.committedReader;
-  let receipt: { path: string; sha256: string; selectedSource?: {
+  let receipt: { path: string; sha256: string; qualification?: { status: 'pending' | 'preparation-qualified' }; selectedSource?: {
     receiptPath: string; sha256: string; sourceCommit: string;
   } };
   if (!selected) receipt = buildPrivateOperatorApiBundle(root, evidenceDir);
