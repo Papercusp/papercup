@@ -15,6 +15,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { runWithoutAmbientArgPeeling } from '../ambient-args-scope';
+import { applyScopedSuperuserTransportBoundary } from '../../endpoint-route/routes/transport/scoped-superuser-transport-boundary';
 import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
@@ -44,6 +45,12 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
     role: ctx.role ?? '',
     isSuperuser: ctx.isSuperuser,
   };
+  const boundary = await applyScopedSuperuserTransportBoundary(
+    { name: _toolName, crossWorkspace: tool.crossWorkspace, profile: tool.profile },
+    { workspaceId: spawnCtxLike.workspaceId, isSuperuser: spawnCtxLike.isSuperuser, profile: ctx.profile },
+  );
+  if (!boundary.ok) return boundary.result;
+
   const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
 
   const baseCtx: UnifiedToolContext = {
