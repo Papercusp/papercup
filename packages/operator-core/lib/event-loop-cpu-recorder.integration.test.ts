@@ -185,6 +185,8 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'let cursor = 1;',
             'let churnedFunctions = 0;',
             'let hotFrameCalls = 0;',
+            'let captureHotFrameWindows = false;',
+            'let hotFrameWindowsNs = [];',
             'const retained = Array.from({ length: 25000 }, (_, i) => {',
             "  const fn = new Function('return function map_' + i + '(x) { return x + ' + i + '; }')();",
             '  fn(i);',
@@ -192,8 +194,10 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '});',
             'function cpuHotFrame(durationMs = 8) {',
             '  hotFrameCalls++;',
+            '  const startedNs = captureHotFrameWindows ? process.hrtime.bigint() : null;',
             '  const until = performance.now() + durationMs;',
             '  while (performance.now() < until) cursor = retained[cursor % retained.length](cursor) % retained.length;',
+            '  if (startedNs !== null) hotFrameWindowsNs.push([startedNs, process.hrtime.bigint()]);',
             '}',
             'let memoryWindow = null;',
             'function sampleMemory() {',
@@ -321,14 +325,17 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             '  if (workStartOffsetMs > 0) await delay(workStartOffsetMs);',
             '  const beforeWork = { hotFrameCalls, churnedFunctions };',
             '  const workStartNs = process.hrtime.bigint();',
+            '  if (includeSampleChains) { captureHotFrameWindows = true; hotFrameWindowsNs = []; }',
             '  await workFor(durationMs);',
+            '  if (includeSampleChains) captureHotFrameWindows = false;',
             '  const workEndNs = process.hrtime.bigint();',
             '  const workload = { hotFrameCalls: hotFrameCalls - beforeWork.hotFrameCalls, churnedFunctions: churnedFunctions - beforeWork.churnedFunctions };',
             '  const stopCallStartedNs = process.hrtime.bigint();',
             '  const finished = eager.finish(true, false);',
             '  const stopCallReturnedNs = process.hrtime.bigint();',
             '  const workWindow = { possibleStartUs: elapsedUs(startCallReturnedNs, workStartNs), definiteStartUs: elapsedUs(startCallStartedNs, workStartNs), definiteEndUs: elapsedUs(startCallReturnedNs, workEndNs), possibleEndUs: elapsedUs(startCallStartedNs, workEndNs) };',
-            '  return { profile: summarize(JSON.parse(finished.profileJson), workWindow, includeSampleChains), workload, timing: { startCallUs: elapsedUs(startCallStartedNs, startCallReturnedNs), workDurationUs: elapsedUs(workStartNs, workEndNs), stopCallUs: elapsedUs(stopCallStartedNs, stopCallReturnedNs) }, sampleCount: finished.sampleCount, serialized: finished.serialized, disposed: finished.disposed };',
+            '  const hotFrameWindowsUs = includeSampleChains ? hotFrameWindowsNs.map(([startedNs, endedNs]) => ({ possibleStartUs: elapsedUs(startCallReturnedNs, startedNs), definiteStartUs: elapsedUs(startCallStartedNs, startedNs), definiteEndUs: elapsedUs(startCallReturnedNs, endedNs), possibleEndUs: elapsedUs(startCallStartedNs, endedNs) })) : undefined;',
+            '  return { profile: summarize(JSON.parse(finished.profileJson), workWindow, includeSampleChains), hotFrameWindowsUs, workload, timing: { startCallUs: elapsedUs(startCallStartedNs, startCallReturnedNs), workDurationUs: elapsedUs(workStartNs, workEndNs), stopCallUs: elapsedUs(stopCallStartedNs, stopCallReturnedNs) }, sampleCount: finished.sampleCount, serialized: finished.serialized, disposed: finished.disposed };',
             '}',
             'async function revokeInspector(enabled, safe) {',
             '  const pending = recorder.record(60000).then(() => false, () => true);',
@@ -344,7 +351,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'const startup = await measure(() => strategy === "inspector" ? recorder.update(true, true) : eager.create());',
             'for (const fn of retained) fn(1);',
             'await delay(50);',
-            'const primary = await measure(() => strategy === "inspector" ? captureInspector(1000) : captureEager(1000));',
+            'const primary = await measure(() => strategy === "inspector" ? captureInspector(1000) : captureEager(1000, false, 0, null, includeRecoverySampleChains));',
             'const disabledRevocation = strategy === "inspector" ? await revokeInspector(false, true) : await revokeEager();',
             'let eagerProfileStartCallWindow = null;',
             'const recoveryWarmup = await measure(() => {',
@@ -417,6 +424,54 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         const eagerNoTurboInlining = await run('eager', ['--no-turbo-inlining']);
         const eagerNoMaglevInlining = await run('eager', ['--no-maglev-inlining']);
         const eagerNoCompilerInlining = await run('eager', ['--no-turbo-inlining', '--no-maglev-inlining']);
+        const inliningTraceScript = [
+          "import { performance } from 'node:perf_hooks';",
+          "import { setTimeout as delay } from 'node:timers/promises';",
+          'let cursor = 1;',
+          'let churnedFunctions = 0;',
+          'const retained = Array.from({ length: 25000 }, (_, i) => {',
+          "  const fn = new Function('return function map_' + i + '(x) { return x + ' + i + '; }')();",
+          '  fn(i);',
+          '  return fn;',
+          '});',
+          'function cpuHotFrame(durationMs = 8) {',
+          '  const until = performance.now() + durationMs;',
+          '  while (performance.now() < until) cursor = retained[cursor % retained.length](cursor) % retained.length;',
+          '}',
+          'async function workFor(durationMs) {',
+          '  const until = performance.now() + durationMs;',
+          '  while (performance.now() < until) {',
+          '    cpuHotFrame();',
+          '    const batch = Array.from({ length: 32 }, (_, offset) => {',
+          "      const name = 'churn_' + churnedFunctions + offset;",
+          "      const fn = new Function('x', 'return x + ' + (churnedFunctions + offset));",
+          "      Object.defineProperty(fn, 'name', { value: name });",
+          '      fn(cursor);',
+          '      return fn;',
+          '    });',
+          '    churnedFunctions += batch.length;',
+          '    void batch;',
+          '    await delay(5);',
+          '  }',
+          '}',
+          'for (let i = 0; i < 4; i++) await workFor(1500);',
+          "process.stdout.write('@@inline-trace-control-finished@@');",
+        ].join('\n');
+        const { stdout: inlineTraceStdout, stderr: inlineTraceStderr } = await exec(
+          process.execPath,
+          ['--trace-turbo-inlining', '--input-type=module', '-e', inliningTraceScript],
+          { timeout: 20_000, maxBuffer: 512 * 1024 },
+        );
+        const inlineTraceText = inlineTraceStdout + '\n' + inlineTraceStderr;
+        const inlineTraceLines = inlineTraceText.split(/\r?\n/).filter(line =>
+          (line.includes('SharedFunctionInfo workFor') || line.includes('SharedFunctionInfo cpuHotFrame')) &&
+          (line.includes('Inlining') || line.includes('Considering')),
+        );
+        const cpuHotFrameInlinedIntoWorkFor = inlineTraceLines.some(line =>
+          line.includes('SharedFunctionInfo cpuHotFrame') &&
+          line.includes('into') &&
+          line.includes('SharedFunctionInfo workFor'),
+        );
         const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
         const eagerPhaseMedianUsefulSamples = median(eager.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
         const noTurboInliningPhaseMedianUsefulSamples = median(eagerNoTurboInlining.recoveryPhaseSweep.map(capture => capture.profile.usefulSamples));
@@ -497,6 +552,12 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           timing?: { startCallUs: number; workDurationUs: number; stopCallUs: number };
           durationMs?: number;
           workerGapMaxMs: number;
+          hotFrameWindowsUs?: Array<{
+            possibleStartUs: number;
+            definiteStartUs: number;
+            definiteEndUs: number;
+            possibleEndUs: number;
+          }>;
           profile: TimedProfile;
         };
         const summarizeCapture = (capture: TimedCapture) => {
@@ -565,6 +626,63 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           churnedFunctions: result.churnedFunctions,
           recorderWarmups: result.recorderWarmups,
         });
+        const summarizeInlineAttribution = (capture: TimedCapture) => {
+          const samples = capture.profile.sampleChains ?? [];
+          const hotWindows = capture.hotFrameWindowsUs ?? [];
+          const containsFrame = (sample: NonNullable<TimedProfile['sampleChains']>[number], name: string) =>
+            sample.chain.some(frame => frame.callFrame.functionName === name);
+          const isInHotFrameWindow = (
+            sample: NonNullable<TimedProfile['sampleChains']>[number],
+            certainty: 'possible' | 'definite',
+          ) => {
+            if (sample.sampleOffsetUs === null) return false;
+            return hotWindows.some(window => {
+              const startUs = certainty === 'definite' ? window.definiteStartUs : window.possibleStartUs;
+              const endUs = certainty === 'definite' ? window.definiteEndUs : window.possibleEndUs;
+              return sample.sampleOffsetUs! >= startUs && sample.sampleOffsetUs! <= endUs;
+            });
+          };
+          const workSamples = samples.filter(sample => containsFrame(sample, 'workFor'));
+          const hotFrameSamples = samples.filter(sample => containsFrame(sample, 'cpuHotFrame'));
+          const bothSamples = samples.filter(sample =>
+            containsFrame(sample, 'workFor') && containsFrame(sample, 'cpuHotFrame'),
+          );
+          const possibleHotWindowSamples = samples.filter(sample => isInHotFrameWindow(sample, 'possible'));
+          const definiteHotWindowSamples = samples.filter(sample => isInHotFrameWindow(sample, 'definite'));
+          return {
+            sampleCount: capture.profile.samples,
+            capturedChains: samples.length,
+            measuredHotFrameWindows: hotWindows.length,
+            workForSamples: workSamples.length,
+            cpuHotFrameSamples: hotFrameSamples.length,
+            workForAndCpuHotFrameSamples: bothSamples.length,
+            possibleHotWindowSamples: possibleHotWindowSamples.length,
+            possibleHotWindowCpuHotFrameSamples: possibleHotWindowSamples.filter(sample => containsFrame(sample, 'cpuHotFrame')).length,
+            definiteHotWindowSamples: definiteHotWindowSamples.length,
+            definiteHotWindowCpuHotFrameSamples: definiteHotWindowSamples.filter(sample => containsFrame(sample, 'cpuHotFrame')).length,
+            definiteHotWindowPaths: definiteHotWindowSamples.slice(0, 8).map(sample => sample.chain
+              .slice(0, 6)
+              .map(frame => frame.callFrame.functionName)),
+            exampleWorkForPaths: workSamples.slice(0, 4).map(sample => sample.chain
+              .slice(0, 6)
+              .map(frame => ({ functionName: frame.callFrame.functionName, lineNumber: frame.callFrame.lineNumber }))),
+          };
+        };
+        const primaryInlineAttribution = summarizeInlineAttribution(eager.primary);
+        const recoveryInlineAttribution = summarizeInlineAttribution(eager.recoveryCapture);
+        const inlineStackDiagnostic = {
+          cpuHotFrameInlinedIntoWorkFor: cpuHotFrameInlinedIntoWorkFor,
+          relevantCompilerTraceLines: inlineTraceLines.slice(0, 20),
+          eagerPrimary: primaryInlineAttribution,
+          eagerAfterProfilerRecreation: recoveryInlineAttribution,
+          interpretation: !cpuHotFrameInlinedIntoWorkFor
+            ? recoveryInlineAttribution.definiteHotWindowSamples > 0 && recoveryInlineAttribution.definiteHotWindowCpuHotFrameSamples === 0
+              ? 'The matching compiler-trace control did not inline cpuHotFrame into workFor, yet samples definitely inside measured cpuHotFrame windows lack that frame after recreation; the miss is a sample/code-entry attribution path, not evidence that workFor omitted an inlined cpuHotFrame frame.'
+              : 'The matching compiler-trace control did not inline cpuHotFrame into workFor; without definite in-hot-frame samples, the profile cannot distinguish inline metadata from sample timing.'
+            : primaryInlineAttribution.workForAndCpuHotFrameSamples > 0 && recoveryInlineAttribution.workForAndCpuHotFrameSamples === 0
+              ? 'The live-code profile exposed cpuHotFrame under workFor while the recreated-profiler profile did not; this is consistent with, but does not alone prove, missing replayed inline-stack metadata.'
+              : 'Compiler and profile evidence did not distinguish inline-stack replay loss from another sample-attribution path.',
+        };
         console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({
           inspector: summarizeStrategy(inspector),
           eager: summarizeStrategy(eager),
@@ -578,6 +696,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             noMaglevInlining: noMaglevInliningPhaseMedianUsefulSamples,
             noCompilerInlining: noCompilerInliningPhaseMedianUsefulSamples,
           },
+          inlineStackDiagnostic,
           gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
         }));
 
