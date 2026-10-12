@@ -1016,7 +1016,7 @@ describe('immutable dependency generation', () => {
 
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{}}}\n',
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{"version":"1.0.0"}}}\n',
     );
     const miss = selectPrewarmed(generationRoot, integration);
     expect(miss.status).toBe(74);
@@ -1024,6 +1024,11 @@ describe('immutable dependency generation', () => {
     // WI-10005159: the miss names the store it searched, so a wrong-store miss explains itself.
     expect(miss.stderr).toContain(`(generation_root=${generationRoot})`);
 
+    mkdirSync(join(integration, 'node_modules/new'), { recursive: true });
+    writeFileSync(
+      join(integration, 'node_modules/new/package.json'),
+      '{"name":"new","version":"1.0.0"}\n',
+    );
     const rewarmed = publish(integration);
     expect(rewarmed.status, rewarmed.stderr).toBe(0);
     const selected = selectPrewarmed(generationRoot, integration);
@@ -1982,6 +1987,61 @@ exec /bin/cp "$@"
     expect(result.stderr).toContain('refusing to publish');
     expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
     expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each([
+    ['missing', 'node_modules/never-installed', '1.0.0'],
+    ['version-mismatch', 'node_modules/pkg', '2.0.0'],
+  ])('WI-6554700010008526: refuses a cache-hit selector for a %s locked dependency', (defect, path, version) => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const marker = join(publishedPath(first.stdout), '.papercusp-dependency-generation');
+    const originalMarker = readFileSync(marker, 'utf8');
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      `${JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: { [path]: { version } },
+      })}\n`,
+    );
+
+    const result = publish(integration);
+
+    expect(result.status, result.stderr).toBe(75);
+    expect(result.stderr).toContain('outcome=hot-hit');
+    expect(result.stderr).toContain(`LOCK_TREE_DEFECT\t${defect}\t${path}`);
+    expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(selectPrewarmed(generationRoot, integration).status).toBe(74);
+    expect(readFileSync(marker, 'utf8')).toBe(originalMarker);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-6554700010008526: binds a new matching lockfile to the cached tree after auditing it', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/pkg":{"version":"1.0.0"}}}\n',
+    );
+
+    const result = publish(integration);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('reused=true');
+    expect(publishedIdentity(result.stdout)).toBe(publishedIdentity(first.stdout));
+    expect(telemetryRecords(result.stderr, 'PHASE')).toContainEqual(
+      expect.objectContaining({ phase: 'lock-tree-audit', outcome: 'ok' }),
+    );
+    const selected = selectPrewarmed(
+      join(integration, '.papercusp/dependency-generations'),
+      integration,
+    );
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(publishedIdentity(selected.stdout)).toBe(publishedIdentity(first.stdout));
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('refuses a torn source with rc75 and publishes no partial generation', () => {
