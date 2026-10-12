@@ -1377,7 +1377,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         if (witness && JSON.stringify([...witness.units].sort()) === JSON.stringify([...runtimeUnits].sort())) {
           executionRuntimeFingerprint = witness.fingerprint;
         }
-        if (execution?.testLayer === 'integration' && execution.isolatedRuntimeReceipts
+        if ((execution?.testLayer === 'integration' || execution?.testLayer === 'e2e') && execution.isolatedRuntimeReceipts
           && JSON.stringify(runtimeUnits.slice().sort()) === JSON.stringify(execution.isolatedRuntimeReceipts
             .map(receipt => `isolated-integration:${receipt.runId}`).sort())) {
           executionRuntimeFingerprint = isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
@@ -2870,7 +2870,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
   if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
     || !row.test_run_present
     || row.evidence_kind !== 'test' || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
-    || row.test_run_framework !== 'vitest' || execution.testLayer !== 'integration'
+    || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
     || execution.failed !== 0 || execution.skipped !== 0 || execution.passed !== selector.runIds.length
     || execution.workspaceId !== scope.workspaceId || !isolatedHarnessMatches

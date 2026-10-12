@@ -139,7 +139,7 @@ describe('completed isolated runtime certification', () => {
   afterEach(async () => {
     h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore();
     await rm(join(artifacts, 'operator-driver'), { recursive: true, force: true });
-    await Promise.all(['verify-tauri-headless', 'native-journey'].map(harness =>
+    await Promise.all(['verify-tauri-headless', 'native-journey', 'isolated-integration'].map(harness =>
       rm(join(artifacts, harness, 'retained'), { recursive: true, force: true })));
   });
 
@@ -193,7 +193,7 @@ describe('completed isolated runtime certification', () => {
   }
   const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
 
-  async function setupIntegration() {
+  async function setupIntegration(testLayer: 'integration' | 'e2e' = 'integration') {
     const state = await setup();
     const runId = '20261008T000021Z-201';
     const basis: any = { ...recipe, runtimeUnits: [`isolated-integration:${runId}`],
@@ -226,7 +226,7 @@ describe('completed isolated runtime certification', () => {
         (state.execution as any).isolatedRuntimeReceipts = [{ runId, resultSha256: hashes[0], sourceSha256: hashes[1], lifecycleSha256: hashes[2] }];
       }
     };
-    state.execution.testLayer = 'integration';
+    state.execution.testLayer = testLayer;
     delete (state.execution as any).runtimeEnvironmentBefore;
     delete (state.execution as any).runtimeEnvironmentAfter;
     state.row.details.currentMeasurement = basis;
@@ -235,12 +235,15 @@ describe('completed isolated runtime certification', () => {
     return { ...state, basis, measured, result, source, life, save, dir };
   }
 
-  it('certifies the original integration lifetime with the reporter hashes after both worker and private PG exit', async () => {
-    await setupIntegration();
+  describe.each(['integration', 'e2e'] as const)('isolated %s runtime certification', testLayer => {
+  const setupIsolated = () => setupIntegration(testLayer);
+
+  it('certifies the original lifetime with the reporter hashes after both worker and private PG exit', async () => {
+    await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
   it.each(['local', 'mutation-probe', 'ci', 'admin-ui'])('preserves guarded adoption of a NULL-harness lifetime only for an adoptable %s ledger row', async sourceKind => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     state.execution.harnessSlug = null as any;
     state.source.harnessSlug = null;
     (state.row as any).test_run_source = sourceKind;
@@ -253,26 +256,26 @@ describe('completed isolated runtime certification', () => {
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('certifies runtime execution when the reporter-derived start follows harness preparation', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     // The reporter subtracts rounded duration from its later completion clock.
     // The retained harness clock is authoritative for its own phase ordering.
     state.row.test_run_started_at = at(14);
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
   it('rejects runtime execution that starts before the parent test interval', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     state.row.test_run_started_at = at(15);
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('rejects an out-of-order preparation receipt even when execution is inside the parent interval', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     state.row.test_run_started_at = at(14);
     state.result.phases[0].startedAt = at(12);
     await state.save(true);
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('certifies a committed disposable checkout against the same current Git objects', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     state.source.repoRoot = '/tmp/papercusp-lint-as-committed-original';
     state.life.cwd = state.source.repoRoot;
     await state.save(true);
@@ -282,8 +285,8 @@ describe('completed isolated runtime certification', () => {
   it.each(['tampered-receipt', 'missing-artifact', 'reused-run', 'wrong-source', 'wrong-layer', 'dirty',
     'outside-test', 'wrong-parent', 'missing-kernel', 'missing-teardown', 'wrong-scope', 'unrecorded', 'wrong-unit',
     'missing-original-root', 'relative-original-root', 'wrong-worker-cwd'])(
-    'rejects isolated integration proof for %s', async failure => {
-      const state = await setupIntegration();
+    'rejects isolated proof for %s', async failure => {
+      const state = await setupIsolated();
       if (failure === 'tampered-receipt') state.life.pgPort++;
       if (failure === 'reused-run') state.result.reuseFromRunId = 'earlier';
       if (failure === 'wrong-source') state.source.files[0].gitSha256 = 'b'.repeat(64);
@@ -304,7 +307,7 @@ describe('completed isolated runtime certification', () => {
       expect((await read()).currentness.dimensions.environment).toBe('unknown');
     });
   it('retains integration receipt bytes through pruning and detects a changed retained artifact', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
     await rm(state.dir, { recursive: true });
     expect((await read()).currentness.dimensions.environment).toBe('current');
@@ -313,10 +316,11 @@ describe('completed isolated runtime certification', () => {
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('rejects current integration source drift against the executed Git objects', async () => {
-    const state = await setupIntegration();
+    const state = await setupIsolated();
     const files = state.measured.files.map((file, i) => i === 0 ? { ...file, sha256: 'b'.repeat(64) } : file);
     expect(await measureCompletedTestRuntime(state.row as any, state.basis, files,
       { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, root)).toBeNull();
+  });
   });
 
   it('certifies the original completed execution after teardown using retained artifacts and Git objects', async () => {
