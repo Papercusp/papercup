@@ -97,13 +97,13 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  an explicit reviewer-model allowlist refusal,
  *  a missing / unregistered harness, a registered standalone harness passed
  *  to the Hive-scoped plan store, a desktop-only capability called before its
- *  sandbox lease was provisioned, or a pre-vetting refusal caused by the
- *  caller-authored acceptance BAR contract. A missing WORKSPACE-scope
+ *  sandbox lease was provisioned, or a pre-vetting / approval refusal caused
+ *  by the caller-authored acceptance BAR contract. A missing WORKSPACE-scope
  *  ("requires a workspace-scoped call") is deliberately NOT here — a
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
 
 /** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
  *  its PostgreSQL 42703 code and a known-column correction payload. When
@@ -240,8 +240,18 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     // Codex reports the same local lookup miss in several phrasings; it is not a
     // server defect because the target MCP handler never ran.
     class: 'caller',
-    errorCodes: ['wrapper-unavailable', 'client_wrapper_unavailable', 'client-wrapper-unavailable'],
-    statuses: ['wrapper-unavailable'],
+    errorCodes: [
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ],
+    statuses: [
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ],
     messagePattern:
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
       'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
@@ -736,7 +746,12 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
   const structuredAttested = input.directEvidence !== undefined;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
-    .some((value) => ['wrapper-unavailable', 'client_wrapper_unavailable'].includes(value?.trim().toLowerCase() ?? ''));
+    .some((value) => [
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ].includes(value?.trim().toLowerCase() ?? ''));
   const expectedSelfAwaitRefusal = [input.errorCode, input.status]
     .some((value) => value?.trim().toLowerCase() === 'self_await_deadlock');
   return {
