@@ -304,6 +304,14 @@ async function writeToPg(
   const takenBy = normalizeTakenBy(row.taken_by);
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance.origin;
+  // WI-6554700010008759 / mig 1466: an admitted remote equal-key winner must
+  // retain its publisher clock. The BEFORE UPDATE stamp trigger consumes this
+  // statement-only token into 'remote'; it is never taken from the wire row or
+  // persisted. INSERT still uses ordinary provenance, since BEFORE INSERT has
+  // already run when PostgreSQL builds EXCLUDED. No connection/transaction state.
+  const updateOrigin = origin === 'remote' && authorPubkey
+    && provenance.sourceLogKeyHex === authorPubkey
+    ? 'remote:features-by-id' : origin;
   const fedTs = provenance?.ts ?? null;
   // D-001: the op's HLC ordering key — the SAME causal key the merge fold orders
   // by. Stored as `fed_hlc` and compared by the LWW guard below via fed_order_key()
@@ -520,7 +528,7 @@ async function writeToPg(
         ELSE EXCLUDED.admitted_by
       END,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin = EXCLUDED.origin,
+      origin = ${updateOrigin},
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc,
       verified_author_github_user_id = EXCLUDED.verified_author_github_user_id
