@@ -32,6 +32,8 @@ export interface DaoWorkspaceView {
   directoryId: string;
   localHomeSlug: string | null;
   status: 'connected' | 'not-joined';
+  /** Lookup scope for separately authenticated contract signers; grants no work access. */
+  contractHomeSlug?: string;
   members?: DaoRead<Array<{ id: number; username: string; displayName: string | null; bindingStatus: string; devices: number }>>;
   people?: DaoRead<DaoPerson[]>;
   capTable?: DaoRead<DaoCapTable>;

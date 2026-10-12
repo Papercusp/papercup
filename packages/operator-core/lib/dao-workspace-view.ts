@@ -10,6 +10,7 @@ import type { DaoCapTable, DaoPerson, DaoRead, DaoWorkspaceView } from './dao-wo
 export type { DaoRead, DaoWorkspaceView } from './dao-workspace-types';
 
 export interface DaoWorkspaceDeps {
+  viewerGithubId(): Promise<number | null>;
   projects(workspaceId: string): Promise<ProjectEntry[]>;
   hive(workspaceId: string, slug: string): Promise<HiveRecord | null>;
   members(workspaceId: string, slug: string): Promise<HiveMemberRecord[]>;
@@ -22,6 +23,10 @@ export interface DaoWorkspaceDeps {
 }
 
 const stores: DaoWorkspaceDeps = {
+  viewerGithubId: async () => {
+    const identity = await (await import('./identity/resolve-local-github-identity')).resolveLocalGithubIdentity();
+    return identity.kind === 'ok' ? identity.githubUserId : null;
+  },
   projects: async workspace => (await (await import('./harness-registry')).loadHarnessRegistry(workspace)).projects,
   hive: async (workspace, slug) => (await import('./hive-store')).getHiveBySlug(workspace, slug),
   // Resolve the owner-authored federated scope; a joiner's local slug can differ.
@@ -59,9 +64,22 @@ export async function buildDaoWorkspaceView(
     (hive?.pubkeyBase64 ?? project.hive_pubkey) === directory.hivePubkey) : undefined;
   if (!binding) return { directoryId: directory.potId, localHomeSlug: null, status: 'not-joined' };
   const slug = binding.project.slug;
+  // A retained local checkout is not an access grant. Re-read the authenticated
+  // viewer and owner-scoped roster on every request, including after offboarding.
+  const access = await read(async () => {
+    const viewer = await deps.viewerGithubId();
+    if (viewer === null) return null;
+    const members = await deps.members(workspaceId, slug);
+    return members.some(member => member.githubUserId === viewer) ? members : null;
+  });
+  if (access.status !== 'ready' || !access.value) return {
+    directoryId: directory.potId, localHomeSlug: null, status: 'not-joined', contractHomeSlug: slug,
+    ...(access.status === 'error' ? { members: access } : {}),
+  };
+  const admittedMembers = access.value;
   const children = projects.filter(project => project.slug === slug || project.hive_slug === slug);
   const [members, policy, governance, work, people, capTable] = await Promise.all([
-    read(async () => (await deps.members(workspaceId, slug)).map(member => ({ id: member.githubUserId, username: member.githubUsername, displayName: member.displayName, bindingStatus: member.bindingStatus, devices: member.deviceAttestations.length }))),
+    read(async () => admittedMembers.map(member => ({ id: member.githubUserId, username: member.githubUsername, displayName: member.displayName, bindingStatus: member.bindingStatus, devices: member.deviceAttestations.length }))),
     read(async () => {
       const signed = await deps.policy(workspaceId, await deps.policyScope(workspaceId, slug));
       return { version: signed?.policyVersion ?? 0, membership: signed?.policy.membership ?? null, admission: signed?.policy.governance?.planAdmission ?? null, delegations: signed?.policy.governance?.signingAuthority?.delegations ?? [] };
