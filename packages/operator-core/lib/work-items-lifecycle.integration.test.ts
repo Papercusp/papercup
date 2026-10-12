@@ -305,6 +305,13 @@ beforeEach(async () => {
 });
 
 describe('blueprint direct-item revision pin', () => {
+  // Agent operations must declare a pinned policy.identity before admission
+  // (operation-unpinned-agent). One shared pin, matching the accepted-operation
+  // identity the worker launch specs below carry, so the two cannot drift.
+  const WORKER_POLICY_IDENTITY = {
+    kind: 'identity', ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64),
+  } as const;
+
   it.each([
     { name: 'exact', mode: 'exact', models: ['claude-opus-4-8'], actual: 'claude-opus-4-8', effort: undefined },
     { name: 'allowed', mode: 'allowed', models: ['claude-opus-4-8', 'openai/claude-sonnet-4-6'], actual: 'claude-opus-4-8', effort: undefined },
@@ -319,7 +326,10 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object' },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode, models: [...models], ...(effort ? { effort } : {}), onUnavailable: 'fail' } },
+        policy: {
+          identity: WORKER_POLICY_IDENTITY,
+          model: { mode, models: [...models], ...(effort ? { effort } : {}), onUnavailable: 'fail' },
+        },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -435,7 +445,7 @@ describe('blueprint direct-item revision pin', () => {
           execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
           acceptance: { resultSchema: { type: 'object', required: ['answer', 'note'],
             properties: { answer: { type: 'string' }, note: { type: 'null' } }, additionalProperties: false } },
-          policy: { model: modelPolicy },
+          policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy },
         }],
       };
       await projectBlueprintToPg(db.sql, {
@@ -555,7 +565,7 @@ describe('blueprint direct-item revision pin', () => {
       roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
       operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy } }],
     };
     await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
       blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
@@ -657,7 +667,7 @@ describe('blueprint direct-item revision pin', () => {
       roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
       operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy } }],
     };
     await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
       blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
@@ -758,7 +768,7 @@ describe('blueprint direct-item revision pin', () => {
       operations: [{
         id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy },
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -870,6 +880,7 @@ describe('blueprint direct-item revision pin', () => {
         acceptance: { resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } },
         signals: { note: { payloadSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } } },
         waits: { approve: { responseSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } } } },
+        policy: { identity: WORKER_POLICY_IDENTITY },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -1062,6 +1073,7 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object', additionalProperties: false },
         acceptance: { resultSchema: { type: 'object' } },
+        policy: { identity: WORKER_POLICY_IDENTITY },
       }],
     };
     const request = {
@@ -1093,7 +1105,7 @@ describe('blueprint direct-item revision pin', () => {
         properties: { itemId: { type: 'string' } },
       },
       acceptance: { resultSchema: { type: 'object' } },
-      policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+      policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
     };
     const source = {
       id: 'accepted-item-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
@@ -1114,7 +1126,7 @@ describe('blueprint direct-item revision pin', () => {
     expect(accepted.id).toMatch(/^WI-/);
     const bSource = {
       ...source,
-      operations: [{ ...operation, version: 'B', policy: { model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }],
+      operations: [{ ...operation, version: 'B', policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }],
     };
     const b = compileAgentSpecification({ source: bSource });
     await projectBlueprintToPg(db.sql, {
@@ -1142,7 +1154,7 @@ describe('blueprint direct-item revision pin', () => {
           properties: { itemId: { type: 'string' } },
         },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+        policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
       };
       const source = {
         id: 'receipt-fixture', workItem: { kind: itemKind },
