@@ -47,6 +47,7 @@ vi.mock('@papercusp/grid-core', () => ({
 }));
 vi.mock('./SavedPromptsSection', () => ({ default: () => <div data-testid="saved-prompts" /> }));
 vi.mock('./HarnessPluginsSection', () => ({ default: () => <div data-testid="plugins-section" /> }));
+vi.mock('./IntegrationModeSection', () => ({ default: () => <div data-testid="integration-mode-section" /> }));
 
 import { toast } from 'sonner';
 import HarnessSettingsPanel from './HarnessSettingsPanel';
