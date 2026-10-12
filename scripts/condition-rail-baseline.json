@@ -132,9 +132,6 @@
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|2",
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|3",
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|4",
-    "log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|1",
-    "log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|2",
-    "log-only-fallback|packages/operator-core/lib/cache/l2-tier.ts|noteL2Error|1",
     "log-only-fallback|packages/operator-core/lib/dbos/bootstrap.ts|startDbosOnce|1",
     "log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts|<module>|1",
     "log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts|<module>|2",
@@ -144,7 +141,6 @@
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|2",
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildSpawnContext|1",
-    "log-only-fallback|packages/operator-core/lib/fleet/git-via-sidecar.ts|recordSidecarFallback|1",
     "log-only-fallback|packages/operator-core/lib/grading-integrity.ts|readActiveLoopStanddownOwners|1",
     "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|runWatchdogTickBody|1",
     "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|1",
@@ -186,7 +182,6 @@
     "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
     "log-only-fallback|packages/operator-core/lib/sync/hyperbee/sync-relay.ts|resolveSyncRelayKeys|1",
     "log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1",
-    "log-only-fallback|packages/operator-core/lib/system-health/single-primary-check.ts|countBackgroundPrimaries|1",
     "log-only-fallback|packages/operator-core/lib/work-item-claim-authority-swarm.ts|route|1",
     "log-only-fallback|packages/operator-core/lib/work-item-lock-release.ts|releaseReclaimedWorkItemLocks|1",
     "log-only-fallback|packages/operator-core/lib/work-item-lock-release.ts|releaseReclaimedWorkItemLocks|2",
@@ -300,6 +295,16 @@
         "item": "P-009"
       },
       "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts|fileFindings|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback"
+      },
+      "evidenceRef": "WI-6554700010008689/P-017-p2p-classification-2026-10-12"
     }
   ]
 }

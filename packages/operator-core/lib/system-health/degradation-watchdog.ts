@@ -207,6 +207,23 @@ registerDegradationMechanism({
   description: 'Embedding child readiness measured by READY handshakes and ready demand requests; unexpected crashes are degraded, deliberate idle exits are excluded.',
   thresholds: { minEligible: 1 },
 });
+registerDegradationMechanism({
+  mechanism: 'spawner-sidecar-exec',
+  description: 'Eligible command and stdin executions served by the spawner sidecar; primary child exits count as applied, local fallbacks and rejected execution count as unavailable. Disabled routing is excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'bounded-operation', scopeKeyed: true,
+  description: 'Named bounded operations that completed before the deadline rather than returning a timeout/error fallback; caller cancellation is excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'cache-l2-operation', scopeKeyed: true,
+  description: 'L2 get, set and invalidation requests completed by the backend rather than a fail-soft build; cache misses are healthy reads, disabled routing is excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'primary-count-capability',
+  description: 'Primary-count queries that measured permission to read all activity stats rather than relying on a missing capability probe or restricted read.',
+  thresholds: { minEligible: 1 },
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both
