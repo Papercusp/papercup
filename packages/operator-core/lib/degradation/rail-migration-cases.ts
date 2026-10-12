@@ -20,7 +20,7 @@ import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
 import { original, execute, source } from './host-startup-migration-cases';
 import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 
-export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
+export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012'];
 
 const remainingSyncCases: RailMigrationCase[] = [{
   id: 'browser-transport-original-hook-production-provider-and-sanitized-ingress', item: 'P-011', route: 'observation',
@@ -31,6 +31,7 @@ const remainingSyncCases: RailMigrationCase[] = [{
     const packets: Array<{ payload: unknown }> = [];
     const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
     const report = execute(original('apps/operator/providers/HarnessSyncProvider.tsx', 'export function reportSyncTransportFallback', 'function'), {
+      resolveBrowserApiTransport: () => ({ mode: 'local' }),
       fetch: async (_url: string, init: { body: string }) => { packets.push(JSON.parse(init.body)); },
     }, 'reportSyncTransportFallback');
     const element = (type: unknown, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: { ...props, children } });
