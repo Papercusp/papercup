@@ -83,6 +83,7 @@ import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta'
 import { collectOrientDisclosures, recordOrientDisclosures } from '../../../agent-orient-disclosures';
 import type { ClaimableHarnessScope } from '../../work_items/claimable';
 import type { ControlAnchor } from '../control-anchor';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 type ControlAnchorFleetRoute = Extract<ControlAnchor['state']['route'], { kind: 'fleet' }>;
 type ControlAnchorRouteState = Pick<ControlAnchor['state'], 'route'>;
@@ -202,61 +203,6 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
 export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
 /** Leave the orchestration worker time to consume and return the degraded snapshot. */
 const ORIENT_PARENT_DEADLINE_HEADROOM_MS = 1_000;
-
-interface OrientPhaseDuration {
-  phase: string;
-  durationMs: number;
-}
-
-interface OrientPhaseDiagnostics {
-  /** Latest-started phase that is still pending; this is a timing clue, not causal proof. */
-  activePhase: string | null;
-  activePhases: string[];
-  activePhaseElapsedMs: number | null;
-  completedDurationsMs: OrientPhaseDuration[];
-  omittedCompletedCount: number;
-  activePhaseSelection: 'latest-started-pending';
-}
-
-function createOrientPhaseTracker() {
-  let nextId = 0;
-  let omittedCompletedCount = 0;
-  const active = new Map<number, { phase: string; startedAt: number }>();
-  const completed: OrientPhaseDuration[] = [];
-  const historyCap = 32;
-
-  return {
-    async track<T>(phase: string, work: () => T | Promise<T>): Promise<T> {
-      const id = ++nextId;
-      active.set(id, { phase, startedAt: Date.now() });
-      try {
-        return await work();
-      } finally {
-        const started = active.get(id);
-        active.delete(id);
-        if (started) {
-          completed.push({ phase, durationMs: Math.max(0, Date.now() - started.startedAt) });
-          if (completed.length > historyCap) {
-            completed.shift();
-            omittedCompletedCount += 1;
-          }
-        }
-      }
-    },
-    snapshot(): OrientPhaseDiagnostics {
-      const pending = [...active.values()];
-      const current = pending[pending.length - 1];
-      return {
-        activePhase: current?.phase ?? null,
-        activePhases: pending.slice(-historyCap).map(({ phase }) => phase),
-        activePhaseElapsedMs: current ? Math.max(0, Date.now() - current.startedAt) : null,
-        completedDurationsMs: completed.slice(),
-        omittedCompletedCount,
-        activePhaseSelection: 'latest-started-pending',
-      };
-    },
-  };
-}
 
 export function withOrientAggregateTimeout<T>(
   work: Promise<T> | ((aggregateDeadlineAtMs: number) => Promise<T>),
@@ -3471,7 +3417,10 @@ export default defineTool({
   // prettier-ignore
   async handler(args, ctx) {
     const aggregateFallback = createOrientAggregateFallback();
-    const phaseTracker = createOrientPhaseTracker();
+    // The dispatcher's per-call tracker (ctx.phases) persists these phases into
+    // tool_invocations.metadata_json.handlerPhases on every call; the local fallback
+    // only serves direct handler calls (tests) that bypass the dispatcher.
+    const phaseTracker = ctx.phases ?? createPhaseTracker({ historyCap: 32 });
     const aggregate = await withOrientAggregateTimeout(
       async (aggregateResponseDeadlineAtMs) => {
     // Leave one more second between composition and the stable aggregate fallback
