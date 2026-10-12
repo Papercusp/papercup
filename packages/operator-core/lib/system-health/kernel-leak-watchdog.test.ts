@@ -5,6 +5,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => { throw new Error('no PG in unit tests'); },
 }));
 vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: vi.fn() }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../alarm-attention', () => ({ resolveAlarm: vi.fn(async (conditionKey, source, deps) =>
+  deps?.resolve?.({ conditionKey, summary: `${source} recovered` }) ?? false) }));
 
 import {
   DYING_DESCENDANTS_FLOOR,
@@ -201,6 +204,54 @@ describe('formatKernelLeakEscalation', () => {
 });
 
 describe('runKernelLeakCheckOnce', () => {
+  it('opens each signal independently of legacy failures and resolves only measured healthy signals', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const high = series({ startMs: BOOT_AT + 7 * HOUR, endMs: BOOT_AT + 20 * HOUR,
+      sUnreclaimStart: 30 * GIB, sUnreclaimPerDay: 3 * GIB, dyingStart: 1500, dyingPerDay: 800 });
+    const low = series({ startMs: BOOT_AT + 7 * HOUR, endMs: BOOT_AT + 20 * HOUR,
+      sUnreclaimStart: GIB, sUnreclaimPerDay: 0, dyingStart: 100, dyingPerDay: 0 });
+    let rows = high, current: KernelMemorySample | null = last(rows), unreadable = false;
+    const open = new Set<string>();
+    const rail = { broadcast: vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; }),
+      resolve: vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey)) };
+    const deps = { rail, readSample: async () => current, store: async () => {}, prune: async () => {},
+      loadSeries: async () => { if (unreadable) throw new Error('history unavailable'); return rows; },
+      escalate: async () => { throw new Error('legacy unavailable'); } };
+    try {
+      await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(3);
+      expect(rail.broadcast).toHaveBeenCalledTimes(3);
+      current = null; await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(3);
+      rows = low; current = { ...last(low), dyingDescendants: null }; unreadable = true;
+      await runKernelLeakCheckOnce(deps);
+      expect([...open].sort()).toEqual(['alarm:kernel-leak:tower:dying-growth', 'alarm:kernel-leak:tower:sunreclaim-growth']);
+      unreadable = false; rows = [current]; await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2); // one point is not proof that the trend recovered
+      rows = low.map((row) => ({ ...row, bootId: 'other-boot' })); await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2);
+      rows = low.map((row, index) => index === 5 ? { ...row, sUnreclaimBytes: NaN } : row);
+      await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2); // malformed history is unknown, not a healthy slope
+      rows = low; current = last(low); await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(0);
+      expect(warn).toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('continues legacy notification when condition delivery fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const current = series({ startMs: BOOT_AT + HOUR, endMs: BOOT_AT + HOUR,
+      sUnreclaimStart: 30 * GIB, sUnreclaimPerDay: 0 })[0];
+    const escalate = vi.fn(async () => {});
+    try {
+      await runKernelLeakCheckOnce({ readSample: async () => current, store: async () => {}, prune: async () => {},
+        loadSeries: async () => [], escalate, rail: { broadcast: async () => { throw new Error('rail failed'); } } });
+      expect(escalate).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('condition sunreclaim-absolute failed'));
+    } finally { warn.mockRestore(); }
+  });
+
   it('skips cleanly when no sample is readable (non-Linux, missing /proc)', async () => {
     const store = vi.fn();
     const r = await runKernelLeakCheckOnce({ readSample: async () => null, store });

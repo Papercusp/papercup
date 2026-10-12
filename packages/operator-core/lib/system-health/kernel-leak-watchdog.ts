@@ -39,6 +39,8 @@ import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 const GIB = 1024 ** 3;
 const HOUR_MS = 3600_000;
@@ -254,6 +256,7 @@ export interface KernelLeakDeps {
   loadSeries: (bootId: string, sinceMs: number) => Promise<KernelMemorySample[]>;
   prune: () => Promise<void>;
   escalate: (alert: KernelLeakAlert) => Promise<void>;
+  rail?: AlarmAttentionDeps;
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -379,8 +382,38 @@ export async function runKernelLeakCheckOnce(overrides: Partial<KernelLeakDeps> 
     warn('load', err);
   }
 
-  const alerts = evaluateKernelLeak([...series, sample], sample);
+  const observations = [...series, sample];
+  const alerts = evaluateKernelLeak(observations, sample);
+  const key = (signal: KernelLeakSignal) => `alarm:kernel-leak:${encodeURIComponent(sample.host)}:${signal}`;
+  const window = slopeWindow(observations, sample);
+  const span = window.length ? window[window.length - 1].sampledAtMs - window[0].sampledAtMs : 0;
+  const trendReady = window.length >= KERNEL_LEAK_MIN_SAMPLES && span >= KERNEL_LEAK_MIN_SPAN_MS;
+  const dying = window.filter((row) => row.dyingDescendants !== null);
+  const dyingReady = trendReady && dying.length >= KERNEL_LEAK_MIN_SAMPLES
+    && dying[dying.length - 1].sampledAtMs - dying[0].sampledAtMs >= KERNEL_LEAK_MIN_SPAN_MS
+    && Number.isFinite(slopePerDay(dying.map((row) => ({ tMs: row.sampledAtMs, v: row.dyingDescendants! }))));
+  const measured: KernelLeakSignal[] = [];
+  if (Number.isFinite(sample.memTotalBytes) && sample.memTotalBytes > 0
+    && Number.isFinite(sample.sUnreclaimBytes) && sample.sUnreclaimBytes >= 0) measured.push('sunreclaim-absolute');
+  if (trendReady && Number.isFinite(slopePerDay(window.map((row) => ({ tMs: row.sampledAtMs, v: row.sUnreclaimBytes }))))) {
+    measured.push('sunreclaim-growth');
+  }
+  if (sample.dyingDescendants !== null && (sample.dyingDescendants < DYING_DESCENDANTS_FLOOR || dyingReady)) {
+    measured.push('dying-growth');
+  }
+  for (const signal of measured) {
+    if (!alerts.some((alert) => alert.signal === signal)) {
+      await resolveAlarm(key(signal), 'kernel-leak-watchdog', deps.rail);
+    }
+  }
   for (const alert of alerts) {
+    const { summary, body } = formatKernelLeakEscalation(alert);
+    try {
+      if (deps.rail?.broadcast) await deps.rail.broadcast({ conditionKey: key(alert.signal), summary, body });
+      else await broadcastSevereEvent({ conditionKey: key(alert.signal), summary, body });
+    } catch (err) {
+      warn(`condition ${alert.signal}`, err);
+    }
     try {
       await deps.escalate(alert);
     } catch (err) {
