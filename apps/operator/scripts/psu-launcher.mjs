@@ -15757,7 +15757,7 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
     // without SessionEnd, the owner's logical "end session" never reaches the
     // existing continuation classifier + audited fleet:kill teardown, leaving
     // this exact managed host alive to block the next resume.
-    const lifecycleReady = ["SessionStart", "SessionEnd"].every((event) =>
+    const lifecycleReady = ["SessionStart", "SessionEnd", "Stop"].every((event) =>
       hooks?.hooks?.[event]?.some((group) =>
         group?.hooks?.some(
           (hook) =>
@@ -15768,7 +15768,7 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
     );
     if (hookOwners.length === 0) return "hooks.json names no session owner";
     if (!hookOwners.every((owner) => owner === expectedOwner)) return "hooks.json names a different session owner";
-    if (!lifecycleReady) return "hooks.json lacks the SessionStart/SessionEnd lifecycle hooks";
+    if (!lifecycleReady) return "hooks.json lacks the SessionStart/SessionEnd/Stop lifecycle hooks";
     return null;
   } catch (error) {
     return `the home could not be read (${error instanceof Error ? error.message : String(error)})`;

@@ -285,6 +285,13 @@ function managedHooks(owner: string, includeLifecycle = true) {
                 ],
               },
             ],
+            Stop: [
+              {
+                hooks: [
+                  { command: `PAPERCUSP_SID='${owner}' lifecycle-report.sh` },
+                ],
+              },
+            ],
           }
         : {}),
     },
@@ -419,6 +426,23 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
       JSON.stringify(managedHooks(owner, true)),
     );
     expect(isCodexHomeLaunchReady(dir, owner)).toBe(true);
+  });
+
+  it("FALSE for a same-owner home whose Stop event omits session-scoped lock cleanup", () => {
+    const owner = "su-stop-lifecycle-gap";
+    writeFileSync(
+      join(dir, "config.toml"),
+      `${REAL_CONFIG}\\n[mcp_servers.papercusp-su]\\nurl = "http://x/api/mcp?superuser=1&client=${owner}"\\n`,
+    );
+    writeFileSync(
+      join(dir, "papercusp-diagnostics.json"),
+      JSON.stringify({ lockOwnerSid: owner }),
+    );
+    const hooks = managedHooks(owner);
+    delete hooks.hooks.Stop;
+    writeFileSync(join(dir, "hooks.json"), JSON.stringify(hooks));
+
+    expect(isCodexHomeLaunchReady(dir, owner)).toBe(false);
   });
 });
 

@@ -36,6 +36,7 @@ vi.mock('../loopback-fetch', async (importActual) => ({
 }));
 // DBOS inactive → goes straight to fire-and-forget fallback.
 vi.mock('../dbos/dbos-flags', () => ({ dbosOrchestratorActive: vi.fn(() => false) }));
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 const durableSpawnFireMock = vi.hoisted(() => vi.fn());
 vi.mock('../dbos/durable-spawn', () => ({ durableSpawnFire: durableSpawnFireMock }));
 // Keep no-turn classification deterministic without probing a live gateway.

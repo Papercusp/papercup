@@ -178,6 +178,11 @@ registerDegradationMechanism({
   thresholds: { minEligible: 1 },
 });
 registerDegradationMechanism({
+  mechanism: 'blueprint-launch', scopeKeyed: true,
+  description: 'Blueprint durable enqueue, spawn recording and completed invoke attempts that measured primary success; configured non-durable routes and intentional durable declines are excluded from the enqueue cohort.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
   mechanism: 'voice-spend-read',
   description: 'Uncached voice spend requests with configured ElevenLabs credentials whose API read completed rather than falling back to local usage.',
 });

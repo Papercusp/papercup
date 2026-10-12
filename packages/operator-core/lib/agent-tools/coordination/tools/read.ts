@@ -32,6 +32,7 @@ import { foldEscalationResolution } from '../escalations';
 import type { EscalationRecord } from '@papercusp/coordination/core';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_READ_ROLES } from '../roles';
+import { resolveAgentIdentity, verifiedSpawnSessionAlias } from '../identity';
 import { disclosureSubject } from '../../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../../_tool-context';
 import { COORD_SEAL_STORE, mergeUnsealed, sealMarkerOf } from '../../../personal-vault/coord-seal';
@@ -85,6 +86,21 @@ export default defineTool({
     // ambiguous one says so with candidates; only a genuine miss is found:false.
     const resolution = await resolveMessageRef(args.msg_id);
     let message = resolution.status === 'found' ? resolution.message : null;
+    // The acceptance judge receives message ids through evidence routes, but
+    // an id is only a locator, not authority to read an arbitrary envelope.
+    // coord:send persists the expanded concrete recipients in `to`; require
+    // the judge's exact coordination identity there. A verified signed-spawn
+    // session may be stored under its bare session owner id, so accept that
+    // alias only when the transport proof validates it. Wildcards are not
+    // evidence delivery: the judge must have been an explicit recipient.
+    if (message && ctx.role === 'judge') {
+      const identity = resolveAgentIdentity(ctx);
+      if (!isExplicitCoordRecipient(message, identity.ownerId, ctx)) {
+        // Match a genuine miss so probing a known msg_id does not reveal
+        // whether a non-recipient's message exists or disclose its full id.
+        return { data: { ok: true, found: false, msg_id: args.msg_id, message: null } };
+      }
+    }
     // WI-10005375: an escalation resolves by a SIBLING event, so the original record always says
     // resolved:null. Fold the sibling in, or a withdrawn ask reads as still open.
     if (message?.kind === 'escalation') {
@@ -167,6 +183,19 @@ export default defineTool({
     return { data: payload };
   },
 });
+
+function isExplicitCoordRecipient(
+  message: unknown,
+  ownerId: string,
+  ctx: Parameters<typeof resolveAgentIdentity>[0],
+): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const to = (message as { to?: unknown }).to;
+  if (!Array.isArray(to)) return false;
+  if (to.includes(ownerId)) return true;
+  const verifiedAlias = verifiedSpawnSessionAlias(ctx, ownerId);
+  return verifiedAlias !== null && to.includes(verifiedAlias);
+}
 
 function sealRefusal(msgId: string, code: string, detail: string) {
   return { ok: false, found: true, msg_id: msgId, error: code, detail, message: null };

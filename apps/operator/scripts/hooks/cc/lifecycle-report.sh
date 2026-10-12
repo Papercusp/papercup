@@ -17,7 +17,7 @@
 # releases the exact lock id and paths.
 #
 # Attached: Claude `SessionStart` + `SessionEnd` settings.json entries; managed
-# Codex homes register the same two events in hooks.json (verified against the
+# Codex homes register those plus `Stop` in hooks.json (verified against the
 # installed Codex 0.149.1 hook schema in WI-41305).
 
 set -euo pipefail

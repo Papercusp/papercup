@@ -38,8 +38,8 @@ const envelope = (msgId: string, body = 'x'.repeat(2615)) => ({
   body,
 });
 
-async function run(args: unknown) {
-  const res = (await tool.handler(args as never, {} as never)) as { data?: unknown; content?: { text: string }[] };
+async function run(args: unknown, ctx: unknown = {}) {
+  const res = (await tool.handler(args as never, ctx as never)) as { data?: unknown; content?: { text: string }[] };
   return res.data ?? JSON.parse(res.content![0].text);
 }
 
@@ -75,6 +75,108 @@ describe('coord:read', () => {
     } as never);
     const out = await run({ msg_id: 'nope' });
     expect(out).toMatchObject({ ok: true, found: false, msg_id: 'nope', message: null });
+  });
+
+  it('judge: an exact msg_id is not authority to read a message addressed elsewhere', async () => {
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'known-private-message',
+      message: envelope('known-private-message', 'private body'),
+      resolvedFrom: 'exact',
+    } as never);
+
+    const out = await run(
+      { msg_id: 'known-private-message' },
+      {
+        role: 'judge',
+        principal: { kind: 'harness', slug: 'system:judge', workspaceId: 'ws' },
+        uiClientId: 'judge-session',
+      },
+    );
+
+    expect(out).toEqual({ ok: true, found: false, msg_id: 'known-private-message', message: null });
+  });
+
+  it('judge: accepts the bare recipient id only for a verified signed spawn session', async () => {
+    const full = { ...envelope('judge-evidence', 'evidence body'), to: ['judge-session'] };
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'judge-evidence',
+      message: full,
+      resolvedFrom: 'exact',
+    } as never);
+
+    const out = await run(
+      { msg_id: 'judge-evidence' },
+      {
+        role: 'judge',
+        principal: {
+          kind: 'harness',
+          slug: 'system:judge',
+          workspaceId: 'ws',
+          authMethod: 'spawn-url',
+          trust: 'trusted',
+        },
+        uiClientId: 'judge-session',
+      },
+    );
+
+    expect(out).toMatchObject({ ok: true, found: true, msg_id: 'judge-evidence' });
+    expect(out.message.body).toBe('evidence body');
+  });
+
+  it('judge: a wildcard or unverified bare client id does not grant message access', async () => {
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'broadcast',
+      message: { ...envelope('broadcast', 'broadcast body'), to: ['*'] },
+      resolvedFrom: 'exact',
+    } as never);
+    const broadcast = await run(
+      { msg_id: 'broadcast' },
+      {
+        role: 'judge',
+        principal: { kind: 'harness', slug: 'system:judge', workspaceId: 'ws' },
+        uiClientId: 'judge-session',
+      },
+    );
+    expect(broadcast).toMatchObject({ found: false, message: null });
+
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'unverified-alias',
+      message: { ...envelope('unverified-alias', 'private body'), to: ['judge-session'] },
+      resolvedFrom: 'exact',
+    } as never);
+    const unverifiedAlias = await run(
+      { msg_id: 'unverified-alias' },
+      {
+        role: 'judge',
+        principal: {
+          kind: 'harness',
+          slug: 'system:judge',
+          workspaceId: 'ws',
+          authMethod: 'bearer',
+          trust: 'untrusted',
+        },
+        uiClientId: 'judge-session',
+      },
+    );
+    expect(unverifiedAlias).toMatchObject({ found: false, message: null });
+  });
+
+  it('non-judge coordination readers retain exact-id read behavior', async () => {
+    const full = { ...envelope('reader-message', 'reader body'), to: ['somebody-else'] };
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'reader-message',
+      message: full,
+      resolvedFrom: 'exact',
+    } as never);
+
+    const out = await run({ msg_id: 'reader-message' }, { role: 'operator' });
+
+    expect(out).toMatchObject({ ok: true, found: true, message: { body: 'reader body' } });
   });
 
   it('a unique PREFIX resolves, and says so — the WI-6725 false negative', async () => {

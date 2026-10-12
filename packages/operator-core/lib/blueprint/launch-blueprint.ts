@@ -50,6 +50,7 @@ import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '..
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
+import { observeFallback } from '../degradation/fallback-observations';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -473,10 +474,12 @@ const defaultFire = async (
           },
         })
       ) {
+        observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'durable-enqueue' }, { workspaceId });
         // The workflow id IS the durable correlation for this fire.
         return { spawnId: `durable-spawn:${idempotencyKey}`, runId: idempotencyKey, durable: true };
       }
     } catch (e) {
+      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'durable-enqueue-failed', scope: 'durable-enqueue' }, { workspaceId });
       // DBOS may have committed the workflow before the enqueue response was
       // lost. A direct /invoke fallback here would create a second child.
       if (e instanceof Error && e.name === 'DurableSpawnEnqueueUncertainError') throw e;
@@ -556,6 +559,7 @@ const defaultFire = async (
         },
       );
       if (!admission.admitted) {
+        observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawn-record' }, { workspaceId });
         console.warn(
           `[launch-blueprint] skipped duplicate Mug launch (${installSlug}/${role}); ` +
             `workspace ${workspaceId} already has active Mug ${admission.activeSpawnId}` +
@@ -566,7 +570,9 @@ const defaultFire = async (
     } else {
       await writeRecord(sql);
     }
+    observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawn-record' }, { workspaceId });
   } catch (e) {
+    observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'spawn-record-failed', scope: 'spawn-record' }, { workspaceId });
     console.warn(
       `[launch-blueprint] fallback spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
     );
@@ -628,7 +634,6 @@ const defaultFire = async (
   )
     .then(async (r) => {
       stopHeartbeat();
-      if (!pg) return;
       // HTTP 200 ≠ the agent ran. Judge the invoke body with the SHARED rule
       // (fleet/invoke-outcome), same as durable-spawn: a fire that returns ok-shaped
       // while the agent never emitted a turn (a 429-killed / dead-launcher spawn) is
@@ -690,6 +695,9 @@ const defaultFire = async (
       if (status === 'failed') {
         console.warn(`[launch-blueprint] fire not green (${installSlug}/${role}): ${errorMessage}`);
       }
+      observeFallback('blueprint-launch', { eligible: 1, applied: status === 'done' ? 1 : 0,
+        reason: status === 'done' ? 'applied' : r?.ok === false ? 'invoke-http-failed' : 'invoke-no-turn', scope: 'invoke-run' }, { workspaceId });
+      if (!pg) return;
       // A release-fixer that returns no turn is not merely a failed child row: it left the
       // red gate without a diagnosis. Reuse the durable escalation table so the next reader
       // sees the failure immediately, while the liveness-aware dispatcher remains the retry
@@ -745,6 +753,7 @@ const defaultFire = async (
           releaseFixerRetryCount + 1,
           false,
         ).catch((retryError) => {
+          observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'retry-start-failed', scope: 'invoke-run' }, { workspaceId });
           console.warn(
             `[launch-blueprint] release-fixer fallback retry failed to start (${installSlug}): ${
               retryError instanceof Error ? retryError.message : String(retryError)
@@ -755,6 +764,7 @@ const defaultFire = async (
     })
     .catch((e) => {
       stopHeartbeat();
+      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'invoke-request-failed', scope: 'invoke-run' }, { workspaceId });
       // describeFetchError surfaces undici's hidden cause code (e.g. UND_ERR_SOCKET)
       // so the persisted error_message + watchdog signal are self-diagnosing (EI-390).
       const detail = describeFetchError(e);
