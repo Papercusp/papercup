@@ -210,6 +210,99 @@ export interface GitRunExecutionOptions {
   env?: Readonly<Record<string, string>>;
 }
 
+export interface GitProgressTimerHandle {
+  cancel(): void;
+  unref?(): void;
+}
+
+export interface GitProgressTimerScheduler {
+  setTimeout(callback: () => void, delayMs: number): GitProgressTimerHandle;
+  setImmediate(callback: () => void): GitProgressTimerHandle;
+}
+
+const GIT_PROGRESS_TIMER_SCHEDULER: GitProgressTimerScheduler = {
+  setTimeout(callback, delayMs) {
+    const timer = setTimeout(callback, delayMs);
+    return {
+      cancel: () => clearTimeout(timer),
+      unref: () => timer.unref?.(),
+    };
+  },
+  setImmediate(callback) {
+    const immediate = setImmediate(callback);
+    return { cancel: () => clearImmediate(immediate) };
+  },
+};
+
+/**
+ * Timer state machine for progress-aware Git children. Exported so its ordering
+ * contract can be tested with a deterministic scheduler instead of depending on
+ * host startup and event-loop timing.
+ */
+export function createGitProgressWatchdog(
+  idleTimeoutMs: number,
+  hardTimeoutMs: number,
+  onTimeout: (reason: string) => void,
+  scheduler: GitProgressTimerScheduler = GIT_PROGRESS_TIMER_SCHEDULER,
+): { start(): void; onOutput(): void; stop(): void } {
+  let idleTimer: GitProgressTimerHandle | null = null;
+  let idleCheck: GitProgressTimerHandle | null = null;
+  let hardTimer: GitProgressTimerHandle | null = null;
+  let started = false;
+  let stopped = false;
+
+  const clear = (): void => {
+    idleTimer?.cancel();
+    hardTimer?.cancel();
+    idleCheck?.cancel();
+    idleTimer = null;
+    hardTimer = null;
+    idleCheck = null;
+  };
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    clear();
+  };
+  const expire = (reason: string): void => {
+    if (stopped) return;
+    stop();
+    onTimeout(reason);
+  };
+  const armIdleTimer = (): void => {
+    if (!started || stopped) return;
+    idleTimer?.cancel();
+    idleCheck?.cancel();
+    idleCheck = null;
+    idleTimer = scheduler.setTimeout(() => {
+      idleTimer = null;
+      if (stopped) return;
+      // Match the sidecar's pipe-progress contract: after a delayed parent
+      // loop, POLL must see already-written bytes before this idle verdict.
+      idleCheck = scheduler.setImmediate(() => {
+        idleCheck = null;
+        expire(`made no output progress for ${idleTimeoutMs}ms`);
+      });
+    }, idleTimeoutMs);
+    idleTimer.unref?.();
+  };
+
+  return {
+    start() {
+      if (started || stopped) return;
+      started = true;
+      armIdleTimer();
+      hardTimer = scheduler.setTimeout(
+        () => expire(`exceeded the ${hardTimeoutMs}ms hard ceiling despite output progress`),
+        hardTimeoutMs,
+      );
+      hardTimer.unref?.();
+    },
+    onOutput: armIdleTimer,
+    stop,
+  };
+}
+
 const runGitLocalBounded = (
   args: string[],
   cwd: string,
@@ -252,10 +345,9 @@ const runGitLocalBounded = (
     const groupLifetime = processGroupLifetime(child, (message) => out.stderr.append(`\ngit ${message}`));
     let settled = false;
     let terminating = false;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    let idleCheck: ReturnType<typeof setImmediate> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
+    let progressWatchdog: ReturnType<typeof createGitProgressWatchdog> | null = null;
     let removeAbortListener = (): void => {};
     const reportProgress = (): void => {
       try {
@@ -265,10 +357,8 @@ const runGitLocalBounded = (
       }
     };
     const clearTimers = (): void => {
-      if (idleTimer) clearTimeout(idleTimer);
+      progressWatchdog?.stop();
       if (hardTimer) clearTimeout(hardTimer);
-      if (idleCheck) clearImmediate(idleCheck);
-      idleCheck = null;
     };
     const finish = (code: number): void => {
       if (settled) return;
@@ -293,26 +383,11 @@ const runGitLocalBounded = (
       killTimer.unref?.();
     };
     const armIdleTimer = (): void => {
-      if (!progressAware || settled || terminating) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      if (idleCheck) clearImmediate(idleCheck);
-      idleCheck = null;
-      idleTimer = setTimeout(() => {
-        idleTimer = null;
-        // Match the sidecar's pipe-progress contract: after a delayed parent
-        // loop, POLL must see already-written bytes before this idle verdict.
-        // Keep the separate absolute deadline unchanged.
-        idleCheck = setImmediate(() => {
-          idleCheck = null;
-          terminate(`made no output progress for ${idleTimeoutMs}ms`);
-        });
-        // This one-shot verdict must also run when the child emits nothing;
-        // unref would let POLL wait for child close or the hard deadline.
-      }, idleTimeoutMs);
-      idleTimer.unref?.();
+      progressWatchdog?.onOutput();
     };
 
     if (progressAware) {
+      progressWatchdog = createGitProgressWatchdog(idleTimeoutMs, hardTimeoutMs, terminate);
       // `collectChildOutput` owns decoding; these listeners only observe byte
       // arrival and therefore cannot split/corrupt a multi-byte character.
       const onOutput = (): void => {
@@ -321,12 +396,7 @@ const runGitLocalBounded = (
       };
       child.stdout?.on('data', onOutput);
       child.stderr?.on('data', onOutput);
-      armIdleTimer();
-      hardTimer = setTimeout(
-        () => terminate(`exceeded the ${hardTimeoutMs}ms hard ceiling despite output progress`),
-        hardTimeoutMs,
-      );
-      hardTimer.unref?.();
+      progressWatchdog.start();
     } else {
       hardTimer = setTimeout(() => terminate(`timed out after ${hardTimeoutMs}ms`), hardTimeoutMs);
       hardTimer.unref?.();
