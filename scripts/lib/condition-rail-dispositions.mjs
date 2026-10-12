@@ -99,7 +99,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|apps/operator/scripts/psu-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/ptool.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs': NA_CLI,
-  'log-only-fallback|libs/generic/sync/src/fallback/useTransportFallback.ts': migrate('P-011'),
   'log-only-fallback|libs/generic/tooldef/src/dispatch-stack.ts': migrate('P-013'),
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
   'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts': migrate('P-013'),
