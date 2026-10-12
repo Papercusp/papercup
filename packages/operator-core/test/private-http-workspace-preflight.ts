@@ -69,6 +69,10 @@ function assertCommittedReaderInputs(closure: Omit<CommittedReaderClosure,
 
 function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
   assertCommittedReaderInputs(closure);
+  // Producer markers cannot downgrade a partial receipt into the legacy path.
+  if (['phase', 'inputReceipt', 'artifactCensus'].some(key => Object.hasOwn(closure, key))
+    || closure.qualification?.status === 'pending')
+    assert.equal(closure.phase, 'produced', 'Produced preparation phase is required');
   assert.ok(Array.isArray(closure.artifacts), 'Required closure dimension missing: artifacts');
   assert.ok(closure.artifacts.length, 'Required closure dimension empty: artifacts');
   for (const key of ['sha256', 'metafileSha256'] as const) {
