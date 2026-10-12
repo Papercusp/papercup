@@ -288,6 +288,12 @@ registerDegradationMechanism({ mechanism: 'substrate-sidecar-respawn', threshold
   description: 'Unexpected sidecar exits restored the preferred process rather than exhausting the respawn budget or failing to spawn; deliberate stops and coalesced callbacks are excluded.' });
 registerDegradationMechanism({ mechanism: 'coord-delivery-receipt', scopeKeyed: true,
   description: 'Applied federated messages published their requested delivery receipt rather than falling back to sender-side reply or inbox confirmation; messages without an eligible receipt are excluded.' });
+registerDegradationMechanism({ mechanism: 'merge-cursor-seed', scopeKeyed: true, thresholds: { minEligible: 1 },
+  description: 'Unpositioned logs obtained durable cursor progress under the preferred apply binding rather than an alternate binding or an unreadable cursor; positioned logs are excluded.' });
+registerDegradationMechanism({ mechanism: 'swarm-transport-identity', thresholds: { minEligible: 1 },
+  description: 'Fresh shared-swarm construction loaded its persisted transport seed rather than generating an ephemeral identity; cached swarm reads are excluded.' });
+registerDegradationMechanism({ mechanism: 'swarm-relay-wiring', thresholds: { minEligible: 1 },
+  description: 'Configured relay keys were passed into a successfully constructed shared swarm; direct-only configuration is excluded. This measures wiring, not relay reachability.' });
 registerDegradationMechanism({
   mechanism: 'routine-capability-read', scopeKeyed: true,
   description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',
