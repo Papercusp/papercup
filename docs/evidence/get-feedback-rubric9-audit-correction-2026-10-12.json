@@ -67,7 +67,7 @@
     "terminal": true
   },
   "receipt": {
-    "status": "submission-unconfirmed",
+    "status": "recorded",
     "firstAttempt": {
       "code": "existing_independent_scorecards",
       "status": "not-recorded",
@@ -99,6 +99,72 @@
       "limit": "No matching card was returned by this read. The unknown acknowledged write has not been confirmed recorded or conclusively unrecorded; do not blindly retry."
     },
     "frictionRef": "EI-25812774343766342",
-    "independentAuditStatus": "not-established-for-correction"
+    "independentAuditStatus": "passed-for-correction",
+    "reconciledRecovery": {
+      "scorecardAbsence": {
+        "instrument": "dev:pg_query over harness_shared.engineer_issues",
+        "scope": "papercusp-workspace; exact corrected title or exact meta-rubric and subject; created_at >= 2026-10-12T21:59:00Z",
+        "rowCount": 0,
+        "positiveControl": "EI-25774297254898354 returned with the same rubric and subject",
+        "absenceStatus": "verified: positive-control-passed"
+      },
+      "invocationRecovery": {
+        "instrument": "dev:pg_query over harness_shared.tool_invocations",
+        "scope": "exact e16e0 owner; 21:59-22:10Z; scorecards:emit and tools:invoke naming scorecards:emit",
+        "invocationIds": [37154004, 37154005],
+        "observation": "Only the first unacknowledged refusal and its wrapper were recorded. This log alone does not establish absence of an effect; the separately controlled scorecard read does.",
+        "acknowledgedWrite": "No corresponding invocation returned in the bounded window."
+      },
+      "retryReceipt": {
+        "method": "ptool scorecards:emit using the unchanged request above",
+        "ok": true,
+        "created": true,
+        "issueId": "EI-25814119302252123",
+        "evidenceFingerprint": "9ecc5d36574dd0a4d51cd19b7775e3d5df13d1b924a811324b5c008074de6c82",
+        "completionReceipt": {
+          "status": "recorded",
+          "effectRef": "EI-25814119302252123"
+        }
+      },
+      "readback": {
+        "instrument": "scorecards:get",
+        "issueId": "EI-25814119302252123",
+        "evidenceFingerprint": "9ecc5d36574dd0a4d51cd19b7775e3d5df13d1b924a811324b5c008074de6c82",
+        "gradingAuditState": "pending",
+        "gradingAuditStampedAt": "2026-10-12T22:24:18.866Z",
+        "reservationKey": "grading-audit:EI-25814119302252123",
+        "reservedAt": "2026-10-12T22:24:24.055Z",
+        "scope": "Identity, subject, evidence fingerprint and audit state read back. Criterion index is not a new independent evidence audit."
+      },
+      "limits": [
+        "The interrupted acknowledged attempt remains historical; no invented completion receipt was assigned to it.",
+        "The new card's non-author grading-integrity audit is recorded separately below; the earlier pending readback is preserved as history.",
+        "No native, R6, implementation or shipment acceptance is asserted."
+      ]
+    },
+    "independentAuditReadback": {
+      "instrument": "scorecards:get",
+      "scorecardIssueId": "EI-25814119302252123",
+      "state": "passed",
+      "auditIssueId": "EI-25814715218855994",
+      "auditor": "system:judge/su-cedabe16-522b-4017-a4b3-6a02d9381135",
+      "auditedAt": "2026-10-12T22:33:51.000Z",
+      "criterionRead": "re-runnable-evidence, offset 0, complete=true, totalChars=3848",
+      "auditorLimit": "The auditor re-read rubric, Goal/decisions, posts, historical test receipts and named scorecard/work-item records. Immutable Git blob/diff/hash legs were NOT EXECUTED: the judge lacked capability:git, shell was forbidden, and working-tree substitution was forbidden. The audit method treated this capability denial as distinct from evidence quality and classified the fully specified probes as re-runnable by a Git-capable reader.",
+      "frictionRef": "EI-25814626176602313",
+      "scope": "Stored independent audit verdict and its disclosed execution limit. This readback does not claim a second independent execution of the immutable Git legs."
+    },
+    "rubricVettingReadback": {
+      "instrument": "rubrics:get detail=summary",
+      "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "currentRevision": 9,
+      "currentCriteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+      "barSetHash": "e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15",
+      "satisfied": true,
+      "state": "vetted",
+      "reason": "current",
+      "attestationIssueId": "EI-25814119302252123",
+      "scope": "Current rubric vetting is settled; implementation, native matrix, original R6 and final R7 acceptance are separate and remain open."
+    }
   }
 }
