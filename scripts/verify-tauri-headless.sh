@@ -892,20 +892,19 @@ trap 'handle_signal HUP' HUP
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
 # slot descriptor for the whole run; tauri-guarded inherits this exact target.
-# This preliminary reservation is released immediately to avoid counting it
-# twice. The final chokepoint still reserves/rechecks capacity before compiling.
+# Retain the Cargo claim during preparation. The final chokepoint adopts this
+# receipt instead of reserving the same budget again after other builds enter.
+NATIVE_CARGO_DISK_RESERVATION_FILE=""
 preflight_native_cargo() {
   [ "$PREPARE_ONLY" != "1" ] || return 0
   PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
   . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
-  (
-    PAPERCUSP_DISK_RESERVATION_FILE=""
-    trap papercusp_release_disk_reservation EXIT
-    local target need
-    target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || exit $?
-    need="$(papercusp_native_dev_cargo_need_gb "$target")" || exit $?
-    papercusp_require_free_gb "$target" "$need" "native dev Cargo build" >&2
-  )
+  PAPERCUSP_DISK_RESERVATION_FILE=""
+  local target need
+  target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || return $?
+  need="$(papercusp_native_dev_cargo_need_gb "$target")" || return $?
+  papercusp_require_free_gb "$target" "$need" "native dev Cargo build" >&2 || return $?
+  NATIVE_CARGO_DISK_RESERVATION_FILE="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
 }
 vh_run_step native-cargo-capacity preflight_native_cargo || exit $?
 
@@ -1111,7 +1110,7 @@ OPERATOR_HOST_BUNDLE=""
 # only bin/hono-host.ts makes isolation verification fail after a healthy boot
 # and can leave bundled replacement sidecars behind at teardown.
 OPERATOR_HOST_PROCESS_RE='bin/hono-host\.ts|dist-verify/hono-host\.mjs'
-VERIFIER_DISK_RESERVATIONS=()
+VERIFIER_DISK_RESERVATIONS=("${NATIVE_CARGO_DISK_RESERVATION_FILE:-}")
 release_verifier_disk_reservations() {
   local reservation
   for reservation in "${VERIFIER_DISK_RESERVATIONS[@]}"; do
@@ -3378,6 +3377,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR=0 \\
   PAPERCUSP_SID="$TAURI_OWNER_SID" PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
+  PAPERCUSP_DISK_RESERVATION_FILE="$NATIVE_CARGO_DISK_RESERVATION_FILE" \\
   $OPERATOR_SOURCE_ENV_LINE \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
