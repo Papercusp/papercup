@@ -25,8 +25,11 @@ import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 const SCAN_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 
-/** Files allowed to write plan content without recording a revision, each with a reason. */
-const EXEMPT: Readonly<Record<string, string>> = {};
+/** Isolated fixture writers do not mutate canonical plans or their revision spine. */
+const EXEMPT: Readonly<Record<string, string>> = {
+  'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts':
+    'Seeds a minimal harness_plans corpus in its private testcontainer database, which has no plan_revisions or content_hash columns.',
+};
 
 const RAW_INSERT = /INSERT\s+INTO\s+harness_shared\.harness_plans\b/;
 const RAW_UPDATE = /UPDATE\s+harness_shared\.harness_plans\b/g;
@@ -160,6 +163,7 @@ describe('raw harness_plans content writers record a plan_revisions row', () => 
   it('every raw content write also writes content_hash', () => {
     const offenders: string[] = [];
     for (const { file } of contentWriters()) {
+      if (file in EXEMPT) continue;
       const src = stripCommentsOnly(readFileSync(join(REPO_ROOT, file), 'utf8'), file);
       for (const stmt of contentWritesWithoutHash(src)) offenders.push(`${file}: ${stmt}`);
     }
@@ -168,6 +172,14 @@ describe('raw harness_plans content writers record a plan_revisions row', () => 
 
   it('every exemption still names a live writer', () => {
     const files = new Set(contentWriters().map((w) => w.file));
-    for (const file of Object.keys(EXEMPT)) expect(files.has(file), `${file} is exempt but no longer writes plan content`).toBe(true);
+    for (const [file, reason] of Object.entries(EXEMPT)) {
+      expect(files.has(file), `${file} is exempt but no longer writes plan content`).toBe(true);
+      expect(reason.trim()).not.toBe('');
+      const source = stripCommentsOnly(readFileSync(join(REPO_ROOT, file), 'utf8'), file);
+      // The exception is for a private seeded schema, not a canonical plan writer.
+      expect(source).toMatch(/CREATE\s+TABLE\s+harness_shared\.harness_plans\b/);
+      expect(source).toContain('CREATE DATABASE');
+      expect(source).not.toMatch(/\bgetOrgPg\s*\(/);
+    }
   });
 });
