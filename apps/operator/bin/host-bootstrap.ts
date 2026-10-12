@@ -701,7 +701,10 @@ export function runBootstrap(): void {
       }
       const { sql } = getOrgPg();
       const r = await checkBespokeActiveSeeds({ sql: sql as unknown as never, installSlug, workspaceId });
+      const conditionKey = `alarm:always-on-routines:${workspaceId}`;
+      const { resolveAlarm } = await import('@papercusp/operator-core/lib/alarm-attention');
       if (r.ok) {
+        await resolveAlarm(conditionKey, 'bespoke-active-seeds');
         console.log(`[bespoke-active-seeds] startup validation passed — all always-on routines ACTIVE for "${installSlug}"`);
         return;
       }
@@ -719,7 +722,22 @@ export function runBootstrap(): void {
             : `[bespoke-active-seeds] DARK: "${e.name}" is ACTIVE for "${e.installSlug}" but last fired ${Math.round(e.ageSec / 60)}m ago, far past its declared ${e.intervalSec}s cadence`,
         );
       // Only the un-re-affirmed ones wake a human; a dated `reviewBy` is a deliberate hold.
-      if (r.escalatable.length === 0) return;
+      if (r.escalatable.length === 0) {
+        await resolveAlarm(conditionKey, 'bespoke-active-seeds');
+        return;
+      }
+      // Boot is a one-shot measurement. Silence after it cannot prove that a
+      // missing/paused/dark routine recovered; a later complete check must do so.
+      try {
+        const { broadcastSevereEvent } = await import('@papercusp/operator-core/lib/severe-event-broadcast');
+        await broadcastSevereEvent({
+          conditionKey, oneShot: true,
+          summary: `${r.escalatable.length} always-on routine(s) are not running at operator boot`,
+          body: r.escalatable.map((entry) => `${entry.installSlug}: ${entry.name}`).join(', '),
+        });
+      } catch (e) {
+        console.warn('[bespoke-active-seeds] condition broadcast failed (non-fatal):', (e as Error)?.message ?? e);
+      }
       const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
       // Seed writers may target different harnesses. Keep the existing one-slug notification
       // API and emit one alert per resolved scope rather than attributing every finding to the
