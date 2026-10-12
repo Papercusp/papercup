@@ -72,6 +72,9 @@ export const DEGRADATION_CONDITION_PREFIX = 'degraded:';
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical' },
+  // P-008: reuse the lost-run sweep's existing keys and measured recovery.
+  { prefix: 'green-checkpoint-lost-run:', harnessFrom: 'suffix', severity: 'critical' },
+  { prefix: 'green-checkpoint-run-progress:', harnessFrom: 'suffix', severity: 'major' },
   // P-005 (gate-ownership-followup-2026-08-08). A gate that FIRES hourly and reds
   // every time is not a stall — `green-stall:` above cannot see it (its legs are
   // fire-staleness and a 12h no-green backstop), so until this entry existed a plain
