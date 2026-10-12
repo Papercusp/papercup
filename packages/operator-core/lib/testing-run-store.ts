@@ -773,12 +773,53 @@ export async function getTestRunLedgerRecoveryAsync(
  * running snapshot into a terminal result. Latest-per-file selection also
  * prevents an older retry from poisoning the recovered verdict.
  */
+const TERMINAL_FAILURE_OUTPUT_START =
+  '\n[detached-recovery] terminal test_runs failure output (begin)\n';
+const TERMINAL_FAILURE_OUTPUT_END =
+  '\n[detached-recovery] terminal test_runs failure output (end)\n';
+
 async function reconcilePersistedTestRun(
   snapshot: RunSnapshot,
   task: PersistedDetachedTaskRow | null,
   taskLinked: boolean,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  if (snapshot.status === 'fail' || snapshot.status === 'error') {
+    // The snapshot's terminal verdict is already authoritative, but its
+    // router output can omit the per-file failure detail persisted by the
+    // reporter. Enrich diagnostics only; never re-derive terminal fields here.
+    if (snapshot.finishedAt === null) return snapshot;
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    if (!rows) return snapshot;
+    const failureOutputs = rows
+      .filter((row) => (row.status === 'fail' || row.status === 'error')
+        && typeof row.file_path === 'string'
+        && row.file_path.length > 0
+        && typeof row.output_tail === 'string'
+        && row.output_tail.length > 0)
+      .map((row) => '[' + row.file_path + ']\n' + row.output_tail);
+    if (failureOutputs.length === 0) return snapshot;
+
+    const previousStart = snapshot.output.indexOf(TERMINAL_FAILURE_OUTPUT_START);
+    let baseOutput = snapshot.output;
+    if (previousStart >= 0) {
+      const previousEnd = snapshot.output.indexOf(TERMINAL_FAILURE_OUTPUT_END, previousStart);
+      baseOutput = previousEnd >= 0
+        ? snapshot.output.slice(0, previousStart) + snapshot.output.slice(previousEnd + TERMINAL_FAILURE_OUTPUT_END.length)
+        : snapshot.output.slice(0, previousStart);
+    }
+    const combinedOutput = baseOutput
+      + TERMINAL_FAILURE_OUTPUT_START
+      + failureOutputs.join('\n\n')
+      + TERMINAL_FAILURE_OUTPUT_END;
+    const output = combinedOutput.length > OUTPUT_CAP_BYTES
+      ? combinedOutput.slice(-OUTPUT_CAP_BYTES)
+      : combinedOutput;
+    const truncated = snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES;
+    if (output === snapshot.output && truncated === snapshot.truncated) return snapshot;
+    return persistReconciledSnapshot(snapshot, { ...snapshot, output, truncated }, sql);
+  }
+
   if (snapshot.status !== 'running' || !taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
 
   const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
