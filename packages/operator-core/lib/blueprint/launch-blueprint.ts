@@ -618,6 +618,7 @@ const defaultFire = async (
   // /invoke route. The route uses this internal field only to stamp the actual
   // invoke-once child pid + launcher boot after admission.
   const invokeBody = { ...body, spawnRecordId: spawnId };
+  let invokeObserved = false;
 
   void loopbackFetch(
     url,
@@ -695,6 +696,7 @@ const defaultFire = async (
       if (status === 'failed') {
         console.warn(`[launch-blueprint] fire not green (${installSlug}/${role}): ${errorMessage}`);
       }
+      invokeObserved = true;
       observeFallback('blueprint-launch', { eligible: 1, applied: status === 'done' ? 1 : 0,
         reason: status === 'done' ? 'applied' : r?.ok === false ? 'invoke-http-failed' : 'invoke-no-turn', scope: 'invoke-run' }, { workspaceId });
       if (!pg) return;
@@ -764,7 +766,10 @@ const defaultFire = async (
     })
     .catch((e) => {
       stopHeartbeat();
-      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'invoke-request-failed', scope: 'invoke-run' }, { workspaceId });
+      if (!invokeObserved) {
+        invokeObserved = true;
+        observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'invoke-request-failed', scope: 'invoke-run' }, { workspaceId });
+      }
       // describeFetchError surfaces undici's hidden cause code (e.g. UND_ERR_SOCKET)
       // so the persisted error_message + watchdog signal are self-diagnosing (EI-390).
       const detail = describeFetchError(e);
