@@ -225,6 +225,8 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  * @param {string | null} o.expectedSha the commit the caller just materialized; HEAD must equal it
  * @param {Record<string, string | undefined>} o.env the env the task will run with
  * @param {string} [o.scope]        log label for where the run came from (e.g. `repair-head`)
+ * @param {boolean} [o.restoreDirtyCheckpoint] Restore dirty files only for a disposable,
+ *   isolated checkpoint checkout already verified at `expectedSha`; never enable for shared trees.
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
@@ -235,7 +237,7 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  *   finish: () => string[],
  * }>}
  */
-export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", deps = {} }) {
+export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", restoreDirtyCheckpoint = false, deps = {} }) {
   const d = { ...defaultDeps, ...deps };
   const label = `${workspace}::${script}`;
   const out = { ...env };
@@ -310,7 +312,28 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   // Drift is computed commit-to-commit, so an uncommitted edit would be invisible to it.
   const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
   if (status == null) return off("checkout-status-unknown");
-  const dirty = status.split("\n").filter((l) => l.trim().length > 0);
+  let dirty = status.split("\n").filter((l) => l.trim().length > 0);
+  if (dirty.length > 0 && restoreDirtyCheckpoint) {
+    // runGateAtRef may enter through setup-release-checkout.sh --prepare-existing, which
+    // intentionally preserves the disposable checkpoint checkout. Previous verification tasks
+    // can leave tracked or untracked files there, so restore only after HEAD was checked above.
+    // This opt-in is for that private checkpoint tree; shared development checkouts stay fail-open.
+    const restoreSteps = [
+      ["reset", "--hard", head],
+      // Restore initialized submodule worktrees to the gitlink revisions recorded at HEAD;
+      // resetting each submodule's current HEAD alone could leave it on the wrong revision.
+      ["submodule", "update", "--init", "--recursive", "--force"],
+      ["submodule", "foreach", "--recursive", "git clean -fd"],
+      ["clean", "-fd"],
+    ];
+    for (const args of restoreSteps) {
+      if (d.git(root, args) == null) return off("checkpoint-restore-failed");
+    }
+    const cleanStatus = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+    if (cleanStatus == null) return off("checkout-status-unknown");
+    dirty = cleanStatus.split("\n").filter((l) => l.trim().length > 0);
+    if (dirty.length === 0) lines.push(`TARGETED_CHECKPOINT_RESTORED sha=${head.slice(0, 12)}`);
+  }
   if (dirty.length > 0) return off(`dirty-checkout(${dirty.length})`);
   // WI-6554700010008589: match the JUDGED tree's recorder, not this module's constant. Its proofs and
   // its skip-list consumer both use that format; on a frozen lineage older than a format bump the

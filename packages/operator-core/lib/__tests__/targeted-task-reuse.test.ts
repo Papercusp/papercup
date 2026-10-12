@@ -508,6 +508,154 @@ describe('armTargetedTaskReuse', () => {
       armed.finish();
     });
 
+    it('restores dirty files in an opted-in disposable checkpoint before deciding reuse', async () => {
+      fixture();
+      const git = (args: string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(String(result.stderr));
+        return String(result.stdout ?? '');
+      };
+      git(['init', '-q']);
+      git(['config', 'user.email', 'test@example.invalid']);
+      git(['config', 'user.name', 'Test']);
+      writeFileSync(join(root, 'tracked.txt'), 'committed contents\n');
+      git(['add', '.']);
+      git(['commit', '-qm', 'checkpoint source']);
+      const expectedSha = git(['rev-parse', 'HEAD']).trim();
+      writeFileSync(join(root, 'tracked.txt'), 'test changed this\n');
+      writeFileSync(join(root, 'untracked-output.txt'), 'test output\n');
+
+      const armed = await armTargetedTaskReuse({
+        root,
+        workspace: WS,
+        script: SCRIPT,
+        expectedSha,
+        env: baseEnv(),
+        restoreDirtyCheckpoint: true,
+        deps: deps({
+          git: (_root: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+            return result.status === 0 ? String(result.stdout ?? '') : null;
+          },
+          loadProofs: async () => ({
+            proofs: new Map([
+              ['packages/lane-ws/a.test.ts', proof(expectedSha, ['packages/lane-ws/a.test.ts'])],
+            ]),
+            rows: 1,
+          }),
+          changedBetween: () => () => new Set<string>(),
+        }),
+      });
+
+      expect(armed.lines).toContain(`TARGETED_CHECKPOINT_RESTORED sha=${expectedSha.slice(0, 12)}`);
+      expect(armed.reused).toBe(1);
+      expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('committed contents\n');
+      expect(existsSync(join(root, 'untracked-output.txt'))).toBe(false);
+      expect(git(['status', '--porcelain', '--ignore-submodules=none'])).toBe('');
+      armed.finish();
+    });
+
+    it('restores dirty initialized submodules in the opted-in disposable checkpoint', async () => {
+      fixture();
+      const subRoot = mkdtempSync(join(tmpdir(), 'targeted-reuse-submodule-'));
+      temps.push(subRoot);
+      const git = (cwd: string, args: string[]) => {
+        const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(String(result.stderr));
+        return String(result.stdout ?? '');
+      };
+      git(subRoot, ['init', '-q']);
+      git(subRoot, ['config', 'user.email', 'test@example.invalid']);
+      git(subRoot, ['config', 'user.name', 'Test']);
+      writeFileSync(join(subRoot, 'source.txt'), 'submodule source\n');
+      git(subRoot, ['add', '.']);
+      git(subRoot, ['commit', '-qm', 'submodule source']);
+      const firstSubmoduleSha = git(subRoot, ['rev-parse', 'HEAD']).trim();
+      writeFileSync(join(subRoot, 'source.txt'), 'pinned submodule source\n');
+      git(subRoot, ['add', '.']);
+      git(subRoot, ['commit', '-qm', 'pinned submodule source']);
+      const pinnedSubmoduleSha = git(subRoot, ['rev-parse', 'HEAD']).trim();
+
+      git(root, ['init', '-q']);
+      git(root, ['config', 'user.email', 'test@example.invalid']);
+      git(root, ['config', 'user.name', 'Test']);
+      git(root, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subRoot, 'modules/child']);
+      git(root, ['add', '.']);
+      git(root, ['commit', '-qm', 'checkpoint with submodule']);
+      const expectedSha = git(root, ['rev-parse', 'HEAD']).trim();
+      git(join(root, 'modules/child'), ['checkout', '-q', '--detach', firstSubmoduleSha]);
+      writeFileSync(join(root, 'modules/child/source.txt'), 'submodule test mutation\n');
+      writeFileSync(join(root, 'modules/child/untracked-output.txt'), 'submodule test output\n');
+
+      const armed = await armTargetedTaskReuse({
+        root,
+        workspace: WS,
+        script: SCRIPT,
+        expectedSha,
+        env: baseEnv(),
+        restoreDirtyCheckpoint: true,
+        deps: deps({
+          git: (_root: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+            return result.status === 0 ? String(result.stdout ?? '') : null;
+          },
+          loadProofs: async () => ({
+            proofs: new Map([
+              ['packages/lane-ws/a.test.ts', proof(expectedSha, ['packages/lane-ws/a.test.ts'])],
+            ]),
+            rows: 1,
+          }),
+          changedBetween: () => () => new Set<string>(),
+        }),
+      });
+
+      expect(armed.lines).toContain(`TARGETED_CHECKPOINT_RESTORED sha=${expectedSha.slice(0, 12)}`);
+      expect(armed.reused).toBe(1);
+      expect(readFileSync(join(root, 'modules/child/source.txt'), 'utf8')).toBe('pinned submodule source\n');
+      expect(git(join(root, 'modules/child'), ['rev-parse', 'HEAD']).trim()).toBe(pinnedSubmoduleSha);
+      expect(existsSync(join(root, 'modules/child/untracked-output.txt'))).toBe(false);
+      expect(git(root, ['status', '--porcelain', '--ignore-submodules=none'])).toBe('');
+      armed.finish();
+    });
+
+    it('does not restore a dirty checkout when its HEAD differs from the expected SHA', async () => {
+      fixture();
+      const git = (args: string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(String(result.stderr));
+        return String(result.stdout ?? '');
+      };
+      git(['init', '-q']);
+      git(['config', 'user.email', 'test@example.invalid']);
+      git(['config', 'user.name', 'Test']);
+      writeFileSync(join(root, 'tracked.txt'), 'committed contents\n');
+      git(['add', '.']);
+      git(['commit', '-qm', 'checkpoint source']);
+      const actualSha = git(['rev-parse', 'HEAD']).trim();
+      writeFileSync(join(root, 'tracked.txt'), 'preserve this mismatch\n');
+
+      const armed = await armTargetedTaskReuse({
+        root,
+        workspace: WS,
+        script: SCRIPT,
+        expectedSha: 'c'.repeat(40),
+        env: baseEnv(),
+        restoreDirtyCheckpoint: true,
+        deps: deps({
+          git: (_root: string, args: string[]) => {
+            const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+            return result.status === 0 ? String(result.stdout ?? '') : null;
+          },
+        }),
+      });
+
+      expect(actualSha).not.toBe('c'.repeat(40));
+      expect(armed.lines[0]).toContain('reason=head-mismatch');
+      expect(readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('preserve this mismatch\n');
+      expect(git(['status', '--porcelain'])).not.toBe('');
+      armed.finish();
+    });
+
     it('when the workspace cannot be resolved', async () => {
       fixture();
       const armed = await armTargetedTaskReuse({

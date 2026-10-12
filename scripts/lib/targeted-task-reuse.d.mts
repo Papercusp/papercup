@@ -46,6 +46,8 @@ export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proo
  * @param {string | null} o.expectedSha the commit the caller just materialized; HEAD must equal it
  * @param {Record<string, string | undefined>} o.env the env the task will run with
  * @param {string} [o.scope]        log label for where the run came from (e.g. `repair-head`)
+ * @param {boolean} [o.restoreDirtyCheckpoint] Restore dirty files only for a disposable,
+ *   isolated checkpoint checkout already verified at `expectedSha`; never enable for shared trees.
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
@@ -56,13 +58,14 @@ export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proo
  *   finish: () => string[],
  * }>}
  */
-export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope, deps }: {
+export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope, restoreDirtyCheckpoint, deps }: {
     root: string;
     workspace: string;
     script: string;
     expectedSha: string | null;
     env: Record<string, string | undefined>;
     scope?: string | undefined;
+    restoreDirtyCheckpoint?: boolean | undefined;
     deps?: Partial<{
         recordReuse: typeof recordGateReuseDecision;
         git: typeof defaultGit;

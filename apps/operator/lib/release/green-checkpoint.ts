@@ -21262,6 +21262,10 @@ export function realCheckpointDeps(
                 expectedSha: ref,
                 env,
                 scope: "targeted-gate",
+                // setupTree(ref) uses --prepare-existing, which preserves the isolated
+                // checkpoint source tree. Restore test artifacts to the verified ref before
+                // reuse checks; the opt-in must never be used on shared development checkouts.
+                restoreDirtyCheckpoint: true,
               }).catch((e: unknown) => {
                 log(
                   `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +

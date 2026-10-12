@@ -605,6 +605,165 @@ const workspaceRoutingCases: RailMigrationCase[] = [{
   },
 }];
 
+workspaceRoutingCases.push({
+  id: 'placement-presence-original-failed-empty-and-filtered-primary-files',
+  item: 'P-013', route: 'observation', mechanism: 'workspace-routing-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts|gatherLivePresenceCurrentFiles|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const path = 'packages/operator-core/lib/agent-tools/fleet/place_batch.ts';
+    let fail = true;
+    let records: Array<{ stale?: boolean; currentFiles?: string[] }> = [];
+    const gather = execute(`${original(path, 'export function currentFilesFromLivePresence', 'function')}\n${original(path, 'async function gatherLivePresenceCurrentFiles', 'function')}`, {
+      listPresence: async (input: { workspaceId: string }) => {
+        expect(input).toEqual({ workspaceId: 'fixture' });
+        if (fail) throw new Error('presence unreadable'); return records;
+      },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('workspace-routing-read'); expect(row.scope).toBe('placement-current-files');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    }, 'gatherLivePresenceCurrentFiles') as (workspaceId: string) => Promise<string[]>;
+    expect(await gather('fixture')).toEqual([]);
+    fail = false; expect(await gather('fixture')).toEqual([]);
+    records = [{ currentFiles: [' one.ts ', '', 'two.ts'] }, { currentFiles: ['one.ts'] }, { stale: true, currentFiles: ['stale.ts'] }];
+    expect(await gather('fixture')).toEqual(['one.ts', 'two.ts']);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'placement-presence-unavailable'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'workspace-routing-read', observations };
+  },
+}, {
+  id: 'conversation-summary-original-read-import-failures-primary-empty-and-exclusions',
+  item: 'P-013', route: 'observation', mechanism: 'conversation-context-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/agent-tools/operator/converse-prompt.ts|buildOperatorPrompt|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const text = original('packages/operator-core/lib/agent-tools/operator/converse-prompt.ts', "if (contextMode === 'compaction' && input.conversationId && conversationsModule)", 'if');
+    let fail = true, summary: string | null = null, workspaceId = 'fixture';
+    const run = async (mode = 'compaction', conversationId: string | null = 'conversation', importFails = false) => {
+      workspaceId = 'fixture';
+      const conversationsModule = importFails ? Promise.reject(new Error('summary module unavailable')) : Promise.resolve({
+        readConversationSummary: async (id: string) => {
+          expect(id).toBe('conversation'); workspaceId = 'drifted-after-await';
+          if (fail) throw new Error('summary store unavailable');
+          return summary === null ? null : { summaryText: summary };
+        },
+      });
+      return await execute(`${text}\nreturn compactedSummary;`, {
+        contextMode: mode, input: { conversationId }, conversationsModule, compactedSummary: null,
+        activeWorkspaceId: () => workspaceId,
+        observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+          expect(mechanism).toBe('conversation-context-read'); expect(row.scope).toBe('rolling-summary');
+          expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+        },
+      });
+    };
+    expect(await run()).toBeNull(); expect(await run('compaction', 'conversation', true)).toBeNull();
+    fail = false; expect(await run()).toBeNull();
+    summary = '   '; expect(await run()).toBeNull();
+    summary = ' earlier decision '; expect(await run()).toBe('earlier decision');
+    expect(await run('window')).toBeNull(); expect(await run('compaction', null)).toBeNull();
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'summary-read-failed'], [0, 'summary-read-failed'], [1, 'applied'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'conversation-context-read', observations };
+  },
+});
+
+const delegationCases: RailMigrationCase[] = [{
+  id: 'sentinel-nudge-original-unresolved-throw-and-readable-recipient-results',
+  item: 'P-013', route: 'observation', mechanism: 'workspace-routing-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/operator-sentinel-handoff-deps.ts|nudgeRecipient|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const sent: Array<{ to: string[] }> = [];
+    const escalated: unknown[] = [];
+    let mode: 'throw' | 'unresolved' | 'su' | 'mug' | 'escalate' = 'unresolved';
+    const deps = execute(original('packages/operator-core/lib/operator-sentinel-handoff-deps.ts', 'export function defaultSentinelHandoffDeps', 'function'), {
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('workspace-routing-read'); expect(row.scope).toBe('sentinel-nudge-recipient');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+      require: (path: string) => {
+        if (path.endsWith('/messages')) return { sendMessage: async (_identity: unknown, input: { to: string[] }) => { sent.push(input); } };
+        if (path.endsWith('/escalations')) return { openEscalation: async (_identity: unknown, input: unknown) => { escalated.push(input); } };
+        if (path.endsWith('/delegated-tasks')) return { OPERATOR_COORD_OWNER: 'operator' };
+        if (path.endsWith('/nudge-recipient')) return { resolveNudgeRecipient: async (input: { workspaceId: string; mugOwner: null }) => {
+          expect(input).toEqual({ workspaceId: 'fixture', mugOwner: null });
+          if (mode === 'throw') throw new Error('presence unavailable');
+          return { kind: mode, ownerId: 'live-recipient', why: 'controlled recipient result' };
+        } };
+        throw new Error(`unexpected sentinel dependency: ${path}`);
+      },
+    }, 'defaultSentinelHandoffDeps') as () => import('../operator-sentinel-handoff').SentinelHandoffDeps;
+    const input = { workItemId: 'WI-fixture', summary: 'controlled brief', urgent: false, harness: 'home', workspaceId: 'fixture' };
+    const nudge = deps().nudgeRecipient;
+    await nudge(input);
+    mode = 'throw'; await nudge(input);
+    expect(sent.map(row => row.to)).toEqual([['@role:mug'], ['@role:mug']]);
+    expect(escalated).toHaveLength(0);
+    mode = 'su'; await nudge(input);
+    expect(sent.at(-1)?.to).toEqual(['live-recipient']);
+    mode = 'escalate'; await nudge(input);
+    expect(escalated).toHaveLength(1);
+    mode = 'mug'; await nudge(input);
+    expect(sent.at(-1)?.to).toEqual(['@role:mug']);
+    mode = 'unresolved'; await nudge({ ...input, urgent: true });
+    expect(escalated).toHaveLength(2);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'nudge-recipient-unavailable'], [0, 'nudge-recipient-unavailable'],
+      [1, 'applied'], [1, 'applied'], [1, 'applied'], [0, 'nudge-recipient-unavailable'],
+    ]);
+    return { route: 'observation', mechanism: 'workspace-routing-read', observations };
+  },
+}, {
+  id: 'deep-delegation-original-message-wake-failures-staged-missed-and-primary',
+  item: 'P-013', route: 'observation', mechanism: 'coordination-delivery',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts|deliverToDeep|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const calls: string[] = [];
+    let mode: 'message-failed' | 'wake-failed' | 'staged' | 'missed' | 'primary' = 'message-failed';
+    const factory = execute(original('packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts', 'export function defaultDeepDelegateDeps', 'function'), {
+      DEEP_DELEGATE_IDENTITY: { ownerId: 'system:fixture' },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('coordination-delivery'); expect(row.scope).toBe('deep-delegation');
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+      require: (path: string) => {
+        if (path.endsWith('/messages')) return { sendMessage: async (_identity: unknown, input: { to: string[]; body: string; harnessSlug: string }) => {
+          expect(input).toMatchObject({ to: ['deep-owner'], body: 'controlled brief', harnessSlug: 'home' });
+          calls.push('message'); if (mode === 'message-failed') throw new Error('inbox unavailable');
+        } };
+        if (path.endsWith('/inbox-wake')) return { wakeRecipients: async (owners: string[]) => {
+          expect(owners).toEqual(['deep-owner']); calls.push('wake');
+          if (mode === 'wake-failed') throw new Error('wake transport unavailable');
+          return { woken: mode === 'primary' ? 1 : 0, staged: mode === 'staged' ? 1 : 0 };
+        } };
+        throw new Error(`unexpected deep dependency: ${path}`);
+      },
+    }, 'defaultDeepDelegateDeps') as () => import('../papercup/papercup-deep-delegate').DeepDelegateDeps;
+    const deliver = factory().deliverToDeep!;
+    const input = { workspaceId: 'fixture', ownerId: 'deep-owner', workItemId: 'WI-fixture', harness: 'home', question: 'controlled question', brief: 'controlled brief' };
+    expect(await deliver(input)).toBe(false);
+    expect(calls).toEqual(['message']);
+    for (const next of ['wake-failed', 'staged', 'missed', 'primary'] as const) {
+      mode = next; calls.length = 0;
+      expect(await deliver(input)).toBe(next === 'primary');
+      expect(calls).toEqual(['message', 'wake']);
+    }
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'delivery-failed'], [0, 'delivery-failed'], [0, 'wake-staged'], [0, 'wake-missed'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'coordination-delivery', observations };
+  },
+}];
+
 const workItemCallerCases: RailMigrationCase[] = [{
   id: 'grading-standdown-original-failed-read-empty-primary-and-owner-suppression',
   item: 'P-013', route: 'observation', mechanism: 'grading-standdown-read',
@@ -730,7 +889,7 @@ const workItemCallerCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...coordinationReadCases, ...remainingSyncCases, {
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

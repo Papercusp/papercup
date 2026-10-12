@@ -521,7 +521,11 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
     try {
       const result = await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
       expect(result.pass).toBe(true);
-      expect(arm).toHaveBeenCalledWith(expect.objectContaining({ expectedSha: sha, script: "test" }));
+      expect(arm).toHaveBeenCalledWith(expect.objectContaining({
+        expectedSha: sha,
+        script: "test",
+        restoreDirtyCheckpoint: true,
+      }));
       const call = calls.find(c => c.args.includes("test"));
       expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
       expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
