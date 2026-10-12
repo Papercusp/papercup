@@ -1568,7 +1568,7 @@ export default defineTool({
     // audit sequence and source-turn mappings to verify citations. Keep this
     // role-scoped read outside cachedRead: the ordinary plan cache is deliberately
     // principal-independent, and must never share judge-only audit evidence.
-    if (ctxAny.role === 'judge' || ctxAny.principal?.slug === 'system:judge') {
+    if (ctx.role === 'judge' || ctx.principal?.slug === 'system:judge') {
       for (const result of env.results as Array<Record<string, unknown>>) {
         if (result.ok !== true) continue;
         const slug = typeof result.slug === 'string' ? result.slug : null;
