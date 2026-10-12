@@ -422,6 +422,70 @@ interface GitSyncRoutineRead {
   metadata: Record<string, unknown> | null;
 }
 
+export interface GitSyncMissedIntervalsCandidate {
+  installSlug: string;
+  missedIntervals: number;
+}
+
+type SystemHealthGitSyncRow = GitSyncRoutineRead & { install_slug: string };
+
+async function readSystemHealthGitSyncRows(workspaceId: string): Promise<SystemHealthGitSyncRow[]> {
+  const { sql } = getOrgPg();
+  return sql<SystemHealthGitSyncRow>`
+    SELECT install_slug, active, trigger_config, metadata FROM harness_shared.routines
+     WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${workspaceId}`;
+}
+
+function missedIntervalsCandidate(
+  row: SystemHealthGitSyncRow,
+  freshness: Record<string, unknown>,
+): GitSyncMissedIntervalsCandidate | null {
+  const missed = typeof freshness.missed_intervals === 'number' ? freshness.missed_intervals : null;
+  const metadata = row.metadata ?? {};
+  const lastStatus = typeof metadata.last_status === 'string' ? metadata.last_status : null;
+  if (
+    missed === null ||
+    missed <= 0 ||
+    lastStatus === 'error' ||
+    lastStatus === 'conflict' ||
+    (lastStatus === 'skipped' && metadata.last_skip_reason === 'no_path')
+  ) {
+    return null;
+  }
+  const schedulerLeg = freshness.scheduler as { stalled_behind_in_flight_fire?: unknown } | undefined;
+  const executionLeg = freshness.execution as { status?: unknown } | undefined;
+  if (schedulerLeg?.stalled_behind_in_flight_fire === true && executionLeg?.status === 'in-flight') {
+    return null;
+  }
+  return { installSlug: row.install_slug, missedIntervals: missed };
+}
+
+/**
+ * Re-read the active routine rows used by the deploy panel, then apply the same
+ * candidate rules before the request-path alarm opens a git-sync starvation alert.
+ * A null result means the live read failed; callers must fail open and preserve the alarm.
+ */
+export async function readFreshGitSyncMissedIntervalsByInstall(
+  workspaceId: string,
+  nowMs: number,
+): Promise<GitSyncMissedIntervalsCandidate[] | null> {
+  try {
+    const [{ deriveGitSyncFreshness }, rows] = await Promise.all([
+      import('../agent-tools/routines/list'),
+      readSystemHealthGitSyncRows(workspaceId),
+    ]);
+    return rows
+      .map((row) => missedIntervalsCandidate(
+        row,
+        deriveSystemHealthGitSyncStatus(row, nowMs, deriveGitSyncFreshness).freshness,
+      ))
+      .filter((candidate): candidate is GitSyncMissedIntervalsCandidate => candidate !== null)
+      .sort((a, b) => b.missedIntervals - a.missedIntervals);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Apply the shared routines:list freshness verdict to the system-health headline.
  *
@@ -1748,11 +1812,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     const gitSyncCheckoutMissingByInstall: NonNullable<DeployHealth['gitSyncCheckoutMissingByInstall']> = [];
     let gitSyncMissedIntervalsUnreadable = false;
     try {
-      const { sql } = getOrgPg();
       const { deriveGitSyncFreshness } = await import('../agent-tools/routines/list');
-      const rows = await sql<Array<GitSyncRoutineRead & { install_slug: string }>>`
-        SELECT install_slug, trigger_config, metadata FROM harness_shared.routines
-         WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${ctx.ws}`;
+      const rows = await readSystemHealthGitSyncRows(ctx.ws);
       for (const r of rows) {
         const md = (r.metadata ?? {}) as Record<string, unknown>;
         const derived = deriveSystemHealthGitSyncStatus(r, ctx.now, deriveGitSyncFreshness);
@@ -1795,10 +1856,6 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // the push-failure escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
-        const schedulerLeg = derived.freshness.scheduler as { stalled_behind_in_flight_fire?: unknown } | undefined;
-        const executionLeg = derived.freshness.execution as { status?: unknown } | undefined;
-        const progressingFireExplainsMissedIntervals =
-          schedulerLeg?.stalled_behind_in_flight_fire === true && executionLeg?.status === 'in-flight';
         // WI-10006867: a vanished checkout skips every fire with `no_path` while last_synced_at
         // stays frozen, so its missed-interval count grows forever without the scheduler being
         // at fault. Report it under its real cause and keep it OUT of the starvation measure.
@@ -1818,9 +1875,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
           // A stale completion clock explained by a progressing fire is long-running execution,
           // not scheduler starvation. Keep the raw maximum for diagnosis, but do not send this
           // install to the starvation alarm.
-          if (missed > 0 && !progressingFireExplainsMissedIntervals) {
-            gitSyncMissedIntervalsByInstall.push({ installSlug: r.install_slug, missedIntervals: missed });
-          }
+          const candidate = missedIntervalsCandidate(r, derived.freshness);
+          if (candidate) gitSyncMissedIntervalsByInstall.push(candidate);
           if (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals) {
             gitSyncMaxMissedIntervals = missed;
             gitSyncMissedIntervalsInstallSlug = r.install_slug;
