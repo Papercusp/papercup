@@ -107,7 +107,6 @@
     "log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|2",
     "log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|3",
     "log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1",
-    "log-only-fallback|packages/docs-engine/src/render-mdx.ts|renderMdxToMarkdownUnqueued|1",
     "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
     "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",
     "log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts|armFallbackOverwatchWake|1",
