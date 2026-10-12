@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
+import './scoped-contracts.e2e.test';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;

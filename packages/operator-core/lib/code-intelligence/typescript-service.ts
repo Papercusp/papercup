@@ -164,6 +164,8 @@ export interface ScopedTsTree extends TsTree {
   readonly rootFiles: ReadonlySet<string>;
   /** How many other files the program pulled in and served as re-export stubs so far. */
   stubbedFiles(): number;
+  /** Exact JSON configuration/package inputs actually read by this compiler program. */
+  readonly configReads: ReadonlyMap<string, string>;
 }
 
 /** How a reached, non-root, in-repo file is served. */
@@ -186,7 +188,13 @@ export function openScopedTsTree(
   stub: StubFn = reExportStub,
   readRoots?: readonly string[],
 ): ScopedTsTree {
-  const filesystem = scopedCompilerFilesystem(ts, readRoots);
+  const scopedFilesystem = scopedCompilerFilesystem(ts, readRoots);
+  const configReads = new Map<string, string>();
+  const filesystem: TsModule.System = { ...scopedFilesystem, readFile: path => {
+    const text = scopedFilesystem.readFile(path);
+    if (text !== undefined && path.endsWith('.json')) configReads.set(path, text);
+    return text;
+  } };
   const full = new Set(rootFiles);
   let stubbed = 0;
   const textOf = (f: string): string | undefined => {
@@ -202,6 +210,7 @@ export function openScopedTsTree(
     fileCount: rootFiles.length,
     rootFiles: full,
     stubbedFiles: () => stubbed,
+    configReads,
   };
 }
 

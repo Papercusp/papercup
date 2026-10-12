@@ -91,8 +91,14 @@ export interface CompilerInterfaceEvidence {
     factoryAuthority: 'maintained-import' | 'maintained-source' | 'unverified'; factory: SymbolSite | null;
     site: SymbolSite; implementation: SymbolSite | null;
     requestValidator: SymbolSite | null; responseValidator: SymbolSite | null; documentation: SymbolSite | null;
+    requestFields?: readonly { name: string; type: string; optional: boolean }[] | null;
+    responseFields?: readonly { name: string; type: string; optional: boolean }[] | null;
     runtimeRegistered: 'unmeasured' }[];
   readonly sources: readonly CodeIntelSourceFile[];
+  /** Static contract candidates, never proof of executed transport or middleware. */
+  readonly interactions?: readonly { protocol: 'http' | 'rpc' | 'event'; role: 'producer' | 'consumer';
+    key: string | null; method: string | null; site: SymbolSite; handler: SymbolSite | null;
+    authority: 'compiler-global' | 'maintained-import' | 'syntax'; middleware: 'unknown'; runtimeExecution: 'unknown' }[];
   readonly truncated: boolean;
   readonly limitations: readonly string[];
 }
@@ -105,7 +111,7 @@ export interface FirstPartyCallersQuery {
   readonly repositoryId?: string;
   readonly name: string;
   /** Native graph operations share the existing bounded compiler worker. */
-  readonly op?: 'callers' | 'symbol' | 'callees' | 'context' | 'impact' | 'trace';
+  readonly op?: 'callers' | 'symbol' | 'callees' | 'context' | 'impact' | 'trace' | 'contracts';
   readonly filePath?: string;
   readonly line1?: number;
   readonly kind?: string;
@@ -420,6 +426,7 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
   const checker = program.getTypeChecker();
   const diagnostics: { site: SymbolSite; code: number; message: string }[] = [];
   const registrations: Array<CompilerInterfaceEvidence['registrations'][number]> = [];
+  const interactions: Array<NonNullable<CompilerInterfaceEvidence['interactions']>[number]> = [];
   const sources = new Map<string, CodeIntelSourceFile>();
   let truncated = false;
   const site = (node: TsModule.Node, kind: string): SymbolSite | null => {
@@ -435,6 +442,14 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
       ? checker.getShorthandAssignmentValueSymbol(node.parent) : checker.getSymbolAtLocation(node);
     if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
     return site(symbol?.declarations?.[0] ?? node, kind);
+  };
+  const fields = (type: TsModule.Type | undefined, at: TsModule.Node | undefined) => {
+    if (!type || !at || type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return null;
+    const properties = type.getProperties();
+    if (properties.length > 50) { truncated = true; return null; }
+    return properties.map(property => ({ name: property.getName(),
+      type: checker.typeToString(checker.getTypeOfSymbolAtLocation(property, at)),
+      optional: Boolean(property.flags & ts.SymbolFlags.Optional) }));
   };
   const factoryEvidence = (expression: TsModule.Expression) => {
     // Inspect the bound import before unaliasing. Same-spelled local factories
@@ -476,6 +491,32 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
     }
     const visit = (node: TsModule.Node): void => {
       if (ts.isCallExpression(node)) {
+        const expression = node.expression;
+        const member = ts.isPropertyAccessExpression(expression) ? expression.name.text : null;
+        const called = ts.isIdentifier(expression) ? expression.text : member;
+        const staticText = (value: TsModule.Node | undefined) => value && ts.isStringLiteralLike(value) ? value.text : null;
+        const add = (protocol: 'http' | 'rpc' | 'event', role: 'producer' | 'consumer', key: string | null,
+          method: string | null, authority: 'compiler-global' | 'maintained-import' | 'syntax', handler: TsModule.Node | undefined) => {
+          if (interactions.length >= limit) { truncated = true; return; }
+          interactions.push({ protocol, role, key, method, site: site(node, `${protocol}-${role}`)!,
+            handler: reference(handler, `${protocol}-handler`), authority, middleware: 'unknown', runtimeExecution: 'unknown' });
+        };
+        if (called === 'fetch') {
+          const symbol = checker.getSymbolAtLocation(expression);
+          const authority = symbol?.declarations?.some(declaration => program.isSourceFileDefaultLibrary(declaration.getSourceFile()))
+            ? 'compiler-global' : 'syntax';
+          const options = node.arguments[1];
+          const props = options && ts.isObjectLiteralExpression(options) ? options.properties : [];
+          const method = props.find(prop => ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name) && prop.name.text === 'method');
+          const dynamic = Boolean(options && (!ts.isObjectLiteralExpression(options) || props.some(prop => ts.isSpreadAssignment(prop)
+            || !('name' in prop) || !prop.name || ts.isComputedPropertyName(prop.name))));
+          add('http', 'consumer', staticText(node.arguments[0]), dynamic ? null
+            : method && ts.isPropertyAssignment(method) ? staticText(method.initializer)?.toUpperCase() ?? null : 'GET', authority, undefined);
+        } else if (called === 'dispatchTool') {
+          add('rpc', 'consumer', staticText(node.arguments[0]), null, 'syntax', undefined);
+        } else if (member === 'emit' || member === 'on' || member === 'once' || member === 'addListener') {
+          add('event', member === 'emit' ? 'producer' : 'consumer', staticText(node.arguments[0]), null, 'syntax', member === 'emit' ? undefined : node.arguments[1]);
+        }
         const factory = factoryEvidence(node.expression);
         if (factory && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
           if (registrations.length >= limit) { truncated = true; return; }
@@ -491,12 +532,18 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
           if (dynamic) props.clear();
           const literal = (key: string) => { const value = props.get(key); return value && ts.isStringLiteralLike(value) ? value.text : null; };
           const kind = dynamic ? 'unknown' : props.has('method') && props.has('path') ? 'route' : 'tool';
+          const handler = props.get('handler');
+          const signature = handler ? checker.getTypeAtLocation(handler).getCallSignatures()[0] : undefined;
+          const parameter = signature?.parameters[0];
+          const result = signature ? checker.getAwaitedType(checker.getReturnTypeOfSignature(signature)) : undefined;
           registrations.push({ name: literal('name'), kind, method: kind === 'route' ? literal('method') : null,
             path: kind === 'route' ? literal('path') : null, ...factory,
             site: site(node, `static-${kind}-registration`)!, implementation: reference(props.get('handler'), `${kind}-implementation`),
             requestValidator: reference(kind === 'route' ? props.get('input') : props.get('args') ?? props.get('input'), 'request-validator'),
             // Tool result/output are executable validators. returns is prose.
             responseValidator: kind === 'tool' ? reference(props.get('result') ?? props.get('output'), 'response-validator') : null,
+            requestFields: fields(parameter && handler ? checker.getTypeOfSymbolAtLocation(parameter, handler) : undefined, handler),
+            responseFields: fields(result, handler),
             documentation: reference(props.get('publicDoc') ?? props.get('description') ?? props.get('guidance'), 'contract-documentation'), runtimeRegistered: 'unmeasured' });
         }
       }
@@ -504,11 +551,12 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
     };
     visit(sf);
   }
-  return { status: 'measured', diagnostics, registrations, sources: [...sources.values()].sort((a, b) => a.path.localeCompare(b.path)), truncated,
+  return { status: 'measured', diagnostics, registrations, interactions, sources: [...sources.values()].sort((a, b) => a.path.localeCompare(b.path)), truncated,
     limitations: ['Diagnostics describe the captured TypeScript program, not executed runtime failures.',
       'Static defineTool object candidates are linked; factoryAuthority distinguishes maintained imports/source from unverified same-name factories. Imports do not prove loaded runtime registration.',
       'Dynamic names, methods, paths and spreads remain unmeasured; route response validators are not declared by the route primitive. Runtime validation is not executed.',
-      'Untyped or any-valued clients can escape compiler diagnostics; this is not registry or client completeness proof.'] };
+      'Untyped or any-valued clients can escape compiler diagnostics; this is not registry or client completeness proof.',
+      'Transport calls and event emitter candidates are static syntax; receiver identity, middleware, service routing and runtime execution are unmeasured.'] };
 }
 
 function buildAnswer(
@@ -591,7 +639,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     return parts.evidence ? result : { ...result, evidence: unmeasuredCallersEvidence(result, q) };
   };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
-  if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace'].includes(op)) {
+  if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'contracts'].includes(op)) {
     return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
   }
   if (op !== 'callers' && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
@@ -669,6 +717,33 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
+    if (op === 'contracts') {
+      const interfaces = compilerInterfaceEvidence(q.ts, program, q.root, limit);
+      const sources: CodeIntelSourceFile[] = program.getSourceFiles().flatMap(sf => {
+        const path = posix(relative(q.root, sf.fileName));
+        if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) return [];
+        return [{ path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
+          language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' as const }];
+      }).sort((a, b) => a.path.localeCompare(b.path));
+      for (const [file, text] of tree.configReads) {
+        const path = posix(relative(q.root, file));
+        if (!isExternalPath(path)) sources.push({ path, contentHash: createHash('sha256').update(text).digest('hex'),
+          language: 'json', representation: 'full-source' });
+      }
+      sources.sort((a, b) => a.path.localeCompare(b.path));
+      const sites = [...interfaces.registrations.map(row => row.site), ...(interfaces.interactions ?? []).map(row => row.site)];
+      const result = answer(q.name, started, now, { sites, intent: 'diagnostics', limitations: [...interfaces.limitations] });
+      const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
+      const evidence = unmeasuredCallersEvidence(result, q);
+      const sourceByPath = new Map(sources.map(source => [source.path, source]));
+      return { ...result, interfaces, evidence: { ...evidence,
+        sourceScope: { ...evidence.sourceScope, repositoryId, identityKind: q.repositoryId ? 'registry' : 'local-root',
+          sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'), supportingFiles: sources },
+        siteIdentities: sites.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
+          contentHash: sourceByPath.get(site.path)?.contentHash ?? null,
+          versionedSymbolId: versionedSymbolIdentity(repositoryId, site, sourceByPath.get(site.path)) })), relationships: [] },
+        truncation: { truncated: interfaces.truncated, totalAvailable: sites.length, continuation: null } };
+    }
     const withInterfaces = (result: FirstPartyCallersAnswer): FirstPartyCallersAnswer => {
       if (!q.includeInterfaces) return result;
       const interfaces = compilerInterfaceEvidence(q.ts, program, q.root, limit);

@@ -44,6 +44,7 @@ import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
+import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -100,6 +101,7 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'contracts',
   'context',
   'trace',
   ...GITNEXUS_FACADE_OPS,
@@ -109,7 +111,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. Impact walks dependents downstream or callees upstream; trace follows directed calls to target. max_depth/max_paths/limit bound traversal, with per-hop source versions, explicit truncation and unknown runtime execution. Context joins calls/imports/heritage/members/overrides/field accesses. Other languages and selectors receive explicit unsupported results.',
+    'Code topology: symbol | context | callers | callees | impact | trace | contracts | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. contracts joins static HTTP/RPC/event producer-consumer evidence over explicit registered harnesses in the authenticated workspace, with source versions, mismatched consumers and unknown middleware/runtime execution. Impact/trace use max_depth/max_paths/limit and per-hop provenance. Other languages and selectors receive explicit unsupported results.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
@@ -128,6 +130,9 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z.enum(OP_VALUES).describe('Which read-only operation to run.'),
+    harnesses: z.array(z.string().min(1)).min(1).max(8).optional()
+      .describe('contracts: explicit registered repository cohort; scoped callers may only select their own harness.'),
+    workspace: z.string().min(1).optional().describe('contracts: must equal the authenticated principal workspace; never expands authority.'),
     name: z
       .string()
       .min(1)
@@ -185,6 +190,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    if (op === 'contracts') return { data: await scopedContractQuery(args, ctx) };
     const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace'].includes(op);
     const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
       const measured = answer.evidence ? answer : { ...answer,

@@ -13,6 +13,7 @@ import '../agent-tools/plans/native-planning-advice.integration.test';
 import './task-brief.integration.test';
 import './task-brief-ledger.integration.test';
 import '../dream/capability-packets.integration.test';
+import './scoped-contracts.integration.test';
 // Enable the interfaces in this isolated fixture; analysis/transport code is real.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));
 import graphQuery from '../agent-tools/gitnexus/query';
