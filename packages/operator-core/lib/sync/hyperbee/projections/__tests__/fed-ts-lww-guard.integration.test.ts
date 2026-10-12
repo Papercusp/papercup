@@ -51,7 +51,6 @@ const AUTHOR = 'f'.repeat(64);
 let db: MigratedTestDb;
 let sql: postgres.Sql;
 let apply: (op: OpEnvelope) => Promise<boolean>;
-let diagnosticSql: { query: string; parameters: unknown[] }[] | null = null;
 
 beforeAll(async () => {
   db = await createFreshTestDb({
@@ -72,14 +71,7 @@ beforeAll(async () => {
       }
     },
   });
-  sql = postgres(db.url, {
-    max: 4, onnotice: () => {}, prepare: false,
-    debug: (_connection, query, parameters) => {
-      if (diagnosticSql && query.includes('INSERT INTO harness_shared.work_items')) {
-        diagnosticSql.push({ query, parameters: [...parameters] });
-      }
-    },
-  });
+  sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
   apply = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
 }, 180_000);
 
@@ -165,56 +157,34 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
 
   it('an equal-ts same-writer put is resolved by the deterministic content tie-break', async () => {
     const id = 'F-oo-eq';
-    const normalized = async () => (await sql`
-      SELECT to_jsonb(w) AS row,
-        concat_ws('|', item_kind, title, summary, status, taken_by, payload::text,
-          terminal_owner, terminal_completion_ref, terminal_reason, authority) AS digest_input,
-        md5(concat_ws('|', item_kind, title, summary, status, taken_by, payload::text,
-          terminal_owner, terminal_completion_ref, terminal_reason, authority)) AS digest,
-        harness_shared.fed_order_key(fed_hlc, fed_ts) AS order_key
-      FROM harness_shared.work_items w WHERE harness_slug = ${HARNESS} AND feature_id = ${id}
-    `)[0];
-    const clear = async () => { await sql`
-      DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${id}
-    `; };
-    diagnosticSql = [];
-    expect(await apply(featurePut(id, 'first', 1500))).toBe(true);
-    const first = await normalized();
-    await clear();
-    await apply(featurePut(id, 'second', 1500));
-    const second = await normalized();
-    await clear();
-    await apply(featurePut(id, 'first', 1500));
-    await apply(featurePut(id, 'second', 1500));
-    const forward = await normalized();
-    await clear();
-    await apply(featurePut(id, 'second', 1500));
-    await apply(featurePut(id, 'first', 1500));
-    const reverse = await normalized();
-    const installed = await sql`
-      SELECT pg_get_functiondef('harness_shared.fed_apply_wins(text,bigint,text,text,text,bigint,text,text)'::regprocedure) AS apply_wins,
-        pg_get_functiondef('harness_shared.fed_order_key(text,bigint)'::regprocedure) AS order_key,
-        version() AS pg_version, current_database() AS database
-    `;
-    const triggers = await sql`
-      SELECT tgname, pg_get_triggerdef(oid) AS definition
-      FROM pg_trigger WHERE tgrelid = 'harness_shared.work_items'::regclass AND NOT tgisinternal
-      ORDER BY tgname
-    `;
-    console.info('WI-8717-LWW-DIAGNOSTIC', JSON.stringify({
-      incoming: [featurePut(id, 'first', 1500), featurePut(id, 'second', 1500)],
-      first, second, forward, reverse, installed, triggers, statements: diagnosticSql,
-    }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
-    diagnosticSql = null;
-    await clear();
-    await apply(featurePut(id, 'first', 1500));
-    await apply(featurePut(id, 'second', 1500));
     // WI-2923/mig 504 replaced unconditional equal-key apply (`>=`) with
     // fed_apply_wins: same-writer equal keys fall to the symmetric content digest
-    // so healed replicas converge instead of swapping values. For these two
-    // payloads the standing row wins the digest tie-break; the contract is
-    // deterministic convergence, not "the second apply always wins".
-    expect(await statusOf(id)).toBe('first');
+    // so healed replicas converge instead of swapping values. An explicit payload
+    // keeps this fixed first-winner fixture stable across NULL-to-{} normalization.
+    const payload = { scenario: 'same-writer' };
+    for (const order of [['first', 'second'], ['second', 'first']]) {
+      await sql`DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      for (const status of order) await apply(featurePut(id, status, 1500, { payload }));
+      expect(await statusOf(id)).toBe('first');
+      const [row] = await sql`SELECT payload FROM harness_shared.work_items
+        WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      expect(row.payload).toEqual(payload);
+    }
+  });
+
+  it('an omitted payload is normalized before the same-writer content tie-break in both orders', async () => {
+    const id = 'F-oo-eq';
+    // Migration 1328 changes an omitted SQL NULL payload to {} before the LWW
+    // guard. For these normalized contents the second digest wins; omitting that
+    // field from the digest would incorrectly preserve the first-winner oracle.
+    for (const order of [['first', 'second'], ['second', 'first']]) {
+      await sql`DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      for (const status of order) await apply(featurePut(id, status, 1500));
+      expect(await statusOf(id)).toBe('second');
+      const [row] = await sql`SELECT payload FROM harness_shared.work_items
+        WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      expect(row.payload).toEqual({});
+    }
   });
 
   it('a STALE del (older than the standing row) must NOT erase it', async () => {
