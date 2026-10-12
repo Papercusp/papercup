@@ -381,12 +381,17 @@ export async function recordIsolatedIntegrationProof(options: {
         await writeFile(join(ctx.evidenceDir, 'source.json'), JSON.stringify(source), { flag: 'wx' });
         await options.prepare?.(ctx.evidenceDir);
       } else if (ctx.phase === 'execute') {
-        await options.execute(child => {
-          assert.ok(!observedChild, 'one lifecycle per run');
-          observedChild = child;
-          observation = observeIsolatedWorkerLifetime(child, root, ctx.evidenceDir, ctx.runId);
-        }, ctx.evidenceDir);
-        ({ lifecycle, ended, observationError } = observation ?? {});
+        try {
+          await options.execute(child => {
+            assert.ok(!observedChild, 'one lifecycle per run');
+            observedChild = child;
+            observation = observeIsolatedWorkerLifetime(child, root, ctx.evidenceDir, ctx.runId);
+          }, ctx.evidenceDir);
+        } finally {
+          // Teardown uses the original observer even when the journey rejects.
+          // A failed assertion must not erase an already observed cleanup.
+          ({ lifecycle, ended, observationError } = observation ?? {});
+        }
         if (observationError) throw observationError;
         assert.ok(lifecycle && ended, 'original start and cleanup observations are required');
         assert.ok(!ended.signal && ended.runtimeRemoved && ended.pgDataRemoved);
