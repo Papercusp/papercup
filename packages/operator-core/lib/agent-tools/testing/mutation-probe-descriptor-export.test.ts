@@ -75,7 +75,7 @@ function makeSubjectRepo(): { file: string; oldSha: string } {
 }
 
 /** The guard: record (phase, descriptor) for every leg, fail unless the subject says `guarded`. */
-function makeRecorder(): { recorder: string; log: string } {
+function makeRecorder(requiredLine = 'guarded'): { recorder: string; log: string } {
   const recorder = join(dir, 'recorder.cjs');
   const log = join(dir, 'legs.jsonl');
   writeFileSync(
@@ -85,7 +85,7 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({
   phase: process.env.PAPERCUSP_MUTATION_PHASE ?? null,
   descriptor: process.env.PAPERCUSP_MUTATION_DESCRIPTOR ?? null,
 }) + '\\n');
-process.exit(/^guarded$/m.test(fs.readFileSync(process.argv[2], 'utf8')) ? 0 : 1);
+process.exit(fs.readFileSync(process.argv[2], 'utf8').split(String.fromCharCode(10)).includes(${JSON.stringify(requiredLine)}) ? 0 : 1);
 `,
   );
   return { recorder, log };
@@ -170,6 +170,44 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       subjectAfterSha256: sha256(HISTORICAL),
     });
     expect(oldSha).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('surviving historical mutant: baseline, mutant and consumption-control retain the SAME strict descriptor', () => {
+    const { file, oldSha } = makeSubjectRepo();
+    // This guard consumes each snapshot, but accepts both current and historical
+    // sources. Only the poisoned snapshot lacks the stable positive control.
+    const { recorder, log } = makeRecorder('stable-control');
+    const test = `node ${recorder} {}`;
+    const { code, out } = probe([
+      '--file', file,
+      '--against-commit', oldSha,
+      '--must-be-absent', 'guarded',
+      '--positive-control', 'stable-control',
+      '--calibration', 'grep -q "^stable-control$" {}',
+      '--test', test,
+    ], { PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always' });
+
+    expect(code, out).toBe(1);
+    expect(out).toMatch(/mode=historical verdict=survived/);
+    expect(out).toMatch(/consumption control: the guard FAILED against a poisoned snapshot/);
+    const seen = legs(log);
+    expect(seen.map((leg) => leg.phase)).toEqual(['baseline', 'historical', 'consumption-control']);
+    const descriptors = seen.map((leg) => {
+      expect(leg.descriptor).not.toBeNull();
+      const descriptor = parseMutationInvocationDescriptor(JSON.parse(leg.descriptor!));
+      expect(descriptor).toBeDefined();
+      return descriptor!;
+    });
+    expect(new Set(seen.map((leg) => leg.descriptor))).toEqual(new Set([seen[0]!.descriptor]));
+    expect(new Set(descriptors.map((descriptor) => descriptor.probeInvocationId)).size).toBe(1);
+    for (const descriptor of descriptors) {
+      expect(descriptor).toMatchObject({
+        mode: 'historical', subjectPath: 'subject.txt', mutateExpression: null,
+        againstCommit: oldSha, subjectBeforeSha256: sha256(ORIGINAL),
+        subjectAfterSha256: sha256(HISTORICAL), testCommandSha256: sha256(test),
+      });
+    }
+    expect(out).toContain(`probeInvocationId=${descriptors[0]!.probeInvocationId}`);
   });
 
   it('auto: withholds the export when the deployed reader is unreadable, and never forwards a stale caller value', () => {
