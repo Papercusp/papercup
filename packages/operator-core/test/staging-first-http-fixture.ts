@@ -51,6 +51,13 @@ async function main() {
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader-setup') {
+    const receipt = await (await import('./committed-reader-http-scenario')).measureCommittedReaderSetup({
+      workspace, harness, evidenceDir,
+    });
+    console.log('COMMITTED_READER_SETUP_RECEIPT ' + JSON.stringify(receipt));
+    return;
+  }
   const committedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader'
     ? await (await import('./committed-reader-http-scenario')).prepareCommittedReaderScenario({
       workspace, harness, base, headers, evidenceDir,
