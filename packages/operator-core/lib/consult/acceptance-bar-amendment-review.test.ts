@@ -664,6 +664,8 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(brief).not.toContain('rubrics:amend');
     expect(brief).toContain(JSON.stringify(approval));
     expect(brief).toContain(ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR);
+    expect(brief).toContain("call `session:end { reason: 'BAR amendment review complete' }`");
+    expect(brief).toContain('do not just finish the turn');
   });
 });
 
