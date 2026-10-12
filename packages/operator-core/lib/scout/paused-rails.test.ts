@@ -13,6 +13,8 @@ import {
 } from './outcome-feedback';
 import { pausedRailsFrom, readPausedRails } from './paused-rails';
 
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
 const lens = CREATIVE_LENSES[0];
 const idea = (over: Partial<RoutedIdeaProvenance> = {}): RoutedIdeaProvenance => ({
   ideaId: 'i1',

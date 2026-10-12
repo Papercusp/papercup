@@ -12,6 +12,7 @@
 
 import type postgres from 'postgres';
 import { boundedPgReadTxn } from '../../pg-read-query';
+import { observeFallback } from '../../degradation/fallback-observations';
 import {
   newMsgId,
   filterInbox,
@@ -960,6 +961,7 @@ export async function readInboxWindow(
       paged.pages,
       paged.raw.length,
     );
+    observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'inbox' }, { workspaceId: coordWorkspaceId() });
     return {
       entries: visible(paged.raw),
       exhausted: paged.exhausted,
@@ -968,6 +970,7 @@ export async function readInboxWindow(
     };
   } catch (err) {
     // Any query error falls back to the authoritative full read. WI-1338374: that
+    observeFallback('coordination-window-read', { eligible: 1, applied: 0, reason: 'paging-failed', scope: 'inbox' }, { workspaceId: coordWorkspaceId() });
     // fallback is `readInbox(ownerId, opts)` — a 2-ARG call, so it hits the SAME
     // no-since_ts `LIMIT 25000` unbounded fast-path query this window form exists
     // to avoid (messages.ts's top-level readInbox, coord_event_log queryid
@@ -1305,6 +1308,7 @@ export async function readOutboxWindow(
       paged.pages,
       paged.raw.length,
     );
+    observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'outbox' }, { workspaceId: coordWorkspaceId() });
     return {
       entries: visible(paged.raw),
       exhausted: paged.exhausted,
@@ -1313,6 +1317,7 @@ export async function readOutboxWindow(
     };
   } catch (err) {
     // Any query error falls back to the authoritative full read — see the matching
+    observeFallback('coordination-window-read', { eligible: 1, applied: 0, reason: 'paging-failed', scope: 'outbox' }, { workspaceId: coordWorkspaceId() });
     // instrumentation on readInboxWindow's catch block (WI-1338374) for why this
     // fallback is worth logging: it hits readOutbox's own unbounded no-since_ts
     // LIMIT-capped fast path, the same shape of query implicated there.

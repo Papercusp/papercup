@@ -28,7 +28,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 vi.mock('../../fleet/git-via-sidecar', () => ({ gitSidecarEnabled: () => false }));
 
-import { runGitBounded } from './run-git-sync';
+import {
+  createGitProgressWatchdog,
+  runGitBounded,
+  type GitProgressTimerHandle,
+  type GitProgressTimerScheduler,
+} from './run-git-sync';
 
 beforeEach(() => { fixture.onOutput = () => {}; fixture.child = null; fixture.output = ''; });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
@@ -114,83 +119,112 @@ describe('local Git cancellation lifetime', () => {
   });
 });
 
-// WI-10008181: these windows were 150ms idle / 450ms stall / 500ms+800ms idle+hard,
-// and the gate (10+ cores of parallel vitest) beat them three times in one run. The
-// runner arms its idle timer at SPAWN (run-git-sync.ts armIdleTimer), so a loaded
-// box's `node -e` startup alone can exceed a 150ms window before the fixture's first
-// write. Each test asserts an ORDERING property, not a duration, so the margins are
-// sized for contention while keeping every inequality the test depends on:
-// stall > idle (the idle timer has really expired when the loop resumes), and
-// idle < hard (the hard ceiling, not the idle guard, ends the continuous-output child).
-const IDLE_MS = 1_000;
-const PARENT_STALL_MS = 2_000;
-const CONTINUOUS_IDLE_MS = 2_000;
-const CONTINUOUS_HARD_MS = 3_000;
-const LOADED_TEST_TIMEOUT_MS = 30_000;
+class ManualTimerScheduler implements GitProgressTimerScheduler {
+  private sequence = 0;
+  private readonly tasks: Array<{
+    id: number;
+    at: number;
+    kind: 'timeout' | 'immediate';
+    callback: () => void;
+    cancelled: boolean;
+    fired: boolean;
+  }> = [];
+  now = 0;
+
+  setTimeout(callback: () => void, delayMs: number): GitProgressTimerHandle {
+    return this.schedule('timeout', callback, this.now + delayMs);
+  }
+
+  setImmediate(callback: () => void): GitProgressTimerHandle {
+    return this.schedule('immediate', callback, this.now);
+  }
+
+  advanceBy(delayMs: number): void {
+    const target = this.now + delayMs;
+    while (true) {
+      const next = this.tasks
+        .filter((task) => !task.cancelled && !task.fired && task.kind === 'timeout' && task.at <= target)
+        .sort((a, b) => a.at - b.at || a.id - b.id)[0];
+      if (!next) break;
+      next.fired = true;
+      this.now = next.at;
+      next.callback();
+    }
+    this.now = target;
+  }
+
+  runImmediates(): void {
+    while (true) {
+      const next = this.tasks
+        .filter((task) => !task.cancelled && !task.fired && task.kind === 'immediate')
+        .sort((a, b) => a.id - b.id)[0];
+      if (!next) return;
+      next.fired = true;
+      next.callback();
+    }
+  }
+
+  private schedule(
+    kind: 'timeout' | 'immediate',
+    callback: () => void,
+    at: number,
+  ): GitProgressTimerHandle {
+    const task = { id: this.sequence++, at, kind, callback, cancelled: false, fired: false };
+    this.tasks.push(task);
+    return {
+      cancel: () => { task.cancelled = true; },
+      unref: () => {},
+    };
+  }
+}
 
 describe('local Git output-idle guard', () => {
-  it('reads queued child progress before expiring an idle timer after a parent-loop stall', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'local-git-progress-'));
-    const release = join(dir, 'release');
-    fixture.script = [
-      "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      // End only after the parent has read the progress written during its stall.
-      // A fixed burst also tests an unrelated silent interval before child exit.
-      `send('ready'); const timer = setInterval(() => { send('progress'); if (require('node:fs').existsSync(${JSON.stringify(release)})) { clearInterval(timer); process.stderr.write(JSON.stringify({ phase: 'ack', at: Date.now() }) + '\\n', () => process.exit(0)); } }, 40);`,
-    ].join(' ');
-    let queued = false;
-    let blockedFrom = 0;
-    let blockedUntil = 0;
-    fixture.onOutput = () => {
-      if (queued) {
-        if (blockedUntil === 0) return;
-        const writes = fixture.output.split('\n').slice(0, -1).filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-        if (writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length >= 3) {
-          writeFileSync(release, 'done');
-        }
-        return;
-      }
-      queued = true;
-      setImmediate(() => {
-        blockedFrom = Date.now();
-        while (Date.now() - blockedFrom < PARENT_STALL_MS) { /* deliberately stall the CHECK phase past IDLE_MS */ }
-        blockedUntil = Date.now();
-      });
-    };
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '20000');
-    const controller = new AbortController();
-    const pending = runGitBounded(['fetch'], tmpdir(), IDLE_MS, { signal: controller.signal });
-    try {
-      const result = await pending;
-      const writes = result.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-      expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
-      expect(writes.some((entry) => entry.phase === 'ack')).toBe(true);
-      expect(result.stderr).not.toContain('no output progress');
-      expect(result.code, result.stderr).toBe(0);
-    } finally {
-      writeFileSync(release, 'done');
-      controller.abort();
-      await pending;
-      await rm(dir, { recursive: true, force: true });
+  it('lets progress already queued in the poll phase cancel the pending idle verdict', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(1_000, 20_000, (reason) => expirations.push(reason), clock);
+
+    watchdog.start();
+    clock.advanceBy(1_000); // Idle timeout fires and queues its setImmediate verdict.
+    watchdog.onOutput(); // The poll phase delivers bytes that were already queued.
+    clock.runImmediates();
+    expect(expirations).toEqual([]);
+
+    clock.advanceBy(1_000);
+    clock.runImmediates();
+    expect(expirations).toEqual(['made no output progress for 1000ms']);
+  });
+
+  it('expires after a finite progress burst stays silent for the idle interval', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(1_000, 20_000, (reason) => expirations.push(reason), clock);
+
+    watchdog.start();
+    for (let index = 0; index < 3; index += 1) {
+      clock.advanceBy(40);
+      watchdog.onOutput();
     }
+    clock.advanceBy(999);
+    expect(expirations).toEqual([]);
+    clock.advanceBy(1);
+    clock.runImmediates();
+    expect(expirations).toEqual(['made no output progress for 1000ms']);
   });
 
-  it('expires a resident child when a finite progress burst ends', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
-    fixture.script = "process.stderr.write('ready\\n'); let n = 0; const timer = setInterval(() => { process.stderr.write('progress\\n'); if (++n === 3) { clearInterval(timer); setInterval(() => {}, 1000); } }, 40);";
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '20000');
-    const result = await runGitBounded(['fetch'], tmpdir(), IDLE_MS);
-    expect(result.stderr.match(/progress\n/g)).toHaveLength(3);
-    expect(result.stderr).toContain(`made no output progress for ${IDLE_MS}ms`);
-    expect(result.stderr).not.toContain('hard ceiling');
-    expect(result.code).toBe(-1);
-  });
+  it('keeps the hard deadline absolute while progress continuously resets idle time', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(2_000, 3_000, (reason) => expirations.push(reason), clock);
 
-  it('still enforces the hard deadline despite continuous output', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
-    fixture.script = "process.stderr.write('ready\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);";
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', String(CONTINUOUS_HARD_MS));
-    const result = await runGitBounded(['fetch'], tmpdir(), CONTINUOUS_IDLE_MS);
-    expect(result.stderr).toContain('progress');
-    expect(result.stderr).toContain(`exceeded the ${CONTINUOUS_HARD_MS}ms hard ceiling despite output progress`);
-    expect(result.code).toBe(-1);
+    watchdog.start();
+    clock.advanceBy(1_000);
+    watchdog.onOutput();
+    clock.advanceBy(1_000);
+    watchdog.onOutput();
+    clock.advanceBy(999);
+    expect(expirations).toEqual([]);
+    clock.advanceBy(1);
+    expect(expirations).toEqual(['exceeded the 3000ms hard ceiling despite output progress']);
   });
 });

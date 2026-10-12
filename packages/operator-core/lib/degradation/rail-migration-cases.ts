@@ -22,6 +22,137 @@ import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-c
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012'];
 
+const scoutReadPath = 'packages/operator-core/lib/';
+type ScoutReadObservation = { eligible: number; applied: number; reason: string; scope?: string | null };
+function scoutReadSink(scope: string, observations: ScoutReadObservation[]) {
+  return (mechanism: string, row: ScoutReadObservation, options: { workspaceId?: string }) => {
+    if (mechanism !== 'scout-state-read' || row.scope !== scope || options.workspaceId !== 'fixture') {
+      throw new Error('Scout producer selected an unexpected observation partition');
+    }
+    observations.push(row); return true;
+  };
+}
+
+const scoutReadCases: RailMigrationCase[] = [{
+  id: 'scout-pot-gate-original-failure-primary-disabled-and-context-exclusion',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: [`log-only-fallback|${scoutReadPath}learning/pot-gate/gates.ts|scoutPotGate|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, pot: string | null = 'fixture-pot';
+    const gate = execute(original(`${scoutReadPath}learning/pot-gate/gates.ts`, 'export async function scoutPotGate', 'function'), {
+      observeFallback: scoutReadSink('pot-gate', observations),
+      require: () => ({ resolveLearningPotSlug: async () => { if (fail) throw new Error('scope unavailable'); return pot; },
+        getOrgPg: () => ({ sql: {} }) }),
+      potLearningEnabled: async () => false,
+    }, 'scoutPotGate') as typeof import('../learning/pot-gate/gates').scoutPotGate;
+    expect(await gate({ workspaceId: 'fixture', installSlug: 'install' })).toEqual({ enabled: true });
+    fail = false;
+    expect(await gate({ workspaceId: 'fixture', installSlug: 'install' })).toEqual({ enabled: false });
+    pot = null;
+    expect(await gate({ workspaceId: 'fixture', installSlug: 'install' })).toEqual({ enabled: true });
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'gate-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'scout-config-original-read-home-failure-empty-and-configured-primary',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: [`log-only-fallback|${scoutReadPath}learning/pot-gate/gates.ts|scoutConfigDelta|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    const path = `${scoutReadPath}learning/pot-gate/gates.ts`;
+    const sections = source(path).statements.find(node => node.getText().startsWith('const SCOUT_CONFIG_SECTIONS'))!.getText();
+    let failure: 'read' | 'home' | null = 'read', configured = false;
+    const config = execute(`${sections}\n${original(path, 'export async function scoutConfigDelta', 'function')}`, {
+      observeFallback: scoutReadSink('config', observations),
+      require: () => ({
+        getHiveLocalBlueprintConfig: async (_ws: string, slug: string, section: string) => {
+          if (failure === 'read') throw new Error('settings unavailable');
+          return configured && slug === 'home' && section === 'scout' ? { model: 'owner-selected' } : null;
+        },
+        resolvePotHomeSlug: () => { if (failure === 'home') throw new Error('home unavailable'); return 'home'; },
+        operatorHomeHarnessSlug: () => 'home',
+      }),
+    }, 'scoutConfigDelta') as typeof import('../learning/pot-gate/gates').scoutConfigDelta;
+    const input = { workspaceId: 'fixture', installSlug: 'install' };
+    expect(await config(input)).toBeNull();
+    failure = 'home'; expect(await config(input)).toBeNull();
+    failure = null; expect(await config(input)).toBeNull();
+    configured = true; expect(await config(input)).toEqual({ scout: { model: 'owner-selected' } });
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'config-read-failed'], [0, 'config-home-unavailable'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'scout-rail-liveness-original-partial-read-failure-and-measured-paused-primary',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: [`log-only-fallback|${scoutReadPath}scout/paused-rails.ts|readPausedRails|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { pausedRailsFrom, GYM_CYCLE_ROUTINE_NAME } = await import('../scout/paused-rails');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true;
+    const sql = async (parts: TemplateStringsArray) => {
+      if (parts.join('').includes('gym_autoloop_config')) return [{ harness_slug: 'pot', enabled: true }];
+      if (fail) throw new Error('routine state unavailable');
+      return [{ install_slug: 'pot', active: false }];
+    };
+    const read = execute(original(`${scoutReadPath}scout/paused-rails.ts`, 'export async function readPausedRails', 'function'), {
+      observeFallback: scoutReadSink('rail-liveness', observations), pausedRailsFrom, GYM_CYCLE_ROUTINE_NAME,
+    }, 'readPausedRails') as typeof import('../scout/paused-rails').readPausedRails;
+    expect([...(await read(sql as Parameters<typeof read>[0], 'fixture'))]).toEqual([]);
+    fail = false;
+    expect([...(await read(sql as Parameters<typeof read>[0], 'fixture'))]).toEqual(['gym']);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'rail-liveness-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'scout-dedup-ledger-original-unavailable-and-empty-measured-primary',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: [`log-only-fallback|${scoutReadPath}scout/dedup-burn-guard.ts|readDedupBurnVerdict|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { assessDedupBurn } = await import('../scout/dedup-burn-guard');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true;
+    const read = execute(original(`${scoutReadPath}scout/dedup-burn-guard.ts`, 'export async function readDedupBurnVerdict', 'function'), {
+      observeFallback: scoutReadSink('dedup-burn', observations), assessDedupBurn,
+      UNSATURATED: assessDedupBurn([]), LEDGER_SCAN_LIMIT: 40,
+      require: () => ({ readScoutTicks: async () => { if (fail) throw new Error('ledger unavailable'); return []; } }),
+    }, 'readDedupBurnVerdict') as typeof import('../scout/dedup-burn-guard').readDedupBurnVerdict;
+    expect((await read({ workspaceId: 'fixture' })).saturated).toBe(false);
+    fail = false; expect((await read({ workspaceId: 'fixture' })).saturated).toBe(false);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'ledger-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'scout-lens-weights-original-unavailable-and-empty-measured-primary',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: [`log-only-fallback|${scoutReadPath}scout/routed-ledger.ts|getScoutLensWeights|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { samplingWeightsWithFloor } = await import('../scout/outcome-feedback');
+    const { CREATIVE_LENSES } = await import('../scout/types');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true;
+    const read = execute(original(`${scoutReadPath}scout/routed-ledger.ts`, 'export async function getScoutLensWeights', 'function'), {
+      observeFallback: scoutReadSink('lens-weights', observations), samplingWeightsWithFloor, CREATIVE_LENSES,
+      activeWorkspaceId: () => 'fixture', isWorkspaceCoordinationOn: async () => false,
+      workspaceBrainReadKeys: () => ['pot'],
+      readScoutLensWeights: async () => { if (fail) throw new Error('weights unavailable'); return {}; },
+    }, 'getScoutLensWeights') as typeof import('../scout/routed-ledger').getScoutLensWeights;
+    const failed = await read({ workspaceId: 'fixture', potSlug: 'pot' });
+    fail = false;
+    expect(await read({ workspaceId: 'fixture', potSlug: 'pot' })).toEqual(failed);
+    expect(Object.keys(failed.lensWeights)).toEqual(CREATIVE_LENSES);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'lens-weights-read-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}];
+
 const remainingSyncCases: RailMigrationCase[] = [{
   id: 'browser-transport-original-hook-production-provider-and-sanitized-ingress', item: 'P-011', route: 'observation',
   mechanism: 'browser-sync-transport',
@@ -260,7 +391,41 @@ const remainingSyncCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...remainingSyncCases, {
+const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scope): RailMigrationCase => ({
+  id: `coordination-${scope}-original-page-error-primary-and-nonpg-exclusion`,
+  item: 'P-013', route: 'observation', mechanism: 'coordination-window-read',
+  rowIds: [`log-only-fallback|packages/operator-core/lib/agent-tools/coordination/messages.ts|${scope === 'inbox' ? 'readInboxWindow' : 'readOutboxWindow'}|1`],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: ScoutReadObservation[] = [];
+    let fail = true, pg = true, fallbackCalls = 0;
+    const functionName = scope === 'inbox' ? 'readInboxWindow' : 'readOutboxWindow';
+    const primary = [{ msg_id: 'primary' }], fallback = [{ msg_id: 'fallback' }];
+    const fullRead = async () => { fallbackCalls++; return fallback; };
+    const read = execute(original('packages/operator-core/lib/agent-tools/coordination/messages.ts', `export async function ${functionName}`, 'function'), {
+      coordHasPgFastPath: () => pg, coordWorkspaceId: () => 'fixture',
+      pageCoordEventLogDesc: async () => { if (fail) throw new Error('page unavailable'); return { raw: primary, pages: 2, exhausted: false }; },
+      filterInbox: (rows: unknown) => rows, filterOutbox: (rows: unknown) => rows,
+      suppressRetracted: (rows: unknown) => rows, collectRetractedIds: () => new Set(),
+      warnOnPageBudgetExhausted() {}, INBOX_SINCE_TS_SKEW_PAD_MS: 1000,
+      INBOX_FAST_PATH_ROW_CAP: 25000, OUTBOX_FAST_PATH_ROW_CAP: 25000,
+      readInbox: fullRead, readOutbox: fullRead,
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('coordination-window-read'); expect(row.scope).toBe(scope);
+        expect(options.workspaceId).toBe('fixture'); observations.push(row); return true;
+      },
+    }, functionName) as (owner: string) => Promise<{ entries: unknown[]; exhausted: boolean }>;
+    expect((await read('owner')).entries).toEqual(fallback);
+    fail = false;
+    expect(await read('owner')).toMatchObject({ entries: primary, exhausted: false });
+    pg = false; expect((await read('owner')).entries).toEqual(fallback);
+    expect(fallbackCalls).toBe(2);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([[0, 'paging-failed'], [1, 'applied']]);
+    return { route: 'observation', mechanism: 'coordination-window-read', observations };
+  },
+}));
+
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

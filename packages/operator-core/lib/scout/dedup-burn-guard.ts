@@ -29,6 +29,7 @@
 
 import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutConfig } from './config';
+import { observeFallback } from '../degradation/fallback-observations';
 
 /** The per-tick fields the guard assesses (a {@link ScoutTickRecord} satisfies it). */
 export type DedupBurnTick = Pick<
@@ -201,8 +202,11 @@ export async function readDedupBurnVerdict(scope: {
       ...(scope.installSlug ? { installSlug: scope.installSlug } : {}),
       limit: LEDGER_SCAN_LIMIT,
     });
-    return assessDedupBurn(ticks, scope.opts);
+    const verdict = assessDedupBurn(ticks, scope.opts);
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'dedup-burn' }, { workspaceId: scope.workspaceId });
+    return verdict;
   } catch (err) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'ledger-read-failed', scope: 'dedup-burn' }, { workspaceId: scope.workspaceId });
     console.warn(
       '[scout/dedup-burn-guard] ledger read failed (fail-open, cycle unaffected):',
       err instanceof Error ? err.message : err,

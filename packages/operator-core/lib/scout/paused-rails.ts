@@ -18,6 +18,7 @@
  */
 import type { getOrgPg } from '@papercusp/db-org';
 import type { RoutedRail } from './outcome-feedback';
+import { observeFallback } from '../degradation/fallback-observations';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -67,11 +68,14 @@ export async function readPausedRails(sql: OrgSql, workspaceId: string): Promise
          WHERE workspace_id = ${workspaceId}
            AND name = ${GYM_CYCLE_ROUTINE_NAME}`,
     ]);
-    return pausedRailsFrom({
+    const paused = pausedRailsFrom({
       autoloops: autoloops.map((r) => ({ harnessSlug: r.harness_slug, enabled: r.enabled === true })),
       gymCycleRoutines: routines.map((r) => ({ installSlug: r.install_slug, active: r.active === true })),
     });
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'rail-liveness' }, { workspaceId });
+    return paused;
   } catch (err) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'rail-liveness-read-failed', scope: 'rail-liveness' }, { workspaceId });
     console.warn(
       '[scout/paused-rails] rail-liveness read failed — treating every rail as live (fail-open):',
       err instanceof Error ? err.message : err,

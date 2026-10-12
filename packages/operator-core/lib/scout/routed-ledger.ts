@@ -19,6 +19,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
+import { observeFallback } from '../degradation/fallback-observations';
 import { dedupById, gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
 import { buildChangeFeedReaders, CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
 import {
@@ -1669,7 +1670,9 @@ export async function getScoutLensWeights(
       }
       if (Object.keys(persisted).length === 0) persisted = await readScoutLensWeights({ workspaceId: ws });
     }
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'lens-weights' }, { workspaceId: ws });
   } catch (err) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'lens-weights-read-failed', scope: 'lens-weights' }, { workspaceId: ws });
     // Best-effort read: fall through with no persisted signal → uniform weights.
      
     console.warn(

@@ -45,10 +45,10 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
       listDegradationMechanisms().map((mechanism) => mechanism.mechanism))).toEqual([]);
   });
 
-  it('retains each implemented P-011 original site identity on the rail', () => {
+  it('retains each implemented P-011 and P-013 original site identity on the rail', () => {
     const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
     expect(live.unreadable).toBe(0);
-    for (const testCase of RAIL_MIGRATION_CASES.filter((entry) => entry.item === 'P-011')) {
+    for (const testCase of RAIL_MIGRATION_CASES.filter((entry) => ['P-011', 'P-013'].includes(entry.item))) {
       for (const id of testCase.rowIds) {
         expect(manifest.rows.find((row: { id: string }) => row.id === id), id).toBeDefined();
         expect(live.sites.find((site: { id: string }) => site.id === id)?.onRail, id).toBe(true);
