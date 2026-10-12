@@ -795,7 +795,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     };
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      responsePromise = callTool('deadlinetest:spill', {},
+      responsePromise = callTool('tools:invoke', { name: 'deadlinetest:spill', args: {} },
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: 'idem-late-scratch-settlement' });
       await enteredWrite;
