@@ -170,6 +170,37 @@ describe('ingress.normalize', () => {
     expect(provider.normalizeEnvelope('{"type":"events_api"}').records).toEqual([]);
   });
 
+  it("records the source's declared drill bot, and only it, as a plain channel message (D-023)", () => {
+    const allowance = { botId: 'B9', appId: 'A9', userId: 'U9', channelId: 'C42' };
+    const config = { botId: 'B0', botUserId: 'U0', channels: ['C42', 'C43'], testBotAllowance: allowance };
+    const drill = { type: 'message', channel: 'C42', channel_type: 'channel', user: 'U9', bot_id: 'B9', app_id: 'A9', text: 'checkout is broken', ts: '1712345678.000300' };
+
+    const [admitted] = provider.normalizeEnvelope(eventsEnvelope(drill), config).records;
+    expect(admitted).toMatchObject({ datatype: 'chat-message', event: 'message', nativeId: 'C42:1712345678.000300' });
+    expect(admitted.payload).toMatchObject({ channelId: 'C42', sender: 'U9', text: 'checkout is broken' });
+    // The same allowance reaches the package through invokeCapability's args.sourceConfig.
+    return provider.invokeCapability({ capability: 'ingress.normalize', args: { envelope: eventsEnvelope(drill), sourceConfig: config } })
+      .then((result: { records: unknown[] }) => {
+        expect(result.records).toHaveLength(1);
+        for (const [event, cfg] of [
+          [drill, {}], // no allowance declared: the in-app default, every bot post dropped
+          [drill, { ...config, testBotAllowance: { ...allowance, appId: '' } }], // incomplete identity
+          [{ ...drill, bot_id: 'B8' }, config], // another bot
+          [{ ...drill, app_id: 'A8' }, config], // another app
+          [{ ...drill, user: 'U8' }, config], // another bot user
+          [{ ...drill, channel: 'C43' }, config], // a watched channel, but not the drill's
+          [drill, { ...config, channels: ['C43'] }], // the drill's channel is not watched
+          [{ ...drill, type: 'app_mention' }, config], // a mention, not a channel message
+          [{ ...drill, channel: 'D42', channel_type: 'im' }, { ...config, testBotAllowance: { ...allowance, channelId: 'D42' }, channels: ['D42'] }],
+          [{ ...drill, subtype: 'bot_message' }, config],
+          [drill, { ...config, botId: 'B9' }], // the allowance can never name this app's own bot
+          [drill, { ...config, botUserId: 'U9' }],
+        ] as Array<[Record<string, unknown>, Record<string, unknown>]>) {
+          expect(provider.normalizeEnvelope(eventsEnvelope(event), cfg).records).toEqual([]);
+        }
+      });
+  });
+
   it('records the /papercusp command as a slash-command chat message', () => {
     const [record] = provider.normalizeEnvelope({
       envelope_id: 'env-9',

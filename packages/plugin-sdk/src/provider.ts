@@ -170,10 +170,23 @@ export interface ProviderSocketIngressDescriptor {
 
 /**
  * Capability a socket-ingress provider must declare: `invoke({ capability: 'ingress.normalize',
- * args: { envelope } })` returns {@link ProviderIngressNormalizeResult}. An envelope that carries no
- * data (a hello, a ping, an event the provider ignores) returns `records: []`.
+ * args: { envelope, sourceConfig } })` returns {@link ProviderIngressNormalizeResult}. An envelope
+ * that carries no data (a hello, a ping, an event the provider ignores) returns `records: []`.
  */
 export const PROVIDER_INGRESS_NORMALIZE_CAPABILITY = 'ingress.normalize';
+
+/** Arguments the host passes to {@link PROVIDER_INGRESS_NORMALIZE_CAPABILITY}. */
+export interface ProviderIngressNormalizeArgs {
+  /** One envelope exactly as the socket delivered it. */
+  envelope: unknown;
+  /**
+   * The connected source's non-secret config (e.g. Slack's channels and a declared drill-bot
+   * identity), so a provider can apply source-scoped admission rules
+   * (cupboard-distributable-integrations-2026-10-10 D-023). Credentials are never in it.
+   * Always an object; a provider that has no such rules ignores it.
+   */
+  sourceConfig: Record<string, unknown>;
+}
 
 /** Result of the {@link PROVIDER_INGRESS_NORMALIZE_CAPABILITY} capability: records shaped like a sync page's. */
 export interface ProviderIngressNormalizeResult {

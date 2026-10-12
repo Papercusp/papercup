@@ -1805,6 +1805,7 @@ export type {
   ProviderSetupDescriptor,
   ProviderIngressDescriptor,
   ProviderSocketIngressDescriptor,
+  ProviderIngressNormalizeArgs,
   ProviderIngressNormalizeResult,
   ProviderCredentialField,
   ProviderAppRegistration,
