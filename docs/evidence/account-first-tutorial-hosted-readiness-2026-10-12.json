@@ -177,8 +177,36 @@
     "cleanupCompleted": 3,
     "cleanupFailed": 0
   },
+  "committedConventionalGuard": {
+    "commit": "a91383fe74d9c22088ee09aa22602e71490f2b1b",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-a91383fe74-jYqbSt",
+    "harness": "papercusp",
+    "source": "local",
+    "worktreeDirty": false,
+    "logPath": "/tmp/tutorial-readiness-connector-committed-a91383fe-20261012T0056.log",
+    "logSha256": "cbc9dac007b6342cfea6b9b33bea1092c2f8ac8ea629e66fd5d6f5cc846c0493",
+    "exitCode": 0,
+    "testNamePattern": null,
+    "suites": [
+      {
+        "file": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+        "localTestRunId": 21134709,
+        "passed": 36,
+        "failed": 0,
+        "explicitOptInExcluded": 28
+      },
+      {
+        "file": "packages/operator-core/lib/endpoint-route/hosted-workspace-connector.test.ts",
+        "localTestRunId": 21134714,
+        "passed": 14,
+        "failed": 0,
+        "excluded": 0
+      }
+    ],
+    "sourceVerification": "The three fixtureSource.sha256 values match blobs at this single immutable commit. Original actualReadiness and its working-source provenance are preserved.",
+    "scope": "Complete default fixture and connector suites; the 28 explicitly opt-in cases did not run. This guard proof does not renew actual hosted, model, voice, novice, production or full-product acceptance."
+  },
   "remaining": [
-    "Committed source verification of the named fixture and connector suites before normal issue closure.",
     "Remaining plan BAR, actual public-manual behavior, full-product acceptance, protected attended voice, novice pilot and final shipment evidence."
   ]
 }
