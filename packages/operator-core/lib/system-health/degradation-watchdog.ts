@@ -257,6 +257,34 @@ registerDegradationMechanism({
   thresholds: { minEligible: 1 },
 });
 registerDegradationMechanism({
+  mechanism: 'work-item-storage-resolution', scopeKeyed: true,
+  description: 'Storage slug resolutions completed the shared pot resolver rather than substituting a literal slug after a resolver error; verified unpotted tenants remain healthy.',
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-binding-resolution', scopeKeyed: true,
+  description: 'Binding lookups completed with an intended Hive, shared-repository or local configuration rather than an unresolved required Hive topic or unreadable identity.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-boot-routing', scopeKeyed: true,
+  description: 'Fresh engine boots made a decided route choice rather than timing out the routing latch; cached handles and coalesced callers are excluded.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-activation-plan',
+  description: 'Harnesses with measured registry provenance included in a completed activation plan rather than booted eagerly after a planning dependency failure. Empty and deliberately disabled sweeps are excluded.',
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-sidecar-boot',
+  description: 'Configured sidecar boot attempts completed the remote boot sweep rather than restarting it in-process; deliberately configured in-process boots are excluded.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'substrate-sidecar-cleanup',
+  description: 'Cleanup attempts after a failed remote boot stopped the sidecar before an in-process retry rather than continuing while stop failed.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
   mechanism: 'routine-capability-read', scopeKeyed: true,
   description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',
   // Boot grants and memoized derivations can yield only one decision per process.
