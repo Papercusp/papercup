@@ -158,6 +158,19 @@ describe('findBackupLockConflicts', () => {
     expect(findBackupLockConflicts(pending(ticketTriggers(action)), ['session_turns', 'session_events'])).toEqual([]);
   });
 
+  it.each(['UPDATE OF status', 'INSERT OR UPDATE OF status'])('proves a conditional %s trigger safe without hiding its locked target', (event) => {
+    const sql = `CREATE TRIGGER work_item_blocked_names_blocker
+      BEFORE ${event} ON harness_shared.work_items
+      FOR EACH ROW WHEN (NEW.status = 'blocked')
+      EXECUTE FUNCTION harness_shared.work_item_blocked_names_blocker();`;
+    expect(findBackupLockConflicts(pending(sql), ['session_turns'])).toEqual([]);
+    expect(findBackupLockConflicts(pending(sql), ['work_items'])).toEqual([
+      { file: '1228-x.sql', subject: 'work_items', reason: 'names-locked-relation' },
+    ]);
+    expect(findBackupLockConflicts(pending(sql + 'EXECUTE prepared_change;'), []).map((c) => c.subject))
+      .toContain('EXECUTE (dynamic SQL)');
+  });
+
   it.each(['data_sources', 'admission_rules', 'work_admissions'])('still blocks a static trigger on backup-held %s', (table) => {
     expect(findBackupLockConflicts(pending(ticketTriggers()), [table])).toEqual([
       { file: '1228-x.sql', subject: table, reason: 'names-locked-relation' },

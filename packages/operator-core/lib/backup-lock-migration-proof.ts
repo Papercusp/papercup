@@ -92,11 +92,18 @@ function withoutStaticTableAnnotation(text: string): string {
     .join(';\n');
 }
 
-const TRIGGER_EVENT = '(?:insert|update|delete|truncate)';
+const TRIGGER_COLUMNS = SQL_IDENTIFIER + '(?:\\s*,\\s*' + SQL_IDENTIFIER + ')*';
+const TRIGGER_EVENT = '(?:insert|update(?:\\s+of\\s+' + TRIGGER_COLUMNS + ')?|delete|truncate)';
+// A row-field comparison against a literal has no executable function call.
+// Keep complex WHEN expressions outside this narrow lock-footprint proof.
+const STATIC_TRIGGER_WHEN = '\\s+when\\s*\\(\\s*(?:new|old)\\.[a-z_][a-z0-9_$]*\\s*' +
+  '(?:=|<>|!=|is(?:\\s+not)?\\s+distinct\\s+from)\\s*' +
+  "(?:'(?:''|[^'])*'|null|true|false|[0-9]+)\\s*\\)";
 const STATIC_TRIGGER_ACTION = new RegExp(
   '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +
   '\\s+(?:before|after|instead\\s+of)\\s+' + TRIGGER_EVENT + '(?:\\s+or\\s+' + TRIGGER_EVENT + ')*' +
-  '\\s+on\\s+' + SQL_IDENTIFIER + '(?:\\s+for\\s+(?:each\\s+)?(?:row|statement))?\\s+)' +
+  '\\s+on\\s+' + SQL_IDENTIFIER + '(?:\\s+for\\s+(?:each\\s+)?(?:row|statement))?' +
+  '(?:' + STATIC_TRIGGER_WHEN + ')?\\s+)' +
   'execute(\\s+(?:function|procedure)\\s+' + SQL_IDENTIFIER + '\\s*\\(\\s*\\))$',
 );
 

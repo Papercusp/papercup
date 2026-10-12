@@ -780,17 +780,25 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
     }
   });
 
-  it('applies a static trigger migration while the backup rendezvous remains held on an unrelated table', async () => {
-    const filename = '960-native-boot-backup-static-trigger.sql';
+  it.each([
+    ['INSERT', '', 960],
+    ['UPDATE OF id', 'WHEN (NEW.id = 1)', 961],
+    ['INSERT OR UPDATE OF id', 'WHEN (NEW.id = 1)', 962],
+  ])('applies a static %s trigger migration while the backup rendezvous remains held on an unrelated table', async (event, predicate, number) => {
+    const filename = `${number}-native-boot-backup-static-trigger.sql`;
+    const target = `boot_static_trigger_target_${number}`;
+    const transcript = `boot_static_trigger_transcript_${number}`;
+    const action = `boot_static_trigger_action_${number}`;
+    const trigger = `boot_static_trigger_${number}`;
     await rootSql.unsafe(`
-      CREATE TABLE harness_shared.boot_static_trigger_target (id int);
-      CREATE TABLE harness_shared.boot_static_trigger_transcript (id int);
-      CREATE FUNCTION harness_shared.boot_static_trigger_action() RETURNS trigger
+      CREATE TABLE harness_shared.${target} (id int);
+      CREATE TABLE harness_shared.${transcript} (id int);
+      CREATE FUNCTION harness_shared.${action}() RETURNS trigger
         LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;`);
     const dir = makeSqlDir({
-      [filename]: `CREATE TRIGGER boot_static_trigger
-        AFTER INSERT ON harness_shared.boot_static_trigger_target
-        FOR EACH ROW EXECUTE FUNCTION harness_shared.boot_static_trigger_action();`,
+      [filename]: `CREATE TRIGGER ${trigger}
+        AFTER ${event} ON harness_shared.${target}
+        FOR EACH ROW ${predicate} EXECUTE FUNCTION harness_shared.${action}();`,
     });
     await seedMigrationReservations([filename]);
     const holder = postgres(dbUrl, {
@@ -801,7 +809,7 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
     try {
       await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
       await dump`BEGIN`;
-      await dump`LOCK TABLE harness_shared.boot_static_trigger_transcript IN ACCESS SHARE MODE`;
+      await dump.unsafe(`LOCK TABLE harness_shared.${transcript} IN ACCESS SHARE MODE`);
       const result = await withBoundedTimeout(
         (signal) => applyPendingMigrationsNow({ sqlDir: dir, broadcast: false, signal }),
         { fallback: null, timeoutMs: 5_000, label: 'static trigger backup rendezvous regression' },
@@ -810,7 +818,7 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       expect(result.value).toMatchObject({ applied: 1, failed: [] });
       const observed = await rootSql<{ created: boolean; backupStillHeld: boolean }[]>`
         SELECT EXISTS (
-          SELECT 1 FROM pg_trigger WHERE tgname = 'boot_static_trigger'
+          SELECT 1 FROM pg_trigger WHERE tgname = ${trigger}
         ) AS created,
         EXISTS (
           SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
