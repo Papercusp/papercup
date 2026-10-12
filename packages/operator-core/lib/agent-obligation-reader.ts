@@ -43,7 +43,8 @@ export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 /**
  * The goal-portfolio sections the obligation reader does NOT read, and so must not
  * pay for inside AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS. The reader reads only
- * `portfolio.goal` and `portfolio.worklist`. Without this projection the 60d3a8
+ * `portfolio.goal`, `portfolio.worklist` and `pending.blenderIdeas` (the planning
+ * review fingerprint). Without this projection the 60d3a8
  * read measured 0.8-1.3s warm, and 111 of 149 goal turn-end rows (2026-10-06..10)
  * recorded `unknown` (EI-25306440159635835).
  */
@@ -964,7 +965,7 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     },
     goalPortfolio: async (workspaceId, goalId) => {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
-      // Placement and planning obligations read only `goal` and `worklist`. The
+      // Placement and planning read `goal`, `worklist` and `pending.blenderIdeas`. The
       // claim-floor count (queue.claimable) and the rubric-stewardship identity
       // graph each alone pushed this read past AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS
       // (EI-25306440159635835), so neither is paid for here.

@@ -1741,6 +1741,17 @@ interface GoalPortfolioClaimStage {
 
 type ReadGoalPortfolioArgs = Parameters<typeof assembleGoalPortfolioBrief>[0];
 
+async function enrichGoalPortfolioRubricStewardship(
+  brief: GoalPortfolioBrief,
+  args: Pick<ReadGoalPortfolioArgs, 'workspaceId' | 'goalId' | 'sql' | 'rubricStewardship'>,
+): Promise<GoalPortfolioBrief> {
+  if (args.rubricStewardship === 'skip' || !brief.goal.body?.includes('Maintain rubric coverage')) return brief;
+  const rubricStewardship = await readGoalRubricStewardship({
+    workspaceId: args.workspaceId, goalId: args.goalId, nowMs: Date.parse(brief.assembledAt),
+  }, { sql: pg(args.sql) });
+  return { ...brief, rubricStewardship };
+}
+
 async function countGoalPortfolioClaimability(
   brief: GoalPortfolioBrief,
   stage: GoalPortfolioClaimStage,
@@ -1772,22 +1783,30 @@ async function countGoalPortfolioClaimability(
 
 /**
  * One portfolio snapshot, delivered in two stages. `snapshot` is the brief WITHOUT
- * the per-id claim-floor count (claimabilityScope 'not-requested'); `counted` is
- * the same snapshot with `queue.claimable` measured over the same candidate rows.
+ * the per-id claim-floor count (claimabilityScope 'not-requested') or rubric
+ * stewardship; `counted` adds both display-only reads to that same snapshot.
  * A caller that needs one consistent snapshot for both an obligation fold (which
  * never reads queue.claimable and runs under AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS)
  * and a display fold must use this instead of sharing one counted read: the count
- * alone took ~0.9s on goal 60d3a8 and timed the obligation fold out every wake
- * (EI-25191349922959563).
+ * alone took ~0.9s on goal 60d3a8 (EI-25191349922959563), and stewardship
+ * still pushed the shared snapshot beyond 900ms (EI-25679819974924161).
  */
 export function readGoalPortfolioBriefStaged(args: Omit<ReadGoalPortfolioArgs, 'claimability'>): {
   snapshot: Promise<GoalPortfolioBrief | null>;
   counted: Promise<GoalPortfolioBrief | null>;
 } {
   const stage: GoalPortfolioClaimStage = { countable: false, claimCandidates: [], buildPriorities: null };
-  const assembled = assembleGoalPortfolioBrief(args, stage);
+  const assembled = assembleGoalPortfolioBrief({ ...args, rubricStewardship: 'skip' }, stage);
   const snapshot = assembled;
-  const counted = assembled.then((brief) => (brief ? countGoalPortfolioClaimability(brief, stage) : null));
+  const counted = assembled.then(async (brief) => {
+    if (!brief) return null;
+    const [counted, enriched] = await Promise.all([
+      countGoalPortfolioClaimability(brief, stage),
+      enrichGoalPortfolioRubricStewardship(brief, args),
+    ]);
+    return { ...enriched, ...counted,
+      ...(enriched.rubricStewardship !== undefined ? { rubricStewardship: enriched.rubricStewardship } : {}) };
+  });
   // Either stage may go unread; a rejection must never surface as unhandled.
   void snapshot.catch(() => undefined);
   void counted.catch(() => undefined);
@@ -2465,15 +2484,9 @@ async function assembleGoalPortfolioBrief(args: {
     };
     stage.buildPriorities = buildPriorities;
 
-    const hasRubricDuties = launch.goalBrief.body?.includes('Maintain rubric coverage') === true
-      && args.rubricStewardship !== 'skip';
-    const rubricStewardship = hasRubricDuties
-      ? await readGoalRubricStewardship({ workspaceId: args.workspaceId, goalId: args.goalId,
-        nowMs: assembledAt.getTime() }, { sql }) : undefined;
-    return {
+    return await enrichGoalPortfolioRubricStewardship({
       schemaVersion: 1,
       assembledAt: assembledAt.toISOString(),
-      ...(hasRubricDuties ? { rubricStewardship } : {}),
       goal: {
         id: args.goalId,
         title: launch.goalBrief.title,
@@ -2538,7 +2551,7 @@ async function assembleGoalPortfolioBrief(args: {
       ...(args.attestOwnerId ? { holderAttestation } : {}),
       priorities: buildPriorities(claimable),
       degradedReasons: [...new Set(degradedReasons)],
-    };
+    }, args);
   } catch (error) {
     return {
       schemaVersion: 1,

@@ -1598,6 +1598,72 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(skipped?.worklist).toEqual(withDuties?.worklist);
   });
 
+  it('staged snapshot preserves planning inputs while rubric stewardship is still pending (EI-25679819974924161)', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stewardshipStarted = new Promise<void>((resolve) => { started = resolve; });
+    let stewardshipEntries = 0;
+    const blockedStewardship = async () => {
+      if (++stewardshipEntries === 2) started();
+      await gate;
+      return null;
+    };
+    rubricStewardshipRead.mockImplementationOnce(blockedStewardship).mockImplementationOnce(blockedStewardship);
+    const args = {
+      workspaceId: WS, goalId: 'goal-1', now: NOW,
+      sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, blender_pending: 7 } } }),
+      launch: { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } },
+    };
+    // The previous shared-read shape waits for the same pending provider.
+    const unsplit = readGoalPortfolioBrief({ ...args, claimability: 'skip' });
+    const staged = readGoalPortfolioBriefStaged(args);
+    let snapshotSettled = false;
+    let countedSettled = false;
+    let unsplitSettled = false;
+    void staged.snapshot.then(() => { snapshotSettled = true; });
+    void staged.counted.then(() => { countedSettled = true; });
+    void unsplit.then(() => { unsplitSettled = true; });
+    try {
+      await stewardshipStarted;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(snapshotSettled).toBe(true);
+      expect(countedSettled).toBe(false);
+      expect(unsplitSettled).toBe(false);
+      const snapshot = await staged.snapshot;
+      expect(snapshot?.goal.id).toBe('goal-1');
+      expect(snapshot?.worklist.length).toBeGreaterThan(0);
+      expect(snapshot?.pending.blenderIdeas).toBe(7);
+      expect(snapshot).not.toHaveProperty('rubricStewardship');
+      release();
+      const counted = await staged.counted;
+      expect(counted).toHaveProperty('rubricStewardship', null);
+      expect(counted?.goal).toEqual(snapshot?.goal);
+      expect(counted?.worklist).toEqual(snapshot?.worklist);
+      expect(counted?.pending).toEqual(snapshot?.pending);
+      expect(counted?.assembledAt).toBe(snapshot?.assembledAt);
+      expect((await unsplit)?.worklist).toEqual(snapshot?.worklist);
+    } finally {
+      release();
+      await Promise.all([staged.counted, unsplit]);
+    }
+  });
+
+  it('stewardship failure rejects the display stage without losing the obligation snapshot', async () => {
+    rubricStewardshipRead.mockRejectedValueOnce(new Error('stewardship unavailable'));
+    const staged = readGoalPortfolioBriefStaged({
+      workspaceId: WS, goalId: 'goal-1', now: NOW,
+      sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, blender_pending: 7 } } }),
+      launch: { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } },
+    });
+    await expect(staged.counted).rejects.toThrow('stewardship unavailable');
+    const snapshot = await staged.snapshot;
+    expect(snapshot?.worklist.length).toBeGreaterThan(0);
+    expect(snapshot?.pending.blenderIdeas).toBe(7);
+    expect(snapshot?.degradedReasons).toEqual([]);
+    expect(snapshot).not.toHaveProperty('rubricStewardship');
+  });
+
   it('staged read delivers the snapshot before the claim-floor count finishes (EI-25191349922959563)', async () => {
     // orient shares one portfolio snapshot between its obligation fold (900ms
     // budget, never reads queue.claimable) and its display fold. The obligation
