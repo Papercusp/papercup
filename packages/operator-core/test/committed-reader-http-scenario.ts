@@ -41,9 +41,11 @@ async function preparePrivateReaderPot(workspace: string, harness: string) {
   assert.equal(await resolveWorkItemPot({ rawSlug: harness, workspaceId: workspace }), workspace);
 }
 
-/** Verify setup before a bundle, sidecar, or HTTP experiment. */
-export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' | 'harness' | 'evidenceDir'>) {
+/** The actual HTTP preparation and its setup-only guard share this binding path. */
+export async function prepareCommittedReaderBindings(o: Pick<Options, 'workspace' | 'harness' | 'evidenceDir'>,
+  targets: Array<{ path: string; fingerprint: string }>, rootHarness?: string) {
   assert.match(o.workspace, /^test-runtime-/);
+  assert.ok(targets.length, 'private preparation requires an evidence target');
   await preparePrivateReaderPot(o.workspace, o.harness);
   const { sql } = getOrgPg();
   const scope = await resolvePlanScope({ harnessSlug: o.harness });
@@ -51,8 +53,23 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
     potMembership: await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system'),
     issuesPerWorkspace: await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId()),
   };
-  const item = await createWorkItem({ kind: 'task', title: 'Private committed reader setup diagnostic',
+  const item = await createWorkItem({ kind: 'task', title: 'Private committed reader HTTP fixture',
     harness: o.harness, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
+  const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader:S-001',
+    planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
+    behavior: 'Cold HTTP evidence reads preserve committed bytes and remain available after a sidecar timeout.',
+    lifecycleStatus: 'draft', mutationRequired: false, actorId: 'private-http-fixture' });
+  assert.equal(clause.status, 'created', JSON.stringify(clause));
+  const bindings = [];
+  for (const target of targets) {
+    const bound = await bindSpecEvidence({ harnessSlug: o.harness, workItemId: item.id,
+      specId: 'private-reader:S-001', evidenceKind: 'manual', evidenceRef: target.path,
+      sourceFingerprint: target.fingerprint, actorId: 'private-http-fixture',
+      ...(rootHarness ? { details: { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
+        rootHarnessSlug: rootHarness, sourcePaths: [target.path] } } } : {}) });
+    assert.equal(bound.status, 'created', JSON.stringify(bound));
+    bindings.push(bound);
+  }
   const rows = await sql`SELECT workspace_id, harness_slug, feature_id, item_kind
     FROM harness_shared.work_items WHERE feature_id = ${item.id}`;
   const visible = await withWorkspace(scope.workspaceId, tx => tx`
@@ -71,15 +88,6 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
     rows, visible, exact };
   // Persist before binding, so a setup failure retains the distinguishing evidence.
   await writeFile(join(o.evidenceDir, 'committed-reader-setup.json'), JSON.stringify(measurement, null, 2), { flag: 'wx' });
-  const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader-setup:S-001',
-    planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
-    behavior: 'Private fixture work-items and evidence bindings share one resolved Pot scope.',
-    lifecycleStatus: 'draft', mutationRequired: false, actorId: 'private-http-fixture' });
-  assert.equal(clause.status, 'created', JSON.stringify(clause));
-  const binding = await bindSpecEvidence({ harnessSlug: o.harness, workItemId: item.id,
-    specId: 'private-reader-setup:S-001', evidenceKind: 'manual', evidenceRef: 'setup-only',
-    sourceFingerprint: sha256('setup-only'), actorId: 'private-http-fixture' });
-  assert.equal(binding.status, 'created', JSON.stringify(binding));
   assert.equal(exact.length, 1, 'private create and binding must use the same partition');
   const wrongHome = `${o.workspace}-wrong-pot`;
   const owner = generateEd25519KeypairDer();
@@ -91,14 +99,34 @@ export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' |
     { slug: wrongHome, path: home.path, hive_slug: wrongHome }] }, o.workspace);
   const wrongScope = await resolvePlanScope({ harnessSlug: wrongHome });
   assert.deepEqual(wrongScope, { workspaceId: o.workspace, harnessSlug: wrongHome });
+  const before = await sql`SELECT id, workspace_id, harness_slug, spec_id, evidence_ref, binding_fingerprint
+    FROM harness_shared.spec_evidence_bindings WHERE work_item_id = ${item.id} ORDER BY id`;
+  assert.equal(before.length, bindings.length);
+  assert.ok(before.every(row => row.workspace_id === scope.workspaceId && row.harness_slug === scope.harnessSlug));
   const wrongBinding = await bindSpecEvidence({ harnessSlug: wrongHome, workItemId: item.id,
-    specId: 'private-reader-setup:S-001', evidenceKind: 'manual', evidenceRef: 'wrong-scope',
+    specId: 'private-reader:S-001', evidenceKind: 'manual', evidenceRef: 'wrong-scope',
     sourceFingerprint: sha256('wrong-scope'), actorId: 'private-http-fixture' });
   assert.equal(wrongBinding.status, 'work_item_not_found', JSON.stringify(wrongBinding));
-  const receipt = { ...measurement, binding, wrongScope, wrongBinding,
+  const after = await sql`SELECT id, workspace_id, harness_slug, spec_id, evidence_ref, binding_fingerprint
+    FROM harness_shared.spec_evidence_bindings WHERE work_item_id = ${item.id} ORDER BY id`;
+  assert.deepEqual(after, before, 'wrong-Pot refusal must not write or alter evidence bindings');
+  const columns = await sql`SELECT column_name FROM information_schema.columns
+    WHERE table_schema = 'harness_shared' AND table_name = 'tool_invocations'
+      AND column_name IN ('serving_process_id', 'metadata_json', 'args_json', 'invoked_at')`;
+  assert.deepEqual(columns.map(row => row.column_name).sort(),
+    ['args_json', 'invoked_at', 'metadata_json', 'serving_process_id'],
+    'private migrated schema must support same-invocation evidence before sidecar/host');
+  const receipt = { ...measurement, preparationPath: 'prepareCommittedReaderBindings',
+    binding: bindings[0], bindings, wrongScope, wrongBinding, bindingsBefore: before, bindingsAfter: after,
+    requiredSchemaColumns: columns.map(row => row.column_name).sort(),
     bundleStarted: false, httpStarted: false, sidecarStarted: false };
   await writeFile(join(o.evidenceDir, 'committed-reader-setup-receipt.json'), JSON.stringify(receipt, null, 2), { flag: 'wx' });
   return receipt;
+}
+
+/** Exercise the same scope/binding preflight without starting the cold/fault experiment. */
+export async function measureCommittedReaderSetup(o: Pick<Options, 'workspace' | 'harness' | 'evidenceDir'>) {
+  return prepareCommittedReaderBindings(o, [{ path: 'setup-only', fingerprint: sha256('setup-only') }]);
 }
 
 export async function prepareCommittedReaderScenario(o: Options) {
@@ -148,21 +176,8 @@ export async function prepareCommittedReaderScenario(o: Options) {
   const registry = await loadHarnessRegistry(o.workspace, { fresh: true });
   await saveHarnessRegistry({ ...registry, projects: [...registry.projects,
     { slug: rootHarness, path: repo, hive_slug: o.workspace }] }, o.workspace);
-  const item = await createWorkItem({ kind: 'task', title: 'Private committed reader HTTP fixture',
-    harness: o.harness, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
-  const clause = await setSpecClause({ harnessSlug: o.harness, specId: 'private-reader:S-001',
-    planItemId: 'P-900', expectedRevision: 0, behaviorClass: 'observability',
-    behavior: 'Cold HTTP evidence reads preserve committed bytes and remain available after a sidecar timeout.',
-    lifecycleStatus: 'draft', mutationRequired: false, actorId: 'private-http-fixture' });
-  assert.equal(clause.status, 'created', JSON.stringify(clause));
-  for (const target of targets) {
-    const bound = await bindSpecEvidence({ harnessSlug: o.harness, workItemId: item.id,
-      specId: 'private-reader:S-001', evidenceKind: 'manual', evidenceRef: target.path,
-      sourceFingerprint: target.fingerprint, actorId: 'private-http-fixture',
-      details: { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
-        rootHarnessSlug: rootHarness, sourcePaths: [target.path] } } });
-    assert.equal(bound.status, 'created', JSON.stringify(bound));
-  }
+  const preparation = await prepareCommittedReaderBindings(o, targets, rootHarness);
+  const item = { id: preparation.itemId };
   // Imports occur after selecting private socket/tmp/PG identities. The real
   // server and executor retain admission, byte handoff and RPC error semantics.
   const { runSpawnerSidecarServer } = await import('../lib/fleet/spawner-sidecar-server');
@@ -201,12 +216,6 @@ export async function prepareCommittedReaderScenario(o: Options) {
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   await once(server, 'listening');
   const { sql } = getOrgPg();
-  const columns = await sql`SELECT column_name FROM information_schema.columns
-    WHERE table_schema = 'harness_shared' AND table_name = 'tool_invocations'
-      AND column_name IN ('serving_process_id', 'metadata_json', 'args_json', 'invoked_at')`;
-  assert.deepEqual(columns.map(row => row.column_name).sort(),
-    ['args_json', 'invoked_at', 'metadata_json', 'serving_process_id'],
-    'private migrated schema must support same-invocation evidence');
   const requests: Array<Record<string, any>> = [];
   const healthSamples: Array<Record<string, unknown>> = [];
   return {
