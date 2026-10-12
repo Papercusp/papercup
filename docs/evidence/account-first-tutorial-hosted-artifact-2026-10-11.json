@@ -141,6 +141,24 @@
       "modelCalls": 0,
       "qualification": "Current retained source equality under documented relocation only. The original release sourceRoot remains absent. This does not establish historical out-of-root dependency equality, restore original directory identity, pass an unmodified served journey's historical sourceRoot lookup, renew runtime acceptance or prove shipment. The compiled artifact and prior test lineage remain unchanged."
     },
+    "fixtureRelocationSupport": {
+      "observedAt": "2026-10-12T03:13:00Z",
+      "workItems": ["WI-10007170", "WI-10007744"],
+      "surface": "Portal e2e/served-artifact.ts assertTutorialSourceCustody",
+      "configuration": "Set PORTAL_TUTORIAL_SOURCE_CUSTODY to this evidence document for a new served journey. The fixture attaches tutorial-source-custody separately from the original release metadata.",
+      "procedure": "Validate the evidence document's buildId, release, publishedAt, sourceRoot and sourceRootDigest against the captured immutable release. Require original sourceRoot to remain absent. Reuse fingerprintReleaseSource on restoredPortalRoot, normalize only declared restored Portal/core symlink targets to original path geometry, compare the complete root-local digest with the original sourceRootDigest, then compare all four consumed imports and seven Portal paths with the fixture.",
+      "regression": {
+        "path": "tests/served-artifact.test.ts",
+        "log": "/tmp/tutorial-source-custody-relocation-20261012T0313.log",
+        "result": "Complete conventional Vitest suite passed 21 tests with zero skips, including successful relocation without metadata mutation, refusal of another build identity, added root-local source, changed consumed fixture source and a reappearing original path.",
+        "scope": "Working-tree fixture repair. Clean committed verifier and hosted browser acceptance are pending."
+      },
+      "exactArtifactPreflight": {
+        "log": "/tmp/tutorial-source-custody-relocation-d047-20261012T0313.log",
+        "result": "The maintained helper verifies originalGeometryDigest 37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0 and current restoredRootDigest 47dc19c350c62de08f2981f91c1ab75312eb9a9ff4561f6a4077dcbed4b362dc against the retained verifier. Historical metadata remains byte-identical SHA256 c10f542d98fc5b0fb749acbbe41642daf2e0a4b848648eb6c6773aca9ffdfc18. No browser case or model call ran."
+      },
+      "qualification": "Explicit current source equality under relocation. Historical source paths and external dependency equality are not restored or claimed; original artifact, metadata and prior test lineage are unchanged. New fixture source must retain its own lineage."
+    },
     "procedure": "Maintained lint-as-committed --materialize-only at the original full core and Portal commits, with --retain-for set to the existing exact release. verifyCommittedWorkRoot checked each commit, all required manifest paths and the exact dependent artifact hold; every manifest input SHA256 matched and both Git trees were clean.",
     "taskId": "0mv456110481ijyrlpq",
     "log": "/tmp/tutorial-d047-source-rematerialize-20261011T1817.log",
