@@ -67,7 +67,12 @@ import {
   type DeadRoutineNameCoverage,
 } from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { lastSystemHealth, readSharedSystemHealthSnapshot } from './compute';
+import {
+  lastSystemHealth,
+  readFreshGitSyncMissedIntervalsByInstall,
+  readSharedSystemHealthSnapshot,
+  type GitSyncMissedIntervalsCandidate,
+} from './compute';
 import {
   openEscalation,
   listEscalationsPaginated,
@@ -493,6 +498,51 @@ export function isGitSyncMissedIntervalsSignature(sig: string): boolean {
   return sig === GIT_SYNC_MISSED_INTERVALS_SIGNATURE || sig.startsWith(`${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:`);
 }
 
+function gitSyncMissedIntervalSummary(installSlug: string | null, missedIntervals: number): string {
+  return (
+    `git-sync${installSlug ? ` on ${installSlug}` : ''} has missed ${missedIntervals} consecutive scheduler intervals. ` +
+    `Missed intervals measure the scheduler leg and do not establish commit progress; an in-flight fire ` +
+    `may have created local commits before routine completion. Read routines:list { name:'git-sync'` +
+    `${installSlug ? `, installSlug:'${installSlug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
+    `execution leg, and safe_to_restart) before concluding no commits were made or restarting anything.`
+  );
+}
+
+function gitSyncMissedIntervalSignal(installSlug: string | null, missedIntervals: number): AlarmSignal {
+  return {
+    key: gitSyncMissedIntervalsSignature(installSlug),
+    severity: 'blocker',
+    summary: gitSyncMissedIntervalSummary(installSlug, missedIntervals),
+  };
+}
+
+function gitSyncMissedIntervalsRevalidationEvidence(
+  sig: string,
+  candidates: GitSyncMissedIntervalsCandidate[],
+  observedAtMs: number,
+): string {
+  const observedAt = new Date(observedAtMs).toISOString();
+  const starvedCandidates = candidates.filter(
+    (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+  );
+  const installSlug = sig.length > GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length
+    ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
+    : null;
+  if (installSlug) {
+    const candidate = starvedCandidates.find((entry) => entry.installSlug === installSlug);
+    return candidate
+      ? `live routines recheck at ${observedAt} confirmed ${installSlug} remains a starvation candidate at ${candidate.missedIntervals} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`
+      : `live routines recheck at ${observedAt} found no current starvation candidate for ${installSlug}; the filtered candidate list is not a raw-zero or commit-progress measure`;
+  }
+  const max = starvedCandidates.reduce<number | null>(
+    (value, candidate) => value === null ? candidate.missedIntervals : Math.max(value, candidate.missedIntervals),
+    null,
+  );
+  return max === null
+    ? `live routines recheck at ${observedAt} found no current starvation candidates; the filtered candidate list is not a raw-zero or commit-progress measure`
+    : `live routines recheck at ${observedAt} found a current starvation candidate at ${max} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+}
+
 /**
  * WI-10006867: the vanished-checkout signature FAMILY, one signal per install keyed
  * `git-sync-checkout-missing:<installSlug>`. An install whose checkout is gone skips every fire
@@ -659,12 +709,7 @@ export function evaluateLivenessAlarm(
     signals.push({
       key: gitSyncMissedIntervalsSignature(slug),
       severity: 'blocker',
-      summary:
-        `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals. ` +
-        `Missed intervals measure the scheduler leg and do not establish commit progress; an in-flight fire ` +
-        `may have created local commits before routine completion. Read routines:list { name:'git-sync'` +
-        `${slug ? `, installSlug:'${slug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
-        `execution leg, and safe_to_restart) before concluding no commits were made or restarting anything.`,
+      summary: gitSyncMissedIntervalSummary(slug, gitSyncMissed),
     });
   }
   // WI-10006867: an install whose checkout VANISHED — reported under its real cause, never as
@@ -1799,6 +1844,13 @@ export interface AlarmDeps {
    *  `null` (unknown/failed) is FAIL-OPEN — it must never suppress a signal, only
    *  confirm one. */
   reverifyDeadRoutines?: (ws: string, now: number) => Promise<string[] | null>;
+  /** EI-25693557603206081: fresh git-sync starvation candidates at alarm time. Production
+   *  defaults to the routines reader only when `readLast` is not injected; tests can inject
+   *  this seam explicitly. Null/throw is unknown and must fail open. */
+  readFreshGitSyncMissedIntervalsByInstall?: (
+    ws: string,
+    nowMs: number,
+  ) => Promise<GitSyncMissedIntervalsCandidate[] | null>;
 }
 
 /**
@@ -2258,6 +2310,65 @@ export async function runLivenessAlarmTick(
     }
   }
 
+  // EI-25693557603206081: snapshot-derived scheduler misses can outlive a recovered
+  // git-sync fire. Re-read the same routine rows immediately before reconciliation/fire
+  // whenever this snapshot or an open escalation mentions the signal family. A live
+  // empty candidate set is a confirmed recovery; a failed read preserves snapshot alarms
+  // and marks the family unobservable so it cannot false-resolve an open row.
+  let gitSyncLiveRevalidation:
+    | { status: 'readable'; observedAtMs: number; candidates: GitSyncMissedIntervalsCandidate[] }
+    | { status: 'unavailable'; observedAtMs: number }
+    | undefined;
+  const reverifyGitSyncMissedIntervals =
+    deps.readFreshGitSyncMissedIntervalsByInstall ??
+    (deps.readLast === undefined ? readFreshGitSyncMissedIntervalsByInstall : null);
+  const shouldReverifyGitSyncMissedIntervals =
+    signals.some((signal) => isGitSyncMissedIntervalsSignature(signal.key)) ||
+    Array.from(openBySig.keys()).some((sig) => isGitSyncMissedIntervalsSignature(sig));
+  if (reverifyGitSyncMissedIntervals && shouldReverifyGitSyncMissedIntervals) {
+    const candidates = await reverifyGitSyncMissedIntervals(ws, now).catch(() => null);
+    if (candidates === null) {
+      gitSyncLiveRevalidation = { status: 'unavailable', observedAtMs: now };
+      const snapshotAt = Number.isFinite(healthForSignals.evaluatedAt)
+        ? new Date(healthForSignals.evaluatedAt).toISOString()
+        : 'unknown';
+      signals = signals.map((signal) => isGitSyncMissedIntervalsSignature(signal.key)
+        ? {
+            ...signal,
+            summary:
+              `${signal.summary} Fire-time git-sync recheck was unavailable; retaining snapshot evidence ` +
+              `evaluated at ${snapshotAt}, so the current candidate and count are unknown.`,
+          }
+        : signal);
+    } else {
+      gitSyncLiveRevalidation = { status: 'readable', observedAtMs: now, candidates };
+      const starvedNow = candidates.filter(
+        (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+      );
+      const keepLegacyFamilySignal = signals.some(
+        (signal) => signal.key === GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+      );
+      const freshSignals = keepLegacyFamilySignal && starvedNow.length > 0
+        ? [gitSyncMissedIntervalSignal(
+            null,
+            starvedNow.reduce((max, candidate) => Math.max(max, candidate.missedIntervals), 0),
+          )]
+        : starvedNow.map((candidate) =>
+            gitSyncMissedIntervalSignal(candidate.installSlug, candidate.missedIntervals));
+      const firstGitSyncSignal = signals.findIndex((signal) => isGitSyncMissedIntervalsSignature(signal.key));
+      const otherSignals = signals.filter((signal) => !isGitSyncMissedIntervalsSignature(signal.key));
+      const insertionIndex = firstGitSyncSignal < 0
+        ? otherSignals.length
+        : signals.slice(0, firstGitSyncSignal).filter((signal) => !isGitSyncMissedIntervalsSignature(signal.key)).length;
+      signals = [
+        ...otherSignals.slice(0, insertionIndex),
+        ...freshSignals,
+        ...otherSignals.slice(insertionIndex),
+      ];
+    }
+    currentSigs = new Set(signals.map((signal) => signal.key));
+  }
+
   // 1. Auto-resolve-on-recovery: every open infra-liveness escalation whose
   //    signal is no longer firing. On the first post-deploy tick this drains the
   //    recovered backlog (gateway/accounts/no-bees-while-idle) so the pile clears.
@@ -2270,6 +2381,11 @@ export async function runLivenessAlarmTick(
   //    readable tick re-fires a fresh escalation: fire → false-resolve → fire, at the
   //    tick rate, forever. Skip those signatures and leave the open row standing.
   const unobservableSigs = unobservableLivenessSignatures(healthForSignals);
+  if (gitSyncLiveRevalidation?.status === 'readable') {
+    unobservableSigs.delete(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  } else if (gitSyncLiveRevalidation?.status === 'unavailable') {
+    unobservableSigs.add(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  }
   // EI-19462267124852221: the THIRD absence reason. A signal withheld by a policy gate
   // (`beesIdleByDesign`) is still TRUE — measured 2026-08-04, every `panel:bees`
   // auto-resolve announced "condition recovered" with the panel reading crit in the
@@ -2382,10 +2498,18 @@ export async function runLivenessAlarmTick(
           : policySuppressed
             ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
           : 'condition recovered';
+        const resolutionEvidence =
+          isGitSyncMissedIntervalsSignature(sig) && gitSyncLiveRevalidation?.status === 'readable'
+            ? gitSyncMissedIntervalsRevalidationEvidence(
+                sig,
+                gitSyncLiveRevalidation.candidates,
+                gitSyncLiveRevalidation.observedAtMs,
+              )
+            : resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals, d026Quiescence);
         const outcome = await resolve(
           rec.msg_id,
           'auto-resolved',
-          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals, d026Quiescence)}`,
+          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolutionEvidence}`,
         );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);
@@ -2496,7 +2620,9 @@ export async function runLivenessAlarmTick(
         const shouldBump =
           repeatedAfterPendingRecoverySigs.has(s.key) && openForSig.some((record) => record.severity === s.severity);
         const shouldRefresh =
-          s.key === 'dead-routines' && openForSig.some((record) => record.summary !== renderedSummary);
+          (s.key === 'dead-routines' ||
+            (isGitSyncMissedIntervalsSignature(s.key) && gitSyncLiveRevalidation !== undefined)) &&
+          openForSig.some((record) => record.summary !== renderedSummary);
         if (shouldBump || shouldRefresh) {
           try {
             await escalate(escalationInput(s));
