@@ -5,7 +5,7 @@ import { createHostedPrincipal } from '../auth/hosted-principal';
 import { createHostedTutorialVoiceTokenRoute, type TutorialVoiceTokenProvider } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { CLOUD_TUTORIAL_ID } from './cloud-tutorial-lesson';
 vi.mock('./cloud-tutorial-progress', () => ({ readAccountTutorialProgress: vi.fn(), readTutorialProgress: vi.fn() }));
-import { readAccountTutorialProgress, readTutorialProgress } from './cloud-tutorial-progress';
+import { readAccountTutorialProgress, readTutorialProgress, type TutorialProgressRecord } from './cloud-tutorial-progress';
 
 const origin = 'https://app.papercusp.com';
 const expiresAt = Date.now() + 900_000;
@@ -24,7 +24,7 @@ function setup(withProvider = true) {
     sessionId: 'reservation', expiresAt, maximumSeconds: 60 }));
   const runTenant = vi.fn(async <T>(_context: unknown, callback: (tx: Sql) => Promise<T>) => callback({} as Sql));
   const route = createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorkspaceId: 'control',
-    runTenant: (context, callback) => runTenant(context, callback), provider: withProvider ? { disabled, issue } : undefined });
+    runTenant: (context, callback) => runTenant(context, callback) as ReturnType<typeof callback>, provider: withProvider ? { disabled, issue } : undefined });
   const call = (input: unknown = body, options: { principal?: ReturnType<typeof principal> | null; origin?: string;
     workspaceHeader?: string; signal?: AbortSignal } = {}) => {
     const request = new Request(origin + route.path, { method: 'POST', body: JSON.stringify(input), signal: options.signal,
@@ -158,8 +158,8 @@ describe('hosted tutorial conversation token boundary', () => {
     expect((await call(legacy)).status).toBe(403);
     expect((await call(legacy, { principal: principal({ selectedWorkspaceId: 'workspace-a' }) })).status).toBe(403);
     const selected = principal({ selectedWorkspaceId: 'workspace-a', permissions: ['workspace:view'] });
-    const record = { revision: 1, mutationId: 'saved', progress: { scope: legacyScope,
-      lessonId: CLOUD_TUTORIAL_ID, version: 2, disposition: 'active' as const } };
+    const record: TutorialProgressRecord = { revision: 1, mutationId: 'saved', progress: { scope: legacyScope,
+      lessonId: CLOUD_TUTORIAL_ID, version: 2 as const, disposition: 'active' as const } };
     vi.mocked(readTutorialProgress).mockResolvedValueOnce({ ...record, revision: 0 });
     expect((await call(legacy, { principal: selected })).status).toBe(409);
     vi.mocked(readTutorialProgress).mockResolvedValueOnce(record);

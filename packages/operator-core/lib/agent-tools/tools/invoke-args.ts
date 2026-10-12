@@ -29,10 +29,11 @@ function recoverRecordWithSurplusClosingBrace(value: string): Record<string, unk
 export function decodeToolsInvokeArgs(value: unknown): unknown {
   let current = value;
   for (let i = 0; i < 5 && typeof current === 'string'; i += 1) {
+    const text = current;
     try {
-      current = JSON.parse(current);
+      current = JSON.parse(text);
     } catch {
-      const recovered = recoverRecordWithSurplusClosingBrace(current);
+      const recovered = recoverRecordWithSurplusClosingBrace(text);
       if (recovered) {
         current = recovered;
         continue;

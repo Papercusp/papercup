@@ -419,7 +419,7 @@ export async function pruneStorageCategory(req: PruneRequest): Promise<PruneResu
   if (!validDays(req.olderThanDays)) return base('invalid_older_than_days');
 
   try {
-    if (cat.store === 'scratch') return await pruneScratch(cat, req);
+    if (cat.kind === 'disk' && cat.store === 'scratch') return await pruneScratch(cat, req);
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql as unknown as Sql;
     if (cat.kind === 'pg') return await prunePg(sql, cat, req);

@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { build } from 'esbuild';
 import type { ContentIntakeDeps } from './content-intake';
-const { readContent, ContentIntakeError } = await import(process.env.CONTENT_INTAKE_PROBE ?? './content-intake');
+const { readContent, ContentIntakeError } = (await import(process.env.CONTENT_INTAKE_PROBE ?? './content-intake')) as typeof import('./content-intake');
 
 const context = { workspaceId: 'workspace-a', readerId: 'reader-a' };
 const allowed: ContentIntakeDeps = { authorize: async () => true };

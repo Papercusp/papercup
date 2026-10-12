@@ -16,7 +16,7 @@ const {
   identityReleasePricing,
   IdentityActivationRefusedError,
   isIdentityActivationRefusedError,
-} = await import(process.env.IDENTITY_ACTIVATION_GATE_MODULE_PATH ?? './identity-activation-gate');
+} = (await import(process.env.IDENTITY_ACTIVATION_GATE_MODULE_PATH ?? './identity-activation-gate')) as typeof import('./identity-activation-gate');
 
 function release(id: string, version = '1.0.0'): { layer: InstalledIdentityReleaseLayer; offer: IdentityOfferView } {
   const derived = identityPerUseOfferTerms({ identity: { id, version } });

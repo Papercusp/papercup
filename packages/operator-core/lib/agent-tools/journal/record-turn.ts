@@ -189,7 +189,7 @@ export default defineTool({
       const observationInput = {
         ownerId, workspaceId: journalWorkspaceId, sessionId: args.session_id, sinceIso,
         assistantText: turn.text, turnRef: `${args.session_id}:${turn.ts?.toISOString() ?? id}`,
-        harnessSlug: resolveConcreteHarnessSlug(undefined, ctx),
+        harnessSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? undefined,
       };
       // This optional observation must not delay or fail the recorded turn.
       // The response reports scheduling; only the observation ledger proves filing.

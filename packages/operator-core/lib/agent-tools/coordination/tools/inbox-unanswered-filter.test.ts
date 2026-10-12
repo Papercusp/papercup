@@ -52,7 +52,7 @@ describe('filterInboxByUnanswered (EI-13159)', () => {
     expect(parts[0]?.expects).toBe('none');
     const filtered = filterInboxByUnanswered(parts, unanswered);
     expect(filtered).toEqual(parts);
-    expect(prioritizedInboxWindow(filtered as Array<Record<string, unknown>>, 20)).toEqual(parts);
+    expect(prioritizedInboxWindow(filtered as ReadonlyArray<Record<string, unknown>>, 20)).toEqual(parts);
   });
 
   it('does not mark messages from positively ended senders as reply-owed', () => {

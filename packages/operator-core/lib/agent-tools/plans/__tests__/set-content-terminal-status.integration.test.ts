@@ -24,7 +24,7 @@ const SLUG = 'zzz-setc-term-plan-2026-06-04';
 const WS = DEFAULT_WORKSPACE_ID;
 
 /** A minimal non-legacy plan that lints clean, at the given lifecycle status. */
-function planBody(status: 'active' | 'superseded' | 'shipped'): string {
+function planBody(status: 'ready' | 'active' | 'superseded' | 'shipped'): string {
   return `---
 title: Terminal Side-Effect Plan
 slug: ${SLUG}

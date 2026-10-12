@@ -439,7 +439,8 @@ export function toolErrorSignalKey(
  */
 export interface SuspectedToolFailure {
   toolName: string;
-  errorCode?: string;
+  /** Wire payloads may carry an explicit `null`; every consumer treats it as absent. */
+  errorCode?: string | null;
   status?: string;
   message: string;
   schemaRevision?: string;

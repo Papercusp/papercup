@@ -355,7 +355,8 @@ function readInterruptedCutReclaims(archiveDir: string, canonicalRoot: string): 
       } finally {
         fs.closeSync(fd);
       }
-      const line = tail.split('\n').findLast((value) => value.startsWith(RECLAIM_RECEIPT_PREFIX));
+      // Last receipt line wins; reverse().find() because operator-core's lib predates es2023 findLast.
+      const line = tail.split('\n').reverse().find((value) => value.startsWith(RECLAIM_RECEIPT_PREFIX));
       if (!line) continue; // older archives remain valid diff archives
       const r = JSON.parse(line.slice(RECLAIM_RECEIPT_PREFIX.length)) as CutReclaimReceipt;
       if (r.schema !== 'papercusp-cut-reclaim/v1' || r.canonicalRoot !== canonicalRoot) continue;
