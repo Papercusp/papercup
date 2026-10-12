@@ -915,7 +915,7 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
       SELECT dedupe_key, outcome FROM harness_shared.trigger_deliveries
       WHERE workspace_id = ${WS} AND source_id = ${sourceId}::uuid
         AND sink_kind = 'data-source-admission' AND datatype_id = 'ticket'
-        AND payload->>'externalId' = ${fresh.gid!}
+        AND dedupe_key LIKE ${`connector:${sourceId}:ticket:${fresh.gid!}:%`}
       ORDER BY dedupe_key`;
     const firstDeliveries = await admissionDeliveries();
     expect(firstDeliveries).toEqual([{ dedupe_key: expect.any(String), outcome: 'delivered' }]);
