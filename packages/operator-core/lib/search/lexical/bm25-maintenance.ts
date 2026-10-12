@@ -455,8 +455,11 @@ async function reclaim(
   opts: Bm25MaintenanceOptions,
   report: Bm25MaintenanceReport,
 ): Promise<void> {
-  const unsettled = new Set(report.compacted.filter(c => c.stillNeeds).map(c => c.index));
-  const candidates = [...live].sort().filter(name => !unsettled.has(`harness_shared.${name}`));
+  // Compaction debt and physical bloat are independent. A busy index can
+  // exhaust every run's step budget; excluding it here hides the reclaim
+  // backlog forever. The concurrent rebuild replaces its segments safely
+  // after this run's compaction statements, under the existing DDL lock.
+  const candidates = [...live].sort();
   const bloated = await findBloated(sql, candidates, opts, report.errors);
   if (bloated.length === 0) return;
   if (report.built) {

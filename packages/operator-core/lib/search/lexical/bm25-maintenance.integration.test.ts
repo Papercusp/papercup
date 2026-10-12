@@ -73,6 +73,46 @@ describe('index maintenance workflow body (P-006)', () => {
     }
   });
 
+  it('reclaims a bloated index even when its compaction budget leaves debt unsettled', async () => {
+    const qualified = 'harness_shared.unsettled_reclaim_probe_bm25';
+    try {
+      await sql.unsafe(`CREATE TABLE harness_shared.unsettled_reclaim_probe (id serial PRIMARY KEY, body text);
+        CREATE INDEX unsettled_reclaim_probe_bm25 ON harness_shared.unsettled_reclaim_probe USING bm25 (body)
+          WITH (text_config = 'english', compaction = 'manual');`);
+      for (let s = 0; s < 4; s++) {
+        await sql`INSERT INTO harness_shared.unsettled_reclaim_probe (body)
+          SELECT 'unsettledtok' || md5(g::text) FROM generate_series(${s * 100 + 1}::int, ${(s + 1) * 100}::int) g`;
+        await sql`SELECT public.bm25_spill_index(${qualified})`;
+      }
+      await sql.unsafe('DELETE FROM harness_shared.unsettled_reclaim_probe WHERE id <= 320');
+      await sql.unsafe('VACUUM harness_shared.unsettled_reclaim_probe');
+      const [{ bytes, summary, needs }] = await sql<{ bytes: string; summary: string; needs: boolean }[]>`
+        SELECT pg_relation_size(${qualified}::regclass)::text AS bytes,
+          public.bm25_summarize_index(${qualified}) AS summary,
+          public.bm25_needs_compaction(${qualified}::regclass) AS needs`;
+      const ratio = Number(bytes) / estimateBm25LiveBytes(parseBm25SegmentTotals(summary)!);
+      expect(needs, 'fixture must have actual unsettled compaction debt').toBe(true);
+      expect(ratio, 'fixture must have measured bloat independently of compaction debt').toBeGreaterThan(BM25_MAX_BLOAT_RATIO);
+      const result = await runBm25Maintenance(sql, { maxCompactionSteps: 0 });
+      expect(result.errors).toEqual([]);
+      expect(result.compacted.find(c => c.index === qualified)).toEqual({ index: qualified, steps: 0, stillNeeds: true });
+      expect(result.reclaimed?.index, 'unsettled compaction must not hide a bloated index from reclaim').toBe(qualified);
+      expect(result.reclaimed!.afterBytes).toBeLessThan(result.reclaimed!.beforeBytes);
+      const [{ remaining, afterBytes, afterSummary, afterNeeds }] = await sql<{
+        remaining: number; afterBytes: string; afterSummary: string; afterNeeds: boolean;
+      }[]>`SELECT (SELECT count(*)::int FROM harness_shared.unsettled_reclaim_probe) AS remaining,
+        pg_relation_size(${qualified}::regclass)::text AS "afterBytes",
+        public.bm25_summarize_index(${qualified}) AS "afterSummary",
+        public.bm25_needs_compaction(${qualified}::regclass) AS "afterNeeds"`;
+      expect(remaining).toBe(80);
+      expect(afterNeeds).toBe(false);
+      expect(Number(afterBytes) / estimateBm25LiveBytes(parseBm25SegmentTotals(afterSummary)!)).toBeLessThan(1.5);
+      expect((await runBm25Maintenance(sql, { maxCompactionSteps: 0 })).reclaimed).toBeNull();
+    } finally {
+      await sql.unsafe('DROP TABLE IF EXISTS harness_shared.unsettled_reclaim_probe');
+    }
+  });
+
   it('holds session settings and advisory locks on one backend, then releases the lock when its dedicated client closes', async () => {
     vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', `postgres://postgres@${db.connection.host}:${db.connection.port}/${db.runTag}`);
     vi.stubEnv('PAPERCUSP_PGBOUNCER', '1');
