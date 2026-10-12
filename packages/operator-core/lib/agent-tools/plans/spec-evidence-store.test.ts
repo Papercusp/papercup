@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -65,6 +65,7 @@ import {
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
+  measureRepoFilesEvidenceDetailedAtCommit,
   measureCompletedTestRuntime,
   agentToolRuntimeSourceWithoutStaticGuidance,
   measureRepoFilesEvidenceAtRoot,
@@ -835,6 +836,46 @@ describe('repo-backed server measurement', () => {
       await writeFile(join(root, 'input.sql'), Buffer.alloc(8 * 1024 * 1024 + 1));
       await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, recipe, { fixtureRoot: root })).rejects.toThrow(/repo_measurement_too_large/);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('pins every byte and member of a fixture corpus above 8MiB with identical working-tree and committed fingerprints', async () => {
+    const dir = join(measurementRoot, 'large-fixture');
+    await mkdir(dir);
+    const fixtures = ['a.sql', 'b.sql', 'c.sql'];
+    await Promise.all(fixtures.map((path, i) => writeFile(join(dir, path), Buffer.alloc(3 * 1024 * 1024, i + 1))));
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'], fixtureGlobs: ['large-fixture/*.sql'] };
+    const first = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(first.pin.files.filter(file => file.dimension === 'fixture').map(file => file.path))
+      .toEqual(fixtures.map(path => `large-fixture/${path}`));
+    const committedRoot = await mkdtemp(join(tmpdir(), 'fixture-committed-twin-'));
+    try {
+      await cp(measurementRoot, committedRoot, { recursive: true });
+      const git = (...args: string[]) => execFileSync('git', ['-C', committedRoot, '-c', 'user.name=test',
+        '-c', 'user.email=test@example.test', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' }).trim();
+      git('init', '-q');
+      git('add', '.');
+      git('commit', '-q', '-m', 'full fixture corpus');
+      const committed = await measureRepoFilesEvidenceDetailedAtCommit(committedRoot, recipe, git('rev-parse', 'HEAD'));
+      expect(committed.fixtureFingerprint).toBe(first.fixtureFingerprint);
+      expect(committed.files.filter(file => file.dimension === 'fixture'))
+        .toEqual(first.pin.files.filter(file => file.dimension === 'fixture')
+          .map(({ path, sha256, gitBlob, dimension }) => ({ path, sha256, gitBlob, dimension })));
+    } finally { await rm(committedRoot, { recursive: true, force: true }); }
+    // Fixture admission must not widen ordinary product-source admission.
+    await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, {
+      ...recipe, sourcePaths: fixtures.map(path => `large-fixture/${path}`), fixtureGlobs: undefined,
+    })).rejects.toThrow(/repo_measurement_too_large/);
+    await writeFile(join(dir, 'c.sql'), 'changed tail');
+    const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
+    await writeFile(join(dir, 'added.sql'), 'new member');
+    const added = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(added.fixtureFingerprint).not.toBe(changed.fixtureFingerprint);
+    await rm(join(dir, 'added.sql'));
+    expect((await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe)).fixtureFingerprint).toBe(changed.fixtureFingerprint);
+    expect(changed.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(changed.testFingerprint).toBe(first.testFingerprint);
   });
 
   it('refuses a fixture corpus beyond its file count bound', async () => {
