@@ -188,7 +188,7 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
   // shell CLI and TypeScript runner finalize here, before either invokes pruning.
   // Preserve declared original phase receipts as well as the completion result.
   // Binding may happen after pruning, so binding-time retention alone is too late.
-  if (result.verdict !== 'pass' || !result.endedAt) return;
+  if (!result.endedAt || (result.verdict !== 'pass' && retainedArtifacts.length === 0)) return;
   const root = await realpath(path.dirname(result.evidenceDir));
   if (path.basename(result.evidenceDir) !== result.runId) throw new Error('invalid retained harness run id');
   const insideRoot = (target: string) => {
@@ -196,10 +196,15 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
     return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
   };
   const runRoot = await realpath(result.evidenceDir);
-  // Read every required original before publishing the retained completion result.
-  const artifacts = await Promise.all([...new Set(retainedArtifacts)].map(async relativeFile => {
+  // Passing runs require every declared original. Failed runs preserve the
+  // available originals; a blocked phase may never have produced its receipt.
+  const originals = await Promise.all([...new Set(retainedArtifacts)].map(async relativeFile => {
     const source = path.join(runRoot, relativeFile);
-    const info = await lstat(source);
+    const info = await lstat(source).catch(error => {
+      if (result.verdict !== 'pass' && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) return null;
     const resolved = await realpath(source);
     const relativeSource = path.relative(runRoot, resolved);
     if (!info.isFile() || info.size > 16 * 1024 * 1024 || !insideRoot(resolved)
@@ -210,6 +215,7 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
     if (artifactBytes.length > 16 * 1024 * 1024) throw new Error('invalid retained harness artifact');
     return { relativeFile, bytes: artifactBytes };
   }));
+  const artifacts = originals.filter((artifact): artifact is NonNullable<typeof artifact> => artifact !== null);
   artifacts.push({ relativeFile: 'result.json', bytes });
   const retainedRoot = path.join(root, 'retained');
   await mkdir(retainedRoot, { recursive: true });

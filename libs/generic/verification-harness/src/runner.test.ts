@@ -59,6 +59,32 @@ describe('declared completion receipt retention', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each(['prepare', 'execute'])('preserves original failed %s receipts and verdict after count pruning', async failurePhase => {
+    const root = tmp(), runId = '20261012T000001Z-1';
+    try {
+      const original = await runHarness({
+        contract: { name: 'failed-receipt-proof', phases: [{ id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }] },
+        evidenceRoot: root, runId, retainedArtifacts: receipts,
+        runPhase: async ({ phase, evidenceDir }) => {
+          writeFileSync(path.join(evidenceDir, phase === 'prepare' ? 'source.json' : 'lifecycle.json'),
+            phase === 'prepare' ? source : lifecycle);
+          return phase === failurePhase ? { ok: false, reasonCode: 'original-rejection', detail: 'original failure' } : { ok: true };
+        },
+      });
+      expect(original.verdict).toBe('fail');
+      expect(original.phases.find(phase => phase.phase === failurePhase)).toMatchObject({
+        reasonCode: 'original-rejection', detail: 'original failure',
+      });
+      await complete(root, '20261012T000002Z-2');
+      expect(await pruneRuns(root, 1)).toContain(runId);
+      expect(existsSync(original.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', runId, receipts[0]))).toEqual(source);
+      if (failurePhase === 'execute') expect(readFileSync(path.join(root, 'retained', runId, receipts[1]))).toEqual(lifecycle);
+      else expect(existsSync(path.join(root, 'retained', runId, receipts[1]))).toBe(false);
+      expect(JSON.parse(readFileSync(path.join(root, 'retained', runId, 'result.json'), 'utf8'))).toEqual(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('refuses changed retained source bytes without replacing the original', async () => {
     const root = tmp(), runId = '20261010T000004Z-4';
     try {
