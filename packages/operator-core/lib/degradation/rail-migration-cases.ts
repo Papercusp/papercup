@@ -60,9 +60,10 @@ const remainingSyncCases: RailMigrationCase[] = [{
     const { expect } = await import('vitest');
     const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
     const text = original('packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts', '[coord-message] delivery receipt failed', 'if');
-    for (const scenario of ['empty', 'unwoken', 'failed', 'sent', 'rate-limited']) {
+    for (const scenario of ['not-requested', 'empty', 'unwoken', 'failed', 'sent', 'rate-limited']) {
       await execute(text, {
-        fanTo: scenario === 'empty' ? [] : ['recipient'],
+        b: { receipt: scenario !== 'not-requested' },
+        to: scenario === 'empty' ? [] : ['recipient'],
         fanWoken: ['unwoken', 'rate-limited'].includes(scenario) ? 0 : 1,
         fanSuppressedByRate: scenario === 'rate-limited',
         opts: { workspaceId: 'fixture', harnessSlug: 'fixture-harness' },
