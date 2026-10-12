@@ -4042,5 +4042,283 @@
       "The18:50 registered receipt names deletion of the old36f6 quarantine; this is not evidence of unauthorized loss or full payload preservation.",
       "Current metadata can seed a later comparison under PID1936094 and script800d1624; a subsequent qualified receipt is still required."
     ]
+  },
+  "native20261012OverdueComparison": {
+    "schemaVersion": 1,
+    "verdict": "OPEN/UNKNOWN: current byte/inode floors and captured protected metadata pass; bg-host PID and sampled maintained script changed, so the span is not a qualified same-runtime/script preservation interval.",
+    "recordedAfter": "2026-10-12T23:29:15.630746+00:00",
+    "previousArtifactSha256": "743a247051b9b354041674ba2fd8bf685f134fc0cab683bb0f9b93c38a066267",
+    "baseline": {
+      "artifactRef": "native20261012LateWindow",
+      "custody": {
+        "logPath": ".papercusp/scratch/bash-8e6aba1d-a8f.log",
+        "logSha256": "2caf0c1814df3f34d54b9c00664f7c71cde995c32067ad7f4fcf052194c4ebc2",
+        "at": "2026-10-12T20:32:32.424181+00:00",
+        "nativePid": 1936094,
+        "scriptSha256": "800d162497596aef95c4b3b9ae99647ef651e87d9d8eb47bc02438746059c37a"
+      },
+      "capacity": {
+        "logPath": ".papercusp/scratch/bash-1a6c19c3-c72.log",
+        "logSha256": "b95113e3ef9815e2fa385a23685c282d29ef38c27f63b8987d6ea2f43da24656",
+        "at": "2026-10-12T20:32:40.332Z"
+      }
+    },
+    "capacity": {
+      "logPath": ".papercusp/scratch/bash-38935773-821.log",
+      "logSha256": "4a686e8fccbb21a15cfcf6435f9f87b2f36ee2e652e27bbcbf6c1d1502edea24",
+      "receipt": {
+        "at": "2026-10-12T23:29:06.842Z",
+        "unit": "papercusp-bg-host.service",
+        "manager": "user",
+        "nativePid": 987208,
+        "policy": {
+          "freePctMin": 0.1,
+          "freeBytesMin": 107374182400,
+          "freeInodesPctMin": 0.05,
+          "criticalFreePctMin": 0.02,
+          "criticalFreeBytesMin": 2147483648,
+          "criticalFreeBytesCap": 68719476736
+        },
+        "snapshots": [
+          {
+            "path": "/",
+            "device": "66307",
+            "key": "dev-66307",
+            "totalBytes": 2013991550976,
+            "availableBytes": 128623026176,
+            "reservedBytes": 19327352832,
+            "usableBytes": 109295673344,
+            "requiredBytes": 40279831019.520004,
+            "byteFloorMet": true,
+            "totalInodes": 124960768,
+            "freeInodes": 104829948,
+            "inodeFraction": 0.8389028787018978,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/mnt/data",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 514215706624,
+            "reservedBytes": 12884901888,
+            "usableBytes": 501330804736,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 754757700,
+            "inodeFraction": 0.965901158785973,
+            "inodeFloorMet": true
+          },
+          {
+            "path": "/tmp/pcv",
+            "device": "66304",
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 514215739392,
+            "reservedBytes": 12884901888,
+            "usableBytes": 501330837504,
+            "requiredBytes": 68719476736,
+            "byteFloorMet": true,
+            "totalInodes": 781402624,
+            "freeInodes": 754757703,
+            "inodeFraction": 0.9659011626252231,
+            "inodeFloorMet": true
+          }
+        ],
+        "scope": "One endpoint using current policy helper with native bg-host env after alarm recovery; no producer census, cleanup, custody or sustained-window claim."
+      }
+    },
+    "custody": {
+      "logPath": ".papercusp/scratch/bash-789d2922-0aa.log",
+      "logSha256": "37adf19a2d791857d8f0f7ebe909b945a858d71e359154b70326ef7c923561d3",
+      "at": "2026-10-12T23:29:15.630746+00:00",
+      "nativePid": 987208,
+      "afterNativePid": 987208,
+      "scriptSha256": "a276a24a113150911fc624fe1f7ad45ac44626a4e7b21451c197da2c817c1c25",
+      "runtimeStableDuringRead": true,
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "device": 66304,
+          "generationCount": 13,
+          "pinCount": 15,
+          "currentPinTargetsPresent": true,
+          "errors": [],
+          "leases": [
+            {
+              "name": "selector-257725-1791842950-12233",
+              "identity": "v1-7193ed2b9950f32a30a85f213dca483ddf2f148a962b59e25591eff991c824df",
+              "pid": "4178692"
+            },
+            {
+              "name": "selector-633870-1791843323-19900",
+              "identity": "v1-7193ed2b9950f32a30a85f213dca483ddf2f148a962b59e25591eff991c824df",
+              "pid": "4178692"
+            }
+          ],
+          "quarantines": [],
+          "populationNamesStableDuringRead": true,
+          "publishLockPresent": false
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "device": 66304,
+          "generationCount": 2,
+          "pinCount": 4,
+          "currentPinTargetsPresent": true,
+          "errors": [],
+          "leases": [],
+          "quarantines": [],
+          "populationNamesStableDuringRead": true,
+          "publishLockPresent": false
+        }
+      ],
+      "rawReceiptRef": ".papercusp/scratch/bash-789d2922-0aa.log"
+    },
+    "comparison": {
+      "sampledSpanMs": 10603206,
+      "sameNativePid": false,
+      "sameScriptSha256": false,
+      "sameDevices": true,
+      "samePolicy": true,
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "beforePinCount": 14,
+          "afterPinCount": 15,
+          "missingPins": [],
+          "addedPins": [
+            "checkout-8d3ec37c4721655d650adab152fea53de93636e0e821e723cab2966364f76699"
+          ],
+          "changedPins": [],
+          "renewedPinRecords": [
+            "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
+            "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+            "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+            "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+            "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+            "ref-263719ba0b1aa62943b848ad81cedf7eef4bc257df55d97ee780534513d1cb62",
+            "ref-781592e23b5e3691923d76db1200185fb72b5a8172af02bb78f6b2d9f8480310",
+            "ref-9adeef0051baef96c114803081f342ca3efc081eaeba4c149f94d1cb4b3f5b7c",
+            "ref-d372b5727e8668d341befa74355d2cd7d2890dd3f80e84e1e680289517618484",
+            "ref-df0a03eb2cf9a875ea8dbbe3611f2109e0fbbc7d90d0576dadf453d79009dc49",
+            "ref-e8bc2ce3e71f7b5004535aa962154eb090d35ea8424303fb30a8cd09c533acaf"
+          ],
+          "protectedGenerationChanges": [],
+          "storeIdentityStable": true
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "beforePinCount": 4,
+          "afterPinCount": 4,
+          "missingPins": [],
+          "addedPins": [],
+          "changedPins": [],
+          "renewedPinRecords": [
+            "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+            "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259"
+          ],
+          "protectedGenerationChanges": [],
+          "storeIdentityStable": true
+        }
+      ]
+    },
+    "registeredStep": {
+      "source": "dbos.operation_outputs exact workflow_uuid/function_name read; retained output json receipt",
+      "rows": [
+        {
+          "workflow_uuid": "sched-.sessionDirGc-2026-10-12T20:50:00.000Z",
+          "function_id": 2,
+          "started_at_epoch_ms": "1791838287091",
+          "completed_at_epoch_ms": "1791838458312",
+          "error": null,
+          "status": "complete",
+          "errors": [],
+          "stores": [
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": false,
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            },
+            {
+              "status": "pruned",
+              "stderr": "",
+              "stdout": "",
+              "retired": true,
+              "generationRoot": "/mnt/backup/papercusp-dependency-generations/slack-asana-bug-drill",
+              "integrationRoot": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill",
+              "stderrTruncated": false,
+              "stdoutTruncated": false
+            }
+          ]
+        }
+      ]
+    },
+    "assessor": {
+      "executed": false,
+      "reason": "The bg-host PID and sampled maintained script differ from the retained baseline; separate capacity and custody probes are non-atomic. Do not splice receipts into the committed assessor endpoint contract."
+    },
+    "coverage": {
+      "population": [
+        "current root/data/tmp byte floor after live reservations",
+        "current inode floors",
+        "exact20:50 registered dependency-retention completion receipt",
+        "current named-store pin target presence",
+        "runtime and maintained-script identity comparison",
+        "baseline protected-pin and generation metadata comparison",
+        "continuous headroom between samples",
+        "candidate-specific demand",
+        "protected payload preservation",
+        "recorder and native journal recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "checked": [
+        "current root/data/tmp byte floor after live reservations",
+        "current inode floors",
+        "exact20:50 registered dependency-retention completion receipt",
+        "current named-store pin target presence",
+        "runtime and maintained-script identity comparison",
+        "baseline protected-pin and generation metadata comparison"
+      ],
+      "notChecked": [
+        "continuous headroom between samples",
+        "candidate-specific demand",
+        "protected payload preservation",
+        "recorder and native journal recovery",
+        "independent final candidate promotion/shipment"
+      ],
+      "notApplicable": [],
+      "residue": [
+        "WI-10007602: R1/R5 and final acceptance remain open.",
+        "EI-25607959410127384: recorder/native journal acceptance remains open.",
+        "EI-25533252356302006: hosted Portal owner/external acceptance remains open."
+      ]
+    },
+    "scope": [
+      "One overdue endpoint comparison and two named-store metadata populations; no cleanup, broad producer census, recursive payload hashing, source retest or exclusive growth/reclaim claim.",
+      "All retained baseline pins are present with unchanged identity/checkout/host, and their generation directory/marker metadata is unchanged within this captured population. This does not prove full payload preservation.",
+      "An additional current checkout pin and two selector lease records are retained as current metadata; no lease liveness or ownership inference is made.",
+      "The script fingerprint is sampled from the maintained file; it does not prove which script bytes every registered native run loaded.",
+      "Raw hashed private receipts preserve exact machine custody identity; displayed home paths are normalized and host labels omitted.",
+      "This comparison was due after21:32:40.332UTC and the actual20:50 completion; delayed recovery produced the endpoint at23:29UTC. Full acceptance remains OPEN."
+    ]
   }
 }
