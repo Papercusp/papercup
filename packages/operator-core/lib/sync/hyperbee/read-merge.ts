@@ -1871,6 +1871,8 @@ export interface MergeCursorStore {
  * of those events would be the same unsafe skip the original latch avoided.
  */
 export interface PgMergeCursorSeedCache {
+  /** Structural invalidation deliberately disables seeding for this boot. */
+  readonly invalidated: boolean;
   /**
    * Seed `cursor` from progress persisted under `applyBinding`. When
    * `fallbackApplyBinding` is given, an admitted key the primary binding left
@@ -2032,6 +2034,7 @@ export function createPgMergeCursorSeedCache(options: PgMergeCursorSeedCacheOpti
     return held;
   };
   return {
+    get invalidated() { return invalidated; },
     async seed(cursor, store, applyBinding, admittedKeyHexes, fallbackApplyBinding) {
       const admitted = [...admittedKeyHexes];
       if (invalidated) {
