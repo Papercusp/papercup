@@ -236,7 +236,13 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
   };
   rows.forEach((row, index) => {
-    const key = [row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef].join('\0');
+    // A mutation target is a distinct claim even when bindings cite the same
+    // mutant run. Keep each target so measured failed cases can corroborate them
+    // independently instead of letting the newest target replace its sibling.
+    const targeted = row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample'
+      ? detailsOf(row).targeted ?? null
+      : null;
+    const key = JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
     const prior = selected.get(key);
     if (!prior) {
       selected.set(key, { row, index });
@@ -1238,10 +1244,68 @@ function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
+/**
+ * Binding details and evidenceRef are claims about identity; the joined test_runs row is the
+ * authority. Older rows can predate the write-schema guard, so every executable verdict checks
+ * that these identities still name the canonical id and file.
+ */
+function canonicalTestRunIdentityGaps(row: SpecEvidenceForAdequacy): string[] {
+  const gaps: string[] = [];
+  const evidenceRef = typeof row.evidenceRef === 'string' ? row.evidenceRef : '';
+  const detailsRunValue = row.details.testRun;
+  const detailsRun = detailsRunValue !== null && typeof detailsRunValue === 'object' && !Array.isArray(detailsRunValue)
+    ? detailsRunValue as Record<string, unknown>
+    : null;
+  const hasDetailsRun = detailsRunValue !== undefined;
+  const runReference = /^test-run\s+(\d+)\b/.exec(evidenceRef);
+  const pathReference = /^test-run:(\d+):(.+)$/.exec(evidenceRef);
+  const canonicalPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath ?? null;
+  if (pathReference && row.testRunId != null && Number(pathReference[1]) !== row.testRunId) {
+    gaps.push('evidenceRef testRunId=' + pathReference[1] + ' differs from canonical testRunId=' + row.testRunId);
+  }
+  if (runReference && row.testRunId != null && Number(runReference[1]) !== row.testRunId) {
+    gaps.push(`evidenceRef testRunId=${runReference[1]} differs from canonical testRunId=${row.testRunId}`);
+  }
+  if (hasDetailsRun) {
+    if (!detailsRun) {
+      gaps.push('details.testRun is not an identity object');
+    } else if (row.testRunId != null && detailsRun.id != null && detailsRun.id !== row.testRunId) {
+      gaps.push(`details.testRun.id=${String(detailsRun.id ?? 'missing')} differs from canonical testRunId=${row.testRunId ?? 'missing'}`);
+    }
+    const declaredPath = typeof detailsRun?.filePath === 'string' ? detailsRun.filePath.trim() : '';
+    if (declaredPath && !canonicalPath) {
+      gaps.push('canonical test-run file path is unavailable');
+    } else if (declaredPath && canonicalPath && !testFilePathMatches(declaredPath, canonicalPath)) {
+      const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+      const cargoSourceMatches = canonicalPath.includes('::') && measurement.success &&
+        measurement.data.testPaths?.some((path) => testFilePathMatches(declaredPath, path));
+      if (!cargoSourceMatches) {
+        gaps.push(`details.testRun.filePath=${JSON.stringify(declaredPath)} differs from canonical test-run file=${JSON.stringify(canonicalPath)}`);
+      }
+    }
+    if (row.testRunId != null && row.evidenceKind !== 'test') {
+      const referencePath = evidenceRef.replaceAll('\\', '/');
+      if (runReference && (Number(runReference[1]) !== row.testRunId || !referencePath.includes(declaredPath.replaceAll('\\', '/')))) {
+        gaps.push('run-derived evidenceRef does not identify details.testRun');
+      }
+    }
+  }
+  if (row.testRunId != null && row.evidenceKind === 'test' && pathReference) {
+    const referencePath = pathReference[2]!;
+    if (!canonicalPath) {
+      gaps.push('canonical test-run file path is unavailable');
+    } else if (!testFilePathMatches(referencePath, canonicalPath)) {
+      gaps.push(`test evidenceRef=${JSON.stringify(referencePath)} differs from canonical test-run file=${JSON.stringify(canonicalPath)}`);
+    }
+  }
+  return [...new Set(gaps)];
+}
+
 /** A binder's case list is corroborated by an exact or runner-prefix-suffixed case in a passing ledger row. */
 function hasPassingLedgerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
   const run = row.testRunExecution;
   return row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
     run != null &&
     run.status?.toLowerCase() === 'pass' &&
     run.passed > 0 &&
@@ -1260,6 +1324,7 @@ function hasPassingLlmScenarioCase(row: SpecEvidenceForAdequacy, scenarioId: str
   const run = row.testRunExecution;
   const provenance = row.testRunProvenance;
   return row.evidenceKind === 'test' && row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
     run != null && run.testLayer === 'llm' &&
     run.status?.toLowerCase() === 'pass' && run.passed > 0 &&
     run.failed === 0 && run.skipped === 0 && run.collectionFailed === false &&
@@ -1330,6 +1395,7 @@ function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
 /** Only canonical ledger provenance can identify a counterexample mutant run. */
 function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean {
   return row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
     row.testRunProvenance?.source === 'mutation-probe' &&
     row.testRunProvenance.mutationPhase === 'mutant';
 }
@@ -1349,6 +1415,7 @@ function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string
 /** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
 function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecutionVerdict {
   if (row.testRunId === null) return 'unknown';
+  if (canonicalTestRunIdentityGaps(row).length > 0) return 'unknown';
   const run = row.testRunExecution;
   const status = run?.status?.toLowerCase();
   if (!run || !status || status === 'running' || status === 'error') return 'unknown';
@@ -1499,6 +1566,7 @@ function executableEvidenceGaps(row: SpecEvidenceForAdequacy): string[] {
   if (!hasExecutionLedgerReference(row)) {
     gaps.push('no testRunId/coverageEvidenceRef ledger reference');
   }
+  gaps.push(...canonicalTestRunIdentityGaps(row));
   if (row.testRunId === null) {
     gaps.push('no canonical test-run execution verdict');
   } else if (measuredExecutionVerdict(row) !== 'pass') {
@@ -2151,8 +2219,10 @@ function appendRatingRerunProbes(
  *  23 — descriptor-bearing catches require invocation-linked calibration and named failures;
  *       grader evidence exposes the descriptor, linkage and ledger-only re-aim coverage.
  *  24 — technical compound modifiers do not turn negative-control observations into proof gaps.
+ *  25 — execution verdicts reconcile explicit nested and structured test-run IDs/files to the joined ledger row.
+ *  26 — shared mutant runs preserve distinct targets and require a measured case for each target.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 25;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 27;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2277,6 +2347,34 @@ export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, ca
   });
 }
 
+/** A shared mutant run must have a measured failing case for each claimed scenario target. */
+function mutationTargetMatchesMeasuredCase(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  caseTitle: string,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  const target = detailsOf(mutation).targeted;
+  if (typeof target !== 'string') return false;
+  const sameRun = (row: SpecEvidenceForAdequacy) =>
+    (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+    row.testRunId === mutation.testRunId &&
+    row.evidenceRef === mutation.evidenceRef;
+  const targetsOnRun = new Set(evidence
+    .filter(sameRun)
+    .map((row) => detailsOf(row).targeted)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0));
+  if (targetsOnRun.size <= 1) return true;
+
+  const separator = caseTitle.lastIndexOf(' > ');
+  const scenarioCase = separator >= 0 ? caseTitle.slice(separator + 3) : caseTitle;
+  const labelEnd = scenarioCase.indexOf(': ');
+  const measuredScenario = labelEnd >= 0 ? scenarioCase.slice(0, labelEnd).trim() : '';
+  return measuredScenario.length > 0 &&
+    (clause.falsifier?.requiredScenarios ?? []).includes(measuredScenario) &&
+    measuredScenario === target;
+}
+
 function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
   const lines = mutations
     .flatMap((mutation) => mutation.testRunProvenance?.mutationFailureLines ?? [])
@@ -2299,7 +2397,9 @@ function clauseBoundMutationTest(
   // Checking only the first row let an older binding without testCases shadow a newer match.
   return clauseBoundCurrentTests(clause, mutation, evidence).find((testBinding) =>
     (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
-      mutationMeasuredFailedCase(mutation, caseTitle) && hasPassingTestBaselineCase(testBinding, caseTitle),
+      mutationMeasuredFailedCase(mutation, caseTitle) &&
+      mutationTargetMatchesMeasuredCase(clause, mutation, caseTitle, evidence) &&
+      hasPassingTestBaselineCase(testBinding, caseTitle),
     ),
   ) ?? null;
 }
