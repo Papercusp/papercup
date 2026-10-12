@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -147,6 +147,22 @@ describe('registered subject evidence with the real local scorer', () => {
     // to production qualification. Every measured scenario retains its 4s cap.
     const warmStart = Date.now();
     try {
+      if (url && privateHome && process.env.PAPERCUSP_EMBED_SIDECAR_WARM?.split(',').includes('rerank')) {
+        // READY means the socket is listening. The boot model is loaded behind
+        // durable admission afterward; observe that maintained health contract
+        // instead of spending a scoring deadline on unfinished construction.
+        let lastState: string | undefined;
+        const readyState = await vi.waitUntil(async () => {
+          const readyHealth = await probeSidecarHealth(url, 5000) as { models?: Record<string, string> } | null;
+          const state = readyHealth ? readyHealth.models?.rerank ?? 'absent' : 'unavailable';
+          if (state !== lastState) {
+            console.info('subject-scorer-model-transition', JSON.stringify({ elapsedMs: Date.now() - warmStart, state }));
+            lastState = state;
+          }
+          return state === 'warm' || state === 'failed' ? state : false;
+        }, { timeout: 120_000, interval: 250 });
+        expect(readyState, 'owned boot reranker must finish construction before scoring').toBe('warm');
+      }
       await scorer('SQL migration file', ['Apply a numbered PostgreSQL DDL transaction.'], { deadline: Date.now() + 15_000 });
     } catch (error) {
       // Preserve the distinction between model construction and admission before
@@ -198,5 +214,5 @@ describe('registered subject evidence with the real local scorer', () => {
     expect(summary.recallAt1).toBeGreaterThanOrEqual(2 / 3);
     expect(summary.falseExpertSelections, 'irrelevant alternatives must not enter the responder menu').toBe(0);
     expect(negatives.filter(r => r.selected.length)).toEqual([]);
-  }, 60_000);
+  }, 180_000);
 });
