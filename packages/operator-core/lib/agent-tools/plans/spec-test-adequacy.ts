@@ -1065,7 +1065,12 @@ function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
   }
   const maxRows = 6;
   const shown = ordered.slice(0, maxRows).map(bindingDescription).join('; ');
-  return ordered.length > maxRows ? `${shown}; +${ordered.length - maxRows} more binding(s)` : shown;
+  const omitted = ordered.slice(maxRows).map((row) =>
+    Number.isSafeInteger(row.id) ? `id=${row.id}` : `${row.evidenceKind}:${row.evidenceRef}`,
+  );
+  return omitted.length > 0
+    ? `${shown}; +${omitted.length} more binding(s) omitted: ${omitted.join(', ')}`
+    : shown;
 }
 
 function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
@@ -1373,6 +1378,88 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
     (run.skipped > 0 && !hasMeasuredCaseScope(row))
     ? 'fail'
     : 'pass';
+}
+
+function executionFailureDetails(row: SpecEvidenceForAdequacy): string {
+  const run = row.testRunExecution;
+  const status = run?.status?.toLowerCase();
+  const predicates: string[] = [];
+  if (!run) {
+    predicates.push('canonical execution_details are unavailable');
+  } else {
+    if (status === 'skipped' || status === 'cancelled' || status === 'canceled') {
+      predicates.push('predicate=status is skipped or cancelled');
+    }
+    if (run.collectionFailed) predicates.push('predicate=collectionFailed=true');
+    if (run.failed > 0) predicates.push('predicate=failed>0 (' + run.failed + ')');
+    if (run.passed < 1) predicates.push('predicate=passed<1 (' + run.passed + ')');
+    if (run.skipped > 0) {
+      const failedCases = row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)
+        ? row.testRunProvenance?.mutationFailedCaseTitles
+        : undefined;
+      if (hasMeasuredCaseScope(row, failedCases) !== true) {
+        predicates.push(
+          'predicate=skipped>0 without complete measured case scope (skipped=' + run.skipped +
+            ', declaredCaseCount=' + (detailsOf(row).testCases?.length ?? 0) +
+            ', passedCaseTitleCount=' + (run.passedCaseTitles ?? []).length + ')',
+        );
+      }
+    }
+    if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) && status === 'pass') {
+      predicates.push('predicate=mutant run passed instead of killing the mutant');
+    } else if (status === 'fail' && row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) {
+      predicates.push('predicate=status=fail');
+    }
+  }
+
+  if (predicates.length === 0) predicates.push('predicate=measured-execution-verdict-fail');
+  const bindingId = Number.isSafeInteger(row.id) ? String(row.id) : 'unknown';
+  const runId = row.testRunId ?? 'unknown';
+  const measurements = run
+    ? [
+        'status=' + (run.status ?? 'unset'),
+        'passed=' + run.passed,
+        'failed=' + run.failed,
+        'skipped=' + run.skipped,
+        'collectionFailed=' + run.collectionFailed,
+        'passedCaseTitleCount=' + (run.passedCaseTitles ?? []).length,
+        'worktreeDirty=' + (row.testRunProvenance?.worktreeDirty ?? 'unknown'),
+      ].join(', ')
+    : 'executionDetails=unavailable';
+  return 'binding ' + bindingId + ' / run ' + runId + ': ' +
+    predicates.join('; ') + '; measured ' + measurements;
+}
+
+function executionFailureSuggestion(rows: SpecEvidenceForAdequacy[]): string {
+  const suggestions = new Set<string>();
+  for (const row of rows) {
+    const run = row.testRunExecution;
+    const status = run?.status?.toLowerCase();
+    if (run && run.skipped > 0) {
+      suggestions.add('Re-run the full test file without a test-name filter (remove -t), then bind the passing run.');
+    }
+    if (status === 'skipped' || status === 'cancelled' || status === 'canceled') {
+      suggestions.add('Resolve the skipped or cancelled run, then re-run the proof and bind the passing result.');
+    }
+    if (run?.collectionFailed) {
+      suggestions.add('Fix test collection errors, then re-run the full file and bind the passing run.');
+    }
+    if (run && (run.failed > 0 || status === 'fail')) {
+      suggestions.add('Fix the failing test case(s), then re-run the full file and bind the passing run.');
+    } else if (run && run.passed < 1) {
+      suggestions.add('Ensure the proof run executes at least one passing case, then bind that run.');
+    }
+    if (row.testRunProvenance?.worktreeDirty === true) {
+      suggestions.add('Re-run on a clean worktree at the intended source revision and bind that result.');
+    }
+    if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) && status === 'pass') {
+      suggestions.add('Correct the mutant or probe so the intended behavior is caught, then bind the measured result.');
+    }
+  }
+  if (suggestions.size === 0) {
+    suggestions.add('Correct the measured execution failure, then re-run the proof and bind the passing result.');
+  }
+  return [...suggestions].join(' ');
 }
 
 function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
@@ -2881,12 +2968,15 @@ export function evaluateSpecTestAdequacy(input: {
     ? {
         rating: 'fail',
         evidence: evidenceWithBindings(
-          `Canonical test_runs status/counts show at least one relied-on execution was skipped, uncollected, failed, or otherwise invalid for ${clauseIdentity(clause)}.`,
+          'Canonical test_runs execution-integrity predicates failed for ' + clauseIdentity(clause) + ': ' +
+            explicitBadExecutionRows.map(executionFailureDetails).join('; ') + '.',
           explicitBadExecutionRows,
         ),
         // P-019: bindings are append-only, so an older failing attempt keeps failing this
         // criterion beside a newer passing one until it is withdrawn.
-        ...(successfulExecution ? { suggestion: SUPERSEDE_DRAGGING_SUGGESTION } : {}),
+        ...(successfulExecution
+          ? { suggestion: SUPERSEDE_DRAGGING_SUGGESTION }
+          : { suggestion: executionFailureSuggestion(explicitBadExecutionRows) }),
       }
     : unbackedExecution.length > 0
       ? {
@@ -3224,9 +3314,14 @@ export function evaluateSpecTestAdequacy(input: {
 
   // P-019: surface the ledger requirement on every ledger-gated criterion that is still
   // short of proof, where the binder reads the refusal, not in a doc they must find first.
+  const executionNeedsLedgerHint =
+    executable.length === 0 ||
+    (explicitBadExecutionRows.length === 0 &&
+      (unbackedExecution.length > 0 || incompleteMeasuredExecution.some((row) => row.testRunId === null)));
   for (const criterion of ['falsifiability', 'execution-integrity', 'traceability'] as const) {
     const current = ratings[criterion];
     if (current.rating !== 'fail' && current.rating !== 'unknown') continue;
+    if (criterion === 'execution-integrity' && !executionNeedsLedgerHint) continue;
     ratings[criterion] = {
       ...current,
       suggestion: current.suggestion ? `${current.suggestion} ${LEDGER_PROOF_HINT}` : LEDGER_PROOF_HINT,
