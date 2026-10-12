@@ -24,7 +24,7 @@ import {
   computeLastActiveSecAgo,
   deriveLastActive,
   fetchPresenceTier1,
-  stripTurnPartLastAt,
+  stripDerivationInputs,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
 import {
@@ -336,7 +336,7 @@ export function foldFleetRoster(
       intentStale,
       intentDivergent: computeIntentDivergent(intentAgeSec, lastActiveSecAgo),
       ...EMPTY_TIER1,
-      ...stripTurnPartLastAt(tier1.get(id)),
+      ...stripDerivationInputs(tier1.get(id)),
     });
   }
   return out.sort(

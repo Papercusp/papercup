@@ -55,6 +55,9 @@ const MAXIMAL_ROW: RosterRow = {
   // — state —
   intent: 'doing things',
   intentDeclaredAt: '2026-06-14T00:50:00.000Z',
+  // P-010 (#D-006): intent provenance — derived from the held work item below.
+  intentSource: 'derived',
+  intentDerivedFrom: { workItemId: 'WI-1', planItemRef: 'plan-x#P-002' },
   currentPlanSlug: 'plan-x',
   currentView: 'harness/papercup',
   currentFiles: ['a.ts'],
@@ -95,6 +98,9 @@ const MAXIMAL_ROW: RosterRow = {
   // P-011: derivation input behind lastActiveSecAgo/lastActiveSource — same dropped
   // lane as lastActiveAt, and mergeTier1 strips it before rows are ever built.
   turnPartLastAt: '2026-06-14T00:58:00.000Z',
+  // P-010: derivation input behind intent/intentSource/intentDerivedFrom — dropped,
+  // and mergeTier1 strips it before rows are ever built.
+  heldWorkIntent: { workItemId: 'WI-1', title: 'doing things', planItemRef: 'plan-x#P-002' },
 };
 
 /** A local PresenceRecord (pre-enrichment) for the byte-stability pipeline test. */

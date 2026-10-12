@@ -23,7 +23,7 @@ import { listPresence } from '../agent-tools/coordination/presence';
 import {
   deriveLastActive,
   fetchPresenceTier1,
-  stripTurnPartLastAt,
+  stripDerivationInputs,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
 import {
@@ -233,7 +233,7 @@ export function foldHiveRoster(
         nowMs,
       ).lastActiveSecAgo,
       ...EMPTY_TIER1,
-      ...stripTurnPartLastAt(tier1.get(id)),
+      ...stripDerivationInputs(tier1.get(id)),
     });
   }
   return out.sort(
