@@ -207,7 +207,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
 
@@ -246,8 +245,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|scripts/lib/batch-watchdog.mjs': na(
     'per-batch test timeout inside the gate runner: a hung batch is killed and reported as that task’s failure in the gate verdict, which already has an owner',
