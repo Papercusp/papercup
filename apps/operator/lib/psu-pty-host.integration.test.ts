@@ -61,6 +61,7 @@ const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
 // subpath keeps this an integration test of the actual chain, not a re-impl.
 import { interruptViaPty, findLiveHost, injectIntoHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { linuxProcStateFromStat } from '@papercusp/operator-core/lib/process-identity';
 
 /**
  * WI-10005017: some respawn tests fail only in whole-file runs, and the failure
@@ -2537,12 +2538,21 @@ describe('hostThroughPty real round-trip', () => {
         while (!/GRAND:\d+/.test(captured()) && Date.now() < deadline) await sleep(25);
         const grandPid = Number(captured().match(/GRAND:(\d+)/)?.[1]);
         expect(grandPid).toBeGreaterThan(1);
+        expect(() => process.kill(grandPid, 0)).not.toThrow();
+
+        const processState = () => {
+          try { return linuxProcStateFromStat(readFileSync(`/proc/${grandPid}/stat`, 'utf8')); }
+          catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'unknown'; }
+        };
+        const states = { beforeSignal: processState(), afterSignal: '', afterHostExit: '', afterWait: '' };
 
         signals.emit('SIGTERM');
+        states.afterSignal = processState() ?? 'unknown';
         // External kill must not wait for node-pty's asynchronous child exit
         // event: fleet:kill may SIGKILL this host during that gap.
         expect(reapScopeResidue).toHaveBeenCalledTimes(1);
         await done;
+        states.afterHostExit = processState() ?? 'unknown';
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
         expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({
           persisted: false,
@@ -2555,10 +2565,21 @@ describe('hostThroughPty real round-trip', () => {
         let alive = true;
         const reapDeadline = Date.now() + 2000;
         while (alive && Date.now() < reapDeadline) {
-          try { process.kill(grandPid, 0); } catch { alive = false; }
+          const state = processState();
+          // SIGKILL has terminated a zombie; its PID remains visible until the
+          // adopting parent reaps it. kill(pid, 0) alone cannot measure execution.
+          if (state === 'Z' || state === 'X' || state === 'absent') alive = false;
+          else {
+            try { process.kill(grandPid, 0); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') alive = false; }
+          }
           if (alive) await sleep(25);
         }
-        expect(alive).toBe(false);
+        let childStat = 'absent';
+        try { childStat = readFileSync(`/proc/${grandPid}/stat`, 'utf8'); } catch { /* disappeared after probe */ }
+        states.afterWait = processState() ?? 'unknown';
+        console.info(`PTY_SIGTERM_PROCESS_STATES ${JSON.stringify(states)}`);
+        expect(alive, `SIGTERM grandchild ${grandPid} states ${JSON.stringify(states)} proc stat: ${childStat}`).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

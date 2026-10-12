@@ -9,7 +9,8 @@ narrative: `apps/operator-docs/.../benchmarks/frontier-swe.mdx`. Current plan:
 > Paid execution is **owner-gated**. D-001 authorizes only the bounded P-012 smoke under
 > an owner-set hard USD cap; inference cannot start until that cap is recorded. P-013
 > calibration and P-014 headline need fresh approval; P-015 canary was declined for now.
-> D-014 pins **gpt-6-luna / reasoning effort max for every initial setup**. This document
+> D-014 records the **exact model / reasoning effort max for every initial setup**. Resolve
+> that pin from `benchmark-coverage-frontierswe-v2-2026-10-10#D-014`. This document
 > describes preparation and no-LLM controls, not approval or proof that a runtime is ready.
 
 ## What was confirmed against the v1 harness (history)
@@ -143,7 +144,7 @@ P-005 complete aggregate accounting, P-006 frozen protocol and P-008 Evaluation 
 The bespoke `makeFrontierSweRunAgent` example below is historical. A setup is runnable
 only after observed model/effort/account/runtime identity, container checkpoint/resume,
 terminal artifacts, cancellation and all-role accounting are verified. A configured
-model label alone does not prove `gpt-6-luna/max` support in a reference client.
+model label alone does not prove support for D-014's model and max effort in a reference client.
 
 For v2, **mean@5 is primary**; best@5, AVG RANK and dominance are secondary. Complete
 task means receive equal weight. The report freezes assigned tasks/arms when supplied;
