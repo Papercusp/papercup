@@ -65,6 +65,62 @@ function longText(chars: number): string {
     .slice(0, chars);
 }
 
+describe('plans:start write receipt recovery', () => {
+  const receipt = () => ({
+    ok: false, counts: { ok: 0, failed: 1 }, results: [{
+      ok: false, slug: 'receipt-plan', harnessSlug: 'papercusp', error: 'admission_refused',
+      autoApproved: true, transitioned: false,
+      promotion: { promoted: 3, skipped: 2, flagOff: false },
+      promotedBlock: { changed: true, rows: 5 },
+      admission: { ready: false, reason: 'floor-gated', message: 'P-001 is excluded by claim floors.', diagnostics: longText(20_000) },
+    }],
+  });
+
+  it.each(['plans:start', 'tools:invoke'])('retains the refusal and committed legs through %s and pages the original bytes', (toolName) => {
+    const source = receipt();
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }] }, {
+      toolName, nestedTargetToolName: toolName === 'tools:invoke' ? 'plans:start' : undefined,
+      workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({
+      error: 'admission_refused', autoApproved: true,
+      promotion: { promoted: 3, skipped: 2 }, promotedBlock: { changed: true, rows: 5 },
+      admission: { ready: false, reason: 'floor-gated' },
+    });
+    expect(body._projection.cursor.tool).toBe('capability:read');
+    expect(body._projection.next).not.toMatch(/Re-call plans:start|Call plans:start again/);
+    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+
+  it('does not recommend replay when an upstream projection already lost the receipt', () => {
+    const tiered = applyPayloadTier({ toolName: 'plans:start', shape: undefined,
+      response: { data: receipt() }, tier: 'trimmed', args: { slug: 'receipt-plan' }, log: vi.fn() });
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(tiered.data) }],
+      _meta: { payloadProjection: tiered.payloadProjection } }, {
+      toolName: 'plans:start', workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body._projection.next).toContain('Do NOT repeat plans:start');
+    expect(body._projection.next).not.toMatch(/Re-call plans:start|Call plans:start again/);
+  });
+
+  it('retains the committed receipt and a read-only recovery after a scratch failure', () => {
+    const blockedRoot = join(sandbox, 'not-a-directory');
+    writeFileSync(blockedRoot, 'blocked');
+    process.env.PAPERCUSP_SCRATCH_ROOT = blockedRoot;
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(receipt()) }] }, {
+      toolName: 'plans:start', workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({ autoApproved: true,
+      promotion: { promoted: 3 }, admission: { reason: 'floor-gated' } });
+    expect(body._projection.cursor.tool).toBe('capability:read');
+    expect(body._projection.next).toContain('Do NOT repeat plans:start');
+  });
+});
+
 /** The single spill file written under <scratchRoot>/<ws>/<tool>/<runId>/. */
 function readSpill(ws: string, tool: string, runId: string): string {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, ws, tool, runId);
