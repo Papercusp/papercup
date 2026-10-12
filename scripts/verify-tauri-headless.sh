@@ -957,7 +957,7 @@ preflight_native_console_platform() {
   [ "$PREPARE_ONLY" != "1" ] || return 0
   [ "$(uname -s)" = "Linux" ] || return 0
   node --test --test-global-setup="$DESKTOP_DIR/test/monorepo-host-preflight.mjs" \
-    "$DESKTOP_DIR/test/native-console-gnome.test.js"
+    "$DESKTOP_DIR/test/native-console-gnome.test.mjs"
 }
 vh_run_step native-console-platform-check preflight_native_console_platform || exit $?
 
