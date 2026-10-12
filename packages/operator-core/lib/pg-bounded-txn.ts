@@ -159,6 +159,103 @@ function cancellableTransaction(
   };
 }
 
+export type CandidateWaitSample =
+  | {
+      status: 'sampled';
+      targetPid: number;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      blockingPids: number[];
+    }
+  | { status: 'no-active'; targetPid: number }
+  | {
+      status: 'unavailable';
+      targetPid?: number;
+      reason: 'cancelled' | 'deadline' | 'query-error';
+    };
+
+export type CandidateWaitSnapshot = CandidateWaitSample & {
+  statementCapMs: number;
+  sampleAfterMs: number;
+};
+
+const CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS = 100;
+
+/**
+ * Take one bounded, PID-and-query-start-targeted pg_stat_activity sample.
+ * This is an instantaneous observation, not evidence about the full duration
+ * of the target statement. The caller owns cancellation when that statement settles.
+ */
+export async function sampleCandidateWaitOnce(
+  client: OrgSql,
+  targetPid: number,
+  targetQueryStartedAfter: Date,
+  signal: AbortSignal,
+): Promise<CandidateWaitSample> {
+  type WaitRow = {
+    waitEventType: string | null;
+    waitEvent: string | null;
+    blockingPids: number[];
+  };
+
+  try {
+    const rows = await withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        client.begin(async (rawTx) => {
+          // A timed-out begin can complete late. Never run even the timeout setup
+          // after its acquisition deadline or after the target statement settled.
+          if (expired() || signal.aborted) throw new Error('candidate wait observer cancelled before begin');
+          const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, signal);
+          try {
+            cancellation.assertNotAborted();
+            await cancellation.tx`SELECT set_config('lock_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true),
+                                        set_config('statement_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true)`;
+            if (expired()) throw new Error('candidate wait observer acquisition deadline expired');
+            cancellation.assertNotAborted();
+            disarm();
+            const query = cancellation.tx<WaitRow[]>`
+              SELECT a.wait_event_type AS "waitEventType",
+                     a.wait_event AS "waitEvent",
+                     pg_blocking_pids(a.pid) AS "blockingPids"
+                FROM pg_stat_activity a
+               WHERE a.datname = current_database()
+                 AND a.pid = ${targetPid}
+                 AND a.query_start >= ${targetQueryStartedAfter}
+                 AND a.state = 'active'
+               LIMIT 1`;
+            return await (cancellation.abort ? Promise.race([query, cancellation.abort]) : query);
+          } finally {
+            cancellation.cleanup();
+          }
+        }),
+      {
+        ms: CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS,
+        label: 'scheduler:get_next:candidate-wait-observer',
+      },
+    );
+    const row = rows[0];
+    if (!row) return { status: 'no-active', targetPid };
+    return {
+      status: 'sampled',
+      targetPid,
+      waitEventType: row.waitEventType,
+      waitEvent: row.waitEvent,
+      blockingPids: row.blockingPids ?? [],
+    };
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    return {
+      status: 'unavailable',
+      targetPid,
+      reason: signal.aborted
+        ? 'cancelled'
+        : error instanceof DbCallDeadlineError || code === '57014' || code === '55P03'
+          ? 'deadline'
+          : 'query-error',
+    };
+  }
+}
+
 /**
  * Thrown when a bounded admin-pool txn can't finish in time: a statement exceeds
  * `statement_timeout` (PG `57014`) or a lock wait exceeds `lock_timeout` (PG `55P03`).
@@ -174,8 +271,12 @@ function cancellableTransaction(
  */
 export class OrgTxnTimeoutError extends Error {
   readonly pgCode: string;
+  /** Caller-safe summary that excludes the fresh-connection global blocker snapshot. */
+  readonly messageWithoutBlockerHint: string;
   /** Best-effort fresh-connection snapshot; it does not prove this operation waited on that backend. */
   readonly blockerHint?: string;
+  /** One instantaneous, target-PID sample captured for scheduler candidate-tier diagnostics. */
+  candidateWaitSnapshot?: CandidateWaitSnapshot;
   /**
    * EI-21831306274538775 — did PostgreSQL actually raise this SQLSTATE (`'pg'`), or did a
    * caller SYNTHESIZE the same typed error to report exhausting its own wall-clock budget
@@ -215,6 +316,7 @@ export class OrgTxnTimeoutError extends Error {
     );
     this.name = 'OrgTxnTimeoutError';
     this.pgCode = pgCode;
+    this.messageWithoutBlockerHint = base;
     this.cause = cause;
     this.blockerHint = blockerHint;
     this.timeoutSource = timeoutSource;

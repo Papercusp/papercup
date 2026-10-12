@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
-import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
+import { boundedOrgTxn, OrgTxnTimeoutError, sampleCandidateWaitOnce } from './pg-bounded-txn';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const BOUNDED_TXN_MODULE = pathToFileURL(fileURLToPath(new URL('./pg-bounded-txn.ts', import.meta.url))).href;
@@ -597,5 +597,75 @@ describe('boundedOrgTxn', () => {
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('55P03');
     expect((err as OrgTxnTimeoutError).blockerHint).toBeUndefined();
+  });
+
+  it('takes one PID-and-query-start-targeted wait sample without selecting query text', async () => {
+    const statements: string[] = [];
+    const values: unknown[] = [];
+    const targetQueryStartedAfter = new Date('2026-10-11T20:00:00.000Z');
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(((strings: TemplateStringsArray, ...params: unknown[]) => {
+        const statement = strings.join('?');
+        statements.push(statement);
+        values.push(...params);
+        return Promise.resolve(statement.includes('FROM pg_stat_activity')
+          ? [{ waitEventType: 'Lock', waitEvent: 'transactionid', blockingPids: [17] }]
+          : []);
+      }) as never),
+    } as never;
+
+    const sample = await sampleCandidateWaitOnce(
+      client,
+      42,
+      targetQueryStartedAfter,
+      new AbortController().signal,
+    );
+
+    expect(sample).toEqual({
+      status: 'sampled',
+      targetPid: 42,
+      waitEventType: 'Lock',
+      waitEvent: 'transactionid',
+      blockingPids: [17],
+    });
+    const observerSql = statements.find((statement) => statement.includes('FROM pg_stat_activity')) ?? '';
+    expect(observerSql).toContain('a.pid = ?');
+    expect(observerSql).toContain('a.query_start >= ?');
+    expect(observerSql).toContain('a.state = \'active\'');
+    expect(observerSql).toContain('LIMIT 1');
+    expect(observerSql).not.toMatch(/\ba\.query\s*(?:,|AS)/i);
+    expect(values).toContain(42);
+    expect(values).toContain(targetQueryStartedAfter);
+    expect(values).toContain('100ms');
+  });
+
+  it('cancels an active wait sample when its target statement settles', async () => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(((strings: TemplateStringsArray) => {
+        if (strings.join('?').includes('set_config')) return Promise.resolve([] as unknown[]);
+        const pending = new Promise<unknown[]>(() => {});
+        queueMicrotask(() => controller.abort(new Error('target statement settled')));
+        return Object.assign(pending, { cancel });
+      }) as never),
+    } as never;
+
+    const sample = await sampleCandidateWaitOnce(client, 42, new Date(), controller.signal);
+
+    expect(sample).toEqual({ status: 'unavailable', targetPid: 42, reason: 'cancelled' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('returns unavailable when the observer cannot acquire its connection within 100 ms', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = { begin: () => new Promise<never>(() => {}) } as never;
+      const sample = sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
