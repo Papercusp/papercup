@@ -350,7 +350,10 @@ const gitLog = defineTool({
 
     const url = new URL(req.url);
     const limit = Math.min(2000, Math.max(1, Number(url.searchParams.get('limit') ?? 300)));
-    const branch = (url.searchParams.get('branch') ?? '').trim();
+    // `ref` is the worktree selector used by AdvGitGraphPanel; retain `branch`
+    // as the explicit API spelling and accept both at the route boundary.
+    const branch = (url.searchParams.get('branch') ?? '').trim()
+      || (url.searchParams.get('ref') ?? '').trim();
     const sha = (url.searchParams.get('sha') ?? '').trim();
     let ref: string | null = null;
     if (branch) {

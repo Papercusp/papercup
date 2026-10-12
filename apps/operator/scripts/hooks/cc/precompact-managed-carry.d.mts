@@ -73,9 +73,12 @@ export function isWakeResumeChild(env: Record<string, string | undefined>): bool
  * session:request-compaction can only answer `no_live_pty_host`: no managed
  * boundary can ever be queued for it. Refusing native compaction there does NOT
  * leave the process intact. The turn fails, the delivery re-arms, and the next
- * wake resumes the same over-limit thread into the same refusal. Measured
- * 2026-10-12: six headless members of one fleet looped like this for 8+ hours,
- * about 45 refused wakes an hour, each one a failed turn. A hosted session, and
+ * wake resumes the same thread into the same refusal. The thread need not be
+ * over its limit: Codex can fire PreCompact(auto) on a resume's first turn below
+ * it (WI-10002531, WI-10005673). Measured 2026-10-12: six headless members of one
+ * fleet looped like this, about 45 refused wakes an hour. For one of them the
+ * last sampled turn was 2026-10-03 (input 567,648 of a 784,800 limit), followed by
+ * 1,531 turn starts that never sampled. A hosted session, and
  * every other refusal reason, keep the fail-closed refusal.
  * @param {{ ok?: boolean, inner?: Record<string, unknown> | null }} parsed
  * @param {Record<string, string | undefined>} env

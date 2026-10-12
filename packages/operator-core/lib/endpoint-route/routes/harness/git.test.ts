@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const resolvePhasedProject = vi.fn();
 const readGitStats = vi.fn();
@@ -7,6 +11,9 @@ vi.mock('../../../harness-core', () => ({
   resolvePhasedProject: (...args: unknown[]) => resolvePhasedProject(...args),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'private-own' }));
+vi.mock('../../../resource-governor/execution', () => ({
+  runGovernedOperation: (_options: unknown, run: () => Promise<unknown>) => run(),
+}));
 vi.mock('../../../harness/git-stats', async () => {
   const actual = await vi.importActual<typeof import('../../../harness/git-stats')>(
     '../../../harness/git-stats',
@@ -22,10 +29,18 @@ type RouteEntry = {
 };
 
 const route = (routes as unknown as RouteEntry[]).find((entry) => entry.path === '/harness/:slug/git/stats')!;
+const gitLogRoute = (routes as unknown as RouteEntry[]).find((entry) => entry.path === '/harness/:slug/git/log')!;
 
 function call(query = ''): Promise<Response> {
   return route.handler(
     new Request(`http://127.0.0.1:3070/api/harness/demo/git/stats${query}`),
+    { params: { slug: 'demo' } },
+  );
+}
+
+function callGitLog(query = ''): Promise<Response> {
+  return gitLogRoute.handler(
+    new Request(`http://127.0.0.1:3070/api/harness/demo/git/log${query}`),
     { params: { slug: 'demo' } },
   );
 }
@@ -62,6 +77,37 @@ describe('GET /harness/:slug/git/stats', () => {
     const response = await call();
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'git timed out' });
+  });
+});
+
+describe('GET /harness/:slug/git/log', () => {
+  it('applies the selected ref to Git history instead of returning all worktree commits', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'harness-git-log-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', repoPath, ...args], { stdio: 'pipe' });
+    try {
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Git log route test');
+      git('config', 'user.email', 'git-log-route@example.test');
+      writeFileSync(join(repoPath, 'history.txt'), 'shared\n');
+      git('add', 'history.txt');
+      git('commit', '-m', 'shared-history');
+      git('checkout', '-b', 'feature/topic');
+      writeFileSync(join(repoPath, 'history.txt'), 'feature\n');
+      git('commit', '-am', 'feature-only');
+      git('checkout', 'main');
+      writeFileSync(join(repoPath, 'history.txt'), 'main\n');
+      git('commit', '-am', 'main-only');
+
+      resolvePhasedProject.mockResolvedValue({ slug: 'demo', path: repoPath });
+      const response = await callGitLog('?limit=100&ref=feature%2Ftopic');
+      expect(response.status).toBe(200);
+      const body = await response.json() as { commits: Array<{ subject: string }> };
+      const subjects = body.commits.map(({ subject }) => subject);
+      expect(subjects).toContain('feature-only');
+      expect(subjects).not.toContain('main-only');
+    } finally {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
   });
 });
 
