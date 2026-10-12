@@ -24,6 +24,14 @@ import {
   parseTestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 
+/** The reporter's real (unexported) synchronous reader type, derived from its own factory. */
+type RuntimeReader = NonNullable<ReturnType<typeof prepareNativeRuntimeReader>>;
+/** Deliberate contract violation (fault injection): `RuntimeReader` is SYNCHRONOUS, and a
+ *  reader that hands back a Promise is exactly what the reporter must classify `invalid`.
+ *  No real type admits that, so this helper casts through `unknown` ON PURPOSE — the
+ *  call-site exception testing/typed-mock.ts sanctions, not a stale fixture. */
+const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unknown as RuntimeReader;
+
 afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
 
 describe('portable Playwright ledger reporter', () => {
@@ -71,13 +79,14 @@ describe('portable Playwright ledger reporter', () => {
       vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
       const witness = { schemaVersion: 1 as const, units: ['owned-native'], fingerprint: 'a'.repeat(64),
         observedAt: '2000-01-01T00:00:00.000Z' };
-      const read = vi.fn(() => witness);
+      const read = vi.fn<RuntimeReader>(() => witness);
       if (outcome === 'changed') read.mockReturnValueOnce(witness).mockReturnValueOnce({ ...witness, fingerprint: 'b'.repeat(64) });
-      if (outcome === 'unavailable') read.mockReturnValue(null as never);
+      if (outcome === 'unavailable') read.mockReturnValue(null);
       if (outcome === 'invalid') read.mockReturnValue({ ...witness, fingerprint: 'caller-claim' });
       if (outcome === 'error') read.mockImplementation(() => { throw new Error('observer failed'); });
-      if (outcome === 'async-reader') read.mockImplementation(() => Promise.resolve(witness) as never);
-      if (outcome === 'async-rejection') read.mockImplementation(() => Promise.reject(new Error('invalid reader')) as never);
+      if (outcome === 'async-reader') read.mockImplementation(violatesSyncReaderContract(() => Promise.resolve(witness)));
+      if (outcome === 'async-rejection') read.mockImplementation(
+        violatesSyncReaderContract(() => Promise.reject(new Error('invalid reader'))));
       sql.mockReset().mockResolvedValue([{ id: '6789' }]);
       try {
         const reporter = new Reporter({ readRuntimeEnvironment: read });
@@ -119,9 +128,9 @@ describe('portable Playwright ledger reporter', () => {
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
     const witness = { schemaVersion: 1 as const, units: ['owned-native'], fingerprint: 'a'.repeat(64),
       observedAt: new Date().toISOString() };
-    const read = vi.fn(() => witness).mockReturnValueOnce(witness);
+    const read = vi.fn<RuntimeReader>(() => witness).mockReturnValueOnce(witness);
     if (outcome === 'changed') read.mockReturnValue({ ...witness, fingerprint: 'b'.repeat(64) });
-    if (outcome === 'unavailable') read.mockReturnValue(null as never);
+    if (outcome === 'unavailable') read.mockReturnValue(null);
     if (outcome === 'error') read.mockImplementation(() => { throw new Error('observer failed'); });
     sql.mockReset().mockResolvedValue([{ id: '6790' }]);
     const reporter = new Reporter({ readRuntimeEnvironment: read });
