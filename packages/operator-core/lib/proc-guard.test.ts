@@ -233,6 +233,29 @@ describe('parseArgv and getOperationalArgv', () => {
     ];
     expect(getOperationalArgv(argv)).toEqual(['node', '/repo/.papercusp/bin/psu', '--model=sonnet:high']);
   });
+
+  it('removes inline shell command text from process-name matching', () => {
+    const argv = [
+      '/usr/bin/bash',
+      '-lc',
+      "ptool work_items:checkpoint --json - <<'JSON'\\n{\\\"checkpoint\\\":\\\"green-checkpoint\\\"}\\nJSON",
+    ];
+    expect(getOperationalArgv(argv)).toEqual(['/usr/bin/bash', '-lc']);
+  });
+
+  it('redacts inline interpreter source and structured payloads even in verbose output', () => {
+    const shellPayload = "ptool work_items:checkpoint --json - <<'JSON'\\nsecret green-checkpoint\\nJSON";
+    const shellArgv = ['bash', '-lc', shellPayload];
+    const verbose = formatProcessCmdline(shellArgv, { verbose: true });
+    expect(verbose).toBe('bash -lc [inline command redacted]');
+    expect(verbose).not.toContain('secret');
+    expect(formatProcessCmdline([
+      'node',
+      '/repo/scripts/ptool.mjs',
+      'work_items:checkpoint',
+      '{"checkpoint":"private payload"}',
+    ], { verbose: true })).toBe('node /repo/scripts/ptool.mjs work_items:checkpoint [payload redacted]');
+  });
 });
 
 describe('formatProcessCmdline', () => {
@@ -508,6 +531,25 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     expect(report.fullMatches.map((m) => m.pid)).toEqual([777, 778, 779, 780, 781]);
     expect(report.argvTextOnly.map((m) => m.pid)).toEqual([778, 779, 780, 781]);
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
+  });
+
+  it('does not report a shell wrapper whose command text only contains a ptool payload match', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', 'green-checkpoint']);
+    fixtureProc(fixtureRoot, 777, 1, [
+      'bash',
+      '-lc',
+      "ptool work_items:checkpoint --json - <<'JSON'\\n{\\\"checkpoint\\\":\\\"green-checkpoint\\\"}\\nJSON",
+    ]);
+
+    const report = matchExternalProcessesDetailed('green-checkpoint', {
+      procRoot: fixtureRoot,
+      selfPid: 100,
+    });
+    expect(report.matches).toEqual([]);
+    expect(report.argvTextOnly.map((row) => row.pid)).toEqual([777]);
+    expect(formatProcessCmdline(report.fullMatches[0].argv, { verbose: true })).not.toContain('green-checkpoint');
   });
 
   // EI-20303820187580514, the live repro: `check green-checkpoint` reported 4

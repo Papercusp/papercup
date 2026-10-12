@@ -2,15 +2,23 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
+import { getTask } from '../lib/task-manager/store';
+import { killTask } from '../lib/task-manager/control';
+import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
+import { isTerminalState, scopeUnitForTask } from '../lib/task-manager/types';
 import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue } from '../lib/release/frozen-candidate-repair-queue';
 import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
+let precheckTaskId: string | undefined;
+async function taskScopeEmpty(cgroupPath: string) {
+  return walkCgroupTree(absCgroupDir(cgroupPath)).length === 0;
+}
 async function stopHost() {
   if (!host) return;
   if (host.exitCode === null && host.signalCode === null) {
@@ -39,6 +47,12 @@ async function main() {
   const evidenceDir = e.ADMISSION_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
   const ordinary = e.ADMISSION_HTTP_CASE === 'ordinary';
+  if (ordinary) {
+    assert.equal(e.DBUS_SESSION_BUS_ADDRESS, undefined, 'desktop bus must stay isolated');
+    assert.ok(lstatSync(join(e.XDG_RUNTIME_DIR!, 'systemd', 'private')).isSymbolicLink(),
+      'explicit private managed-task route required');
+    assert.equal(existsSync(join(e.XDG_RUNTIME_DIR!, 'bus')), false, 'desktop session bus must not be exposed');
+  }
   const sources = ['packages/operator-core/lib/agent-tools/release/repair-queue.ts',
     'packages/operator-core/lib/release/admission-jobs.ts',
     'packages/operator-core/lib/release/admission-offthread.ts',
@@ -210,6 +224,8 @@ process.exitCode = result.status ?? 1;
     assert.equal(response.admitted, false, JSON.stringify(response));
     const operationId = response.precheckOperation?.operationId;
     assert.ok(operationId, 'managed precheck operation identity required');
+    precheckTaskId = parseFrozenCandidateRepairQueue(await readQueue())?.admissionPrecheck?.runnerTaskId;
+    assert.ok(precheckTaskId, 'private managed task identity required');
     const precheckDeadline = Date.now() + 90_000;
     let settled: ReturnType<typeof parseFrozenCandidateRepairQueue> | undefined;
     while (Date.now() < precheckDeadline) {
@@ -231,8 +247,22 @@ process.exitCode = result.status ?? 1;
     assert.notEqual(after.repairHead, candidate);
     assert.equal(git(fixture, 'rev-parse', lineageRef), after.repairHead);
     assert.match(git(fixture, 'show', after.repairHead + ':' + admittedPath), /assert.equal\(true, true\)/);
+    let task = await getTask(precheckTaskId);
+    const taskExitDeadline = Date.now() + 10_000;
+    while (task && !isTerminalState(task.state) && Date.now() < taskExitDeadline) {
+      await new Promise(done => setTimeout(done, 100));
+      task = await getTask(precheckTaskId);
+    }
+    assert.ok(task?.confined && task.cgroupPath, 'precheck must be actually cgroup-confined');
+    assert.equal(task.workspaceId, workspace, 'task must belong to private runtime');
+    assert.equal(task.scopeUnit, scopeUnitForTask(precheckTaskId));
+    assert.ok(isTerminalState(task.state), 'precheck task must finish before retiring private PG');
+    assert.equal(task.exitCode, 0, 'managed worker must exit successfully');
+    assert.equal(await taskScopeEmpty(task.cgroupPath), true, 'private task scope must have no surviving processes');
     ordinaryProof = { operationId, precheck, admittedPath, servedRoot, canonicalRoot: fixture,
-      materialization: 'fixture-tools', noBackgroundPublication: true, finalRepairHead: after.repairHead };
+      materialization: 'fixture-tools', noBackgroundPublication: true, finalRepairHead: after.repairHead,
+      managedTask: { taskId: task.taskId, confined: task.confined, scopeUnit: task.scopeUnit,
+        cgroupPath: task.cgroupPath, state: task.state, exitCode: task.exitCode, scopeEmpty: true } };
   } else {
   assert.equal(response.ok, false, JSON.stringify(response));
   assert.equal(response.admitted, false, JSON.stringify(response));
@@ -257,5 +287,13 @@ catch (error) {
   process.exitCode = 1;
 } finally {
   await stopHost();
+  if (precheckTaskId) {
+    const task = await getTask(precheckTaskId);
+    if (task?.confined && task.cgroupPath && !(await taskScopeEmpty(task.cgroupPath))) {
+      const stopped = await killTask(precheckTaskId, { reapTerminalResidue: true, includeSubtree: true });
+      assert.ok(stopped.ok || stopped.error === 'already_gone', JSON.stringify(stopped));
+      assert.equal(await taskScopeEmpty(task.cgroupPath), true, 'private managed task survived cleanup');
+    }
+  }
   await getOrgPg().sql.end({ timeout: 1 });
 }

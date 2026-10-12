@@ -27,6 +27,13 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     }, { conversationsRead: true })).toMatchObject({ mounted: true });
   }, 180_000);
 const options = isolatedWorkerOptions(360_000);
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real populated Create Dock selects its neighbor and raw Markdown body before private allocation', async () => {
+    const portalSourceRoot = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    expect(await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot, createDock: true,
+      selected: 'create-role-selected', neighbor: 'create-role-neighbor',
+    }, { createDockRead: true })).toMatchObject({ mounted: true });
+  }, 180_000);
 function aggregateWorkerEnv(proof: string, evidenceDir: string, ambient: NodeJS.ProcessEnv = process.env) {
   const env: NodeJS.ProcessEnv = { ...ambient, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
     ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1', [proof]: '1',
@@ -72,6 +79,10 @@ for (const [_surface, proof, expected] of [
     await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource, conversations: true,
       selected: 'aggregate-role-selected', neighbor: 'aggregate-role-neighbor',
     }, { conversationsRead: true });
+  } else {
+    await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource, createDock: true,
+      selected: 'create-role-selected', neighbor: 'create-role-neighbor',
+    }, { createDockRead: true });
   }
   let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
   const prefix = proof === 'ROSTER_CONVERSATIONS_BROWSER_PROOF' ? 'portal-conversations' : 'portal-create-dock';
@@ -84,7 +95,7 @@ for (const [_surface, proof, expected] of [
       `phases/execute/${prefix}-seed.json`, `phases/execute/${prefix}-reads.json`,
       ...(proof === 'ROSTER_CONVERSATIONS_BROWSER_PROOF'
         ? ['phases/execute/portal-conversations-preflight.json', 'phases/execute/portal-conversations-denials.json']
-        : ['phases/execute/portal-create-dock-persistence.json'])],
+        : ['phases/execute/portal-create-dock-preflight.json', 'phases/execute/portal-create-dock-persistence.json'])],
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
       'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/sync-resolver/index.ts',

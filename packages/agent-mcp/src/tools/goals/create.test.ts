@@ -293,6 +293,52 @@ describe('goals:create — a goal must declare its holder policy', () => {
 });
 
 describe('goals:create — what the row must carry', () => {
+  it('creates a paused standing record with its window and complete launch settings', async () => {
+    const launchSettings = {
+      holder: { requireLive: true, onLoss: 'deactivate' },
+      defaults: { agent: 'codex', model: 'fixture-model', carry: 'warm' },
+      roles: { goal: { effort: 'high', account: 'example' } },
+    };
+    const res = await call(ARGS({
+      status: 'paused', standing: true, budgetCents: 50_000, budgetWindowSec: 604_800,
+      holder: undefined, launchSettings,
+    }), CTX());
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    const columns = insert.sql.match(/\(([^]*?)\)\s*VALUES/)![1]!.replace(/\s/g, '').split(',');
+    const value = (column: string) => insert.params[columns.indexOf(column)];
+    expect(value('standing')).toBe(true);
+    expect(value('status')).toBe('paused');
+    expect(value('budget_window_sec')).toBe(604_800);
+    expect(JSON.parse(value('launch_settings') as string)).toEqual(launchSettings);
+    expect(res.data).toMatchObject({ status: 'paused', standing: true, budget_window_sec: 604_800,
+      mode_subject_stamped: false });
+    const modeStamp = calls.find((c) => /UPDATE harness_shared\.agent_modes/.test(c.sql));
+    expect(modeStamp?.sql).toMatch(/mode = 'goal'/);
+  });
+
+  it('overlays the explicit holder policy without dropping launch settings siblings', async () => {
+    await call(ARGS({ holder: { requireLive: false }, launchSettings: {
+      holder: { requireLive: true }, defaults: { model: 'fixture-model' }, maxAgents: 4,
+    } }), CTX());
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(insert.params).toContain(JSON.stringify({
+      maxAgents: 4, defaults: { model: 'fixture-model' }, holder: { requireLive: false },
+    }));
+  });
+
+  it('rejects invalid launch settings and nonpositive windows before a write', () => {
+    expect(() => ARGS({ launchSettings: { roles: { unknown: {} } } })).toThrow();
+    expect(() => ARGS({ budgetWindowSec: 0 })).toThrow();
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(false);
+  });
+
+  it('checks window-specific tripwires against the declared creation window', async () => {
+    const res = await call(ARGS({ budgetWindowSec: 604_800,
+      tripwires: [{ metric: 'spend_usd_7d', label: '7d spend', threshold: 100, unit: 'usd' }],
+    }), CTX());
+    expect(res.data).not.toHaveProperty('tripwire_advisories');
+  });
+
   it('persists the kill criterion, which no pot could carry for a multi-project goal', async () => {
     const res = await call(ARGS({ killCriterion: 'no paying user after 2 weeks' }), CTX());
     expect((res.data as { kill_criterion: string }).kill_criterion).toBe('no paying user after 2 weeks');

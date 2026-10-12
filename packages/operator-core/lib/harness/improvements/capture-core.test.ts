@@ -2541,6 +2541,61 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(base.created).toHaveLength(1);
   });
 
+  it('P-005 does not coalesce a coord:presence timeout into a keyless client-wrapper failure sibling', async () => {
+    const wrapperFailure = existing({
+      id: 'EI-25547463864163185',
+      title: 'coord:presence tool-call failure (client-wrapper-missing)',
+      scope: 'harness:papercusp',
+      payload: { lane: 'improvement' },
+    });
+    const base = deps({ found: [] });
+    const d = semDeps(base, { hard: [], soft: [{ id: wrapperFailure.id, similarity: 0.91 }] }, [wrapperFailure]);
+    let pressureReads = 0;
+    d.readIssueAdmissionPressure = async () => {
+      pressureReads += 1;
+      return assessIssueAdmissionPressure({
+        rawOccurrences: 455,
+        duplicateOccurrences: 455,
+        canonicalStock: 2_494,
+        canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+        emitterCounts: [430, 5, 5, 5, 5, 5],
+      });
+    };
+    const watchdogKey = 'repeated-tool-error:coord:presence:structural:timeout-report';
+
+    const res = await captureImprovement({
+      title: 'coord:presence tool-call failure (request_timeout)',
+      body: 'A nested tools:invoke request for coord:presence exceeded its 55s timeout.',
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      payloadExtra: {
+        toolFailureProbation: {
+          state: 'promoted',
+          directEvidence: true,
+          watchdogKey,
+          class: 'structural',
+          report: {
+            toolName: 'coord:presence',
+            status: 'request_timeout',
+            message: 'A nested tools:invoke request for coord:presence exceeded its 55s timeout.',
+          },
+        },
+      },
+    }, d);
+
+    expect(res).toMatchObject({ ok: true, created: true, issue: { id: 'EI-100' } });
+    expect(res.possibleDuplicates).toEqual([
+      expect.objectContaining({ id: wrapperFailure.id, semantic: 'soft' }),
+    ]);
+    expect(pressureReads).toBe(0);
+    expect(base.created).toHaveLength(1);
+    expect(base.created[0]).toMatchObject({
+      title: 'coord:presence tool-call failure (request_timeout)',
+      body: 'A nested tools:invoke request for coord:presence exceeded its 55s timeout.',
+    });
+  });
+
   it('P-005 CONTROL: ordinary keyed captures still use a keyless soft sibling during a burst', async () => {
     const worded = existing({
       id: 'EI-59',

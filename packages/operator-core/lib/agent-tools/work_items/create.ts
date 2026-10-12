@@ -36,6 +36,7 @@ import {
 } from './_create-core';
 import { looksLikeResidualClosure } from '../../plan-items/convert';
 import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
+import { FEATURE_STATE_ALIASES } from '../../work-item-dispatch-states';
 import { LINK_RELS } from './link';
 import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 import { derivePlanSlug } from '../coordination/derived-plan-slug';
@@ -89,8 +90,17 @@ const stateOnCreate = z
     message:
       'a work-item cannot be CREATED in a terminal state — that would bypass the completion-integrity gate (no owner, no evidence). Create it, then work_items:complete { id, completion, state } so the verification evidence is recorded.',
   })
+  // WI-6554700010009155 (owner directive #1746): `blocked` must NAME its blocker. Creating
+  // straight into `blocked` was the one door that skipped work_items:set_state's typed-blocker
+  // guard — measured 2026-10-12: 14 rows born blocked with no blocker, e.g. WI-6554700010008642.
+  // Aliases are folded through the same map the runtime writer uses, so a future spelling of
+  // `blocked` is refused here on its own.
+  .refine((s) => (FEATURE_STATE_ALIASES[s.trim().toLowerCase()] ?? s.trim().toLowerCase()) !== 'blocked', {
+    message:
+      "a work-item cannot be CREATED in state 'blocked' — a blocked item must name its blocker. Create it (open), then: work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } for an external event/gate/runtime/human blocker (it parks the item), or work_items:link { id: '<blocker-id>', target_id: '<new-id>', rel: 'blocks' } for another work-item, or plans:set-status for a plan item.",
+  })
   .describe(
-    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'), or 'blocked'. Defaults to the kind's normal entry state (todo). Terminal states are rejected: complete the item instead, so its evidence is recorded.",
+    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'). Defaults to the kind's normal entry state (todo). Terminal states and 'blocked' are rejected: complete the item instead, or create it then name its blocker with work_items:set_blocker.",
   );
 
 /**

@@ -436,7 +436,14 @@ async function coordCanary(health: unknown) {
     let createDockPlans: import('./portal-roster-browser-fixture').PrivateCreateDockSeed | undefined;
     if (process.env.ROSTER_CREATE_DOCK_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const { resolveHarnessPlansDir } = await import('../lib/agent-tools/plans/source');
       const harness = operatorHomeHarnessSlug();
+      // Unlike the workspace-wide archive fixture, Create requests an
+      // explicit harness fan-out. Its real registry eligibility is required.
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects.filter(p => p.slug !== harness),
+        { slug: harness, path: root }] }), workspace);
+      assert.equal((await resolveHarnessPlansDir(harness, { workspaceId: workspace })).harnessSlug, harness);
       const stem = `private-create-dock-${process.pid}`;
       createDockPlans = { workspace, harness, selectedSlug: stem + '-selected', neighborSlug: stem + '-neighbor', foreignSlug: stem + '-foreign' };
       for (const [scope, slug] of [[workspace, createDockPlans.selectedSlug], [workspace, createDockPlans.neighborSlug],
@@ -447,6 +454,18 @@ async function coordCanary(health: unknown) {
           VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'draft', ${content}, ${createHash('sha256').update(content).digest('hex')})`;
       }
       writeFileSync(join(evidence, 'portal-create-dock-seed.json'), JSON.stringify(createDockPlans, null, 2));
+      const url = new URL('/api/zero-harness/rest-query', base);
+      url.searchParams.set('name', 'plans.list');
+      url.searchParams.set('args', JSON.stringify({ includeFinished: false, includeArchived: true,
+        includeLegacy: true, harness_slugs: [harness] }));
+      const response = await fetch(url, { headers: { cookie: cookie(ownSession.token) }, signal: AbortSignal.timeout(25_000) });
+      const body = await response.json() as { rows?: Array<{ slug: string }> };
+      writeFileSync(join(evidence, 'portal-create-dock-preflight.json'), JSON.stringify({ status: response.status, body }, null, 2));
+      assert.equal(response.status, 200);
+      for (const slug of [createDockPlans.selectedSlug, createDockPlans.neighborSlug])
+        assert.ok(body.rows?.some(row => row.slug === slug), 'Create list must expose its registered plan before browser: ' + slug);
+      assert.ok(!body.rows?.some(row => row.slug === createDockPlans!.foreignSlug), 'Create preflight excludes the foreign workspace');
+      console.log('ROSTER_STOP_HTTP_PHASE create-dock-api-preflight-ready');
     }
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;

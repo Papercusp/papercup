@@ -1776,6 +1776,12 @@ import '../events';
 import '../coord-lifecycle/lifecycle-rules';
 import '../coord-lifecycle/register-emit-rules';
 
+// derived-status-not-hand-written-2026-10-12#P-011 — blocker auto-clear: a terminal
+// work_items:complete / set_state clears every live-dependency blocker that named
+// the finished item (history kept) and wakes the blocked item's holder. Importing
+// registers the rules; loaded after '../events' so the registry exists.
+import '../work-item-ref-blocker-auto-clear-rule';
+
 // docs-and-memory-as-projections-2026-06-05 P0 — the topic-keyed RATIONALE
 // projection (@papercusp/projection-index): plan decisions + work-items + insights,
 // indexed by topic and kept fresh by the event engine. `rationale:feed` is the

@@ -22,7 +22,7 @@ import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learn
 import { observeWorkflowDenialCycle, runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
 import { runPrivateStatsPage, type PrivateStatsSeed } from './portal-stats-fixture';
 import { runPrivateGitPage, type PrivateGitSeed } from './portal-git-fixture';
-import { defaultAdvGitLayout } from '../lib/dock-layouts';
+import { defaultAdvCreateLayout, defaultAdvGitLayout } from '../lib/dock-layouts';
 import { runPrivateCupboardPage } from './portal-cupboard-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -720,9 +720,15 @@ function conversationSearchControl(page: Page) {
     .getByRole('searchbox', { name: 'Search conversations', exact: true });
 }
 
+function createDockPlanBody(main: ReturnType<Page['locator']>, body: string) {
+  // The real renderer can fall back to a preformatted Markdown document.
+  // Scope to the detail pane and accept its surrounding Markdown syntax.
+  return main.getByText(body, { exact: false }).first();
+}
+
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean; devRead?: boolean; conversationsRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean; cupboardRead?: boolean; devRead?: boolean; conversationsRead?: boolean; createDockRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
@@ -734,6 +740,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   assert.ok(!options.cupboardRead || input.cupboard, 'Cupboard workflow requires the actual Cupboard route');
   assert.ok(!options.devRead || input.dev, 'Dev workflow requires the actual Dev route');
   assert.ok(!options.conversationsRead || input.conversations, 'Conversation controls require the actual aggregate');
+  assert.ok(!options.createDockRead || input.createDock, 'Create controls require the actual dock');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -840,6 +847,19 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       reads.push({ name: 'dev.workspaces', args: null });
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ workspaces: [input.selected, input.neighbor].map(id => ({ id, name: id })) }));
+    } else if (options.createDockRead && pathname === '/api/dock-layouts/adv-create2') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ workspaceId: 'preflight-workspace', userId: '_local', layoutName: 'adv-create2',
+        schemaVersion: 1, layoutJson: defaultAdvCreateLayout(), updatedTs: 1, createdTs: 1 }));
+    } else if (options.createDockRead && pathname === '/api/admin/plans/get') {
+      const slug = requestUrl.searchParams.get('slug');
+      reads.push({ name: 'plans.get', args: { slug } });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true, slug, title: slug, status: 'draft',
+        harness: input.selected, frontmatter: { slug, title: slug, status: 'draft' },
+        raw: `---\nslug: ${slug}\nstatus: draft\n---\n\n## Now\n${slug}-body\n`,
+        items: [], decisions: [], sectionIndex: [], counts: { items: 0, decisions: 0 },
+        contentHash: 'explicit-component-fixture', version: 1 }));
     } else if ((input.conversations || input.createDock) && pathname === '/api/zero-harness/rest-query') {
       const name = requestUrl.searchParams.get('name');
       reads.push({ name, args: JSON.parse(requestUrl.searchParams.get('args') ?? '{}') });
@@ -847,7 +867,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       response.end(JSON.stringify({ rows: options.conversationsRead && name === 'conversations.questionsList'
         ? [input.selected, input.neighbor].map(id => ({ id, kind: 'question', state: 'open', scope: 'workspace',
           harness_slug: null, title: id, asker_id: 'preflight-viewer', topics: [], created_ts: '2026-10-12T00:00:00Z' }))
-        : [] }));
+        : options.createDockRead && name === 'dockLayouts.byName'
+          ? [{ workspaceId: 'preflight-workspace', userId: '_local', layoutName: 'adv-create2',
+            schemaVersion: 1, layoutJson: defaultAdvCreateLayout(), updatedTs: 1, createdTs: 1 }]
+        : options.createDockRead && name === 'plans.list'
+          ? [input.selected, input.neighbor].map(slug => ({ slug, title: slug, status: 'draft',
+            harness: input.selected, archived: false, isLegacy: false, itemCounts: {}, nextAction: slug + '-body' }))
+          : [] }));
     } else if (input.harnessSettings && pathname.endsWith('/blueprint-params')) {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ blueprintId: 'explicit-settings-component-fixture', params: {} }));
@@ -1106,6 +1132,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     if (input.conversations || input.createDock) {
       url.searchParams.set('app', input.conversations ? 'conversations' : 'create');
       url.searchParams.set('ws', 'preflight-workspace');
+      if (options.createDockRead) {
+        url.searchParams.set('slug', input.selected); url.searchParams.set('scope', 'all');
+        url.searchParams.set('view', 'plans'); url.searchParams.set('plan', input.selected);
+      }
     }
     if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
     if (input.stats) { url.searchParams.set('app', 'stats'); url.searchParams.set('slug', input.selected); }
@@ -1185,6 +1215,16 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     } else if (input.createDock) {
       await page.getByRole('navigation', { name: 'Create view', exact: true }).waitFor();
       assert.equal(await page.locator('.pc-adv-create__dock').count(), 1);
+      if (options.createDockRead) {
+        const dock = page.locator('.pc-adv-create__dock');
+        const main = dock.locator('.pc-plans__main');
+        await createDockPlanBody(main, input.selected + '-body').waitFor();
+        await dock.locator('.pc-plans__list').getByText(input.neighbor, { exact: true }).first().click();
+        await createDockPlanBody(main, input.neighbor + '-body').waitFor();
+        await page.waitForURL(value => value.searchParams.get('plan') === input.neighbor);
+        assert.ok(reads.some(read => read.name === 'plans.list'));
+        assert.ok(reads.some(read => read.name === 'plans.get' && read.args.slug === input.neighbor));
+      }
     } else if (input.harnessSettings) {
       await page.getByRole('heading', { name: 'Settings — ' + input.selected, exact: true }).waitFor();
       await page.getByText(/Schema-driven per-harness settings/).waitFor();
@@ -2220,9 +2260,9 @@ async function runPrivateCreateDockPage(page: Page, context: BrowserContext, inp
   await page.goto(url.href);
   const dock = page.locator('.pc-adv-create__dock');
   const main = dock.locator('.pc-plans__main');
-  await main.getByText(seed.selectedSlug + '-body', { exact: true }).waitFor();
+  await createDockPlanBody(main, seed.selectedSlug + '-body').waitFor();
   const neighbor = dock.locator('.pc-plans__list').getByText(seed.neighborSlug, { exact: true }).first();
-  await neighbor.click(); await main.getByText(seed.neighborSlug + '-body', { exact: true }).waitFor();
+  await neighbor.click(); await createDockPlanBody(main, seed.neighborSlug + '-body').waitFor();
   await page.waitForURL(value => value.searchParams.get('plan') === seed.neighborSlug);
   // Exercise the real splitter and its debounced HTTP persistence, rather
   // than saving a fixture layout directly through the API.
@@ -2239,7 +2279,7 @@ async function runPrivateCreateDockPage(page: Page, context: BrowserContext, inp
   const persistedRow = await persisted.json();
   assert.ok(savedRow.layoutJson, 'the canonical save receipt must contain its logical layout');
   assert.deepEqual(persistedRow.layoutJson, savedRow.layoutJson);
-  await page.reload(); await main.getByText(seed.neighborSlug + '-body', { exact: true }).waitFor();
+  await page.reload(); await createDockPlanBody(main, seed.neighborSlug + '-body').waitFor();
   assert.equal(new URL(page.url()).searchParams.get('plan'), seed.neighborSlug);
   assert.equal(new URL(page.url()).searchParams.get('ws'), seed.workspace);
   assert.ok(!(await dock.innerText()).includes(seed.foreignSlug));

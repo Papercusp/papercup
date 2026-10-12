@@ -3944,9 +3944,19 @@ export function composeResumeModelSpec(model: any, effort: any): any;
 /** Content-free lineage shown in the resume picker for ported target sessions. */
 export function resumeSessionLineageLabel(session: any): string | null;
 export function sessionPortUpgradeError(error: any): Error;
+/** PURE (exported for tests): the backends the interactive resume picker offers
+ * as targets. Every backend, whatever the source: the session-port service
+ * prepares claude, codex and omp sources alike (session-port/service.ts source
+ * gate) and resolveResumeTarget already ports any scripted `--agent` pair. The
+ * picker used to offer other backends only to Claude sources — a leftover from
+ * when protocol v1 read Claude transcripts only — so a Codex or OMP session could
+ * never be switched interactively (consult-backed-parking-2026-10-12 P-011,
+ * R-10). The source backend is listed first so the native rows lead the menu. */
+export function resumePickerBackendsFor(session: any): any[];
 /** Resolve the backend before account selection. Same-backend selections keep
- * the byte-identical native resume/fork path; a tracked plain Claude source may
- * instead create a fresh Codex/OMP session through protocol v1. */
+ * the byte-identical native resume/fork path; any other backend creates a fresh
+ * session for the target through the session port (protocol v1), whichever of
+ * claude, codex or omp the tracked source runs on. */
 export function resolveResumeTarget(session: any, args?: {}, selected?: {}): {
     modelSource?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     operation: string;

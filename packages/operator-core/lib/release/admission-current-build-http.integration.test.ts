@@ -18,6 +18,12 @@ async function verifyAdmissionHttp(context: TestContext, ordinary = false) {
       'packages/operator-core/test/admission-http-fixture.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
+      'packages/operator-core/lib/task-manager/store.ts',
+      'packages/operator-core/lib/task-manager/control.ts',
+      'packages/operator-core/lib/task-manager/cgroup-read.ts',
+      'packages/operator-core/lib/task-manager/types.ts',
+      'packages/operator-core/lib/task-manager/managed-spawn.ts',
+      'packages/operator-core/lib/systemd-scope.ts',
       'scripts/with-test-pg.mjs',
       'packages/operator-core/lib/agent-tools/release/repair-queue.ts',
       'packages/operator-core/lib/release/admission-jobs.ts',
@@ -47,7 +53,8 @@ async function verifyAdmissionHttp(context: TestContext, ordinary = false) {
       else delete env.ADMISSION_HTTP_CASE;
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
-      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api',
+        ...(ordinary ? ['--managed-tasks'] : []), '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/admission-http-fixture.ts')],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
@@ -67,6 +74,7 @@ async function verifyAdmissionHttp(context: TestContext, ordinary = false) {
         workerSha256: expect.stringMatching(/^[a-f0-9]{64}$/), health: { service: 'papercusp-operator' } });
       if (ordinary) expect(receipt).toMatchObject({ response: { ok: true, admitted: true },
         ordinaryProof: { materialization: 'fixture-tools', noBackgroundPublication: true,
+          managedTask: { confined: true, exitCode: 0, scopeEmpty: true },
           admittedPath: 'test/ordinary.test.mjs', precheck: { status: 'passed', verdict: { ok: true, ran: true,
             passing: ['test/ordinary.test.mjs'], failing: [], unmeasured: [] } } } });
       else expect(receipt).toMatchObject({

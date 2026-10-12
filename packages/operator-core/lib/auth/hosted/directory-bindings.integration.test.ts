@@ -75,6 +75,84 @@ beforeEach(async () => {
 });
 
 describe('audited directory binding administration', () => {
+  it('exports local roles and approved bindings without foreign tenant or profile/email disclosure', async () => {
+    await manager.set(principal(), input());
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      VALUES (${foreignOrganizationId}::uuid,${memberId}::uuid,'owner','active','member_management')`;
+    await sql`INSERT INTO papercusp_auth.external_identities(hosted_user_id,provider,subject,profile)
+      VALUES (${memberId}::uuid,'workos-dsync',${JSON.stringify(['foreign-org','foreign-directory','foreign-user'])},
+        '{"authorized_directory_groups":["foreign-group"],"private_note":"do not export"}'::jsonb)`;
+    await sql`UPDATE papercusp_auth.external_identities SET profile=profile || '{"private_note":"do not export","email":"private@example.test"}'::jsonb
+      WHERE provider='workos-dsync' AND subject=${JSON.stringify(['workos-org','directory-1','dsync-user-1'])}`;
+    const review = await manager.review(principal(), { organizationId, purpose: 'Quarterly access review' });
+    expect(review.members).toHaveLength(3);
+    expect(review.scope).toBe('local-memberships-and-directory-bindings');
+    expect(review.members.find(m => m.userId === memberId)).toMatchObject({ role: 'member', membershipStatus: 'active',
+      effectivePermissions: ['workspace:operate','workspace:view'], directoryBindings: [{ directoryId: 'directory-1',
+        directoryUserId: 'dsync-user-1', authorizedGroupIds: ['group-a','group-b'], status: 'active' }] });
+    expect(JSON.stringify(review)).not.toMatch(/foreign-|private_note|private@example|admin@example|member@example/);
+    expect(await sql`SELECT actor_id,purpose,metadata FROM papercusp_auth.organization_audit_events WHERE id=${review.auditId}::uuid`)
+      .toMatchObject([{ actor_id: actorId, purpose: 'Quarterly access review', metadata: { memberCount: 3, generatedAt: review.generatedAt } }]);
+  });
+
+  it.each(['member','billing'])('refuses stale administrator permission after live %s role replacement', async (role) => {
+    await sql`DELETE FROM papercusp_auth.organization_memberships WHERE user_id=${actorId}::uuid`;
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      VALUES (${organizationId}::uuid,${actorId}::uuid,${role},'active','member_management')`;
+    await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_forbidden');
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+
+  it('refuses foreign, suspended administrator and permission-free requests', async () => {
+    await expect(manager.review(principal(), { organizationId: foreignOrganizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_forbidden');
+    await expect(manager.review(principal(['workspace:view']), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_forbidden');
+    await sql`UPDATE papercusp_auth.organization_memberships SET status='suspended',suspended_at=now() WHERE user_id=${actorId}::uuid`;
+    await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_forbidden');
+  });
+
+  it('reports suspended memberships and deleted users without effective permission', async () => {
+    await sql`UPDATE papercusp_auth.organization_memberships SET status='suspended',suspended_at=now() WHERE user_id=${memberId}::uuid`;
+    await sql`UPDATE papercusp_auth.hosted_users SET status='deleted',deleted_at=now() WHERE id=${otherId}::uuid`;
+    const review = await manager.review(principal(), { organizationId, purpose: 'Review lifecycle' });
+    expect(review.members.find(m => m.userId === memberId)).toMatchObject({ membershipStatus: 'suspended', effectivePermissions: [] });
+    expect(review.members.find(m => m.userId === otherId)).toMatchObject({ userStatus: 'deleted', effectivePermissions: [] });
+    expect(review.members.find(m => m.userId === actorId)?.effectivePermissions).toContain('members:manage');
+  });
+
+  it('fails closed on malformed directory coordinates before recording a successful export', async () => {
+    await sql`INSERT INTO papercusp_auth.external_identities(hosted_user_id,provider,subject)
+      VALUES (${memberId}::uuid,'workos-dsync','not-json')`;
+    await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_invalid_binding');
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+
+  it('refuses population overflow instead of exporting a silently truncated review', async () => {
+    await sql`INSERT INTO papercusp_auth.hosted_users(primary_email)
+      SELECT 'bulk-' || n || '@example.test' FROM generate_series(1,998) AS n`;
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      SELECT ${organizationId}::uuid,id,'member','active','member_management' FROM papercusp_auth.hosted_users WHERE primary_email LIKE 'bulk-%'`;
+    await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_member_limit');
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+
+  it('refuses directory identity overflow without a partial review', async () => {
+    await sql`INSERT INTO papercusp_auth.external_identities(hosted_user_id,provider,subject)
+      SELECT ${memberId}::uuid,'workos-dsync',json_build_array('workos-org','directory',n::text)::text FROM generate_series(1,101) AS n`;
+    await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('directory_access_review_identity_limit');
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+
+  it('does not return a review when the append-only audit insert fails', async () => {
+    await sql.unsafe(`CREATE FUNCTION pg_temp.reject_access_review() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'review audit unavailable'; END $$;
+      CREATE TRIGGER reject_access_review BEFORE INSERT ON papercusp_auth.organization_audit_events
+      FOR EACH ROW EXECUTE FUNCTION pg_temp.reject_access_review();`);
+    try {
+      await expect(manager.review(principal(), { organizationId, purpose: 'Review' })).rejects.toThrow('review audit unavailable');
+      expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+    } finally { await sql.unsafe('DROP TRIGGER reject_access_review ON papercusp_auth.organization_audit_events'); }
+    expect((await manager.review(principal(), { organizationId, purpose: 'Review after recovery' })).auditId).toBeTruthy();
+  });
   it('sets and updates immutable references with old/new groups in append-only audit and no role change', async () => {
     const first = await manager.set(principal(), input());
     const next = await manager.set(principal(), { ...input(), authorizedGroupIds: ['group-c'] });

@@ -15,11 +15,80 @@ import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'node:net';
+import { createServer, createConnection } from 'node:net';
+import { getContainerRuntimeClient } from 'testcontainers';
 
 const PG_IMAGE = 'postgres@sha256:5a65324fe84dc41709ff914e90b07f3e2f577073ed27bf917d4873aca0c9ec51';
 const MAIL_IMAGE = 'maildev/maildev@sha256:180ef51f65eefebb0e7122d8308813c1fd7bff164bc440ce5a3c2feee167a810';
+const REAPER_IMAGE = 'testcontainers/ryuk@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0';
 const PINNED_IMAGE = /^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$/;
+
+/** Ryuk must acknowledge this run's exact ownership filter before allocation.
+ * Keep one connection per sandbox: the shared Testcontainers reaper waits for
+ * every peer's connection, which cannot bound cleanup for one killed wrapper.
+ */
+export async function registerSandboxReaper({ port, owner, onDisconnect = () => {}, timeoutMs = 30_000 }) {
+  if (!/^daohr-documenso-[a-f0-9-]{12}$/.test(owner)) throw new Error('Invalid sandbox cleanup owner');
+  const socket = createConnection({ host: '127.0.0.1', port });
+  let acknowledged = false, closing = false, connected = false, failure, response = '';
+  const lost = error => {
+    if (closing || failure) return;
+    failure = error;
+    connected = false;
+    if (acknowledged) onDisconnect(error);
+  };
+  try {
+    await new Promise((done, reject) => {
+      const timer = setTimeout(() => fail(new Error('Sandbox cleanup reaper did not acknowledge its ownership filter')), timeoutMs);
+      function fail(error) { clearTimeout(timer); lost(error); reject(error); }
+      socket.once('connect', () => socket.write('label=papercusp.test.owner=' + owner + '\n'));
+      socket.on('error', error => fail(error));
+      socket.on('close', () => fail(new Error('Sandbox cleanup reaper connection closed')));
+      socket.on('data', data => {
+        response += data.toString('utf8');
+        if (response.length > 128 || (response.includes('\n') && response !== 'ACK\n')) {
+          fail(new Error('Sandbox cleanup reaper rejected its ownership filter'));
+        } else if (response === 'ACK\n') {
+          clearTimeout(timer);
+          acknowledged = connected = true;
+          done();
+        }
+      });
+    });
+    return {
+      assertConnected() { if (!connected) throw failure ?? new Error('Sandbox cleanup reaper is disconnected'); },
+      close() { closing = true; connected = false; socket.destroy(); },
+    };
+  } catch (error) { closing = true; socket.destroy(); throw error; }
+}
+
+async function startSandboxReaper(owner, docker, onDisconnect) {
+  if (process.env.TESTCONTAINERS_RYUK_DISABLED === 'true') {
+    throw new Error('Documenso sandbox requires external-kill cleanup; Ryuk cannot be disabled');
+  }
+  const client = await getContainerRuntimeClient();
+  const name = owner + '-reaper';
+  // The reaper itself is outside the wrapper's process scope. --rm and its
+  // no-client timeout also cover wrapper death before the registration ACK.
+  await dockerAllocation(['run', '-d', '--rm', '--pull=never', '--name', name,
+    '--label', 'papercusp.test.reaper=' + owner, '-p', '127.0.0.1::8080', '--mount',
+    'type=bind,src=' + client.info.containerRuntime.remoteSocketPath + ',dst=/var/run/docker.sock',
+    '-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);
+  const port = loopbackPort(docker(['port', name, '8080/tcp']));
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      const connection = await registerSandboxReaper({ port, owner, onDisconnect });
+      console.error('[documenso-sandbox-reaper] ' + JSON.stringify({ network: owner, container: name, image: REAPER_IMAGE }));
+      return connection;
+    } catch (error) {
+      // A published Docker port can precede the server's listen. Only that
+      // pre-listen refusal is retryable; never allocate without an ACK.
+      if (error.code !== 'ECONNREFUSED' || Date.now() >= deadline) throw error;
+      await new Promise(done => setTimeout(done, 100));
+    }
+  }
+}
 
 export function parseSandboxArgs(argv) {
   const separator = argv.indexOf('--');
@@ -65,13 +134,13 @@ export function sandboxEnvironment({ appUrl, databasePassword, secret, encryptio
 }
 
 /** An allocation request is not cancelled by killing its Docker CLI client.
- * Wait for the response before cleanup; a CLI timeout otherwise lets the daemon
- * allocate a container after `docker rm` has already reported it absent.
+ * Join each daemon request, including removal; a CLI timeout can leave work
+ * running after the caller has already inspected an incomplete outcome.
  * The threshold is a progress warning, not permission to abandon the request.
  */
 export async function dockerAllocation(args, environment = {}, {
   spawnChild = spawn, pendingAfterMs = 30_000,
-  onPending = () => console.error('[documenso-sandbox] Docker ' + args[0] + ' allocation still pending; waiting for its outcome before cleanup'),
+  onPending = () => console.error('[documenso-sandbox] Docker ' + args[0] + ' request still pending; waiting for its outcome before cleanup'),
 } = {}) {
   const child = spawnChild('docker', args, { env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
@@ -86,11 +155,35 @@ export async function dockerAllocation(args, environment = {}, {
         for (const value of Object.values(environment).filter(value => value.length >= 8)) {
           stderr = stderr.split(value).join('[redacted]');
         }
-        reject(new Error('Documenso sandbox Docker allocation failed: ' + args[0] + ' ' +
+        reject(new Error('Documenso sandbox Docker request failed: ' + args[0] + ' ' +
           (signal ?? code) + (stderr ? ': ' + stderr : '')));
       });
     });
   } finally { clearTimeout(warning); }
+}
+
+/** Normal cleanup joins removal before checking this run's ownership label.
+ * A concurrent external reaper may already have removed a named resource;
+ * absence is authoritative, while a retained resource always fails closed.
+ */
+export async function cleanupSandboxResources({ containers, network, networkCreated, inspect,
+  remove = args => dockerAllocation(args) }) {
+  const errors = [];
+  for (const name of [...containers].reverse()) {
+    try { await remove(['rm', '-f', '-v', name]); }
+    catch (error) { errors.push(error.message); }
+  }
+  if (networkCreated) {
+    try { await remove(['network', 'rm', network]); }
+    catch (error) { errors.push(error.message); }
+  }
+  const remainingContainers = inspect(['ps', '-aq', '--filter', 'label=papercusp.test.owner=' + network]);
+  const remainingNetworks = inspect(['network', 'ls', '-q', '--filter', 'label=papercusp.test.owner=' + network]);
+  if (remainingContainers || remainingNetworks) {
+    throw new Error('Documenso sandbox cleanup incomplete for ' + network + ': containers=' +
+      (remainingContainers || 'none') + ', networks=' + (remainingNetworks || 'none') +
+      (errors.length ? '; removal errors=' + errors.join('; ') : ''));
+  }
 }
 
 /** Collect failure evidence while the owned container still exists. Never emit config secrets. */
@@ -133,7 +226,7 @@ export async function runSandbox({ image, command }) {
   const network = 'daohr-documenso-' + suffix;
   const database = network + '-pg', mail = network + '-mail', app = network + '-app';
   const containers = [];
-  let directory, networkCreated = false, child, stopped = false, killTimer;
+  let directory, reaper, reaperFailure, networkCreated = false, child, stopped = false, killTimer;
   const secret = () => randomBytes(32).toString('hex');
   function docker(args, environment = {}) {
     const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 30_000,
@@ -153,25 +246,15 @@ export async function runSandbox({ image, command }) {
   async function start(name, args, environment = {}) {
     // Create and start have different effects. Await the allocation response
     // before starting; a later start timeout cannot allocate another container.
+    reaper.assertConnected();
     containers.push(name);
     await dockerAllocation(['create', '--pull=never', '--name', name, '--label', 'papercusp.test.owner=' + network,
       '--network', network, ...args], environment);
     if (!stopped) docker(['start', name]);
   }
   async function cleanup() {
-    for (const name of [...containers].reverse()) {
-      spawnSync('docker', ['rm', '-f', '-v', name], { stdio: 'ignore', timeout: 30_000 });
-    }
-    if (networkCreated) spawnSync('docker', ['network', 'rm', network], { stdio: 'ignore', timeout: 10_000 });
-    if (directory) rmSync(directory, { recursive: true, force: true });
-    // Ignored removal exit codes are not evidence of cleanup. Verify only this
-    // run's ownership label; refuse a success result when a resource remains.
-    const remainingContainers = docker(['ps', '-aq', '--filter', 'label=papercusp.test.owner=' + network]);
-    const remainingNetworks = docker(['network', 'ls', '-q', '--filter', 'label=papercusp.test.owner=' + network]);
-    if (remainingContainers || remainingNetworks) {
-      throw new Error('Documenso sandbox cleanup incomplete for ' + network + ': containers=' +
-        (remainingContainers || 'none') + ', networks=' + (remainingNetworks || 'none'));
-    }
+    try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }
+    finally { if (directory) rmSync(directory, { recursive: true, force: true }); }
   }
   function stop() {
     stopped = true;
@@ -186,9 +269,11 @@ export async function runSandbox({ image, command }) {
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
     // Refuse before allocating anything when required images/tools are absent.
-    for (const ref of [image, PG_IMAGE, MAIL_IMAGE]) docker(['image', 'inspect', ref]);
+    for (const ref of [image, PG_IMAGE, MAIL_IMAGE, REAPER_IMAGE]) docker(['image', 'inspect', ref]);
     const openssl = spawnSync('openssl', ['version'], { stdio: 'ignore', timeout: 5000 });
     if (openssl.status !== 0) throw new Error('openssl is required for the sandbox signing certificate');
+    reaper = await startSandboxReaper(network, docker, error => { reaperFailure = error; stop(); });
+    if (stopped) return 130;
     directory = mkdtempSync(join(tmpdir(), 'daohr-documenso-'));
     chmodSync(directory, 0o700);
     const signingPassword = secret();
@@ -207,6 +292,7 @@ export async function runSandbox({ image, command }) {
     networkCreated = true;
     // Match upstream's supported bridge. SMTP terminates at MailDev. Allocation
     // may take longer than the CLI warning threshold on either bridge type.
+    reaper.assertConnected();
     await dockerAllocation(['network', 'create', '--label', 'papercusp.test.owner=' + network, network]);
     if (stopped) return 130;
     const databasePassword = secret();
@@ -253,13 +339,16 @@ export async function runSandbox({ image, command }) {
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,
       env: { ...process.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
         DOCUMENSO_TEST_RUNTIME: JSON.stringify(runtime) } });
-    return await new Promise((done, reject) => {
+    const exitCode = await new Promise((done, reject) => {
       child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
     });
+    if (reaperFailure) throw reaperFailure;
+    return exitCode;
   } finally {
     clearTimeout(killTimer);
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
-    await cleanup();
+    try { await cleanup(); }
+    finally { reaper?.close(); }
   }
 }
 

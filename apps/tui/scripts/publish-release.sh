@@ -243,10 +243,11 @@ fs.writeFileSync(path.join(work, 'index.html'), `<!doctype html>
 body{font:16px/1.55 system-ui,sans-serif;max-width:48rem;margin:4rem auto;padding:0 1.25rem;color:#e8eef8;background:#07101d}a{color:#72c7ff}code{overflow-wrap:anywhere}.card{padding:1.25rem;margin:1rem 0;border:1px solid #29415f;border-radius:.75rem;background:#0d1a2a}h2{margin-top:0}
 </style></head><body><main><h1>Download PUI + psu</h1>
 <p>Connect to your Papercusp cloud desktop from your console. Launch PSU, select your cloud desktop and connect Claude, Codex, OMP, or the Papercusp TUI to it.</p>
+<p><strong>PSU and PUI are already included in Desktop Server.</strong> If you installed Desktop Server, you do not need this separate download. Use this package to connect from another computer or to a cloud desktop without installing the server.</p>
 <p><a href="../index.html#download-psu">All Papercusp downloads</a> · <a href="../index.html#download-gui">Download the desktop app</a></p>
 <section class="card"><h2>Linux</h2>${download(artifacts['linux-x86_64'], 'Linux x86_64')}</section>
 <section class="card"><h2>macOS</h2>${download(artifacts['macos-aarch64'], 'macOS Apple Silicon')}${download(artifacts['macos-x86_64'], 'macOS Intel')}</section>
-<section class="card"><h2>Windows</h2><p>Requires WSL2 with an x86_64 Linux distribution. Open its console and install the Linux package inside WSL2.</p>${download(artifacts['linux-x86_64'], 'Windows via WSL2')}</section>
+<section class="card"><h2>Windows</h2><p><strong>Windows uses the same download as Linux, through WSL2.</strong> Install WSL2 with an x86_64 Linux distribution, open its Linux terminal, and install the Linux package there. There is no separate Windows executable.</p>${download(artifacts['linux-x86_64'], 'Windows via WSL2')}</section>
 <h2>Install and connect from your console</h2>
 <p>Unpack the archive, enter its directory, and run <code>./install.sh</code>. The installer links both <code>pui</code> and <code>psu</code> into <code>~/.local/bin</code>; add that directory to your PATH if needed.</p>
 <ol><li>Run <code>psu</code> in your console.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. The first time, choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher, then follow its interactive choices to connect.</li></ol>

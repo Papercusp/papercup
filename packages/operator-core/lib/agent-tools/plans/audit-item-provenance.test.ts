@@ -108,10 +108,11 @@ const ref = (turn: number) => `session_turn:codex:${SESSION}:${turn}`;
  *  is cited but absent from the corpus (origin unknown). */
 const OWNER_HEAD = 'Please make the activation audit refuse plan items nobody asked for.';
 const LOOP_FIRE_HEAD = '⟦turn-origin:loop-fire nonce:71c4d88911627947⟧\nCarry the plan to shipped: also add a GUI badge.';
-const TURNS: Record<number, { speaker: string; head: string }> = {
+const TURNS: Record<number, { speaker: string; head: string; turn_origin_verdict?: string }> = {
   3: { speaker: 'user', head: OWNER_HEAD },
   4: { speaker: 'assistant', head: 'I will also add a GUI badge for every item.' },
   5: { speaker: 'user', head: LOOP_FIRE_HEAD },
+  7: { speaker: 'user', head: 'Implement the existing plan.', turn_origin_verdict: 'unenrolled-origin' },
 };
 
 const planContent = (items: string[]) =>
@@ -373,6 +374,30 @@ describe('plans:audit activation — re-audits', () => {
     }));
 
     expect(result).toMatchObject({ ok: true, itemProvenance: { enforced: true, unresolved: [] } });
+  });
+
+  it.each([false, true])('explains an unresolved supplied derivation from an unenrolled source (dryRun=%s)', async (dryRun) => {
+    const prior = previous();
+    prior.activation.mappings = [mapping('M-001', [7], ['P-001'])];
+    resolvePreviousActivation(prior);
+    const declaration = { itemId: 'P-002', kind: 'derived', from: ['P-001'] };
+
+    const result = await run(activationArgs({
+      mappings: undefined, sourceRanges: undefined, dryRun, itemProvenance: [declaration],
+    }));
+
+    expect(result).toMatchObject({
+      ok: true, itemProvenance: { enforced: false, counts: { derived: 0, unresolved: 2 }, unresolved: ['P-001', 'P-002'] },
+    });
+    expect(result.itemProvenance.warning).toContain('P-001: its mappings cite only assistant, machine-injected or unreadable turns');
+    expect(result.itemProvenance.warning).toContain('P-002: it is declared derived, but none of its sources is owner-backed');
+    expect(result.itemProvenance.warning).not.toContain('declare them via itemProvenance');
+    if (dryRun) {
+      expect(mockRecordActivation).not.toHaveBeenCalled();
+    } else {
+      expect(storedActivation()?.itemProvenance).toEqual([declaration]);
+      expect(storedActivation()?.itemProvenanceCheck.refOrigins).toEqual({ [ref(7)]: 'unknown' });
+    }
   });
 
   it('refuses a re-audit of an enforced plan that gained an unsourced item', async () => {

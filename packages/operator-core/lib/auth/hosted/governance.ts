@@ -340,6 +340,38 @@ export interface DirectoryBindingResult {
   auditId: string;
 }
 
+export interface DirectoryAccessReviewInput {
+  organizationId: string;
+  purpose: string;
+}
+
+export interface DirectoryAccessReview {
+  organizationId: string;
+  generatedAt: string;
+  scope: 'local-memberships-and-directory-bindings';
+  memberLimit: number;
+  directoryIdentityLimitPerMember: number;
+  members: Array<{
+    membershipId: string;
+    userId: string;
+    role: string;
+    membershipStatus: string;
+    userStatus: string;
+    effectivePermissions: string[];
+    directoryBindings: Array<{
+      identityId: string;
+      directoryId: string;
+      directoryUserId: string;
+      status: string;
+      authorizedGroupIds: string[];
+    }>;
+  }>;
+  auditId: string;
+}
+
+const ACCESS_REVIEW_MEMBER_LIMIT = 1000;
+const ACCESS_REVIEW_IDENTITY_LIMIT = 100;
+
 export function validateDirectoryBinding(input: DirectoryBindingInput): DirectoryBindingInput & { authorizedGroupIds: string[] } {
   const identifier = (value: unknown, field: string): string => {
     if (typeof value !== 'string' || !value.trim() || value.length > 512) throw new TypeError(`directory_binding_invalid:${field}`);
@@ -361,6 +393,91 @@ export function validateDirectoryBinding(input: DirectoryBindingInput): Director
  * link an email, or reactivate a removed identity or membership. */
 export class HostedDirectoryBindingManager {
   constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  /** Local authority and approved directory references, not an IdP attestation
+   * or a census of every workspace/tool grant. Never return identity profiles. */
+  async review(principal: HostedPrincipal, raw: DirectoryAccessReviewInput): Promise<DirectoryAccessReview> {
+    const identifier = (value: string, field: string) => {
+      if (typeof value !== 'string' || !value.trim() || value.length > 512) {
+        throw new TypeError(`directory_access_review_invalid:${field}`);
+      }
+      return value.trim();
+    };
+    const input = { organizationId: identifier(raw.organizationId, 'organizationId'), purpose: identifier(raw.purpose, 'purpose') };
+    assertGovernancePayloadSafe(input);
+    if (!isHostedPrincipal(principal) || principal.activeOrganizationId !== input.organizationId || !principal.permissions.has('members:manage')) {
+      throw new Error('directory_access_review_forbidden');
+    }
+    return this.run<DirectoryAccessReview>(async (sql) => {
+      const organizations = await sql<{ external_organization_id: string }[]>`
+        SELECT external_organization_id FROM papercusp_auth.organizations
+         WHERE id = ${input.organizationId}::uuid AND identity_provider = 'workos' AND status = 'active' FOR SHARE`;
+      if (!organizations[0]) throw new Error('directory_access_review_organization_not_found');
+      const actors = await sql<{ role: string; status: string }[]>`
+        SELECT membership.role, membership.status FROM papercusp_auth.organization_memberships AS membership
+        JOIN papercusp_auth.hosted_users AS actor ON actor.id = membership.user_id
+         WHERE membership.organization_id = ${input.organizationId}::uuid AND membership.user_id = ${principal.userId}::uuid
+           AND actor.status = 'active' FOR SHARE OF membership, actor`;
+      if (!actors[0] || !hostedPermissionsForMembership(actors[0]).has('members:manage')) throw new Error('directory_access_review_forbidden');
+      // One statement gives the exported population a single MVCC snapshot.
+      // Read one extra row/reference to detect overflow, never silently clip it.
+      const rows = await sql<Array<{
+        membership_id: string; user_id: string; role: string; membership_status: string; user_status: string;
+        generated_at: string;
+        bindings: Array<{ id: string; subject: string; status: string; groups: unknown }>;
+      }>>`
+        SELECT membership.id::text AS membership_id, member.id::text AS user_id,
+          membership.role, membership.status AS membership_status, member.status AS user_status,
+          statement_timestamp()::text AS generated_at, COALESCE(directory.bindings, '[]'::jsonb) AS bindings
+        FROM papercusp_auth.organization_memberships AS membership
+        JOIN papercusp_auth.hosted_users AS member ON member.id = membership.user_id
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(jsonb_build_object('id', identity.id, 'subject', identity.subject,
+            'status', identity.status, 'groups', identity.profile -> 'authorized_directory_groups') ORDER BY identity.id) AS bindings
+          FROM (SELECT id, subject, status, profile FROM papercusp_auth.external_identities
+            WHERE hosted_user_id = member.id AND provider = 'workos-dsync'
+            ORDER BY id LIMIT ${ACCESS_REVIEW_IDENTITY_LIMIT + 1}) AS identity
+        ) AS directory ON true
+        WHERE membership.organization_id = ${input.organizationId}::uuid
+        ORDER BY membership.id LIMIT ${ACCESS_REVIEW_MEMBER_LIMIT + 1}`;
+      if (rows.length > ACCESS_REVIEW_MEMBER_LIMIT) throw new Error('directory_access_review_member_limit');
+      const externalOrganizationId = organizations[0].external_organization_id;
+      const members: DirectoryAccessReview['members'] = rows.map((row) => {
+        if (row.bindings.length > ACCESS_REVIEW_IDENTITY_LIMIT) throw new Error('directory_access_review_identity_limit');
+        const directoryBindings = row.bindings.flatMap((binding) => {
+          let coordinates: unknown;
+          try { coordinates = JSON.parse(binding.subject); } catch { throw new Error('directory_access_review_invalid_binding'); }
+          if (!Array.isArray(coordinates) || coordinates.length !== 3 || coordinates.some(value => typeof value !== 'string' || !value.trim() || value.length > 512)
+            || workosDirectoryIdentitySubject(coordinates[0], coordinates[1], coordinates[2]) !== binding.subject) {
+            throw new Error('directory_access_review_invalid_binding');
+          }
+          // A person may belong to several organizations; their foreign
+          // directory references must not cross this export's tenant boundary.
+          if (coordinates[0] !== externalOrganizationId) return [];
+          const groups = binding.groups ?? [];
+          if (!Array.isArray(groups) || groups.length > 100 || groups.some(value => typeof value !== 'string' || !value.trim() || value.length > 512)) {
+            throw new Error('directory_access_review_invalid_binding');
+          }
+          return [{ identityId: binding.id, directoryId: coordinates[1], directoryUserId: coordinates[2],
+            status: binding.status, authorizedGroupIds: [...new Set(groups.map(value => value.trim()))].sort() }];
+        });
+        return { membershipId: row.membership_id, userId: row.user_id, role: row.role,
+          membershipStatus: row.membership_status, userStatus: row.user_status,
+          effectivePermissions: row.user_status === 'active'
+            ? [...hostedPermissionsForMembership({ role: row.role, status: row.membership_status })].sort() : [], directoryBindings };
+      });
+      assertGovernancePayloadSafe(members as unknown as GovernanceJson);
+      const generatedAt = new Date(rows[0].generated_at).toISOString();
+      const auditId = await appendOrganizationAuditEvent({ organizationId: input.organizationId,
+        actorKind: 'customer_user', actorId: principal.userId, action: 'directory_access_review.exported', purpose: input.purpose,
+        targetType: 'organization', targetId: input.organizationId,
+        metadata: { memberCount: members.length, memberLimit: ACCESS_REVIEW_MEMBER_LIMIT,
+          directoryIdentityLimitPerMember: ACCESS_REVIEW_IDENTITY_LIMIT, generatedAt, scope: 'local-memberships-and-directory-bindings' },
+      }, sql);
+      return { organizationId: input.organizationId, generatedAt, scope: 'local-memberships-and-directory-bindings',
+        memberLimit: ACCESS_REVIEW_MEMBER_LIMIT, directoryIdentityLimitPerMember: ACCESS_REVIEW_IDENTITY_LIMIT, members, auditId };
+    });
+  }
 
   async set(principal: HostedPrincipal, raw: DirectoryBindingInput): Promise<DirectoryBindingResult> {
     return this.change(principal, validateDirectoryBinding(raw), false);

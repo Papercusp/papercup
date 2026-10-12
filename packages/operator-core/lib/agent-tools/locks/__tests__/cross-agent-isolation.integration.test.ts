@@ -50,6 +50,9 @@ import { decideAuthority, type AuthorityRecord } from '@papercusp/locks-core';
 
 async function dbLive(): Promise<boolean> {
   try {
+    // A disposable product PG starts without the separate locks database.
+    // Bootstrap it before probing; probing first skips every real-PG case.
+    await ensureBootstrap();
     await getTxPool()`SELECT 1`;
     return true;
   } catch {

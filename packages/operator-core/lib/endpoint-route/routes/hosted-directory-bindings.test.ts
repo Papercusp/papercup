@@ -15,6 +15,44 @@ const request = (method: string, payload = body) => new Request('https://app.pap
   { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
 
 describe('hosted directory binding routes', () => {
+  it('exports only the session/path organization with no-store download headers', async () => {
+    const review = vi.fn(async (_principal: HostedPrincipal, _input: { organizationId: string; purpose: string }) => ({ members: [], auditId: 'audit' }));
+    const route = createHostedDirectoryBindingRoutes({ review } as unknown as HostedDirectoryBindingManager)[2];
+    const response = await route.handler(request('POST', { ...body, purpose: 'Quarterly review' }), context());
+    expect(response.status).toBe(200);
+    expect(review.mock.calls[0]?.[1]).toEqual({ organizationId: 'org', purpose: 'Quarterly review' });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-disposition')).toContain('directory-access-review.json');
+    expect(await response.json()).toEqual({ ok: true, review: { members: [], auditId: 'audit' } });
+  });
+
+  it('rejects unauthorized access review before calling the manager', async () => {
+    const review = vi.fn();
+    const route = createHostedDirectoryBindingRoutes({ review } as unknown as HostedDirectoryBindingManager)[2];
+    expect((await route.handler(request('POST'), context('foreign'))).status).toBe(403);
+    expect((await route.handler(request('POST'), context('org', ['workspace:view']))).status).toBe(403);
+    expect(review).not.toHaveBeenCalled();
+  });
+
+  it('conceals unexpected TypeError details instead of treating all TypeErrors as input failures', async () => {
+    const review = vi.fn().mockRejectedValue(new TypeError('credential=internal-secret'));
+    const route = createHostedDirectoryBindingRoutes({ review } as unknown as HostedDirectoryBindingManager)[2];
+    const response = await route.handler(request('POST'), context());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: { code: 'directory_access_review_unavailable' } });
+  });
+
+  it.each([
+    ['directory_access_review_forbidden', 403], ['directory_access_review_organization_not_found', 404],
+    ['directory_access_review_member_limit', 409], ['directory_access_review_identity_limit', 409],
+    ['database query credential=internal-secret', 503],
+  ])('maps access-review %s without exposing internal failures', async (code, status) => {
+    const review = vi.fn().mockRejectedValue(new Error(code));
+    const route = createHostedDirectoryBindingRoutes({ review } as unknown as HostedDirectoryBindingManager)[2];
+    const response = await route.handler(request('POST'), context());
+    expect(response.status).toBe(status);
+    if (status === 503) expect(await response.json()).toEqual({ error: { code: 'directory_access_review_unavailable' } });
+  });
   it.each([0, 1])('rejects foreign organization and non-admin permissions on route %i before writes', async (index) => {
     const set = vi.fn(); const remove = vi.fn();
     const route = createHostedDirectoryBindingRoutes({ set, remove } as unknown as HostedDirectoryBindingManager)[index];

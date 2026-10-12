@@ -448,7 +448,27 @@ describe('one product downloads page', () => {
     expect(html).toContain('href="pui/index.html"');
     expect(html).toContain('Where should psu run?');
     expect(html).toContain('Local — this computer');
+    expect(html).toContain('Uses the same download as Linux.');
+    expect(html).toContain('Apple Silicon: no verified standalone download is published yet.');
+    expect(html).toContain('Intel: no verified standalone download is published yet.');
+    expect(html).toContain('PSU and PUI are included.');
     expect(html).not.toMatch(/(?:psu|pui) --connect/);
+  });
+
+  it('keeps the server setup guide inside its product panel and archives closed by default', () => {
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null, redact: [] });
+    const server = html.slice(html.indexOf('id="download-server"'), html.indexOf('id="download-gui"'));
+    expect(server).toContain(`id="${INSTRUCTIONS_BODY_ID}"`);
+    expect(html.match(new RegExp(`id="${INSTRUCTIONS_BODY_ID}"`, 'g'))).toHaveLength(1);
+    expect(html).toContain('<details class="release-downloads"><summary>Archived downloads for');
+    expect(html).not.toContain('<details class="release-downloads" open');
+  });
+
+  it('explains the unpublished replacement mobile builds without offering withdrawn downloads', () => {
+    const html = renderProductDownloads([]);
+    expect(html).toContain('The previous Android builds were withdrawn. A replacement download is not published yet.');
+    expect(html).toContain('The previous iPhone builds were withdrawn. A replacement download is not published yet.');
+    expect(html).not.toMatch(/href="[^"]+\.(?:apk|ipa)"/);
   });
 
   it('keeps separate server, GUI and mobile artifacts, including multiple formats', () => {

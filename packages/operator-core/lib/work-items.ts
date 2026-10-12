@@ -135,6 +135,7 @@ import {
   activeExternalBlockers,
   readExternalBlockers,
   updateExternalBlockerHistory,
+  type ExternalBlockerKind,
   type ExternalBlockerRecord,
 } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
@@ -7268,20 +7269,14 @@ export async function reconcileEventExternalBlockers(
   if (!ref) return { cleared: 0, restored: 0 };
 
   const settledBy = actor?.trim() || 'system:event-settlement';
-  const parsedNow = Date.parse(now);
-  const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
-  const rows = await tx<
-    {
-      workspace_id: string;
-      feature_id: string;
-      item_kind: string | null;
-      status: string | null;
-      payload: unknown;
-    }[]
-  >`
+  // `payload ? 'externalBlockers'` is the predicate of the partial index
+  // work_items_external_blockers_ws_idx (migration 1475); the containment test
+  // alone cannot prove it, so without this line the lookup reads the whole table.
+  const rows = await tx<LockedExternalBlockerRow[]>`
     SELECT workspace_id, feature_id, item_kind, status, payload
       FROM harness_shared.work_items
-     WHERE COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
+     WHERE payload ? 'externalBlockers'
+       AND COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
        'externalBlockers',
        jsonb_build_array(jsonb_build_object('kind', 'event', 'ref', ${ref}::text, 'status', 'active'))
      )
@@ -7291,47 +7286,101 @@ export async function reconcileEventExternalBlockers(
   let cleared = 0;
   let restored = 0;
   for (const row of rows) {
-    const payload =
-      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-        ? (row.payload as Record<string, unknown>)
-        : {};
-    const history = updateExternalBlockerHistory(payload, { kind: 'event', ref, clear: true }, settledBy, now);
-    if (!history.changed) continue;
-
-    const activeBlockers = history.blockers.some((blocker) => blocker.status === 'active');
-    const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
-    const autoBlockedIssue =
-      issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
-    const restoreIssue = autoBlockedIssue && !activeBlockers;
-    const nextPayload: Record<string, unknown> = {
-      ...payload,
-      externalBlockers: history.blockers,
-    };
-
-    if (restoreIssue) {
-      delete nextPayload.held_open_by;
-      delete nextPayload.held_open_at;
-      delete nextPayload.held_open_reason;
-      // A durable claim park may coexist with the temporary blocked lease.
-      // Match setWorkItemClaimHold(..., { leaseOnly:true }) and retain it.
-      if (typeof payload.claim_hold_by !== 'string' || payload.claim_hold_by.trim() === '') {
-        delete nextPayload._claimHold;
-      }
-      restored += 1;
-    }
-
-    await tx`
-      UPDATE harness_shared.work_items
-         SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
-             status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
-             updated_ts = ${updatedTs}
-       WHERE workspace_id = ${row.workspace_id}
-         AND feature_id = ${row.feature_id}
-    `;
+    const outcome = await clearExternalBlockersOnLockedRow(tx, row, [{ kind: 'event', ref }], settledBy, now);
+    if (!outcome.changed) continue;
     cleared += 1;
+    if (outcome.restored) restored += 1;
   }
 
   return { cleared, restored };
+}
+
+/** A work-item row read `FOR UPDATE` by a caller that is about to clear blockers on it. */
+export interface LockedExternalBlockerRow {
+  workspace_id: string;
+  feature_id: string;
+  item_kind: string | null;
+  status: string | null;
+  payload: unknown;
+}
+
+/**
+ * The per-row core shared by every system path that clears typed external
+ * blockers inside the caller's transaction: event settlement
+ * ({@link reconcileEventExternalBlockers}) and the work-item-ref auto-clear
+ * (work-item-ref-blocker-auto-clear.ts, plan derived-status-not-hand-written-2026-10-12#P-011).
+ *
+ * Each target clears the latest ACTIVE record with the same kind and ref. A
+ * cleared record stays in the payload history with `clearedAt`/`clearedBy`
+ * (and `evidence` when supplied); nothing is deleted. An issue-family row that
+ * `work_items:set_blocker` auto-parked is restored to `open` only once no
+ * active blocker remains, and a durable claim park survives that restore.
+ * Feature-family lifecycle state is untouched here; a caller that wants the
+ * set_blocker un-park does it after commit. The row must already be locked.
+ */
+export async function clearExternalBlockersOnLockedRow(
+  tx: OrgSql | TransactionSql,
+  row: LockedExternalBlockerRow,
+  targets: ReadonlyArray<{ kind: ExternalBlockerKind; ref: string; evidence?: string }>,
+  actor: string,
+  now: string,
+): Promise<{
+  changed: boolean;
+  restored: boolean;
+  cleared: Array<{ kind: ExternalBlockerKind; ref: string }>;
+  activeRemaining: number;
+}> {
+  const payload =
+    row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : {};
+  let blockers = readExternalBlockers(payload);
+  const cleared: Array<{ kind: ExternalBlockerKind; ref: string }> = [];
+  for (const target of targets) {
+    const history = updateExternalBlockerHistory(
+      { ...payload, externalBlockers: blockers },
+      { kind: target.kind, ref: target.ref, clear: true, ...(target.evidence ? { evidence: target.evidence } : {}) },
+      actor,
+      now,
+    );
+    if (!history.changed) continue;
+    blockers = history.blockers;
+    cleared.push({ kind: target.kind, ref: target.ref });
+  }
+  const activeRemaining = blockers.filter((blocker) => blocker.status === 'active').length;
+  if (cleared.length === 0) return { changed: false, restored: false, cleared, activeRemaining };
+
+  const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
+  const autoBlockedIssue =
+    issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
+  const restoreIssue = autoBlockedIssue && activeRemaining === 0;
+  const nextPayload: Record<string, unknown> = {
+    ...payload,
+    externalBlockers: blockers,
+  };
+
+  if (restoreIssue) {
+    delete nextPayload.held_open_by;
+    delete nextPayload.held_open_at;
+    delete nextPayload.held_open_reason;
+    // A durable claim park may coexist with the temporary blocked lease.
+    // Match setWorkItemClaimHold(..., { leaseOnly:true }) and retain it.
+    if (typeof payload.claim_hold_by !== 'string' || payload.claim_hold_by.trim() === '') {
+      delete nextPayload._claimHold;
+    }
+  }
+
+  const parsedNow = Date.parse(now);
+  const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  await tx`
+    UPDATE harness_shared.work_items
+       SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
+           status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
+           updated_ts = ${updatedTs}
+     WHERE workspace_id = ${row.workspace_id}
+       AND feature_id = ${row.feature_id}
+  `;
+  return { changed: true, restored: restoreIssue, cleared, activeRemaining };
 }
 
 /**

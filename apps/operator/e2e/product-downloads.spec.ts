@@ -30,12 +30,14 @@ const html = execFileSync(resolve(root, 'node_modules/.bin/tsx'), ['-e', `
   process.stdout.write(renderIndexHtml([release], { generatedAt: new Date('2026-10-12T00:00:00Z'), analytics: null, redact: [] }));
 `], { cwd: root, encoding: 'utf8', timeout: 20_000 });
 
-async function serve(context: BrowserContext, malicious = false) {
+async function serve(context: BrowserContext, malicious = false, mac = false) {
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.origin !== origin) return route.abort();
     if (url.pathname === '/pui/latest.json') return route.fulfill({ contentType: 'application/json',
-      body: JSON.stringify({ artifacts: { 'linux-x86_64': { target: 'linux-x86_64', version: '0.1.0',
+      body: JSON.stringify({ artifacts: { ...(mac ? Object.fromEntries(['macos-aarch64', 'macos-x86_64'].map(target => [target,
+        { target, version: '0.1.0', archiveSha256: sha, archiveUrl: `${origin}/pui/0.1.0/pui-0.1.0-${target}.tar.gz` }])) : {}),
+        'linux-x86_64': { target: 'linux-x86_64', version: '0.1.0',
         archiveSha256: sha, archiveUrl: malicious ? 'https://other.test/wrong.tar.gz'
           : `${origin}/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz` } } }) });
     if (url.pathname === '/index.html') return route.fulfill({ contentType: 'text/html', body: html });
@@ -55,12 +57,21 @@ for (const width of [1440, 390]) test(`five download products work by menu and k
     await expect(page.getByRole('radio', { name, exact: true })).toBeChecked();
     await expect(page.locator(`#download-${id}`)).toBeVisible();
     await expect(page.locator('.download-panel:visible')).toHaveCount(1);
+    if (id !== 'server') {
+      await expect(page.getByRole('link', { name: 'server.deb', exact: true })).toHaveCount(0);
+      await expect(page.locator('#instructions-body')).toBeHidden();
+    }
   }
   await page.locator('#choose-gui').focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('radio', { name: 'PSU + PUI', exact: true })).toBeChecked();
   await expect(page.getByRole('link', { name: /Download Linux x86_64.*PSU \+ PUI/ })).toHaveAttribute('href',
     `${origin}/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz`);
+  await expect(page.getByRole('link', { name: /Download Windows \(WSL2\).*PSU \+ PUI/ })).toHaveAttribute('href',
+    `${origin}/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz`);
+  await expect(page.getByText('Uses the same download as Linux.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Apple Silicon: no verified standalone download is published yet.', { exact: true })).toBeVisible();
+  await expect(page.getByText('PSU and PUI are included.', { exact: false })).toBeVisible();
   const geometry = await page.evaluate(() => ({ viewport: innerWidth,
     documentWidth: document.documentElement.scrollWidth,
     overflow: [...document.querySelectorAll('.product-downloads *')].filter(el =>
@@ -72,6 +83,17 @@ for (const width of [1440, 390]) test(`five download products work by menu and k
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewport + 1);
   expect(errors).toEqual([]);
   await page.screenshot({ path: info.outputPath(`downloads-${width}.png`), fullPage: true });
+});
+
+test('verified macOS packages replace only their unavailable platform messages', async ({ context, page }) => {
+  await serve(context, false, true);
+  await page.goto(`${origin}/index.html#download-psu`);
+  for (const [name, target] of [['macOS Apple Silicon', 'macos-aarch64'], ['macOS Intel', 'macos-x86_64']]) {
+    await expect(page.getByRole('link', { name: `Download ${name} — PSU + PUI 0.1.0`, exact: true })).toHaveAttribute('href',
+      `${origin}/pui/0.1.0/pui-0.1.0-${target}.tar.gz`);
+  }
+  await expect(page.locator('#psu-mac-arm')).not.toContainText('not published');
+  await expect(page.locator('#psu-mac-intel')).not.toContainText('not published');
 });
 
 test('an unexpected PUI archive origin retains the ordinary download link', async ({ context, page }) => {

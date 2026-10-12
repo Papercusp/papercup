@@ -6,6 +6,7 @@ import type { HostedDirectoryBindingManager, DirectoryBindingInput } from '../..
 export const HOSTED_DIRECTORY_BINDING_ROUTES = [
   { method: 'PUT', path: '/hosted/organizations/:organizationId/members/:userId/directory-binding', access: 'authenticated' },
   { method: 'DELETE', path: '/hosted/organizations/:organizationId/members/:userId/directory-binding', access: 'authenticated' },
+  { method: 'POST', path: '/hosted/organizations/:organizationId/members/access-review', access: 'authenticated' },
 ] as const;
 
 export function createHostedDirectoryBindingRoutes(manager: HostedDirectoryBindingManager) {
@@ -25,6 +26,22 @@ export function createHostedDirectoryBindingRoutes(manager: HostedDirectoryBindi
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_json');
         body = value;
       } catch { return Response.json({ error: { code: 'invalid_json' } }, { status: 400 }); }
+      if (route.method === 'POST') {
+        try {
+          const review = await manager.review(principal, { organizationId, purpose: body.purpose as string });
+          return Response.json({ ok: true, review }, { headers: {
+            'cache-control': 'no-store', 'content-disposition': 'attachment; filename="directory-access-review.json"',
+          } });
+        } catch (cause) {
+          const code = cause instanceof Error ? cause.message : 'directory_access_review_failed';
+          const status = code === 'directory_access_review_forbidden' ? 403
+            : code === 'directory_access_review_organization_not_found' ? 404
+            : code === 'directory_access_review_member_limit' || code === 'directory_access_review_identity_limit' ? 409
+            : /^directory_access_review_invalid:/.test(code) || /^hosted-governance:/.test(code) ? 400 : 503;
+          return Response.json({ error: { code: status === 503 ? 'directory_access_review_unavailable' : code } },
+            { status, headers: { 'cache-control': 'no-store' } });
+        }
+      }
       const input = {
         organizationId, userId: String(ctx.params.userId ?? ''), externalOrganizationId: body.externalOrganizationId,
         directoryId: body.directoryId, directoryUserId: body.directoryUserId, authorizedGroupIds: body.authorizedGroupIds,

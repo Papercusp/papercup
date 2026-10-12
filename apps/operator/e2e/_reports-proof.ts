@@ -106,6 +106,21 @@ export async function navigateToPublishedReport(page: Page, report: PublishedRep
     .toMatchObject({ report_id: report.report_id, title: report.title, body_md: report.body_md });
 }
 
+/** Vditor assigns these ids only on script load, before resolving preview().
+ * Cold asset initialization belongs to navigation readiness, before the short
+ * content/geometry assertions. A visible body alone can precede onParsed.
+ */
+export async function waitForReportRenderer(page: Page): Promise<void> {
+  await page.waitForFunction(() => [
+    'vditorLuteScript', 'vditorI18nScripten_US', 'vditorIconScript',
+  ].every(id => {
+    const script = document.getElementById(id);
+    return script instanceof HTMLScriptElement &&
+      new URL(script.src).origin === location.origin &&
+      new URL(script.src).pathname.startsWith('/vditor/');
+  }));
+}
+
 export async function verifyPublishedReportAndOfflineExport(
   page: Page, report: PublishedReportProof, testInfo: TestInfo, readerTimeout = 15_000,
 ) {
@@ -113,6 +128,7 @@ export async function verifyPublishedReportAndOfflineExport(
   await expect(page.locator('.reports-reader'), 'The selected Reports reader must mount').toHaveCount(1, { timeout: readerTimeout });
   expect(new URL(page.url()).searchParams.get('sel')).toBe(report.report_id);
   await expect(page.locator('.reports-article-main > h2')).toHaveText(report.title);
+  await waitForReportRenderer(page);
   await expect(page.locator('.reports-body')).toBeVisible();
   await page.getByRole('button', { name: 'Copy as Markdown', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { reportProofMarkdown?: string }).reportProofMarkdown))

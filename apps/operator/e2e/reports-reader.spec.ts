@@ -2,7 +2,7 @@
 import { test, expect } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src/components/reports/reports-test-fixture';
-import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport } from './_reports-proof';
+import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
 import type { Page } from '@playwright/test';
 
 const report = {
@@ -45,6 +45,7 @@ for (const width of [1440, 900, 390]) {
     await page.goto('/reports?sel=edition-2');
     await sync.waitForServed(['reports.list', 'reports.get', 'reports.lineage']);
     await expect(page.locator('.reports-article-main > h2')).toHaveText(report.title);
+    await waitForReportRenderer(page);
     await expect(page.locator('.reports-body h2').first()).toHaveText('Finding 1');
     await expect(page.getByRole('navigation', { name: 'On this page' }).getByRole('link')).toHaveCount(8);
     const geometry = await page.locator('.reports-page').evaluate(root => {

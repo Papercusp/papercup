@@ -27,9 +27,9 @@
  * Teardown is best-effort but unconditional: the postmaster is stopped and the temp
  * datadir removed on normal exit, on a failing child, and on SIGINT/SIGTERM.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { access, stat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, stat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -41,11 +41,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const sep = process.argv.indexOf('--');
 const cmd = sep >= 0 ? process.argv.slice(sep + 1) : [];
-const options = sep >= 0 ? process.argv.slice(2, sep) : process.argv.slice(2);
+const rawOptions = sep >= 0 ? process.argv.slice(2, sep) : process.argv.slice(2);
+const managedTasks = rawOptions.includes('--managed-tasks');
+const options = rawOptions.filter(option => option !== '--managed-tasks');
 const operatorApi = options.length === 1 && options[0] === '--isolated-runtime=operator-api';
 const isolatedRuntime = operatorApi || (options.length === 1 && options[0] === '--isolated-runtime');
-if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime)) {
-  console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime[=operator-api]] -- <command> [args...]');
+if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime) || (managedTasks && !operatorApi)) {
+  console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime[=operator-api]] [--managed-tasks (operator-api only)] -- <command> [args...]');
   process.exit(2);
 }
 
@@ -85,6 +87,37 @@ try {
 } catch (error) {
   console.error('[with-test-pg] child preflight failed: ' + error.message);
   process.exit(1);
+}
+
+// R6 requires a real confined task. Opt in to ONLY the user manager's private
+// control socket, never the desktop session bus or ambient product IPC. Reuse
+// the task manager's systemd-run scope probe before importing runtime bootstrap
+// dependencies or allocating PG. The worker still receives the private exact
+// environment through the maintained systemd environment transport.
+let managedTaskSocket;
+if (managedTasks) {
+  try {
+    if (process.platform !== 'linux' || !process.env.XDG_RUNTIME_DIR?.trim()) {
+      throw new Error('an explicit Linux user-manager runtime directory is required');
+    }
+    managedTaskSocket = join(resolve(process.env.XDG_RUNTIME_DIR), 'systemd', 'private');
+    const socket = await stat(managedTaskSocket);
+    if (!socket.isSocket() || socket.uid !== process.getuid()) {
+      throw new Error('user-manager private control socket must be an owned socket');
+    }
+    const probeEnv = { ...process.env };
+    delete probeEnv.DBUS_SESSION_BUS_ADDRESS;
+    const probe = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect',
+      '--property=CollectMode=inactive-or-failed', '--', 'true'],
+    { env: probeEnv, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'ignore', 'pipe'] });
+    if (probe.error || probe.status !== 0) {
+      throw new Error(probe.error?.message ?? `scope probe exited ${probe.status}: ${probe.stderr.trim()}`);
+    }
+    console.log('[with-test-pg] managed task preflight passed (private user-manager control socket)');
+  } catch (error) {
+    console.error('[with-test-pg] managed task preflight failed: ' + error.message);
+    process.exit(1);
+  }
 }
 
 /** The migrations dir: the monorepo path, else the packaged sidecar's copy. */
@@ -297,6 +330,13 @@ function assertNotTerminating() {
 }
 
 async function main() {
+if (managedTaskSocket) {
+  const privateManager = join(runtimeRoot, 'xdg-runtime', 'systemd');
+  const privateSocket = join(privateManager, 'private');
+  if (Buffer.byteLength(privateSocket) > 107) throw new Error('private managed-task socket exceeds native address capacity');
+  await mkdir(privateManager, { recursive: true, mode: 0o700 });
+  await symlink(managedTaskSocket, privateSocket);
+}
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
