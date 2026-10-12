@@ -3256,9 +3256,9 @@ export async function listLapsedWallFacts(
   if (opts.recoveryFor?.length === 0) return [];
   const sql = sqlOf(inject);
   const recovery = opts.recoveryFor !== undefined;
-  const identities = JSON.stringify((opts.recoveryFor ?? []).map((fact) => ({
+  const identities = (opts.recoveryFor ?? []).map((fact) => ({
     ...fact, scopeRef: fact.scopeRef ?? '', sourceHive: fact.sourceHive ?? '',
-  })));
+  }));
   const limit = opts.limit ?? (recovery ? opts.recoveryFor!.length : 200);
   const rows = await sql<Array<{
     workspace_id: string;
@@ -3282,7 +3282,7 @@ export async function listLapsedWallFacts(
        AND superseded_at IS NULL
        AND (${recovery} OR (retracted_at IS NULL AND expires_at < now()))
        AND (NOT ${recovery} OR EXISTS (
-         SELECT 1 FROM jsonb_to_recordset(${identities}::jsonb)
+         SELECT 1 FROM jsonb_to_recordset(${sql.json(identities)}::jsonb)
            AS target("workspaceId" text, scope text, "scopeRef" text, key text, "sourceHive" text)
           WHERE target."workspaceId" = workspace_id AND target.scope = agent_facts.scope
             AND target."scopeRef" = coalesce(scope_ref, '') AND target.key = agent_facts.key
