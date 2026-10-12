@@ -415,8 +415,41 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-inbox-seed.json'), JSON.stringify(inbox, null, 2));
     }
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
+    let devSeed: { selectedMarker: string; neighborMarker: string; foreignMarker: string; neighborWorkspace: string } | undefined;
+    if (process.env.ROSTER_DEV_BROWSER_PROOF === '1') {
+      devSeed = { selectedMarker: `private-dev-${process.pid}-selected`, neighborMarker: `private-dev-${process.pid}-neighbor`,
+        foreignMarker: `private-dev-${process.pid}-foreign`, neighborWorkspace: workspace + '-neighbor' };
+      for (const [scope, name] of [[workspace, devSeed.selectedMarker], [devSeed.neighborWorkspace, devSeed.neighborMarker],
+        [foreignWorkspace, devSeed.foreignMarker]]) {
+        await sql`INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status, invoked_at)
+          VALUES (${scope}, 'papercusp', 'agent-mcp', ${name}, 'operator', 'private-dev', 'run:private-dev', 'ok', now() + interval '1 hour')`;
+      }
+      const catalogResponse = await fetch(base + '/api/plugins/tools?stats=false');
+      const catalog = await catalogResponse.json() as { tools: Array<{ name: string; inputSchema: any; expose: any }> };
+      assert.equal(catalogResponse.status, 200);
+      const tool = catalog.tools.find(value => value.name === 'dev:activity');
+      assert.ok(tool?.inputSchema.properties.workspaceIds, 'real catalog must expose the workspaceIds schema');
+      assert.equal(tool.expose.http.path, '/api/agent-tools/dev/activity');
+      const observations = [];
+      for (const [ids, included, excluded] of [[ [workspace], [devSeed.selectedMarker], [devSeed.neighborMarker, devSeed.foreignMarker] ],
+        [ [devSeed.neighborWorkspace], [devSeed.neighborMarker], [devSeed.selectedMarker, devSeed.foreignMarker] ],
+        [ null, [devSeed.selectedMarker, devSeed.neighborMarker, devSeed.foreignMarker], [] ]] as const) {
+        const response = await fetch(base + tool.expose.http.path + '?workspace=' + encodeURIComponent(workspace) + '&role=operator&run=private-dev&spawn=private-dev',
+          { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceIds: ids, limit: 100 }) });
+        const body = await response.json() as any;
+        observations.push({ workspaceIds: ids, status: response.status, body });
+        writeFileSync(join(evidence, 'portal-dev-preflight.json'), JSON.stringify({ tool, seed: devSeed, observations }, null, 2));
+        assert.equal(response.status, 200, 'real activity projection must accept the public diagnostic read');
+        assert.ok(Array.isArray(body.data?.entries), 'real activity response must contain entries');
+        const names = body.data.entries.map((row: any) => row.tool_name);
+        for (const name of included) assert.ok(names.includes(name), 'activity preflight must include ' + name);
+        for (const name of excluded) assert.equal(names.includes(name), false, 'activity preflight must exclude ' + name);
+      }
+    }
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, foreign, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      ...(devSeed ? { dev: true, devSeed } : {}),
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
