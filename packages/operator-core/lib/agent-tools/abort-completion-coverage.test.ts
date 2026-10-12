@@ -12,6 +12,7 @@ import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
 import codeRun from './code/run';
+import testingRun, { testingRunAbortCompletionReceipt } from './testing/run';
 import docsAuthor from './docs/author';
 import coordSend from './coordination/tools/send';
 import agentReview from './improvements/agent-review';
@@ -47,6 +48,8 @@ const LATE_RETURN_MUTATORS = {
   'scorecards:emit': scorecardsEmit,
   // EI-25216756674045452: code:run can complete nested writes after its dispatch deadline.
   'code:run': codeRun,
+  // EI-25248391444384694: a completed test run needs its run-group identity after late return.
+  'testing:run': testingRun,
   // EI-25261691219544543: docs:author crosses the default dispatch budget; identify the canonical doc on late return.
   'docs:author': docsAuthor,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
@@ -76,6 +79,49 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     for (const [name, tool] of Object.entries(LATE_RETURN_MUTATORS)) {
       expect(tool.name).toBe(name);
     }
+  });
+
+  it('testing:run distinguishes completed verdicts, durable recovery, and unknown outcomes', () => {
+    const attempt = { callId: 'test-call-1', toolName: 'testing:run' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as ToolResult;
+
+    expect(testingRunAbortCompletionReceipt({}, result({ ok: true, runId: 'run-pass', files: 1 }), attempt))
+      .toMatchObject({ status: 'recorded', effectRef: 'testing-run:run-pass' });
+    expect(testingRunAbortCompletionReceipt({}, result({ ok: false, runId: 'run-fail', files: 1 }), attempt))
+      .toMatchObject({ status: 'recorded', effectRef: 'testing-run:run-fail' });
+    expect(testingRunAbortCompletionReceipt({}, result({
+      ok: false,
+      runId: 'run-origin',
+      error: 'timeout',
+      detachedRunId: 'run-recovery',
+      detachedDurable: true,
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'testing-run:run-origin:detached:run-recovery',
+    });
+    expect(testingRunAbortCompletionReceipt({}, result({
+      ok: false,
+      runId: 'run-active',
+      error: 'timeout',
+      taskId: 'task-1',
+      terminationUnconfirmed: true,
+    }), attempt)).toMatchObject({ status: 'recorded', effectRef: 'testing-run:run-active:task:task-1' });
+    expect(testingRunAbortCompletionReceipt({}, result({ ok: false, error: 'invalid_root' }), attempt))
+      .toMatchObject({ status: 'not-recorded' });
+    expect(testingRunAbortCompletionReceipt({}, result({
+      ok: false,
+      error: 'invalid_root',
+      evidenceBundle: { status: 'retirement-incomplete' },
+    }), attempt)).toMatchObject({ status: 'recovery-incomplete', failures: ['evidence-retirement-unconfirmed'] });
+    expect(testingRunAbortCompletionReceipt({}, result({
+      ok: false,
+      runId: 'run-unknown',
+      error: 'timeout',
+      detachedRunId: 'run-undurable',
+      detachedDurable: false,
+    }), attempt)).toMatchObject({ status: 'recovery-incomplete' });
   });
 
   it('storage:prune reports the effect or fails closed when an aborted attempt is unclear', () => {

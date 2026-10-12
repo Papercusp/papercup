@@ -10832,7 +10832,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results and registered acquisition tickets without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.",
+        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results, registered acquisition tickets, and raw PAPERCUSP_DB_POOL_MAX override without a health query; logical tickets do not measure physical connection occupancy, in-flight SQL or other processes.",
         "notWhen": "For application-level health, use `harness:health`. pg_health is the database layer."
       }
     },
