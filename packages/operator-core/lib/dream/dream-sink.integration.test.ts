@@ -41,6 +41,7 @@ const { sinkDreamInsight } = await import('./dream-sink');
 const { gradeRoutedIdea, readRoutedIdeas, refreshScoutOutcomes, recordRoutedIdea } =
   await import('../scout/routed-ledger');
 const { captureImprovement } = await import('../harness/improvements/capture-core');
+const { mergeIssuePayload } = await import('../issues-engineer');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-dream-sink';
@@ -369,9 +370,12 @@ describe('accepted dream sink (real PG — P-004)', () => {
       const [original] = await db.adminSql`SELECT issue_id, payload FROM harness_shared.engineer_issues
         WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = ${'dream:' + runId}`;
       expect(original!.payload[IDEA_ORIGIN_PAYLOAD_KEY]).toBe('dream');
-      // Model an artifact captured by the historical writer before it stamped origin.
-      await db.adminSql`UPDATE harness_shared.engineer_issues
-        SET payload = payload - ${IDEA_ORIGIN_PAYLOAD_KEY} WHERE issue_id = ${original!.issue_id}`;
+      // Model the historical writer through the canonical unset seam. The
+      // compatibility view deliberately merges payloads, restoring removed keys.
+      const cleared = await mergeIssuePayload(original!.issue_id, {}, {
+        unset: [IDEA_ORIGIN_PAYLOAD_KEY], harnessSlug: HARNESS,
+      });
+      expect(cleared).not.toBeNull();
       const [legacy] = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
         WHERE issue_id = ${original!.issue_id}`;
       expect(legacy!.payload).not.toHaveProperty(IDEA_ORIGIN_PAYLOAD_KEY);
