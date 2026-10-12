@@ -28,7 +28,9 @@ vi.mock('../../scorecards', async (importOriginal) => {
 import { listScorecardPage } from '../../scorecards';
 
 const listScorecardPageM = vi.mocked(listScorecardPage);
-const listTool = (await import('./list')).default;
+const listModule = await import('./list');
+const listTool = listModule.default;
+const { resolveScorecardListDetail, toScoresOnlyRow } = listModule;
 
 const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -91,8 +93,10 @@ describe('scorecards:list correctness payload', () => {
     } as unknown as ScorecardRow;
     listScorecardPageM.mockResolvedValue({ rows: [scorecard], hasMore: true });
 
+    // detail:'full' — this guard is about the EVIDENCE-bearing payload surviving the result door
+    // untrimmed; the default browse read (no subjectRef) is the lean 'scores' mode (P-010).
     const raw = (await listTool.handler(
-      { rubricRef: 'acceptance-test-rubric' } as never,
+      { rubricRef: 'acceptance-test-rubric', detail: 'full' } as never,
       { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
     )) as { data: unknown };
     expect(raw.data).toMatchObject({
@@ -113,7 +117,7 @@ describe('scorecards:list correctness payload', () => {
     const dispatched = await dispatchProjectedTool(
       projected!,
       'scorecards:list',
-      { rubricRef: 'acceptance-test-rubric' },
+      { rubricRef: 'acceptance-test-rubric', detail: 'full' },
       makeDispatchContext(),
       {},
     );
@@ -142,6 +146,61 @@ describe('scorecards:list correctness payload', () => {
     expect(Object.keys(payload?.scorecards[0]?.ratings ?? {})).toHaveLength(7);
     expect(payload?.scorecards[0]?.missingKeys).toEqual([]);
     expect(payload?.scorecards[0]?.rerunRecipe).toEqual(rerunRecipe);
+  });
+
+  // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-010): a browse read (no
+  // subjectRef) defaults to 'scores'. It must keep EVERY criterion key and the completeness fields
+  // (EI-21437537919383948) and drop only the evidence prose that made a limit:200 read ~7.7 MB.
+  it("browse reads default to 'scores': every criterion key and rating kept, evidence dropped", async () => {
+    const ratings = Object.fromEntries(
+      Array.from({ length: 7 }, (_, i) => [
+        `criterion-${i + 1}`,
+        {
+          rating: i < 4 ? 'healthy' : 'degraded',
+          evidence: `evidence-${i + 1} ${'e'.repeat(1200)}`,
+          evidenceRef: `ref-${i + 1}`,
+          ...(i === 5 ? { remediation: 'WI-1 tracks this' } : {}),
+        },
+      ]),
+    );
+    const row = {
+      issueId: 'EI-lean', createdAt: '2026-10-12T00:00:00.000Z', rubricRef: 'r', ratings,
+      nKeys: 7, missingKeys: ['criterion-8'],
+    } as unknown as ScorecardRow;
+    listScorecardPageM.mockResolvedValueOnce({ rows: [row], hasMore: false });
+
+    const lean = (await listTool.handler(
+      { rubricRef: 'r' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: { detail: string; evidenceOmitted?: string; scorecards: Array<Record<string, unknown>> } };
+    expect(lean.data.detail).toBe('scores');
+    expect(lean.data.evidenceOmitted).toContain("detail:'full'");
+    const card = lean.data.scorecards[0] as { ratings: Record<string, Record<string, unknown>>; nKeys: number; missingKeys: string[] };
+    expect(Object.keys(card.ratings)).toHaveLength(7);
+    expect(card.nKeys).toBe(7);
+    expect(card.missingKeys).toEqual(['criterion-8']);
+    expect(card.ratings['criterion-1']).toEqual({ rating: 'healthy' });
+    expect(card.ratings['criterion-6']).toEqual({ rating: 'degraded', remediation: 'WI-1 tracks this' });
+    expect(JSON.stringify(lean.data).length).toBeLessThan(2_000);
+
+    // A subjectRef read drills into one subject's card: full evidence by default.
+    listScorecardPageM.mockResolvedValueOnce({ rows: [row], hasMore: false });
+    const drilled = (await listTool.handler(
+      { rubricRef: 'r', subjectRef: 'EI-subject' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: { detail: string; evidenceOmitted?: string; scorecards: Array<{ ratings: Record<string, { evidence?: string }> }> } };
+    expect(drilled.data.detail).toBe('full');
+    expect(drilled.data.evidenceOmitted).toBeUndefined();
+    expect(drilled.data.scorecards[0].ratings['criterion-1'].evidence).toContain('evidence-1');
+  });
+
+  it('resolveScorecardListDetail: explicit detail wins; otherwise subjectRef ⇒ full, browse ⇒ scores', () => {
+    expect(resolveScorecardListDetail(undefined, undefined)).toBe('scores');
+    expect(resolveScorecardListDetail(undefined, 'EI-1')).toBe('full');
+    expect(resolveScorecardListDetail('full', undefined)).toBe('full');
+    expect(resolveScorecardListDetail('scores', 'EI-1')).toBe('scores');
+    expect(toScoresOnlyRow(null)).toBeNull();
+    expect(toScoresOnlyRow({ issueId: 'x' })).toEqual({ issueId: 'x' });
   });
 
   it('accepts the returned keyset cursor and passes it to the scorecard page reader', async () => {

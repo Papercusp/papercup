@@ -124,8 +124,13 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
     return [{ key: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) }];
   }
   const keys = new Set(facts.map(wallConditionKey));
+  // Conditions ALREADY open. `null` = the read failed, so nothing is known to be open and every
+  // lapsed wall is broadcast (fail LOUD — a missed page is the failure this module exists for).
+  let alreadyOpen: ReadonlySet<string> | null = null;
   try {
-    for (const key of await (deps.readOpenConditionKeys ?? readOpenWallConditionKeys)()) keys.add(key);
+    const open = await (deps.readOpenConditionKeys ?? readOpenWallConditionKeys)();
+    alreadyOpen = new Set(open);
+    for (const key of open) keys.add(key);
   } catch (e) {
     console.warn(`[wall-fact-lapse] condition read failed (non-fatal): ${String(e)}`);
   }
@@ -134,12 +139,21 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
       const workspaceId = fact.workspaceId || 'default';
       const installSlug = fact.scope === 'harness' && fact.scopeRef ? fact.scopeRef : DEFAULT_INSTALL_SLUG;
       const { summary, body } = formatWallLapseAlert(fact, now);
-      try {
-        const event = { conditionKey: wallConditionKey(fact), summary, body, oneShot: true };
-        if (deps.rail?.broadcast) await deps.rail.broadcast(event);
-        else await broadcastSevereEvent(event);
-      } catch (e) {
-        console.warn(`[wall-fact-lapse] condition broadcast failed (non-fatal): ${String(e)}`);
+      // ONE broadcast per episode (WI-6554700010008923). The event is declared `oneShot`, which
+      // promises the condition fold that the emitter alarms ONCE and stays silent until recovery —
+      // so an already-open condition needs no re-broadcast to stay open. Before this gate the
+      // broadcast ran on EVERY routines tick, ahead of the 24h debounce below, to `*`: measured
+      // 2026-10-12 14:00–14:25Z, 836 broadcasts for 76 walls (~2 MB of coord log), every one
+      // re-injected into every live agent's next tool result as a `[coord+N]` block.
+      const conditionKey = wallConditionKey(fact);
+      if (!alreadyOpen?.has(conditionKey)) {
+        try {
+          const event = { conditionKey, summary, body, oneShot: true };
+          if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch (e) {
+          console.warn(`[wall-fact-lapse] condition broadcast failed (non-fatal): ${String(e)}`);
+        }
       }
       const firedRecently =
         (await (deps.recentWatchdogFires ?? recentWatchdogFires)(

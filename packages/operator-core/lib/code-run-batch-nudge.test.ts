@@ -560,6 +560,35 @@ describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)
     expect(texts[1]).toContain('2nd reminder this session'); // 2nd = firmer
     expect(texts[2]).toContain('3rd reminder this session'); // 3rd = stronger / directive
   });
+
+  // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): the explanation is
+  // taught once. Every repeat used to re-send the full ~1.2 KB hint, explanation included.
+  it('a repeat fire keeps the prefilled skeleton but drops the explanation the first fire taught', () => {
+    const fires: Array<{ text: string; suggestedScript?: string }> = [];
+    let t = 0;
+    for (let i = 0; i < 20; i++) {
+      t += 1000;
+      const r = maybeBatchNudge({ ...cap, sessionKey: 'repeat-compact', args: { id: `WI-${i}` }, now: t });
+      if (r) fires.push(r);
+    }
+    expect(fires.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = fires;
+    // First fire: the full teaching text.
+    expect(first.text).toMatch(/read its result and DECIDE/);
+    expect(first.text).toMatch(/args must come from one of these results/);
+    // Repeat: still actionable — the skeleton, prefilled from THIS burst, is carried verbatim.
+    expect(second.suggestedScript).toBeTruthy();
+    expect(second.text).toContain(second.suggestedScript as string);
+    expect(second.text).toContain('extend this list');
+    expect(second.text).toMatch(/separate round-trips/);
+    // ...but the prose already read this session is gone.
+    expect(second.text).not.toMatch(/read its result and DECIDE/);
+    expect(second.text).not.toMatch(/args must come from one of these results/);
+    expect(second.text).not.toMatch(/re-reading your whole context/);
+    const proseOf = (f: { text: string; suggestedScript?: string }) =>
+      f.text.length - (f.suggestedScript?.length ?? 0);
+    expect(proseOf(second)).toBeLessThan(proseOf(first) / 2);
+  });
 });
 
 describe('maybeBatchNudge — scoping guards (teeth)', () => {

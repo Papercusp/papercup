@@ -20,6 +20,47 @@ import { listScorecardPage } from '../../scorecards';
 import type { ScorecardListCursor } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
+/**
+ * Lean browse mode (WI-6554700010008923, oversized-tool-results-reduction-2026-10-12#P-010).
+ * Measured 2026-10-12 (24h): agents' scorecards:list reads totalled ~1.1 GB, mostly browse reads
+ * (rubricRef spec-test-adequacy, limit 200 ≈ 7.7 MB each) whose bulk was per-criterion evidence
+ * prose nobody reads when scanning rows.
+ *
+ * EI-21437537919383948 forbids reshaping the ratings MAP (a 4-of-7 card must never look like a
+ * complete 4-criterion card), so this keeps EVERY criterion key and the decision fields
+ * (rating, unknownReason, remediation, disregard), and drops only the evidence-bearing ones.
+ * `nKeys` / `missingKeys` are untouched, so completeness reads exactly as in full mode.
+ */
+const SCORES_ONLY_ENTRY_KEYS = ['rating', 'unknownReason', 'remediation', 'disregard'] as const;
+
+export function resolveScorecardListDetail(
+  detail: 'full' | 'scores' | undefined,
+  subjectRef: string | undefined,
+): 'full' | 'scores' {
+  // A subjectRef read drills into ONE subject's card, where the evidence is the point.
+  return detail ?? (subjectRef ? 'full' : 'scores');
+}
+
+export function toScoresOnlyRow<T>(row: T): T {
+  if (!row || typeof row !== 'object') return row;
+  const ratings = (row as { ratings?: unknown }).ratings;
+  if (!ratings || typeof ratings !== 'object' || Array.isArray(ratings)) return row;
+  const lean: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(ratings as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') {
+      lean[key] = entry;
+      continue;
+    }
+    const kept: Record<string, unknown> = {};
+    for (const field of SCORES_ONLY_ENTRY_KEYS) {
+      const value = (entry as Record<string, unknown>)[field];
+      if (value !== undefined) kept[field] = value;
+    }
+    lean[key] = kept;
+  }
+  return { ...row, ratings: lean };
+}
+
 const scorecardListCursorSchema = z.object({
   createdAt: z.string().datetime({ offset: true }),
   issueId: z.string().min(1).max(160),
@@ -98,6 +139,12 @@ export default defineTool({
     cursor: scorecardListCursorSchema
       .optional()
       .describe('Keyset continuation returned as nextCursor by the previous page; keep the same filters when continuing.'),
+    detail: z
+      .enum(['full', 'scores'])
+      .optional()
+      .describe(
+        "'scores' keeps every criterion key with its rating and drops evidence text; 'full' adds evidence. Default: 'full' with subjectRef, else 'scores'.",
+      ),
   }),
   result: z
     .object({
@@ -138,6 +185,7 @@ export default defineTool({
         const nextCursor = page.hasMore
           ? { createdAt: lastRow!.createdAt, issueId: lastRow!.issueId }
           : null;
+        const detail = resolveScorecardListDetail(args.detail, args.subjectRef);
         return {
           data: {
             ok: true,
@@ -145,7 +193,11 @@ export default defineTool({
             hasMore: page.hasMore,
             truncatedByLimit: page.hasMore,
             nextCursor,
-            scorecards: page.rows,
+            detail,
+            ...(detail === 'scores'
+              ? { evidenceOmitted: "evidence text omitted; pass detail:'full' (or subjectRef) to read it" }
+              : {}),
+            scorecards: detail === 'scores' ? page.rows.map(toScoresOnlyRow) : page.rows,
           },
         };
       } catch (error) {

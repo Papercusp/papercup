@@ -180,6 +180,32 @@ describe('wallLapseSweep — orchestration (injected deps, no PG)', () => {
     recovered = [{ ...b, recovered: true }]; await wallLapseSweep(d); expect(open.size).toBe(0);
   });
 
+  // WI-6554700010008923: the broadcast goes to EVERY agent (`to:['*']`) and is declared oneShot, so
+  // re-sending it on every routines tick is pure noise. Measured 2026-10-12 14:00–14:25Z before this
+  // gate: 836 broadcasts for 76 walls, re-injected into every live agent's next tool result.
+  it('broadcasts ONCE per episode — an already-open condition is not re-broadcast on later ticks', async () => {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; });
+    const d = deps({ rail: { broadcast, resolve: vi.fn(async () => true) },
+      recentWatchdogFires: async () => 1, readOpenConditionKeys: async () => [...open] });
+    for (let tick = 0; tick < 5; tick++) {
+      expect((await wallLapseSweep(d))[0].outcome).toBe('debounced');
+    }
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(open.size).toBe(1);
+  });
+
+  it('still broadcasts every lapsed wall when the open-condition read FAILS (fail loud, not silent)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broadcast = vi.fn(async () => true);
+    const d = deps({ rail: { broadcast, resolve: vi.fn(async () => true) },
+      listLapsedWallFacts: vi.fn(async () => [fact({ key: 'wall:a' }), fact({ key: 'wall:b' })]),
+      readOpenConditionKeys: async () => { throw new Error('fold unavailable'); } });
+    await wallLapseSweep(d);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('attempts each delivery leg when the other fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const broadcast = vi.fn(async () => { throw new Error('rail unavailable'); });

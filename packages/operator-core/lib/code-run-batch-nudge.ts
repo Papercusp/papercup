@@ -764,10 +764,11 @@ function codeRunCall(scriptBody: string, timeoutSec?: number): string {
   return `code:run { ${args}\`\n${scriptBody}\` }`;
 }
 
+/** Shown on the FIRST fire only. A repeat fire omits it (see {@link maybeBatchNudge}): the caller
+ *  already read it this session, and every repeat paid for it again (WI-6554700010008923). */
 const TRAILER =
-  `Only the script's return re-enters context, so return what you'll need next. Or reuse a recipe ` +
-  `(recipes:search { query }). Keep a call separate ONLY when you must read its result and DECIDE ` +
-  `before the next (a script can't pause for you to think).`;
+  `Only the script's return re-enters context, so return what you'll need next. Keep a call separate ` +
+  `ONLY when you must read its result and DECIDE before the next. Reusable scripts: recipes:search { query }.`;
 
 /** How many calls must pass before the NEXT nudge may fire, given how many have already fired this
  *  session. Exponential backoff (4 → 8 → 16 → 32 → 64, capped) so ignoring a nudge once does not
@@ -786,16 +787,8 @@ function cooldownCalls(nudgesAlreadyFired: number): number {
 function escalationPrefix(n: number): string {
   if (n <= 1) return '';
   if (n === 2) return '(2nd reminder this session) ';
-  if (n === 3)
-    return (
-      '⚠️ 3rd reminder this session — you keep firing tool calls one at a time. Please bundle the rest ' +
-      'of this burst into a single code:run. '
-    );
-  return (
-    `🚨 ${n}× reminded this session — this is a persistent one-at-a-time pattern that is burning tokens. ` +
-    'Default to code:run for these calls now; keep one separate ONLY if you must read its result and ' +
-    'reason before the next. '
-  );
+  if (n === 3) return '⚠️ 3rd reminder this session — bundle the rest of this burst into one code:run. ';
+  return `🚨 ${n}× reminded this session — default to code:run for these calls now. `;
 }
 
 export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline' | 'preempt';
@@ -1004,41 +997,47 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
       `Adding more calls to it may not fit: split them across two code:run calls rather than raising it further ` +
       `(${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is the foreground ceiling).`
     : '';
+  // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): the explanation is
+  // taught ONCE. A repeat fire keeps what the caller acts on — the banner, the count, the prefilled
+  // skeleton and any budget/activation note — and drops the why-prose and TRAILER it already read
+  // this session. Measured 2026-10-12: the full same-tool hint ran ~1.2 KB and repeated verbatim on
+  // every fire, so the second and later fires paid the explanation again for no new information.
+  const repeat = st.nudgeCount > 1;
+  const tail = `${repeat ? '' : `\n${TRAILER}`}${budgetNote}${activate}`;
   if (kind === 'same-tool') {
     const burst = totalRecent > sameToolTurns ? ` (${totalRecent} tool calls total this burst)` : '';
     const suggestedScript = sameToolSkeleton(toolName, st.recent, foldTimeoutSec);
-    const text =
-      `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
-      `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. Each call already carries ` +
-      `its own known args, so these are independent by construction — fold them into ONE code:run: Promise.all ` +
-      `over the inputs, ready-to-paste skeleton, \`inputs\` prefilled from this burst (extend it instead of firing ` +
-      `another solo call). If a NEXT call's args must come from one of these results, sequence just that one ` +
-      `separately instead of adding it to this list:\n` +
-      `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
-    return { text, suggestedScript, kind, tool: toolName };
+    const lead = repeat
+      ? `${banner}"${toolName}" from ${sameToolTurns}× separate turns in ~${windowS}s = ${sameToolTurns} separate ` +
+        `round-trips. Fold them into ONE code:run (\`inputs\` prefilled — extend this list):\n`
+      : `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
+        `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. Each call carried its own ` +
+        `known args, so these are independent by construction — fold them into ONE code:run, \`inputs\` prefilled ` +
+        `from this burst (extend it instead of firing another solo call). If a NEXT call's args must come from one ` +
+        `of these results, sequence just that one separately:\n`;
+    return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
   }
+  const cost =
+    `${totalRecent} tool calls across ${seen.size} different tools in ${distinctTurnsInWindow} separate turns ` +
+    `in the last ~${windowS}s — ~${distinctTurnsInWindow} round-trips`;
   if (kind === 'pipeline') {
     const suggestedScript = pipelineSkeleton(st.recent, foldTimeoutSec);
-    const text =
-      `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
-      `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
-      `round-trips, each re-reading your whole context. These calls thread ` +
-      `the SAME object through different verbs — a CHAINED pipeline, and dependence does NOT mean ` +
-      `one-call-per-turn: a script threads one result into the next (and can branch on it). Sequence the chain ` +
-      `INSIDE one code:run — this burst as one round-trip (args prefilled):\n` +
-      `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
-    return { text, suggestedScript, kind, tool: toolName };
+    const lead = repeat
+      ? `${banner}${cost}. This CHAINED pipeline fits in ONE code:run (args prefilled):\n`
+      : `${banner}you've made ${cost}, each re-reading your whole context. These calls thread the SAME object ` +
+        `through different verbs — a CHAINED pipeline, and dependence does NOT mean one-call-per-turn: a script ` +
+        `threads one result into the next (and can branch on it). Sequence the chain INSIDE one code:run ` +
+        `(args prefilled):\n`;
+    return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
   }
   // fan-out
   const suggestedScript = fanoutSkeleton(distinctOrder, st.recent, foldTimeoutSec);
-  const text =
-    `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
-    `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
-    `round-trips, each re-reading your whole context. Collapse the burst ` +
-    `into ONE code:run — Promise.all when the calls are independent, sequential awaits when one feeds the ` +
-    `next — ready-to-paste skeleton (args prefilled from your last calls):\n` +
-    `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
-  return { text, suggestedScript, kind, tool: toolName };
+  const lead = repeat
+    ? `${banner}${cost}. Collapse them into ONE code:run (args prefilled):\n`
+    : `${banner}you've made ${cost}, each re-reading your whole context. Collapse the burst into ONE code:run — ` +
+      `Promise.all when the calls are independent, sequential awaits when one feeds the next (args prefilled ` +
+      `from your last calls):\n`;
+  return { text: `${lead}${suggestedScript}${tail}`, suggestedScript, kind, tool: toolName };
 }
 
 /** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.
