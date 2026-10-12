@@ -1,11 +1,40 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
+
+describe('PostgreSQL bootstrap browser import boundary', () => {
+  it.each(['ordinary', 'isolated'])('reaches the %s child preflight without loading the CommonJS browser installer', mode => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    const script = `
+      import Module from 'node:module';
+      const compile = Module.prototype._compile;
+      Module.prototype._compile = function (content, filename) {
+        if (filename.endsWith('/scripts/lib/playwright-temp-directory.cjs')) {
+          throw new Error('BROWSER_COMMONJS_BOOTSTRAP_REFUSED');
+        }
+        return compile.call(this, content, filename);
+      };
+      process.argv = [process.execPath, ${JSON.stringify(entry)},
+        ...${JSON.stringify(mode === 'isolated' ? ['--isolated-runtime=operator-api'] : [])},
+        '--', 'papercusp-missing-child-executable-browser-boundary'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});
+    `;
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
+    });
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain('child preflight failed');
+    expect(result.stderr).not.toContain('BROWSER_COMMONJS_BOOTSTRAP_REFUSED');
+    expect(result.stdout).not.toContain('booting throwaway PG');
+  });
+});
 
 describe('private API bundle durable evidence preflight', () => {
   it.each(['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT'])(
