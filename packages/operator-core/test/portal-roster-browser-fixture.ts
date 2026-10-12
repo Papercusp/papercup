@@ -137,6 +137,7 @@ type PortalRosterBrowserInput = {
   stats?: boolean;
   git?: boolean;
   frames?: boolean;
+  evals?: boolean;
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -179,7 +180,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.frames ? `
+  const entry = input.evals ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import AdvEvalsTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvEvalsTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvEvalsTab))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.frames ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -472,7 +485,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -538,7 +551,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Frames preflight requires native ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.frames
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.evals
+    ? '/apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' : input.frames
     ? '/apps/operator-vite/src/components/adv/AdvFramesTab.tsx' : input.git
     ? '/apps/operator/app/adv/harnesses/AdvGitWorkspace.tsx' : input.stats
     ? '/apps/operator-vite/src/components/adv/AdvStatsTab.tsx' : input.workflows
@@ -600,13 +614,14 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
   assert.ok(!options.workflowsRead || input.workflows, 'Workflows read preflight requires Workflows');
   assert.ok(!options.gitRead || input.git, 'Git read preflight requires the Git workspace');
   assert.ok(!options.framesRead || input.frames, 'Frames read preflight requires the Frames panel');
+  assert.ok(!options.evalsRead || input.evals, 'Evaluation read preflight requires Evaluation');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -618,9 +633,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const writes: Array<{ surface: string; body: any }> = [];
   const reads: Array<{ name: string | null; args: any }> = [];
   let framesDenied = false;
+  let evalsDenied = false;
+  let evalsDenialPhase: 'warm' | 'cold' | null = null;
   const frameStreams: Array<{ slug: string; closed: Promise<void> }> = [];
-  const framesEvidence = options.framesRead ? mkdtempSync(join(tmpdir(), 'frames-component-')) : null;
-  if (framesEvidence) writeFileSync(join(framesEvidence, 'browser-inputs.json'), JSON.stringify({
+  const componentEvidence = options.framesRead || options.evalsRead
+    ? mkdtempSync(join(tmpdir(), options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
+  if (componentEvidence) writeFileSync(join(componentEvidence, 'browser-inputs.json'), JSON.stringify({
     browserBundleSha256: digest(built.bundle),
     originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
   }, null, 2));
@@ -690,7 +708,20 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   const server = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.framesRead && request.method !== 'GET') {
+    if (options.evalsRead && request.method !== 'GET') {
+      writes.push({ surface: pathname, body: { method: request.method } });
+      response.writeHead(405); response.end();
+    } else if (options.evalsRead && pathname === '/api/zero-harness/rest-query') {
+      const name = requestUrl.searchParams.get('name');
+      const args = JSON.parse(requestUrl.searchParams.get('args') ?? '{}');
+      const denied = name === 'evals.suites' && evalsDenied;
+      reads.push({ name, args: { ...args, denied, denialPhase: denied ? evalsDenialPhase : null } });
+      const rows = name === 'evals.suites' ? [input.selected, input.neighbor].map(suite => ({
+        suite, runId: 'fixture-' + suite, taskCount: 4, passAt1ByArm: { papercusp: 0.5 },
+      })) : [];
+      response.writeHead(denied ? 403 : 200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(denied ? { error: 'explicit fixture evaluation denial' } : { rows }));
+    } else if (options.framesRead && request.method !== 'GET') {
       writes.push({ surface: pathname, body: null });
       response.writeHead(405); response.end();
     } else if (options.framesRead && pathname === '/api/deploy/frames') {
@@ -877,6 +908,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('app', 'frames'); url.searchParams.set('slug', input.selected);
       url.searchParams.set('q', 'preflight-search'); url.searchParams.set('ws', 'preflight-workspace');
     }
+    if (options.evalsRead) {
+      url.searchParams.set('app', 'evals'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('q', 'preflight-search'); url.searchParams.set('ws', 'preflight-workspace');
+      url.searchParams.set('evalSuite', input.selected); url.searchParams.set('evalRun', 'fixture-drill-in');
+      url.searchParams.set('evalView', 'external');
+    }
     await page.goto(url.href);
     if (options.gitRead) {
       await page.waitForFunction(() => document.querySelector('.pc-adv-git')
@@ -884,7 +921,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
+    try { await (input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
+      : input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
       : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
       : input.workflows ? page.getByTestId('workflows-control-deck')
       : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
@@ -892,6 +930,46 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.evalsRead) {
+      const scoreboard = (suite: string) => page!.getByLabel(`${suite} — pass@1 by arm`, { exact: true });
+      await scoreboard(input.selected).waitFor();
+      await page.getByRole('combobox', { name: 'Benchmark suite', exact: true }).click();
+      await page.getByRole('option', { name: `${input.neighbor} · 4 tasks`, exact: true }).click();
+      const assertQuery = async () => {
+        await page!.waitForURL(url => url.searchParams.get('evalSuite') === input.neighbor
+          && url.searchParams.get('evalRun') === null);
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'evals'); assert.equal(params.get('slug'), input.selected);
+        assert.equal(params.get('q'), 'preflight-search'); assert.equal(params.get('ws'), 'preflight-workspace');
+        assert.equal(params.get('evalView'), 'external');
+      };
+      await scoreboard(input.neighbor).waitFor(); await assertQuery();
+      await page.reload(); await scoreboard(input.neighbor).waitFor(); await assertQuery();
+      const reload = () => page!.getByRole('button', { name: 'Reload the evaluation data', exact: true });
+      const denied = async () => {
+        await page!.getByRole('alert').filter({ hasText: /Could not load benchmark suites:.*HTTP 403/ }).waitFor();
+        assert.equal(await page!.getByText('No benchmark runs yet', { exact: true }).count(), 0);
+        assert.equal(await page!.locator('.pc-evals__scoreboard').count(), 0, 'denied suite read withholds stale scores');
+        await assertQuery();
+      };
+      evalsDenied = true; evalsDenialPhase = 'warm';
+      await reload().focus(); await page.keyboard.press('Enter'); await denied();
+      evalsDenied = false; evalsDenialPhase = null;
+      await reload().focus(); await page.keyboard.press('Enter');
+      await scoreboard(input.neighbor).waitFor(); await assertQuery();
+      evalsDenied = true; evalsDenialPhase = 'cold';
+      await page.reload(); await denied();
+      evalsDenied = false; evalsDenialPhase = null;
+      await reload().focus(); await page.keyboard.press('Enter');
+      await scoreboard(input.neighbor).waitFor(); await assertQuery();
+      assert.deepEqual(writes, [], 'Evaluation reads must not launch, grade, export or delete runs');
+      assert.ok(reads.some(read => read.name === 'evals.report' && read.args.runId === 'fixture-drill-in'));
+      assert.ok(reads.some(read => read.name === 'evals.report' && read.args.runId === 'fixture-' + input.neighbor));
+      for (const phase of ['warm', 'cold']) assert.ok(reads.some(read => read.name === 'evals.suites'
+        && read.args.denied && read.args.denialPhase === phase), `actual ${phase} denial required`);
+      if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt.json'), JSON.stringify({
+        reads, writes, providerUsed: false }, null, 2));
+    }
     if (options.framesRead) {
       const tile = (slug: string) => page!.getByRole('button', { name: `${slug} :1 — fixture-${slug}`, exact: true });
       await tile(input.selected).waitFor(); await tile(input.neighbor).waitFor();
@@ -932,7 +1010,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       await page.locator('.pc-frames').waitFor({ state: 'detached' });
       await Promise.all(frameStreams.map(stream => stream.closed));
       // Retain observed traffic even if a population assertion below fails.
-      if (framesEvidence) writeFileSync(join(framesEvidence, 'receipt.json'), JSON.stringify({ reads, writes,
+      if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt.json'), JSON.stringify({ reads, writes,
         streamCount: frameStreams.length, streamsClosed: true, providerUsed: false }, null, 2));
       assert.deepEqual(writes, [], 'stills selection must not mint VNC sessions, join voice or change the server');
       assert.equal(reads.filter(read => read.name === '/api/deploy/frames').length, 4);
@@ -1165,6 +1243,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       } else {
         assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
       }
+    } else if (input.evals) {
+      assert.equal(await page.locator('.pc-evals').count(), 1);
     } else if (input.frames) {
       assert.equal(await page.locator('.pc-frames').count(), options.framesRead ? 0 : 1);
       if (options.framesRead) assert.equal(await page.getByRole('button', { name: 'Open Frames', exact: true }).count(), 1);
@@ -1191,10 +1271,15 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       ...(options.gitRead ? { selectedCommitDiff: true, commitReload: true, keyboardClose: true } : {}),
       ...(options.framesRead ? { framesRead: true, keyboardSelection: true, stillReload: true,
         rosterDenialRecovery: true, shellQueryPreserved: true, streamsClosed: true, noOutwardWrites: true,
-        providerUsed: false, evidence: framesEvidence } : {}) };
+        providerUsed: false, evidence: componentEvidence } : {}),
+      ...(options.evalsRead ? { evalsRead: true, suiteSelection: true, suiteReload: true,
+        warmDenialRecovery: true, coldDenialRecovery: true, shellQueryPreserved: true,
+        noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
   } catch (error) {
+    if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
+      reads, writes, errors, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
