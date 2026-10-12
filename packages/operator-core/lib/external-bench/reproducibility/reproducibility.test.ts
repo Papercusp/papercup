@@ -263,6 +263,40 @@ describe('current frozen benchmark protocol', () => {
       if (defect === 'unknown-unit') (sampling as { unit: string }).unit = 'seed';
       expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
     });
+
+  // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: a Codex arm may be paid by a
+  // ChatGPT subscription, but never compared against an API-key arm, and only with the
+  // provider's own frozen input and output limits standing in for max_output_tokens.
+  describe('D-023 payer basis', () => {
+    const subscription = () => {
+      const protocol = currentProtocolFixture();
+      const rate = protocol.priceSchedule.rates[0];
+      rate.inputTokenCeiling = 1000; rate.inputTokenCeilingSourceSha256 = 'a'.repeat(64); rate.outputTokenCeiling = 128;
+      for (const arm of protocol.arms) arm.payer = 'subscription';
+      return protocol;
+    };
+    it('accepts matched Codex subscription arms with frozen provider input and output ceilings', () => {
+      expect(issuesOf(subscription())).toEqual([]);
+      const apiKey = subscription(); for (const arm of apiKey.arms) delete arm.payer;
+      expect(issuesOf(apiKey)).toEqual([]);
+    });
+    it.each([
+      ['mixed', 'Matched arms require one payer basis.'],
+      ['claude', 'Only Codex arms support the subscription payer.'],
+      ['missing-output', 'A subscription arm needs frozen provider input and output ceilings.'],
+      ['output-without-input', 'A provider output ceiling requires the frozen native input ceiling.'],
+    ] as const)('refuses %s', (defect, message) => {
+      const protocol = subscription(); const rate = protocol.priceSchedule.rates[0];
+      if (defect === 'mixed') delete protocol.arms[1].payer;
+      if (defect === 'claude') protocol.arms[0].agent = 'claude';
+      if (defect === 'missing-output') delete rate.outputTokenCeiling;
+      if (defect === 'output-without-input') {
+        delete rate.inputTokenCeiling; delete rate.inputTokenCeilingSourceSha256;
+        for (const arm of protocol.arms) delete arm.payer;
+      }
+      expect(issuesOf(protocol)).toContain(message);
+    });
+  });
 });
 
 describe('canonicalJson', () => {

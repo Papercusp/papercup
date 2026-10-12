@@ -59,7 +59,7 @@ function controllerFixture() {
   const originalReserve = reserve.getMockImplementation()!;
   reserve.mockImplementation(async (sql, input) => { const result = await originalReserve(sql, input);
     admitted = result.reservation; return result; });
-  const recordAttemptResult = vi.fn(async () => ({ ok: true as const }));
+  const recordAttemptResult = vi.fn(async (): Promise<{ ok: boolean }> => ({ ok: true }));
   const governor: GovernorGlueDeps = { enabled: async () => true, getSql: async () => ({} as Sql), reserve,
     settle, recordAttemptResult, log: () => {} };
   const input = { workspaceId: 'private-workspace', loopId: 'gym:private', potSlug: 'private-pot', token,
@@ -100,7 +100,7 @@ describe('native Gym governor-backed provider controller', () => {
 
   it('refuses the route when durable per-attempt evidence cannot be saved', async () => {
     const f = controllerFixture();
-    f.recordAttemptResult.mockResolvedValue({ ok: false } as never);
+    f.recordAttemptResult.mockResolvedValue({ ok: false });
     const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
     await expect(receipt!.observeAttemptResult!(attemptResult(f.request, receipt!.reservationRef, 'response-headers')))
       .rejects.toThrow();
@@ -154,6 +154,47 @@ describe('native Gym governor-backed provider controller', () => {
     expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).toBeNull();
     expect(f.reserve).not.toHaveBeenCalled(); f.revoke();
   });
+
+  // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: the ChatGPT subscription backend
+  // rejects max_output_tokens, so only host evidence of the provider's own frozen limits
+  // may stand in for the per-request output field, and only on that oauth-http route.
+  function intrinsicFixture() {
+    const f = controllerFixture();
+    const body = JSON.stringify({ model: 'approved-model', input: [], reasoning: { effort: 'high' } });
+    const request = { ...f.request, transport: 'oauth-http' as const,
+      target: 'https://chatgpt.com/backend-api/codex/responses', body, bodySha256: digest(body) };
+    f.authority.inputEvidence = { kind: 'provider-intrinsic-limit', sourceSha256: digest('subscription contract'),
+      bodySha256: request.bodySha256, inputTokens: 100, outputTokens: 41 };
+    return { ...f, request };
+  }
+  it('reserves the frozen provider output limit for a subscription body without an output field', async () => {
+    const f = intrinsicFixture();
+    expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).not.toBeNull();
+    expect(f.reserve).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      cycle: expect.objectContaining({ resources: { armId: 'native-cycle', inputTokens: 100, outputTokens: 41 } }) }));
+    expect(JSON.parse(f.reserve.mock.calls[0]![1].note!).inputEvidence).toEqual({ kind: 'provider-intrinsic-limit',
+      sourceSha256: digest('subscription contract'), bodySha256: f.request.bodySha256, inputTokens: 100, outputTokens: 41 });
+    f.revoke();
+  });
+  it.each(['output-field', 'bearer-route', 'output-mismatch', 'input-mismatch', 'foreign-body', 'bad-source'] as const)(
+    'refuses intrinsic-limit evidence with %s before reserve', async changed => {
+      const f = intrinsicFixture(); const proof = f.authority.inputEvidence as Extract<
+        NonNullable<NativeGymProviderAuthorization['inputEvidence']>, { kind: 'provider-intrinsic-limit' }>;
+      let request: GatewayCarryTrialAttempt = f.request;
+      if (changed === 'output-field' || changed === 'bearer-route') {
+        // An output field would satisfy the output check on its own; the evidence must still refuse it.
+        const body = changed === 'output-field' ? JSON.stringify({ ...JSON.parse(request.body), max_output_tokens: 41 }) : request.body;
+        request = { ...request, body, bodySha256: digest(body),
+          ...(changed === 'bearer-route' ? { transport: 'bearer-http' as const, target: 'https://api.openai.com/v1/responses' } : {}) };
+        proof.bodySha256 = request.bodySha256;
+      }
+      if (changed === 'output-mismatch') proof.outputTokens = 40;
+      if (changed === 'input-mismatch') proof.inputTokens = 99;
+      if (changed === 'foreign-body') proof.bodySha256 = digest('another body');
+      if (changed === 'bad-source') proof.sourceSha256 = 'not-a-digest';
+      expect(await f.gateway.carryTrial.authorizeAttempt(request)).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled(); f.revoke();
+    });
 
   it('refuses missing registered policy without inventing defaults', () => {
     const f = controllerFixture(); Object.assign(f.input.cycle, { resourceBudget: undefined });

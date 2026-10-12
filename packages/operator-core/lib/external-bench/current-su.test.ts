@@ -11,6 +11,7 @@ import {
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
+  currentBenchCodexSubscriptionContract, currentBenchCodexSubscriptionInputReader, currentBenchCodexSubscriptionTarget,
   currentBenchNativeCostReader, type CurrentBenchNativeCostReaderPorts,
   currentBenchAttemptPopulationMatches,
   type CurrentBenchNativeInputCeiling,
@@ -271,7 +272,7 @@ function budgetFixture() {
     reason: 'not-found' as const, reservation: null }));
   const input = { workspaceId: 'bench-private', loopId: 'benchmark-run-1', token: randomUUID(), preregHash: digest('frozen'),
     protocol, resources, armId: 'papercusp', taskId: 't1', seed: 1,
-    authenticateProvider: vi.fn(async () => authority) };
+    authenticateProvider: vi.fn(async (): Promise<NativeGymProviderAuthorization | null> => authority) };
   const governor = { enabled: async () => true, getSql: async () => ({} as Sql), reserve, settle,
     recordAttemptResult: vi.fn(async () => ({ ok: true })), log: () => {} };
   const controller = currentBenchGatewayController(input, governor);
@@ -464,7 +465,7 @@ describe('frozen benchmark native provider admission', () => {
       if (changed === 'model') body.model = 'other-model';
       if (changed === 'output') body.max_output_tokens = 11;
       if (changed === 'missing-output') delete body.max_output_tokens;
-      if (changed === 'auth') f.input.authenticateProvider.mockResolvedValue(null as never);
+      if (changed === 'auth') f.input.authenticateProvider.mockResolvedValue(null);
       if (changed === 'price') f.authority.requestedUsd = 0.000001;
       if (changed === 'expired') f.authority.validUntilMonotonicMs = -1;
       if (changed === 'foreign-manifest') f.attempt = { ...f.attempt, manifestSha256: 'd'.repeat(64) };
@@ -568,10 +569,12 @@ function providerAuthFixture() {
   const account = { id: f.attempt.accountId, provider: 'codex' as const, credentialRef: 'token:fixture-private-key' };
   const resolver = { current: vi.fn(async () => NEVER_EMIT_MARKER), invalidate: vi.fn(),
     kind: 'token' as const, authMode: 'oauth' as const };
-  const ports = { readAccount: vi.fn(async () => account), credentialResolver: vi.fn(() => resolver) };
+  type AuthPorts = NonNullable<Parameters<typeof currentBenchProviderAuthenticator>[1]>;
+  const ports = { readAccount: vi.fn<AuthPorts['readAccount']>(async () => account),
+    credentialResolver: vi.fn<AuthPorts['credentialResolver']>(() => resolver) };
   const input = { workspaceId: f.input.workspaceId, preregHash: f.input.preregHash, protocol: f.input.protocol,
     armId: f.input.armId, taskId: f.input.taskId, seed: f.input.seed,
-    readNativeInputCeiling: vi.fn(async () => ceiling) };
+    readNativeInputCeiling: vi.fn(async (): Promise<CurrentBenchNativeInputCeiling | null> => ceiling) };
   const auth = currentBenchProviderAuthenticator(input, ports);
   const attempt = { ...f.attempt, target: 'https://api.openai.com/v1/responses' };
   return { ...f, ...auth, input, ports, ceiling, account, resolver, attempt };
@@ -858,8 +861,8 @@ describe('registered benchmark provider authentication', () => {
     const f = providerAuthFixture();
     f.input.protocol.arms[0].agent = 'claude';
     f.input.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 25;
-    f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' } as never);
-    f.ports.credentialResolver.mockReturnValue({ ...f.resolver, kind: 'apikey', authMode: 'api-key' } as never);
+    f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' });
+    f.ports.credentialResolver.mockReturnValue({ ...f.resolver, kind: 'apikey', authMode: 'api-key' });
     const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
     const attempt = { ...f.attempt, target: 'https://api.anthropic.com/v1/messages', transport: 'anthropic-http' as const,
       credentialHeader: 'x-api-key' as const, credentialSha256: f.digest(NEVER_EMIT_MARKER), body, bodySha256: f.digest(body) };
@@ -903,9 +906,9 @@ describe('registered benchmark provider authentication', () => {
           attempt.body = JSON.stringify(body); attempt.bodySha256 = f.digest(attempt.body);
         }
         if (changed === 'account') attempt.accountId = 'other-account';
-        if (changed === 'provider') f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' } as never);
-        if (changed === 'unregistered') f.ports.readAccount.mockResolvedValue(null as never);
-        if (changed === 'missing-ceiling') f.input.readNativeInputCeiling.mockResolvedValue(null as never);
+        if (changed === 'provider') f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' });
+        if (changed === 'unregistered') f.ports.readAccount.mockResolvedValue(null);
+        if (changed === 'missing-ceiling') f.input.readNativeInputCeiling.mockResolvedValue(null);
         if (changed === 'source') f.ceiling.sourceSha256 = f.digest('other-contract');
         if (changed === 'ceiling') f.ceiling.inputTokens = 9999;
         if (changed === 'expired') f.ceiling.validUntilMonotonicMs = -1;
@@ -932,6 +935,126 @@ describe('registered benchmark provider authentication', () => {
       vi.mocked(f.ceiling.validateAuthorization).mockImplementation(() => { throw new Error('native contract revoked'); });
       expect(() => authority.validateAuthorization()).toThrow(/native contract revoked/);
     } finally { f.revoke(); }
+  });
+});
+
+// benchmark-coverage-frontierswe-v2-2026-10-10#D-023: a Codex arm frozen with the
+// subscription payer sends only through the ChatGPT backend (oauth-http), only with a
+// registered codex-cli account, and reserves the provider's own frozen input and output
+// limits because that backend rejects max_output_tokens and has no count endpoint.
+function subscriptionAuthFixture() {
+  const f = budgetFixture();
+  f.revoke();
+  const rate = f.input.protocol.priceSchedule.rates[0];
+  for (const arm of f.input.protocol.arms) arm.payer = 'subscription';
+  rate.inputTokenCeiling = 10_000; rate.outputTokenCeiling = 128;
+  rate.inputTokenCeilingSourceSha256 = currentBenchCodexSubscriptionContract(rate.model, 10_000, 128);
+  const account = { id: f.attempt.accountId, provider: 'codex' as const, credentialRef: 'codex-cli:/private/codex-home' };
+  const resolver = { current: vi.fn(async () => NEVER_EMIT_MARKER), invalidate: vi.fn(),
+    kind: 'file' as const, authMode: 'oauth' as const };
+  type AuthPorts = NonNullable<Parameters<typeof currentBenchProviderAuthenticator>[1]>;
+  const ports = { readAccount: vi.fn<AuthPorts['readAccount']>(async () => account),
+    credentialResolver: vi.fn<AuthPorts['credentialResolver']>(() => resolver) };
+  const input = { workspaceId: f.input.workspaceId, preregHash: f.input.preregHash, protocol: f.input.protocol,
+    armId: f.input.armId, taskId: f.input.taskId, seed: f.input.seed };
+  // Accepts any route, so a refusal under it is owed to the authenticator's own gates.
+  const permissive = vi.fn(async (): Promise<CurrentBenchNativeInputCeiling | null> => ({ model: rate.model, inputTokens: 10_000,
+    sourceSha256: rate.inputTokenCeilingSourceSha256!, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
+    validateAuthorization: () => {} }));
+  const body = JSON.stringify({ model: rate.model, input: [{ role: 'user', content: 'native input' }],
+    instructions: 'same instructions', reasoning: { effort: 'high' },
+    tools: [{ type: 'function', name: 'shell', parameters: { type: 'object' } }], stream: true });
+  const attempt: GatewayCarryTrialAttempt = { ...f.attempt, transport: 'oauth-http', target: currentBenchCodexSubscriptionTarget,
+    body, bodySha256: f.digest(body) };
+  return { ...f, budgetInput: f.input, input, ports, account, resolver, permissive, attempt, rate };
+}
+
+describe('D-023 Codex subscription payer', () => {
+  it('freezes a contract distinct from the API-key contract and bound to both provider limits', () => {
+    const contract = currentBenchCodexSubscriptionContract('configured-alias', 10_000, 128);
+    expect(contract).toMatch(/^[a-f0-9]{64}$/);
+    expect(contract).not.toBe(currentBenchOpenAiInputContract('configured-alias', 10_000));
+    expect(contract).not.toBe(currentBenchCodexSubscriptionContract('configured-alias', 10_000, 129));
+    expect(contract).not.toBe(currentBenchCodexSubscriptionContract('configured-alias', 10_001, 128));
+    expect(() => currentBenchCodexSubscriptionContract('configured-alias', 10_000, 0)).toThrow(/subscription input contract/);
+  });
+
+  it('authenticates the ChatGPT route with the default provider-limit reader and reserves the model maximum output', async () => {
+    const f = subscriptionAuthFixture();
+    const auth = currentBenchProviderAuthenticator(f.input, f.ports);
+    try {
+      const authority = await auth.authenticateProvider(f.attempt);
+      expect(authority).toMatchObject({ inputTokens: 10_000, outputTokens: 128, requestedUsd: 0.010256,
+        inputEvidence: { kind: 'provider-intrinsic-limit', sourceSha256: f.rate.inputTokenCeilingSourceSha256,
+          bodySha256: f.attempt.bodySha256, inputTokens: 10_000, outputTokens: 128 } });
+      expect(f.ports.credentialResolver).toHaveBeenCalledWith('codex', 'codex-cli:/private/codex-home');
+      expect(JSON.stringify(authority)).not.toContain(NEVER_EMIT_MARKER);
+      authority!.validateAuthorization();
+      auth.revoke(); expect(() => authority!.validateAuthorization()).toThrow(/revoked/);
+    } finally { auth.revoke(); }
+  });
+
+  it('reads only the final ChatGPT body that omits the output field, until revoked', async () => {
+    const f = subscriptionAuthFixture();
+    const reader = currentBenchCodexSubscriptionInputReader({ model: f.rate.model, inputTokens: 10_000, outputTokens: 128 });
+    const proof = await reader.read(f.attempt);
+    expect(proof).toMatchObject({ model: f.rate.model, inputTokens: 10_000, sourceSha256: f.rate.inputTokenCeilingSourceSha256 });
+    const body = JSON.stringify({ ...JSON.parse(f.attempt.body), max_output_tokens: 128 });
+    expect(await reader.read({ ...f.attempt, body, bodySha256: f.digest(body) })).toBeNull();
+    expect(await reader.read({ ...f.attempt, transport: 'bearer-http' })).toBeNull();
+    expect(await reader.read({ ...f.attempt, target: 'https://api.openai.com/v1/responses' })).toBeNull();
+    reader.revoke();
+    expect(() => proof!.validateAuthorization()).toThrow(/revoked/);
+    expect(await reader.read(f.attempt)).toBeNull();
+  });
+
+  it.each(['bearer-route', 'target', 'output-field', 'api-key-account', 'contract', 'api-arm-subscription-account'] as const)(
+    'refuses %s without granting provider authority', async changed => {
+      const f = subscriptionAuthFixture();
+      if (changed === 'contract') f.rate.inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract(f.rate.model, 10_000);
+      if (changed === 'api-arm-subscription-account') {
+        for (const arm of f.input.protocol.arms) delete arm.payer;
+        f.rate.inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract(f.rate.model, 10_000);
+      }
+      const auth = currentBenchProviderAuthenticator(changed === 'contract' ? f.input
+        : { ...f.input, readNativeInputCeiling: f.permissive }, f.ports);
+      try {
+        // Positive control: the same authenticator grants the unmodified subscription request.
+        if (changed !== 'contract' && changed !== 'api-arm-subscription-account') {
+          expect(await auth.authenticateProvider({ ...f.attempt, attemptId: randomUUID() })).not.toBeNull();
+        }
+        let attempt: GatewayCarryTrialAttempt = { ...f.attempt };
+        if (changed === 'bearer-route' || changed === 'api-arm-subscription-account') {
+          attempt = { ...attempt, transport: 'bearer-http', target: 'https://api.openai.com/v1/responses' };
+        }
+        if (changed === 'target') attempt = { ...attempt, target: 'https://api.openai.com/v1/responses' };
+        if (changed === 'output-field' || changed === 'api-arm-subscription-account') {
+          const body = JSON.stringify({ ...JSON.parse(attempt.body), max_output_tokens: 128 });
+          attempt = { ...attempt, body, bodySha256: f.digest(body) };
+        }
+        if (changed === 'api-key-account') f.ports.readAccount.mockResolvedValue({ ...f.account, credentialRef: 'token:/private/key' });
+        f.resolver.current.mockClear();
+        expect(await auth.authenticateProvider(attempt)).toBeNull();
+        if (changed === 'api-key-account' || changed === 'api-arm-subscription-account') expect(f.resolver.current).not.toHaveBeenCalled();
+      } finally { auth.revoke(); }
+    });
+
+  it('reserves the frozen provider output ceiling on the gateway and refuses a host output limit', async () => {
+    const f = subscriptionAuthFixture();
+    expect(() => currentBenchGatewayController({ ...f.budgetInput, outputTokenLimit: 128 }, f.governor)).toThrow(/subscription arm/);
+    const controller = currentBenchGatewayController(f.budgetInput, f.governor);
+    try {
+      expect(controller.gateway.carryTrial.outputTokenLimit).toBeUndefined();
+      Object.assign(f.authority, { inputTokens: 10_000, outputTokens: 128, requestedUsd: 0.010256,
+        inputEvidence: { kind: 'provider-intrinsic-limit', sourceSha256: f.rate.inputTokenCeilingSourceSha256,
+          bodySha256: f.attempt.bodySha256, inputTokens: 10_000, outputTokens: 128 } });
+      expect(await controller.gateway.carryTrial.authorizeAttempt(f.attempt)).not.toBeNull();
+      expect(f.reserve).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        exact: expect.objectContaining({ resources: expect.objectContaining({ inputTokens: 10_000, outputTokens: 128 }) }) }));
+      const body = JSON.stringify({ ...JSON.parse(f.attempt.body), max_output_tokens: 128 });
+      expect(await controller.gateway.carryTrial.authorizeAttempt({ ...f.attempt, attemptId: randomUUID(),
+        body, bodySha256: f.digest(body) })).toBeNull();
+    } finally { controller.revoke(); }
   });
 });
 
