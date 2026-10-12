@@ -73,17 +73,18 @@ async function register(browser: Browser, person: SigningPerson) {
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).not.toBe('/signup');
   });
   await uiPhase(page, 'verify fixture email through provider UI', () => verifyEmail(page, person.email));
-  return { context, page, password };
+  return { context, page };
 }
 
-async function signIn(page: Page, email: string, password: string) {
-  await uiPhase(page, 'sign in verified account', async () => {
-    await page.goto(baseUrl + '/signin');
-    await page.locator('input[name="email"]').fill(email);
-    await page.locator('input[name="password"]').fill(password);
-    await page.getByRole('button', { name: /sign in/i }).click();
-    await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).not.toBe('/signin');
-  });
+async function authenticatedAccount(page: Page, email: string) {
+  // Signup establishes the session, and verification keeps it. Confirm the
+  // account rather than navigating to /signin, which redirects signed-in users.
+  // This reads the provider session; it does not create/authenticate a fixture.
+  const response = await page.context().request.get(baseUrl + '/api/auth/session');
+  expect(response.ok()).toBe(true);
+  const session = await response.json();
+  expect(session.isAuthenticated).toBe(true);
+  expect(session.user?.email === email).toBe(true);
 }
 
 async function accountToken(page: Page) {
@@ -141,7 +142,7 @@ describe.skipIf(!enabled)('P006 real Documenso sandbox — authenticated sequent
     try {
       const candidate = await register(browser, signers[0]); contexts.push(candidate.context);
       const company = await register(browser, signers[1]); contexts.push(company.context);
-      await signIn(company.page, signers[1].email, company.password);
+      await authenticatedAccount(company.page, signers[1].email);
       const secret = randomBytes(32).toString('hex');
       const adapter = new DocumensoAdapter({ baseUrl, apiKey: await accountToken(company.page), webhookSecret: secret });
       const contractId = 'daohr-nonbinding-' + suffix;
@@ -152,10 +153,11 @@ describe.skipIf(!enabled)('P006 real Documenso sandbox — authenticated sequent
       const event = adapter.verifyWebhook(secret, { event: 'DOCUMENT_COMPLETED', createdAt: new Date().toISOString(),
         payload: { envelopeId, externalId: contractId, status: 'COMPLETED' } });
       await expect(adapter.completed(event, { contractId, envelopeId, signers })).rejects.toMatchObject({ code: 'invalid_completion' });
-      await signIn(candidate.page, signers[0].email, candidate.password);
+      await authenticatedAccount(candidate.page, signers[0].email);
       await sign(candidate.page, links.find(link => link.email === signers[0].email)!.signingUrl);
       await expect(adapter.completed(event, { contractId, envelopeId, signers })).rejects.toMatchObject({ code: 'invalid_completion' });
       await sign(company.page, links.find(link => link.email === signers[1].email)!.signingUrl);
+      await expect.poll(() => adapter.reconcile({ contractId, envelopeId, signers, pdf: pdf.pdf }), { timeout: 30_000 }).toBe('COMPLETED');
       const result = await adapter.completed(event, { contractId, envelopeId, signers });
       expect(result.signers.map(signer => signer.email).sort()).toEqual(signers.map(signer => signer.email).sort());
       expect(Buffer.from(result.document.subarray(0, 5)).toString()).toBe('%PDF-');
