@@ -10,6 +10,10 @@ afterAll(() => {
 });
 
 const spawnMock = vi.fn();
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
 // WI-10007538: spawnSubstrateSidecar enrols the child in the task ledger
 // (beginSyncEnrolment → completeSyncEnrolment), whose fire-and-forget write goes

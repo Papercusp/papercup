@@ -22,7 +22,69 @@ import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-c
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, {
+const remainingSyncCases: RailMigrationCase[] = [{
+  id: 'sidecar-respawn-original-budget-failure-success-and-exclusions', item: 'P-011', route: 'observation',
+  mechanism: 'substrate-sidecar-respawn',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts|scheduleRespawn|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    for (const scenario of ['stopped', 'pending', 'budget', 'failed', 'ready']) {
+      let timer: (() => void) | undefined;
+      let notified = false;
+      const producer = execute(original('packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts', 'function scheduleRespawn(', 'function'), {
+        deliberateStop: scenario === 'stopped', respawnTimer: scenario === 'pending' ? 1 : null,
+        respawnAttempts: [], RESPAWN_WINDOW_MS: 1000, MAX_RESPAWN_ATTEMPTS: 3,
+        pruneRespawnWindow: () => [], respawnBudgetExhausted: () => scenario === 'budget', gaveUp: false,
+        respawnBackoffMs: () => 1, setTimeout: (fn: () => void) => { timer = fn; return 1; },
+        spawnSubstrateSidecar: async () => { if (scenario === 'failed') throw new Error('spawn unavailable'); },
+        notifySidecarRespawned: () => { notified = true; },
+        observeFallback: (mechanism: string, row: typeof observations[number]) => {
+          expect(mechanism).toBe('substrate-sidecar-respawn'); observations.push(row); return true;
+        },
+      }, 'scheduleRespawn') as (socketPath: string) => void;
+      producer('/fixture/socket');
+      if (timer) { timer(); await new Promise<void>((resolve) => setTimeout(resolve, 0)); }
+      expect(notified).toBe(scenario === 'ready');
+    }
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [1, 0, 'budget-exhausted'], [1, 0, 'respawn-failed'], [1, 1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'substrate-sidecar-respawn', observations };
+  },
+}, {
+  id: 'coord-receipt-original-send-failure-primary-and-exclusions', item: 'P-011', route: 'observation',
+  mechanism: 'coord-delivery-receipt',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts|writeToPg|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const text = original('packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts', '[coord-message] delivery receipt failed', 'if');
+    for (const scenario of ['empty', 'unwoken', 'failed', 'sent', 'rate-limited']) {
+      await execute(text, {
+        fanTo: scenario === 'empty' ? [] : ['recipient'],
+        fanWoken: ['unwoken', 'rate-limited'].includes(scenario) ? 0 : 1,
+        fanSuppressedByRate: scenario === 'rate-limited',
+        opts: { workspaceId: 'fixture', harnessSlug: 'fixture-harness' },
+        row: { msg_id: 'fixture-message', harness_slug: 'fixture-harness' },
+        require: (path: string) => {
+          if (path.endsWith('coordination/messages')) return { sendMessage: async () => { if (scenario === 'failed') throw new Error('send unavailable'); } };
+          if (path.endsWith('device-keychain-id')) return { machineFingerprint: () => 'fixture-device' };
+          throw new Error(`unexpected dependency ${path}`);
+        },
+        observeFallback: (mechanism: string, row: typeof observations[number] & { scope?: string }) => {
+          expect(mechanism).toBe('coord-delivery-receipt'); expect(row.scope).toBe('fixture-harness'); observations.push(row); return true;
+        },
+      });
+    }
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [1, 0, 'receipt-send-failed'], [1, 1, 'applied'], [1, 1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'coord-delivery-receipt', observations };
+  },
+}];
+
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

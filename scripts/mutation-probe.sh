@@ -206,6 +206,23 @@
 #     --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
 #
 # EXIT CODES
+#
+# PROVENANCE AND REPLAY
+#   Guard rows carry execution_details.mutation: invocation id, leg, mode,
+#   subject, expression/commit, before/after hashes, diff and literal testCommand.
+#   PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=auto (default) waits until the deployed
+#   reader accepts the descriptor. always is for a verified compatible reader;
+#   never deliberately leaves linkage unverified. Read the withholding log.
+#   Find probe rows with testing:runs { source:'mutation-probe' } or exact
+#   testRunIds:[N]. Replay the recorded testCommand, preserving its {} subject
+#   pointer and inline environment, against the recorded subject and mutation.
+#   An unchanged-test survivor followed by a descriptor-linked catch is refused
+#   at binding with mutation_reaim_unjustified; supply structured
+#   reaimJustification naming the prior binding and concrete reason for re-aiming.
+#   Detection covers ledgered mutant-leg rows; legacy rows have unknown linkage.
+#   Historical fixed-path guards that ignore the snapshot produce INCONCLUSIVE
+#   (exit 2, guard-ignores-subject); use copy-out for import-based guards.
+#
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
@@ -1423,6 +1440,21 @@ mutation_descriptor_reader_ready() {
     MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) predates the descriptor parser (D-001)"
     return 1
   fi
+  # D-009: exercise the exact deployed parser before exporting an additive key.
+  git -C "$repo/libs/test-config" show "$link:src/mutation-descriptor.ts" > "$SCRATCH/mutation-reader.ts" 2>/dev/null || return 1
+  if ! MPD_READER="$SCRATCH/mutation-reader.ts" node --experimental-strip-types --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const reader = await import(pathToFileURL(process.env.MPD_READER).href);
+    const sample = { schemaVersion: 1, probeInvocationId: "reader-check-0001", mode: "copy-out",
+      subjectPath: "reader-check", mutateExpression: "s/old/new/", againstCommit: null,
+      subjectBeforeSha256: "a".repeat(64), subjectAfterSha256: "b".repeat(64),
+      mutantDiff: "", mutantDiffTruncated: false, testCommandSha256: "c".repeat(64),
+      testCommand: "test -f {}" };
+    process.exit(reader.parseMutationInvocationDescriptor?.(sample) ? 0 : 1);
+  ' > /dev/null 2> "$SCRATCH/mutation-reader.err"; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha does not accept the replayable testCommand (D-009)"
+    return 1
+  fi
   MUTATION_DESCRIPTOR_GATE="on: deployed reader $sha parses execution_details.mutation"
   return 0
 }
@@ -1438,6 +1470,9 @@ build_mutation_descriptor() {
   if [ "${#expression}" -gt "$MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS" ]; then
     log "mutation descriptor withheld: the --mutate expression is ${#expression} characters (limit $MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS) and is never recorded truncated"
     return 0
+  fi
+  if [ "${#TEST_CMD}" -gt 8000 ]; then
+    die "the --test template exceeds the replayable descriptor limit (8000 characters); use a maintained guard script"
   fi
   diff -u --label "a/$subject" --label "b/$subject" "$before" "$after" > "$SCRATCH/mutation-descriptor.diff" 2>/dev/null
   MUTATION_DESCRIPTOR_JSON="$(
@@ -1460,6 +1495,7 @@ build_mutation_descriptor() {
         mutantDiff: full.slice(0, max),
         mutantDiffTruncated: full.length > max,
         testCommandSha256: sha(e.MPD_TEST),
+        testCommand: e.MPD_TEST,
       }));
     ' 2>"$SCRATCH/mutation-descriptor.err"
   )" || MUTATION_DESCRIPTOR_JSON=""

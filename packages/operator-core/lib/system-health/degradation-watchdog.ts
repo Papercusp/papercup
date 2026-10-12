@@ -284,6 +284,10 @@ registerDegradationMechanism({
   description: 'Cleanup attempts after a failed remote boot stopped the sidecar before an in-process retry rather than continuing while stop failed.',
   thresholds: { minEligible: 1 },
 });
+registerDegradationMechanism({ mechanism: 'substrate-sidecar-respawn', thresholds: { minEligible: 1 },
+  description: 'Unexpected sidecar exits restored the preferred process rather than exhausting the respawn budget or failing to spawn; deliberate stops and coalesced callbacks are excluded.' });
+registerDegradationMechanism({ mechanism: 'coord-delivery-receipt', scopeKeyed: true,
+  description: 'Applied federated messages published their requested delivery receipt rather than falling back to sender-side reply or inbox confirmation; messages without an eligible receipt are excluded.' });
 registerDegradationMechanism({
   mechanism: 'routine-capability-read', scopeKeyed: true,
   description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',

@@ -42,6 +42,7 @@ import { tryConsumeMemberMessageRate } from '../member-rate-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 import { readExpectedLifecycleAck } from '../../../agent-tools/coordination/cue-authority';
 import { readRelayProvenance } from '../../../agent-tools/coordination/relay-provenance';
+import { observeFallback } from '../../../degradation/fallback-observations';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -651,8 +652,9 @@ async function writeToPg(
             },
           },
         );
+        observeFallback('coord-delivery-receipt', { eligible: 1, applied: 1, reason: 'applied', scope: opts.harnessSlug });
       } catch (e) {
-
+        observeFallback('coord-delivery-receipt', { eligible: 1, applied: 0, reason: 'receipt-send-failed', scope: opts.harnessSlug });
         console.warn(
           `[coord-message] delivery receipt failed for ${row.msg_id} (message applied; sender falls back to reply/inbox confirmation):`,
           e instanceof Error ? e.message : String(e),

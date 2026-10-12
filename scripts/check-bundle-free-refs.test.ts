@@ -198,6 +198,24 @@ describe('main (the CLI bundle-host.sh runs)', () => {
     expect(result()).toMatch(/status=clean selection=changed-since-baseline inputs=3 checked=1 findings=0 unreadable=0/);
   });
 
+  it('reports inconclusive and refuses publication when every selected input is unparsed', () => {
+    writeFileSync(path.join(dir, 'new.ts'), 'const = ;');
+    const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', baseline], io());
+    expect(code).toBe(1);
+    expect(result()).toMatch(/status=inconclusive selection=changed-since-baseline inputs=3 checked=1 findings=0 unreadable=0 unparsed=1/);
+    expect(errors.join('\n')).toContain('no selected inputs could be analysed');
+  });
+
+  it('retains clean when some selected inputs parse cleanly beside an unparsed input', () => {
+    writeFileSync(path.join(dir, 'new.ts'), 'const = ;');
+    writeFileSync(path.join(dir, 'clean.ts'), "import { z } from './z';\nexport const c = z;");
+    const now = Date.now() / 1000;
+    utimesSync(path.join(dir, 'clean.ts'), now, now);
+    const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', baseline], io());
+    expect(code).toBe(0);
+    expect(result()).toMatch(/status=clean selection=changed-since-baseline inputs=3 checked=2 findings=0 unreadable=0 unparsed=1/);
+  });
+
   it("honours esbuild's own --define:NAME=VALUE arguments, passed through verbatim", () => {
     const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', baseline, '--define:freshFree="x"'], io());
     expect(code).toBe(0);

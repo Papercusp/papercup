@@ -22,12 +22,13 @@
  * `--since <file>` (the last-known-good bundle) are checked; `--all` checks every
  * repo-owned input and is how the allowlist below is calibrated.
  *
- * Exit: 0 clean · 1 free references found or an input could not be read (bundle-host
- * refuses to publish, so the last-known-good bundle boots) · 2 misuse / unreadable
- * metafile. Parser syntax gaps remain `unparsed` warnings: esbuild already accepted
- * those sources, so they are an instrument gap rather than a confirmed defect. An
- * unreadable input is different: the guard cannot claim a clean analysis of a file
- * it failed to open.
+ * Exit: 0 clean or skipped · 1 free references, unreadable inputs, or a selected batch
+ * with zero analyzable inputs (bundle-host refuses to publish, keeping the
+ * last-known-good bundle) · 2 misuse / unreadable metafile. Parser syntax gaps remain
+ * `unparsed` warnings when some selected inputs are analyzable: esbuild already
+ * accepted those sources, so they are an instrument gap rather than a confirmed
+ * defect. If every selected input is unparsed, coverage is inconclusive and cannot be
+ * reported as clean.
  */
 import { readFileSync, statSync } from 'node:fs';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
@@ -255,7 +256,10 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
   const known = knownGlobalNames(opts.allow);
   const { findings, unreadable, unparsed } = checkInputs(files, { known });
   const ms = Date.now() - t0;
-  const status = findings.length > 0 || unreadable.length > 0 ? 'refused' : 'clean';
+  const allSelectedInputsUnparsed = files.length > 0 && unparsed.length === files.length;
+  let status = 'clean';
+  if (findings.length > 0 || unreadable.length > 0) status = 'refused';
+  else if (allSelectedInputsUnparsed) status = 'inconclusive';
   if (opts.json) {
     io.log(JSON.stringify({ status, selection, inputs: inputs.length, checked: files.length, ms, findings, unreadable, unparsed }));
   } else {
@@ -264,9 +268,12 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
     }
     for (const u of unreadable) io.error(`🚨 could not read ${u.file}: ${u.error} — refusing to publish an input the guard could not analyze`);
     for (const u of unparsed) io.error(`⚠ could not analyse ${u.file}: ${u.error}`);
+    if (allSelectedInputsUnparsed) {
+      io.error('🚨 no selected inputs could be analysed; refusing to publish an inconclusive bundle scan');
+    }
   }
   io.log(`BUNDLE_FREE_REFS_RESULT status=${status} selection=${selection} inputs=${inputs.length} checked=${files.length} findings=${findings.length} unreadable=${unreadable.length} unparsed=${unparsed.length} ms=${ms}`);
-  return findings.length > 0 || unreadable.length > 0 ? 1 : 0;
+  return findings.length > 0 || unreadable.length > 0 || allSelectedInputsUnparsed ? 1 : 0;
 }
 
 // Basename pin, as in check-bundled-cli-entry-guards.mjs: bundle-host.sh runs this under

@@ -7,6 +7,13 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+// Producer behavior is unit tested here; durable telemetry has integration
+// coverage. Hoist the sink seam so boot decisions cannot enqueue real-PG writes.
+vi.mock('../../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

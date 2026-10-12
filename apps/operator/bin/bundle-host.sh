@@ -535,7 +535,7 @@ bundle_rc=0
   # every repo-owned input changed since the last-known-good $OUTFILE (still in place here — the
   # atomic mv is below) for value references that reach global scope unbound. Findings keep LKG.
   # Metafile input keys are repo-root relative; keep --base-dir at REPO_ROOT. Unreadable inputs
-  # now refuse publication instead of being counted as an unparsed/clean result.
+  # and a selected batch with zero analyzable inputs refuse publication instead of reading clean.
   if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \
     --metafile "$METAFILE" --base-dir "$REPO_ROOT" --since "$OUTFILE" \
     "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
