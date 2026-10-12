@@ -141,7 +141,17 @@ const instrumentDeclarationSchema = z
   .describe(
     'For operational/manual evidence, declare either { path, testPath } for the committed instrument and its committed test, or { none: true, reason } when no instrument was used.',
   );
-const bindingDetailsSchema = z
+const bindingDetailsSchema = z.preprocess((value) => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const details = value as Record<string, unknown>;
+  if (typeof details.testLayer !== 'string') return value;
+  const nested = details.adequacy;
+  if (nested !== undefined && (nested === null || typeof nested !== 'object' || Array.isArray(nested))) return value;
+  const adequacy = nested as Record<string, unknown> | undefined;
+  if (adequacy?.testLayer !== undefined && adequacy.testLayer !== details.testLayer) return value;
+  const { testLayer, ...rest } = details;
+  return { ...rest, adequacy: { ...adequacy, testLayer } };
+}, z
   .intersection(
     z.record(z.string(), z.unknown()),
     z
@@ -180,12 +190,7 @@ const bindingDetailsSchema = z
         message: issue.message,
       });
     }
-  })
-  .transform((details) => {
-    if (details.testLayer === undefined) return details;
-    const { testLayer, ...rest } = details;
-    return { ...rest, adequacy: { ...(details.adequacy as Record<string, unknown> | undefined), testLayer } };
-  });
+  }));
 const CAUSAL_PAIR_EVIDENCE_KINDS = new Set([
   'test',
   'coverage-census',

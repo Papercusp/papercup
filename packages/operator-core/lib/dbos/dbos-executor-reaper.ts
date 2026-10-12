@@ -27,6 +27,7 @@
  * lets the GC (and every routine) keep firing.
  */
 import type { Sql } from 'postgres';
+import { observeFallback } from '../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /**
@@ -152,12 +153,14 @@ export const STALE_ROUTINE_FIRE_NO_OUTPUT_MS = ((): number => {
   const v = Number(raw);
   const fallback = `falling back to ${DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS}ms`;
   if (!Number.isFinite(v) || v <= 0) {
+    observeFallback('routine-config', { eligible: 1, applied: 0, reason: 'invalid-number', scope: 'reaper-fire-window' });
     console.warn(
       `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${raw} is not a positive number; ${fallback}.`,
     );
     return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
   }
   if (v <= NO_OUTPUT_OVERRIDE_FLOOR_MS || v >= NO_OUTPUT_OVERRIDE_CEILING_MS) {
+    observeFallback('routine-config', { eligible: 1, applied: 0, reason: 'unsafe-timing-order', scope: 'reaper-fire-window' });
     console.warn(
       `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${v}ms would break the green-gate timing chain ` +
         `(must be strictly between SELF_WATCHDOG_MS=${NO_OUTPUT_OVERRIDE_FLOOR_MS}ms and ` +
@@ -168,6 +171,7 @@ export const STALE_ROUTINE_FIRE_NO_OUTPUT_MS = ((): number => {
     );
     return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
   }
+  observeFallback('routine-config', { eligible: 1, applied: 1, reason: 'applied', scope: 'reaper-fire-window' });
   return v;
 })();
 /** WI-1416: the FAST-orphan window for a routineFire in the genuinely anomalous

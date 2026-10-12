@@ -255,6 +255,46 @@ beforeEach(() => {
 });
 
 describe('connector sync driver over registered providers (R-3)', () => {
+  it('skips a due source until descriptor-required config is present without recording a sync failure', async () => {
+    const src = await createSource();
+    const configDescriptor: ProviderDescriptor = {
+      ...descriptor,
+      configSchema: {
+        type: 'object',
+        properties: { teamIds: { type: 'array', items: { type: 'string' }, minItems: 1 } },
+        required: ['teamIds'],
+      },
+    };
+    const configRegistry = createProviderRegistry();
+    await configRegistry.register({
+      descriptor: configDescriptor,
+      adapter: { ...adapter, describe: () => configDescriptor },
+      pluginName: 'connector-config-readiness-test-plugin',
+    });
+    const hostFetchFor = vi.fn(() => noNetwork);
+    const servicesFor = vi.fn(async () => undefined);
+
+    const outcome = await syncOne(src, { registry: configRegistry, hostFetchFor, servicesFor });
+
+    expect(outcome).toMatchObject({
+      outcome: 'needs-config',
+      mode: 'backfill',
+      missingConfig: ['teamIds'],
+      pages: 0,
+    });
+    expect(calls).toEqual([]);
+    expect(hostFetchFor).not.toHaveBeenCalled();
+    expect(servicesFor).not.toHaveBeenCalled();
+    expect(await state(src)).toMatchObject({
+      cursor: null,
+      status: 'ready',
+      failure_count: 0,
+      lease_owner: null,
+      last_error: null,
+    });
+    expect(formatConnectorSyncLog({ providers: 1, sources: [outcome] })).toContain('needs_config=1');
+  });
+
   it('refuses an undeclared membership snapshot without committing its cursor', async () => {
     const src = await createSource();
     handler = async () => ({ ...page([], 'untrusted', false), membership: { members: [{ providerUserId: '42' }] } });

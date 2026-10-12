@@ -70,4 +70,15 @@ describe('Hiring Workbench', () => {
     await waitFor(() => expect(fetcher.mock.calls.filter(c => !c[1]).length).toBe(2));
     expect(JSON.parse(fetcher.mock.calls.find(c => c[1]?.method === 'POST')![1].body)).toEqual({ action: 'approve', offerId: 'offer' });
   });
+  it('creates an amendment referencing the active offer with a preserved vesting schedule', async () => {
+    const hired:HiringView={...view,offers:view.offers.map(offer=>({...offer,state:'hired'}))};
+    fetcher.mockImplementation(async(url:string,init?:RequestInit)=>url.endsWith('/hiring')?init?Response.json({ok:true}):response(hired):Response.json({ok:false,message:'Fixture only'}));
+    show();const form=await screen.findByRole('form',{name:'Create engagement amendment'});
+    fireEvent.change(within(form).getByLabelText('Amended pay amount'),{target:{value:'7000'}});
+    fireEvent.change(within(form).getByLabelText('Amended total grant shares'),{target:{value:'1500'}});
+    fireEvent.submit(form);
+    await waitFor(()=>expect(fetcher.mock.calls.some(([,init])=>init?.method==='POST')).toBe(true));
+    expect(JSON.parse(fetcher.mock.calls.find(([,init])=>init?.method==='POST')![1].body)).toEqual({action:'offer',roleId:'role',personId:'PER-candidate',amendsOfferId:'offer',
+      engagementType:'contractor',jurisdiction:'US',pay:{amount:'7000',currency:'USD',cadence:'monthly'},overrides:{shares:1500,vestingDays:1460,cliffDays:365}});
+  });
 });

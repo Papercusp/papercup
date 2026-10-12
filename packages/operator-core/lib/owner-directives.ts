@@ -560,14 +560,16 @@ export async function listOpenOwnerDirectives(
   limit: number = OWNER_DIRECTIVES_RENDER_MAX_ROWS,
   sql?: Sql,
   viewerOwnerId?: string | null,
+  recordedBy?: string,
 ): Promise<OwnerDirectiveRow[]> {
-  return listOwnerDirectives({ workspaceId, open: true, limit, viewerOwnerId }, sql);
+  return listOwnerDirectives({ workspaceId, open: true, limit, viewerOwnerId, recordedBy }, sql);
 }
 
 export async function countOpenOwnerDirectives(
   workspaceId: string,
   sql?: Sql,
   viewerOwnerId?: string | null,
+  recordedBy?: string,
 ): Promise<number> {
   const s = db(sql);
   const ws = resolveConcreteWorkspaceId(workspaceId);
@@ -578,6 +580,7 @@ export async function countOpenOwnerDirectives(
     SELECT count(*) AS n FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        AND dispositioned_at IS NULL
+       ${recordedBy !== undefined ? s`AND recorded_by = ${recordedBy}` : s``}
        ${agendaClearedExclusionSql(s, viewerOwnerId)}
   `;
   return Number(rows[0]?.n ?? 0);

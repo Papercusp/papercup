@@ -58,6 +58,15 @@ describe('set-plan-status public lifecycle guidance', () => {
 });
 
 describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', () => {
+  it.each([true, false])('boolean current=%s omits caller testimony before ship-gate evaluation', (current) => {
+    const request = { slug: 'plan-a', status: 'shipped' };
+    const aliased = setPlanStatusTool.args.parse({ ...request, current });
+    const omitted = setPlanStatusTool.args.parse(request);
+    expect(aliased.current).toBe(current);
+    expect({ ...aliased, current: undefined }).toEqual({ ...omitted, current: undefined });
+    expect(setPlanStatusTool.args.safeParse({ ...request, current: 'fresh' }).success).toBe(false);
+  });
+
   it('declares idempotent:true so a committed-but-slow flip is reported as success', () => {
     expect((setPlanStatusTool as { idempotent?: boolean }).idempotent).toBe(true);
   });
@@ -269,6 +278,17 @@ describe('flipPlanFrontmatterStatus accepted YAML styles', () => {
 });
 
 describe('launchAcceptanceGraderForGate (D-006)', () => {
+  it.each([true, false])('boolean current=%s reaches the recruitment gate without caller testimony', async (current) => {
+    const parsed = setPlanStatusTool.args.parse({ slug: 'plan-a', status: 'shipped', current });
+    const evaluate = vi.fn(async (_slug: string, _options: { current?: unknown }) => ({ satisfied: true }));
+    const launch = vi.fn();
+    await launchAcceptanceGraderForGate('plan-a', { satisfied: false, code: 'plan_items_unfinished' },
+      {} as never, 'papercusp', launch as never, evaluate as never, parsed.current);
+    expect(evaluate).toHaveBeenCalledWith('plan-a', expect.objectContaining({ harnessSlug: 'papercusp', gradingRecruitment: true }));
+    expect(evaluate.mock.calls[0]?.[1]).not.toHaveProperty('current');
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('keeps exact current evidence comparisons when evaluating the ceremony recruitment tail', async () => {
     const current = [{
       planSlug: 'plan-a', specId: 'delivery', specRevision: 3,

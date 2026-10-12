@@ -20,7 +20,10 @@
  *      `env-trees/<id>` D-006 env-operator serving trees (`env-tree-prepare.ts` — force-
  *      recreatable from `origin/<branch>` on every provision, deliberately never committed),
  *      and `.papercusp/worktrees/<slug>` migration/synthesis isolation trees (their OWN
- *      dedicated sync path, not git-sync's).
+ *      dedicated sync path, not git-sync's). The verification harness's pinned
+ *      `release-local/<run>/source` snapshots and workspace-host release-cut
+ *      `.papercusp/wh-release-rN/source` checkouts are also generated release inputs, not
+ *      working branches for git-sync to commit.
  *   3. Nothing else. A dirty worktree that matches NEITHER of the above is a genuine finding
  *      — most likely a stray worktree an agent created (or worked inside) that no routine will
  *      ever commit, i.e. exactly the WI-3449 class.
@@ -77,6 +80,13 @@ export const KNOWN_UNCOVERED_WORKTREE_PATTERNS: readonly RegExp[] = [
   // Measured 2026-08-14: papercusp-relcut-0016 and -0017-stable each carry 1 dirty file
   // permanently, so without this they are a standing false positive on every sweep.
   /-relcut-/,
+  // Verification-harness release-local sources are pinned snapshots retained as evidence;
+  // bootstrap artifacts such as package-lock.json/.papercusp-pinned-deps are not source edits
+  // for git-sync to preserve. The harness retention workflow owns these run directories.
+  /\/verification-harness\/release-local\/[^/]+\/source$/,
+  // Workspace-host release cuts keep their pinned source under ~/.papercusp/wh-release-rN;
+  // the release-cut lifecycle owns these rebuildable intermediates, not git-sync.
+  /\/\.papercusp\/wh-release-r\d+\/source$/,
 ];
 
 /**

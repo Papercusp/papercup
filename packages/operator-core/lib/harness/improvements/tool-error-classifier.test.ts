@@ -289,6 +289,30 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies the events:await self-await guard as caller control flow and never promotes its attestation', () => {
+    const message =
+      'You are the CURRENT ASSIGNEE of WI-6554700010008741 — awaiting "work-item:done:WI-6554700010008741" would wait on YOUR OWN completion of it, which is unsatisfiable by construction. Nothing was registered.';
+    expect(classifyToolError('self_await_deadlock', 'refused', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:await',
+      errorCode: 'self_await_deadlock',
+      status: 'refused',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'the guard refuses a wait on the current assignee’s own completion',
+        actual: 'the guard returns self_await_deadlock and registers nothing',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+    // The specific code wins even when unrelated structural prose is also present.
+    expect(classifyToolError(
+      'self_await_deadlock',
+      'error',
+      'self_await_deadlock: current assignee; Cannot read properties of undefined',
+    )).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
   it('classifies the claim-spec self-sentinel refusal as caller misuse, not a structural tool defect', () => {
     const message =
       'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.';
@@ -684,6 +708,20 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       'error',
       JSON.stringify({ ok: false, reason: 'unrelated_refusal' }),
     )).toBe('structural');
+  });
+
+  it('classifies events:status mutually exclusive selectors as caller input', () => {
+    const message =
+      'events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:status',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'caller', direct: false });
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
   it('classifies nested tenant-scope reader refusals as caller', () => {

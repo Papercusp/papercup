@@ -7,6 +7,7 @@ import { reportingForest, type OrgNode } from './org-chart';
 import EquityViews from './EquityViews';
 import HiringViews from './HiringViews';
 import OnboardingViews from './OnboardingViews';
+import ContractAccessViews from './ContractAccessViews';
 
 const personKey = (person: DaoPerson) => person.personId ?? 'member:' + person.memberId;
 
@@ -81,6 +82,7 @@ export default function PeopleViews({ view, onRefresh }: { view: DaoWorkspaceVie
         <div><dt>Ownership</dt><dd>{person.equity.value.ownershipPercent}%</dd></div>
       </dl> : <p>{person.equity.message}</p>}
       {'pay' in person ? <><h3>Pay terms</h3>{person.pay ? <p>{person.pay.amount} {person.pay.currency} · {person.pay.cadence}</p> : <p>No pay terms recorded.</p>}</> : null}
+      {view.localHomeSlug?<ContractAccessViews key={view.localHomeSlug+':'+selected} daoSlug={view.localHomeSlug} onChanged={onRefresh} />:null}
     </article> : <p>The selected person is not a current member of this organization.</p>}
     {view.localHomeSlug ? <RouteLink className="dao-action" href={'/adv?slug=' + encodeURIComponent(view.localHomeSlug) + '&tab=harnesses'}>Open contributor work</RouteLink> : null}
   </section>;

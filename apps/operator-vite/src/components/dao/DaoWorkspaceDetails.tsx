@@ -6,6 +6,7 @@ import DaoPolicyEditor from './DaoPolicyEditor';
 import DaoFinance from './DaoFinance';
 import DaoExecution from './DaoExecution';
 import PeopleViews from './people/PeopleViews';
+import ContractAccessViews from './people/ContractAccessViews';
 
 function ReadState({ read }: { read: DaoRead<unknown> | undefined }) {
   return read?.status === 'error' ? <p role="alert">{read.message}</p> : null;
@@ -18,7 +19,8 @@ function record(value: unknown): Record<string, unknown> {
 export default function DaoWorkspaceDetails({ section, view, loading, error, onChanged }: { section: DaoSection; view: DaoWorkspaceView | null; loading: boolean; error: string; onChanged?: () => void }) {
   if (loading) return <p role="status">Loading organization records…</p>;
   if (error) return <div className="dao-notice" role="alert">{error}</div>;
-  if (!view || view.status === 'not-joined') return <section className="dao-card"><h2>Connect to this DAO</h2><p>Join its published projects to access organization records. Directory discovery alone does not grant membership or voting rights.</p></section>;
+  if (!view || view.status === 'not-joined') return <section className="dao-card"><h2>Connect to this DAO</h2><p>Join its published projects to access organization records. Directory discovery alone does not grant membership or voting rights.</p>
+    <ReadState read={view?.members} />{view?.contractHomeSlug?<ContractAccessViews key={view.contractHomeSlug} daoSlug={view.contractHomeSlug} onChanged={onChanged} />:null}</section>;
   const projects = view.projects?.status === 'ready' ? view.projects.value : [];
   const governance = view.governance?.status === 'ready' ? view.governance.value : null;
   const policy = view.policy?.status === 'ready' ? view.policy.value : null;

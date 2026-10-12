@@ -5,6 +5,7 @@ import { syncGoogleContacts } from '../../personal-vault/live-sink';
 import { GOOGLE_CAPABILITY_DEFS, type GoogleCapabilityId } from '../../endpoint-route/routes/user/personal-vault';
 import { GOOGLE_WORKSPACE_SOURCE_KINDS } from '../../external-triggers/google-workspace';
 import { getSystemAction, type SystemActionCtx } from './system-actions';
+import type { ConnectorSyncResult } from '../../providers/connector-runtime';
 import {
   runConnectorSyncAction,
   runGoogleContactsPersonalVaultPoll,
@@ -178,5 +179,45 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
     expect(getSystemAction('connector-sync')).toBeTypeOf('function');
     expect(runGoogleContacts).toHaveBeenCalledWith(ctx, sql);
     expect(result.diagnostics).toMatchObject({ contactsSources: 1, contactsSynced: 2, contactsPages: 1, contactsFailed: 0 });
+  });
+
+  it('does not turn a source awaiting required config into a routine soft error', async () => {
+    const sql = {} as Sql;
+    const runConnectorSync = vi.fn(async (): Promise<ConnectorSyncResult> => ({
+      providers: 1,
+      sources: [{
+        sourceId: 'linear-source-needs-config',
+        providerId: 'linear',
+        outcome: 'needs-config',
+        mode: 'backfill',
+        pages: 0,
+        admitted: 0,
+        deduped: 0,
+        rejected: 0,
+        cursorReset: false,
+        hasMore: false,
+        missingConfig: ['teamIds'],
+      }],
+    }));
+
+    const result = await runConnectorSyncAction(ctx, {
+      sql,
+      reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
+      runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
+      runConnectorSync,
+      runParticipantBackfills: vi.fn(async () => []),
+      runGoogleContacts: vi.fn(async () => ({
+        sources: 0,
+        succeeded: 0,
+        failed: 0,
+        contacts: 0,
+        pages: 0,
+        failures: [],
+      })),
+    });
+
+    expect(result.diagnostics).toMatchObject({ sources: 1, failed: 0, admitted: 0 });
+    expect(runConnectorSync).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, harness: ctx.installSlug });
+    expect(result).not.toHaveProperty('softError');
   });
 });

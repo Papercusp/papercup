@@ -88,6 +88,7 @@ import {
   promises as fs,
 } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { managedSpawn } from '../../task-manager/managed-spawn';
 import { dirSizeBytes } from '../../storage/disk';
@@ -2479,8 +2480,11 @@ function openAnalyzeLog(logPath: string): number | null {
     mkdirSync(dir, { recursive: true });
     // keep - 1: the file about to be created is the newest.
     pruneAnalyzeLogs(dir, GITNEXUS_ANALYZE_LOGS_KEPT - 1);
-    return openSync(logPath, 'a');
+    const fd = openSync(logPath, 'a');
+    observeFallback('routine-output-log', { eligible: 1, applied: 1, reason: 'applied', scope: 'gitnexus-analyze' });
+    return fd;
   } catch (e) {
+    observeFallback('routine-output-log', { eligible: 1, applied: 0, reason: 'log-open-failed', scope: 'gitnexus-analyze' });
     console.warn(`[gitnexus-reindex] cannot open analyze log ${logPath} — falling back to piped output: ${String(e)}`);
     return null;
   }

@@ -1,11 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as recorder from '../degradation/fallback-observations';
 import { migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
+
+// These cases verify real producers at their dependency seams. Durable INSERTs
+// have separate integration coverage; never let incidental imported telemetry
+// flush against the unit fixture's database. A case replaces this sink to assert
+// its exact observation; the default also covers import-time initialization.
+beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); });
+afterEach(() => { recorder._resetFallbackObservationsForTests(); vi.restoreAllMocks(); });
 
 describe('condition-rail per-row executable coverage (P-017)', () => {
   it('has a matching executable case for every row in every completed migration', () => {

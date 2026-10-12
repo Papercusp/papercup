@@ -86,6 +86,8 @@ import {
 import { agentMcpBootstrapFailureCode } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-error';
 import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
+import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
+import { setDiscoveryIdentityObserver } from '@papercusp/db-org';
 
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
@@ -211,14 +213,17 @@ function startPackagedMcpProxy(): void {
         // (non-proxy squatter that failed the health probe above) would be an
         // uncaught 'error' event and kill the whole operator.
         server.on('error', (e) => {
+          observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'fallback-listen-failed', scope: 'mcp-proxy' });
           void execution.cancel((e as Error)?.message ?? String(e));
           console.warn(`[mcp-proxy] in-process fallback proxy failed on :${port}:`, (e as Error)?.message ?? e);
         });
         server.once('close', () => void execution.finish());
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-entry-missing', scope: 'mcp-proxy' });
         console.log(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} — serving the MCP proxy IN-PROCESS on 127.0.0.1:${port} (stale-bundle fallback)`,
         );
       } catch (e) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'fallback-start-failed', scope: 'mcp-proxy' });
         await execution.cancel((e as Error)?.message ?? String(e));
         console.warn(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} and the in-process fallback failed; psu sessions will use direct discovery:`,
@@ -250,6 +255,10 @@ function startPackagedMcpProxy(): void {
       throw error;
     }
     BOOTSTRAP_STATE.packagedMcpProxyProcess = child;
+    // A returned ChildProcess is not proof that spawn succeeded; wait for its event.
+    child.once('spawn', () => {
+      observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'mcp-proxy' });
+    });
     child.once('exit', () => {
       if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
         BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
@@ -257,6 +266,7 @@ function startPackagedMcpProxy(): void {
       void execution.finish();
     });
     child.once('error', (e) => {
+      observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-spawn-failed', scope: 'mcp-proxy' });
       if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
         BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
       }
@@ -265,6 +275,9 @@ function startPackagedMcpProxy(): void {
     });
     console.log(`[mcp-proxy] packaged proxy spawned on 127.0.0.1:${port} (dynamic operator.json target)`);
   })().catch((e) => {
+    if (!BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) {
+      observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-spawn-failed', scope: 'mcp-proxy' });
+    }
     console.warn('[mcp-proxy] packaged proxy spawn failed:', (e as Error)?.message ?? e);
   });
 }
@@ -399,6 +412,10 @@ export function runBootstrap(): void {
   declareOperatorHostProcess();
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
+  // The generic DB package reports identity outcomes without depending on this host's rail.
+  setDiscoveryIdentityObserver((mechanism, observation) => {
+    observeFallback(mechanism, observation);
+  });
 
   // WI-10006785: hosts kill timed-out child processes, and a `git status` SIGKILLed while
   // holding its OPTIONAL `.git/index.lock` leaves a holderless lock that freezes every commit
@@ -1748,7 +1765,9 @@ export function runBootstrap(): void {
           '@papercusp/operator-core/lib/projected-tool-deps'
         );
         installControlAnchorKernelResolver();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'kernel-resolver' });
       } catch (e) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'kernel-resolver' });
         console.warn(
           '[kernel-resolver] FAILED to install the control-anchor kernel resolver before routines started — capability-envelope enforcement falls back to the default resolver until this host restarts:',
           e instanceof Error ? e.message : e,
@@ -1893,10 +1912,12 @@ export function runBootstrap(): void {
         const t0 = Date.now();
         await spawnSpawnerSidecar();
         registerSpawnerSidecarShutdownHooks();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawner-warmup' });
         console.log(
           `[spawner-sidecar] warm boot complete in ${Date.now() - t0}ms`,
         );
       } catch (err) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'spawner-warmup' });
         console.warn(
           '[spawner-sidecar] warm boot failed (non-fatal; lazy fallback covers it):',
           err instanceof Error ? err.message : err,
@@ -1930,10 +1951,12 @@ export function runBootstrap(): void {
         const t0 = Date.now();
         const outcome = await ensureGatewaySidecar();
         registerGatewaySidecarShutdownHooks();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'gateway-supervision' });
         console.log(
           `[gateway-sidecar] supervision up in ${Date.now() - t0}ms — ${outcome}`,
         );
       } catch (err) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'gateway-supervision' });
         console.warn(
           '[gateway-sidecar] supervision failed (non-fatal; agents fall back to direct/default credential paths):',
           err instanceof Error ? err.message : err,

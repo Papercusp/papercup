@@ -176,7 +176,12 @@ describe('provider socket ingress (P-003, D-009)', () => {
     await h.manager.reconcile();
     h.sockets[0]!.emit('message', JSON.stringify({ envelope_id: 'env-2', type: 'events_api' }));
     await vi.waitFor(() => expect(h.invokes).toHaveLength(1));
-    expect(h.invokes[0]).toEqual({ source: source.id, capability: 'ingress.normalize', args: { envelope: { envelope_id: 'env-2', type: 'events_api' } } });
+    // The source's config rides along so the provider can apply source-scoped rules (D-023).
+    expect(h.invokes[0]).toEqual({
+      source: source.id,
+      capability: 'ingress.normalize',
+      args: { envelope: { envelope_id: 'env-2', type: 'events_api' }, sourceConfig: source.config },
+    });
     expect(JSON.stringify(h.invokes)).not.toContain(APP_TOKEN);
     expect(h.logs.join('\n')).not.toContain(APP_TOKEN);
   });

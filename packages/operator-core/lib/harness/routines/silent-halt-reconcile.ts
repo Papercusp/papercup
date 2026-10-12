@@ -84,6 +84,7 @@
  */
 
 import type { Sql } from 'postgres';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { getOrgPg } from '@papercusp/db-org';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
@@ -597,7 +598,9 @@ export async function sweepSilentHalts(opts: {
     );
     try {
       markers = await readMarkers(new Date(nowMs - lookbackMs).toISOString());
+      observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'silent-halt-wake-markers' });
     } catch (e) {
+      observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'wake-markers-unavailable', scope: 'silent-halt-wake-markers' });
       markers = null;
       console.warn(
         `[silent-halt-reconcile] wake-marker read failed; falling back to page-only this tick: ` +

@@ -44,6 +44,7 @@
  * that a deploy cannot activate their change, which is the opposite lie.
  */
 import { readFileSync } from 'node:fs';
+import { observeFallback } from './degradation/fallback-observations';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, relative } from 'node:path';
 
@@ -155,6 +156,7 @@ export function dispatchedSweepMatcher(): RegExp {
     // matcher is the honest answer — but it must be LOUD, because silently finding nothing
     // is how the original WI-6659 mis-routing looked.
     if (paths.length < 10) {
+      observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'dispatch-set-incomplete', scope: 'dispatch-derivation' });
       console.warn(
         `[routines-dispatch] derived only ${paths.length} dispatched sweeps from ${WORKFLOW_REL} ` +
           `(expected >=10). The dispatch idiom may have changed; new sweeps will fall through to ` +
@@ -164,8 +166,10 @@ export function dispatchedSweepMatcher(): RegExp {
       return cached;
     }
     cached = new RegExp(`^(${paths.map(escapeRe).join('|')})$`);
+    observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'dispatch-derivation' });
     return cached;
   } catch (err) {
+    observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'dispatch-source-unavailable', scope: 'dispatch-derivation' });
     console.warn(
       `[routines-dispatch] could not derive the dispatched sweep set from ${WORKFLOW_REL}: ` +
         `${(err as Error).message}. Falling back to hand-written rules only (WI-6659 risk).`,

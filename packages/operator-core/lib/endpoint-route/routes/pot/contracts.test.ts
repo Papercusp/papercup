@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/agent-mcp';
-const io=vi.hoisted(()=>({actor:vi.fn(),templates:vi.fn(),get:vi.fn(),prepare:vi.fn(),start:vi.fn(),complete:vi.fn(),origin:vi.fn(),onboarding:vi.fn(),identity:vi.fn(),hire:vi.fn(),accept:vi.fn(),admit:vi.fn(),wallet:vi.fn(),execution:vi.fn()}));
+const io=vi.hoisted(()=>({actor:vi.fn(),templates:vi.fn(),get:vi.fn(),prepare:vi.fn(),start:vi.fn(),complete:vi.fn(),origin:vi.fn(),onboarding:vi.fn(),identity:vi.fn(),hire:vi.fn(),accept:vi.fn(),admit:vi.fn(),wallet:vi.fn(),execution:vi.fn(),engagement:vi.fn(),fire:vi.fn(),resign:vi.fn(),amend:vi.fn(),end:vi.fn(),amended:vi.fn()}));
 vi.mock('../../../workspace-registry',()=>({activeWorkspaceId:()=> 'workspace'}));
 vi.mock('../../../dao-hr/contract-templates',async original=>({...await original<typeof import('../../../dao-hr/contract-templates')>(),listContractTemplates:io.templates}));
 vi.mock('../../../dao-hr/hiring',async original=>({...await original<typeof import('../../../dao-hr/hiring')>(),resolveHiringActor:io.actor}));
@@ -14,12 +14,14 @@ import { HiringError } from '../../../dao-hr/hiring';
 import { DocumensoError } from '../../../dao-hr/documenso';
 import { ContractSigningError } from '../../../dao-hr/contracts-esign';
 import { OnboardingError } from '../../../dao-hr/onboarding';
+vi.mock('../../../dao-hr/engagement-changes',async original=>({...await original<typeof import('../../../dao-hr/engagement-changes')>(),readEngagement:io.engagement,prepareEngagementFire:io.fire,prepareEngagementResignation:io.resign,prepareEngagementAmendment:io.amend,completeEngagementEnd:io.end,completeEngagementAmendment:io.amended}));
+import { EngagementError } from '../../../dao-hr/engagement-changes';
 const ctx:RouteContext={params:{id:'dao',offerId:'offer'},principal:null,input:undefined,log:()=>{},signal:new AbortController().signal};
 const request=(body:unknown)=>new Request('http://local/api/pot/dao/contracts',{method:'POST',body:JSON.stringify(body)});
 describe('Contract execution HTTP boundary',()=>{
   beforeEach(()=>{Object.values(io).forEach(mock=>mock.mockReset());io.actor.mockResolvedValue('PER-admin');io.templates.mockResolvedValue([]);});
   it('keeps private routes loopback and only the secret-checked provider completion route public',()=>{
-    expect(routes.map(r=>r.auth)).toEqual(['loopback','loopback','loopback','public','loopback','loopback']);
+    expect(routes.map(r=>r.auth)).toEqual(['loopback','loopback','loopback','public','loopback','loopback','loopback','loopback']);
   });
   it('refuses a non-admin before reading templates or contract bytes',async()=>{
     io.actor.mockRejectedValue(new HiringError('not_admin','Sign in as HR admin'));
@@ -81,5 +83,37 @@ describe('Contract execution HTTP boundary',()=>{
     io.wallet.mockResolvedValue({ok:false,status:409,error:'invalid_signature'});
     const response=await routes[5]!.handler(request({action:'wallet-verify',challengeId:'challenge',signature:'0x'+'11'.repeat(65)}),ctx);
     expect(response.status).toBe(409);expect((await response.json()).error).toBe('invalid_signature');expect(io.identity).not.toHaveBeenCalled();
+  });
+  it('keeps retained engagement reads private and refuses foreign signers',async()=>{
+    io.engagement.mockResolvedValue({offboarding:{kind:'resigned'},isCandidate:true});
+    const response=await routes[6]!.handler(new Request('http://local'),ctx);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect((await response.json()).engagement.offboarding.kind).toBe('resigned');
+    io.engagement.mockRejectedValue(new OnboardingError('identity_mismatch','Foreign signer'));
+    expect((await routes[6]!.handler(new Request('http://local'),ctx)).status).toBe(403);
+  });
+  it('rejects forged offboarding proof, actors, votes and amendment amounts',async()=>{
+    for(const body of [{action:'complete-fire',transactionHash:'0x'+'11'.repeat(32),passed:true},{action:'prepare-fire',actorPersonId:'PER-forged'},
+      {action:'prepare-amendment',shares:100},{action:'complete-resignation',proof:{status:'success'}},{action:'complete-amendment',transactionHash:null,state:'executed'}])
+      expect((await routes[7]!.handler(request(body),ctx)).status).toBe(400);
+    expect(io.fire).not.toHaveBeenCalled();expect(io.end).not.toHaveBeenCalled();expect(io.amended).not.toHaveBeenCalled();
+  });
+  it('passes only exact lookup hashes and the server policy for end and amendment actions',async()=>{
+    const transactionHash='0x'+'11'.repeat(32),key={workspaceId:'workspace',daoSlug:'dao',offerId:'offer'};
+    for(const [action,kind] of [['complete-fire','fired'],['complete-resignation','resigned']]){
+      expect((await routes[7]!.handler(request({action,transactionHash}),ctx)).status).toBe(200);
+      expect(io.end).toHaveBeenLastCalledWith(key,{},kind,transactionHash);
+    }
+    expect((await routes[7]!.handler(request({action:'complete-amendment',transactionHash:null}),ctx)).status).toBe(200);
+    expect(io.amended).toHaveBeenCalledWith(key,{},null);
+    io.fire.mockRejectedValue(new HiringError('not_admin','HR admin required'));
+    expect((await routes[7]!.handler(request({action:'prepare-fire'}),ctx)).status).toBe(403);
+    io.end.mockRejectedValue(new EngagementError('invalid_proof','Vote must execute'));
+    expect((await routes[7]!.handler(request({action:'complete-fire',transactionHash}),ctx)).status).toBe(409);
+  });
+  it('blocks cross-origin engagement writes before preparing transactions',async()=>{
+    io.origin.mockReturnValue(Response.json({}, {status:403}));
+    expect((await routes[7]!.handler(request({action:'prepare-resignation'}),ctx)).status).toBe(403);
+    expect(io.resign).not.toHaveBeenCalled();
   });
 });

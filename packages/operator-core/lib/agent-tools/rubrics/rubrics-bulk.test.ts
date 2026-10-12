@@ -156,9 +156,14 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const aliased = await body(getTool, { rubricRef: 'r-1', detail: booleanDetail });
     const canonical = await body(getTool, { rubricRef: 'r-1', detail: stringDetail });
     expect(aliased).toEqual(canonical);
-    expect(aliased.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1', detail: stringDetail });
-    if (booleanDetail) expect(aliased.results[0].rubric.criteria).toEqual(RUBRIC_R1.criteria);
-    else expect(aliased.results[0]).toHaveProperty('fullBody.args.detail', 'full');
+    expect(aliased.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1' });
+    if (booleanDetail) {
+      expect(aliased.results[0].rubric.criteria).toEqual(RUBRIC_R1.criteria);
+      expect(aliased.results[0]).not.toHaveProperty('fullBody');
+    } else {
+      expect(aliased.results[0]).toMatchObject({ detail: stringDetail });
+      expect(aliased.results[0]).toHaveProperty('fullBody.args.detail', 'full');
+    }
   });
 
   it('inline { rubricRef } returns a single result', async () => {

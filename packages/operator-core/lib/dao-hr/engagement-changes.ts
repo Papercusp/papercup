@@ -9,11 +9,11 @@ import { equityArtifacts, prepareEquityTransaction } from '../equity/runtime';
 import { readWalletBinding } from '../cupboard/wallet-binding-io';
 import { resolveFederatedPotScope } from '../federated-pot-scope';
 import { removeHiveMember } from '../hive-membership-store';
-import { getHiringOffer, resolveHiringActor } from './hiring';
+import { getHiringOffer, HiringError, resolveHiringActor } from './hiring';
 import { getContractExecution } from './contracts-esign';
 import { getWorkProfile, saveWorkProfile } from './work-profile';
 import { assertHireDeployment, authenticateContractCandidate, confirmedEquityCall, equityReceiptEvent,
-  onboardingChain, type HirePlan, type OnboardingContract, type OnboardingDeps } from './onboarding';
+  onboardingChain, OnboardingError, type HirePlan, type OnboardingContract, type OnboardingDeps } from './onboarding';
 
 type Key = { workspaceId: string; daoSlug: string; offerId: string };
 type HostedWallet = {walletAddress?:string;chainId?:number;challengeId?:string;verifiedAtMs?:number};
@@ -46,6 +46,25 @@ async function admitted(key: Key, policy: HivePolicy, deps: OnboardingDeps) {
   return {contract,plan:contract.hire_plan,chain:await onboardingChain(deps)};
 }
 async function admin(key: Key, deps: OnboardingDeps) { return deps.adminPerson ? deps.adminPerson() : resolveHiringActor(key,{sql:db(deps)}); }
+/** Retained signer records remain readable after membership revocation. Never
+ * return source documents, email snapshots or generic writable lifecycle flags. */
+export async function readEngagement(key: Key, deps: OnboardingDeps = {}) {
+  const contract = await getContractExecution(key, deps) as EngagementContract;
+  let isAdmin = false, isCandidate = false;
+  try { await admin(key, deps); isAdmin = true; }
+  catch (error) { if (!(error instanceof HiringError && error.code === 'not_admin')) throw error; }
+  if (!isAdmin) { await authenticateContractCandidate(contract, deps); isCandidate = true; }
+  else {
+    try { await authenticateContractCandidate(contract, deps); isCandidate = true; }
+    catch (error) { if (!(error instanceof OnboardingError)) throw error; }
+  }
+  const offer = await getHiringOffer(key, deps);
+  return { offerId: key.offerId, isAdmin, isCandidate, bindingEligible: contract.can_bind,
+    admitted: !!contract.admitted_at, amendsOfferId: offer.amendsOfferId ?? null,
+    signed: !!contract.completed_at && !!contract.sealed_pdf && !!contract.audit_certificate,
+    fireProposalId: contract.fire_plan?.proposalId ?? null,
+    offboarding: contract.offboarding_proof, amendment: contract.amendment_execution_proof };
+}
 export async function prepareEngagementFire(key: Key, policy: HivePolicy, deps: OnboardingDeps = {}) {
   await admin(key,deps);
   const {contract,plan} = await admitted(key,policy,deps);
@@ -149,7 +168,8 @@ export async function prepareEngagementAmendment(key: Key, policy: HivePolicy, d
     chain.readContract({address:plan.equity,abi,functionName:'grantLimit',args:[],blockNumber}),
   ]);
   const g = grant as readonly unknown[], amount = BigInt(offer.terms.equity.shares);
-  if (BigInt(String(g[6])) !== 0n || amount < BigInt(String(g[1])) || amount > BigInt(String(limit)))
+  const previousShares = BigInt(String(g[1]));
+  if (BigInt(String(g[6])) !== 0n || amount < previousShares || (amount > previousShares && amount > BigInt(String(limit))))
     fail('invalid_stage','An amendment cannot reduce equity, exceed the per-grant limit or raise a stopped grant.');
   const proposed: AmendmentPlan = {documentHash:amendment.document_hash!,amount:String(amount),previousShares:String(g[1]),blockNumber:String(blockNumber)};
   const frozen = await db(deps).begin(async tx => {

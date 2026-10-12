@@ -28,6 +28,7 @@
  */
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { observeFallback } from '../degradation/fallback-observations';
 // Eagerly capture process identity before routines-workflow's watchdog is
 // lazily imported by the first routinesTick. The watchdog must judge the
 // executor against its real host boot, not the delayed first sweep.
@@ -529,7 +530,10 @@ async function startDbosOnce(): Promise<void> {
   // Best-effort by design: a failure here is safe, because an unreadable probe is classified
   // `unknown` and degrades to exactly the pre-3b behaviour rather than reaping on absent
   // evidence. It must never fail boot.
-  await grantDbosWorkflowStatusRead().catch((err) => {
+  await grantDbosWorkflowStatusRead().then(() => {
+    observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'dbos-lifecycle-read-grant' });
+  }).catch((err) => {
+    observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'lifecycle-read-grant-failed', scope: 'dbos-lifecycle-read-grant' });
     console.warn(
       '[dbos] could not grant harness_app read on dbos.workflow_status; the hosted-lifecycle ' +
         'reconciler will fall back to recency-only liveness:',

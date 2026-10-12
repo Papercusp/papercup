@@ -4,6 +4,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
 import ContractSigningViews from './ContractSigningViews';
 import OnboardingViews from './OnboardingViews';
+import EngagementViews from './EngagementViews';
 
 const cadences = ['hourly','weekly','biweekly','monthly','annual','per-milestone'];
 const states: Record<string, string> = { offered: 'Awaiting internal approval', approved: 'Approved for contract', 'contract-generated': 'Awaiting signatures', signed: 'Signed; awaiting hire vote', 'hire-proposed': 'Hire vote open', hired: 'Hired', rejected: 'Rejected', lapsed: 'Lapsed' };
@@ -75,6 +76,13 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
     await action({ action: 'offer', roleId: role!.roleId, personId: fields.get('person'), engagementType: fields.get('engagement'), jurisdiction: fields.get('jurisdiction'),
       pay: { amount: fields.get('amount'), currency: fields.get('currency'), cadence: fields.get('cadence') }, overrides });
   }
+  async function createAmendment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();const fields=new FormData(event.currentTarget);
+    await action({action:'offer',roleId:offer!.roleId,personId:offer!.personId,amendsOfferId:offer!.offerId,
+      engagementType:offer!.terms.engagementType,jurisdiction:offer!.terms.jurisdiction,
+      pay:{amount:fields.get('amount'),currency:offer!.terms.pay.currency,cadence:offer!.terms.pay.cadence},
+      overrides:{shares:Number(fields.get('shares')),vestingDays:offer!.terms.equity.vestingDays,cliffDays:offer!.terms.equity.cliffDays}});
+  }
   return <section aria-label="Hiring">
     <h3>Hiring</h3><p>Role → candidate → offer → internal approval → contract → hire vote.</p>
     {error ? <p role="alert">{error}</p> : null}
@@ -126,10 +134,17 @@ export default function HiringViews({ daoSlug }: { daoSlug: string }) {
         <li key={h.id}>{h.state} · {name(h.actorPersonId)} · <time>{h.at}</time></li>)}</ol>
       {offer.state === 'offered' ? <p>Internal approval is required before contract generation.</p> :
         <ContractSigningViews key={offer.offerId} daoSlug={daoSlug} offer={offer} people={data.people} onChanged={() => void load()} />}
-      {['signed','hire-proposed','hired','lapsed'].includes(offer.state) ? <>
+      {offer.state==='hired'?<form className="dao-form" aria-label="Create engagement amendment" onSubmit={createAmendment}>
+        <h4>Amend pay or equity</h4><p>This creates a new amendment for internal approval and both signatures. The vesting schedule is preserved.</p>
+        <label>Amended pay amount<input name="amount" defaultValue={offer.terms.pay.amount} required inputMode="decimal" pattern="[0-9]{1,16}(\.[0-9]{1,2})?" /></label>
+        <label>Amended total grant shares<input name="shares" type="number" min={offer.terms.equity.shares} defaultValue={offer.terms.equity.shares} step="1" required /></label>
+        <button type="submit" disabled={busy}>Create amendment for signatures</button>
+      </form>:null}
+      {!offer.amendsOfferId&&['signed','hire-proposed','hired','lapsed'].includes(offer.state) ? <>
         <p>Candidate onboarding offer reference: <code>{offer.offerId}</code>. The candidate can open it in People → Onboarding.</p>
         <OnboardingViews key={'onboarding:' + offer.offerId} daoSlug={daoSlug} offerId={offer.offerId} onChanged={() => void load()} />
       </> : null}
+      {offer.state==='hired'||(offer.amendsOfferId&&offer.state==='signed')?<EngagementViews key={'engagement:'+offer.offerId} daoSlug={daoSlug} offerId={offer.offerId} onChanged={()=>void load()} />:null}
     </article> : offerId ? <p>The selected offer is unavailable in this DAO.</p> : null}
   </section>;
 }

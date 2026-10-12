@@ -23,6 +23,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
   type HostFetch,
+  type ProviderIngressNormalizeArgs,
   type ProviderSocketIngressDescriptor,
 } from '@papercusp/plugin-sdk';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -251,8 +252,11 @@ export class ProviderSocketIngressManager {
 
   private async handleEnvelope(connection: Connection, envelope: Record<string, unknown>): Promise<void> {
     const { provider } = connection.ingress;
+    // The source's non-secret config rides along so the provider can apply source-scoped admission
+    // rules, e.g. Slack's declared drill-bot identity (cupboard-distributable-integrations D-023).
+    const args: ProviderIngressNormalizeArgs = { envelope, sourceConfig: connection.source.config ?? {} };
     const result = await provider.adapter.invoke(
-      { source: connection.source.id, capability: PROVIDER_INGRESS_NORMALIZE_CAPABILITY, args: { envelope } },
+      { source: connection.source.id, capability: PROVIDER_INGRESS_NORMALIZE_CAPABILITY, args: { ...args } },
       { fetch: this.hostFetch(provider, connection.source) },
     );
     const records = (result as { records?: unknown } | null)?.records;

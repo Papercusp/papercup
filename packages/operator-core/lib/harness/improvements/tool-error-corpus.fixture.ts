@@ -29,6 +29,9 @@
  * The native-owner transport capability refusal was added 2026-10-09 from
  * EI-25431178848604122; the owner RPC intentionally refuses host-local auth
  * capabilities that cannot cross its boundary, so this is not a tool bug.
+ * The events:await self-await refusal was added 2026-10-12 from
+ * EI-25327017880527713; the guard intentionally refuses an unsatisfiable wait
+ * on the current assignee's own work-item lifecycle.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -480,6 +483,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     }),
     expectedClass: 'caller',
     note: 'tools:invoke wraps dev:pg_query’s caller-authored SQL undefined-column refusal; the knownColumns guidance identifies the invalid SQL field, not a broken invoke wrapper (EI-25389944836048866)',
+  },
+  {
+    n: 1, errorCode: 'self_await_deadlock', status: 'refused',
+    message: 'You are the CURRENT ASSIGNEE of WI-6554700010008741 — awaiting "work-item:done:WI-6554700010008741" would wait on YOUR OWN completion of it, which is unsatisfiable by construction. Nothing was registered.',
+    expectedClass: 'caller',
+    note: 'events:await correctly refused an attempt to await the current assignee’s own work-item completion; the refusal prevents self-deadlock and must not be promoted as a structural tool bug (EI-25327017880527713)',
   },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────

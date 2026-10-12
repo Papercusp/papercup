@@ -76,6 +76,29 @@ describe('findUncoveredDirtyWorktrees (pure classifier)', () => {
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
   });
 
+  it('does not flag a dirty verification-harness release-local pinned source snapshot', () => {
+    const worktrees = [wt(
+      '/home/dev/.local/state/verification-harness/release-local/wi-123-run-20261012/source',
+      true,
+      1,
+    )];
+    expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
+  });
+
+  it('does not flag a dirty workspace-host release-cut pinned source checkout', () => {
+    const worktrees = [wt('/home/dev/.papercusp/wh-release-r64/source', true, 1)];
+    expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
+  });
+
+  it('still flags an ordinary dirty checkout under a similarly named release-local directory', () => {
+    const ordinary = wt(
+      '/home/dev/.local/state/verification-harness/release-local/wi-123/worktree',
+      true,
+      1,
+    );
+    expect(findUncoveredDirtyWorktrees([ordinary], CANONICAL)).toEqual([ordinary]);
+  });
+
   it('FLAGS a dirty worktree matching none of the known patterns — the WI-3449 class', () => {
     const worktrees = [wt('/home/dev/some-random-clone-of-papercusp', true, 4)];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual(worktrees);

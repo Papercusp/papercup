@@ -849,6 +849,25 @@ defineTool({
         },
       };
     }
+    if (input.probe === 'deep-many') {
+      return {
+        data: {
+          results: [{
+            id: 'selected-row',
+            checkpoint: 'C'.repeat(10_000),
+            threadWindow: {
+              posts: Array.from({ length: 6 }, (_, index) => ({
+                id: 50 + index,
+                thread_id: `thread-${index}`,
+                author_id: `agent-${index}`,
+                created_ts: `2026-10-06T00:00:0${index}.000Z`,
+                body: `selected-body-${index}-${'x'.repeat(1_000)}`,
+              })),
+            },
+          }],
+        },
+      };
+    }
     if (input.probe === 'observation') {
       return {
         data: {
@@ -2800,6 +2819,41 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     expect(post?.body).toMatch(/^selected-body-/);
   });
 
+  it('preserves selected leaf fields across six rows through the tools:invoke result door', async () => {
+    const paths = [
+      'results[].threadWindow.posts[].body',
+      'results[].threadWindow.posts[].author_id',
+      'results[].threadWindow.posts[].created_ts',
+    ];
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep-many' },
+        projection: { pick: paths },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const posts = payload.results[0]?.threadWindow.posts;
+    expect(posts).toHaveLength(6);
+    expect(posts?.map((post) => post.author_id)).toEqual(Array.from({ length: 6 }, (_, i) => `agent-${i}`));
+    expect(posts?.map((post) => post.created_ts)).toEqual(
+      Array.from({ length: 6 }, (_, i) => `2026-10-06T00:00:0${i}.000Z`),
+    );
+    expect(posts?.map((post, i) => post.body?.startsWith(`selected-body-${i}-`))).toEqual(
+      Array.from({ length: 6 }, () => true),
+    );
+  });
+
   it('preserves selected payload.observation leaves through the final result door', async () => {
     const res = await callTool(
       'tools:invoke',
@@ -4619,6 +4673,23 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
       'role_not_allowed: Role "worker" cannot call tool "gatingtest:scoped" (allowed roles: scoper)',
     );
     expect(seen).toEqual([]);
+    // The allowlist is knowable from the target definition; a denial must not
+    // wait for principal synthesis via withWorkspace.
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
+  it('rejects judge from docs:search before synthesizing a workspace principal', async () => {
+    const res = await callTool(
+      'docs:search',
+      { query: 'authorization ordering regression fixture' },
+      extraFor(signedUrl({ role: 'judge' })),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('role_not_allowed:');
+    expect(textOf(res)).toContain('docs:search');
+    expect(h.withWorkspaceCalls).toEqual([]);
+    expect(seen).toEqual([]);
   });
 
   it('in-role call dispatches with a synthesized least-privilege principal + workspace tx + ALS pin', async () => {
@@ -5090,6 +5161,23 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     // A concrete workspace ⇒ the harness_app workspace tx (fakeTx), opened for ws-test.
     expect(inner?.ctx.tx).toBe(h.fakeTx);
     expect(h.withWorkspaceCalls).toContain('ws-test');
+  });
+
+  it('rejects a nested out-of-role target before synthesizing its workspace principal', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:scoped', args: {} },
+      extraFor(signedUrl({ role: 'worker' })),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain(
+      'role_not_allowed: Role "worker" cannot call tool "gatingtest:scoped"',
+    );
+    // The wrapper call still synthesizes its own principal; the forbidden target
+    // must not add another workspace acquisition.
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+    expect(seen).toEqual([]);
   });
 
   it('preserves the caller harness on a nested target (EI-21238811054889658)', async () => {

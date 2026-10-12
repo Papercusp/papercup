@@ -69,6 +69,7 @@ import { createInteractionParticipantSink, isInteractionDatatype } from '../rela
 import { graphDefaultHarness, isGraphEntityDatatype } from '../relationship-graph/resolver';
 import { createAppDeliverySinkIfConfigured, reportAppSinkGateError } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
+import { missingRequiredJsonSchemaKeys } from '../json-schema-validation';
 
 /** Source statuses the driver advances. `error` waits for a reconnect. */
 export const CONNECTOR_SYNC_STATUSES = ['ready', 'connecting', 'connected', 'degraded'] as const;
@@ -100,7 +101,8 @@ export type ConnectorSourceOutcomeKind =
   | 'leased-elsewhere'
   | 'rate-limited'
   | 'failed'
-  | 'reconnect-required';
+  | 'reconnect-required'
+  | 'needs-config';
 
 export interface ConnectorSourceOutcome {
   sourceId: string;
@@ -119,6 +121,8 @@ export interface ConnectorSourceOutcome {
   cursorResetReason?: string;
   /** True when this pass adopted the source's pre-provider cursor state (D-020). */
   adopted?: boolean;
+  /** Provider-required config keys absent before this source can be synced. */
+  missingConfig?: string[];
   /** What the last membership snapshot this pass carried did to the source's permission list (D-015.4). */
   membership?: DataSourceMembershipOutcome;
   hasMore: boolean;
@@ -860,6 +864,23 @@ export async function runConnectorSync(
   for (const source of sources) {
     const provider = byKind.get(source.kind);
     if (!provider) continue;
+    const missingConfig = missingRequiredJsonSchemaKeys(provider.descriptor.configSchema, source.config);
+    if (missingConfig.length > 0) {
+      outcomes.push({
+        sourceId: source.id,
+        providerId: provider.descriptor.id,
+        outcome: 'needs-config',
+        mode: source.backfillStatus === 'complete' ? 'incremental' : 'backfill',
+        pages: 0,
+        admitted: 0,
+        deduped: 0,
+        rejected: 0,
+        cursorReset: false,
+        hasMore: false,
+        missingConfig,
+      });
+      continue;
+    }
     let hostFetch = fetchers.get(provider.descriptor.id);
     if (!hostFetch) {
       hostFetch = hostFetchFor(provider, sql, opts);
@@ -1004,6 +1025,7 @@ export function formatConnectorSyncLog(result: ConnectorSyncResult): string {
   return (
     `[connector-sync] providers=${result.providers} sources=${result.sources.length} synced=${count('synced')} `
     + `rate_limited=${count('rate-limited')} failed=${count('failed')} reconnect=${count('reconnect-required')} `
+    + `needs_config=${count('needs-config')} `
     + `leased_elsewhere=${count('leased-elsewhere')} admitted=${admitted} cursor_resets=${resets.length}`
     + (resetReasons ? ` reset_reasons=${resetReasons}` : '')
   );

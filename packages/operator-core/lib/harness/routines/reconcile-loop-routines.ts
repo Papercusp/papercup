@@ -159,6 +159,7 @@
  * infinity comparison is done in SQL — so the invalid-Date trap cannot bite here.
  */
 import type { Sql } from 'postgres';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   recordFire as defaultRecordFire,
@@ -1979,7 +1980,11 @@ export async function reconcileLoopRoutines(
             intervalMs,
             stuckFireCount,
             circuitOpen,
+          }).then((guard) => {
+            observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'loop-terminal-guard' });
+            return guard;
           }).catch((e) => {
+            observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'terminal-guard-unavailable', scope: 'loop-terminal-guard' });
             console.warn(
               `[loop-reconcile] unreachable-terminal-guard check failed for '${row.id}' — falling back to stuck-backstop retry: ${e instanceof Error ? e.message : e}`,
             );

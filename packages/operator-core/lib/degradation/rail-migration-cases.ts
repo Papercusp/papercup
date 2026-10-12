@@ -16,9 +16,12 @@ export interface RailMigrationCase {
   run: () => RailMigrationOutcome | Promise<RailMigrationOutcome>;
 }
 
-export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-010'];
+import { HOST_STARTUP_MIGRATION_CASES } from './host-startup-migration-cases';
+import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-cases';
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [{
+export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-010', 'P-012'];
+
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',
@@ -68,6 +71,186 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [{
     }
   },
 }];
+
+RAIL_MIGRATION_CASES.push({
+  id: 'spawner-sidecar-fallback-primary-denominator-and-recovery', item: 'P-012', route: 'observation',
+  mechanism: 'spawner-sidecar-exec',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/fleet/git-via-sidecar.ts|recordSidecarFallback|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../fleet/git-via-sidecar');
+    const spawner = await import('../fleet/spawner-sidecar-spawn');
+    const ipc = await import('../fleet/spawner-ipc-client');
+    const watchdog = await import('../system-health/degradation-watchdog');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const mocks = [
+      vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+        if (mechanism === 'spawner-sidecar-exec') observations.push(row);
+        return true;
+      }),
+      vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      vi.spyOn(spawner, 'spawnSpawnerSidecar').mockResolvedValue(undefined),
+      vi.spyOn(ipc, 'getSpawnerIpcClient').mockReturnValue({
+        call: async () => ({ code: 3, stdout: 'child ran', stderr: 'child exit' }),
+      } as unknown as ReturnType<typeof ipc.getSpawnerIpcClient>),
+    ];
+    const verdict = () => watchdog.judgeDegradation(recorder.summarizeFallbackWindow('spawner-sidecar-exec', 60_000,
+      observations.map((row) => ({ ...row, samples: 1 }))),
+      { mechanism: 'spawner-sidecar-exec' }, watchdog.getDegradationMechanism('spawner-sidecar-exec')!.thresholds);
+    producer.resetSidecarFallbackStatsForTest();
+    try {
+      // Original producer, including warnings suppressed by the per-subsystem throttle.
+      const failedAt = Date.now() - producer.SIDECAR_BREAKER_COOLDOWN_MS - 1;
+      for (let i = 0; i < 20; i++) producer.noteSidecarFallback('coverage', new Error(`failure ${i}`), failedAt);
+      expect(observations).toHaveLength(20);
+      expect(verdict().kind).toBe('collapsed');
+      // Disabled routing makes no sidecar decision and cannot manufacture recovery.
+      await producer.execFileViaSidecar('git', ['status'], { timeoutMs: 1000, subsystem: 'coverage' }, {
+        sidecarEnabled: () => false, local: async () => ({ stdout: '' }),
+      });
+      expect(observations).toHaveLength(20);
+      // Execute the actual primary RPC path. Child exit status is not transport health.
+      for (let i = 0; i < 25; i++) await producer.runCommandViaSpawnerSidecar('git', ['status'], { timeoutMs: 1000 });
+      expect(observations.filter((row) => row.applied === 1)).toHaveLength(25);
+      expect(verdict().kind).toBe('recovered');
+      return { route: 'observation', mechanism: 'spawner-sidecar-exec', observations };
+    } finally {
+      producer.resetSidecarFallbackStatsForTest();
+      for (const mock of mocks) mock.mockRestore();
+    }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'bounded-operation-deadline-error-primary-and-cancellation-exclusion', item: 'P-012', route: 'observation',
+  mechanism: 'bounded-operation',
+  rowIds: [
+    'log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|1',
+    'log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|2',
+  ],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../bounded-timeout');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'bounded-operation') observations.push(row);
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const deadline = producer.withBoundedTimeout(new Promise<string>(() => {}), { fallback: 'fallback', timeoutMs: 1, label: 'coverage' });
+      expect((await deadline).reason).toBe('timeout');
+      expect((await producer.withBoundedTimeout(Promise.reject(new Error('query error')), {
+        fallback: 'fallback', timeoutMs: 1000, label: 'coverage',
+      })).reason).toBe('error');
+      expect((await producer.withBoundedTimeout(Promise.resolve('primary'), {
+        fallback: 'fallback', timeoutMs: 1000, label: 'coverage',
+      })).degraded).toBe(false);
+      const controller = new AbortController();
+      controller.abort();
+      await producer.withBoundedTimeout(async () => { throw new Error('must not run'); }, {
+        fallback: 'fallback', timeoutMs: 1000, signal: controller.signal,
+      });
+      expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([
+        [0, 'timeout'], [0, 'error'], [1, 'applied'],
+      ]);
+      return { route: 'observation', mechanism: 'bounded-operation', observations };
+    } finally { sink.mockRestore(); warn.mockRestore(); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'primary-count-missing-capability-before-log-throttle-and-verified-recovery', item: 'P-012', route: 'observation',
+  mechanism: 'primary-count-capability',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/system-health/single-primary-check.ts|countBackgroundPrimaries|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../system-health/single-primary-check');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'primary-count-capability') observations.push(row);
+      return true;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let answer: Array<{ n: number; can_read_all_stats?: boolean }> = [{ n: 0 }];
+    const sql = (async () => answer) as unknown as Parameters<typeof producer.countBackgroundPrimaries>[0];
+    try {
+      expect(await producer.countBackgroundPrimaries(sql)).toBe(0);
+      expect(await producer.countBackgroundPrimaries(sql)).toBe(0);
+      answer = [{ n: 0, can_read_all_stats: false }];
+      expect(await producer.countBackgroundPrimaries(sql)).toBeNull();
+      answer = [{ n: 1, can_read_all_stats: true }];
+      expect(await producer.countBackgroundPrimaries(sql)).toBe(1);
+      expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([
+        [0, 'probe-column-absent'], [0, 'probe-column-absent'], [0, 'stats-permission-denied'], [1, 'applied'],
+      ]);
+      return { route: 'observation', mechanism: 'primary-count-capability', observations };
+    } finally { sink.mockRestore(); warn.mockRestore(); }
+  },
+});
+
+RAIL_MIGRATION_CASES.push({
+  id: 'cache-l2-backend-failures-before-throttle-healthy-miss-and-disabled-exclusion', item: 'P-012', route: 'observation',
+  mechanism: 'cache-l2-operation',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/cache/l2-tier.ts|noteL2Error|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const producer = await import('../cache/l2-tier');
+    const instance = await import('../cache/instance');
+    const flags = await import('@papercusp/flags');
+    const flagTest = await import('@papercusp/flags/test');
+    const observations: Array<{ eligible: number; applied: number; reason: string; scope?: string | null }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'cache-l2-operation') observations.push(row);
+      return true;
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let fails = true;
+    const store = {
+      get: async () => { if (fails) throw new Error('get unavailable'); return undefined; },
+      set: async () => { if (fails) throw new Error('set unavailable'); },
+      invalidateByTags: async () => { if (fails) throw new Error('invalidation unavailable'); return 1; },
+    } as unknown as Parameters<typeof producer.installL2StoreForTests>[0];
+    const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      flagTest.setFlagOverridesForTest({ [flags.FLAGS.CACHE_LAYER]: true, [flags.FLAGS.CACHE_L2]: true });
+      await instance._refreshCacheLayerForTests();
+      producer.setL2EnabledForTests(true);
+      producer.installL2StoreForTests(store);
+      producer.resetL2ErrorLogForTests();
+      const read = producer.withL2('coverage', 'key', async () => 'fresh build', { tags: [], softTtlMs: 1000 });
+      for (let i = 0; i < 20; i++) { expect(await read()).toBe('fresh build'); await settle(); }
+      expect(observations.filter((row) => row.scope === 'get' && row.applied === 0)).toHaveLength(20);
+      expect(observations.filter((row) => row.scope === 'set' && row.applied === 0)).toHaveLength(20);
+      expect(log).toHaveBeenCalledTimes(2);
+      producer.invalidateL2ByTags('coverage', ['tag']);
+      await settle();
+      expect(observations).toContainEqual({ eligible: 1, applied: 0, reason: 'backend-error', scope: 'invalidateByTags' });
+      fails = false;
+      expect(await read()).toBe('fresh build'); // A successful backend MISS is a healthy consultation.
+      await settle();
+      await producer.invalidateL2ByTagsWithRetry('coverage', ['tag']);
+      for (const scope of ['get', 'set', 'invalidateByTags']) {
+        expect(observations).toContainEqual({ eligible: 1, applied: 1, reason: 'applied', scope });
+      }
+      const measured = observations.length;
+      producer.setL2EnabledForTests(false);
+      await producer.withL2('coverage', 'off', async () => 'local', { tags: [], softTtlMs: 1000 })();
+      expect(observations).toHaveLength(measured);
+      return { route: 'observation', mechanism: 'cache-l2-operation', observations };
+    } finally {
+      producer.installL2StoreForTests(null);
+      producer.setL2EnabledForTests(true);
+      flagTest.setFlagOverridesForTest({});
+      await instance._refreshCacheLayerForTests();
+      sink.mockRestore(); log.mockRestore();
+    }
+  },
+});
 
 RAIL_MIGRATION_CASES.push({
   id: 'gate-stall-fixer-succession-and-readable-end', item: 'P-008', route: 'condition',
@@ -548,11 +731,14 @@ RAIL_MIGRATION_CASES.push({
         route: async () => { throw new Error('routing unavailable'); } })).toEqual({});
       await readCheckpointRunState('coverage', 'coverage', { observeFallback,
         route: async () => ({ ...(await route({ installSlug: 'coverage', workspaceId: 'coverage' }, '/coverage')), skip: { reason: 'coverage skip' } }) });
+      await readCheckpointRunState('misconfigured', 'coverage', { observeFallback,
+        route: async () => ({ root: '/coverage', extraEnv: {}, clearEnv: [],
+          skip: { reason: 'integration-equals-release', misconfigured: true } }) });
       const deps = { observeFallback, route, readLock: () => ({ held: true, elapsedSec: 1 }), readPhase: () => null };
       await readCheckpointRunState('coverage', 'coverage', deps);
       await readCheckpointRunState('coverage', 'coverage', { ...deps, readLock: () => ({ held: false, elapsedSec: null }) });
       expect(observations.map(({ applied, reason }) => [applied, reason])).toEqual([
-        [0, 'run-state-unavailable'], [0, 'routing-skipped'], [0, 'phase-unavailable'], [1, 'applied']]);
+        [0, 'run-state-unavailable'], [0, 'routing-misconfigured'], [0, 'phase-unavailable'], [1, 'applied']]);
       return { route: 'observation', mechanism: 'release-state-read', observations };
     } finally { warn.mockRestore(); }
   },

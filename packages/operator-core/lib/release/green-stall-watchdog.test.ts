@@ -115,6 +115,7 @@ import {
   readGateFireOwnerWall,
   resolveVerdictlessRefireEpisode,
   wakeAbandonedCheckpointAwaits,
+  readCheckpointRunState,
   type CheckpointEvidence,
 } from './green-stall-watchdog';
 import type { StoredInFlightCandidate } from './in-flight-candidate';
@@ -1184,6 +1185,50 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
       recovered: [],
       suppressed: [],
     });
+  });
+});
+
+describe('readCheckpointRunState routing eligibility', () => {
+  it('does not count an expected non-gated route skip as a degraded eligible read', async () => {
+    const observeFallback = vi.fn((_mechanism: string, _decision: unknown) => true);
+    const readLock = vi.fn();
+    const readPhase = vi.fn();
+
+    await expect(readCheckpointRunState('no-gate', 'coverage', {
+      route: async () => ({ root: '/DEFAULT', extraEnv: {}, clearEnv: [], skip: { reason: 'gate_disabled' } }),
+      observeFallback,
+      readLock,
+      readPhase,
+    })).resolves.toEqual({});
+
+    expect(observeFallback).not.toHaveBeenCalled();
+    expect(readLock).not.toHaveBeenCalled();
+    expect(readPhase).not.toHaveBeenCalled();
+  });
+
+  it('keeps a misconfigured gated route visible with a specific degradation reason', async () => {
+    const observeFallback = vi.fn((_mechanism: string, _decision: unknown) => true);
+
+    await expect(readCheckpointRunState('bad-gate', 'coverage', {
+      route: async () => ({
+        root: '/DEFAULT',
+        extraEnv: {},
+        clearEnv: [],
+        skip: { reason: 'integration-equals-release', misconfigured: true },
+      }),
+      observeFallback,
+    })).resolves.toEqual({});
+
+    expect(observeFallback).toHaveBeenCalledWith(
+      'release-state-read',
+      expect.objectContaining({
+        eligible: 1,
+        applied: 0,
+        reason: 'routing-misconfigured',
+        scope: 'coverage:bad-gate:checkpoint-run-state',
+      }),
+      { workspaceId: 'coverage' },
+    );
   });
 });
 

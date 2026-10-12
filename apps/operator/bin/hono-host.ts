@@ -31,6 +31,7 @@ import './boot-flag-store';
 // THIRD: reject a persistent main-port holder before the expensive Hono,
 // bootstrap, native-addon, and cluster import graph evaluates.
 import './hono-host-port-preflight';
+import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
@@ -317,7 +318,10 @@ function startRequestServers(): void {
   // WI-10004071: drop this worker's cached harness_registry / account-pool rows
   // when a SIBLING worker (or any other process) writes them, instead of serving
   // the stale row for the cache TTL. Rides the same sync_invalidate LISTEN.
-  void startOperatorStateCacheCoherence().catch((err) => {
+  void startOperatorStateCacheCoherence().then(() => {
+    observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'cache-coherence' });
+  }).catch((err) => {
+    observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'cache-coherence' });
     console.warn('[hono-host] operator-state cache coherence did not start (TTL fallback only):', err);
   });
 

@@ -140,7 +140,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockResolvedValue([]);
     const parsed = tool.args.parse({ harness: 'papercusp', slug: 'plan-a', current });
-    expect(parsed.current).toBeUndefined();
+    expect(parsed.current).toBe(current);
     const result = await call(parsed);
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ current: undefined }));
     expect(result.rows[0].ratings.freshness.rating).not.toBe('pass');

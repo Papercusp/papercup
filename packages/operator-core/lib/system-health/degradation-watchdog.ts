@@ -238,6 +238,22 @@ registerDegradationMechanism({
   mechanism: 'mcp-workspace-resolution',
   description: 'Scoped superuser workspace resolutions supplied explicitly or verified from the session, rather than guessed from the active registry. Deliberate unscoped administration is excluded.',
 });
+registerDegradationMechanism({
+  mechanism: 'routine-capability-read', scopeKeyed: true,
+  description: 'Routine and loop capability reads completed their primary dependency probe rather than using reduced liveness, carry scope, or dispatch authority.',
+  // Boot grants and memoized derivations can yield only one decision per process.
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'routine-config', scopeKeyed: true,
+  description: 'Explicit routine configuration passed validation rather than being rejected in favor of the safe default; absent overrides are ineligible.',
+  thresholds: { minEligible: 1 },
+});
+registerDegradationMechanism({
+  mechanism: 'routine-output-log', scopeKeyed: true,
+  description: 'Routine output opened its primary durable log rather than falling back to piped output.',
+  thresholds: { minEligible: 1 },
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both

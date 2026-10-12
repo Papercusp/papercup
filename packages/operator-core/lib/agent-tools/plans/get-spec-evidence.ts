@@ -62,7 +62,6 @@ const argsSchema = z.object({
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   current: z
     .union([z.array(evidenceCurrentInputSchema).max(500), z.boolean()])
-    .transform((current) => typeof current === 'boolean' ? undefined : current)
     .optional()
     .describe(
       'Current fingerprints keyed by planSlug/specId/specRevision/specFingerprint/evidenceKind/evidenceRef when clause identity is supplied; legacy evidenceKind+evidenceRef tuples remain a fallback. Boolean true/false both omit caller fingerprints and use independent server measurement. Missing applicable values return unknown, never current.',
@@ -101,7 +100,7 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    const { detail, ...listArgs } = args;
+    const { detail, current, ...listArgs } = args;
     const limit = args.limit ?? 200;
     const diagnostics: ListSpecEvidenceDiagnostics = {
       phaseMs: {},
@@ -117,6 +116,7 @@ export default defineTool({
     };
     const evidenceWithLookahead = await listSpecEvidence({
       ...listArgs,
+      current: typeof current === 'boolean' ? undefined : current,
       limit: limit + 1,
       planSlugs: [args.slug],
       harnessSlug,

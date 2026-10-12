@@ -10,6 +10,7 @@ import { resolveFederatedPotScope } from '../../../federated-pot-scope';
 import { getHivePolicy } from '../../../hive-policy-store';
 import { admitHire, OnboardingError, prepareHireAcceptance, prepareHireProposal, readOnboarding, reconcileFailedHire, recordHireExecution, recordHireProposal, runOnboardingWalletAction, verifyOnboardingIdentity } from '../../../dao-hr/onboarding';
 import { WorkProfileError } from '../../../dao-hr/work-profile';
+import { completeEngagementAmendment, completeEngagementEnd, EngagementError, prepareEngagementAmendment, prepareEngagementFire, prepareEngagementResignation, readEngagement } from '../../../dao-hr/engagement-changes';
 
 const actions=z.discriminatedUnion('action',[
   z.object({action:z.literal('prepare'),offerId:z.string().min(1),companyPersonId:z.string().min(1),startDate:z.string(),templates:z.array(z.object({templateKey:z.string().min(1),version:z.number().int().positive()}).strict()).min(2).max(4)}).strict(),
@@ -17,7 +18,7 @@ const actions=z.discriminatedUnion('action',[
 ]);
 function failure(error:unknown){
   if(error instanceof ZodError)return Response.json({ok:false,error:'invalid_input',message:'Contract fields are missing or invalid.'},{status:400});
-  if(error instanceof ContractTemplateError||error instanceof ContractSigningError||error instanceof HiringError||error instanceof DocumensoError||error instanceof OnboardingError||error instanceof WorkProfileError)
+  if(error instanceof ContractTemplateError||error instanceof ContractSigningError||error instanceof HiringError||error instanceof DocumensoError||error instanceof OnboardingError||error instanceof WorkProfileError||error instanceof EngagementError)
     return Response.json({ok:false,error:error.code,message:error.message},{status:['not_admin','invalid_webhook','identity_required','identity_mismatch'].includes(error.code)?403:error.code==='invalid_input'?400:409});
   throw error;
 }
@@ -100,4 +101,32 @@ const onboardingPost = defineTool({ method:'POST', path:'/pot/:id/contracts/:off
     return Response.json({ok:true,result},{headers:{'Cache-Control':'private, no-store'}});
   } catch(error) { return failure(error); }
 }});
-export default [get,post,document,webhook,onboardingGet,onboardingPost];
+const engagementActions = z.discriminatedUnion('action', [
+  z.object({action:z.enum(['prepare-fire','prepare-resignation','prepare-amendment'])}).strict(),
+  z.object({action:z.enum(['complete-fire','complete-resignation']),transactionHash:hash}).strict(),
+  z.object({action:z.literal('complete-amendment'),transactionHash:hash.nullable()}).strict(),
+]);
+const engagementGet = defineTool({method:'GET',path:'/pot/:id/contracts/:offerId/engagement',auth:'loopback',async handler(_req,ctx){
+  try {
+    const key={workspaceId:activeWorkspaceId(),daoSlug:ctx.params.id!,offerId:ctx.params.offerId!};
+    return Response.json({ok:true,engagement:await readEngagement(key)},{headers:{'Cache-Control':'private, no-store'}});
+  } catch(error) {return failure(error);}
+}});
+const engagementPost = defineTool({method:'POST',path:'/pot/:id/contracts/:offerId/engagement',auth:'loopback',async handler(req,ctx){
+  const refusal=requireAllowedOriginOr403(req);if(refusal)return refusal;
+  try {
+    const action=engagementActions.parse(await req.json().catch(()=>null));
+    const key={workspaceId:activeWorkspaceId(),daoSlug:ctx.params.id!,offerId:ctx.params.offerId!},policy=await onboardingPolicy(key);
+    let result:unknown;
+    switch(action.action){
+      case 'prepare-fire':result=await prepareEngagementFire(key,policy);break;
+      case 'prepare-resignation':result=await prepareEngagementResignation(key,policy);break;
+      case 'prepare-amendment':result=await prepareEngagementAmendment(key,policy);break;
+      case 'complete-fire':result=await completeEngagementEnd(key,policy,'fired',action.transactionHash);break;
+      case 'complete-resignation':result=await completeEngagementEnd(key,policy,'resigned',action.transactionHash);break;
+      case 'complete-amendment':result=await completeEngagementAmendment(key,policy,action.transactionHash);break;
+    }
+    return Response.json({ok:true,result},{headers:{'Cache-Control':'private, no-store'}});
+  }catch(error){return failure(error);}
+}});
+export default [get,post,document,webhook,onboardingGet,onboardingPost,engagementGet,engagementPost];

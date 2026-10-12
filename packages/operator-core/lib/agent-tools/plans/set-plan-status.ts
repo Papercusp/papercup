@@ -113,8 +113,9 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
 const argsSchema = z
   .object({
     harness: harnessArg,
-    current: z.array(evidenceCurrentInputSchema).max(2000).optional()
-      .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; missing currentness never establishes fulfillment'),
+    current: z.union([z.array(evidenceCurrentInputSchema).max(2000), z.boolean()])
+      .optional()
+      .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; boolean true/false omit caller fingerprints and use independent server measurement; missing currentness never establishes fulfillment'),
     slug: z.string().min(1).optional(),
     slugs: z
       .array(z.string().min(1))
@@ -468,7 +469,7 @@ export async function launchAcceptanceGraderForGate(
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
   evaluateRecruitment: typeof evaluatePlanAcceptanceGate = evaluatePlanAcceptanceGate,
-  current?: EvidenceCurrentInput[],
+  current?: EvidenceCurrentInput[] | boolean,
   /** WI-6554700010008529: the re-observation step for an `independent_verification_missing` recruit. */
   renderVerification: (slug: string, harnessSlug: string, workspaceId: string) => Promise<string> =
     defaultIndependentVerificationBrief,
@@ -482,7 +483,7 @@ export async function launchAcceptanceGraderForGate(
       gradingRecruitment: true,
       // Recruitment evaluates the same proof as the strict gate. Keep the exact
       // comparison inputs; dropping opaque dimensions makes current proof unknown.
-      ...(current ? { current } : {}),
+      ...(Array.isArray(current) ? { current } : {}),
     });
   }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
@@ -779,7 +780,7 @@ export default defineTool({
             // independent pre-grading blocker in one refusal instead of one per attempt.
             // The primary code/message are unchanged, so grader recruitment is too.
             collectAllBlockers: true,
-            ...(args.current ? { current: args.current } : {}),
+            ...(Array.isArray(args.current) ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
             readGradingAuditDispatchSuppression: async (targetOwnerId) => {
               const { readGradingAuditDispatchSuppression } = await import('../../grading-integrity');

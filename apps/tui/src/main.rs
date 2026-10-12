@@ -2216,8 +2216,10 @@ async fn run<B: Backend>(
         if let Ok(mut selected) = sync_pane.selected.lock() {
             *selected = app.tab;
         }
-        if app.tab != prior_tab && app.tab == app::Tab::Overview {
-            let _ = sync_refetch.send(RefetchSignal::GENERAL);
+        if app.tab != prior_tab {
+            if let Some(signal) = RefetchSignal::for_tab_entry(app.tab) {
+                let _ = sync_refetch.send(signal);
+            }
         }
         // A saved Network view bypasses the normal tab-entry action.
         if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
@@ -7728,6 +7730,8 @@ fn spawn_sync(
 struct RefetchSignal {
     include_plan_reads: bool,
     include_account_reads: bool,
+    include_memory_reads: bool,
+    include_pipeline_reads: bool,
 }
 
 /// Keep background reads aligned with the pane the workbench currently shows.
@@ -7740,16 +7744,28 @@ struct PaneFetchScope {
 }
 
 impl PaneFetchScope {
-    fn fetches_network(&self) -> bool {
+    fn selected_tab(&self) -> Option<app::Tab> {
         self.pinned
             .or_else(|| self.selected.lock().ok().map(|selected| *selected))
-            == Some(app::Tab::Network)
+    }
+
+    fn fetches_network(&self) -> bool {
+        self.selected_tab() == Some(app::Tab::Network)
+    }
+
+    fn fetches_accounts(&self) -> bool {
+        matches!(
+            self.selected_tab(),
+            Some(app::Tab::Overview | app::Tab::Operator)
+        )
+    }
+
+    fn fetches_memory(&self) -> bool {
+        self.selected_tab() == Some(app::Tab::Memory)
     }
 
     fn fetches_pipeline(&self) -> bool {
-        self.pinned
-            .or_else(|| self.selected.lock().ok().map(|selected| *selected))
-            == Some(app::Tab::Overview)
+        self.selected_tab() == Some(app::Tab::Overview)
     }
 }
 
@@ -7757,11 +7773,31 @@ impl RefetchSignal {
     const FULL: Self = Self {
         include_plan_reads: true,
         include_account_reads: true,
+        include_memory_reads: true,
+        include_pipeline_reads: true,
     };
     const GENERAL: Self = Self {
         include_plan_reads: false,
         include_account_reads: false,
+        include_memory_reads: false,
+        include_pipeline_reads: false,
     };
+
+    fn for_tab_entry(tab: app::Tab) -> Option<Self> {
+        let mut signal = Self::GENERAL;
+        match tab {
+            // The account pool backs both the Overview spend summary and the
+            // Operator chat account picker.
+            app::Tab::Overview => {
+                signal.include_account_reads = true;
+                signal.include_pipeline_reads = true;
+            }
+            app::Tab::Operator => signal.include_account_reads = true,
+            app::Tab::Memory => signal.include_memory_reads = true,
+            _ => return None,
+        }
+        Some(signal)
+    }
 
     fn include_plan_reads(self) -> bool {
         self.include_plan_reads
@@ -7770,6 +7806,8 @@ impl RefetchSignal {
     fn merge(&mut self, other: Self) {
         self.include_plan_reads |= other.include_plan_reads;
         self.include_account_reads |= other.include_account_reads;
+        self.include_memory_reads |= other.include_memory_reads;
+        self.include_pipeline_reads |= other.include_pipeline_reads;
     }
 }
 
@@ -7793,6 +7831,8 @@ fn refetch_signal_for_frame_data(data: &str) -> RefetchSignal {
         include_account_reads: name.starts_with("accounts.")
             || name == "harness_shared.operator_account_pool.changed"
             || name == "harness_shared.operator_account_override.changed",
+        include_memory_reads: false,
+        include_pipeline_reads: false,
     }
 }
 
@@ -8393,9 +8433,10 @@ fn spawn_first_paint_work_items<S: FirstPaintWorkItems>(
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
 /// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
 /// scopes the fat plans/attention reads to panes that actually render them
-/// (see `pane_fetches_plans` / `pane_fetches_attention`). `signal` skips plan
-/// and account reads on unrelated SSE invalidations. Startup and the 60s safety
-/// tick include both, so missed signals self-heal without a tight poll.
+/// (see `pane_fetches_plans` / `pane_fetches_attention`). `signal` scopes optional
+/// plan, account, memory, and pipeline reads to their relevant invalidation or
+/// active pane. Startup and the 60s safety tick include all scopes for the active
+/// pane, so missed signals self-heal without a tight poll.
 async fn refetch_all(
     client: &OperatorClient,
     tx: &UnboundedSender<Event>,
@@ -8457,7 +8498,7 @@ async fn refetch_all(
     }
     // The pipeline tile belongs to Overview. Its Git subprocesses must not
     // compete with Agent Chat's bounded turn-start reads in the operator.
-    if pane.fetches_pipeline() {
+    if signal.include_pipeline_reads && pane.fetches_pipeline() {
         let _ = tx.send(Event::PipelineStatus(Box::new(
             client.pipeline_status().await,
         )));
@@ -8601,7 +8642,7 @@ async fn refetch_all(
     }
     // Agent Chat account-route picker. The generic run-tool bridge returns
     // live pool rows; an empty pool still leaves the Auto row available.
-    if signal.include_account_reads {
+    if signal.include_account_reads && pane.fetches_accounts() {
         match client.accounts_status().await {
             Ok(status) => {
                 let _ = tx.send(Event::AccountRows(status.accounts));
@@ -8663,9 +8704,11 @@ async fn refetch_all(
     }
     // The Memory tab's list (D-006 Step 2). Preserve backend-disabled,
     // authentication, and transport outcomes as distinct typed states.
-    let _ = tx.send(Event::MemoryLoad(
-        client.memory_list_state(Some(&slug)).await,
-    ));
+    if signal.include_memory_reads && pane.fetches_memory() {
+        let _ = tx.send(Event::MemoryLoad(
+            client.memory_list_state(Some(&slug)).await,
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -9576,15 +9619,23 @@ mod tests {
             for signal in signals {
                 merged.merge(signal);
             }
-            assert_eq!(merged, RefetchSignal::FULL);
+            assert_eq!(
+                merged,
+                RefetchSignal {
+                    include_plan_reads: true,
+                    include_account_reads: true,
+                    include_memory_reads: false,
+                    include_pipeline_reads: false,
+                }
+            );
         }
     }
 
     /// Exercise the real refetch fan-out and run-tool wire, not just the
-    /// signal predicate. Unrelated SSE frames must not re-read the account
-    /// pool; startup, account updates, unknown payloads and safety refresh do.
+    /// signal predicate. Generic invalidations must not re-read memory or the
+    /// Overview pipeline; account updates and active-pane refreshes still do.
     #[tokio::test]
-    async fn account_refetch_reads_only_for_account_updates_and_full_refresh() {
+    async fn optional_refetch_reads_follow_invalidation_and_active_pane_scope() {
         use crate::framing::{encode_frame, FrameType};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -9592,8 +9643,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("account-refetch.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let reads = Arc::new(AtomicUsize::new(0));
-        let recorded_reads = reads.clone();
+        let account_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_account_reads = account_reads.clone();
+        let memory_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_memory_reads = memory_reads.clone();
+        let pipeline_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_pipeline_reads = pipeline_reads.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut reader, mut writer) = stream.into_split();
@@ -9611,11 +9666,23 @@ mod tests {
                 let tool_body = request["input"]["body"]
                     .as_str()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
-                let is_accounts = request["input"]["path"] == "/api/agent-mcp/run-tool"
-                    && tool_body.as_ref().and_then(|body| body["name"].as_str())
-                        == Some("accounts:status");
+                let tool_name = tool_body.as_ref().and_then(|body| body["name"].as_str());
+                if request["input"]["path"] == "/api/agent-mcp/run-tool" {
+                    match tool_name {
+                        Some("accounts:status") => {
+                            recorded_account_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some("memory:list") => {
+                            recorded_memory_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some("state:read") => {
+                            recorded_pipeline_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                }
+                let is_accounts = tool_name == Some("accounts:status");
                 let response = if is_accounts {
-                    recorded_reads.fetch_add(1, Ordering::SeqCst);
                     serde_json::json!({"ok":true,"result":{"content":[{
                         "type":"text", "text":r#"{"accounts":[],"poolVerdict":[]}"#
                     }]}})
@@ -9653,9 +9720,10 @@ mod tests {
         let active_harness = Arc::new(Mutex::new("fixture".into()));
         let active_doc = Arc::new(Mutex::new(None));
         let active_plan = Arc::new(Mutex::new(None));
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
         let pane = PaneFetchScope {
             pinned: None,
-            selected: Arc::new(Mutex::new(app::Tab::Operator)),
+            selected: selected.clone(),
         };
         for (frame, expected_reads) in [
             (None, 1), // startup
@@ -9681,7 +9749,7 @@ mod tests {
             (Some(r#"{"args":{"x":1}}"#), 7),
             (None, 8), // the same full refresh used by the 60s safety tick
         ] {
-            let previous_reads = reads.load(Ordering::SeqCst);
+            let previous_reads = account_reads.load(Ordering::SeqCst);
             let signal = frame
                 .map(refetch_signal_for_frame_data)
                 .unwrap_or(RefetchSignal::FULL);
@@ -9700,7 +9768,7 @@ mod tests {
             .await
             .expect("fixture refetch completed");
             assert_eq!(
-                reads.load(Ordering::SeqCst),
+                account_reads.load(Ordering::SeqCst),
                 expected_reads,
                 "frame={frame:?}"
             );
@@ -9709,6 +9777,69 @@ mod tests {
                 .count();
             assert_eq!(account_events, expected_reads - previous_reads);
         }
+
+        macro_rules! run_scoped_refetch {
+            ($signal:expr) => {{
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    refetch_all(
+                        &client,
+                        &tx,
+                        &active_harness,
+                        &active_doc,
+                        &active_plan,
+                        &pane,
+                        $signal,
+                    ),
+                )
+                .await
+                .expect("scoped fixture refetch completed");
+            }};
+        }
+
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 0);
+
+        // Account writes still refresh the Overview summary and chat picker,
+        // while an off-pane account invalidate does not fetch the pool.
+        *selected.lock().unwrap() = app::Tab::Network;
+        run_scoped_refetch!(refetch_signal_for_frame_data(r#"{"name":"accounts.pool"}"#));
+        assert_eq!(account_reads.load(Ordering::SeqCst), 8);
+
+        // The Memory pane loads on entry and on its 60s safety refresh. General
+        // tool activity while it remains selected is not a memory invalidation.
+        *selected.lock().unwrap() = app::Tab::Memory;
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 0);
+        run_scoped_refetch!(RefetchSignal::for_tab_entry(app::Tab::Memory).unwrap());
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 1);
+        run_scoped_refetch!(RefetchSignal::FULL);
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 2);
+
+        // Four state cells are read only when entering Overview or on its
+        // safety refresh; generic tool-invocation events do not fan them out.
+        *selected.lock().unwrap() = app::Tab::Overview;
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 0);
+        run_scoped_refetch!(RefetchSignal::for_tab_entry(app::Tab::Overview).unwrap());
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 9);
+        run_scoped_refetch!(refetch_signal_for_frame_data(r#"{"name":"accounts.pool"}"#));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 10);
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 10);
+        run_scoped_refetch!(RefetchSignal::FULL);
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 8);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 11);
+
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
     }
@@ -9761,6 +9892,55 @@ mod tests {
             selected
         }
         .fetches_pipeline());
+    }
+
+    #[test]
+    fn optional_refetch_signals_match_tab_entry_and_visible_surfaces() {
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
+        let pane = PaneFetchScope {
+            pinned: None,
+            selected: selected.clone(),
+        };
+        for (tab, accounts, memory, pipeline) in [
+            (app::Tab::Operator, true, false, false),
+            (app::Tab::Overview, true, false, true),
+            (app::Tab::Memory, false, true, false),
+            (app::Tab::Network, false, false, false),
+        ] {
+            *selected.lock().unwrap() = tab;
+            assert_eq!(pane.fetches_accounts(), accounts, "{tab:?}");
+            assert_eq!(pane.fetches_memory(), memory, "{tab:?}");
+            assert_eq!(pane.fetches_pipeline(), pipeline, "{tab:?}");
+        }
+
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Operator),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: true,
+                include_memory_reads: false,
+                include_pipeline_reads: false,
+            })
+        );
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Memory),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: false,
+                include_memory_reads: true,
+                include_pipeline_reads: false,
+            })
+        );
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Overview),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: true,
+                include_memory_reads: false,
+                include_pipeline_reads: true,
+            })
+        );
+        assert_eq!(RefetchSignal::for_tab_entry(app::Tab::Network), None);
     }
 
     fn coord_msg(

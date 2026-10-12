@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 28,
-    "openUnknown": 63
+    "repairedPeerFocused": 32,
+    "openUnknown": 59
   },
   "classes": {
     "assertion": 55,
@@ -1513,8 +1513,17 @@
     {
       "path": "packages/operator-core/lib/personal-vault/binding-enforcement.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-029",
+        "reviewRef": "WI-10006170#comment1175414",
+        "reviewedMapSha256": "1d5eb910a8cc858aa640fa4d38181a953bbb095855df915a5c06e4410559e56c",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "EI-25188920285594233",
+        "recurrenceGuard": "Fixture-owned Git root preserves actual disclosure/egress handlers: unrestricted and released namespaces remain equal to the parent, while restricted and explicit source-held controls remain offline. Historical20810258 is DIRTY14PASS; later clean21103785 has14 named cases/0skip/no selector or collection failure. Current named test0ec6e476 matches the accepted blob and f419975.",
+        "scope": "Reviewed historical fixture diagnosis, committed repair and focused controls only. Original/current complete loaded imports, configuration, applied schema, environment, native and final D006 assurance remain unknown. No terminal repair or test replay."
+      },
       "lines": [
         13785
       ]
@@ -2100,8 +2109,17 @@
     {
       "path": "packages/operator-core/lib/experiment/producer-lifecycle-store.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-029",
+        "reviewRef": "WI-10006170#comment1175419",
+        "reviewedMapSha256": "1d5eb910a8cc858aa640fa4d38181a953bbb095855df915a5c06e4410559e56c",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006153",
+        "recurrenceGuard": "Guard5a6b6c69 and writer090c9b90 clone scope before SELECT. Real private-PG alias control20761866 fails1/12 before repair, clean20762529 passes12/0skip after; later clean21103746 has13 named cases/0skip including the original-run/.8 scheduling-boundary case. Current writer equals accepted bytes and integration testc365b86e equals f419975. Unit18FAIL16PASS to34PASS remains DIRTY scope.",
+        "scope": "Reviewed historical snapshot-ownership repair and focused causal controls only. The whole old terminal remains STALE over other changed lifecycle files; the parent's distinct Transfer fix is not substituted. Complete loaded imports/configuration/schema/environment and final D006 readiness remain unknown. No re-close or test replay."
+      },
       "lines": [
         13421
       ]
@@ -3873,8 +3891,17 @@
     {
       "path": "libs/test-config/src/pg-migrate.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-029",
+        "reviewRef": "WI-10006170#comment1175414",
+        "reviewedMapSha256": "1d5eb910a8cc858aa640fa4d38181a953bbb095855df915a5c06e4410559e56c",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "EI-25690351072074950",
+        "recurrenceGuard": "Committed03595bfd/test-config5edf952 preserves uncancellable DROP/budgets while reporting detached when the janitor occupies its client/lock. Held/unheld counterexample has1PASS1FAIL12skips; deterministic before controls have2FAIL24PASS. Exact immutable21071855/56/57/60 and log1dbcb260 record52PASS0skip including14 real PG; later clean21099189 covers14 named held/unheld/deferred/retry cases. Five accepted file blobs match current named bytes.",
+        "scope": "Reviewed historical cleanup-disposition diagnosis, accountable committed repair and focused guards only. Original timing/environment and complete loaded-source/import/schema assurance remain unknown; runtime before/after captures are not configured. No final D006 execution or shipment claim."
+      },
       "lines": [
         17682
       ]
@@ -3882,8 +3909,17 @@
     {
       "path": "libs/generic/search/src/embedding-space.integration.test.ts",
       "class": "unclassified",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-029",
+        "reviewRef": "WI-10006170#comment1175414",
+        "reviewedMapSha256": "1d5eb910a8cc858aa640fa4d38181a953bbb095855df915a5c06e4410559e56c",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "EI-25404520658279489",
+        "recurrenceGuard": "Committed search126c95f8 initializes vector before publishing owned/supplied URLs under transaction advisory serialization. Real-PG old3FAIL/new3PASS and independent installation/two-waiter/no-publication controls distinguish ordering from an unusable extension. Seven-file36PASS includes embedding20929100's5cases/0skip; that receipt is DIRTY with root/search pointer mismatch. Current named source23fdd976 and guard8507b06d match accepted blobs.",
+        "scope": "Reviewed accountable readiness-class repair, not exact attribution of the archived conflicting transaction. Original loaded-source identity and complete current imports/configuration/schema/environment remain unknown. No terminal repair/test replay or final D006 readiness claim."
+      },
       "lines": [
         18044
       ],
@@ -3904,7 +3940,7 @@
         "fourNamedBlobsMatchCommittedRunStart": true,
         "originalLoadedSourceCurrentness": "unknown"
       },
-      "assuranceLimits": "Read-only diagnostic recovery. The clean receipt predates the failure and does not establish a repair. Basename ledger lookup excluded mutation probes; no matching original run-group receipt was recovered. No new test, causal control, source repair, final D006 readiness or shipment claim. Keep UNKNOWN pending a specific admitted repair and distinguishing guard."
+      "assuranceLimits": "Original diagnostic and pre-failure clean receipt remain preserved; that receipt alone never established a repair. D-029 separately qualifies the accountable readiness-class repair and focused real-PG controls recorded above. Original conflicting transaction/loaded-source identity, complete current imports/configuration/schema/environment, final D006 readiness and shipment remain unverified. No new test or terminal repair replay."
     }
   ],
   "sourceCensusRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/file-census.json",
@@ -3923,13 +3959,13 @@
       "count": 55,
       "status": "partially-repaired-peer-focused",
       "stateCounts": {
-        "repaired-peer-focused": 6,
-        "open-unknown": 49
+        "repaired-peer-focused": 9,
+        "open-unknown": 46
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Forty-nine remaining entries unproved; exactly six historical fixture diagnoses and existing accountable repairs were independently reviewed in report-plan D-019 and D-027. Their focused proof does not establish complete loaded-source/environment or final assurance.",
+      "rootCause": "Forty-six remaining entries unproved; nine historical diagnoses and existing accountable repairs were independently reviewed in report-plan D-019, D-027 and D-029. D-029 adds fixture-root isolation, producer snapshots and PG cleanup; ingestion remains unproved pending its specific catalog-pollution control. Focused proof does not establish complete loaded-source/environment or final assurance.",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     },
     {
@@ -4115,14 +4151,14 @@
       "originalClassCount": 6,
       "status": "partially-repaired-focused",
       "stateCounts": {
-        "repaired-peer-focused": 2,
-        "open-unknown": 3
+        "repaired-peer-focused": 3,
+        "open-unknown": 2
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Hive-roster's historical membership fixture is covered by committed WI-10006194 and real Pot controls. Atomic-registry's unreachable barrier and missing inherited-provider fixture are covered by committed WI-10006502, retained interleaving assertions and early-refusal controls; attribution of the archived timeout is explicitly inferred. Three remaining unclassified rows are unproved. Worked-history is qualified separately by the existing role-catalog serialization repair; its original symptom class remains recorded on that row.",
-      "next": "Retain roster20793752 clean focused5PASS/0skip and atomic20831098 clean focused4PASS/0skip with named-byte equality only. Diagnose the three remaining unclassified files from exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
+      "rootCause": "Hive-roster's historical membership fixture is covered by committed WI-10006194 and real Pot controls. Atomic-registry's unreachable barrier and missing inherited-provider fixture are covered by committed WI-10006502, retained interleaving assertions and early-refusal controls; attribution of the archived timeout is explicitly inferred. D-029 qualifies the committed search vector-readiness repair while preserving the unknown archived conflicting transaction. Two remaining unclassified rows are unproved. Worked-history is qualified separately by the existing role-catalog serialization repair; its original symptom class remains recorded on that row.",
+      "next": "Retain roster20793752 clean focused5PASS/0skip, atomic20831098 clean focused4PASS/0skip and D-029 search readiness controls with named-byte equality only. Diagnose the two remaining unclassified files from exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
     },
     {
       "class": "peer-hosted-role-catalog-serialization",
