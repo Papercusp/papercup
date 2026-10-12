@@ -111,12 +111,12 @@ function makeTx(rows: unknown[]) {
   return vi.fn(async () => rows);
 }
 
-function callTool(args: Record<string, unknown>, tx: unknown, log?: (message: string) => void) {
+function callTool(args: Record<string, unknown>, tx: unknown, log?: (message: string) => void, metadata?: (value: Record<string, unknown>) => void) {
   return (
     tool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
     }
-  ).handler(args, { workspaceId: 'default', tx, log });
+  ).handler(args, { workspaceId: 'default', tx, log, metadata });
 }
 
 describe('sessions:search limit contract', () => {
@@ -612,7 +612,8 @@ describe('sessions:search surfaces the engine leg report (WI-10005676)', () => {
       },
     });
 
-    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const metadata = vi.fn();
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]), undefined, metadata);
     const parsed = JSON.parse(res.content[0].text) as {
       legs?: {
         degraded: boolean;
@@ -629,6 +630,11 @@ describe('sessions:search surfaces the engine leg report (WI-10005676)', () => {
     // The load-bearing assertion: a zero is STATED, not omitted — it is what tells a
     // leg that ran and found nothing apart from a leg that never ran.
     expect(parsed.legs?.semantic.candidates).toBe(0);
+    const engineContext = (runHybridSearch.mock.calls[0] as unknown as [unknown, Record<string, unknown>])[1];
+    const receipt = metadata.mock.lastCall?.[0].sessionsSearchRead;
+    expect(engineContext.correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(receipt).toMatchObject({ correlationId: engineContext.correlationId,
+      legs: { degraded: true, warning: 'semantic leg contributed 0 candidates' } });
   });
 
   it('keeps lexical hits and reports a budget-blocked semantic leg without failing the tool', async () => {

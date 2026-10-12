@@ -13,6 +13,7 @@
  * this is the one-call way back to them.
  */
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
@@ -315,6 +316,7 @@ export default defineTool({
       const sources = SEARCH_SOURCES.filter((s) => scopeNames.includes(s.name));
       const embedder = await measureSearchPhase(ctx, 'query_embedder_acquisition', () =>
         buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }));
+      const correlationId = randomUUID();
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
       // call inside runHybridSearch, not just the acquisition above.
       const { results, legs } = await measureSearchPhase(ctx, 'hybrid_main_query', () => runHybridSearch(sources, {
@@ -323,6 +325,7 @@ export default defineTool({
         query: args.query,
         workspaceId,
         scopeFilter: args.harness_slug ?? null,
+        correlationId,
         limit: offset + limit + 1,
         mode: 'hybrid',
         embedder,
@@ -332,6 +335,11 @@ export default defineTool({
         log: ctx.log,
       }));
       searchLegs = legs;
+      (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata?.({ sessionsSearchRead: {
+        schemaVersion: 'sessions-search-read-v1',
+        correlationId,
+        legs: describeSearchLegs(legs),
+      } });
       for (const r of results) {
         if (r.source === 'session_turn') {
           const ref = parseTurnRef(r.source_id);
