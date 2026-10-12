@@ -138,6 +138,7 @@ type PortalRosterBrowserInput = {
   git?: boolean;
   frames?: boolean;
   evals?: boolean;
+  support?: boolean;
   statsSeed?: PrivateStatsSeed;
   gitSeed?: PrivateGitSeed;
   calendarSeed?: PrivateCalendarSeed;
@@ -168,7 +169,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'git' | 'frames' | 'evals' | 'support' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -180,7 +181,15 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.evals ? `
+  const entry = input.support ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { Route as SupportRoute } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/routes/support.tsx'))};
+    const routeTree = createRootRoute({ component: SupportRoute.options.component });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.evals ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -485,7 +494,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -505,7 +514,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
     loader: { '.css': retainBrowserCss ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
-    ...(boundary ? { define: boundary.define } : {}),
+    ...(boundary ? { define: { ...boundary.define,
+      ...(input.support ? { 'process.env.NEXT_PUBLIC_PAPERCUSP_API_BASE': JSON.stringify('') } : {}) } } : {}),
     // Browser packages may export CSS only under development/production (e.g.
     // Excalidraw). Use the real production export instead of a fixture alias.
     conditions: ['browser', 'production', ...(retainBrowserCss ? ['style'] : [])],
@@ -551,7 +561,17 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Frames preflight requires native ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.evals
+  if (input.support) {
+    const routerContexts = [...originals.keys()].filter(path => path.includes('/@tanstack/react-router/')
+      && /\/routerContext\.(?:js|cjs)$/.test(path));
+    assert.equal(routerContexts.length, 1, 'Support preflight requires one actual router context across entry and route');
+    for (const suffix of ['/apps/operator-vite/src/routes/support.tsx',
+      '/apps/operator/app/_components/SupportAgentPanel.tsx', '/apps/operator/app/_components/SupportChatButton.tsx']) {
+      assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `Support preflight requires actual ${suffix}`);
+    }
+  }
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.support
+    ? '/apps/operator-vite/src/routes/support.tsx' : input.evals
     ? '/apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' : input.frames
     ? '/apps/operator-vite/src/components/adv/AdvFramesTab.tsx' : input.git
     ? '/apps/operator/app/adv/harnesses/AdvGitWorkspace.tsx' : input.stats
@@ -614,7 +634,7 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
 
 export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0],
   options: { brainstormHydration?: boolean; prsRead?: boolean; insightsRead?: boolean; workflowsRead?: boolean;
-    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean } = {}) {
+    workflowsDeniedResponseDelayMs?: number; gitRead?: boolean; framesRead?: boolean; evalsRead?: boolean; supportRead?: boolean } = {}) {
   assert.ok(!options.brainstormHydration || input.brainstorm, 'Hydration preflight requires Brainstorm');
   assert.ok(!options.prsRead || input.prs, 'PR read preflight requires the PR panel');
   assert.ok(!options.insightsRead || input.insights, 'Insights read preflight requires the Insights panel');
@@ -622,6 +642,7 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   assert.ok(!options.gitRead || input.git, 'Git read preflight requires the Git workspace');
   assert.ok(!options.framesRead || input.frames, 'Frames read preflight requires the Frames panel');
   assert.ok(!options.evalsRead || input.evals, 'Evaluation read preflight requires Evaluation');
+  assert.ok(!options.supportRead || input.support, 'Support workflow requires the actual Support route');
   const built = await buildPortalRosterBrowser(input);
   if (options.gitRead) {
     const tooltipPackages = new Set([...built.originals.keys()].filter(path =>
@@ -636,8 +657,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   let evalsDenied = false;
   let evalsDenialPhase: 'warm' | 'cold' | null = null;
   const frameStreams: Array<{ slug: string; closed: Promise<void> }> = [];
-  const componentEvidence = options.framesRead || options.evalsRead
-    ? mkdtempSync(join(tmpdir(), options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
+  const supportRequests: Array<{ sessionId: string; message: string; surface: string; status: number }> = [];
+  const outwardRequests: string[] = [];
+  const componentEvidence = options.framesRead || options.evalsRead || options.supportRead
+    ? mkdtempSync(join(tmpdir(), options.supportRead ? 'support-component-' : options.evalsRead ? 'evals-component-' : 'frames-component-')) : null;
   if (componentEvidence) writeFileSync(join(componentEvidence, 'browser-inputs.json'), JSON.stringify({
     browserBundleSha256: digest(built.bundle),
     originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
@@ -705,10 +728,23 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       strokeWidth: 1, strokeStyle: 'solid', roughness: 1, opacity: 100, groupIds: [], frameId: null,
       roundness: null, seed: 1, version: 1, versionNonce: 1, isDeleted: false, boundElements: null,
       updated: 1, link: null, locked: false }], appState: {}, files: {} } };
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
     const pathname = requestUrl.pathname;
-    if (options.evalsRead && request.method !== 'GET') {
+    if (options.supportRead && pathname === '/v1/support/chat' && request.method === 'POST') {
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
+      const args = JSON.parse(body);
+      const status = supportRequests.length === 0 ? 403 : 200;
+      supportRequests.push({ ...args, status });
+      response.writeHead(status, { 'content-type': status === 200 ? 'text/event-stream' : 'text/plain' });
+      response.end(status === 403 ? 'explicit fixture support denial'
+        : 'event: token\ndata: "Fixture support "\n\nevent: token\ndata: "answer"\n\n'
+          + 'event: done\ndata: {"costUsd":0.0123,"capExceeded":false}\n\n');
+    } else if (options.supportRead && request.method !== 'GET') {
+      writes.push({ surface: pathname, body: 'unexpected Support mutation' });
+      response.writeHead(405); response.end('unexpected Support mutation');
+    } else if (options.evalsRead && request.method !== 'GET') {
       writes.push({ surface: pathname, body: { method: request.method } });
       response.writeHead(405); response.end();
     } else if (options.evalsRead && pathname === '/api/zero-harness/rest-query') {
@@ -870,6 +906,18 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     const address = server.address(); assert.ok(address && typeof address === 'object');
     page = await browser.newPage();
     page.setDefaultTimeout(15_000);
+    if (options.supportRead) {
+      await page.route('**/*', route => {
+        const requestUrl = new URL(route.request().url());
+        if (requestUrl.origin === `http://127.0.0.1:${address.port}`) return route.continue();
+        outwardRequests.push(requestUrl.href);
+        return route.abort('blockedbyclient');
+      });
+      await page.addInitScript(() => {
+        (window as any).__supportOpenCount = 0;
+        window.addEventListener('papercusp:open-support', () => (window as any).__supportOpenCount++);
+      });
+    }
     page.on('pageerror', error => errors.push(error.stack ?? error.message));
     // This browser-only preflight has no API. Capture the renderer's handled
     // failures, rather than treating background flag-bootstrap requests as
@@ -914,6 +962,10 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       url.searchParams.set('evalSuite', input.selected); url.searchParams.set('evalRun', 'fixture-drill-in');
       url.searchParams.set('evalView', 'external');
     }
+    if (options.supportRead) {
+      url.searchParams.set('app', 'support'); url.searchParams.set('slug', input.selected);
+      url.searchParams.set('q', 'preflight-search'); url.searchParams.set('ws', 'preflight-workspace');
+    }
     await page.goto(url.href);
     if (options.gitRead) {
       await page.waitForFunction(() => document.querySelector('.pc-adv-git')
@@ -921,7 +973,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal((await page.locator('body').innerText()).includes('must be used within'), false,
         'Selected Git commit must retain the production root providers: ' + await page.locator('body').innerText());
     }
-    try { await (input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
+    try { await (input.support ? page.getByRole('heading', { name: 'Support', exact: true })
+      : input.evals ? page.getByRole('heading', { name: 'Evaluation', exact: true })
       : input.frames ? page.locator('.pc-frames') : input.git ? page.locator('.pc-adv-git')
       : input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
       : input.workflows ? page.getByTestId('workflows-control-deck')
@@ -930,6 +983,47 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (options.supportRead) {
+      const assertShell = () => {
+        const params = new URL(page!.url()).searchParams;
+        assert.equal(params.get('app'), 'support'); assert.equal(params.get('slug'), input.selected);
+        assert.equal(params.get('q'), 'preflight-search'); assert.equal(params.get('ws'), 'preflight-workspace');
+      };
+      const faq = page.locator('.pc-support-faq-summary').first();
+      assert.equal(await faq.getAttribute('aria-expanded'), 'false');
+      await faq.focus(); await page.keyboard.press('Enter');
+      await page.locator('.pc-support-faq-answer').getByText('Install one of the supported agent CLIs globally:', { exact: true }).waitFor();
+      assert.equal(await faq.getAttribute('aria-expanded'), 'true');
+      await faq.focus(); await page.keyboard.press('Space');
+      assert.equal(await faq.getAttribute('aria-expanded'), 'false');
+      const ask = page.getByRole('button', { name: 'Ask', exact: true });
+      assert.equal(await ask.isDisabled(), true);
+      const inputBox = page.getByPlaceholder('How do I set up my first harness?', { exact: true });
+      await inputBox.fill('fixture denied question'); await inputBox.press('Enter');
+      await page.getByText('❌ explicit fixture support denial', { exact: true }).waitFor();
+      await inputBox.fill('fixture recovered question'); await inputBox.press('Enter');
+      await page.getByText('Fixture support answer', { exact: true }).waitFor();
+      await page.getByText('$0.0123 / $0.50', { exact: true }).waitFor();
+      assert.equal(await ask.isDisabled(), true, 'successful send clears input and leaves no invented retry');
+      const human = page.getByRole('button', { name: 'Talk to a human via Support', exact: true });
+      await human.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => (window as any).__supportOpenCount === 1);
+      assert.equal(supportRequests.length, 2, 'human handoff with empty input must not submit a provider request');
+      assert.equal(supportRequests[0].sessionId, supportRequests[1].sessionId);
+      assert.match(supportRequests[0].sessionId, /^s_/);
+      assert.deepEqual(supportRequests.map(r => [r.message, r.surface, r.status]), [
+        ['fixture denied question', 'operator', 403], ['fixture recovered question', 'operator', 200]]);
+      assertShell();
+      await page.reload();
+      await page.getByRole('heading', { name: 'Support', exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Ask', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByText('Fixture support answer', { exact: true }).count(), 0);
+      assert.equal(await faq.getAttribute('aria-expanded'), 'false');
+      assertShell();
+      assert.deepEqual(writes, []); assert.deepEqual(outwardRequests, []); assert.deepEqual(errors, []);
+      writeFileSync(join(componentEvidence!, 'receipt.json'), JSON.stringify({ reads, writes, supportRequests,
+        outwardRequests, errors, providerUsed: false }, null, 2));
+    }
     if (options.evalsRead) {
       const scoreboard = (suite: string) => page!.getByLabel(`${suite} — pass@1 by arm`, { exact: true });
       await scoreboard(input.selected).waitFor();
@@ -1243,6 +1337,8 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       } else {
         assert.match(await page.locator('.pc-adv-git__empty').innerText(), /Pick a .+ from the selector above\./);
       }
+    } else if (input.support) {
+      assert.equal(await page.locator('.pc-support-shell').count(), 1);
     } else if (input.evals) {
       assert.equal(await page.locator('.pc-evals').count(), 1);
     } else if (input.frames) {
@@ -1274,12 +1370,15 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         providerUsed: false, evidence: componentEvidence } : {}),
       ...(options.evalsRead ? { evalsRead: true, suiteSelection: true, suiteReload: true,
         warmDenialRecovery: true, coldDenialRecovery: true, shellQueryPreserved: true,
-        noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
+        noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}),
+      ...(options.supportRead ? { supportRead: true, keyboardFaq: true, denialRecovery: true,
+        streamedAnswer: true, sessionScoped: true, humanEvent: true, deepLinkReload: true,
+        shellQueryPreserved: true, noOutwardWrites: true, providerUsed: false, evidence: componentEvidence } : {}) };
   } catch (error) {
     if (componentEvidence) writeFileSync(join(componentEvidence, 'receipt-failure.json'), JSON.stringify({
-      reads, writes, errors, providerUsed: false, error: String(error) }, null, 2));
+      reads, writes, errors, supportRequests, outwardRequests, providerUsed: false, error: String(error) }, null, 2));
     if (options.workflowsRead) console.log('WORKFLOWS_REFRESH_PREFLIGHT_FAILURE ' + JSON.stringify(workflowsTimeline));
-    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead)) {
+    if (page && (options.brainstormHydration || options.prsRead || options.insightsRead || options.gitRead || options.framesRead || options.evalsRead || options.supportRead)) {
       const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
       await retainPortalBrowserFailure(page, evidence,
         options.gitRead ? new Error([String(error), ...errors, ...failedRequests].join('\n')) : error, errors);
