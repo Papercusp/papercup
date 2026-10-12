@@ -14,6 +14,41 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
       code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
 }
 
+describe('private managed task preflight', () => {
+  it.each(['missing', 'regular-file'])('refuses a %s manager socket before PostgreSQL allocation', kind => {
+    const directory = mkdtempSync(join(tmpdir(), 'private-task-preflight-'));
+    if (kind === 'regular-file') {
+      mkdirSync(join(directory, 'systemd'));
+      writeFileSync(join(directory, 'systemd', 'private'), 'not a socket');
+    }
+    try {
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)'], {
+        cwd: root, encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, XDG_RUNTIME_DIR: directory, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/unused-desktop-bus',
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('managed task preflight failed');
+      if (kind === 'regular-file') expect(result.stderr).toContain('must be an owned socket');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('requires the operator-api profile for an explicit managed task route', () => {
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)'], {
+      cwd: root, encoding: 'utf8', timeout: 5000,
+    });
+    expect(result.status, childDiagnostic(result, startedAt)).toBe(2);
+    expect(result.stderr).toContain('operator-api only');
+    expect(result.stdout).not.toContain('booting throwaway PG');
+  });
+});
+
 describe('PostgreSQL bootstrap import boundary', () => {
   it.each(['ordinary', 'isolated'])('reaches the %s child preflight without loading runtime or browser bootstrap dependencies', mode => {
     const entry = join(root, 'scripts/with-test-pg.mjs');
@@ -29,7 +64,9 @@ describe('PostgreSQL bootstrap import boundary', () => {
     const script = `
       import Module from 'node:module';
       import { register } from 'node:module';
+      console.error('BOOTSTRAP_PREFLIGHT_STAGE:entry');
       register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      console.error('BOOTSTRAP_PREFLIGHT_STAGE:guard-ready');
       const compile = Module.prototype._compile;
       Module.prototype._compile = function (content, filename) {
         if (filename.endsWith('/scripts/lib/playwright-temp-directory.cjs')) {
@@ -40,15 +77,20 @@ describe('PostgreSQL bootstrap import boundary', () => {
       process.argv = [process.execPath, ${JSON.stringify(entry)},
         ...${JSON.stringify(mode === 'isolated' ? ['--isolated-runtime=operator-api'] : [])},
         '--', 'papercusp-missing-child-executable-browser-boundary'];
+      console.error('BOOTSTRAP_PREFLIGHT_STAGE:launcher-import');
       await import(${JSON.stringify(pathToFileURL(entry).href)});
     `;
     const startedAt = performance.now();
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    // Refusal is a builtin-only Node path. Install the guards before importing
+    // the launcher, without first bootstrapping an unrelated transpiler.
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: root, encoding: 'utf8', timeout: 10_000,
       env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
     });
     const diagnostic = childDiagnostic(result, startedAt);
     expect(result.status, diagnostic).toBe(1);
+    expect(result.stderr, diagnostic).toContain('BOOTSTRAP_PREFLIGHT_STAGE:guard-ready');
+    expect(result.stderr, diagnostic).toContain('BOOTSTRAP_PREFLIGHT_STAGE:launcher-import');
     expect(result.stderr, diagnostic).toContain('child preflight failed');
     expect(result.stderr).not.toContain('RUNTIME_BOOTSTRAP_IMPORT_REFUSED');
     expect(result.stderr).not.toContain('BROWSER_COMMONJS_BOOTSTRAP_REFUSED');
