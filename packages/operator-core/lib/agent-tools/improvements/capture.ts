@@ -295,7 +295,7 @@ const NOT_EXERCISED_RUBRIC_GUIDANCE =
  * the validator so discovery can publish the same rule the refinement enforces.
  */
 const CAPTURE_TEXT_CALL_CONSTRAINT =
-  'at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted (body-only captures derive title from the first non-empty body line)';
+  'at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted (body-only captures derive title from the first non-empty body line); a non-empty observation.notExercised requires observation.rubricRef or the top-level rubricRef compatibility alias (omit notExercised for free-text observations)';
 
 /**
  * EI-19325151590626958 — the DEFAULT conditionKey for a rubric-graded scorecard observation.

@@ -820,7 +820,7 @@ describe('improvements:capture tool envelope', () => {
     ).toBe(false);
   });
 
-  it('publishes the conditional title/body/toolFailure prerequisite (EI-22685673523193526)', () => {
+  it('publishes conditional capture prerequisites for title/body/toolFailure and notExercised', () => {
     const json = z.toJSONSchema(captureTool.args as never) as {
       'x-papercusp-call-constraint'?: string;
     };
@@ -828,6 +828,9 @@ describe('improvements:capture tool envelope', () => {
     expect(json['x-papercusp-call-constraint']).toContain('at least one of title, body, or toolFailure');
     expect(json['x-papercusp-call-constraint']).toContain(
       'title is required when both body and toolFailure are omitted',
+    );
+    expect(json['x-papercusp-call-constraint']).toContain(
+      'a non-empty observation.notExercised requires observation.rubricRef or the top-level rubricRef compatibility alias',
     );
 
     const argsSchema = captureTool.args as {
@@ -905,7 +908,7 @@ describe('improvements:capture tool envelope', () => {
     });
 
     const rowKeys = mockCapture.mock.calls.map(([input]) => input.watchdogKey);
-    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:sdk-bootstrap-failed-before-operator-connection');
+    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:md5-8627c9c6c1206235c21992a6dee757ef');
     expect(rowKeys[1]).toBe('tool-failure-signature:ptool:structural:enospc:tmp-pcv-fs-mutex-locks');
     expect(rowKeys[1]).not.toBe(rowKeys[0]);
     expect(rowKeys[2]).toBe(rowKeys[1]);
@@ -914,7 +917,49 @@ describe('improvements:capture tool envelope', () => {
     const enospcProbation = (mockCapture.mock.calls[1]?.[0].payloadExtra as Record<string, unknown>)
       ?.toolFailureProbation as Record<string, unknown>;
     expect(firstProbation.watchdogKey).toBe(rowKeys[0]);
-    expect(enospcProbation.watchdogKey).toBe(rowKeys[0]);
+    expect(enospcProbation.watchdogKey).toBe(
+      'repeated-tool-error:ptool:structural:md5-7a7a4b4cbc261d5b0c59a376c9fb3f1a',
+    );
+    expect(enospcProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
+  });
+
+  it('keeps distinct status-502 lock failures separate through the regular capture route', async () => {
+    mockIdentity.mockReturnValue(identity('static-client', 'su-lock-filer'));
+    const prefix = 'locks:acquire failed (502): read ECONNRESET while acquiring the file lock for ';
+    const messages = [
+      `${prefix}packages/operator-core/lib/agent-tools/locks/alpha.ts`,
+      `${prefix}packages/operator-core/lib/agent-tools/locks/beta.ts`,
+    ];
+    const ctx = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+
+    for (const message of messages) {
+      await callTool({
+        kind: 'bug',
+        toolFailure: {
+          toolName: 'locks:acquire',
+          errorCode: 'ECONNRESET',
+          status: '502',
+          message,
+        },
+      }, ctx);
+    }
+
+    // 502 is not accepted by the narrower invocation-friction helper, so both
+    // reports must fall through to captureImprovement with their own full-message key.
+    expect(mockCaptureToolInvocationFriction).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledTimes(2);
+    const inputs = mockCapture.mock.calls.map(([input]) => input as {
+      watchdogKey?: string;
+      payloadExtra?: { toolFailureProbation?: { watchdogKey?: string; messageFingerprint?: string | null } };
+    });
+    const rowKeys = inputs.map((input) => input.watchdogKey);
+    expect(rowKeys[0]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
+    expect(rowKeys[1]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
+    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    const probation = inputs.map((input) => input.payloadExtra?.toolFailureProbation);
+    expect(probation[0]?.watchdogKey).toBe(rowKeys[0]);
+    expect(probation[1]?.watchdogKey).toBe(rowKeys[1]);
+    expect(probation[1]?.messageFingerprint).not.toBe(probation[0]?.messageFingerprint);
   });
 
   it('routes output-spill failures through the signature-aware subsystem writer (EI-25309649835141283)', async () => {
