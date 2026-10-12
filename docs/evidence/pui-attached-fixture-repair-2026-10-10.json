@@ -266,5 +266,91 @@
       "The changed invocation path passes 10 route tests; chat context/catalog checks add 7 passes with unknown commit provenance. Both cold controls now pass the unchanged three-second request/loop guard on the production bundle loader. This proves the corrected private fixture; no native approval/restart or immutable full-candidate acceptance is established.",
       "The original full47a6 verdict remains refused. BAR adequacy, independent grading and final Avi candidate approval remain required."
     ]
+  },
+  "nativeResumeHomeRepair": {
+    "workItem": "EI-25697542669399195",
+    "plane": "local current-build operator fixture with retained installed 47a6 PUI binary; not immutable full-candidate acceptance",
+    "failedRun": {
+      "taskId": "0mv5lj63x1bkkes9qdy",
+      "testRunId": 21155108,
+      "logPath": ".papercusp/scratch/bash-f3b96652-92e.log",
+      "logSha256": "0e267b31478501d4a65667f77e1e6585adadf6f30df6f8812d649abc50127cc5",
+      "terminalAt": "2026-10-12T18:49:19.853Z",
+      "exitCode": 1,
+      "firstOperatorPid": 2165056,
+      "secondOperatorPid": 2247838,
+      "port": 41033,
+      "nativePostExitHolder": "clean-scan; held=false",
+      "attachOutcome": { "httpStatus": 503, "status": "error", "code": "attached_engine_start_failed", "error": "The native transcript is unavailable or still being restored" },
+      "nativeModel": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "accountServed": "aviynw6",
+      "firstLeg": "Passed native approval, exact effect, completed same-turn/session tool and greeting assertions before OS exit; no standalone first-leg receipt existed in this run."
+    },
+    "rootCause": "The launcher transcript preflight hardcoded the default OMP store although launch and native-resume environment used PAPERCUSP_SU_OMP_HOMES_DIR. Structured resume also omitted the persisted descriptor agentHome from the preflight source. The preflight therefore refused a valid private native transcript before the existing exact-home resolver ran.",
+    "alternativeHypothesis": "Archive timing or provider capacity prevented the transcript from being restored.",
+    "distinguishingTest": "Canonical filesystem launcher tests create the exact native transcript in saved/configured homes without any provider or archive, then check transcript presence and native resume environment. A negative control puts the same thread id only in an unrelated default home. Structured-resume test refuses unless descriptor agentHome reaches transcript preflight.",
+    "negativeControl": { "testRunIds": [21155678, 21155682], "result": "Three launcher regressions and the structured-resume regression failed on unchanged production source." },
+    "guardVerification": {
+      "testRunIds": [21155704, 21155707],
+      "launcherTestsPassed": 13,
+      "structuredResumeTestsPassed": 21,
+      "exitCode": 0,
+      "logPath": "/tmp/pui-acceptance-7534f/fire28-resume-guards.log",
+      "logSha256": "830e6f92c35476704b8ddc01f25a5f910af7a9e525da9a7f9f61b395dbee134a",
+      "scope": "Current working-tree regressions; uncommitted source provenance stamped by runner."
+    },
+    "repair": "Reuse one tracked OMP agent-home derivation for transcript and native environment; pass the saved descriptor home into structured resume; fail closed when an explicit home lacks its transcript. Retain completed native approval and pre-restart transcript receipts before cleanup and assert transcript can be located before OS exit.",
+    "sourceSha256": {
+      "apps/operator/scripts/psu-launcher.mjs": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "apps/operator/lib/psu-launcher.test.ts": "944bf06166a256c3eceb30c17aceb291a63ab6a3d0ee35261c6136201c24cccf",
+      "packages/operator-core/lib/su-session-resume.ts": "e907bf8298804fa019e586c480bb859059117e48566f3b5a3879dadee86a1756",
+      "packages/operator-core/lib/su-session-resume.test.ts": "0be9c4a63552b352744ccf815bddcf2d05d212fb6e53f58e2212fb45d0242a04",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "c09549a7805eb7b1f9f5f231d33b032dcf4be4e75f562627be608c849ef34967"
+    },
+    "nativeVerification": {
+      "taskId": "0mv5mv6fm123qa1klp1",
+      "logPath": ".papercusp/scratch/bash-95364ead-1dc.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-root-fix-20261012-1918",
+      "deadline": "2026-10-12T19:36:39.687Z",
+      "state": "Failed before restart: approval fixture waited for the note card while OMP requested approval for a mounted MCP work-item lookup.",
+      "testRunId": 21155813,
+      "terminalAt": "2026-10-12T19:25:08.891Z",
+      "exitCode": 1,
+      "pendingApprovalTitle": "Write(xd://mcp__papercusp_su__work_items_get)",
+      "followUpWorkItem": "EI-25803053154996876",
+      "logSha256": "5df3cdcbd081a85b6edda3fa786bbe46726a19af8e4be3a4444dac8cb9925cea"
+    },
+    "limitations": [
+      "The retained full47a6 verdict remains refused. This repair has not yet passed a real native restart journey or a clean as-committed candidate acceptance. The subsequent native run failed before exercising the repaired restart path.",
+      "No OMP model pin, account substitution, permission bypass, timeout increase or cold REST prewarm was introduced. Independent grading and exact final Avi approval remain required."
+    ]
+  },
+  "mountedSuApprovalRepair": {
+    "workItem": "EI-25803053154996876",
+    "rootCause": "The fixture recognized only direct papercusp-su MCP approval titles, while OMP's connected MCP devices request native Write(xd://...) approval. The existing prerequisite driver ignored this card and waited for the separate requested-note card.",
+    "repair": "Extend the existing release-acceptance helper and shared fixture classifiers to recognize only Papercusp SU mounted devices. Approve mounted Write calls once; never grant all native Write permission. Leave ordinary filesystem writes, Bash effects and other servers' devices for explicit approval. Add pending-card titles to the timeout diagnostic.",
+    "guardVerification": {
+      "testRunId": 21155887,
+      "testsPassed": 14,
+      "testsSkipped": 36,
+      "exitCode": 0,
+      "logPath": "/tmp/pui-acceptance-7534f/fire28-mounted-mcp-guards.log",
+      "logSha256": "5e41079d696249d327c485e86151f9908b220c86e5666c690611600919332126",
+      "scope": "Canonical Vitest native approval terminal and prerequisite classifier controls; real PUI mounted-device execution remains pending."
+    },
+    "sourceSha256": {
+      "packages/operator-core/lib/pui-e2e/release-acceptance.ts": "8a5ed02c31fe8b66afd54c44d9c087ca2c5fa4a00898176e2ad0acfbb6e05a82",
+      "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts": "8be5712ce2caa00a2091835a0f9bdcaabf24b5968a0dd98123d72cfbd2da49e6",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "d5e16ab06441002c789a58c28afda75a78c80a431cbb408cfc22523c82de14a9"
+    },
+    "nativeVerification": {
+      "taskId": "0mv5nmz651f2fiuabl4",
+      "logPath": ".papercusp/scratch/bash-ac98c238-049.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-fix-20261012-1940",
+      "deadline": "2026-10-12T19:58:16.655Z",
+      "state": "Pending; adopt this single existing job before any replay or source edit."
+    },
+    "limitations": "No actual mounted-route tool completion, requested-note approval/effect, second-process native attachment or immutable full-candidate acceptance is claimed. All original publication holds remain."
   }
 }
