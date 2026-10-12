@@ -6,6 +6,7 @@ import './task-brief.test';
 import '../dream/capability-packets.test';
 import '../dream/capability-sampler.test';
 import './scoped-contracts.test';
+import '../dream/capability-review.test';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';

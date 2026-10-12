@@ -74,6 +74,12 @@ async function withinRoot(root: string, path: string): Promise<string> {
   return file;
 }
 
+/** Same canonical scope and source byte budget for independently retrieved code priors. */
+export async function readCapabilitySource(rootPath: string, path: string): Promise<string> {
+  const root = await realpath(rootPath);
+  return readBounded(await withinRoot(root, path), MAX_SOURCE_BYTES);
+}
+
 const defaultDeps: CapabilityPacketDeps = {
   cache: new PgL2Store(),
   pack: (rootPath, include) => packerFacade('pack', { rootPath, include, format: 'xml', compress: false }),

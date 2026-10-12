@@ -37,7 +37,7 @@ const PriorSchema = z
     evidenceHash: hash.nullable(),
     locator: z
       .discriminatedUnion('kind', [
-        z.object({ kind: z.literal('code'), id: ref }).strict(),
+        z.object({ kind: z.literal('code'), id: ref, path: ref.optional() }).strict(),
         z.object({ kind: z.literal('plan'), id: ref }).strict(),
         z.object({ kind: z.literal('dream'), id: ref }).strict(),
         z.object({ kind: z.literal('idea'), id: ref, subref: ref }).strict(),

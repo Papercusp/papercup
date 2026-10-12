@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { PlanRow } from '../agent-tools/plans/source';
 import type { DreamRun } from './dream-run-store';
-import { buildCapabilityReviewSources, type CapabilityReviewSourceDeps } from './capability-review-sources';
+import { buildCapabilityReviewSources, discoverCapabilityReviewCode, type CapabilityReviewSourceDeps } from './capability-review-sources';
 import { getPilotCapabilityManifest } from './capability-catalog';
 import { capabilityHash, capabilityUnitHash, type CapabilityPacket } from './capability-contracts';
 import { type CapabilityProposal } from './capability-pass';
-import { verifyCapabilityPacket } from './capability-packets';
+import { CAPABILITY_EXTRACTION_RECIPE, CAPABILITY_SUMMARY_PROMPT, verifyCapabilityPacket } from './capability-packets';
 import { capabilityContentVersion, capabilityPairKey, type CapabilitySelection } from './capability-sampler';
 import {
   CAPABILITY_PRIOR_KINDS,
@@ -202,8 +202,8 @@ async function fixture() {
       manifestRevision: 'review-fixture-v1',
       sources,
       extraction: {
-        recipeVersion: 'scanned-anchors-and-radius-v2',
-        promptVersion: 'manifest-facets-v1',
+        recipeVersion: CAPABILITY_EXTRACTION_RECIPE,
+        promptVersion: CAPABILITY_SUMMARY_PROMPT,
         capturedAt: '2026-09-07T14:00:00Z',
         sourceCommit: null,
         dirty: true,
@@ -312,6 +312,13 @@ async function fixture() {
 }
 
 describe('independent capability source and skeptical review', () => {
+  it('keeps current fixture extraction inputs fresh and rejects the retired recipe with the same source and manifest', async () => {
+    const f = await fixture(), packet = f.options.selection.a.packet;
+    const input = { rootPath: f.root, scope, unit: packet.unit, manifestRevision: f.options.manifest.revision };
+    expect(await f.deps.verifyPacket(packet, input)).toEqual({ fresh: true });
+    expect(await f.deps.verifyPacket({ ...packet, extraction: { ...packet.extraction, recipeVersion: 'scanned-anchors-and-radius-v2' } }, input))
+      .toEqual({ fresh: false, reason: 'Packet scope or manifest changed' });
+  });
   it('refuses an invented problem fit before spending on independent review', async () => {
     const f = await fixture();
     f.options.candidate.problemFit = { refs: ['observation:absent'], beneficiary: 'Engineers', proposedImprovement: 'Restore state' };
@@ -961,6 +968,62 @@ describe('production capability and Blender source adapter', () => {
     expect(answer.matches.find((p) => p.ref === 'dream:rejected-1')!.text).toContain('state scope was not bounded');
     for (const p of answer.matches) expect(await a.sources.readCurrent(p)).toEqual(p);
   });
+  it('discovers actual integration source and a renamed compiler neighbor beyond the initial capability catalogue', async () => {
+    const a = await adapterFixture();
+    await writeFile(join(a.f.root, 'existing.ts'), 'import { helper } from "./helper";\nexport function boundedRollbackRecipe() { return helper(); }\n');
+    await writeFile(join(a.f.root, 'helper.ts'), 'export function helper() { return "ALREADY_IMPLEMENTED_INTEGRATION"; }\n');
+    a.deps.code = discoverCapabilityReviewCode;
+    const result = await a.sources.search({ ...a.request, query: 'boundedRollbackRecipe' });
+    expect(result.matches).toContainEqual(expect.objectContaining({ ref: 'code-source:existing.ts',
+      text: expect.stringContaining('boundedRollbackRecipe'), locator: { kind: 'code', id: 'source:existing.ts', path: 'existing.ts' } }));
+    expect(result.matches).toContainEqual(expect.objectContaining({ ref: 'code-source:helper.ts', text: expect.stringContaining('ALREADY_IMPLEMENTED_INTEGRATION') }));
+    const current = result.matches.find(p => p.ref === 'code-source:helper.ts')!;
+    expect(await a.sources.readCurrent(current)).toEqual(current);
+    await writeFile(join(a.f.root, 'helper.ts'), 'export function helper() { return "CHANGED_IMPLEMENTATION"; }\n');
+    expect((await a.sources.readCurrent(current))!.sourceHash).not.toBe(current.sourceHash);
+    expect(result.note).toContain('global novelty is not established');
+  }, 30_000);
+  it('preserves no-match uncertainty and independently resolves saved beyond-catalogue source locators', async () => {
+    const a = await adapterFixture(); a.deps.code = discoverCapabilityReviewCode;
+    await writeFile(join(a.f.root, 'existing.ts'), 'export function boundedRollbackRecipe() { return "existing integration"; }\n');
+    const found = await a.sources.search({ ...a.request, query: 'boundedRollbackRecipe' });
+    const saved = JSON.parse(JSON.stringify(found.matches.find(p => p.ref === 'code-source:existing.ts'))) as CapabilityReviewPrior;
+    const restarted = buildCapabilityReviewSources({ sql: {} as Sql, scope, rootPath: a.f.root,
+      manifest: a.f.options.manifest, packets: [] }, a.deps);
+    expect(await restarted.readCurrent(saved)).toEqual(saved);
+    const absent = await a.sources.search({ ...a.request, query: 'nonsensezzqwerty' });
+    expect(absent.matches.some(p => p.ref.startsWith('code-source:'))).toBe(false);
+    expect(absent.note).toContain('not proof of absence');
+    expect(absent.note).toContain('global novelty is not established');
+  }, 30_000);
+  it('rejects a proposal as a duplicate when independent review cites current implementation outside the manifest catalogue', async () => {
+    const a = await adapterFixture(), f = a.f;
+    await writeFile(join(f.root, 'existing.ts'), 'export function existingSnapshotReplay() { return "Restore the scoped state and replay the evaluation"; }\n');
+    a.deps.code = discoverCapabilityReviewCode; f.options.sources = a.sources;
+    // Calibrated negative reference: retain the independently known matching
+    // implementation. The general fixture reverses arbitrary priors and can
+    // drop this reference at the eight-row budget before review sees it.
+    f.deps.rerank = async (_query, values) => ({ priors: [...values]
+      .sort((left, right) => Number(right.ref === 'code-source:existing.ts') - Number(left.ref === 'code-source:existing.ts')).slice(0, 8),
+    outcome: { attempted: true, scored: values.length } });
+    const llm = f.options.llmCall;
+    f.options.llmCall = async input => {
+      const request = JSON.parse(input.messages[0]!.content as string);
+      if (request.priors) {
+        const review = judgment(request.priors);
+        const match = review.comparisons.find(c => c.ref === 'code-source:existing.ts');
+        expect(match).toBeDefined(); match!.disposition = 'duplicate';
+        match!.note = 'The existing source already restores scoped state and replays evaluation.';
+        f.setJudgment(review);
+      }
+      return llm(input);
+    };
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.verdict, result.note).toBe('reject'); expect(result.reason).toBe('duplicate');
+    expect(result.priorMatches).toContainEqual(expect.objectContaining({ ref: 'code-source:existing.ts',
+      sourceHash: capabilityHash('export function existingSnapshotReplay() { return "Restore the scoped state and replay the evaluation"; }\n') }));
+    expect(result.coverage.globalNovelty).toBe('not-established');
+  }, 30_000);
   it('shares history only within the search phase and re-reads authoritative evidence for adjudication', async () => {
     const a = await adapterFixture();
     const [first] = await Promise.all(
