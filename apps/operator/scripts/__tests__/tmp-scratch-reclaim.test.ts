@@ -132,7 +132,7 @@ describe('shared /tmp scratch reclaimer systemd contract', () => {
       const mktempShim = join(shim, 'mktemp');
       writeFileSync(mktempShim, `#!/usr/bin/env bash\nfor arg in "$@"; do\n  case "$arg" in "${target}"/*) echo 'No space left on device' >&2; exit 1;; esac\ndone\nexec "${realMktemp}" "$@"\n`);
       chmodSync(mktempShim, 0o755);
-      const env = { ...process.env, PATH: `${shim}:${process.env.PATH}` };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${shim}:${process.env.PATH}` };
       delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_COPIED;
       delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_DIR;
       const args = [WRAPPER, SCRIPT, '--root', target, '--execute'];

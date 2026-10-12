@@ -38,7 +38,9 @@ try {
       // command substitution: that would bind the ledger to an already-dead PID.
       const result = await runGovernedTestProcess({ namespace: 'r11-reservation-owner',
         owner: `r11-reservation-${process.pid}`, timeoutMs: 26 * 3600_000, demand: { cpuWeight: 1 } },
-      (_context: unknown, childEnv: NodeJS.ProcessEnv) => new Promise<{ status: number | null; signal: string | null }>((resolve, reject) => {
+      // `settle`, not `resolve`: that name would shadow node:path's resolve, which the
+      // spawn argv below needs to locate disk-preflight.sh.
+      (_context: unknown, childEnv: NodeJS.ProcessEnv) => new Promise<{ status: number | null; signal: string | null }>((settle, reject) => {
       const child = spawn('bash', ['-c', [
         'set -eu',
         'source "$1"; shift',
@@ -57,7 +59,7 @@ try {
       ...admission.devices.flatMap((device) => [device.paths[0], String(Math.ceil(device.requiredBytes / 1024 ** 3))])],
       { stdio: 'inherit', env: childEnv });
       child.once('error', reject);
-      child.once('close', (status, signal) => resolve({ status, signal }));
+      child.once('close', (status, signal) => settle({ status, signal }));
       }));
       if (result.status !== 0) throw new Error(`R11 reservation owner exited ${result.status ?? result.signal}`);
     }

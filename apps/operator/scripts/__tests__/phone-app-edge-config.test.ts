@@ -259,7 +259,9 @@ describe("LiveKit advertises only public media candidates once the edge is confi
     const dir = mkdtempSync(join(tmpdir(), "phone-edge-env-"));
     try {
       const source = readFileSync(edgeScript, "utf8").split('case "${1:-}" in')[0];
-      const testEnv = { ...process.env, ...env, PHONE_CONFIG_DIR: dir };
+      // Annotated: spreading the concrete `env` after process.env drops the
+      // index signature, which would make this delete a TS2339.
+      const testEnv: NodeJS.ProcessEnv = { ...process.env, ...env, PHONE_CONFIG_DIR: dir };
       delete testEnv.PHONE_PRODUCER_LISTEN_PORT;
       writeFileSync(join(dir, "edge.env"), port === undefined ? "" : `PHONE_PRODUCER_LISTEN_PORT=${port}\n`);
       const result = spawnSync("bash", ["-c", `${source}\nHERE="$EDGE_SOURCE_DIR"\npersist\nrender nginx-site`], {

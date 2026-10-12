@@ -52,7 +52,7 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
     const env: NodeJS.ProcessEnv = { TMPDIR: '/full', XDG_CACHE_HOME: '/healthy' };
     const result = preparePlaywrightTempDirectory({
       env, mkdir: vi.fn(), access: vi.fn(),
-      statfs: vi.fn(path => path === '/full' ? { ...healthy, bavail: 12 } : healthy) as typeof import('node:fs').statfsSync,
+      statfs: vi.fn(path => path === '/full' ? { ...healthy, bavail: 12 } : healthy) as unknown as typeof import('node:fs').statfsSync,
     });
     expect(result.path).toBe('/healthy/papercusp/playwright-tmp');
     expect(result.usedFallback).toBe(true);
@@ -63,7 +63,7 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
     const mkdir = vi.fn();
     const result = preparePlaywrightTempDirectory({
       env: { TMPDIR: '/explicit' }, mkdir, access: vi.fn(),
-      statfs: vi.fn(() => healthy) as typeof import('node:fs').statfsSync,
+      statfs: vi.fn(() => healthy) as unknown as typeof import('node:fs').statfsSync,
     });
     expect(result.path).toBe('/explicit');
     expect(mkdir).not.toHaveBeenCalled();
@@ -78,7 +78,7 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
         statfs: vi.fn(() => {
           if (failure === 'measurement') throw new Error('EIO');
           return { ...healthy, bavail: failure === 'capacity' ? 0 : healthy.bavail, ffree: failure === 'inodes' ? 0 : healthy.ffree };
-        }) as typeof import('node:fs').statfsSync,
+        }) as unknown as typeof import('node:fs').statfsSync,
       })).toThrow(/No writable Playwright temporary directory/);
       expect(env).toEqual({ TMPDIR: '/bad', XDG_CACHE_HOME: '/also-bad' });
     }
