@@ -103,12 +103,10 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
   'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts': migrate('P-013'),
   'log-only-fallback|packages/docs-engine/src/render-mdx.ts': migrate('P-013'),
-  'log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/agent-tools/index.ts': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
   ),
-  'log-only-fallback|packages/operator-core/lib/agent-tools/operator/converse-prompt.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/attention/reconcile-escalations.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/blueprint/blueprint-run-action.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts': migrate('P-013'),

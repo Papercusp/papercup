@@ -109,8 +109,6 @@
     "log-only-fallback|libs/generic/tooldef/src/dispatch-stack.ts|run|1",
     "log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1",
     "log-only-fallback|packages/docs-engine/src/render-mdx.ts|renderMdxToMarkdownUnqueued|1",
-    "log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts|gatherLivePresenceCurrentFiles|1",
-    "log-only-fallback|packages/operator-core/lib/agent-tools/operator/converse-prompt.ts|buildOperatorPrompt|1",
     "log-only-fallback|packages/operator-core/lib/attention/reconcile-escalations.ts|rerouteUnackedEscalationsOnce|1",
     "log-only-fallback|packages/operator-core/lib/blueprint/blueprint-run-action.ts|handleBlueprintRun|1",
     "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|1",
