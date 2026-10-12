@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -688,6 +689,38 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
 });
 
 describe('exact spec evidence bindings', () => {
+  it.each([
+    ['integration', true, false], ['e2e', true, false], ['unit', true, false],
+    ['e2e', false, false], ['e2e', true, true],
+  ] as const)('pins original isolated lifetime hashes (layer=%s receipts=%s wrong-unit=%s)',
+    async (testLayer, hasReceipts, wrongUnit) => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const runId = '20261008T000000Z-100';
+      const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+        lifecycleSha256: 'c'.repeat(64) }];
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        testLayer, passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: true, ...(hasReceipts ? { isolatedRuntimeReceipts: receipts } : {}) };
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+        WHERE id = ${testRunId}`;
+      const result = await evidenceStore.bindSpecEvidence({
+        workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test',
+        evidenceRef: 'test/reconnect.test.ts', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-cannot-create-a-receipt', details: { evidencePlane: 'live', currentMeasurement: {
+          schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+          runtimeUnits: [wrongUnit ? 'bg-host' : `isolated-integration:${runId}`],
+        } },
+      });
+      expect(result).toMatchObject({ status: 'created' });
+      const [stored] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
+      const expected = testLayer !== 'unit' && hasReceipts && !wrongUnit
+        ? createHash('sha256').update(JSON.stringify(receipts)).digest('hex') : null;
+      expect(stored.environment_fingerprint).toBe(expected);
+    });
+
   it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
