@@ -594,6 +594,11 @@ interface GradingAuditReservationOptions {
   now?: Date;
   /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
   currentness?: ScorecardGradingAuditCurrentness;
+  /**
+   * Set only after this dispatcher has proven its build is the graded build or a descendant.
+   * That proof lets a compatible dispatcher clear a legacy generation-incompatible backoff.
+   */
+  allowGenerationIncompatibleBackoff?: boolean;
 }
 
 async function withGradingAuditSubjectMutex<T>(
@@ -864,8 +869,9 @@ export async function reservePendingGradingAudit(
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
                jsonb_set(
-                 -- A claim only succeeds once any quota backoff below has EXPIRED,
-                 -- so clearing it here is the natural place: the stamp is spent.
+                 -- A claim only succeeds once any blocking backoff below has expired,
+                 -- or a compatible dispatcher has proved it can clear a legacy
+                 -- generation-incompatible stamp, so clearing it here spends the stamp.
                  COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
                  '{observation,gradingAudit,dispatchReservation}',
                  ${reservation}::text::jsonb,
@@ -899,6 +905,10 @@ export async function reservePendingGradingAudit(
              -- strand a card permanently.
              AND (
                payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until' IS NULL
+               OR (
+                 ${options.allowGenerationIncompatibleBackoff === true}
+                 AND payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'generation_incompatible'
+               )
                OR CASE
                     WHEN payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until'
                          ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
@@ -1516,6 +1526,9 @@ export async function dispatchPendingGradingAudits(
     let launchBackend: 'claude' | 'codex' = 'claude';
     let routingFallback: string | undefined;
     let receipt: PendingGradingAuditDispatchReceipt | null = null;
+    const generationBound = card.gradedGeneration != null;
+    const evaluatorBuildBound = card.rerunRecipe?.evaluatorBuild != null;
+    let generationCompatible = false;
     const releaseReservation = async (
       backoff?: GradingAuditDispatchBackoff,
       restore?: GradingAuditReservationResult['prior'],
@@ -1663,9 +1676,31 @@ export async function dispatchPendingGradingAudits(
       return `${idempotencyKey}:recovery:${retryIdentity}`;
     };
     try {
+      if (generationBound) {
+        const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
+        const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
+        const generationCheck = assessGenerationAncestry(
+          gradedGeneration?.deployedSha,
+          currentGeneration.deployedSha,
+          resolveAgentWorkspaceRoot({}),
+          deps.generationAncestry ??
+            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+        );
+        if (!generationCheck.ok) {
+          const reason =
+            "grading auditor dispatch for '" + issueId + "' refused: dispatcher build '" +
+            (currentGeneration.deployedSha ?? 'unknown') + "' is not proven to be the same as or a descendant of " +
+            "graded build '" + (gradedGeneration?.deployedSha ?? 'unknown') + "' (" + generationCheck.reason + "); " +
+            'no auditor was routed or launched; no reservation or backoff was changed';
+          return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, reason };
+        }
+        generationCompatible = true;
+      }
+
       const reservation = await reserve(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
         currentness: card.gradingAuditCurrentness,
+        ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
       });
       if (reservation.status !== 'claimed') {
         return {
@@ -1689,35 +1724,6 @@ export async function dispatchPendingGradingAudits(
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         return receipt!;
-      }
-      const generationBound = card.gradedGeneration != null;
-      const evaluatorBuildBound = card.rerunRecipe?.evaluatorBuild != null;
-      if (generationBound) {
-        const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
-        const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
-        const generationCheck = assessGenerationAncestry(
-          gradedGeneration?.deployedSha,
-          currentGeneration.deployedSha,
-          resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ??
-            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
-        );
-        if (!generationCheck.ok) {
-          const reason =
-            `grading auditor dispatch for '${issueId}' refused: dispatcher build ` +
-            `'${currentGeneration.deployedSha ?? 'unknown'}' is not proven to be the same as or a descendant of ` +
-            `graded build '${gradedGeneration?.deployedSha ?? 'unknown'}' (${generationCheck.reason}); ` +
-            'no auditor was routed or launched';
-          await releaseReservation(
-            resolveGradingAuditFailureBackoff({
-              code: 'generation_incompatible',
-              reason,
-              ...(deps.now ? { nowMs: deps.now() } : {}),
-            }),
-            priorReservation,
-          );
-          return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, reason };
-        }
       }
       /**
        * The reservation is a bounded dispatch lease, not the auditor's

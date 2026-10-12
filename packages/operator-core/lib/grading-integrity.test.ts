@@ -796,6 +796,14 @@ describe('dispatchPendingGradingAudits', () => {
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-generation-bound'], ctx }, d);
 
     expect(d.generationAncestry).toHaveBeenCalledWith(expect.any(String), '1111111', '2222222');
+    expect(d.reserve).toHaveBeenCalledWith(
+      'EI-generation-bound',
+      'grading-audit:EI-generation-bound',
+      expect.objectContaining({ allowGenerationIncompatibleBackoff: true }),
+    );
+    expect(d.generationAncestry.mock.invocationCallOrder[0]).toBeLessThan(
+      d.reserve.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledTimes(1);
     // EI-24339979200649356: the ancestry check measured THIS dispatcher's build, so the
@@ -842,29 +850,22 @@ describe('dispatchPendingGradingAudits', () => {
       const result = await dispatchPendingGradingAudits({ targetIds: ['EI-incompatible-generation'], ctx }, d);
 
       expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining(reasonCode) });
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(d.release).not.toHaveBeenCalled();
+      expect(d.confirmReservation).not.toHaveBeenCalled();
+      expect(d.listTasks).not.toHaveBeenCalled();
       expect(d.route).not.toHaveBeenCalled();
       expect(d.launch).not.toHaveBeenCalled();
-      expect(d.release).toHaveBeenCalledWith(
-        'EI-incompatible-generation',
-        'grading-audit:EI-incompatible-generation',
-        expect.objectContaining({
-          backoff: expect.objectContaining({ code: 'generation_incompatible', source: 'retry-window' }),
-        }),
-      );
     },
   );
 
-  it('restores the prior auditor lease when generation incompatibility blocks a retry', async () => {
+  it('does not mutate an existing auditor lease when generation is incompatible', async () => {
     const d = deps();
     const issueId = 'EI-incompatible-retained-auditor';
-    const idempotencyKey = `grading-audit:${issueId}`;
+    const idempotencyKey = 'grading-audit:' + issueId;
     const priorReservation = {
       key: idempotencyKey,
       reservedAt: '2026-10-12T01:03:23.081Z',
-    };
-    const retryReservation = {
-      key: idempotencyKey,
-      reservedAt: '2026-10-12T01:47:09.741Z',
     };
     d.listScorecards.mockResolvedValue([
       card(issueId, {
@@ -884,22 +885,14 @@ describe('dispatchPendingGradingAudits', () => {
         },
       }),
     ]);
-    d.reserve.mockResolvedValue({
-      status: 'claimed',
-      reservation: retryReservation,
-      prior: priorReservation,
-    });
     d.generationAncestry.mockReturnValue(false);
 
     const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
 
     expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('no auditor was routed or launched') });
-    expect(d.release).toHaveBeenCalledWith(issueId, idempotencyKey, {
-      workspaceId: 'ws-test',
-      reservedAt: retryReservation.reservedAt,
-      backoff: expect.objectContaining({ code: 'generation_incompatible', source: 'retry-window' }),
-      restore: priorReservation,
-    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.confirmReservation).not.toHaveBeenCalled();
+    expect(d.release).not.toHaveBeenCalled();
     expect(d.listTasks).not.toHaveBeenCalled();
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
