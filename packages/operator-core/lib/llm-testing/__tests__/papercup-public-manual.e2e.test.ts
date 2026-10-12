@@ -37,7 +37,8 @@ import { recordWorkspaceHostSignals, upsertWorkspaceHost, upsertWorkspaceHostCon
 import { HostedWorkspaceConnectorClient } from '../../workspace-host/hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from '../../workspace-host/hosted-session-host';
 import type { HostedConnectorBinding } from '../../endpoint-route/hosted-workspace-connector';
-import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, publicManualHostedUpgradeHeaders, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { connectorHostMatches } from '../../endpoint-route/routes/hosted-workspace-connector';
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withHostedServiceContext, withWorkspace } from '@papercusp/db-org';
@@ -826,6 +827,33 @@ describe('public manual connected-host transport', () => {
         .rejects.toThrow(/hosted_fixture_operator_(origin_required|not_loopback)/);
     });
 
+  it('qualifies connector and browser sockets at private ingress while retaining their credentials and origin', () => {
+    const origin = 'https://localhost:14502';
+    for (const credentials of [{ authorization: 'Bearer fixture-credential' }, { cookie: 'fixture-cookie' }]) {
+      const request = { url: '/api/hosted/connectors/socket?ticket=fixture-ticket&kind=operator-http',
+        headers: { host: 'localhost:14502', origin, ...credentials } };
+      const headers = publicManualHostedUpgradeHeaders(request, origin);
+      expect(headers).toEqual({ ...request.headers, host: 'app.papercusp.com' });
+      expect(request.headers.host).toBe('localhost:14502');
+      expect(connectorHostMatches(new Request(`https://${headers.host}${request.url}`), binding)).toBe(true);
+      expect(connectorHostMatches(new Request(`https://${request.headers.host}${request.url}`), binding)).toBe(false);
+    }
+  });
+
+  it('does not qualify foreign hosts, ordinary HTTP paths or non-private fixture origins', () => {
+    const headers = { host: 'localhost:14502', origin: 'https://localhost:14502', authorization: 'Bearer fixture' };
+    for (const request of [
+      { url: '/api/hosted/connectors/register', headers },
+      { url: '/api/agent-config', headers },
+      { url: '/api/hosted/connectors/socket', headers: { ...headers, host: 'foreign.example' } },
+      { url: '/api/hosted/connectors/socket', headers: { ...headers, host: 'localhost:14504' } },
+    ]) expect(publicManualHostedUpgradeHeaders(request, headers.origin)).toBe(request.headers);
+    for (const origin of ['https://foreign.example', 'https://user@localhost:14502', 'https://localhost:14502/path']) {
+      expect(() => publicManualHostedUpgradeHeaders({ url: '/api/hosted/connectors/socket', headers }, origin))
+        .toThrow('hosted_fixture_upgrade_origin_not_loopback');
+    }
+  });
+
   it('retains the HTTP refusal from a real upgrade and disposes its socket', async () => {
     const { createServer } = await import('node:http');
     const broker = createServer();
@@ -939,10 +967,11 @@ describe('public manual Portal fixture preparation', () => {
         candidateRoot, portalRoot, modelTurnRequests: 0, observations: {}, observedAt: new Date().toISOString() };
       const observations = receipt.observations as Record<string, unknown>;
       const receiptFile = join(evidenceDir, 'case.json');
+      let failure: unknown;
       const phase = publicManualHostedPhaseRecorder(value => {
         receipt.stage = value.stage;
         receipt.phase = value;
-        writeFileSync(receiptFile, serializePortalEvidence(receipt), { mode: 0o600 });
+        writeFileSync(receiptFile, serializePortalEvidence(receipt, failure), { mode: 0o600 });
         console.log(`HOSTED_READINESS_PHASE ${JSON.stringify(value)} receipt=${receiptFile}`);
       });
       receipt.runtimeBudget = await phase('runtime-budget-preflight', async () => assertPublicManualHostedRuntimeBudget([
@@ -966,7 +995,6 @@ describe('public manual Portal fixture preparation', () => {
       let api: import('@playwright/test').APIRequestContext | undefined;
       let user: { workspaceId?: string; cookie: (origin: string) => { name: string; value: string }; cleanup: (reason: string) => Promise<void> } | undefined;
       let connector: Awaited<ReturnType<typeof ownHostedOperatorConnector>> | undefined;
-      let failure: unknown;
       try {
         modules = await loadPortalFixtureModules(portalRoot, phase);
         const { request } = await phase('playwright-library-import', () => import('playwright'), 10_000);
@@ -1010,14 +1038,19 @@ describe('public manual Portal fixture preparation', () => {
         expect(historyBody.turns).toEqual([]);
         const listed = await phase('owned-chat-list', () => api.get(`${origin}/api/papercup-chat/conversations`, { headers }));
         const listedBody = await listed.json();
-        observations.ownedList = { status: listed.status(), containsChat: listedBody.chats?.some((chat: { id: string }) => chat.id === chatId) };
+        observations.ownedList = { status: listed.status(), containsChat: listedBody.chats?.some((chat: { chatId: string; backend: string }) => chat.chatId === chatId && chat.backend === 'converse') };
         expect(listed.status()).toBe(200);
-        expect((observations.ownedList as { containsChat: boolean }).containsChat).toBe(true);
+        expect(listedBody).toMatchObject({ ok: true, chats: expect.arrayContaining([
+          expect.objectContaining({ chatId, backend: 'converse' }),
+        ]) });
         const deniedHistory = await phase('anonymous-history', () => api.get(historyPath));
         observations.anonymousHistory = { status: deniedHistory.status() };
         expect(deniedHistory.status()).toBe(401);
         receipt.stage = 'passed';
-      } catch (error) { failure = error; }
+      } catch (error) {
+        failure = error;
+        receipt.primaryFailureStage = receipt.stage;
+      }
       finally {
         const resources = [
           { kind: 'hosted-operator-connector', cleanup: async () => { await connector?.close(); } },
