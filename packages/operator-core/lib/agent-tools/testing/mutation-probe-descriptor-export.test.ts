@@ -278,6 +278,66 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(seen.every((l) => l.descriptor === null)).toBe(true);
   });
 
+  it('auto: distinguishes an unavailable reader commit from an absent parser', () => {
+    const reader = join(dir, 'reader');
+    initRepo(reader);
+    const sub = join(reader, 'libs', 'test-config');
+    initRepo(sub);
+    writeFileSync(join(sub, 'README'), 'test-config\n');
+    git(sub, ['add', 'README']);
+    git(sub, ['commit', '-qm', 'available local reader']);
+    const unavailableCommit = 'f'.repeat(40);
+    git(reader, ['update-index', '--add', '--cacheinfo', `160000,${unavailableCommit},libs/test-config`]);
+    git(reader, ['commit', '-qm', 'reader with unavailable gitlink object']);
+    const health = join(dir, 'health.json');
+    writeFileSync(health, JSON.stringify({ sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) }));
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
+    });
+
+    expect(code, out).toBe(0);
+    expect(out).toContain('reader commit object is unavailable');
+    expect(out).not.toContain('predates the descriptor parser');
+    expect(legs(log).length).toBeGreaterThan(0);
+    expect(legs(log).every((leg) => leg.descriptor === null)).toBe(true);
+  });
+
+  it('auto: distinguishes an unreadable parser blob from an absent parser', () => {
+    const reader = join(dir, 'reader');
+    initRepo(reader);
+    const sub = join(reader, 'libs', 'test-config');
+    initRepo(sub);
+    mkdirSync(join(sub, 'src'));
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'), readFileSync(resolve(__dirname, '../../../../../libs/test-config/src/mutation-descriptor.ts')));
+    git(sub, ['add', 'src/mutation-descriptor.ts']);
+    git(sub, ['commit', '-qm', 'reader with parser']);
+    git(reader, ['add', 'libs/test-config']);
+    git(reader, ['commit', '-qm', 'reader with parser gitlink']);
+    const parserBlob = git(sub, ['rev-parse', 'HEAD:src/mutation-descriptor.ts']);
+    const blobPath = join(sub, '.git', 'objects', parserBlob.slice(0, 2), parserBlob.slice(2));
+    expect(existsSync(blobPath)).toBe(true);
+    rmSync(blobPath);
+    const health = join(dir, 'health.json');
+    writeFileSync(health, JSON.stringify({ sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) }));
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
+    });
+
+    expect(code, out).toBe(0);
+    expect(out).toContain('descriptor parser blob is unreadable');
+    expect(out).not.toContain('predates the descriptor parser');
+    expect(legs(log).length).toBeGreaterThan(0);
+    expect(legs(log).every((leg) => leg.descriptor === null)).toBe(true);
+  });
+
   it('auto: turns on only when the deployed build\'s libs/test-config gitlink carries the descriptor parser', () => {
     // A reader superproject whose libs/test-config is a gitlink: commit OLD predates
     // the parser, commit NEW contains src/mutation-descriptor.ts.

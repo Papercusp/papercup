@@ -1421,7 +1421,7 @@ MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS=2000
 MUTATION_DESCRIPTOR_MAX_DIFF_CHARS=8000
 
 mutation_descriptor_reader_ready() {
-  local url sha repo link
+  local url sha repo link parser_entry
   case "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" in
     always) MUTATION_DESCRIPTOR_GATE="forced on (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always)"; return 0 ;;
     never) MUTATION_DESCRIPTOR_GATE="forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)"; return 1 ;;
@@ -1440,12 +1440,23 @@ mutation_descriptor_reader_ready() {
     MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha has no resolvable libs/test-config gitlink in $repo"
     return 1
   fi
-  if ! git -C "$repo/libs/test-config" cat-file -e "$link:src/mutation-descriptor.ts" 2>/dev/null; then
+  if ! git -C "$repo/libs/test-config" cat-file -e "$link^{commit}" 2>/dev/null; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) reader commit object is unavailable in $repo/libs/test-config"
+    return 1
+  fi
+  if ! parser_entry="$(git -C "$repo/libs/test-config" ls-tree "$link" -- src/mutation-descriptor.ts 2>/dev/null)"; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) reader tree is unreadable in $repo/libs/test-config"
+    return 1
+  fi
+  if [ -z "$parser_entry" ]; then
     MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) predates the descriptor parser (D-001)"
     return 1
   fi
   # D-009: exercise the exact deployed parser before exporting an additive key.
-  git -C "$repo/libs/test-config" show "$link:src/mutation-descriptor.ts" > "$SCRATCH/mutation-reader.ts" 2>/dev/null || return 1
+  if ! git -C "$repo/libs/test-config" show "$link:src/mutation-descriptor.ts" > "$SCRATCH/mutation-reader.ts" 2>/dev/null; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) descriptor parser blob is unreadable in $repo/libs/test-config"
+    return 1
+  fi
   if ! MPD_READER="$SCRATCH/mutation-reader.ts" node --experimental-strip-types --input-type=module -e '
     import { pathToFileURL } from "node:url";
     const reader = await import(pathToFileURL(process.env.MPD_READER).href);
