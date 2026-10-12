@@ -8,7 +8,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { qualifyCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -86,8 +86,7 @@ async function main() {
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
   let qualifySource: (() => ReturnType<typeof qualifyCommittedReaderSource>) | undefined;
   if (isCommittedReader) {
-    assert.ok(e.VERIFY_TAURI_SOURCE_RECEIPT && e.VERIFY_TAURI_SOURCE_REF,
-      'Independent selected committed source receipt and ref are required');
+    const selection = resolvePreparedCommittedReaderSource(process.argv.slice(2), evidenceDir);
     // Compare the actual required private column/type/nullability/default
     // catalogue, rather than inferring applied schema from migration filenames.
     const columns = await sql`SELECT table_schema, table_name, column_name, data_type, udt_name,
@@ -99,7 +98,7 @@ async function main() {
     ]));
     qualifySource = () => qualifyCommittedReaderSource({ root, bundle,
       receiptPath: join(dirname(evidenceDir), 'prepare', 'operator-api-preflight.json'),
-      sourceReceiptPath: e.VERIFY_TAURI_SOURCE_RECEIPT!, selectedCommit: e.VERIFY_TAURI_SOURCE_REF!, schema, environment: e });
+      ...selection, schema, environment: e });
     writeFileSync(join(evidenceDir, 'committed-reader-source-preflight.json'), JSON.stringify(qualifySource()));
   }
   // The required source guard runs before preparation opens its private sidecar.

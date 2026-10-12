@@ -1,13 +1,16 @@
+import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { mkdir, rm, symlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('measures cold committed blobs through HTTP and preserves a real sidecar timeout while health advances', async context => {
+  let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/plans/committed-tree-reader-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -22,7 +25,18 @@ it('measures cold committed blobs through HTTP and preserves a real sidecar time
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+    prepare: async evidenceDir => {
+      const sourceReceiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+      const selectedCommit = process.env.VERIFY_TAURI_SOURCE_REF;
+      assert.ok(sourceReceiptPath && selectedCommit, 'Independent selected committed source receipt and ref are required');
+      // Reuse the independent preparation receipt beside the source selection.
+      // Missing/full-closure gaps refuse here, before allocating private PG.
+      prepared = preparePrivateOperatorApiBundle(root, evidenceDir, { committedReader: {
+        sourceReceiptPath, selectedCommit, receiptPath: join(dirname(sourceReceiptPath), 'operator-api-preflight.json'),
+      } });
+    },
     execute: async (observe, evidenceDir) => {
+      assert.ok(prepared?.selectedSource, 'Committed reader preparation must precede private runtime allocation');
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -31,7 +45,8 @@ it('measures cold committed blobs through HTTP and preserves a real sidecar time
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => {

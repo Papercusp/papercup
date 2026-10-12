@@ -55,6 +55,19 @@ describe('unprobed-deploy-dependency', () => {
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
 
+  it('does not join a held gate transition to a later deployment disclaimer across a semicolon', () => {
+    const note =
+      'EI-25421911577420059 remains open and held by this session; no direct trace ties the historical stall to a cause. ' +
+      'EI-25233283196255077 remains held pending the other live gate owner\'s transition; no gate/deploy read was made.';
+    expect(kinds(note)).not.toContain('unprobed-deploy-dependency');
+
+    // Positive control: the same required/action and deployment vocabulary still fires
+    // when it appears in one uninterrupted clause.
+    expect(kinds('This item is pending deployment to main before grading.')).toContain(
+      'unprobed-deploy-dependency',
+    );
+  });
+
   it('a checks row in the same write that probes the release plane clears the narrative line', () => {
     const note = withCarryNoteChecks('Waiting on the deploy to finish R-3.', [
       { claim: 'R-3 is blocked on the :3070 deploy', recheck: 'dev:pipeline_position { path } → servingRuntimes' },
