@@ -1236,7 +1236,9 @@ $hits
 
       Usual cause: \`npm run test:file\` runs through pc-heavy (/run/user/$(id -u)/pc-heavy-slots)
       and npm-install-safe (/tmp/pcv/fs-mutex-locks); both write host state the
-      sandbox forbids. Call the test router DIRECTLY instead:
+      sandbox forbids. Call the test router DIRECTLY instead; mutation-probe.sh
+      acquires npm-install-safe's reader lease outside bwrap and passes its
+      verified marker through, so the router reuses that lease:
           --test 'node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <path>'
       If the guard itself writes elsewhere, point it at \$TMPDIR or under $SANDBOX_ROOT."
 }
@@ -1560,7 +1562,8 @@ mutation_descriptor_subject_path() {
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper
+  local -a sandbox_lock_prefix=()
   for attempt in 1 2; do
     log "running $label: $cmd"
     # A retried attempt must not inherit the first attempt's receipts.
@@ -1640,9 +1643,24 @@ run_guard() {
         # writable zone. Parent-held fds (the >"$output" redirect) pass through.
         export TMPDIR="$SCRATCH"
         printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
+        sandbox_lock_prefix=()
+        if [[ "$cmd" == *"scripts/test-files.mjs"* ]]; then
+          # test-files.mjs normally takes this repo's reader lease itself. Its
+          # lock root is host state, though, and / is read-only inside bwrap.
+          # Acquire the same lease on the host first; npm-install-safe passes
+          # the verified repo marker to bwrap, and test-files.mjs reuses that
+          # held lease instead of trying to mkdir under the sandbox's /tmp.
+          npm_lock_wrapper="$RUNNER_ROOT/scripts/npm-install-safe.mjs"
+          [ -n "$RUNNER_ROOT" ] && [ -f "$npm_lock_wrapper" ] \
+            || die "the direct test-files.mjs router needs the repository's npm-install-safe reader wrapper outside the read-only sandbox"
+          sandbox_lock_prefix=(node "$npm_lock_wrapper" --repo-root "$RUNNER_ROOT" --exec-under-lock --)
+        fi
         # --dev replaces /dev, hiding subjects stored in a tmpfs TMPDIR under /dev/shm.
         # Preserve that source tree read-only before granting the two writable binds.
-        exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+        # Keep the timeout inside the lease wrapper. A timed-out bwrap child
+        # then exits while npm-install-safe remains alive to release its reader.
+        exec ${sandbox_lock_prefix[@]+"${sandbox_lock_prefix[@]}"} \
+          ${guard_prefix[@]+"${guard_prefix[@]}"} \
           bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
           ${SANDBOX_TMPFS_ARGS[@]+"${SANDBOX_TMPFS_ARGS[@]}"} \
