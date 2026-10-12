@@ -122,6 +122,10 @@ const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)
 /** The shared cc/ turn-end journal hook (WI-10006795). One name, read by both the
  * writer and the identity repair, so a home missing it is repaired on resume. */
 const CODEX_TURN_JOURNAL_HOOK = 'stop-turn-journal.sh';
+/** WI-6554700010009447: the Codex RTK rewrite hook. Every codex shell handler
+ *  reports tool_name "Bash" to hooks (codex-rs core/src/tools/hook_names.rs). */
+export const CODEX_RTK_REWRITE_HOOK = 'pretooluse-codex-rtk-rewrite.mjs';
+const CODEX_RTK_REWRITE_MATCHER = '^Bash$';
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -987,6 +991,23 @@ export function writeCodexLockHooks(
     });
   }
 
+  // WI-6554700010009447 (owner #1759/#1764): RTK output compression for Codex's
+  // native shell, the Codex counterpart of the RTK rewrite inside Claude's
+  // egress guard. It must stay the ONLY Codex PreToolUse hook that returns
+  // updatedInput: codex resolves competing rewrites by completion order (last
+  // to finish wins), and every other hook in this file only denies. Codex
+  // applies a rewrite only with permissionDecision "allow", which this script
+  // emits; code-mode script calls (tool_use_id `exec-*`) stay verbatim. Su AND
+  // role homes, since both run native shells. The script fails open when rtk is
+  // missing. role-codex-home.test.ts fails if this registration is removed.
+  const rtkRewrite = join(dir, CODEX_RTK_REWRITE_HOOK);
+  if (existsSync(rtkRewrite)) {
+    preToolUse.push({
+      matcher: CODEX_RTK_REWRITE_MATCHER,
+      hooks: [{ type: 'command', command: rtkRewrite }],
+    });
+  }
+
   // IDENTITY HOOK ports (portable-identity-packages-2026-09-26 P-011, D-023 §2):
   // a worn identity's pre-tool guards, stop rules and compaction rules, through
   // the same dispatcher and the same baked sid as the two context ports above.
@@ -1212,13 +1233,36 @@ function repairSuCodexHomeIdentityImpl(
       return false;
     }
   })();
+  // WI-6554700010009447: a home written before the Codex RTK hook existed would
+  // otherwise read as current, so a RESUMED su codex session would keep running
+  // its shell without RTK. Gated on the script being installed, like the writer.
+  const rtkRewriteHookMatches = (() => {
+    if (!hooksExpected || !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+      return true;
+    }
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
+      };
+      return (
+        parsed.hooks?.PreToolUse?.some(
+          (group) =>
+            group.matcher === CODEX_RTK_REWRITE_MATCHER &&
+            group.hooks?.some((hook) => hook.command?.includes(CODEX_RTK_REWRITE_HOOK)),
+        ) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
   if (
     hooksMatch &&
     diagnosticsMatch &&
     sentinelMatches &&
     lifecycleHooksMatch &&
     preCompactHookMatches &&
-    managedTurnHooksMatch
+    managedTurnHooksMatch &&
+    rtkRewriteHookMatches
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }

@@ -988,6 +988,14 @@ export const CC_HOOK_FILES = [
   //   matcher that can never fire. It is registered where it can: the managed
   //   Codex home's PreToolUse chain in role-codex-home.ts (matcher ^apply_patch$).
   'pretooluse-apply-patch-duplicate-target-guard.mjs',
+  // WI-6554700010009447 (owner #1759/#1764): PreToolUse (Codex, matcher ^Bash$) RTK
+  // output compression for Codex's native shell, reusing the egress guard's
+  // rtkRewriteSync (so it must land beside pretooluse-restricted-egress-guard.mjs).
+  //   ⚠ COPIED BUT NOT REGISTERED IN mergeClaudeHookSettings, on purpose: Claude's
+  //   native Bash already gets RTK inside the egress guard, and a second Claude hook
+  //   returning updatedInput would race it (last to finish wins). Registered in the
+  //   managed Codex home's PreToolUse chain (role-codex-home.ts writeCodexLockHooks).
+  'pretooluse-codex-rtk-rewrite.mjs',
   // WI-38352: PreToolUse (matcher "Edit|Write|MultiEdit") BLOCKING guard on a write to
   // libs/papercusp/libs/db/sql/<NNN>-*.sql whose NNN was hand-picked rather than allocated
   // via `node scripts/next-migration.mjs` (no row in harness_shared.migration_reservations).

@@ -6,7 +6,7 @@
  * config.toml = [mcp_servers.papercusp] url = "<signed>", auth.json
  * symlinked to the real ~/.codex/auth.json (never copied).
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
@@ -2406,5 +2406,129 @@ describe('ensureCodexSkillWatchRoots', () => {
     expect(diag.codexSkillWatchRoots.codexHomeSkillsReady).toBe(true);
     expect(diag.codexSkillWatchRoots.systemSkillsDir).toBe('/etc/codex/skills');
     expect(typeof diag.codexSkillWatchRoots.systemSkillsReady).toBe('boolean');
+  });
+});
+
+/**
+ * WI-6554700010009447 (owner #1759/#1764) — RTK output compression for Codex's
+ * native shell. Owner #1764 asked that RTK not be silently un-integrated again,
+ * so these fail if the registration, its matcher, or its resume repair is dropped,
+ * and the end-to-end case runs the SHIPPED script through the composed command.
+ */
+describe('writeCodexLockHooks — Codex RTK rewrite (WI-6554700010009447)', () => {
+  const REAL_HOOKS = fileURLToPath(new URL('../../../apps/operator/scripts/hooks/', import.meta.url));
+  const SCRIPT = 'pretooluse-codex-rtk-rewrite.mjs';
+
+  function rtkEntries(hooks: any) {
+    return (hooks.hooks.PreToolUse ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((h) => h.command.includes(SCRIPT)),
+    );
+  }
+
+  /** The real rewrite hook, the egress guard it imports rtkRewriteSync from, and
+   *  that guard's own inject/ imports, laid out as the installers lay them out. */
+  async function installRealRtkHook() {
+    const dir = await installFakeHooks();
+    for (const name of [SCRIPT, 'pretooluse-restricted-egress-guard.mjs']) {
+      copyFileSync(join(REAL_HOOKS, 'cc', name), join(dir, name));
+      chmodSync(join(dir, name), 0o755);
+    }
+    const inject = join(fakeHome, '.papercusp', 'hooks', 'inject');
+    mkdirSync(inject, { recursive: true });
+    for (const name of ['core.mjs', 'ports.mjs']) copyFileSync(join(REAL_HOOKS, 'inject', name), join(inject, name));
+    return dir;
+  }
+
+  it('registers exactly one ^Bash$ rewrite on SU and role homes', async () => {
+    await installRealRtkHook();
+    const { writeSuCodexHome, writeRoleCodexHome, CODEX_RTK_REWRITE_HOOK } = await loadMod();
+    expect(CODEX_RTK_REWRITE_HOOK).toBe(SCRIPT);
+    const su = writeSuCodexHome({ sessionKey: 71, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-71' });
+    const role = writeRoleCodexHome({ sessionKey: 72, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-rtk-72' });
+    for (const out of [su, role]) {
+      const entries = rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')));
+      expect(entries).toHaveLength(1);
+      // codex reports every shell handler (exec_command, unified exec, shell) as "Bash".
+      expect(entries[0].matcher).toBe('^Bash$');
+      expect(new RegExp(entries[0].matcher).test('Bash')).toBe(true);
+      expect(new RegExp(entries[0].matcher).test('apply_patch')).toBe(false);
+    }
+  });
+
+  it('calibration: no RTK entry when the script is not installed', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 73, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-73' });
+    expect(rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')))).toHaveLength(0);
+  });
+
+  it('a resumed home written before the hook existed is repaired once, then left byte-identical', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'rtk-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-rtk-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    expect(rtkEntries(JSON.parse(readFileSync(hooksPath, 'utf8')))).toHaveLength(0);
+
+    await installRealRtkHook();
+    const resume = () =>
+      ensureSuCodexHomeConfig({ sessionKey: 'rtk-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-rtk-upgrade' });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    expect(rtkEntries(JSON.parse(repairedText))).toHaveLength(1);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
+  });
+
+  it('end to end: the composed command rewrites a direct codex shell call through ~/.local/bin/rtk, and leaves a code-mode call alone', async () => {
+    await installRealRtkHook();
+    const bin = join(fakeHome, '.local', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'rtk'),
+      '#!/bin/sh\n[ "$1" = rewrite ] || exit 64\n[ "$2" = "git status" ] && { echo "rtk git status"; exit 0; }\nexit 1\n',
+    );
+    chmodSync(join(bin, 'rtk'), 0o755);
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 74, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-e2e' });
+    const [entry] = rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')));
+    expect(entry, 'rtk entry composed').toBeTruthy();
+
+    // codex hands hook commands a minimal env: no VITEST, no PAPERCUSP_RTK_BIN.
+    const fire = (toolUseId: string) =>
+      spawnSync('/bin/sh', ['-c', entry.hooks[0].command], {
+        input: JSON.stringify({
+          cwd: fakeHome,
+          hook_event_name: 'PreToolUse',
+          model: 'gpt-test',
+          permission_mode: 'bypassPermissions',
+          session_id: 's',
+          tool_input: { command: 'git status' },
+          tool_name: 'Bash',
+          tool_use_id: toolUseId,
+          transcript_path: null,
+          turn_id: 't',
+        }),
+        env: { PATH: `${process.env.PATH ?? ''}`, HOME: fakeHome },
+        encoding: 'utf8',
+        timeout: 20_000,
+      });
+    const direct = fire('call_e2e');
+    expect(direct.status, direct.stderr).toBe(0);
+    expect(JSON.parse(direct.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: 'rtk git status' },
+      },
+    });
+    const nested = fire('exec-0b5e2c7a-1d3f-4b6a-9c8d-7e6f5a4b3c2d');
+    expect(nested.status, nested.stderr).toBe(0);
+    expect(nested.stdout).toBe('');
   });
 });

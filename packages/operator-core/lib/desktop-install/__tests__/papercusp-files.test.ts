@@ -944,7 +944,8 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     );
     expect(canonicalOverlay).toContain('ptool tools:find --json - "${ptool_scope[@]}" <<\'JSON\'');
     expect(canonicalOverlay).toContain("ptool <group:verb> --json - <<'JSON'");
-    expect(canonicalOverlay).toContain('Use `--json-file`');
+    // b9482e800e reworded this to "Use the quoted heredoc, or `--json-file` for anything large".
+    expect(canonicalOverlay).toContain('`--json-file` for anything large');
     expect(canonicalOverlay).not.toContain("ptool tools:find --json '{");
     expect(canonicalOverlay).not.toContain("ptool <group:verb> --json '{...}'");
   });
