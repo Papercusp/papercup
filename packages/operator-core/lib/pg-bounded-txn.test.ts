@@ -77,6 +77,69 @@ describe('boundedOrgTxn', () => {
     expect(vals).toContain('12345ms'); // statement_timeout
   });
 
+  it.each(['begin', 'setup'] as const)('retries a classified %s failure before caller work starts', async (phase) => {
+    let beginAttempts = 0;
+    let setupAttempts = 0;
+    const transient = Object.assign(new Error('server_login_retry: database is restarting'), { code: '08P01' });
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        beginAttempts++;
+        if (phase === 'begin' && beginAttempts === 1) throw transient;
+        const tx = async (strings: TemplateStringsArray) => {
+          if (phase === 'setup' && strings.join('?').includes('set_config') && setupAttempts++ === 0) {
+            throw transient;
+          }
+          return [];
+        };
+        return cb(tx);
+      },
+    } as never;
+    const caller = vi.fn(async () => 'done');
+
+    await expect(boundedOrgTxn(caller, {
+      client,
+      acquireRetries: 0,
+      connectionSetupRetries: 2,
+      connectionSetupBackoffMs: 0,
+    })).resolves.toBe('done');
+
+    expect(beginAttempts).toBe(2);
+    expect(caller).toHaveBeenCalledOnce();
+  });
+
+  it('returns the last setup error on exhaustion without invoking caller work', async () => {
+    const finalError = pgError('57P01');
+    const begin = vi.fn(async () => { throw finalError; });
+    const caller = vi.fn(async () => 'unreachable');
+
+    await expect(boundedOrgTxn(caller, {
+      client: { begin } as never,
+      acquireRetries: 0,
+      connectionSetupRetries: 2,
+      connectionSetupBackoffMs: 0,
+    })).rejects.toBe(finalError);
+
+    expect(begin).toHaveBeenCalledTimes(3);
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a server_login_retry error after caller work has started', async () => {
+    const failure = Object.assign(new Error('server_login_retry after mutation began'), { code: '08P01' });
+    const begin = vi.fn(async (cb: (tx: unknown) => Promise<unknown>) =>
+      cb((() => Promise.resolve([])) as never));
+    const caller = vi.fn(async () => { throw failure; });
+
+    await expect(boundedOrgTxn(caller, {
+      client: { begin } as never,
+      acquireRetries: 0,
+      connectionSetupRetries: 15,
+      connectionSetupBackoffMs: 1_000,
+    })).rejects.toBe(failure);
+
+    expect(begin).toHaveBeenCalledOnce();
+    expect(caller).toHaveBeenCalledOnce();
+  });
+
   it('starts read-only transactions before applying the local timeouts', async () => {
     const statements: string[] = [];
     const client = fakeClient((text) => statements.push(text));

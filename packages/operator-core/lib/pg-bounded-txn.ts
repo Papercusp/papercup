@@ -35,6 +35,7 @@ import {
   DEFAULT_TX_ACQUIRE_DEADLINE_MS,
   DbCallDeadlineError,
   getOrgPg,
+  retryBeforeCallbackStarts,
   retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
@@ -425,6 +426,10 @@ export interface BoundedOrgTxnOptions {
   acquireTimeoutMs?: number;
   /** Additional retries after the first measured acquisition deadline; defaults to two. */
   acquireRetries?: number;
+  /** Additional retries for classified BEGIN/setup failures before the caller starts; defaults to two. */
+  connectionSetupRetries?: number;
+  /** Linear backoff base for pre-callback connection/setup retries; defaults to 150ms. */
+  connectionSetupBackoffMs?: number;
   /** Per-statement cap (PG statement_timeout), ms. Default ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS. */
   statementTimeoutMs?: number;
   /** Per-lock-wait cap (PG lock_timeout), ms. Default ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS. */
@@ -442,9 +447,10 @@ export interface BoundedOrgTxnOptions {
 /**
  * Run `fn` inside ONE bounded admin-pool transaction. `fn` receives the
  * transaction-scoped sql handle — every query it runs is in the same txn and
- * under the SET LOCAL timeouts. A contention timeout (PG 57014 / 55P03) is mapped
- * to OrgTxnTimeoutError; any other error propagates unchanged (and rolls the txn
- * back).
+ * under the SET LOCAL timeouts. Classified connection/setup failures may retry
+ * before `fn` starts; once it starts, errors propagate unchanged so a partial
+ * write is never replayed. A contention timeout (PG 57014 / 55P03) is mapped to
+ * OrgTxnTimeoutError.
  *
  * The `tx` is typed as OrgSql so store helpers that take a single `Sql` can be
  * constructed against it (e.g. `new PgThreadStore({ ...opts, getSql: () => tx })`).
@@ -473,51 +479,61 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
       // callback from an expired attempt cannot relabel the next attempt.
       let acquireLabel = 'boundedOrgTxn:begin(admin)';
       return withAcquisitionDeadline(
-        ({ disarm, expired }) => {
-          const assertWithinAcquisitionDeadline = () => {
-            if (expired()) {
-              throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
-            }
-          };
-          return sql.begin(async (rawTx) => {
-            // Promise.race does not cancel a late sql.begin callback. Check at
-            // entry so a BEGIN that resolves after the caller timed out rolls
-            // back without issuing transaction setup SQL.
-            assertWithinAcquisitionDeadline();
-            const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, opts.signal);
-            try {
-              cancellation.assertNotAborted();
-              // SET TRANSACTION must precede the first query in this transaction.
-              // Bounded search reads use this option to preserve the read-only
-              // contract while still receiving the same per-statement bounds.
-              if (opts.readOnly) {
-                acquireLabel = 'boundedOrgTxn:setup-read-only(admin)';
-                await cancellation.tx`SET TRANSACTION READ ONLY`;
+        ({ disarm, expired }) =>
+          retryBeforeCallbackStarts(
+            (markStarted) =>
+              sql.begin(async (rawTx) => {
+                const assertWithinAcquisitionDeadline = () => {
+                  if (expired()) {
+                    throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
+                  }
+                };
+                // Promise.race does not cancel a late sql.begin callback. Check at
+                // entry so a BEGIN that resolves after the caller timed out rolls
+                // back without issuing transaction setup SQL.
                 assertWithinAcquisitionDeadline();
-              }
-              // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
-              // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
-              // WI-10003631: one round trip for both transaction-local settings.
-              acquireLabel = 'boundedOrgTxn:setup-timeouts(admin)';
-              await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
-                                           set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
-              assertWithinAcquisitionDeadline();
-              // The caller's work may legitimately run longer than acquisition;
-              // stop the phase clock immediately before entering it.
-              disarm();
-              const work = Promise.resolve().then(() => {
-                cancellation.assertNotAborted();
-                return fn(cancellation.tx);
-              });
-              // If cancellation wins the race, the transaction callback returns early while
-              // the late `fn` promise is still observed and its rejection is suppressed.
-              work.catch(() => undefined);
-              return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
-            } finally {
-              cancellation.cleanup();
-            }
-          });
-        },
+                const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, opts.signal);
+                try {
+                  cancellation.assertNotAborted();
+                  // SET TRANSACTION must precede the first query in this transaction.
+                  // Bounded search reads use this option to preserve the read-only
+                  // contract while still receiving the same per-statement bounds.
+                  if (opts.readOnly) {
+                    acquireLabel = 'boundedOrgTxn:setup-read-only(admin)';
+                    await cancellation.tx`SET TRANSACTION READ ONLY`;
+                    assertWithinAcquisitionDeadline();
+                  }
+                  // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
+                  // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
+                  // WI-10003631: one round trip for both transaction-local settings.
+                  acquireLabel = 'boundedOrgTxn:setup-timeouts(admin)';
+                  await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
+                                               set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+                  assertWithinAcquisitionDeadline();
+                  // The caller's work may legitimately run longer than acquisition;
+                  // stop the phase clock immediately before entering it. Mark the
+                  // retry boundary at the same point: any later error may follow a
+                  // partial write and must never replay fn.
+                  disarm();
+                  const work = Promise.resolve().then(() => {
+                    cancellation.assertNotAborted();
+                    markStarted();
+                    return fn(cancellation.tx);
+                  });
+                  // If cancellation wins the race, the transaction callback returns early while
+                  // the late `fn` promise is still observed and its rejection is suppressed.
+                  work.catch(() => undefined);
+                  return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
+                } finally {
+                  cancellation.cleanup();
+                }
+              }),
+            {
+              retries: opts.connectionSetupRetries,
+              backoffMs: opts.connectionSetupBackoffMs,
+              pool: acquirePool,
+            },
+          ),
         // The guard reads this getter when the deadline fires, after the
         // callback may have progressed from BEGIN to a setup statement.
         { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool },
