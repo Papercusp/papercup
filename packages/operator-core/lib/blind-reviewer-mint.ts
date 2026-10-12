@@ -144,6 +144,10 @@ export async function mintBlindGapReviewer(
       brief: kickoff,
       harness: input.harness,
       headless: true,
+      // Use the native backend used by grading-audit recovery. An implicit
+      // Claude launch can strand a confined review on a completed provider
+      // API error while its PTY remains live (EI-25752839878478687).
+      agent: 'codex',
       account: BLIND_GAP_REVIEW_ACCOUNT,
       // A confined reviewer must reach the door and product on the build that
       // minted it. The stable endpoint may still serve an older tool catalog.

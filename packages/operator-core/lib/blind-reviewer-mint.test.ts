@@ -177,6 +177,7 @@ describe('mintBlindGapReviewer', () => {
       brief: result.kickoff,
       harness: 'papercusp',
       headless: true,
+      agent: 'codex',
       account: 'auto',
       mcpTarget: 'spawn-host',
     });
