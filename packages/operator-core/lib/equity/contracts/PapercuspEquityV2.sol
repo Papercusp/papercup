@@ -132,11 +132,21 @@ contract PapercuspEquityV2 is ERC20, ERC20Votes {
     function registerHolder(address wallet, bytes32 identityCommitment) external onlyAuthority returns (uint256) {
         return _register(wallet, identityCommitment);
     }
+    /// A zero start anchors vesting to this hire execution; cliff/end are then durations.
+    /// Otherwise all three values are absolute timestamps from the signed offer.
     function commitGrant(bytes32 grantId, address wallet, uint208 amount, uint48 start, uint48 cliff, uint48 end) external onlyAuthority {
+        if (start == 0) {
+            if (end == 0 || end > MAX_GRANT_DURATION || cliff > end) revert Invalid();
+            start = clock();
+            cliff += start;
+            end += start;
+        }
         uint256 id = memberId(wallet);
         if (grantId == 0 || grants[grantId].holderId != 0 || id == 0 || amount == 0 || amount > grantLimit ||
             end <= start || end - start > MAX_GRANT_DURATION || cliff < start || cliff > end) revert Invalid();
-        _requireEligible(wallet);
+        // The hire vote registers and reserves atomically. Acceptance follows the vote;
+        // claimGrant still requires the holder's own acceptance before issuing shares.
+        if (!holders[id].eligible) revert Ineligible();
         _reserve(amount);
         grants[grantId] = Grant(id, amount, 0, start, cliff, end, 0);
         emit GrantCommitted(grantId, id, amount, start, cliff, end);
