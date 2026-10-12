@@ -56,6 +56,7 @@ import {
   BODY_REFS_OPT_OUT_FIELD,
   detectEntryBodyRefs,
   GATE_REFS_FIELD,
+  parseRefToken,
 } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import {
@@ -118,6 +119,7 @@ import {
   toSections,
   sectionsToText,
   SECTION_ONLY_FIELDS,
+  type ForYouBecauseRelation,
   type MessageSection,
   type MessageWhy,
 } from '../message-fields';
@@ -472,6 +474,12 @@ interface DispatchAdvisory {
 // item. Keep it aligned with actionable-work-item-dispatch's unassigned
 // frontier; terminal/blocked items must not produce a dispatch suggestion.
 const DISPATCH_ADVISORY_CLAIMABLE_STATES = new Set(['open', 'failing', 'todo']);
+const DISPATCH_ADVISORY_ATTACHED_RELATIONS: ReadonlySet<ForYouBecauseRelation> = new Set([
+  'owns',
+  'holds-a-lock-on',
+  'is-blocked-on',
+  'awaits',
+]);
 
 /**
  * Detect the "cheerful acceptance, zero claim" route at the send seam.
@@ -491,23 +499,34 @@ async function deriveDispatchAdvisory(
   msg: SendMsg,
   recipients: readonly string[],
   harnessSlug: string | null,
+  senderOwnerId: string,
 ): Promise<DispatchAdvisory | undefined> {
   if (msg.expects !== 'action' || msg.noBodyRefs || !isDirected(msg.to)) return undefined;
 
   const workItemRefs = (text: string) => detectEntryBodyRefs({ summary: text }).filter(
     (ref): ref is { kind: 'work-item'; id: string } => ref.kind === 'work-item',
   );
-  // The body is prose and may cite other work-items as context. Use the
-  // structured per-recipient rationale as the action target when it names a
-  // work-item; otherwise the required inbox headline is the narrowest
-  // unstructured signal for what the action concerns. Do not treat every body
-  // mention as a requested lane.
-  const structuredRefs = Array.isArray(msg.body)
-    ? msg.body.flatMap((section) =>
-        typeof section.forYouBecause?.ref === 'string' ? workItemRefs(section.forYouBecause.ref) : [],
-      )
+  // `forYouBecause` is the structured reason this recipient is being asked. If
+  // present, its ref is the action target when it names a work-item; an event,
+  // message, file, or other ref must not fall back to an incidental WI id in
+  // the summary. Relations that already attach the recipient to that target
+  // also cannot describe a phantom assignment handoff.
+  const structuredSections = Array.isArray(msg.body)
+    ? msg.body.filter((section) => section.forYouBecause !== undefined)
     : [];
-  const candidateRefs = structuredRefs.length > 0 ? structuredRefs : workItemRefs(msg.summary);
+  const structuredRefs = structuredSections.flatMap((section) => {
+    const rationale = section.forYouBecause;
+    if (!rationale || typeof rationale.ref !== 'string') return [];
+    const target = parseRefToken(rationale.ref);
+    if (
+      target?.kind !== 'work-item' ||
+      DISPATCH_ADVISORY_ATTACHED_RELATIONS.has(rationale.relation)
+    ) {
+      return [];
+    }
+    return [{ kind: 'work-item' as const, id: target.id }];
+  });
+  const candidateRefs = structuredSections.length > 0 ? structuredRefs : workItemRefs(msg.summary);
   const refs = [...new Map(candidateRefs.map((ref) => [ref.id, ref])).values()];
   if (refs.length === 0) return undefined;
 
@@ -551,17 +570,27 @@ async function deriveDispatchAdvisory(
       //
       // The advisory's subject (EI-21824246903447871) is PHANTOM ROUTING: a recipient who
       // replies "yes" cannot become the worker, so the request dies un-actioned. That
-      // failure requires NOBODY addressed to be able to act. If even one addressee holds
-      // the item, the work has a real owner in the audience and the suggested remedy
-      // (coord:dispatch, to "assign the execution lane") is already satisfied — an
+      // failure requires neither the sender nor anyone addressed to hold the item. If the
+      // sender or even one addressee holds it, the work has a real owner and the suggested
+      // remedy (coord:dispatch, to "assign the execution lane") is already satisfied — an
       // advisory whose fix is a no-op is noise, and noise trains readers to ignore the
       // alarm that does matter.
       //
       // `recipients.length > 0` is load-bearing: a bare `0 === 0` match would fire a
       // vacuous advisory naming an empty recipient set.
       .filter(
-        (assignment) =>
-          recipients.length > 0 && assignment.recipientsNotHolding.length === recipients.length,
+        (assignment) => {
+          const senderHoldsItem =
+            assignment.assignee !== null &&
+            (senderOwnerId === assignment.assignee ||
+              isOwnerIdAlias(senderOwnerId, assignment.assignee) ||
+              isOwnerIdAlias(assignment.assignee, senderOwnerId));
+          return (
+            !senderHoldsItem &&
+            recipients.length > 0 &&
+            assignment.recipientsNotHolding.length === recipients.length
+          );
+        },
       );
     if (mismatches.length === 0) return undefined;
 
@@ -2623,7 +2652,7 @@ async function sendOne(
   const claimText = msg.summary || bodyText || '';
   const authorityClaim = claimText ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority) : null;
   const { value: dispatchAdvisory } = await withBoundedTimeout(
-    () => deriveDispatchAdvisory(msg, env.to, harnessSlug),
+    () => deriveDispatchAdvisory(msg, env.to, harnessSlug, identity.ownerId),
     {
       fallback: undefined,
       timeoutMs: COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS,
@@ -2862,7 +2891,7 @@ export default defineTool({
     'coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes recipients; `optimistic` needs `backstop`.',
   guidance: {
     when:
-      'Share context or ask. `summary` is the required inbox headline; `body` is detail. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +
+      'Share context or ask. `summary` is the required inbox headline; `body` is detail. For the dispatch advisory, put the work-item action target in `body[].forYouBecause.ref`; summary ids can be contextual. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +
       DEFAULT_INBOX_BODY_CAP +
       ' characters; longer ones are refused unsent (see returns). Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on a section gives a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. ',
     argRedirects: sectionOnlyArgRedirects,
@@ -2871,7 +2900,7 @@ export default defineTool({
       DEFAULT_INBOX_BODY_CAP +
       ' characters is refused before persistence (`goal-owner-report-over-cap`); generic over-cap bodies are delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading). A generic body needing more than ' +
       COORD_SEND_MAX_CHUNK_PARTS +
-      ' parts is refused. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
+      ' parts is refused. A directed action whose `body[].forYouBecause.ref` names an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy; summary ids are not used as a fallback when structured rationale is present. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',

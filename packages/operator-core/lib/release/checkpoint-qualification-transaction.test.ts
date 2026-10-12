@@ -94,7 +94,9 @@ describe('historical dependency pre-suite recovery', () => {
     ['another inconclusive verdict', { kind: 'code-inconclusive', reason: 'gate-tooling-crash' }],
   ] as const)('preserves a real %s terminal', (_, outcome) => {
     const current = { ...terminal(), outcome };
-    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({ status: 'conflict', transaction: current });
+    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({
+      status: 'conflict', transaction: current, refusalReason: 'predecessor-not-recoverable',
+    });
   });
   it.each([
     ['no positive prelock evidence', (text: string) => text.replace('FAILED before checkpoint lock:', 'dependency setup failed:')],
@@ -117,6 +119,24 @@ describe('historical dependency pre-suite recovery', () => {
     expect(recoverQualificationHistoricalPreSuiteError({ ...current, consumedPhysicalRuns: [{
       ...runner, endedAtMs: 200, outcome: current.outcome,
     }] }, proof()).status).toBe('conflict');
+  });
+  it.each([
+    ['attemptId', 'predecessor-attempt-mismatch'],
+    ['runId', 'predecessor-run-mismatch'],
+    ['candidate', 'predecessor-candidate-mismatch'],
+  ] as const)('identifies the exact predecessor %s guard without changing the terminal', (field, refusalReason) => {
+    const current = { ...terminal(), [field]: 'different' };
+    const snapshot = structuredClone(current);
+    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({
+      status: 'conflict', transaction: current, refusalReason,
+    });
+    expect(current).toEqual(snapshot);
+  });
+  it('distinguishes an archive hash mismatch from measured suite evidence', () => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), { ...proof(), logSha256: 'a'.repeat(64) }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'archive-hash-mismatch' });
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), proof(`phase=suite\n${log()}`)))
+      .toMatchObject({ status: 'conflict', refusalReason: 'archive-suite-evidence' });
   });
 });
 

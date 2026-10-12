@@ -135,7 +135,7 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
       const installSlug = fact.scope === 'harness' && fact.scopeRef ? fact.scopeRef : DEFAULT_INSTALL_SLUG;
       const { summary, body } = formatWallLapseAlert(fact, now);
       try {
-        const event = { conditionKey: wallConditionKey(fact), summary, body };
+        const event = { conditionKey: wallConditionKey(fact), summary, body, oneShot: true };
         if (deps.rail?.broadcast) await deps.rail.broadcast(event);
         else await broadcastSevereEvent(event);
       } catch (e) {

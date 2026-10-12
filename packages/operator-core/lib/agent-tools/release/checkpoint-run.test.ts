@@ -3054,6 +3054,21 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(qualificationMocks.recover).not.toHaveBeenCalled();
     expect(launchSpy).not.toHaveBeenCalled();
   });
+  it('returns the locked recovery guard and queue reason without beginning or launching', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false })) });
+    qualificationMocks.recover.mockResolvedValue({
+      status: 'conflict', refusalReason: 'repair-queue-reconciliation',
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-origin-mismatch' },
+    });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE], historicalPreSuiteRecovery: recoveryProof }, MAKE_CTX())) as never);
+    expect(b).toMatchObject({ launched: false, recovery_refusal_reason: 'repair-queue-reconciliation',
+      recovery_queue_reason: 'queue-origin-mismatch' });
+    expect(b).not.toHaveProperty('transaction');
+    expect(qualificationMocks.begin).not.toHaveBeenCalled();
+    expect(qualificationMocks.reserve).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+  });
 
   it('does not use historical evidence to bypass another live gate owner', async () => {
     const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false })) });

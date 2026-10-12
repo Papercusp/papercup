@@ -1855,6 +1855,10 @@ describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', 
 
 describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
   const actionBody = [{ text: 'please perform the acceptance step', forYouBecause: { relation: 'other' as const, note: 'you own this step' } }];
+  const actionBodyFor = (ref: string) => [{
+    text: 'please perform the acceptance step',
+    forYouBecause: { relation: 'other' as const, ref, note: 'you own this step' },
+  }];
 
   it('warns when an action message names an unassigned work-item', async () => {
     getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: null });
@@ -1863,7 +1867,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1'],
       summary: 'Please grade WI-872411',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('WI-872411'),
     });
 
     expect(b.results[0]).toMatchObject({
@@ -1887,7 +1891,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1'],
       summary: 'Continue WI-872411',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('WI-872411'),
     });
 
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
@@ -1907,7 +1911,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       expects: 'action',
       body: [{
         text: 'The recipient is currently awaiting WI-10005443 as context.',
-        forYouBecause: { relation: 'owns', ref: 'WI-10007462', note: 'you own the requested release' },
+        forYouBecause: { relation: 'other', ref: 'WI-10007462', note: 'you own the requested release' },
       }],
     });
 
@@ -1928,7 +1932,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       expects: 'action',
       body: [{
         text: 'The recipient is currently awaiting WI-10005443 as context.',
-        forYouBecause: { relation: 'owns', ref: 'WI-10007462', note: 'you own the requested release' },
+        forYouBecause: { relation: 'other', ref: 'WI-10007462', note: 'you own the requested release' },
       }],
     });
 
@@ -1952,7 +1956,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1', 'bee-2'],
       summary: 'Please coordinate WI-872411',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('WI-872411'),
     });
 
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
@@ -1973,7 +1977,16 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1', 'bee-2'],
       summary: 'EI-23761345516273342 for one of you, WI-10002063 for the other',
       expects: 'action',
-      body: actionBody,
+      body: [
+        {
+          text: 'please perform the acceptance step for the first item',
+          forYouBecause: { relation: 'other', ref: 'EI-23761345516273342', note: 'you own this step' },
+        },
+        {
+          text: 'please perform the acceptance step for the second item',
+          forYouBecause: { relation: 'other', ref: 'WI-10002063', note: 'you own this step' },
+        },
+      ],
     });
 
     expect(getWorkItemM).toHaveBeenCalled();
@@ -1991,7 +2004,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1', 'bee-2'],
       summary: 'Please coordinate WI-872411',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('WI-872411'),
     });
 
     expect(b.results[0].dispatchAdvisory).toMatchObject({
@@ -2009,7 +2022,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1'],
       summary: 'Please dispatch EI-22637132888380914',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('EI-22637132888380914'),
     });
 
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
@@ -2023,7 +2036,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       to: ['bee-1'],
       summary: 'Please grade WI-872411',
       expects: 'action',
-      body: actionBody,
+      body: actionBodyFor('WI-872411'),
     });
 
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
@@ -2042,6 +2055,85 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
 
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
     expect(getWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('does not recommend transfer when the creator is asked to check source evidence for their item', async () => {
+    const b = await body({
+      to: ['original-author'],
+      summary: 'Check source transcript and emit completion event for WI-10006526',
+      expects: 'action',
+      body: [{
+        text: 'Please check your saved source transcript and emit a completion event if it supports the result.',
+        forYouBecause: {
+          relation: 'owns',
+          ref: 'WI-10006526',
+          note: 'you authored the original report and can verify its source evidence',
+        },
+      }],
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(getWorkItemM).not.toHaveBeenCalled();
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fall back to a summary item when the structured target is a completion event', async () => {
+    const b = await body({
+      to: ['original-author'],
+      summary: 'Emit completion event for WI-10006526',
+      expects: 'action',
+      body: [{
+        text: 'Please emit the completion event if the source evidence supports it.',
+        forYouBecause: {
+          relation: 'other',
+          ref: 'work-item:done:WI-10006526',
+          note: 'you authored its source transcript',
+        },
+      }],
+    });
+
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(getWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it.each(['owns', 'holds-a-lock-on', 'is-blocked-on', 'awaits'] as const)(
+    'does not recommend transfer for an already-attached rationale relation (%s)',
+    async (relation) => {
+      const b = await body({
+        to: ['original-author'],
+        summary: 'Check source transcript for WI-10006526',
+        expects: 'action',
+        body: [{
+          text: 'Please verify the source evidence for this item.',
+          forYouBecause: { relation, ref: 'WI-10006526' },
+        }],
+      });
+
+      expect(b.results[0].dispatchAdvisory).toBeUndefined();
+      expect(getWorkItemM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stays quiet when the sender already holds an item asked about via a non-structural relation', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-10006526', state: 'open', assignee: 'me' });
+
+    const b = await body({
+      to: ['original-author'],
+      summary: 'Check source transcript and emit completion event for WI-10006526',
+      expects: 'action',
+      body: [{
+        text: 'Please check your saved source transcript and emit a completion event if it supports the result.',
+        forYouBecause: {
+          relation: 'other',
+          ref: 'WI-10006526',
+          note: 'you authored the original report and can verify its source evidence',
+        },
+      }],
+    });
+
+    expect(getWorkItemM.mock.calls.map(([id]) => id)).toEqual(['WI-10006526']);
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
   });
 });
 

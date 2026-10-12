@@ -164,6 +164,7 @@ describe('wallLapseSweep — orchestration (injected deps, no PG)', () => {
       recentWatchdogFires: async () => 1, readOpenConditionKeys: async () => [...open] });
     expect((await wallLapseSweep(d)).map(row => row.outcome)).toEqual(['debounced', 'debounced', 'debounced']);
     expect(open.size).toBe(3);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ oneShot: true }));
     expect(d.openEscalation).not.toHaveBeenCalled();
     lapsed = [];
     await wallLapseSweep({ ...d }); // fresh invocation with only durable open keys

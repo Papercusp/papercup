@@ -4058,7 +4058,7 @@
           "POST"
         ]
       },
-      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.",
+      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.",
       "capabilities": [
         "capability:fs-read"
       ],
@@ -4120,9 +4120,9 @@
         "judge"
       ],
       "guidance": {
-        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
+        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
-        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite)."
+        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around)."
       }
     },
     {
@@ -5710,7 +5710,7 @@
       ],
       "guidance": {
         "when": "Deliberately re-tuning YOUR OWN per-hop budgets for a specific task — e.g. widening the result door for a session paging large artifacts, without touching the workspace defaults.",
-        "notWhen": "Fleet-wide — config:doors-set. To read the layers — config:doors-get. Never as a reaction to one capped result (runtime feedback, D-001) — page the spill pointer instead.",
+        "notWhen": "Fleet-wide — config:doors-set. To read the layers — config:doors-get. Never as a reaction to one capped result (runtime feedback, D-001) — search the spill instead (capability:read query, then view_lines).",
         "chaining": "config:doors-get first (see your effective constants); set; clear:true when the task is done."
       }
     },

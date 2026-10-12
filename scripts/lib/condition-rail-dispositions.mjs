@@ -249,7 +249,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/wall-lapse-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|scripts/lib/batch-watchdog.mjs': na(
     'per-batch test timeout inside the gate runner: a hung batch is killed and reported as that task’s failure in the gate verdict, which already has an owner',
   ),
