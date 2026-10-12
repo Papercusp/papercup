@@ -4,11 +4,13 @@ import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { validateReportJournalRequests } from '../test/report-journal-http-scenario';
 
 const root = resolve(import.meta.dirname, '../../..');
 const options = isolatedWorkerOptions(180_000);
 
 it('files an unpublished Reports observation through real isolated HTTP journal ingestion and preserves its controls', async context => {
+  await validateReportJournalRequests();
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/report-journal-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',

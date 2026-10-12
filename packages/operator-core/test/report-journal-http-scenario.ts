@@ -12,6 +12,19 @@ const reportBody = '# Private detector assessment\n\n## Findings\n'
   + 'The disposable HTTP fixture measures journal persistence and observation filing. '.repeat(12)
   + '\n\n## Verdict\nThis is private fixture data, not an owner deliverable.';
 
+const publicationArgs = { title: 'Private journal publication control',
+  body_md: reportBody, visibility: 'owner' as const };
+
+/** Validate caller arguments before provisioning PG or building the HTTP host.
+ * Harness scope belongs to the transport envelope, not reports:publish args. */
+export async function validateReportJournalRequests() {
+  const { default: publish } = await import('../lib/agent-tools/reports/publish');
+  const schema = publish.args as { strict(): { parse(value: unknown): unknown;
+    safeParse(value: unknown): { success: boolean } } };
+  schema.strict().parse(publicationArgs);
+  assert.equal(schema.strict().safeParse({ ...publicationArgs, harness: 'private' }).success, false);
+}
+
 export async function measureReportJournalScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
   const adapter = FILE_ADAPTERS.find(candidate => candidate.sourceKind === 'codex');
@@ -89,8 +102,7 @@ export async function measureReportJournalScenario(o: Options) {
   assert.equal((await observations(unpublished)).length, 1);
 
   const published = await turn(reportBody);
-  const publication = await invoke('reports:publish', { title: 'Private journal publication control',
-    body_md: reportBody, visibility: 'owner', harness: o.harness }, published.owner);
+  const publication = await invoke('reports:publish', publicationArgs, published.owner);
   assert.equal(publication.ok, true, JSON.stringify(publication));
   const publicationRows = await sql`SELECT author_owner_id, body_md FROM harness_shared.report_library
     WHERE workspace_id = ${o.workspace} AND author_owner_id = ${published.owner}`;
