@@ -78,8 +78,11 @@ export async function measureReportJournalScenario(o: Options) {
   assert.ok(filed[0].body.includes(unpublished.turnRef));
   const journal = await sql`SELECT workspace_id, owner_id, source_kind, session_id, harness_slug
     FROM harness_shared.session_turn_journal WHERE session_id = ${unpublished.session}`;
-  assert.deepEqual(journal, [{ workspace_id: o.workspace, owner_id: unpublished.owner,
-    source_kind: 'codex', session_id: unpublished.session, harness_slug: o.harness }]);
+  // postgres returns an Array subclass; compare row count and row contents,
+  // rather than treating its Result prototype as provenance data.
+  assert.equal(journal.length, 1);
+  assert.deepEqual(journal[0], { workspace_id: o.workspace, owner_id: unpublished.owner,
+    source_kind: 'codex', session_id: unpublished.session, harness_slug: o.harness });
   const duplicate = await ingest(unpublished);
   assert.equal(duplicate.recorded, false, JSON.stringify(duplicate));
   assert.equal(duplicate.deduped, true, JSON.stringify(duplicate));
