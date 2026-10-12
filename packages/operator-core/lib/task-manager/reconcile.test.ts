@@ -224,10 +224,15 @@ describe('reconcile — unconfined task the scan read but did not list (WI-10005
 });
 
 describe('reconcile — stranding', () => {
-  it('strands a row whose scope holds no processes', () => {
+  it('keeps a scoped row unresolved when systemd has not confirmed release', () => {
     const r = reconcile([row({ taskId: 'eee555', scopeUnit: 'pc-eee555.scope' })], [], { now: NOW });
-    expect(r.stranded).toEqual([
-      { taskId: 'eee555', reason: 'scope pc-eee555.scope holds no processes' },
+    expect(r.stranded).toHaveLength(0);
+    expect(r.endedUnobserved).toHaveLength(0);
+    expect(r.unresolved).toEqual([
+      {
+        taskId: 'eee555',
+        reason: 'scope pc-eee555.scope holds no processes — systemd has not confirmed scope pc-eee555.scope was released',
+      },
     ]);
   });
 
@@ -556,7 +561,8 @@ describe('summarizeReconcile', () => {
     );
     expect(summarizeReconcile(r)).toMatchObject({
       alive: 0,
-      stranded: 1,
+      stranded: 0,
+      unresolved: 1,
       unaccounted: 1,
       unaccountedPids: 2,
       foreign: 0,

@@ -415,8 +415,7 @@ export async function enforceLifecycleVerdicts(
       continue;
     }
 
-    const terminalResidue = kinds.includes('terminal-residue');
-    if (row.state === 'unaccounted' || terminalResidue) {
+    if (row.state === 'unaccounted') {
       if (!row.scopeUnit) {
         outcomes.push({
           taskId,
@@ -464,6 +463,8 @@ export async function enforceLifecycleVerdicts(
       continue;
     }
 
+    // A terminal-row kill verdict stays on the task-id path, whose killTask
+    // call positively re-verifies residue before it reaps terminal scope work.
     let reapingResidue = isTerminalState(row.state);
     const auditId = await recordAudit({
       taskId,
@@ -555,7 +556,8 @@ export function evaluateLifecycleCandidates(input: {
       }
     }
 
-    if (row.state === 'unaccounted') {
+    const terminalResidue = kinds.includes('terminal-residue');
+    if (row.state === 'unaccounted' || terminalResidue) {
       const cpuUsec = finiteNumber(row.cpuUsec);
       let nextCpuUsec = cpuUsec;
       let cpuSampledAtMs: number | null = null;

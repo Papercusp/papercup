@@ -740,7 +740,8 @@ describe('reconcileTick — dryRun', () => {
       dryRun: true,
       checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
-    expect(out.summary.stranded).toBe(1);
+    expect(out.summary.stranded).toBe(0);
+    expect(out.summary.unresolved).toBe(1);
     expect(store.stranded).toHaveLength(0);
     expect(store.touched).toHaveLength(0);
   });
@@ -880,9 +881,9 @@ describe('reconcileTick — default scan yields its kernel IO (jev-memory-timeou
     expect(store.touched[0]).toMatchObject({ taskId: 'ccc333', pid: 42 });
   });
 
-  it('control: the synchronous scanner on the same fixture strands the row', async () => {
-    // Proves the fixture separates the two scanners. If this ever stops
-    // stranding, the test above no longer fails when the default reverts.
+  it('control: the synchronous scanner on the same fixture keeps the row unresolved', async () => {
+    // Proves the fixture separates the two scanners. The row stays unresolved
+    // because the probe supplies no positive systemd release confirmation.
     const { reads, asyncFs } = asyncKernel();
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'ccc333' })],
@@ -892,7 +893,8 @@ describe('reconcileTick — default scan yields its kernel IO (jev-memory-timeou
       checkScopesReleased: async () => new Set<string>(),
     });
     expect(reads).toEqual([]);
-    expect(out.strandedCount).toBe(1);
-    expect(store.stranded[0]!.taskId).toBe('ccc333');
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['ccc333']);
+    expect(store.stranded).toHaveLength(0);
   });
 });
