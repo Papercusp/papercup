@@ -56,7 +56,13 @@ import {
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments } from '../typed-properties-db';
-import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
+import {
+  boundedOrgTxn,
+  OrgTxnTimeoutError,
+  sampleCandidateWaitOnce,
+  type CandidateWaitSample,
+  type CandidateWaitSnapshot,
+} from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   claimFloorsWhereSql,
@@ -186,6 +192,8 @@ export interface GetNextOpts {
   signal?: AbortSignal;
   /** Diagnostic only: candidate phase entry and elapsed duration survive a caller timeout. */
   onResolutionStep?: (step: string, event: ResolutionStepEvent) => void;
+  /** Enable one bounded, target-PID wait snapshot for candidate feature tier 1. */
+  captureCandidateWait?: boolean;
 }
 
 export interface GetNextResult {
@@ -3082,7 +3090,10 @@ export async function getNextWorkItem(
   };
 
   /** One attempt at the compiled query under a given (possibly widened) filter node. */
-  const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
+  const attempt = async (
+    filterNode: FilterNode | undefined,
+    captureCandidateWait = false,
+  ): Promise<WorkItem | null> => {
     const remainingMs = ladderDeadline - Date.now();
     if (remainingMs <= 0) {
       // The budget is gone. Report it as the same typed contention error a per-statement
@@ -3094,18 +3105,24 @@ export async function getNextWorkItem(
         'caller-budget',
       );
     }
-    const rows = await boundedOrgTxn(
-      async (tx) => {
-        // Compile against the TRANSACTION client so the fragments belong to the connection
-        // that carries the SET LOCAL statement_timeout.
-        const floors = claimFloorsWhereSql(tx, floorOpts);
-        const selection = goalPlanClaimFragments(tx as OrgSql,
-          await lockGoalPlanClaimSelections(tx as OrgSql, ws, bee.assignee), {
-            harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
-          });
-        const order = compileRank(tx, spec, bee);
-        const filter = compileFilter(tx, filterNode);
-        const rows = await tx<FeatureRowDb[]>`
+    const statementTimeoutMs = Math.max(
+      100,
+      Math.trunc(Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS)),
+    );
+    let candidateWaitSnapshot: CandidateWaitSnapshot | undefined;
+    try {
+      const rows = await boundedOrgTxn(
+        async (tx) => {
+          // Compile against the TRANSACTION client so the fragments belong to the connection
+          // that carries the SET LOCAL statement_timeout.
+          const floors = claimFloorsWhereSql(tx, floorOpts);
+          const selection = goalPlanClaimFragments(tx as OrgSql,
+            await lockGoalPlanClaimSelections(tx as OrgSql, ws, bee.assignee), {
+              harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
+            });
+          const order = compileRank(tx, spec, bee);
+          const filter = compileFilter(tx, filterNode);
+          const updateCandidate = () => tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
        WHERE (harness_slug, feature_id) = (
@@ -3122,22 +3139,90 @@ export async function getNextWorkItem(
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
-        if (!rows[0]) return rows;
-        return (await guardPlanItemSiblingClaim(tx, rows[0], {
-          workspaceId: ws,
-          assignee: bee.assignee,
-          family: 'feature',
-        }))
-          ? rows
-          : [];
-      },
-      {
-        client: sql,
-        signal: opts.signal,
-        statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS),
-      },
-    );
-    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+          let rows: FeatureRowDb[];
+          if (captureCandidateWait) {
+            // Record the backend and a lower-bound start instant on the same
+            // transaction immediately before the candidate UPDATE. The observer
+            // later requires both, so it cannot attach a stale activity row to this
+            // claim attempt.
+            const [target] = await tx<Array<{ pid: number; queryStartedAfter: Date }>>`
+              SELECT pg_backend_pid()::int AS pid,
+                     clock_timestamp() AS "queryStartedAfter"`;
+            const sampleAfterMs = Math.floor(statementTimeoutMs * 0.8);
+            if (!target) {
+              candidateWaitSnapshot = {
+                status: 'unavailable',
+                reason: 'query-error',
+                statementCapMs: statementTimeoutMs,
+                sampleAfterMs,
+              };
+              rows = await updateCandidate();
+            } else {
+              const sampleAbort = new AbortController();
+              let sampleTimer: ReturnType<typeof setTimeout> | undefined;
+              let samplePromise: Promise<CandidateWaitSample> | undefined;
+              let sample: CandidateWaitSample | undefined;
+              sampleTimer = setTimeout(() => {
+                samplePromise = sampleCandidateWaitOnce(
+                  sql,
+                  Number(target.pid),
+                  target.queryStartedAfter,
+                  sampleAbort.signal,
+                ).then((value) => {
+                  sample = value;
+                  return value;
+                });
+                void samplePromise.catch(() => undefined);
+              }, sampleAfterMs);
+              try {
+                rows = await updateCandidate();
+              } finally {
+                if (sampleTimer) clearTimeout(sampleTimer);
+                // The observer uses its own AbortSignal-backed query cancellation;
+                // settling the UPDATE always ends the diagnostic, even if it is still
+                // acquiring its spare scheduler-claim connection.
+                sampleAbort.abort(new Error('candidate statement settled'));
+                if (samplePromise) {
+                  sample = await samplePromise.catch(() => ({
+                    status: 'unavailable' as const,
+                    targetPid: Number(target.pid),
+                    reason: 'query-error' as const,
+                  }));
+                } else {
+                  sample = { status: 'no-active', targetPid: Number(target.pid) };
+                }
+                candidateWaitSnapshot = {
+                  ...sample,
+                  statementCapMs: statementTimeoutMs,
+                  sampleAfterMs,
+                };
+              }
+            }
+          } else {
+            rows = await updateCandidate();
+          }
+          if (!rows[0]) return rows;
+          return (await guardPlanItemSiblingClaim(tx, rows[0], {
+            workspaceId: ws,
+            assignee: bee.assignee,
+            family: 'feature',
+          }))
+            ? rows
+            : [];
+        },
+        {
+          client: sql,
+          signal: opts.signal,
+          statementTimeoutMs,
+        },
+      );
+      return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+    } catch (error) {
+      if (error instanceof OrgTxnTimeoutError && candidateWaitSnapshot) {
+        error.candidateWaitSnapshot = candidateWaitSnapshot;
+      }
+      throw error;
+    }
   };
 
   // Priority preclaim: this is the only issue-family path that runs before the
@@ -3155,7 +3240,7 @@ export async function getNextWorkItem(
   // Tier 1: the spec's view exactly as authored.
   if (!claimed) {
     resolutionStep('candidate-feature-tier-1');
-    claimed = await attempt(spec.view.filter);
+    claimed = await attempt(spec.view.filter, opts.captureCandidateWait === true);
   }
 
   // Tier 2 (fallback-ladder P-005, fleet-backlog-lessons-2026-07-01, WI-1407): a spec that
