@@ -53,6 +53,41 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it.each([0, 17])('streams actual native invocation transitions before the file settles (exit %s)', async exitCode => {
+    const fixture = new URL('./native-cli.fixture.ts', import.meta.url).href;
+    const script = `
+      import { spawnSync } from 'node:child_process';
+      import { nativeCliCall } from ${JSON.stringify(fixture)};
+      const invoke = (_command, _args, options) => spawnSync(process.execPath,
+        ['-e', ${JSON.stringify(`setTimeout(() => { process.stdout.write('{"ok":true,"answer":42}'); process.exit(${exitCode}); }, 75);`)}],
+        { ...options, input: undefined });
+      try {
+        const answer = nativeCliCall('http://127.0.0.1:3170', 'fixture:read', { secret: 'must-stay-private' }, invoke);
+        if (answer.answer !== 42) throw new Error('Unexpected child answer');
+      } catch (error) {
+        if (${exitCode} === 0 || !String(error).includes('Native CLI process failed')) throw error;
+      }
+      process.stderr.write('NATIVE_CLI_PARENT_SETTLED\\n');
+    `;
+    const chunks: string[] = [];
+    const result = await nativeFixtureProcess(process.execPath,
+      ['--import', 'tsx', '--input-type=module', '-e', script], {
+        cwd: process.cwd(), timeoutMs: 10_000, onOutput: text => chunks.push(text),
+      });
+    expect(result.code, result.output).toBe(0);
+    const output = chunks.join('');
+    const transitions = output.split('\n').filter(line => line.startsWith('NATIVE_CLI_PROGRESS='))
+      .map(line => JSON.parse(line.slice('NATIVE_CLI_PROGRESS='.length)));
+    expect(transitions).toEqual([
+      expect.objectContaining({ state: 'started', name: 'fixture:read' }),
+      expect.objectContaining({ state: 'settled', name: 'fixture:read', status: exitCode, signal: null }),
+    ]);
+    expect(transitions[1].elapsedMs).toBeGreaterThanOrEqual(75);
+    expect(output.indexOf('"state":"started"')).toBeLessThan(output.indexOf('"state":"settled"'));
+    expect(output.indexOf('"state":"settled"')).toBeLessThan(output.indexOf('NATIVE_CLI_PARENT_SETTLED'));
+    expect(output).not.toContain('must-stay-private');
+  });
+
   it('recovers complete spilled evidence through verified bytes and refuses corrupted or partial sources', () => {
     const payload = Buffer.from(JSON.stringify({ content: [{ type: 'text', text: '{"ok":true,"answer":42}' }] }));
     const envelope = { schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',

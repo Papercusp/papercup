@@ -1,6 +1,7 @@
 /** Real native CLI fixture: preserve the selected runtime and producer budgets. */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
@@ -128,10 +129,30 @@ export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult
   return nativeCliResult({ ...result, stdout: recovered.content[0].text });
 }
 
-export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>): Record<string, any> {
+export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>,
+  invoke: typeof spawnSync = spawnSync): Record<string, any> {
   const plan = nativeCliPlan(baseUrl, name, args);
-  return recoverNativeCliResult(spawnSync(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
-    name, `--url=${plan.cliUrl}`, '--json', '-'], {
-    cwd: repoRoot, encoding: 'utf8', timeout: plan.timeoutMs, input: JSON.stringify(args), env: plan.env,
-  }), pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs)) as Record<string, any>;
+  const startedAt = performance.now();
+  // Write to the worker's actual descriptor: Vitest buffers console output until
+  // the file settles, hiding completed requests from the router's existing
+  // progress-aware watchdog. These are real transitions, never timer heartbeats.
+  const progress = (state: string, result?: { status: number | null; signal: string | null }) => {
+    writeSync(2, `NATIVE_CLI_PROGRESS=${JSON.stringify({ state, name,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      ...(result ? { status: result.status, signal: result.signal } : {}) })}\n`);
+  };
+  progress('started');
+  let result;
+  try {
+    result = invoke(process.execPath, [join(repoRoot, 'apps/operator/scripts/ptool.mjs'),
+      name, `--url=${plan.cliUrl}`, '--json', '-'], {
+      cwd: repoRoot, encoding: 'utf8', timeout: plan.timeoutMs, input: JSON.stringify(args), env: plan.env,
+    });
+  } catch (error) {
+    progress('launch-error');
+    throw error;
+  }
+  progress('settled', result);
+  return recoverNativeCliResult(result,
+    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke)) as Record<string, any>;
 }
