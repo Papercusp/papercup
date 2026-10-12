@@ -1150,15 +1150,15 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   // WI-10003884. Same activation-vs-capability rule as the test above: the priority-wait
-  // branch is inert unless the unit asks for it, so dropping the word from the unit
-  // silently restores the every-other-hour skip. Only the hourly dump needs it; a Kopia
-  // sweep that also waited on contention would stop yielding the lock to the dump.
-  it('makes lock contention a priority wait for the db dump only', () => {
+  // branch is inert unless the entrypoint asks for it, so dropping the word silently
+  // restores the every-other-hour skip. The hourly dump and daily home walk register
+  // priority waits; the periodic hot sweep stays preemptible and must not wait here.
+  it('enables priority-on-contention for the db dump and daily home snapshot only', () => {
     expect(dbService).toContain('--label db-dump --no-restart-safe --priority-on-contention -- ');
+    expect(homeService).toContain('--label daily-home-vm --priority-on-contention -- ');
+    expect(homeScript).toContain('--mode scheduled --label daily-home-vm --priority-on-contention');
     expect(hotService).not.toContain('--priority-on-contention');
-    expect(homeService).not.toContain('--priority-on-contention');
     expect(hotScript).not.toContain('--priority-on-contention');
-    expect(homeScript).not.toContain('--priority-on-contention');
   });
 
   it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {
