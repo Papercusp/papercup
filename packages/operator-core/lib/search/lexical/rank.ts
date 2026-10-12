@@ -97,12 +97,18 @@ export function usesWebsearchOperators(query: string): boolean {
 const SCHEMA = 'harness_shared';
 const AVAILABILITY_TTL_MS = 60_000;
 
-interface AvailabilityEntry {
+export interface AvailabilityEntry {
   indexes: ReadonlySet<string>;
   /** `bm25_get_current_score()` exists on this server (BM25_SCAN_SCORE_NOTE). */
   scanScore: boolean;
   checkedAt: number;
 }
+
+/** A caller may wrap a catalog cache miss in a transaction while keeping the
+ * cache identity tied to the original SQL client. */
+export type Bm25AvailabilityLoader = (
+  read: (readSql: Sql) => Promise<AvailabilityEntry>,
+) => Promise<AvailabilityEntry>;
 
 const state = pinModuleState('@papercusp/operator-core.lexical-bm25-availability', () => ({
   bySql: new WeakMap<object, AvailabilityEntry>(),
@@ -148,13 +154,18 @@ export async function readBm25ScanScore(sql: Sql): Promise<boolean> {
   }
 }
 
-async function availabilityFor(sql: Sql): Promise<AvailabilityEntry> {
+async function availabilityFor(sql: Sql, loader?: Bm25AvailabilityLoader): Promise<AvailabilityEntry> {
   const now = Date.now();
   const hit = state.bySql.get(sql);
   if (hit && now - hit.checkedAt < AVAILABILITY_TTL_MS) return hit;
-  const indexes = await readBm25Indexes(sql);
-  const scanScore = indexes.size > 0 && (await readBm25ScanScore(sql));
-  const entry = { indexes, scanScore, checkedAt: now };
+  const read = async (readSql: Sql): Promise<AvailabilityEntry> => {
+    const indexes = await readBm25Indexes(readSql);
+    const scanScore = indexes.size > 0 && (await readBm25ScanScore(readSql));
+    return { indexes, scanScore, checkedAt: Date.now() };
+  };
+  // Cache by the owning client, but let a caller bound/cancel catalog reads.
+  // The loader is not called on a fresh cache hit.
+  const entry = await (loader ? loader(read) : read(sql));
   state.bySql.set(sql, entry);
   return entry;
 }
@@ -361,10 +372,13 @@ export async function bm25LegIfAvailable(
   table: Bm25CorpusTable,
   query: string,
   alias?: string,
+  options: { availabilityLoader?: Bm25AvailabilityLoader } = {},
 ): Promise<LexicalLeg | null> {
-  if ((await lexicalEngine(sql, table)) !== 'bm25') return null;
+  if (!(await bm25FlagOn())) return null;
+  const availability = await availabilityFor(sql, options.availabilityLoader);
+  if (!availability.indexes.has(bm25Corpus(table).indexName)) return null;
   const leg = bm25Leg(sql, bm25Corpus(table), query, alias);
-  return (await bm25ScanScoreFor(sql)) ? { ...leg, scanScore: sql`bm25_get_current_score()` } : leg;
+  return availability.scanScore ? { ...leg, scanScore: sql`bm25_get_current_score()` } : leg;
 }
 
 /**
