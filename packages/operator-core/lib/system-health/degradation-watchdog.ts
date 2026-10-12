@@ -166,7 +166,11 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'workspace-routing-read', scopeKeyed: true,
-  description: 'Workspace route, recipient and issue-partition decisions that measured their primary inventory, recipient set or flag rather than selecting a fallback after a read failure.',
+  description: 'Workspace route, placement, recipient and issue-partition decisions that measured their primary inventory, presence files, recipient set or flag rather than selecting a fallback after a read failure.',
+});
+registerDegradationMechanism({
+  mechanism: 'conversation-context-read', scopeKeyed: true,
+  description: 'Eligible conversation context reads that measured the primary stored context, including empty context, rather than using a window-only prompt after a read failure; configured window mode and missing conversations are excluded.',
 });
 registerDegradationMechanism({
   mechanism: 'coordination-delivery', scopeKeyed: true,
