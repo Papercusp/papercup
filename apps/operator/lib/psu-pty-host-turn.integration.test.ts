@@ -1058,6 +1058,7 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);",
       "if(data.includes('\\u0001')){if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);return;}",
       "if(data.includes('\\u0002')){clearInterval(repaint);repaint=null;return;}",
+      "if(data.includes('\\u0003')){clearInterval(repaint);repaint=null;setTimeout(()=>{repaint=setInterval(()=>process.stdout.write('.'),20);},180);return;}",
       "process.stdout.write('INPUT:'+data+'\\n');});",
       'setTimeout(()=>process.exit(0),20000);',
     ].join('');
@@ -1105,6 +1106,15 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       const wake = { mode: 'turn' as const, ownerId, data: 'pending x', deliveryId: 'unbindable-pending-x' };
       expect(await injectIntoHostWithConfirmation(sock, wake)).toMatchObject({ ok: true, reason: 'accepted' });
       expect(await waitForEvent((event) => event.kind === 'wake-rearm-scheduled')).toBe(true);
+      // Scheduling alone does not prove the re-arm still owns this ID. Assert
+      // that prerequisite before spending the unbound-window wait, and retain
+      // lifecycle evidence in the failure instead of deleting it in cleanup.
+      expect(await injectIntoHostWithConfirmation(sock, wake), JSON.stringify(readEvents(ownerId)))
+        .toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      // Controlled reproduction: a delayed repaint timer can expose a quiet
+      // window without changing the intended busy lifecycle of this fixture.
+      expect(await injectIntoHost(sock, { mode: 'raw', data: '\x03', ownerId })).toBeTruthy();
+      await sleep(500);
       expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(0);
 
       // (3) Let the child cross its window while the accepted copy stays PENDING
@@ -1118,7 +1128,8 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
         .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
       const refusals = readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused');
       expect(refusals).toHaveLength(1);
-      expect(refusals[0]).toMatchObject({ mode: 'turn', phase: 'duplicate-pending' });
+      expect(refusals[0], JSON.stringify(readEvents(ownerId)))
+        .toMatchObject({ mode: 'turn', phase: 'duplicate-pending' });
       expect(captured()).not.toContain('INPUT:pending x');
 
       // The refusal does not cancel the accepted copy. Once the id appears and
