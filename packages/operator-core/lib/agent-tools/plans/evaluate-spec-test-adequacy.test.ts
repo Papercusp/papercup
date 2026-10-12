@@ -147,6 +147,80 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows[0].wouldBlock).toContain('freshness');
   });
 
+  it('marks a replay with unavailable server measurements as degraded in summary and full results', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([{
+      id: 91,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      specRevision: 1,
+      currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: 42,
+      testRunProvenance: null,
+      details: { adequacy: { testLayer: 'integration', outcome: 'pass', executed: true } },
+      observedAt: '2026-09-07T00:00:00.000Z',
+      bindingFingerprint: 'sha256:binding-91',
+      createdBy: 'su-test',
+      createdAt: '2026-09-07T00:00:00.000Z',
+      currentness: {
+        overall: 'unknown',
+        provenance: 'replayed-snapshot',
+        comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'unknown', test: 'unknown' },
+        staleReasons: [],
+        unknownReasons: ['server-measurement-unavailable:repo_measurement_timeout'],
+      },
+      serverMeasurement: { status: 'unavailable', reason: 'repo_measurement_timeout' },
+    } as never]);
+
+    const base = {
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      replaySnapshot: true,
+      current: [],
+    };
+    const summary = await call({ ...base, detail: 'summary' });
+    const full = await call({ ...base, detail: 'full' });
+
+    const expectedMeasurementEvidence = {
+      status: 'degraded',
+      selectedBindings: 1,
+      measuredBindings: 0,
+      unavailableBindings: [{
+        id: 91,
+        evidenceKind: 'test',
+        evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+        reason: 'repo_measurement_timeout',
+      }],
+      withoutMeasurementBasis: [],
+    };
+    expect(summary.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
+    expect(full.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
+    expect(summary.rows[0].ratings.freshness.rating).toBe('unknown');
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      replaySnapshot: true,
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+    }));
+  });
+
   it('derives omitted classRef from the persisted subject class without waiving proof', async () => {
     listAcceptanceRubrics.mockResolvedValue([{ rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never]);
     listClauses.mockResolvedValue([clause('active')]);

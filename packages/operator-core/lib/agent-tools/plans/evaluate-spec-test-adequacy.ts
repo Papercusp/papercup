@@ -27,7 +27,54 @@ import { getWorkItem } from '../../work-items';
 import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 
-type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy>;
+type MeasurementEvidenceSummary = {
+  status: 'none' | 'measured' | 'partial' | 'unmeasured' | 'degraded';
+  selectedBindings: number;
+  measuredBindings: number;
+  unavailableBindings: Array<{ id: number; evidenceKind: string; evidenceRef: string; reason: string }>;
+  withoutMeasurementBasis: Array<{ id: number; evidenceKind: string; evidenceRef: string }>;
+};
+
+type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy> & {
+  measurementEvidence: MeasurementEvidenceSummary;
+};
+
+function summarizeMeasurementEvidence(
+  evidence: Awaited<ReturnType<typeof listSpecEvidence>>,
+): MeasurementEvidenceSummary {
+  const unavailableBindings = evidence.flatMap((row) =>
+    row.serverMeasurement?.status === 'unavailable'
+      ? [{
+          id: row.id,
+          evidenceKind: row.evidenceKind,
+          evidenceRef: row.evidenceRef,
+          reason: row.serverMeasurement.reason,
+        }]
+      : [],
+  );
+  const withoutMeasurementBasis = evidence.flatMap((row) =>
+    row.serverMeasurement === undefined
+      ? [{ id: row.id, evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef }]
+      : [],
+  );
+  const measuredBindings = evidence.filter((row) => row.serverMeasurement?.status === 'measured').length;
+  const status: MeasurementEvidenceSummary['status'] = evidence.length === 0
+    ? 'none'
+    : unavailableBindings.length > 0
+      ? 'degraded'
+      : withoutMeasurementBasis.length === evidence.length
+        ? 'unmeasured'
+        : withoutMeasurementBasis.length > 0
+          ? 'partial'
+          : 'measured';
+  return {
+    status,
+    selectedBindings: evidence.length,
+    measuredBindings,
+    unavailableBindings,
+    withoutMeasurementBasis,
+  };
+}
 const PASS_LIKE = new Set(['pass', 'not-applicable']);
 const COMPACT_FAILURE_EVIDENCE_CHARS = 1200;
 
@@ -53,6 +100,10 @@ function summaryRow(row: EvaluatedRow) {
     // P-019: the binding ids that drag each blocking criterion — ids only, so the compact
     // read stays compact while naming exactly which rows to retract or supersede.
     ...(Object.keys(row.draggingBindingIds).length > 0 ? { draggingBindingIds: row.draggingBindingIds } : {}),
+    // Keep transient measurement failures machine-visible in the compact response.
+    // Criterion prose alone made a temporary server-measurement timeout look like a
+    // stable substantive UNKNOWN rating when the evaluator otherwise returned ok:true.
+    measurementEvidence: row.measurementEvidence,
     ratings: Object.fromEntries(
       Object.entries(row.ratings).map(([criterion, entry]) => [
         criterion,
@@ -408,7 +459,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     ok: true,
     evaluatorBuild: liveEvaluatorBuild,
     ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
-    rows: [summaryRow(evaluated)],
+    rows: [summaryRow({ ...evaluated, measurementEvidence: summarizeMeasurementEvidence(evidence) })],
     count: 1,
     historicalAuditOnly: {
       provenance: 'historical-audit-only',
@@ -719,7 +770,14 @@ export default defineTool({
         clause.sourceBar,
         sourceBarRubricCache,
       );
-      return evaluateSpecTestAdequacy({
+      const clauseEvidence = allEvidence.filter((row) =>
+        row.planSlug === clause.planSlug &&
+        row.specId === clause.specId &&
+        row.specRevision === clause.revision &&
+        row.specFingerprint === clause.contentHash,
+      );
+      const latestClauseEvidence = new Set(latestLogicalEvidence(clauseEvidence));
+      const evaluated = evaluateSpecTestAdequacy({
         clause,
         evidence: evaluationEvidence,
         classRef,
@@ -731,14 +789,8 @@ export default defineTool({
           // The grade selects the newest append of each exact-clause binding.
           // Its replay must use that SAME measurement, not an older recipe that
           // happens to appear later in the newest-first evidence history.
-          const selected = new Set(latestLogicalEvidence(allEvidence.filter((row) =>
-            row.planSlug === clause.planSlug &&
-            row.specId === clause.specId &&
-            row.specRevision === clause.revision &&
-            row.specFingerprint === clause.contentHash,
-          )));
-          for (const row of allEvidence) {
-            if (!selected.has(row) || row.serverMeasurement?.status !== 'measured') continue;
+          for (const row of clauseEvidence) {
+            if (!latestClauseEvidence.has(row) || row.serverMeasurement?.status !== 'measured') continue;
             merged.set(evidenceCurrentInputKey(row.serverMeasurement.current), row.serverMeasurement.current);
           }
           return merged.size > 0 ? [...merged.values()] : undefined;
@@ -751,6 +803,10 @@ export default defineTool({
         },
         now,
       });
+      return {
+        ...evaluated,
+        measurementEvidence: summarizeMeasurementEvidence(clauseEvidence),
+      };
     }));
     // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): a read whose EVIDENCE COHORT is
     // pinned (workItemIds / evidenceRefs / bindingIds) is a DIAGNOSTIC, not the ship verdict — the ship gate
