@@ -173,6 +173,10 @@ registerDegradationMechanism({
   description: 'Actual MDX parses that completed rather than returning searchable raw-text fallback; cache hits and cancellation before parsing are excluded.',
 });
 registerDegradationMechanism({
+  mechanism: 'hook-lock-enforcement', scopeKeyed: true,
+  description: 'Eligible OMP edit-lock checks that returned a measured enforcement verdict rather than allowing the edit after empty keys, a request defect or unavailable transport; unrelated guards and non-edit tools are excluded.',
+});
+registerDegradationMechanism({
   mechanism: 'improvement-watchdog-read', scopeKeyed: true,
   description: 'Improvement-watchdog lock, history and key-dedup reads that completed their primary operation rather than sweeping unlocked or using no-history/title-only defaults.',
 });
