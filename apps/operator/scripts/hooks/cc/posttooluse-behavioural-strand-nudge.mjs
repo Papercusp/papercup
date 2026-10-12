@@ -90,7 +90,9 @@
 //     mirrors pretooluse-secrets-guard.mjs / the required-field sibling.
 //
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 
@@ -142,7 +144,7 @@ async function main() {
     if (!filePath) return done();
 
     const msg = await nudgeFor(filePath);
-    if (msg) {
+    if (msg && shouldEmitNudge(hook.session_id, filePath, msg)) {
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: msg },
@@ -153,6 +155,41 @@ async function main() {
     // fail open — see CONTRACT
   }
   return done();
+}
+
+/**
+ * Emit a nudge only when THIS session has not already been shown the identical text for
+ * this file (WI-6554700010008923, oversized-tool-results-reduction-2026-10-12#P-008).
+ *
+ * The nudge diffs the file against its base, so every later Edit to the same file
+ * recomputes the same block. Measured 2026-10-12: a batch of two Edits to cell-read.ts
+ * printed the full ~2 KB block twice in one response. Hook output bypasses the result
+ * door, so the repetition went straight into context. Once the session has seen the
+ * block, repeating it adds nothing. When the detected seam set changes, the text changes
+ * and the nudge fires again.
+ *
+ * State is one small JSON map per session (relPath -> sha256 of the text) under the OS
+ * temp dir. FAIL OPEN, as the rest of this hook does: with no session id or unreadable
+ * state, it emits.
+ */
+export function shouldEmitNudge(sessionId, filePath, msg, { stateDir = join(tmpdir(), 'papercusp-strand-nudge') } = {}) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(sessionId)) return true;
+  const hash = createHash('sha256').update(msg).digest('hex');
+  const stateFile = join(stateDir, `${sessionId}.json`);
+  let seen = {};
+  try {
+    seen = JSON.parse(readFileSync(stateFile, 'utf8')) || {};
+  } catch {
+    seen = {};
+  }
+  if (seen[filePath] === hash) return false;
+  try {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(stateFile, JSON.stringify({ ...seen, [filePath]: hash }));
+  } catch {
+    // fail open: emit even when the state cannot be recorded
+  }
+  return true;
 }
 
 /**

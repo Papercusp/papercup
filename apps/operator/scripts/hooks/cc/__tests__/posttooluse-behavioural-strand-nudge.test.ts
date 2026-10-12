@@ -480,3 +480,51 @@ describe('behavioural-strand nudge — never runs main() on import', () => {
     expect(hook.isDirectCliInvocation(undefined)).toBe(false);
   });
 });
+
+// WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): hook output
+// bypasses the result door, so an identical nudge repeated per Edit lands in context
+// in full each time. Measured: two Edits to one file in one batch printed the ~2 KB
+// block twice.
+describe('behavioural-strand nudge — one session sees an identical block once', () => {
+  type Dedupe = {
+    shouldEmitNudge: (sessionId: unknown, filePath: string, msg: string, opts?: { stateDir?: string }) => boolean;
+  };
+  const withStateDir = async (fn: (hook: Dedupe, stateDir: string) => void | Promise<void>) => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const stateDir = mkdtempSync(resolve(tmpdir(), 'strand-nudge-dedupe-'));
+    try {
+      await fn((await import(`file://${HOOK}`)) as unknown as Dedupe, stateDir);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  };
+
+  it('emits the first time and suppresses the identical block for the same file and session', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(false);
+    }));
+
+  it('re-emits when the block CHANGES (a different seam set is news)', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v1', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v2', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v2', { stateDir })).toBe(false);
+    }));
+
+  it('never suppresses across files or across sessions', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/b.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-2', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+    }));
+
+  it('fails OPEN: no usable session id always emits', () =>
+    withStateDir((hook, stateDir) => {
+      for (const bad of [undefined, '', '../escape', 42]) {
+        expect(hook.shouldEmitNudge(bad, '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+        expect(hook.shouldEmitNudge(bad, '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      }
+    }));
+});
