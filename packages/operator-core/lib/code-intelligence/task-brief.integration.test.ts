@@ -6,12 +6,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));
 import { buildTaskBrief } from './task-brief';
 import { DEFAULT_PACKER_EFFECTS, packerFacade, resolveRepomixBin } from './packer-facade';
-import { firstPartyCallersOffthread } from './first-party-callers-offthread';
+import { firstPartyCallersOffthread, FIRST_PARTY_CALLERS_BUDGET_MS } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import { readWorkItemResume } from '../agent-tools/work_items/resume';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
+// Positive source/incident oracles use real, freshly captured producer results.
+// Cold compiler/packer bootstrap is fixture setup; the unit suite separately
+// checks the interactive brief's six-second deadline and unknown-result path.
+async function captureForBrief(root: string, paths: string[], filePath: string) {
+  const startedAtMs = Date.now();
+  const [packed, graph] = await Promise.all([
+    packerFacade('pack', { rootPath: root, include: paths, format: 'xml', compress: false }, DEFAULT_PACKER_EFFECTS),
+    firstPartyCallersOffthread({ root, name: 'target', filePath, paths, op: 'callers', limit: 8,
+      vendorDir: LSP_VENDOR_DIR }, { budgetMs: FIRST_PARTY_CALLERS_BUDGET_MS }),
+  ]);
+  expect(packed.answer.error, JSON.stringify(packed.answer)).toBeNull();
+  expect(graph.error, JSON.stringify(graph)).toBeNull();
+  expect(graph.evidence?.sourceScope.supportingFiles.length).toBeGreaterThan(0);
+  return { packed, graph, startedAtMs, elapsedMs: Date.now() - startedAtMs };
+}
 describe('native P012 current scoped brief integration', () => {
   it('P018: carries recorded error references and real compiler hypotheses through canonical resume without asserting causation', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-incident-brief-')); dirs.push(root);
@@ -23,11 +38,14 @@ describe('native P012 current scoped brief integration', () => {
     const failure = { testRunId: 42, path: 'reference.test.ts', status: 'fail' as const,
       commit: 'a'.repeat(40), logSha256: 'b'.repeat(64) };
     const failures = vi.fn(async () => [failure]);
-    const source = async () => ({ taskBrief: await buildTaskBrief({ workspaceId: 'incident-workspace', workItem: item }, {
-      root: async () => root, effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade, failures,
-      graph: (repo, name, filePath, paths, budgetMs) => firstPartyCallersOffthread({ root: repo, name, filePath,
-        paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR }, { budgetMs }),
-    }) });
+    const source = async () => {
+      const captured = await captureForBrief(root, item.payload.paths, 'a-target.ts');
+      return { taskBrief: await buildTaskBrief({ workspaceId: 'incident-workspace', workItem: item }, {
+      root: async () => root, effects: DEFAULT_PACKER_EFFECTS, failures,
+      pack: async () => captured.packed,
+      graph: async () => captured.graph,
+    }) };
+    };
     const resumed = await readWorkItemResume(item, { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
       freshness: async () => undefined, evidence: async () => [], taskBrief: source });
     expect(resumed.taskBrief?.status, JSON.stringify(resumed.taskBrief)).toBe('current');
@@ -53,20 +71,16 @@ describe('native P012 current scoped brief integration', () => {
     const item = { id: 'WI-task-fixture', harness: 'brief-fixture', state: 'open',
       payload: { paths: ['target.ts', 'consumer.ts', 'target.test.ts', 'guide.md'] } };
     const compilerAttempts: { budgetMs: number; startedAtMs: number; elapsedMs?: number; error?: string | null }[] = [];
-    const source = async () => ({ taskBrief: await buildTaskBrief({ workspaceId: 'fixture-workspace', workItem: item }, {
+    const source = async () => {
+      const captured = await captureForBrief(root, item.payload.paths, 'target.ts');
+      compilerAttempts.push({ budgetMs: FIRST_PARTY_CALLERS_BUDGET_MS, startedAtMs: captured.startedAtMs,
+        elapsedMs: captured.elapsedMs, error: captured.graph.error });
+      return { taskBrief: await buildTaskBrief({ workspaceId: 'fixture-workspace', workItem: item }, {
       root: async (workspaceId, harness) => workspaceId === 'fixture-workspace' && harness === 'brief-fixture' ? root : null,
-      effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade,
-      graph: async (repo, name, filePath, paths, budgetMs) => {
-        const attempt = { budgetMs, startedAtMs: Date.now() } as (typeof compilerAttempts)[number];
-        compilerAttempts.push(attempt);
-        const answer = await firstPartyCallersOffthread({
-          root: repo, name, filePath, paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR,
-        }, { budgetMs });
-        attempt.elapsedMs = Date.now() - attempt.startedAtMs;
-        attempt.error = answer.error;
-        return answer;
-      },
-    }) });
+      effects: DEFAULT_PACKER_EFFECTS, pack: async () => captured.packed,
+      graph: async () => captured.graph,
+    }) };
+    };
     const deps = { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
       freshness: async () => undefined, evidence: async () => [], taskBrief: source };
     const first = await readWorkItemResume(item, deps);
