@@ -7083,6 +7083,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     return;
                   }
                   const stalled = error.code === 'ttfb-timeout';
+                  // WI-6554700010009426: an admitted attempt that died on the wire (TTFB
+                  // deadline / transport) spent its slot and produced nothing — contract
+                  // the lane exactly like a mid-relay death (EI-7168), so a herd queues
+                  // here instead of saturating egress with full-body re-uploads.
+                  providerAdmission.recordHardFailure('claude');
                   log(
                     'error',
                     `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} request=${requestRef} code=${error.code} on '${account.accountId}': ${error.message}`,
@@ -8851,6 +8856,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
         onEgressFailure: (id, error) => {
           egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1);
+          // WI-6554700010009426: an ADMITTED codex attempt that died on the wire (TTFB
+          // deadline / connect / DNS / reset — downstream cancels and local terminal
+          // decisions never reach this hook) is a measured upstream fault (D-005), the
+          // same evidence the claude lane already contracts on (EI-7168). Without it the
+          // codex lane only ever heard 429s and successes, so on 2026-10-12 its capless
+          // window kept EXPANDING (5878→6196) through ~8,900 TTFB timeouts while a
+          // mass-resume herd saturated egress; every abort failed over and re-uploaded
+          // the whole body, and the gateway collapsed for ~35 min (claude too).
+          providerAdmission.recordHardFailure('codex');
           const description = describeFetchError(error);
           const edge = codexReachability.noteTransportFailure(id, description, classifyTransportFailure(error), Date.now());
           if (edge === 'became-unreachable') {
