@@ -1141,6 +1141,63 @@ describe('bootstrap-su', () => {
     }));
   });
 
+  // consult-backed-parking-2026-10-12#P-010 (R-10): 16 measured cross-backend port
+  // failures (~2026-10-05) ended with "prepared target account auto did not resolve
+  // exactly at bootstrap (got default)". The launcher sent the prepared 'auto', but the
+  // codex auto route resolved without the gatewayAuto marker, so bootstrap read it as
+  // 'default'. The first case is the regression guard for that class: an auto-routed
+  // codex target must resolve to exactly 'auto' and be accepted. The second pins the
+  // earlier contract guard: a launch whose account drifted from the prepared request is
+  // refused before any target is reserved, so no route ever changes silently.
+  const sessionPortRowForAccount = (account: string) => {
+    const row = sessionPortRow();
+    const summary = (row.metadata as { summary: { target: Record<string, unknown> } }).summary;
+    return {
+      ...row,
+      metadata: { ...row.metadata, summary: { ...summary, target: { ...summary.target, account } } },
+    };
+  };
+  const sessionPortLaunch = (account: string) => ({
+    agent: 'codex',
+    model: 'gpt-5.5',
+    account,
+    owner_id: 'su-source-owner',
+    bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+    session_port_protocol: 2,
+    session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+    session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+  });
+
+  it('accepts a prepared auto account when the codex target resolves to unpinned gateway routing', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRowForAccount('auto'));
+    getFlagMock.mockImplementation(async (key: string) => key === 'papercusp-inference-gateway');
+    loadAccountPoolMock.mockResolvedValueOnce({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    try {
+      const res = await callPost(sessionPortLaunch('auto'));
+      expect(res.status).toBe(200);
+      expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(
+        expect.objectContaining({ portId: SESSION_PORT_ID }),
+      );
+      expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+        expect.objectContaining({ codexGatewayAuto: true, codexGatewayAccountId: null }),
+      );
+    } finally {
+      getFlagMock.mockImplementation(async () => false);
+    }
+  });
+
+  it('refuses a launch whose account drifted from the prepared auto request, before reserving a target', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRowForAccount('auto'));
+    const res = await callPost(sessionPortLaunch('default'));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe(
+      'session-port bootstrap inputs differ from the immutable prepared request; inspect and prepare again',
+    );
+    expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
   it('replays the committed bootstrap receipt before rejecting an already-pending attempt', async () => {
     getSessionPortMock.mockResolvedValueOnce(sessionPortRow({ status: 'pending', targetAdvSessionId: 42 }));
     readSessionPortBootstrapDispositionMock.mockResolvedValueOnce({
@@ -1740,10 +1797,12 @@ describe('bootstrap-su', () => {
       launch_context: kickoff,
     });
     expect(res.status).toBe(200);
+    // The composer may place the cache-split boundary (PSU_CACHE_BOUNDARY, role-launch-spec)
+    // between the stable playbook and the per-launch context; the folded order is the contract.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        promptText: expect.stringContaining(
-          'PLAYBOOK + CTX BODY\n\n---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout',
+        promptText: expect.stringMatching(
+          /PLAYBOOK \+ CTX BODY\n\n(?:<!--PSU_CACHE_BOUNDARY-->\n\n)?---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout/,
         ),
       }),
     );
