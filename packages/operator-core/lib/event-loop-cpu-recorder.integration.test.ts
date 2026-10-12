@@ -142,7 +142,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         );
         expect(existsSync(addonPath)).toBe(true);
 
-        const run = async (strategy: 'inspector' | 'eager') => {
+        const run = async (strategy: 'inspector' | 'eager', v8Flags: string[] = []) => {
           const workerSource =
             "const { parentPort } = require('node:worker_threads'); " +
             "let waiting = false; " +
@@ -333,7 +333,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
 
           const { stdout } = await exec(
             process.execPath,
-            ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', childScript],
+            [...v8Flags, '--expose-gc', '--import', 'tsx', '--input-type=module', '-e', childScript],
             { timeout: 90_000, maxBuffer: 128 * 1024 },
           );
           return JSON.parse(stdout);
@@ -341,6 +341,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
 
         const inspector = await run('inspector');
         const eager = await run('eager');
+        const eagerNoInlining = await run('eager', ['--no-turbo-inlining']);
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
             eager.recoveryCapture.profile.samples <= maxSamples &&
@@ -364,6 +365,20 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({
           inspector,
           eager,
+          eagerNoInlining,
+          inlineControl: {
+            flag: '--no-turbo-inlining',
+            defaultRecovery: {
+              hotSamples: eager.recoveryCapture.profile.hotSamples,
+              mapSamples: eager.recoveryCapture.profile.mapSamples,
+              usefulSamples: eager.recoveryCapture.profile.usefulSamples,
+            },
+            noInliningRecovery: {
+              hotSamples: eagerNoInlining.recoveryCapture.profile.hotSamples,
+              mapSamples: eagerNoInlining.recoveryCapture.profile.mapSamples,
+              usefulSamples: eagerNoInlining.recoveryCapture.profile.usefulSamples,
+            },
+          },
           gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
         }));
 
@@ -373,6 +388,8 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         // interpreting a post-disposal miss as lifecycle recovery failure.
         expect(eager.primary.profile.usefulSamples).toBeGreaterThanOrEqual(1);
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
+        expect(eagerNoInlining.recoveryCapture.workload.hotFrameCalls).toBeGreaterThan(0);
+        expect(eagerNoInlining.recoveryCapture.workload.churnedFunctions).toBeGreaterThan(0);
         expect(eager.disabledRevocation.serialized).toBe(false);
         expect(eager.unsafeRevocation.serialized).toBe(false);
         expect(eager.delayed.cleanup.serialized).toBe(false);
