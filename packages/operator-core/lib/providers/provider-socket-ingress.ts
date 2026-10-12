@@ -348,7 +348,15 @@ export class ProviderSocketIngressManager {
     for (const source of sources) {
       const id = key(source);
       const ingress = providers.get(source.kind);
-      if (!ingress || this.connections.has(id) || (this.retryAt.get(id) ?? 0) > this.now()) continue;
+      if (!ingress) continue;
+      const existing = this.connections.get(id);
+      if (existing) {
+        // The socket can stay open across source edits, but envelope normalization and admission
+        // must see the current non-secret config and source metadata on every reconcile.
+        existing.source = source;
+        continue;
+      }
+      if ((this.retryAt.get(id) ?? 0) > this.now()) continue;
       try {
         const credential = await (this.deps.readCredential
           ?? ((provider, harness, field) => readProviderCredentialValue(provider.descriptor, harness, field)))(
