@@ -48,7 +48,7 @@ const {
     deadPidMock: vi.fn((_pid: number) => false),
     lockTxnSqlMock,
     resourcePoolBeginMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(lockTxnSqlMock)),
-    boundedOrgTxnMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(sqlMock)),
+    boundedOrgTxnMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>, _opts?: unknown) => fn(sqlMock)),
   };
 });
 vi.mock('../locks/su-lock-store', () => ({
