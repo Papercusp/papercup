@@ -184,8 +184,7 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'let cursor = 1;',
             'let churnedFunctions = 0;',
             'const retained = Array.from({ length: 25000 }, (_, i) => {',
-            "  const fn = new Function('x', 'return x + ' + i);",
-            "  Object.defineProperty(fn, 'name', { value: 'map_' + i });",
+            "  const fn = new Function('return function map_' + i + '(x) { return x + ' + i + '; }')();",
             '  fn(i);',
             '  return fn;',
             '});',
@@ -221,11 +220,27 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
             'function summarize(profile) {',
             '  const nodes = Array.isArray(profile?.nodes) ? profile.nodes : [];',
             '  const samples = Array.isArray(profile?.samples) ? profile.samples : [];',
-            '  const names = new Map(nodes.map(node => [node.id, node.callFrame?.functionName ?? ""]));',
-            '  const sampledNames = samples.map(id => names.get(id) ?? "");',
-            "  const hotSamples = sampledNames.filter(name => name === 'cpuHotFrame').length;",
-            "  const mapSamples = sampledNames.filter(name => name.startsWith('map_')).length;",
-            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, usefulSamples: hotSamples + mapSamples, bytes: Buffer.byteLength(JSON.stringify(profile)) };',
+            '  const nodesById = new Map(nodes.map(node => [node.id, node]));',
+            '  const parentById = new Map();',
+            '  for (const node of nodes) for (const child of node.children ?? []) parentById.set(child, node.id);',
+            '  const sampleFrames = samples.map(sampleId => {',
+            '    const frames = [], seen = new Set();',
+            '    let nodeId = sampleId;',
+            '    while (nodeId !== undefined && !seen.has(nodeId)) {',
+            '      seen.add(nodeId);',
+            '      const node = nodesById.get(nodeId);',
+            '      if (!node) break;',
+            '      frames.push(node.callFrame?.functionName ?? "");',
+            '      nodeId = parentById.get(nodeId);',
+            '    }',
+            '    return frames;',
+            '  });',
+            '  const isMapFrame = name => /^map_[0-9]+$/.test(name);',
+            '  const mapFrameNames = [...new Set(sampleFrames.flat().filter(isMapFrame))];',
+            '  const hotSamples = sampleFrames.filter(frames => frames.includes("cpuHotFrame")).length;',
+            '  const mapSamples = sampleFrames.filter(frames => frames.some(isMapFrame)).length;',
+            '  const usefulSamples = sampleFrames.filter(frames => frames.includes("cpuHotFrame") || frames.some(isMapFrame)).length;',
+            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, mapFrameNames: mapFrameNames.slice(0, 8), usefulSamples, bytes: Buffer.byteLength(JSON.stringify(profile)) };',
             '}',
             'async function captureInspector(durationMs) {',
             '  const rotate = setInterval(() => { void recorder.update(true, true); }, 40);',
@@ -311,7 +326,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         const eager = await run('eager');
         const gates = {
           sampleCap: eager.primary.sampleCount <= maxSamples &&
+            eager.recoveryCapture.profile.samples <= maxSamples &&
             eager.delayed.cleanup.sampleCount <= maxSamples,
+          primaryFixtureVisible: eager.primary.profile.usefulSamples >= 1,
           recoveredHotFrames: eager.recoveryCapture.profile.usefulSamples >= 3,
           discardedWithoutSerialization:
             !eager.disabledRevocation.serialized &&
@@ -327,10 +344,17 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
           lowerRecoveryGap:
             eager.recoveryWarmup.workerGapMaxMs < inspector.recoveryWarmup.workerGapMaxMs,
         };
-        console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({ inspector, eager, gates }));
+        console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({
+          inspector,
+          eager,
+          gates: { ...gates, candidateQualified: Object.values(gates).every(Boolean) },
+        }));
 
         expect(eager.primary.serialized).toBe(true);
         expect(eager.primary.profile.samples).toBeLessThanOrEqual(maxSamples);
+        // Prove the fixture is visible in V8-emitted sample stacks before
+        // interpreting a post-disposal miss as lifecycle recovery failure.
+        expect(eager.primary.profile.usefulSamples).toBeGreaterThanOrEqual(1);
         expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
         expect(eager.disabledRevocation.serialized).toBe(false);
         expect(eager.unsafeRevocation.serialized).toBe(false);
