@@ -54,6 +54,12 @@ import { buildOperatorPrompt } from '../converse-prompt';
 import { loadRoleToolsMd } from '../../../prompt-assembly';
 import previewPrompt from '../preview_prompt';
 
+/** Narrow a tool result union to its `data` payload; a result without one fails the test. */
+function responseData(result: object): unknown {
+  if (!('data' in result)) throw new Error('tool result carried no data payload');
+  return result.data;
+}
+
 describe('buildOperatorPrompt — per-surface affordances', () => {
   it('injects the pui control affordance + client_id only on surface="tui"', async () => {
     const tui = await buildOperatorPrompt(
@@ -193,7 +199,7 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
       brain: 'converse', request: 'What is Papercusp?',
       role: 'papercup', hostTrust: 'public', toolNames: [],
     }, {} as never);
-    const prompt = result.data as { systemPromptText: string; userPromptText: string; provenance: { builder: string; role: string; hostTrust: string; toolNames: string[] } };
+    const prompt = responseData(result) as { systemPromptText: string; userPromptText: string; provenance: { builder: string; role: string; hostTrust: string; toolNames: string[] } };
     expect(prompt.systemPromptText).toContain('# Papercup persona');
     expect(prompt.systemPromptText).toContain('This is a PUBLIC surface');
     expect(prompt.systemPromptText).toContain('Explain the product from the public FAQ first');

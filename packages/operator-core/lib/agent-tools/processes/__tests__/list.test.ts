@@ -50,7 +50,7 @@ function tickResult(
 ): ReconcileTickResult {
   const { result: resultOver, scan: scanOver, ...rest } = over;
   const result: ReconcileResult = {
-    alive: [], stranded: [], endedUnobserved: [], unaccounted: [], abandonedWindow: [],
+    alive: [], stranded: [], unresolved: [], endedUnobserved: [], unaccounted: [], abandonedWindow: [],
     consoleWindow: [], verifierScope: [], foreign: [], overdue: [], tooYoung: [],
     ...resultOver,
   };

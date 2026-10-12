@@ -44,7 +44,7 @@ function transactionalRig(
   const writes: string[] = [];
   const lock: typeof locks.withPlanLock = async (_ctx, opts, mutate) => {
     const outcome = await mutate(witness.content, {
-      version: concurrentVersion, contentHash: witness.contentHash, opStatus: null,
+      version: concurrentVersion, contentHash: witness.contentHash, opStatus: null, planStatus: null,
       templateData: null, inputSchema: null, outputSchema: null,
       latestRevision: { seq: witness.seq, body: witness.shippedBody },
     });

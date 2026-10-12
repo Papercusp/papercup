@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseTestRunExecutionDetails, recordedTestLayer, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 
 import { SCENARIOS } from './scenarios';
-import type { LlmCallDiagnostic } from '@papercup/testing-shell/llm';
+import type { LlmCallDiagnostic, LlmCallDiagnosticSummary } from '@papercusp/testing-shell/llm';
 import { beginLlmScenarioLedger, llmScenarioLedgerRow, prepareLlmScenarioRuntimeReader, recordLlmScenarioTestRun, recordLlmScenarioTestRunFailure, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
 import { captureWorktreeSnapshot } from '../testing-worktree';
 
@@ -63,7 +63,7 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     expect(await recordedScope()).toEqual({ harness: 'papercusp', workspace: 'papercusp-workspace' });
   });
   it('records a thrown runner failure with its bounded transport diagnostics', async () => {
-    const diagnostics = {
+    const diagnostics: LlmCallDiagnosticSummary = {
       events: [{
         callId: 'local-call', attempt: 1, phase: 'transport-error', observedAt: '2026-10-08T00:00:00Z',
         label: 'anthropic-direct', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,

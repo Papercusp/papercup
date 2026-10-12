@@ -52,7 +52,7 @@ describe('adopt-next stable refusal convergence (SPEC-BQL-P-009-CONVERGENCE)', (
     });
     const mergeWorkItemPayload = vi.fn(async (id: string, patch: Record<string, unknown>) => {
       const row = rows.get(id)!;
-      rows.set(id, { ...row, payload: { ...row.payload, ...patch } });
+      rows.set(id, { ...row, payload: { ...(row.payload as Record<string, unknown>), ...patch } });
       return getWorkItem(id);
     });
     const deps = {

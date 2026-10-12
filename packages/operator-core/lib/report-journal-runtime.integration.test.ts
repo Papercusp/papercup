@@ -36,6 +36,12 @@ const io = await import('./turn-end-tracking-io');
 const observer = vi.mocked(io.boundedUnpublishedReportTurn);
 const { default: journal } = await import('./agent-tools/journal/record-turn');
 
+/** Narrow a tool result union to its `data` payload; a result without one fails the test. */
+function responseData(result: object): unknown {
+  if (!('data' in result)) throw new Error('tool result carried no data payload');
+  return result.data;
+}
+
 const body = '# Architecture audit\n\n## Findings\n' + 'Measured architecture evidence. '.repeat(24)
   + '\n\n## Verdict\nThe fixture audit is complete.';
 
@@ -131,7 +137,7 @@ describe('Reports automatic journal runtime against migrated private PostgreSQL'
     try {
       const result = await ingest(input);
       expect(result).toMatchObject({ data: { ok: true, recorded: true, unpublishedReportObservationScheduled: true } });
-      expect(result.data).not.toHaveProperty('unpublishedReportObserved');
+      expect(responseData(result)).not.toHaveProperty('unpublishedReportObserved');
       await expect.poll(async () => db.adminSql`SELECT pid FROM pg_stat_activity
         WHERE datname = current_database() AND wait_event_type = 'Lock'
           AND query LIKE '%SELECT report_id FROM harness_shared.report_library%'`, { timeout: 2_000 }).not.toHaveLength(0);

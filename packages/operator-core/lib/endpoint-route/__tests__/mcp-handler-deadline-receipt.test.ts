@@ -374,10 +374,10 @@ afterAll(() => {
 
 const MCP = 'http://127.0.0.1:3070/api/mcp';
 
-function extraFor(url: string, headers: Record<string, string> = {}): unknown {
+function extraFor(url: string, headers: Record<string, string> = {}): Record<string, unknown> {
   return { requestInfo: { url, headers: { host: '127.0.0.1:3070', ...headers } } };
 }
-function superuserExtra(query = '', headers: Record<string, string> = {}): unknown {
+function superuserExtra(query = '', headers: Record<string, string> = {}): Record<string, unknown> {
   return extraFor(`${MCP}?superuser=1${query}`, { authorization: 'Bearer test-su-bearer', ...headers });
 }
 
@@ -796,7 +796,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const traceId = '879b64d8-741b-4e8a-a111-39dd7b35c05f';
-    let responsePromise: Promise<McpCallResult> | undefined;
+    let responsePromise: Promise<CallResult> | undefined;
     let releasePendingBackfill!: () => void;
     const pendingBackfillGate = new Promise<void>((resolve) => { releasePendingBackfill = resolve; });
     let signalPendingBackfillStarted!: () => void;

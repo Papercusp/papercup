@@ -579,7 +579,7 @@ export function dbMigrateAbortCompletionReceipt(
   };
 }
 
-const holderJson = (h: ResourceHolder) => ({
+const holderJson = (h: Pick<ResourceHolder, 'owner' | 'owner_label' | 'mode' | 'status'>) => ({
   owner: h.owner,
   owner_label: h.owner_label,
   mode: h.mode,
