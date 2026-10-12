@@ -440,6 +440,9 @@ if (isolatedRuntime) {
   // attribution contract. Preserve only those keys; product pools still receive
   // the private runtime URLs below, and unrelated PAPERCUSP_ keys stay scrubbed.
   const evidenceKeys = new Set([
+    // Optional receipts from the existing committed-source loader are evidence,
+    // not an operator identity or endpoint. Retain them in the profile child.
+    'PAPERCUSP_COMMITTED_SOURCE_AUDIT',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
