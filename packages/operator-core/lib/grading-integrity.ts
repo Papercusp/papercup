@@ -1714,6 +1714,7 @@ export async function dispatchPendingGradingAudits(
               reason,
               ...(deps.now ? { nowMs: deps.now() } : {}),
             }),
+            priorReservation,
           );
           return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, reason };
         }

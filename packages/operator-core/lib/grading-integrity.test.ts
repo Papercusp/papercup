@@ -854,6 +854,57 @@ describe('dispatchPendingGradingAudits', () => {
     },
   );
 
+  it('restores the prior auditor lease when generation incompatibility blocks a retry', async () => {
+    const d = deps();
+    const issueId = 'EI-incompatible-retained-auditor';
+    const idempotencyKey = `grading-audit:${issueId}`;
+    const priorReservation = {
+      key: idempotencyKey,
+      reservedAt: '2026-10-12T01:03:23.081Z',
+    };
+    const retryReservation = {
+      key: idempotencyKey,
+      reservedAt: '2026-10-12T01:47:09.741Z',
+    };
+    d.listScorecards.mockResolvedValue([
+      card(issueId, {
+        gradedGeneration: {
+          deployedSha: '1111111',
+          hostStartedAt: '2026-09-24T11:38:02.124Z',
+          bootHeadSha: null,
+          scoutCodeHash: null,
+          staleHost: false,
+        },
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-10-12T01:00:00.000Z',
+          dispatchReservation: priorReservation,
+          lastDispatchReservation: priorReservation,
+        },
+      }),
+    ]);
+    d.reserve.mockResolvedValue({
+      status: 'claimed',
+      reservation: retryReservation,
+      prior: priorReservation,
+    });
+    d.generationAncestry.mockReturnValue(false);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('no auditor was routed or launched') });
+    expect(d.release).toHaveBeenCalledWith(issueId, idempotencyKey, {
+      workspaceId: 'ws-test',
+      reservedAt: retryReservation.reservedAt,
+      backoff: expect.objectContaining({ code: 'generation_incompatible', source: 'retry-window' }),
+      restore: priorReservation,
+    });
+    expect(d.listTasks).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('does not redispatch a target whose evaluator change requires the source card to be re-emitted', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([
