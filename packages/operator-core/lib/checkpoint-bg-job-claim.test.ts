@@ -20,6 +20,14 @@ describe('detectBgJobCheckpointClaim (EI-18654296679612119 — unverifiable bg-j
     expect(detectBgJobCheckpointClaim('kicked off a background task to run the suite').detected).toBe(true);
   });
 
+  it('does not classify a server-side deferred writer that may continue in the background as a session job', () => {
+    expect(
+      detectBgJobCheckpointClaim(
+        'The applyResultDoorAsync deferred writer may continue in the background after the request times out.',
+      ),
+    ).toEqual({ detected: false });
+  });
+
   it('flags a literal run_in_background reference', () => {
     expect(
       detectBgJobCheckpointClaim('launched via Bash run_in_background: true, task id bfdsrowp3').detected,

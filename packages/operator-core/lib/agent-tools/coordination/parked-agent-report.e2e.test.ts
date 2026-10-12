@@ -1,15 +1,31 @@
 /** R-3: authenticated reports:get readback, preserving the frozen census.
  * Separate from the R-1/R-2 instrument so its accepted fingerprints stay intact.
- * The live case is read-only and requires an explicit report id and body digest.
+ * The live case is read-only and pins the accepted report id and body digest.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
+
+const REPORT_ID = 'rpt_18581993-b959-48ca-88dc-28e1f0176296';
+const REPORT_SHA256 = '3762b8eec60dee0575349369560a45eeecb3123cc873edc30915c32f8149e38e';
+const LIVE_PROFILE = 'packages/operator-core/test/parked-agent-report.live-profile.json';
+
+function liveConfigurationErrors(env: NodeJS.ProcessEnv, layer: string | undefined): string[] {
+  const errors: string[] = [];
+  if (layer === 'e2e' && env.PAPERCUSP_PARKED_REPORT_LIVE !== '1') errors.push('live-readback-required');
+  if (env.PAPERCUSP_PARKED_REPORT_ID !== undefined && env.PAPERCUSP_PARKED_REPORT_ID !== REPORT_ID) {
+    errors.push('canonical-report-id-mismatch');
+  }
+  if (env.PAPERCUSP_PARKED_REPORT_SHA256 !== undefined && env.PAPERCUSP_PARKED_REPORT_SHA256 !== REPORT_SHA256) {
+    errors.push('canonical-report-digest-mismatch');
+  }
+  return errors;
+}
 
 interface ReportRead {
   ok: boolean;
@@ -51,6 +67,23 @@ function fixture(): { read: ReportRead; id: string; hash: string; owners: string
 }
 
 describe('R-3 report readback controls', () => {
+  it('requires live readback in the configured e2e layer', () => {
+    expect(liveConfigurationErrors({}, 'e2e')).toEqual(['live-readback-required']);
+    expect(liveConfigurationErrors({}, 'unit')).toEqual([]);
+    expect(liveConfigurationErrors({ PAPERCUSP_PARKED_REPORT_LIVE: '1' }, 'e2e')).toEqual([]);
+  });
+  it('refuses a report id override instead of redirecting the accepted target', () => {
+    expect(liveConfigurationErrors({ PAPERCUSP_PARKED_REPORT_LIVE: '1',
+      PAPERCUSP_PARKED_REPORT_ID: 'rpt_other' }, 'e2e')).toEqual(['canonical-report-id-mismatch']);
+  });
+  it('refuses a digest override instead of accepting another report body', () => {
+    expect(liveConfigurationErrors({ PAPERCUSP_PARKED_REPORT_LIVE: '1',
+      PAPERCUSP_PARKED_REPORT_SHA256: '0'.repeat(64) }, 'e2e')).toEqual(['canonical-report-digest-mismatch']);
+  });
+  it('accepts environment confirmations of the canonical target', () => {
+    expect(liveConfigurationErrors({ PAPERCUSP_PARKED_REPORT_LIVE: '1',
+      PAPERCUSP_PARKED_REPORT_ID: REPORT_ID, PAPERCUSP_PARKED_REPORT_SHA256: REPORT_SHA256 }, 'e2e')).toEqual([]);
+  });
   it('accepts the complete owner report and exact population', () => {
     const f = fixture();
     expect(reportViolations(f.read, f.id, f.hash, f.owners)).toEqual([]);
@@ -90,13 +123,15 @@ describe('R-3 report readback controls', () => {
 });
 
 const LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_REPORT_LIVE === '1';
+const TEST_LAYER = inject('papercuspTestLayer');
 allowRealPgForLiveSuite(LIVE_REQUESTED);
-describe.skipIf(!LIVE_REQUESTED)('LIVE: R-3 published diagnostic report', () => {
+// E2e execution must collect the real case even when its opt-in was omitted.
+// Ordinary unit runs keep the real-PG rail and exercise only the controls.
+describe.skipIf(!LIVE_REQUESTED && TEST_LAYER !== 'e2e')('LIVE: R-3 published diagnostic report', () => {
   let sql: postgres.Sql;
   beforeAll(async () => {
-    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(
-      'packages/operator-core/test/parked-agent-report.live-profile.json',
-    );
+    expect(liveConfigurationErrors(process.env, TEST_LAYER), 'R-3 live configuration').toEqual([]);
+    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(LIVE_PROFILE);
     const address = new URL(getHarnessAdminUrl());
     expect(['localhost', '127.0.0.1', '::1', '[::1]']).toContain(address.hostname);
     expect(address.port || '5432').toBe('5432');
@@ -105,10 +140,8 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-3 published diagnostic report', () => 
   afterAll(async () => { await sql?.end({ timeout: 5 }); });
 
   it('reports:get returns the complete owner diagnostic with every frozen population row', async () => {
-    const id = process.env.PAPERCUSP_PARKED_REPORT_ID;
-    const hash = process.env.PAPERCUSP_PARKED_REPORT_SHA256;
-    expect(id).toMatch(/^rpt_[a-z0-9-]+$/);
-    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    const id = REPORT_ID;
+    const hash = REPORT_SHA256;
     expect(process.env.PAPERCUSP_SID, 'retain this session authenticated principal').toBeTruthy();
     const rows = await sql<Array<{ content: string }>>`
       SELECT content FROM harness_shared.harness_text_artifacts
@@ -134,7 +167,7 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-3 published diagnostic report', () => 
     });
     const read = JSON.parse(raw) as ReportRead;
     expect(Array.isArray(read.results), `reports:get returned another envelope: ${JSON.stringify(read).slice(0, 2500)}`).toBe(true);
-    const errors = reportViolations(read, id!, hash!, owners);
+    const errors = reportViolations(read, id, hash, owners);
     process.stdout.write(`PARKED_AUDIT_R3 ${JSON.stringify({ reportId: id, sha256: hash, population: owners.length,
       route: 'http://127.0.0.1:3170', errors })}\n`);
     expect(errors).toEqual([]);

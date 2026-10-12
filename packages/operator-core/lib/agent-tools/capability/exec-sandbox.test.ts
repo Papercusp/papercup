@@ -10,7 +10,7 @@
  * fail-CLOSES under the ro-root), the deny-all-egress lever, and credential-list
  * parity with the fleet sandbox.
  */
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest';
@@ -53,7 +53,12 @@ describe('shared heavy scheduler metadata in capability sandboxes', () => {
       const alias = join(root, 'slot-alias');
       symlinkSync(slots, alias);
       expect(capabilityHeavySchedulerWritePath({ PC_HEAVY_DIR: alias })).toBe(slots);
-      expect(capabilityHeavySchedulerWritePath({ XDG_RUNTIME_DIR: join(root, 'absent') })).toBeUndefined();
+      const freshRuntime = join(root, 'absent');
+      expect(capabilityHeavySchedulerWritePath({ XDG_RUNTIME_DIR: freshRuntime })).toBe(join(freshRuntime, 'pc-heavy-slots'));
+      const file = join(root, 'not-a-directory');
+      writeFileSync(file, 'blocked');
+      expect(() => capabilityHeavySchedulerWritePath({ PC_HEAVY_DIR: file }))
+        .toThrow(`Shared heavy scheduler metadata is unavailable at ${file}`);
     } finally {
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });

@@ -140,6 +140,9 @@ const BG_CHECKPOINT =
   'no other suite depended on the old behavior — will report+complete once it finishes.';
 /** An isolated session-local handle: this must trigger without relying on other keywords. */
 const SESSION_LOCAL_TASK_HANDLE_CHECKPOINT = 'read task id bf5ryqqze output when it lands. If green -> complete.';
+/** A server-side deferred writer is not a session-local process/job. */
+const SERVER_SIDE_DEFERRED_WRITER_CHECKPOINT =
+  'The applyResultDoorAsync deferred writer may continue in the background after the request times out.';
 /** A SQL column mention without a native task handle is ordinary source evidence. */
 const SQL_TASK_ID_COLUMN_CHECKPOINT =
   'gcTerminalTasks deleted expired non-release ledger rows with RETURNING task_id only';
@@ -185,6 +188,13 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     const b = await body({ id: 'WI-TASK-HANDLE' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-TASK-HANDLE', released: true });
     expect(b.results[0].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
+  });
+
+  it('stays silent for a server-side deferred writer that may continue in the background', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SERVER_SIDE_DEFERRED_WRITER_CHECKPOINT);
+    const b = await body({ id: 'WI-SERVER-WRITER' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-SERVER-WRITER', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
   });
 
   it('stays silent when a checkpoint names an SQL task_id column without a handle', async () => {

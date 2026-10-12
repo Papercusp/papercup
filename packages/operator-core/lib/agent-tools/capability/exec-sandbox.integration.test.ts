@@ -58,10 +58,10 @@ d('exec-sandbox — REAL bwrap exec (host is bwrap-capable)', () => {
   });
   afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 
-  it('writes shared scheduler metadata and observes the host flock without reopening network or credentials', () => {
+  it('prepares fresh shared scheduler metadata and observes the host flock without reopening network or credentials', () => {
     const runtime = join(ROOT, 'runtime');
     const slots = join(runtime, 'pc-heavy-slots');
-    mkdirSync(slots, { recursive: true });
+    expect(existsSync(slots)).toBe(false);
     const previous = process.env.PC_HEAVY_DIR;
     process.env.PC_HEAVY_DIR = slots;
     try {

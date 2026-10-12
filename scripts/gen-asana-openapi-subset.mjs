@@ -7,12 +7,15 @@
  * Asana publishes no typed SDK (the `asana` npm package is swagger-codegen JavaScript with no model
  * types), so the types come from the spec itself, pinned to one commit of Asana/openapi:
  *
- *   packages/operator-core/lib/providers/asana/asana-openapi.subset.json
+ *   libs/papercusp/plugins/asana/openapi/asana-openapi.subset.json
  *     The ROOT component schemas below, every schema they reference (transitively, verbatim), and
  *     the inline request/response bodies of the endpoints the provider calls, lifted to named
  *     schemas. The recorded fake checks every `opt_fields` path the provider requests against it.
- *   packages/operator-core/lib/providers/asana/asana-openapi.d.ts
+ *   libs/papercusp/plugins/asana/openapi/asana-openapi.d.ts
  *     openapi-typescript over that subset; the fixtures are typed with its `components['schemas']`.
+ *
+ * Both outputs live beside the asana package they describe, not in app code (plan
+ * cupboard-distributable-integrations-2026-10-10, P-022 / D-024).
  *
  * Never hand-edit either output. To move the pin, change ASANA_OAS_COMMIT and re-run:
  *   node scripts/gen-asana-openapi-subset.mjs
@@ -31,7 +34,7 @@ const OPENAPI_TYPESCRIPT = 'openapi-typescript@7.13.0';
 const SOURCE_URL = `https://raw.githubusercontent.com/Asana/openapi/${ASANA_OAS_COMMIT}/defs/asana_oas.yaml`;
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const OUT_DIR = join(REPO_ROOT, 'packages/operator-core/lib/providers/asana');
+const OUT_DIR = join(REPO_ROOT, 'libs/papercusp/plugins/asana/openapi');
 const OUT_JSON = join(OUT_DIR, 'asana-openapi.subset.json');
 const OUT_DTS = join(OUT_DIR, 'asana-openapi.d.ts');
 
