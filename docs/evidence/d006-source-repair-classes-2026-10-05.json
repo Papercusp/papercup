@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 24,
-    "openUnknown": 67
+    "repairedPeerFocused": 28,
+    "openUnknown": 63
   },
   "classes": {
     "assertion": 55,
@@ -1119,11 +1119,19 @@
     {
       "path": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
       "lines": [
         14646
-      ]
+      ],
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-027",
+        "reviewedMapSha256": "08036a3cc20ba9bb0a9b0a60e73655dde39c0c526744f22e9165da4501ae781e",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "EI-25347188820510988",
+        "recurrenceGuard": "Committed oracle alignment preserves intentional WI-10005312 refusal persistence: WorkspaceHostControllerFenceError still throws, failed desired_revision2 receipt is not admitted restore, and replacement generation/revision remain2. Earlier20904095 remains DIRTY7-pass proof. Later clean20940371 atbb0f15e166 passes all7 named cases including the exact same-revision guard without selector, skips or collection failure. Current named test SHA903713b9 equals bb0f15 and f419975. Rehashed product log17ccb4dc records18 domain-contract passes; real-PG refusal control distinguishes fencing/live-progress visibility from admitted retry.",
+        "scope": "Historical refusal-receipt oracle repair only. The earlier dirty proof remains dirty; later clean focused evidence does not establish complete loaded-source, configuration, schema, environment or final-source readiness. D-027 qualifies only the reviewed historical repair prerequisite. Runtime captures for21104384/20940371 are not-configured; original failed D006 census/skips/gaps and global unproved-root-cause scope remain. Final D006/source readiness, P004 acceptance and shipment are not established."
+      }
     },
     {
       "path": "packages/operator-core/lib/scout/rubric-drill.integration.test.ts",
@@ -1589,26 +1597,42 @@
     {
       "path": "packages/operator-core/lib/pot/start-pot-e2e.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
       "lines": [
         14036,
         14055,
         14074,
         14093
-      ]
+      ],
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-027",
+        "reviewedMapSha256": "08036a3cc20ba9bb0a9b0a60e73655dde39c0c526744f22e9165da4501ae781e",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006241",
+        "recurrenceGuard": "Committed incomplete-plan audit refusal before writes/promotion, forced wake refusal, empty default arming and boot cleanup preserve unrelated su rules and canonical tenant/request context. Clean20802965 at99e704f02c records6PASS/0FAIL/0SKIP; complete log SHA46343b1b also records adjacent43 start-guard passes. Later clean21104384 covers all6 named revised cases without selector, skips or collection failure after the fixture-only merge-to-ensure change. Current named test SHA928399b7 equals f419975.",
+        "scope": "Original terminal freshness remains STALE; the later clean receipt is separate evidence. Archive missing fields alone do not identify the exact plan refusal; retained causal reproduction and source controls support the audit-refusal/tenant diagnosis. Complete loaded imports/configuration/schema/environment remain unknown. D-027 qualifies only the reviewed historical repair prerequisite. Runtime captures for21104384/20940371 are not-configured; original failed D006 census/skips/gaps and global unproved-root-cause scope remain. Final D006/source readiness, P004 acceptance and shipment are not established."
+      }
     },
     {
       "path": "packages/operator-core/lib/pot/declared-event-wake-e2e.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
       "lines": [
         13942,
         13961,
         13980,
         13999
-      ]
+      ],
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-027",
+        "reviewedMapSha256": "08036a3cc20ba9bb0a9b0a60e73655dde39c0c526744f22e9165da4501ae781e",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006210",
+        "recurrenceGuard": "Committed fixture replaces retired Mug success with real dispatcher/full migrated PG refusal controls: four declarations plus three wake sources, both force states, unchanged pot_wake and no launch. Clean20798412 at88fed5c47a records7PASS/0FAIL/0SKIP without selector or collection failure; complete log SHAab15cf32 matches. Current named test SHA9add15ed equals that receipt pin and f419975.",
+        "scope": "Historical retired-Mug expectation repair only; live su/event behavior and complete original/current loaded imports, configuration, applied schema and environment remain outside this disposition. D-027 qualifies only the reviewed historical repair prerequisite. Runtime captures for21104384/20940371 are not-configured; original failed D006 census/skips/gaps and global unproved-root-cause scope remain. Final D006/source readiness, P004 acceptance and shipment are not established."
+      }
     },
     {
       "path": "packages/operator-core/lib/external-triggers/ingestion.integration.test.ts",
@@ -2789,12 +2813,20 @@
     {
       "path": "packages/operator-core/lib/pui-e2e/remote-connect-relay.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
       "lines": [
         14105,
         14123
-      ]
+      ],
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-027",
+        "reviewedMapSha256": "08036a3cc20ba9bb0a9b0a60e73655dde39c0c526744f22e9165da4501ae781e",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006263",
+        "recurrenceGuard": "Committed fixture oracle independently requires unchanged forwarded version/fleet argv while permitting shell screen-clear/missing-program fallback wrapping. Original real-PTY version/exit0 and invalid-fleet refusal/exit1 remain. Clean20806138 at48133e69fa records2PASS/0FAIL/0SKIP without selector or collection failure; complete log SHA03850667 matches. Current named test SHA42684882 equals that receipt pin and f419975.",
+        "scope": "Historical shell-wrapper expectation repair only; this does not establish complete current transport, imported-source or binary assurance. D-027 qualifies only the reviewed historical repair prerequisite. Runtime captures for21104384/20940371 are not-configured; original failed D006 census/skips/gaps and global unproved-root-cause scope remain. Final D006/source readiness, P004 acceptance and shipment are not established."
+      }
     },
     {
       "path": "packages/operator-core/lib/fleet/spawn-admission.integration.test.ts",
@@ -3864,13 +3896,13 @@
       "count": 55,
       "status": "partially-repaired-peer-focused",
       "stateCounts": {
-        "repaired-peer-focused": 2,
-        "open-unknown": 53
+        "repaired-peer-focused": 6,
+        "open-unknown": 49
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Fifty-three remaining entries unproved; exactly two historical fixture diagnoses and existing accountable repairs were independently reviewed in report-plan D-019. Their focused proof does not establish complete loaded-source/environment or final assurance.",
+      "rootCause": "Forty-nine remaining entries unproved; exactly six historical fixture diagnoses and existing accountable repairs were independently reviewed in report-plan D-019 and D-027. Their focused proof does not establish complete loaded-source/environment or final assurance.",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     },
     {
