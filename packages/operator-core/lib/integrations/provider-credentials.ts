@@ -35,6 +35,10 @@ import { fetchProviderIdentity, type ProviderAccountIdentity } from './provider-
 
 const STORE_PREFIX = 'provider-setup:';
 const SAVED_AT_SUFFIX = '__saved_at';
+/** Separates a provider from the person whose own values an entry holds (D-026). */
+const PRINCIPAL_INFIX = ':person:';
+/** The store key becomes a file name, so a person id is held to filename-safe characters. */
+const PRINCIPAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
  * Whether the provider's pasted credentials connected this source (WI-6554700010008468).
@@ -56,6 +60,18 @@ export function providerSetupStoreKey(providerId: string): string {
   return `${STORE_PREFIX}${providerId}`;
 }
 
+/**
+ * Token-store key holding ONE person's own values of a provider's per-person fields
+ * (cupboard-distributable-integrations-2026-10-10 D-026), e.g. their Slack user token. Kept apart
+ * from the source's entry, so a person's value never signs a sync or another person's search.
+ */
+export function providerPrincipalStoreKey(providerId: string, userId: string): string {
+  if (!PRINCIPAL_ID_PATTERN.test(userId)) {
+    throw new ProviderCredentialError('invalid-principal', `"${userId}" is not a workspace user id`);
+  }
+  return `${STORE_PREFIX}${providerId}${PRINCIPAL_INFIX}${userId}`;
+}
+
 /** What a read may say about one field. Deliberately has no value-bearing member. */
 export interface ProviderCredentialStatus {
   key: string;
@@ -67,12 +83,23 @@ export interface ProviderCredentialStatus {
   pattern: string | null;
   /** Hosts whose requests carry the value; empty for an ingress-only field. */
   hosts: string[];
+  /**
+   * Each person stores their own value (D-026); `configured` and `savedAt` then describe the
+   * asking person's value, and the field is never part of what connects the source.
+   */
+  perPrincipal: boolean;
   configured: boolean;
   /** ISO time the current value was saved, or null when not configured. */
   savedAt: string | null;
 }
 
-export type ProviderCredentialErrorCode = 'no-credential-fields' | 'unknown-field' | 'invalid-value' | 'empty-request';
+export type ProviderCredentialErrorCode =
+  | 'no-credential-fields'
+  | 'unknown-field'
+  | 'invalid-value'
+  | 'empty-request'
+  | 'invalid-principal'
+  | 'principal-required';
 
 export class ProviderCredentialError extends Error {
   constructor(
@@ -101,32 +128,41 @@ function statusOf(field: ProviderCredentialField, stored: Record<string, unknown
     placeholder: field.placeholder ?? null,
     pattern: field.pattern ?? null,
     hosts: [...(field.hosts ?? [])],
+    perPrincipal: field.perPrincipal === true,
     configured,
     savedAt: configured && typeof savedAt === 'string' ? savedAt : null,
   };
 }
 
-/** Each declared field and whether it is configured. Never includes a value. */
+/**
+ * Each declared field and whether it is configured. Never includes a value. A per-person field
+ * reports `principalUserId`'s own value, and reads as not configured when no person is named.
+ */
 export async function providerCredentialStatus(
   descriptor: Pick<ProviderDescriptor, 'id' | 'setup'>,
   harness: string,
   storage: TokenStorage = fsTokenStorage,
+  principalUserId: string | null = null,
 ): Promise<ProviderCredentialStatus[]> {
   const fields = fieldsOf(descriptor);
   if (fields.length === 0) return [];
   const stored = await storage.read(providerSetupStoreKey(descriptor.id), harness);
-  return fields.map((field) => statusOf(field, stored));
+  const ownStored = principalUserId && fields.some((field) => field.perPrincipal)
+    ? await storage.read(providerPrincipalStoreKey(descriptor.id, principalUserId), harness)
+    : {};
+  return fields.map((field) => statusOf(field, field.perPrincipal ? ownStored : stored));
 }
 
 /**
  * Check and store some or all of a provider's credentials. Every value is checked before any is
  * written, so a request with one bad value changes nothing. Returns the status, not the values.
+ * A per-person field's value is stored as `principalUserId`'s own, and needs one (D-026).
  */
 export async function saveProviderCredentials(
   descriptor: Pick<ProviderDescriptor, 'id' | 'setup'>,
   harness: string,
   values: Record<string, unknown>,
-  opts: { storage?: TokenStorage; now?: () => Date } = {},
+  opts: { storage?: TokenStorage; now?: () => Date; principalUserId?: string | null } = {},
 ): Promise<ProviderCredentialStatus[]> {
   const storage = opts.storage ?? fsTokenStorage;
   const fields = fieldsOf(descriptor);
@@ -137,6 +173,7 @@ export async function saveProviderCredentials(
   if (entries.length === 0) throw new ProviderCredentialError('empty-request', 'no credential values were sent');
   const byKey = new Map(fields.map((field) => [field.key, field]));
   const patch: Record<string, unknown> = {};
+  const ownPatch: Record<string, unknown> = {};
   const savedAt = (opts.now?.() ?? new Date()).toISOString();
   for (const [key, value] of entries) {
     const field = byKey.get(key);
@@ -145,25 +182,37 @@ export async function saveProviderCredentials(
     }
     const issue = providerCredentialValueIssue(field, value);
     if (issue) throw new ProviderCredentialError('invalid-value', issue, key);
-    patch[key] = (value as string).trim();
-    patch[`${key}${SAVED_AT_SUFFIX}`] = savedAt;
+    if (field.perPrincipal && !opts.principalUserId) {
+      throw new ProviderCredentialError('principal-required', `${field.label} is stored per person; sign in to store your own`, key);
+    }
+    const target = field.perPrincipal ? ownPatch : patch;
+    target[key] = (value as string).trim();
+    target[`${key}${SAVED_AT_SUFFIX}`] = savedAt;
   }
-  await storage.update(providerSetupStoreKey(descriptor.id), harness, patch);
-  return providerCredentialStatus(descriptor, harness, storage);
+  const ownKey = opts.principalUserId ? providerPrincipalStoreKey(descriptor.id, opts.principalUserId) : null;
+  if (Object.keys(patch).length > 0) await storage.update(providerSetupStoreKey(descriptor.id), harness, patch);
+  if (ownKey && Object.keys(ownPatch).length > 0) await storage.update(ownKey, harness, ownPatch);
+  return providerCredentialStatus(descriptor, harness, storage, opts.principalUserId ?? null);
 }
 
-/** Forget one stored credential. */
+/** Forget one stored credential; a per-person field forgets `principalUserId`'s own value. */
 export async function clearProviderCredential(
   descriptor: Pick<ProviderDescriptor, 'id' | 'setup'>,
   harness: string,
   key: string,
   storage: TokenStorage = fsTokenStorage,
+  principalUserId: string | null = null,
 ): Promise<ProviderCredentialStatus[]> {
-  if (!fieldsOf(descriptor).some((field) => field.key === key)) {
+  const field = fieldsOf(descriptor).find((candidate) => candidate.key === key);
+  if (!field) {
     throw new ProviderCredentialError('unknown-field', `provider "${descriptor.id}" has no credential field "${key}"`, key);
   }
-  await storage.update(providerSetupStoreKey(descriptor.id), harness, { [key]: null, [`${key}${SAVED_AT_SUFFIX}`]: null });
-  return providerCredentialStatus(descriptor, harness, storage);
+  if (field.perPrincipal && !principalUserId) {
+    throw new ProviderCredentialError('principal-required', `${field.label} is stored per person; sign in to clear your own`, key);
+  }
+  const storeKey = field.perPrincipal ? providerPrincipalStoreKey(descriptor.id, principalUserId!) : providerSetupStoreKey(descriptor.id);
+  await storage.update(storeKey, harness, { [key]: null, [`${key}${SAVED_AT_SUFFIX}`]: null });
+  return providerCredentialStatus(descriptor, harness, storage, principalUserId);
 }
 
 /** Whose source a pasted credential connects: the signed-in owner, in the active workspace. */
@@ -232,7 +281,9 @@ export async function syncProviderCredentialSource(
   opts: CredentialIdentityOptions = {},
 ): Promise<'connected' | 'disconnected'> {
   const credentialRef = providerSetupStoreKey(descriptor.id);
-  if (credentials.length > 0 && credentials.every((field) => field.configured)) {
+  // A per-person field is each reader's own (D-026); only the source's fields connect it.
+  const sourceFields = credentials.filter((field) => !field.perPrincipal);
+  if (sourceFields.length > 0 && sourceFields.every((field) => field.configured)) {
     const identity = await credentialAccount(descriptor, opts);
     const source = await upsertOwnedExternalTriggerSource(sql, {
       workspaceId: owner.workspaceId,
@@ -267,7 +318,25 @@ export async function readProviderCredentialValue(
   key: string,
   storage: TokenStorage = fsTokenStorage,
 ): Promise<string | null> {
-  if (!fieldsOf(descriptor).some((field) => field.key === key)) return null;
+  if (!fieldsOf(descriptor).some((field) => field.key === key && !field.perPrincipal)) return null;
   const value = (await storage.read(providerSetupStoreKey(descriptor.id), harness))[key];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * One person's own stored value of a per-person field, or null when they stored none (D-026).
+ * HOST-INTERNAL, like {@link readProviderCredentialValue}: only a `host.fetch` bound to that same
+ * person may call it.
+ */
+export async function readProviderPrincipalCredentialValue(
+  descriptor: Pick<ProviderDescriptor, 'id' | 'setup'>,
+  harness: string,
+  principalUserId: string,
+  key: string,
+  storage: TokenStorage = fsTokenStorage,
+): Promise<string | null> {
+  if (!fieldsOf(descriptor).some((field) => field.key === key && field.perPrincipal)) return null;
+  if (!PRINCIPAL_ID_PATTERN.test(principalUserId)) return null;
+  const value = (await storage.read(providerPrincipalStoreKey(descriptor.id, principalUserId), harness))[key];
   return typeof value === 'string' && value !== '' ? value : null;
 }

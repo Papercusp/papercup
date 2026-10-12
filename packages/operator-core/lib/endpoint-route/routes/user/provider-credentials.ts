@@ -37,7 +37,14 @@ const STATUS_BY_CODE: Record<ProviderCredentialErrorCode, number> = {
   'unknown-field': 404,
   'invalid-value': 422,
   'empty-request': 400,
+  'invalid-principal': 400,
+  'principal-required': 400,
 };
+
+/** Keys of the provider's per-person fields, which each signed-in user stores as their own (D-026). */
+function perPersonKeys(entry: RegisteredProvider): Set<string> {
+  return new Set((entry.descriptor.setup?.credentials ?? []).filter((field) => field.perPrincipal).map((field) => field.key));
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
@@ -77,9 +84,8 @@ async function provider(providerId: string | undefined): Promise<RegisteredProvi
 }
 
 /** Connect or disable the signed-in owner's source for this provider to match what is now stored. */
-async function syncSource(req: Request, entry: RegisteredProvider, credentials: Parameters<typeof syncProviderCredentialSource>[3]): Promise<void> {
-  const user = await getSessionUserOrDefault(req.headers);
-  await syncProviderCredentialSource(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: user.id }, entry.descriptor, credentials);
+async function syncSource(userId: string, entry: RegisteredProvider, credentials: Parameters<typeof syncProviderCredentialSource>[3]): Promise<void> {
+  await syncProviderCredentialSource(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: userId }, entry.descriptor, credentials);
 }
 
 // The page's query key is { userId } (workspace is server-derived), so a notify
@@ -94,10 +100,11 @@ const status = defineTool({
   method: 'GET',
   path: '/user/integrations/providers/:providerId/credentials',
   auth: 'loopback',
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
     try {
       const entry = await provider(ctx.params.providerId);
-      const credentials = await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS);
+      const user = await getSessionUserOrDefault(req.headers);
+      const credentials = await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, undefined, user.id);
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {
       return failure(error);
@@ -118,8 +125,11 @@ const save = defineTool({
     }
     try {
       const entry = await provider(ctx.params.providerId);
-      const credentials = await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, body.values);
-      await syncSource(req, entry, credentials);
+      const user = await getSessionUserOrDefault(req.headers);
+      const credentials = await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, body.values, { principalUserId: user.id });
+      // Storing only your own per-person value changes nothing about the source (D-026).
+      const ownOnly = perPersonKeys(entry);
+      if (Object.keys(body.values).some((key) => !ownOnly.has(key))) await syncSource(user.id, entry, credentials);
       invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {
@@ -137,8 +147,10 @@ const clear = defineTool({
     if (csrf) return csrf;
     try {
       const entry = await provider(ctx.params.providerId);
-      const credentials = await clearProviderCredential(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, ctx.params.key ?? '');
-      await syncSource(req, entry, credentials);
+      const user = await getSessionUserOrDefault(req.headers);
+      const key = ctx.params.key ?? '';
+      const credentials = await clearProviderCredential(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, key, undefined, user.id);
+      if (!perPersonKeys(entry).has(key)) await syncSource(user.id, entry, credentials);
       invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {

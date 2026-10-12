@@ -15,7 +15,11 @@ import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
 import { connectionAccessToken } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
-import { providerSetupStoreKey, readProviderCredentialValue } from './provider-credentials';
+import {
+  providerSetupStoreKey,
+  readProviderCredentialValue,
+  readProviderPrincipalCredentialValue,
+} from './provider-credentials';
 import { providerRegistry, type ProviderRegistry } from './provider-registry';
 
 export interface SourceHostFetchOptions {
@@ -34,6 +38,13 @@ export interface SourceHostFetchOptions {
   sourceIds?: readonly string[];
   /** Error to throw when the source's account must be reconnected. */
   reconnectRequired?: (reason: string) => Error;
+  /**
+   * The workspace user this fetch acts for (a live search, cupboard-distributable-integrations
+   * D-026). Hosts a per-person setup field claims then carry that user's own stored value, and a
+   * user with none gets `principal-credential-missing` instead of the source's access. Omitted by
+   * the sync driver and outbound dispatch, which act for the source.
+   */
+  principalUserId?: string;
 }
 
 export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOptions): HostFetch {
@@ -53,6 +64,16 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
       const registered = registry.get(opts.providerId);
       return registered ? readProviderCredentialValue(registered.descriptor, opts.harness, key) : null;
     },
+    ...(opts.principalUserId
+      ? {
+        async principalCredential(key: string) {
+          const registered = registry.get(opts.providerId);
+          return registered
+            ? readProviderPrincipalCredentialValue(registered.descriptor, opts.harness, opts.principalUserId!, key)
+            : null;
+        },
+      }
+      : {}),
     async resolveSource(sourceId) {
       if (allowed && !allowed.has(sourceId)) return null;
       const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);

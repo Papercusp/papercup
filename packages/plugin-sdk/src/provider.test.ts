@@ -11,6 +11,10 @@ import {
   providerAppRegistrationUrl,
   providerCredentialForHost,
   providerCredentialValueIssue,
+  providerLiveSearchResultIssue,
+  providerPrincipalCredentialForHost,
+  PROVIDER_ACL_REF_PATTERN,
+  PROVIDER_SEARCH_LIVE_CAPABILITY,
   validateProviderDescriptor,
   type ProviderDescriptor,
 } from './provider';
@@ -74,6 +78,20 @@ describe('validateProviderDescriptor: membership', () => {
     for (const membership of [{}, { identityProvider: '' }, { identityProvider: 'Git Hub' }, 'github', ['github']]) {
       expect(validateProviderDescriptor({ ...base, membership } as unknown as ProviderDescriptor)).toEqual([refusal]);
     }
+  });
+
+  // A source made of containers with their own members (cupboard-distributable-integrations-2026-10-10 D-026).
+  it('accepts a containers flag and refuses one that is not a boolean', () => {
+    expect(validateProviderDescriptor({ ...base, membership: { identityProvider: 'slack', containers: true } })).toEqual([]);
+    expect(validateProviderDescriptor({ ...base, membership: { identityProvider: 'slack', containers: false } })).toEqual([]);
+    expect(
+      validateProviderDescriptor({ ...base, membership: { identityProvider: 'slack', containers: 'yes' } } as unknown as ProviderDescriptor),
+    ).toEqual(['provider.membership.containers must be true or false']);
+  });
+
+  it('container refs are printable, without spaces, and at most 200 characters', () => {
+    for (const ref of ['T01:C02', 'drive/folder-1', '#general', 'team@example.com']) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(true);
+    for (const ref of ['', 'two words', 'line\nbreak', 'x'.repeat(201)]) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(false);
   });
 });
 
@@ -213,6 +231,23 @@ describe('validateProviderDescriptor: setup.credentials', () => {
       "provider.setup.credentials[0] host 'api.example.com' is already given a credential by provider.serviceCredentials",
     );
   });
+
+  // Each person's own credential (D-026): it only ever rides host.fetch calls made for that person.
+  const user = { key: 'user_token', label: 'Your user token', pattern: 'xoxp-[A-Za-z0-9-]+', hosts: ['api.example.com'], perPrincipal: true };
+
+  it('accepts a per-person credential for a host the source credential also covers', () => {
+    expect(withCredentials([bot, user])).toEqual([]);
+  });
+
+  it('refuses a per-person credential without hosts, a non-boolean flag, and two per-person credentials for one host', () => {
+    expect(withCredentials([{ ...user, hosts: undefined }])).toContain(
+      'provider.setup.credentials[0].perPrincipal needs hosts: a per-person credential is only ever injected into host.fetch',
+    );
+    expect(withCredentials([{ ...bot, perPrincipal: 'yes' }])).toContain('provider.setup.credentials[0].perPrincipal must be true or false');
+    expect(withCredentials([bot, user, { ...user, key: 'other_user_token' }])).toContain(
+      "provider.setup.credentials[2] host 'api.example.com' is already given a credential by provider.setup.credentials[1]",
+    );
+  });
 });
 
 describe('providerCredentialValueIssue', () => {
@@ -246,6 +281,51 @@ describe('providerCredentialForHost', () => {
     expect(providerCredentialForHost(d, 'Slack.com')?.key).toBe('bot_token');
     expect(providerCredentialForHost(d, 'api.slack.com')).toBeNull();
     expect(providerCredentialForHost({}, 'slack.com')).toBeNull();
+  });
+
+  it('keeps per-person credentials apart from the source credential for the same host (D-026)', () => {
+    const both = {
+      setup: {
+        credentials: [
+          { key: 'user_token', label: 'User', hosts: ['slack.com'], perPrincipal: true },
+          { key: 'bot_token', label: 'Bot', hosts: ['slack.com'] },
+        ],
+      },
+    };
+    expect(providerCredentialForHost(both, 'slack.com')?.key).toBe('bot_token');
+    expect(providerPrincipalCredentialForHost(both, 'SLACK.com')?.key).toBe('user_token');
+    expect(providerPrincipalCredentialForHost(d, 'slack.com')).toBeNull();
+  });
+});
+
+describe('providerLiveSearchResultIssue (D-026)', () => {
+  const hit = {
+    externalId: 'C1:1700000000.000100',
+    title: '#general',
+    text: 'the deploy is stuck',
+    occurredAt: '2026-10-12T09:00:00.000Z',
+    participants: ['U1'],
+    permalink: 'https://example.slack.com/archives/C1/p1700000000000100',
+  };
+
+  it('names the capability and accepts hits with nullable time and link', () => {
+    expect(PROVIDER_SEARCH_LIVE_CAPABILITY).toBe('search.live');
+    expect(providerLiveSearchResultIssue({ hits: [] })).toBeNull();
+    expect(providerLiveSearchResultIssue({ hits: [hit, { ...hit, externalId: 'x', occurredAt: null, permalink: null }] })).toBeNull();
+  });
+
+  it('refuses a result without hits and a hit missing or mistyping a field', () => {
+    expect(providerLiveSearchResultIssue(null)).toBe('search.live result must carry a hits list');
+    expect(providerLiveSearchResultIssue({ hits: 'none' })).toBe('search.live result must carry a hits list');
+    expect(providerLiveSearchResultIssue({ hits: [{ ...hit, externalId: '' }] })).toBe('search.live hits[0].externalId must be a non-empty string');
+    expect(providerLiveSearchResultIssue({ hits: [hit, { ...hit, text: undefined }] })).toBe('search.live hits[1] needs title and text strings');
+    expect(providerLiveSearchResultIssue({ hits: [{ ...hit, occurredAt: 1700000000 }] })).toBe(
+      'search.live hits[0].occurredAt must be a string or null',
+    );
+    expect(providerLiveSearchResultIssue({ hits: [{ ...hit, participants: [1] }] })).toBe(
+      'search.live hits[0].participants must be a list of strings',
+    );
+    expect(providerLiveSearchResultIssue({ hits: [{ ...hit, permalink: undefined }] })).toBe('search.live hits[0].permalink must be a string or null');
   });
 });
 
@@ -358,6 +438,18 @@ describe('validateProviderDescriptor: ingress.socket (P-003, D-009)', () => {
     expect(validateProviderDescriptor({ ...base, setup: undefined })).toContain(
       "provider.ingress.socket.credential 'app_token' is not a provider.setup.credentials key",
     );
+  });
+
+  it("refuses a per-person credential as the socket's credential: the host's connection is the source's (D-026)", () => {
+    const setup = {
+      credentials: [
+        { key: 'bot_token', label: 'Bot token', hosts: ['api.example.com'] },
+        { key: 'app_token', label: 'App token', hosts: ['api.example.com'], perPrincipal: true },
+      ],
+    };
+    expect(validateProviderDescriptor({ ...base, setup })).toEqual([
+      "provider.ingress.socket.credential 'app_token' is a per-person credential; the host's connection needs the source's own",
+    ]);
   });
 
   it('refuses an open URL that is not https or whose host is outside egressHosts', () => {

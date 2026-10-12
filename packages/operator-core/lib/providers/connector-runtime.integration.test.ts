@@ -26,6 +26,7 @@ import type {
   ProviderSyncRequest,
 } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
 import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
@@ -621,6 +622,168 @@ describe('connector sync driver over registered providers (R-3)', () => {
     expect(s.last_error).toMatch(/^reconnect_required: invalid_grant/);
     await makeDue(src);
     expect((await sync(src)).sources).toEqual([]);
+  });
+});
+
+/**
+ * Readership per container (cupboard-distributable-integrations-2026-10-10 D-026): a source made of
+ * containers (Slack channels) gets one permission list per container, and each record's document is
+ * bound to its own container's list, so nobody reads a channel they are not in.
+ */
+describe('container readership and source scope (D-026)', () => {
+  const member = (providerUserId: string) => ({ providerUserId });
+
+  async function orgSource(): Promise<string> {
+    const [row] = await org.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.data_sources
+        (workspace_id, kind, provider_account_id, status, scope, destination_policy, permission_mapping)
+      VALUES (${WS}, ${KIND}, ${`org-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}, 'ready', 'organization',
+              ${org.adminSql.json({ 'email-message': ['document'] })}, ${org.adminSql.json({ mode: 'source-acl' })})
+      RETURNING id::text`;
+    return row.id;
+  }
+
+  /** The source-wide list and every container list of a source, with their members. */
+  async function lists(src: string) {
+    return org.adminSql<Array<{ source_ref: string; title: string; members: string[] }>>`
+      SELECT l.source_ref, l.title,
+             coalesce(array_agg(m.provider_user_id ORDER BY m.provider_user_id)
+                        FILTER (WHERE m.provider_user_id IS NOT NULL), '{}') AS members
+        FROM harness_shared.document_permission_lists l
+        LEFT JOIN harness_shared.document_permission_members m ON m.workspace_id = l.workspace_id AND m.list_id = l.id
+       WHERE l.workspace_id = ${WS} AND (l.source_ref = ${src} OR l.source_ref LIKE ${`${src}#%`})
+       GROUP BY l.source_ref, l.title
+       ORDER BY l.source_ref`;
+  }
+
+  /** Which list each of the source's documents is bound to. */
+  async function documentLists(src: string) {
+    return org.adminSql<Array<{ external_id: string; source_ref: string; acl_ref: string | null }>>`
+      SELECT d.external_id, l.source_ref, d.metadata->>'aclRef' AS acl_ref
+        FROM harness_shared.documents d
+        JOIN harness_shared.document_permission_lists l ON l.id = d.permission_list_id
+       WHERE d.workspace_id = ${WS} AND position(${src} in d.dedupe_key) > 0
+       ORDER BY d.external_id`;
+  }
+
+  /** The production document sink, without the other connector sinks. */
+  const documentSinks: ConnectorSyncDeps['sinksFor'] = (sql, source, datatype) =>
+    createDatatypeDestinationSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype });
+
+  async function withMembership<T>(membership: ProviderDescriptor['membership'], run: () => Promise<T>): Promise<T> {
+    descriptor.membership = membership;
+    try {
+      return await run();
+    } finally {
+      delete descriptor.membership;
+    }
+  }
+
+  it('binds each document to its container list, empties a container the next snapshot drops, and keeps an unseen container unreadable', async () => {
+    const src = await orgSource();
+    await withMembership({ identityProvider: 'fixture', containers: true }, async () => {
+      handler = scripted({
+        start: {
+          ...page([mail('m1', 'In general', { aclRef: 'C1' }), mail('m2', 'In private', { aclRef: 'C2' }), mail('m3', 'Source-wide')], 'c1', false),
+          membership: {
+            members: [member('U0')],
+            containers: [
+              { ref: 'C1', title: '#general', members: [member('U1'), member('U2')] },
+              { ref: 'C2', title: '#private', members: [member('U2')] },
+            ],
+          },
+        },
+      });
+      const first = await syncOne(src, { sinksFor: documentSinks });
+      expect(first).toMatchObject({ outcome: 'synced', admitted: 3, membership: { applied: true, containers: 2 } });
+      expect(await lists(src)).toEqual([
+        { source_ref: src, title: '', members: ['U0'] },
+        { source_ref: `${src}#C1`, title: '#general', members: ['U1', 'U2'] },
+        { source_ref: `${src}#C2`, title: '#private', members: ['U2'] },
+      ]);
+      expect(await documentLists(src)).toEqual([
+        { external_id: 'm1', source_ref: `${src}#C1`, acl_ref: 'C1' },
+        { external_id: 'm2', source_ref: `${src}#C2`, acl_ref: 'C2' },
+        { external_id: 'm3', source_ref: src, acl_ref: null },
+      ]);
+
+      // The app left #private and a message arrives in a channel membership has not named yet.
+      await makeDue(src);
+      handler = scripted({
+        c1: {
+          ...page([mail('m4', 'Not yet named', { aclRef: 'C3' })], 'c2', false),
+          membership: { members: [member('U0')], containers: [{ ref: 'C1', members: [member('U1')] }] },
+        },
+      });
+      expect(await syncOne(src, { sinksFor: documentSinks })).toMatchObject({ outcome: 'synced', mode: 'incremental', admitted: 1 });
+      expect(await lists(src)).toEqual([
+        { source_ref: src, title: '', members: ['U0'] },
+        { source_ref: `${src}#C1`, title: '#general', members: ['U1'] },
+        { source_ref: `${src}#C2`, title: '#private', members: [] },
+        { source_ref: `${src}#C3`, title: '', members: [] },
+      ]);
+      expect((await documentLists(src)).find((doc) => doc.external_id === 'm4')).toEqual({
+        external_id: 'm4',
+        source_ref: `${src}#C3`,
+        acl_ref: 'C3',
+      });
+    });
+  });
+
+  it('refuses containers and aclRefs a descriptor does not allow, without committing the cursor', async () => {
+    const applyMembership = vi.fn();
+    const refused = async (membership: ProviderDescriptor['membership'], result: ProviderSyncPage) => {
+      const src = await orgSource();
+      handler = async () => result;
+      await withMembership(membership, () => syncOne(src, { applyMembership }));
+      return state(src);
+    };
+    const snapshot = (containers: unknown) => ({ members: [member('U0')], containers }) as ProviderSyncPage['membership'];
+    const flat = { identityProvider: 'fixture' };
+    const containers = { identityProvider: 'fixture', containers: true };
+
+    // Containers from a provider whose descriptor does not declare them.
+    expect(await refused(flat, { ...page([], 'x', false), membership: snapshot([{ ref: 'C1', members: [] }]) }))
+      .toMatchObject({ cursor: null, failure_count: 1 });
+    // A container named twice, a malformed ref, and a container without a member list.
+    for (const bad of [
+      [{ ref: 'C1', members: [] }, { ref: 'C1', members: [] }],
+      [{ ref: 'two words', members: [] }],
+      [{ ref: 'C1' }],
+    ]) {
+      expect(await refused(containers, { ...page([], 'x', false), membership: snapshot(bad) })).toMatchObject({ cursor: null, failure_count: 1 });
+    }
+    // A record naming a container: only allowed when containers are declared, and only a well-formed ref.
+    expect(await refused(flat, page([mail('m1', 'x', { aclRef: 'C1' })], 'x', false))).toMatchObject({ cursor: null, failure_count: 1 });
+    expect(await refused(containers, page([mail('m1', 'x', { aclRef: 'two words' })], 'x', false))).toMatchObject({ cursor: null, failure_count: 1 });
+    expect(applyMembership).not.toHaveBeenCalled();
+
+    // Positive control: the same shapes pass once declared and well formed.
+    const ok = await orgSource();
+    handler = async () => ({ ...page([mail('m1', 'x', { aclRef: 'C1' })], 'x', false), membership: snapshot([{ ref: 'C1', members: [] }]) });
+    applyMembership.mockResolvedValue({ applied: false, reason: 'not_organization_scope' });
+    await withMembership(containers, () => syncOne(ok, { applyMembership }));
+    expect(await state(ok)).toMatchObject({ cursor: 'x', failure_count: 0 });
+    expect(applyMembership).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: ok }), {
+      identityProvider: 'fixture',
+      members: [member('U0')],
+      containers: [{ ref: 'C1', members: [] }],
+    });
+  });
+
+  it("passes the source's scope on every sync request", async () => {
+    const scopes: Array<string | undefined> = [];
+    handler = async (req) => {
+      scopes.push(req.scope);
+      return page([], null, false);
+    };
+    await syncOne(await orgSource());
+    const pot = await createSource();
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET scope = 'pot', scope_ref = 'connector-pot'
+       WHERE workspace_id = ${WS} AND id = ${pot}::uuid`;
+    await syncOne(pot);
+    expect(scopes).toEqual(['organization', 'pot']);
   });
 });
 

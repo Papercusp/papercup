@@ -12,6 +12,7 @@
 import {
   providerCredentialForHost,
   providerEgressAllows,
+  providerPrincipalCredentialForHost,
   type HostFetch,
   type HostFetchRequest,
   type HostFetchResponse,
@@ -27,7 +28,8 @@ export type HostFetchErrorCode =
   | 'caller-authorization-header'
   | 'token-unavailable'
   | 'service-credential-unavailable'
-  | 'credential-unavailable';
+  | 'credential-unavailable'
+  | 'principal-credential-missing';
 
 export class HostFetchError extends Error {
   constructor(
@@ -67,6 +69,14 @@ export interface HostFetchDeps {
    * descriptor injects a pasted credential; the value never reaches provider code.
    */
   pastedCredential?(key: string): Promise<string | null>;
+  /**
+   * Set only on a fetch bound to one person (a live search, cupboard-distributable-integrations
+   * D-026): that person's own value of the per-person field `key`, or null when they stored none.
+   * A host a per-person field claims then carries their value, ahead of every source credential,
+   * and the call fails with `principal-credential-missing` rather than fall back to the source's
+   * broader access. Without this dep per-person fields are never consulted.
+   */
+  principalCredential?(key: string): Promise<string | null>;
   fetchImpl?: typeof fetch;
 }
 
@@ -127,17 +137,31 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       }
       if (!HOP_BY_HOP.has(lower)) headers.set(name, value);
     }
+    // On a call made for one person, a host a per-person field claims carries that person's own
+    // value, so the vendor answers with exactly what they may see (D-026).
+    const principal = deps.principalCredential
+      ? providerPrincipalCredentialForHost(registered.descriptor, url.hostname)
+      : null;
+    const principalValue = principal ? await deps.principalCredential!(principal.key) : null;
+    if (principal && !principalValue) {
+      throw new HostFetchError(
+        'principal-credential-missing',
+        `host.fetch: "${principal.label}" for provider "${providerId}" is not set up for you; add your own on the Integrations page`,
+      );
+    }
     // A host declared under serviceCredentials gets the host-held service
     // identity, never the source's user token (D-018.1).
-    const service = serviceCredentialForHost(registered.descriptor.serviceCredentials, url.hostname);
+    const service = principal ? null : serviceCredentialForHost(registered.descriptor.serviceCredentials, url.hostname);
     // A host a pasted credential claims gets that value (P-001); the descriptor validator keeps
     // pasted and service credentials from claiming the same host.
-    const pasted = service ? null : providerCredentialForHost(registered.descriptor, url.hostname);
+    const pasted = principal || service ? null : providerCredentialForHost(registered.descriptor, url.hostname);
     // A provider may offer a pasted credential as an ALTERNATIVE to OAuth (Asana's personal access
     // token). Declaring one must not cut an existing OAuth source off from its own account: that
     // source is sent its own token, and the pasted value is only its fallback.
     const ownToken = pasted && resolved.ownCredential ? await deps.accessToken(resolved) : null;
-    if (ownToken) {
+    if (principalValue) {
+      headers.set('authorization', `Bearer ${principalValue}`);
+    } else if (ownToken) {
       headers.set('authorization', `Bearer ${ownToken}`);
     } else if (pasted) {
       const value = deps.pastedCredential ? await deps.pastedCredential(pasted.key) : null;
