@@ -143,7 +143,7 @@ describe('committed blob reader through private real IPC', () => {
     // Metadata lookup uses the fixture Git runner; the bulk bytes use the
     // production default reader, actual RPC and actual governed execProcess.
     const cold = createCommittedTreeDiagnostics();
-    const deps = { git: async (_cwd: string, args: string[]) => git(...args), diagnostics: cold };
+    const deps = { git: async (_cwd: string, args: readonly string[]) => git(...args), diagnostics: cold };
     const files = await readCommittedFiles(repo, commit, [FILE, FILE], deps);
     expect(files.get(FILE)).toEqual({ path: FILE, gitBlob: blob, size: content.length,
       sha256: createHash('sha256').update(content).digest('hex') });
@@ -234,7 +234,7 @@ describe('committed blob reader through private real IPC', () => {
     const diagnostics = createCommittedTreeDiagnostics();
     let settled = false;
     const result = readCommittedFiles(repo, commit, [FILE], {
-      git: async (_cwd: string, args: string[]) => git(...args), diagnostics,
+      git: async (_cwd: string, args: readonly string[]) => git(...args), diagnostics,
     }).then(
       () => ({ error: null }), (error: unknown) => ({ error }),
     ).finally(() => { settled = true; });
