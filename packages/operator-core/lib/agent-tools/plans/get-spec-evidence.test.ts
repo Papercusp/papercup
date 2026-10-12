@@ -97,6 +97,49 @@ beforeEach(() => {
 });
 
 describe('plans:get-spec-evidence detail levels', () => {
+  it('allows exact-ID audit reads of withdrawn bindings and exposes their withdrawal stamp', async () => {
+    const withdrawn = {
+      ...binding(38856, 'SPEC-A', 'stale'),
+      withdrawal: {
+        at: '2026-10-12T08:09:46.000Z',
+        by: 'su-binder',
+        reason: 'superseded by binding 38907 (plans:bind-spec-evidence supersedeAtRevision)',
+      },
+    } as EvidenceRow;
+    listEvidence.mockResolvedValue([withdrawn]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      bindingIds: [38856],
+      includeRetracted: true,
+    });
+
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      bindingIds: [38856],
+      includeRetracted: true,
+      planSlugs: ['plan-a'],
+    }));
+    expect(result.evidence[0]).toMatchObject({
+      id: 38856,
+      withdrawal: withdrawn.withdrawal,
+    });
+  });
+
+  it('requires an exact non-empty binding selector before including withdrawn evidence', () => {
+    expect(tool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      includeRetracted: true,
+    }).success).toBe(false);
+    expect(tool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      bindingIds: [],
+      includeRetracted: true,
+    }).success).toBe(false);
+  });
+
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve scope, currentness and tier', async (booleanDetail, stringDetail) => {
     const base = { harness: 'papercusp', slug: 'plan-a' };
     const aliased = await call({ ...base, detail: booleanDetail });

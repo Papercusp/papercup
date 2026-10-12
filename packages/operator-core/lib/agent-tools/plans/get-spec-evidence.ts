@@ -33,6 +33,7 @@ function summaryEvidenceRow(row: EvidenceRow) {
       staleReasons: row.currentness.staleReasons,
       unknownReasons: row.currentness.unknownReasons,
     },
+    ...(row.withdrawal ? { withdrawal: row.withdrawal } : {}),
   };
 }
 
@@ -61,6 +62,10 @@ const argsSchema = z.object({
     .optional(),
   evidenceKinds: z.array(z.enum(SPEC_EVIDENCE_KINDS)).min(1).max(SPEC_EVIDENCE_KINDS.length).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
+  /** Exact immutable row ids for audit reads, including bindings later withdrawn. */
+  bindingIds: z.array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)).max(500).optional(),
+  /** Audit-only: must be paired with exact binding ids; never use for gate evaluation. */
+  includeRetracted: z.boolean().optional(),
   current: z
     .union([z.array(evidenceCurrentInputSchema).max(500), z.boolean()])
     .optional()
@@ -74,16 +79,19 @@ const argsSchema = z.object({
     .optional(),
   limit: z.number().int().min(1).max(1000).optional().describe('Maximum evidence rows returned; bounded.truncatedByLimit reports whether additional rows exist.'),
   detail: reviewReadDetailArg,
+}).refine((args) => args.includeRetracted !== true || (args.bindingIds !== undefined && args.bindingIds.length > 0), {
+  message: 'includeRetracted requires a non-empty exact bindingIds selector for audit reads',
+  path: ['bindingIds'],
 });
 
 export default defineTool({
   name: 'plans:get-spec-evidence',
   description:
-    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details.',
+    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, pass exact bindingIds with includeRetracted:true; this selector is not for gate/evaluator reads.',
   guidance: {
     when: 'Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.',
     notWhen: 'Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.',
-    chaining: 'plans:bind-spec-evidence → plans:get-spec-evidence { current:[…] } → completion/acceptance gate.',
+    chaining: 'plans:bind-spec-evidence → plans:get-spec-evidence { current:[…] } → completion/acceptance gate. Historical withdrawn rows are audit-only: use bindingIds with includeRetracted:true and never feed them into gate evaluation.',
     seeAlso: ['plans:bind-spec-evidence (append proof)', 'plans:get-specs (canonical behavior)'],
   },
   capability: 'plans:read',
