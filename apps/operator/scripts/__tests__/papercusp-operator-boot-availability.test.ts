@@ -158,8 +158,14 @@ describe("papercusp operator boot availability units", () => {
 
   it("documents copy-based installation and live verification", async () => {
     const readme = await readFile(README, "utf8");
-    expect(readme).toContain("papercusp-operator-boot-availability.service");
+    expect(readme).toContain("install -Dm0644 papercusp-operator-boot-availability.service");
+    expect(readme).toContain("install -Dm0644 papercusp-operator-boot-availability.timer");
     expect(readme).toContain("systemctl --user enable --now papercusp-operator-boot-availability.timer");
-    expect(readme).not.toContain('ln -sfn "$(pwd)/papercusp-operator-boot-availability');
+    // Copy-based install is deliberate: no `ln -s…` command (continuations joined) may link these units.
+    const symlinkInstalls = (text: string) => text.replace(/\\\n\s*/g, " ").split("\n")
+      .filter((line) => /\bln\s+-s/.test(line) && line.includes("papercusp-operator-boot-availability"));
+    expect(symlinkInstalls('ln -sfn \\\n  "$(pwd)/papercusp-operator-boot-availability.timer" ~/.config/systemd/user/'))
+      .toHaveLength(1);
+    expect(symlinkInstalls(readme)).toEqual([]);
   });
 });

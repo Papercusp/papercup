@@ -363,7 +363,11 @@ describe('sessions:list historical bounded census', () => {
     expect(sourceRollup).toBeGreaterThan(metricRollup);
     expect(sql).toContain('WHERE k.session_id IS NOT NULL');
     expect(sql).toContain('WHERE k.session_id IS NULL');
-    expect(sql).not.toContain('FROM raw_events e');
+    // The append-only event stream is scanned exactly once, inside the grouped CTE.
+    expect(sql.match(/\bFROM raw_events\b/g)).toHaveLength(1);
+    const rawEventScan = sql.search(/\bFROM raw_events\b/);
+    expect(rawEventScan).toBeGreaterThan(rawEventGroups);
+    expect(rawEventScan).toBeLessThan(rawEventGroupBy);
     expect(sql).not.toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
     expect(sql).toContain('sum(event_count)::int AS event_count');
     expect(sql).toContain('array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources');

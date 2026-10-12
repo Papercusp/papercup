@@ -51,7 +51,9 @@ describe('rendered benchmark evidence classes', () => {
   ));
 
   it('labels measured current outcomes only with complete assignment and observed protocol identity', () => {
-    expect(renderEvidence()).toContain('Current measured evidence');
+    const verified = renderEvidence();
+    expect(verified).toContain('Current measured evidence');
+    expect(verified).toContain('assigned outcomes are measured');
     for (const over of [
       { protocolCommitted: false }, { expectedAssignments: 2 }, { missingGradeCount: 1 },
       { tasks: [{ ...measured, resolved: null }] }, { tasks: [{ resolved: true }] },
@@ -74,7 +76,7 @@ describe('rendered benchmark evidence classes', () => {
     expect(archive).toContain('1 submissions await official grades');
     for (const html of [fixture, archive, renderEvidence({ hasFrozenProtocol: false })]) {
       expect(html).not.toContain('<strong>Current measured evidence</strong>');
-      expect(html).not.toContain('Real graded run');
+      expect(html).not.toContain('assigned outcomes are measured');
     }
   });
 });
