@@ -2140,7 +2140,7 @@ function withPreGradingBlockers(
  */
 export function messageWithAdditionalBlockers(
   message: string | undefined,
-  blockers: readonly PlanAcceptanceGateBlocker[] | undefined,
+  blockers: readonly { code: string }[] | undefined,
 ): string | undefined {
   const rest = (blockers ?? []).slice(1);
   if (rest.length === 0) return message;
