@@ -20,7 +20,6 @@
     "bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts|<module>|1",
