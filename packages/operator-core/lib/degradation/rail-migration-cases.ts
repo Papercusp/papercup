@@ -23,6 +23,88 @@ import { ROUTINE_FALLBACK_MIGRATION_CASES } from './routine-fallback-migration-c
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-012'];
 
 const remainingSyncCases: RailMigrationCase[] = [{
+  id: 'merge-cursor-original-primary-alternate-failed-and-positioned-exclusion', item: 'P-011', route: 'observation',
+  mechanism: 'merge-cursor-seed',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot.ts|mergeOnePass|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const text = original('packages/operator-core/lib/sync/hyperbee/boot.ts', 'const eligibleSeeds =', 'if');
+    for (const scenario of ['primary', 'alternate', 'failed', 'positioned', 'disabled']) {
+      await execute(text, {
+        pgMergeCursorStore: scenario === 'disabled' ? null : {},
+        pgCursorSeedCache: { seed: async () => {
+          if (scenario === 'failed') throw new Error('cursor unavailable');
+          return new Set(scenario === 'alternate' ? ['b'] : []);
+        } },
+        markMergeStage() {}, logKeys: ['a', 'b', 'c'],
+        mergeCursor: { positions: new Map((scenario === 'positioned' ? ['a', 'b', 'c'] : ['a']).map((key) => [key, 1])) },
+        currentApplyBinding: () => 'primary', memoryToggledApplyBinding: () => 'alternate',
+        memoryFederationEnabledForPass: true, memoryReplayCursor: null, createMergeCursor: () => ({}),
+        pinUnknownDurableState() {}, recordBootEvent() {},
+        opts: { workspaceId: 'fixture', harnessSlug: 'fixture-harness' },
+        observeFallback: (name: string, row: typeof observations[number]) => {
+          expect(name).toBe('merge-cursor-seed'); observations.push(row); return true;
+        },
+      });
+    }
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [2, 2, 'applied'], [2, 1, 'alternate-binding'], [2, 0, 'cursor-read-failed'],
+    ]);
+    return { route: 'observation', mechanism: 'merge-cursor-seed', observations };
+  },
+}, {
+  id: 'swarm-identity-original-persisted-and-ephemeral', item: 'P-011', route: 'observation',
+  mechanism: 'swarm-transport-identity',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|buildSharedSwarm|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    for (const fail of [true, false]) await execute(original('packages/operator-core/lib/sync/hyperbee/swarm.ts', 'swarmSeed = await loadOrGenerateSwarmSeed', 'try'), {
+      swarmSeed: undefined, loadOrGenerateSwarmSeed: async () => { if (fail) throw new Error('keychain unavailable'); return Buffer.alloc(32, 7); },
+      observeFallback: (name: string, row: typeof observations[number]) => {
+        expect(name).toBe('swarm-transport-identity'); observations.push(row); return true;
+      },
+    });
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [1, 0, 'ephemeral-identity'], [1, 1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'swarm-transport-identity', observations };
+  },
+}, {
+  id: 'swarm-relay-original-wired-failed-and-direct-only-exclusion', item: 'P-011', route: 'observation',
+  mechanism: 'swarm-relay-wiring',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|buildSharedSwarm|2'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { syncRelayThroughOption } = await import('../sync/hyperbee/sync-relay');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const text = original('packages/operator-core/lib/sync/hyperbee/swarm.ts', '_sharedSwarm = new Swarm', 'try');
+    for (const scenario of ['failed', 'wired', 'direct']) {
+      const relayKeys = scenario === 'direct' ? [] : [Buffer.alloc(32, 1), Buffer.alloc(32, 2)];
+      const attempt = execute(text, {
+        _sharedSwarm: null, relayKeys, syncRelayThroughOption,
+        opts: { maxPeers: 10, maxClientConnections: 8 }, dht: null, swarmSeed: undefined,
+        guard: { firewall: () => true },
+        Swarm: class {
+          constructor(opts: { relayThrough?: Buffer[] }) {
+            expect(opts.relayThrough).toEqual(relayKeys.length ? relayKeys : undefined);
+            if (scenario === 'failed') throw new Error('construction unavailable');
+          }
+        },
+        observeFallback: (name: string, row: typeof observations[number]) => {
+          expect(name).toBe('swarm-relay-wiring'); observations.push(row); return true;
+        },
+      });
+      if (scenario === 'failed') await expect(attempt).rejects.toThrow('construction unavailable');
+      else await attempt;
+    }
+    expect(observations.map((row) => [row.eligible, row.applied, row.reason])).toEqual([
+      [2, 0, 'swarm-construction-failed'], [2, 2, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'swarm-relay-wiring', observations };
+  },
+}, {
   id: 'sidecar-respawn-original-budget-failure-success-and-exclusions', item: 'P-011', route: 'observation',
   mechanism: 'substrate-sidecar-respawn',
   rowIds: ['log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts|scheduleRespawn|1'],

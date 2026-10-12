@@ -26,6 +26,7 @@
  */
 
 import type Corestore from 'corestore';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import Protomux from 'protomux';
 import c from 'compact-encoding';
@@ -4115,7 +4116,9 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   let swarmSeed: Buffer | undefined;
   try {
     swarmSeed = await loadOrGenerateSwarmSeed();
+    observeFallback('swarm-transport-identity', { eligible: 1, applied: 1, reason: 'applied' });
   } catch (e) {
+    observeFallback('swarm-transport-identity', { eligible: 1, applied: 0, reason: 'ephemeral-identity' });
     console.warn(
       `[swarm] ⚠ failed to load/persist the swarm transport identity seed — falling back to an ` +
         `EPHEMERAL random identity for this boot (no cross-restart reconnect): ${e instanceof Error ? e.message : e}`,
@@ -4178,14 +4181,24 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands
   // the firewall the remote public key, so IP-level bans are enforced in the
   // connection handler instead.
-  _sharedSwarm = new Swarm({
-    maxPeers: opts.maxPeers,
-    maxClientConnections: opts.maxClientConnections,
-    ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
-    ...(swarmSeed ? { seed: swarmSeed } : {}),
-    ...syncRelayThroughOption(relayKeys),
-    firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
-  });
+  try {
+    _sharedSwarm = new Swarm({
+      maxPeers: opts.maxPeers,
+      maxClientConnections: opts.maxClientConnections,
+      ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
+      ...(swarmSeed ? { seed: swarmSeed } : {}),
+      ...syncRelayThroughOption(relayKeys),
+      firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
+    });
+    if (relayKeys.length > 0) observeFallback('swarm-relay-wiring', {
+      eligible: relayKeys.length, applied: relayKeys.length, reason: 'applied',
+    });
+  } catch (e) {
+    if (relayKeys.length > 0) observeFallback('swarm-relay-wiring', {
+      eligible: relayKeys.length, applied: 0, reason: 'swarm-construction-failed',
+    });
+    throw e;
+  }
   // WI-6063: make the budget split VISIBLE at construction. The reserve only
   // binds deep at scale, so without this line a dial refusal at 224/256 would
   // look like an unexplained connectivity failure rather than a deliberate bound.

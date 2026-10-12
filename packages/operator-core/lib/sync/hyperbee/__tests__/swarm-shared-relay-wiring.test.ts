@@ -13,6 +13,11 @@
  * only the leaves (the hyperswarm constructor, the relay-key reader, the seed load).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The real constructor emits fallback observations; this suite isolates its sink.
+vi.mock('../../../degradation/fallback-observations', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../degradation/fallback-observations')>(),
+  observeFallback: vi.fn(() => true),
+}));
 
 /** Options passed to each `new Swarm(...)` in a test. */
 const constructedWith: Array<Record<string, unknown>> = [];

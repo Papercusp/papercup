@@ -33,6 +33,7 @@
  *     through PG-direct.
  */
 
+import { observeFallback } from '../../degradation/fallback-observations';
 import {
   getHarnessStore,
   closeHarnessStore,
@@ -4315,6 +4316,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // failures does it pin them at 0, the old "slower but correct" fallback.
       if (pgMergeCursorStore && pgCursorSeedCache) {
         markMergeStage('pg-cursor-seed');
+        // Positioned logs reuse their cursor and make no new seeding decision.
+        const eligibleSeeds = logKeys.filter((key) => !mergeCursor.positions.has(key)).length;
         try {
           const applyBinding = currentApplyBinding();
           const fallbackBinding = memoryToggledApplyBinding();
@@ -4325,6 +4328,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             logKeys,
             fallbackBinding,
           );
+          if (eligibleSeeds > 0) observeFallback('merge-cursor-seed', {
+            eligible: eligibleSeeds,
+            applied: Math.max(0, eligibleSeeds - seededFromFallback.size),
+            reason: seededFromFallback.size > 0 ? 'alternate-binding' : 'applied',
+            scope: opts.harnessSlug,
+          });
           if (seededFromFallback.size > 0) {
             const owesMemoryReplay = memoryFederationEnabledForPass;
             if (owesMemoryReplay && !memoryReplayCursor) memoryReplayCursor = createMergeCursor();
@@ -4336,6 +4345,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             );
           }
         } catch (e) {
+          if (eligibleSeeds > 0) observeFallback('merge-cursor-seed', {
+            eligible: eligibleSeeds, applied: 0, reason: 'cursor-read-failed', scope: opts.harnessSlug,
+          });
           // F4: an unreadable durable cursor may be holding an unapplied entry
           // at zero. Snapshot skipping is unsafe until that state is known. The
           // cache has already applied this (hold or pin); the helper re-asserts it
