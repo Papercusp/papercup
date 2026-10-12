@@ -76,9 +76,10 @@ export interface BespokeActiveSeed {
   /**
    * Which harness receives the row. Most bespoke maintenance routines belong to the
    * operator home; the canary seeders intentionally target their separate canary harness;
-   * the oddsmith cron migrations target the fixed external `oddsmith` harness.
+   * the oddsmith cron migrations target the fixed external `oddsmith` harness; and
+   * project-history-refresh targets `sidestage`, whose API consumes the generated snapshot.
    */
-  scope?: 'operator-home' | 'hive-canary' | 'oddsmith';
+  scope?: 'operator-home' | 'hive-canary' | 'oddsmith' | 'sidestage';
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
@@ -177,7 +178,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-plan-item-reflect-orphan-reconcile-routine.ts',
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
-  { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
+  // The seed writer defaults to SideStage, and SideStage's BuildHistoryService imports the
+  // generated snapshot. Papercusp's own project-history route reads Postgres directly.
+  { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts', scope: 'sidestage' },
   // Found missing by this registry's own guard test, red on the frozen green-checkpoint
   // candidate e8ff0cf8 (gate held as WI-10002394): the psu-pty host-events ingest landed as
   // an active-by-default seed script without this row, so the derived set held 58 scripts
@@ -555,6 +558,7 @@ function resolveInstallSlug(scope: BespokeActiveSeed['scope'], operatorHomeInsta
   // Reuse the seed writer's own constant rather than re-deriving the env var name here —
   // seed-oddsmith-cron-routines.ts and this check must never disagree about the target.
   if (scope === 'oddsmith') return ODDSMITH_HARNESS_SLUG;
+  if (scope === 'sidestage') return 'sidestage';
   return operatorHomeInstallSlug;
 }
 
