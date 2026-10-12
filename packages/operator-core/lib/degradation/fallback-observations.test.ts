@@ -116,7 +116,10 @@ describe('fallbackDecisionProblem', () => {
 describe('observeFallback + flushFallbackObservations', () => {
   it('buffers without writing, then flushes every row with its fields intact', async () => {
     const f = fakeSql();
-    expect(observeFallback('gate.pass-reuse', { eligible: 10, applied: 0, reason: 'proofs-unavailable', scope: 'run-1' }, { sql: f.sql, workspaceId: 'ws-a', processTag: 'gate-cli' })).toBe(true);
+    const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    expect(observeFallback('gate.pass-reuse', { eligible: 10, applied: 0, reason: 'proofs-unavailable', scope: 'run-1' }, {
+      sql: f.sql, workspaceId: 'ws-a', processTag: 'gate-cli', correlationId,
+    })).toBe(true);
     expect(observeFallback('gate.pass-reuse', { eligible: 5, applied: 5, reason: 'applied' }, { sql: f.sql, workspaceId: 'ws-a' })).toBe(true);
     expect(f.inserts).toHaveLength(0);
     expect(_pendingFallbackObservationCount()).toBe(2);
@@ -129,6 +132,7 @@ describe('observeFallback + flushFallbackObservations', () => {
     expect(f.inserts[0]?.[0]).toMatchObject({
       workspace_id: 'ws-a', mechanism: 'gate.pass-reuse', eligible: 10, applied: 0,
       reason: 'proofs-unavailable', scope: 'run-1', process_tag: 'gate-cli',
+      correlation_id: correlationId,
     });
     expect(f.inserts[0]?.[0]).not.toHaveProperty('sql');
   });
@@ -139,6 +143,15 @@ describe('observeFallback + flushFallbackObservations', () => {
     expect(_pendingFallbackObservationCount()).toBe(0);
     const res = await flushFallbackObservations();
     expect(res).toMatchObject({ written: 0, rejected: 1 });
+  });
+
+  it('refuses malformed correlation ids before they can fail asynchronously in Postgres', async () => {
+    const f = fakeSql();
+    expect(observeFallback('retrieval', { eligible: 1, applied: 0, reason: 'semantic-blocked' }, {
+      sql: f.sql, correlationId: 'not-a-uuid',
+    })).toBe(false);
+    expect(_pendingFallbackObservationCount()).toBe(0);
+    expect(await flushFallbackObservations()).toMatchObject({ written: 0, rejected: 1 });
   });
 
   it('flushes on its own once a full batch is buffered', async () => {
