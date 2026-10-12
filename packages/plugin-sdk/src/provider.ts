@@ -165,7 +165,20 @@ export interface ProviderSocketIngressDescriptor {
    * Top-level envelope `field` whose value in `values` means the server is about to drop the
    * socket (Slack: `type` = `disconnect`); the host opens a fresh one instead of waiting for the close.
    */
-  reconnect?: { field: string; values: string[] };
+  reconnect?: ProviderSocketEnvelopeMatch;
+  /**
+   * Envelopes whose top-level `field` value is in `values` are normalized at once, instead of
+   * waiting behind the source's serialized envelope chain. For interactions with a short response
+   * window (Slack: `type` = `interactive`, whose trigger_id opens a form for only 3 seconds).
+   * Their records are admitted in arrival order among themselves, not among other envelopes.
+   */
+  immediate?: ProviderSocketEnvelopeMatch;
+}
+
+/** A top-level envelope field and the values that select an envelope. */
+export interface ProviderSocketEnvelopeMatch {
+  field: string;
+  values: string[];
 }
 
 /**
@@ -824,20 +837,21 @@ function ingressDescriptorIssues(ingress: unknown, capabilities: string[], egres
   if (s.ackField !== undefined && (!isNonEmptyString(s.ackField) || !PROVIDER_INGRESS_FIELD_PATTERN.test(s.ackField))) {
     issues.push(`${at}.ackField must be a top-level envelope field name`);
   }
-  if (s.reconnect !== undefined) {
-    const reconnect = s.reconnect as Partial<NonNullable<ProviderSocketIngressDescriptor['reconnect']>> | null;
-    if (!reconnect || typeof reconnect !== 'object' || Array.isArray(reconnect)) {
-      issues.push(`${at}.reconnect must be an object`);
-    } else {
-      if (!isNonEmptyString(reconnect.field) || !PROVIDER_INGRESS_FIELD_PATTERN.test(reconnect.field)) {
-        issues.push(`${at}.reconnect.field must be a top-level envelope field name`);
-      }
-      const values = Array.isArray(reconnect.values) ? reconnect.values : [];
-      if (values.length === 0 || !values.every(isNonEmptyString)) {
-        issues.push(`${at}.reconnect.values must list at least one value`);
-      }
-      for (const dup of duplicates(values.filter(isNonEmptyString))) issues.push(`${at}.reconnect.values repeats "${dup}"`);
+  for (const key of ['reconnect', 'immediate'] as const) {
+    if (s[key] === undefined) continue;
+    const match = s[key] as Partial<ProviderSocketEnvelopeMatch> | null;
+    if (!match || typeof match !== 'object' || Array.isArray(match)) {
+      issues.push(`${at}.${key} must be an object`);
+      continue;
     }
+    if (!isNonEmptyString(match.field) || !PROVIDER_INGRESS_FIELD_PATTERN.test(match.field)) {
+      issues.push(`${at}.${key}.field must be a top-level envelope field name`);
+    }
+    const values = Array.isArray(match.values) ? match.values : [];
+    if (values.length === 0 || !values.every(isNonEmptyString)) {
+      issues.push(`${at}.${key}.values must list at least one value`);
+    }
+    for (const dup of duplicates(values.filter(isNonEmptyString))) issues.push(`${at}.${key}.values repeats "${dup}"`);
   }
   if (!capabilities.includes(PROVIDER_INGRESS_NORMALIZE_CAPABILITY)) {
     issues.push(`${at} needs capability ${PROVIDER_INGRESS_NORMALIZE_CAPABILITY}`);

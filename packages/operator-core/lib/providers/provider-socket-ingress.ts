@@ -97,6 +97,11 @@ interface Connection {
   ingress: SocketIngressProvider;
   socket: IngressSocketLike;
   processing: Promise<void>;
+  /**
+   * The chain for envelopes the descriptor marks `immediate` (a short vendor response window):
+   * they never wait behind `processing`, only behind each other.
+   */
+  immediate: Promise<void>;
   /** Set when an envelope announced the drop: reconnect at once instead of backing off. */
   reconnectRequested: boolean;
 }
@@ -269,9 +274,11 @@ export class ProviderSocketIngressManager {
 
   private attach(source: ConnectorSourceRow, ingress: SocketIngressProvider, socket: IngressSocketLike): void {
     const id = key(source);
-    const connection: Connection = { source, ingress, socket, processing: Promise.resolve(), reconnectRequested: false };
+    const connection: Connection = {
+      source, ingress, socket, processing: Promise.resolve(), immediate: Promise.resolve(), reconnectRequested: false,
+    };
     this.connections.set(id, connection);
-    const { ackField, reconnect } = ingress.socket;
+    const { ackField, reconnect, immediate } = ingress.socket;
     socket.on('open', () => {
       this.attempts.delete(id);
       this.retryAt.delete(id);
@@ -296,15 +303,20 @@ export class ProviderSocketIngressManager {
         try { socket.close(); } catch { /* already closed */ }
         return;
       }
-      connection.processing = connection.processing
-        .then(() => this.handleEnvelope(connection, envelope))
-        .catch((error) => {
-          this.log(`source ${source.id} envelope failed: ${error instanceof Error ? error.message : String(error)}`);
-          this.updateSource(connection.source, {
-            status: 'degraded',
-            lastError: `ingress_envelope_failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 3900)}`,
-          });
+      const failed = (error: unknown) => {
+        this.log(`source ${source.id} envelope failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.updateSource(connection.source, {
+          status: 'degraded',
+          lastError: `ingress_envelope_failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 3900)}`,
         });
+      };
+      // An `immediate` envelope (e.g. a click whose response window is seconds) must not wait for
+      // a slow envelope ahead of it, so it runs on its own chain.
+      if (immediate && immediate.values.includes(String(envelope[immediate.field]))) {
+        connection.immediate = connection.immediate.then(() => this.handleEnvelope(connection, envelope)).catch(failed);
+        return;
+      }
+      connection.processing = connection.processing.then(() => this.handleEnvelope(connection, envelope)).catch(failed);
     });
     socket.on('close', (code?: number) => {
       if (this.connections.get(id) !== connection) return;
