@@ -455,6 +455,32 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     );
   });
 
+  it('uses the nested tools:invoke target for pending, late, and settled spill backfills', () => {
+    const pendingStart = handlerSource.indexOf(
+      'onScratchWritePending: (timeout) => backfillResultDoorOutputRef({',
+    );
+    const lateStart = handlerSource.indexOf('onLateScratchWriteSettled: (settlement) =>');
+    const lateEnd = handlerSource.indexOf('onScratchWriteTiming: (timings) =>', lateStart);
+    const settledStart = handlerSource.indexOf(
+      'void backfillResultDoorOutputRef({',
+      handlerSource.indexOf('if (doorMeta?.truncated'),
+    );
+    const settledEnd = handlerSource.indexOf('}).catch((err) =>', settledStart);
+
+    expect(pendingStart).toBeGreaterThan(-1);
+    expect(lateStart).toBeGreaterThan(pendingStart);
+    expect(lateEnd).toBeGreaterThan(lateStart);
+    expect(settledStart).toBeGreaterThan(-1);
+    expect(settledEnd).toBeGreaterThan(settledStart);
+
+    const pending = handlerSource.slice(pendingStart, lateStart);
+    const late = handlerSource.slice(lateStart, lateEnd);
+    const settled = handlerSource.slice(settledStart, settledEnd);
+    for (const callSite of [pending, late, settled]) {
+      expect(callSite).toContain('toolName: nestedTargetToolName ?? toolName');
+    }
+  });
+
   it('stamps spillFailed UNCONDITIONALLY, so absent never reads as measured-false', () => {
     // The hard rollback trigger for spill-persistence failure is only falsifiable if the
     // healthy case is stamped too. A conditional spread would omit the key whenever the spill
