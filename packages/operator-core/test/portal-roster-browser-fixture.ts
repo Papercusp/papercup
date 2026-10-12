@@ -2136,6 +2136,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
       : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
+      : input.harnessSettings ? '/?app=settings&q=retained-shell-search'
       : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     if (input.docs) {
       url.searchParams.set('slug', input.docs.harness);

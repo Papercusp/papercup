@@ -39,6 +39,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/harness-registry.ts',
         'packages/operator-core/lib/harness-project-files.ts', 'packages/operator-core/lib/endpoint-route/routes/harness/spec.ts',
+        'packages/operator-core/lib/sync-resolver/index.ts', 'packages/operator-core/lib/workspace-registry.ts',
         'packages/operator-core/lib/endpoint-route/routes/harness/blueprint-params.ts',
         'apps/operator/app/harness/BlueprintSettingsPanel.tsx', 'apps/operator/app/harness/HarnessSettingsPanel.tsx',
         'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
