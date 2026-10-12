@@ -6,7 +6,8 @@
  * One pass, per watched device (the disk-space alarm's `watchedPaths()`, grouped by
  * st_dev and resolved to the mount that shows the whole filesystem):
  *   1. statfs → size / used / avail.
- *   2. `du -x -0 -B1 --max-depth=6 <mount>` at idle I/O + CPU priority, streamed into
+ *   2. `du -x -0 -B1 --max-depth=6 <mount>` at low priority (best-effort I/O level 7,
+ *      nice 19 — not the idle I/O class, which mq-deadline starves; see usage.ts), streamed into
  *      the consumer tree (every directory ≥ 1 GiB down to depth 6, plus the large
  *      files inside any directory whose own files reach 1 GiB).
  *   3. Stores the operator user cannot read are sized through their own APIs instead
@@ -34,6 +35,7 @@ import {
   CENSUS_FLOOR_BYTES,
   CENSUS_MAX_DEPTH,
   censusDepth,
+  censusDuCommand,
   deviceMountRoot,
   devToMajorMinor,
   DuTreeAccumulator,
@@ -147,7 +149,7 @@ export interface DuRun {
   error?: string;
 }
 
-/** Run du over one mount at idle priority and stream it into a consumer tree. */
+/** Run du over one mount at low priority and stream it into a consumer tree. */
 export async function runDuTree(
   root: string,
   opts: { floorBytes?: number; maxDepth?: number; timeoutMs?: number } = {},
@@ -156,13 +158,11 @@ export async function runDuTree(
   const maxDepth = opts.maxDepth ?? CENSUS_MAX_DEPTH;
   const acc = new DuTreeAccumulator(root, { floorBytes, maxDepth });
   const duArgs = ['-x', '-0', '-B1', `--max-depth=${maxDepth}`, root];
-  const ionice = await resolveBin('ionice');
-  const nice = await resolveBin('nice');
-  const [cmd, args] = ionice
-    ? [ionice, ['-c3', ...(nice ? [nice, '-n', '19'] : []), 'du', ...duArgs]]
-    : nice
-      ? [nice, ['-n', '19', 'du', ...duArgs]]
-      : ['du', duArgs];
+  // Best-effort I/O at the lowest level, not the idle class: see CENSUS_IONICE_ARGS.
+  const [cmd, args] = censusDuCommand(duArgs, {
+    ionice: await resolveBin('ionice'),
+    nice: await resolveBin('nice'),
+  });
   return new Promise<DuRun>((resolve) => {
     let deniedCount = 0;
     const deniedSample: string[] = [];

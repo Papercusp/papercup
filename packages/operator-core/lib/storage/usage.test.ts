@@ -46,6 +46,7 @@ vi.mock('./disk', () => ({
 import {
   attributeOwnFiles,
   censusDepth,
+  censusDuCommand,
   computeStorageUsage,
   deviceMountRoot,
   devToMajorMinor,
@@ -260,5 +261,26 @@ describe('disk consumer census attribution', () => {
     expect(entries.find((e) => e.majorMinor === '0:5')?.mountPoint).toBe('/dev space');
     expect(devToMajorMinor(66304)).toBe('259:0');
     expect(devToMajorMinor(66306)).toBe('259:2');
+  });
+
+  it('runs du at best-effort I/O level 7 + nice 19, never in the idle I/O class', () => {
+    // The idle class is starved on mq-deadline under fleet load: measured 2026-10-12, the
+    // idle-class census du spent 26.4 s of every 30 s waiting in the scheduler and its walk
+    // of / did not finish inside the 90 min cap. See CENSUS_IONICE_ARGS.
+    const duArgs = ['-x', '-0', '-B1', '--max-depth=6', '/'];
+    const [cmd, args] = censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice' });
+    expect(cmd).toBe('/usr/bin/ionice');
+    expect(args).toEqual(['-c2', '-n7', '/usr/bin/nice', '-n', '19', 'du', ...duArgs]);
+    expect(args).not.toContain('-c3');
+
+    expect(censusDuCommand(duArgs, { ionice: null, nice: '/usr/bin/nice' })).toEqual([
+      '/usr/bin/nice',
+      ['-n', '19', 'du', ...duArgs],
+    ]);
+    expect(censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: null })).toEqual([
+      '/usr/bin/ionice',
+      ['-c2', '-n7', 'du', ...duArgs],
+    ]);
+    expect(censusDuCommand(duArgs, { ionice: null, nice: null })).toEqual(['du', duArgs]);
   });
 });

@@ -420,6 +420,26 @@ export const CENSUS_MAX_DEPTH = 6;
  *  bytes at or above it mean such a consumer can exist — the read flags a coverage gap. */
 export const CENSUS_COVERAGE_GAP_BYTES = 10 * 1024 ** 3;
 
+/**
+ * I/O class for the census du: best-effort, lowest level — never the idle class (-c3).
+ * / sits on an mq-deadline queue, which honours I/O classes and dispatches an idle
+ * request only when no best-effort request is waiting. Measured 2026-10-12 (bpftrace
+ * block_rq_insert -> block_rq_issue on nvme0n1, 30 s): the idle-class census du waited
+ * 2.58 ms per request in the scheduler against 0.43 ms for all other I/O — 26.4 s of
+ * every 30 s queued — and its walk of / was unfinished after 55 min of a 90 min cap.
+ */
+export const CENSUS_IONICE_ARGS = ['-c2', '-n7'] as const;
+
+/** argv for one census du walk: best-effort I/O + nice 19 CPU, each only when available. */
+export function censusDuCommand(
+  duArgs: readonly string[],
+  bins: { ionice: string | null; nice: string | null },
+): [string, string[]] {
+  const niced = bins.nice ? [bins.nice, '-n', '19', 'du', ...duArgs] : ['du', ...duArgs];
+  if (bins.ionice) return [bins.ionice, [...CENSUS_IONICE_ARGS, ...niced]];
+  return [niced[0]!, niced.slice(1)];
+}
+
 /** Depth of `path` below `mountRoot`: 0 for the root itself, null when outside it. */
 export function censusDepth(mountRoot: string, path: string): number | null {
   const root = mountRoot.length > 1 ? mountRoot.replace(/\/+$/, '') : mountRoot;
