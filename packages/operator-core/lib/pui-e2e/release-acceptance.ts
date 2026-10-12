@@ -46,7 +46,7 @@ export function nativeInterruptRequest(listId: string, count = 1000): string {
   if (Buffer.byteLength(expectedReply, 'utf8') > 4096) {
     throw new Error('Native interruption probe exceeds its 4096-byte reply budget');
   }
-  return `Please write the numbers from 1 through ${count}, one per line, with no other text. Do not summarize or use tools. (List id: ${listId})`;
+  return `Reply directly in this chat with the numbers from 1 through ${count}, one per line, starting with 1, 2, 3 on separate lines. Continue the sequence in the same reply, with no other text or summary. Do not create or edit files, run commands, or use any tools. (List id: ${listId})`;
 }
 
 /** Stop a card wait when this turn has actually settled without a pending

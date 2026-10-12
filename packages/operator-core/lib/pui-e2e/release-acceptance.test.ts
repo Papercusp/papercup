@@ -117,6 +117,11 @@ describe('native interruption response budget admission', () => {
     const expectedReply = Array.from({ length: count }, (_, index) => `${index + 1}\n`).join('');
     expect(count).toBeGreaterThanOrEqual(100);
     expect(Buffer.byteLength(expectedReply, 'utf8')).toBeLessThanOrEqual(4096);
+    // A real Claude turn interpreted "write the numbers" as a file task and
+    // waited on a Write approval. The probe must request inline text only.
+    expect(prompt).toContain('Reply directly in this chat');
+    expect(prompt).toContain('Do not create or edit files, run commands, or use any tools');
+    expect(prompt).not.toMatch(/write the numbers/i);
     expect(() => nativeInterruptRequest('ordinary-list', 10000)).toThrow(/reply budget/);
   });
 
