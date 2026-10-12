@@ -25,7 +25,7 @@ import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { synthesize, synthesizeReading } from './tts-synth';
 import { CONTENT_LIMITS, ContentIntakeError, readContent, type ContentInput } from '../../../content-intake';
 import { ContentSummaryError, summaryOptionsSchema, summarizeContent } from '../../../content-summary';
-import { providedContentSchema } from '../../../agent-tools/documents/content';
+import { decodeProvidedContent, providedContentSchema } from '../../../agent-tools/documents/content';
 
 /** Same authorized provided-content contract; this operation never starts speech. */
 async function summaryResponse(req: Request, body: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
@@ -37,8 +37,8 @@ async function summaryResponse(req: Request, body: Record<string, unknown>, sign
   const workspaceId = activeWorkspaceId();
   if (!user?.id || !workspaceId || workspaceId === '*') return Response.json({ ok: false, error: 'A current user and workspace are required.' }, { status: 401 });
   try {
-    const supplied = content.data;
-    const input: ContentInput = supplied.kind === 'pdf' ? { ...supplied, kind: 'pdf', bytes: new Uint8Array(Buffer.from(supplied.base64, 'base64')) } : supplied;
+    // Shared decoder: also decodes base64 PDFs inside a `collection` payload.
+    const input: ContentInput = decodeProvidedContent(content.data);
     const source = await readContent(input, { workspaceId, readerId: `user:${user.id}`, signal }, { authorize: async candidate => candidate.kind !== 'reference' });
     return Response.json({ ok: true, ...await summarizeContent(source, options.data, signal) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {

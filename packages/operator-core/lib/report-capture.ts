@@ -41,7 +41,10 @@ async function capture(origin: CaptureOrigin, source: string, ref: string, title
     } as const;
     const stamped = { authorOwnerId: origin.ownerId, harnessSlug: origin.harnessSlug,
       authorSessionRef: origin.sessionRef ?? ref };
-    const publish = (storedBody = input.bodyMd) => publishReportWithEffects(sql,
+    // `input` is `as const`, so without the annotation the default would narrow
+    // this parameter to input.bodyMd's template-literal type and refuse the
+    // stored historical body passed on the conflict-retry path below.
+    const publish = (storedBody: string = input.bodyMd) => publishReportWithEffects(sql,
       { ...input, bodyMd: storedBody, tags: [...input.tags] }, stamped, message => console.warn(message));
     let result;
     try { result = await publish(); }

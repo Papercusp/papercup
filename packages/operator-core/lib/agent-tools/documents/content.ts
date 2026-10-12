@@ -19,6 +19,21 @@ export const providedContentSchema = z.union([
   z.object({ kind: z.literal('collection'), sources: z.array(providedSourceSchema).min(1).max(20), ...source }),
 ]);
 
+/**
+ * Decode a validated provided-content payload into the intake's ContentInput:
+ * base64 PDFs become bytes, at the top level AND inside a collection. The one
+ * decoder every provided-content surface uses (tool + operator-tts route), so a
+ * new schema variant cannot be decoded in one place and forgotten in another.
+ */
+export function decodeProvidedContent(supplied: z.infer<typeof providedContentSchema>): ContentInput {
+  const decode = (member: z.infer<typeof providedSourceSchema>) => member.kind === 'pdf'
+    ? { kind: 'pdf' as const, bytes: new Uint8Array(Buffer.from(member.base64, 'base64')), ref: member.ref, title: member.title, partial: member.partial }
+    : member;
+  return supplied.kind === 'collection'
+    ? { ...supplied, sources: supplied.sources.map(decode) }
+    : decode(supplied);
+}
+
 export async function readProvidedContent(
   supplied: z.infer<typeof providedContentSchema>,
   ctx: PapercuspUnifiedToolContext,
@@ -27,12 +42,7 @@ export async function readProvidedContent(
   const readerId = disclosureSubject(ctx);
   const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
   if (!readerId || !workspaceId || workspaceId === '*') throw new ContentIntakeError('unauthorized', 'A concrete workspace and reader identity are required.');
-  const decode = (member: z.infer<typeof providedSourceSchema>) => member.kind === 'pdf'
-    ? { kind: 'pdf' as const, bytes: new Uint8Array(Buffer.from(member.base64, 'base64')), ref: member.ref, title: member.title, partial: member.partial }
-    : member;
-  const input: ContentInput = supplied.kind === 'collection'
-    ? { ...supplied, sources: supplied.sources.map(decode) }
-    : decode(supplied);
+  const input = decodeProvidedContent(supplied);
   return readContent(input, { workspaceId, readerId, signal: ctx.signal }, {
     // The caller supplied these bytes; this never dereferences the provenance ref
     // or obtains new access. Existing reader tools retain their own ACL checks.

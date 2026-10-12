@@ -309,7 +309,8 @@ export async function* synthesizeReading(
     return;
   }
   // Never infer source-disclosure permission from having a configured cloud key.
-  if (!options.allowCloud && snapshot.ttsEngine !== 'kokoro' && snapshot.ttsEngine !== 'browser') {
+  // ('browser' already returned above, so kokoro is the only local engine left.)
+  if (!options.allowCloud && snapshot.ttsEngine !== 'kokoro') {
     yield { ok: false, error: 'This source is restricted to local speech. Choose a local engine in /settings/voice or explicitly allow cloud speech.', status: 403 };
     return;
   }
