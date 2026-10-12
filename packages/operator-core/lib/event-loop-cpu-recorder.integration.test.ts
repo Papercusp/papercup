@@ -20,15 +20,31 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
   it('retains useful 100Hz samples across rotations, discards delayed work and releases its sampler', async () => {
     const { stdout } = await exec(process.execPath, ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', `
       import { LoopCpuRecorder } from ${JSON.stringify(recorderPath)};
-      import { performance } from 'node:perf_hooks';
+      import { performance, PerformanceObserver } from 'node:perf_hooks';
       const retained = Array.from({ length: 25000 }, (_, i) => new Function('x', 'return x + ' + i));
       const observer = [], memory = [], starts = [], stops = [];
+      const gcEntries = [];
+      const gcObserver = new PerformanceObserver(list => {
+        for (const entry of list.getEntries()) {
+          gcEntries.push({ startTime: entry.startTime, durationMs: entry.duration, kind: entry.detail?.kind ?? null });
+        }
+      });
+      gcObserver.observe({ entryTypes: ['gc'] });
       const recorder = new LoopCpuRecorder(2000, (line, detail) => observer.push({ line, ...detail }));
       const measureIdle = async () => {
-        const start = performance.now(), before = process.cpuUsage();
+        const start = performance.now(), before = process.cpuUsage(), threadBefore = process.threadCpuUsage?.();
         await new Promise(r => setTimeout(r, 500));
+        const end = performance.now();
         const cpu = process.cpuUsage(before);
-        return { wallMs: performance.now() - start, cpuMs: (cpu.user + cpu.system) / 1000 };
+        const threadCpu = threadBefore && process.threadCpuUsage?.(threadBefore);
+        await new Promise(r => setImmediate(r));
+        return {
+          wallMs: end - start,
+          cpuMs: (cpu.user + cpu.system) / 1000,
+          threadCpuMs: threadCpu ? (threadCpu.user + threadCpu.system) / 1000 : null,
+          gcEvents: gcEntries.filter(entry => entry.startTime >= start && entry.startTime <= end)
+            .map(({ kind, durationMs }) => ({ kind, durationMs })),
+        };
       };
       const before = await measureIdle();
       let useful = 0, maxSamples = 0, maxBytes = 0;
@@ -73,13 +89,19 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
         if (!await recorder.update(true, true)) throw new Error('safe recovery failed');
         await recorder.update(false, true);
         after = await measureIdle();
-      } finally { recorder.stop(); }
+      } finally { recorder.stop(); gcObserver.disconnect(); }
       global.gc();
       process.stdout.write(JSON.stringify({ observer, memory, starts, stops, useful, maxSamples,
         maxBytes, before, active, after, delayedRejected, abortRejected, unavailable }));
     `], { timeout: 35_000, maxBuffer: 128 * 1024 });
     const result = JSON.parse(stdout);
     console.info('P-003 product warm recorder:', JSON.stringify(result));
+    console.info('P-003 active CPU window diagnostics:', JSON.stringify({
+      before: result.before,
+      active: result.active,
+      after: result.after,
+      warmups: result.observer.filter((e: { warmupMs?: number }) => 'warmupMs' in e),
+    }));
     expect(result.useful).toBe(40);
     expect(result.observer.filter((e: { warmupMs?: number }) => 'warmupMs' in e)).toHaveLength(2);
     expect(result.delayedRejected).toBe(true);

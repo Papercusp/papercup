@@ -3696,6 +3696,18 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     expect(footer).toContain('grep (fixed/ignoreCase');
   });
 
+  it('uses byte pages when multi-line non-JSON text contains a line too large for a line window', () => {
+    const oversizedLine = 'x'.repeat(BUDGET_CHARS * 2);
+    const footer = footerFor([
+      { type: 'text', text: `line before\n${oversizedLine}\nline after` },
+    ], 'capability:read');
+
+    expect(footer).toContain('include a line over');
+    expect(footer).toContain('byte_offset+byte_limit; no raw');
+    expect(footer).toContain('follow next_cursor');
+    expect(footer).not.toContain('op:"grep"');
+  });
+
   it('finds the JSON payload even when it is neither the joined body nor the first item', () => {
     // The live shape: a JSON payload accompanied by advisory prose, so the
     // JOINED text does not parse. A classifier that only tries the join — or
@@ -3739,12 +3751,12 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     ).toContain('`pick` is what reduces it');
   });
 
-  it('a single-line non-JSON body says projection cannot help, and names the tool to re-call', () => {
+  it('a single-line non-JSON body over byte-page size points to capability:read', () => {
     const footer = footerFor([{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 2) }], 'capability:read');
-    expect(footer).toContain('`projection` cannot help');
-    expect(footer).toContain('capability:read');
+    expect(footer).toContain('include a line over 4096 bytes; use capability:read cursor.args');
+    expect(footer).not.toContain('`projection` cannot help');
     expect(footer).not.toContain('op:"grep"');
-    // A line search over one line returns that same line, so the search route is not advertised.
+    // Byte paging is the recovery path; neither projection nor search is advertised.
     expect(footer).not.toContain('query:"terms"');
   });
 

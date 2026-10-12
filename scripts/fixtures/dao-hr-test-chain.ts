@@ -23,10 +23,17 @@ export async function startDaoHrTestChain() {
     throw new Error('DAO HR test chain requires explicit isolated verification');
   // Reuse the existing actual EVM, compiler/artifacts, accounts and contract bootstrap.
   const chain = await evmChain();
+  const snapshots = new Map<bigint, { root: Uint8Array; timestamp: bigint; hash: Hex }>();
+  async function snapshot() {
+    const blockNumber = chain.blockNumber(), block = await chain.getBlock({ blockNumber });
+    snapshots.set(blockNumber, { root: (await chain.vm.stateManager.getStateRoot()).slice(), timestamp: chain.now(), hash: block.hash });
+  }
+  await snapshot();
   const transactions = new Map<Hex, Record<string, unknown>>();
   const receipts = new Map<Hex, Record<string, unknown>>();
   const logs: Array<Record<string, unknown>> = [];
   async function record(hash: Hex) {
+    await snapshot();
     const [tx, receipt] = await Promise.all([chain.getTransaction({ hash }), chain.getTransactionReceipt({ hash })]);
     const account = await chain.vm.stateManager.getAccount(createAddressFromString(tx.from));
     const position = { blockHash: receipt.blockHash, blockNumber: quantity(receipt.blockNumber), transactionIndex: '0x0' };
@@ -50,11 +57,18 @@ export async function startDaoHrTestChain() {
   await chain.send(timelock, 'initializeGovernor', [governor.address]); await saveLast();
   await chain.send(equity, 'bindGovernance', [governor.address, timelock.address, chain.accounts[V2_ADMIN]]); await saveLast();
   chain.advance(2);
+  await snapshot();
 
   const number = (tag: unknown) => tag === undefined || tag === 'latest' || tag === 'pending'
     ? chain.blockNumber() : tag === 'earliest' ? 0n : BigInt(String(tag));
-  function current(tag: unknown) {
-    if (number(tag) !== chain.blockNumber()) throw new Error('Historical EVM storage is unavailable in this test chain');
+  async function atBlock<T>(tag: unknown, read: (blockNumber: bigint, timestamp: bigint) => Promise<T>): Promise<T> {
+    const blockNumber = number(tag), saved = snapshots.get(blockNumber);
+    if (!saved) throw new Error('Unknown historical EVM block');
+    const previousRoot = await chain.vm.stateManager.getStateRoot();
+    try {
+      await chain.vm.stateManager.setStateRoot(saved.root);
+      return await read(blockNumber, saved.timestamp);
+    } finally { await chain.vm.stateManager.setStateRoot(previousRoot); }
   }
   async function dispatch(method: string, params: unknown[] = []): Promise<unknown> {
     if (method === 'eth_chainId') return '0x1';
@@ -65,24 +79,25 @@ export async function startDaoHrTestChain() {
     if (method === 'eth_getTransactionByHash') return transactions.get(params[0] as Hex) ?? null;
     if (method === 'eth_getTransactionReceipt') return receipts.get(params[0] as Hex) ?? null;
     if (method === 'eth_getCode') {
-      current(params[1]);
-      return bytesToHex(await chain.vm.stateManager.getCode(createAddressFromString(params[0] as Address)));
+      return atBlock(params[1], async () => bytesToHex(await chain.vm.stateManager.getCode(createAddressFromString(params[0] as Address))));
     }
     if (method === 'eth_getBalance' || method === 'eth_getTransactionCount') {
-      current(params[1]);
-      const account = await chain.vm.stateManager.getAccount(createAddressFromString(params[0] as Address));
-      return quantity((method === 'eth_getBalance' ? account?.balance : account?.nonce) ?? 0n);
+      return atBlock(params[1], async () => {
+        const account = await chain.vm.stateManager.getAccount(createAddressFromString(params[0] as Address));
+        return quantity((method === 'eth_getBalance' ? account?.balance : account?.nonce) ?? 0n);
+      });
     }
     if (method === 'eth_call') {
-      current(params[1]);
+      return atBlock(params[1], async (blockNumber, timestamp) => {
       const input = params[0] as { to: Address; from?: Address; data?: Hex; value?: Hex };
-      const block = createBlock({ header: { number: chain.blockNumber(), timestamp: chain.now(),
+      const block = createBlock({ header: { number: blockNumber, timestamp,
         gasLimit: 60_000_000n, baseFeePerGas: 1n } }, { common: chain.vm.common });
       const result = await chain.vm.evm.runCall({ to: createAddressFromString(input.to),
         caller: createAddressFromString(input.from ?? chain.accounts[0]!), data: hexToBytes(input.data ?? '0x'),
         value: BigInt(input.value ?? '0x0'), gasLimit: 50_000_000n, block, isStatic: true });
       if (result.execResult.exceptionError) throw new Error('EVM call reverted: ' + bytesToHex(result.execResult.returnValue));
       return bytesToHex(result.execResult.returnValue);
+      });
     }
     if (method === 'eth_sendTransaction') {
       const input = params[0] as { from: Address; to?: Address; data?: Hex; value?: Hex; chainId?: Hex };
@@ -110,10 +125,11 @@ export async function startDaoHrTestChain() {
     }
     if (method === 'eth_getBlockByNumber') {
       const blockNumber = number(params[0]);
-      const saved = await chain.getBlock({ blockNumber });
+      const saved = snapshots.get(blockNumber);
+      if (!saved) throw new Error('Unknown historical EVM block');
       return { number: quantity(blockNumber), hash: saved.hash, timestamp: quantity(saved.timestamp),
         parentHash: zeroHash, nonce: '0x0000000000000000', sha3Uncles: zeroHash,
-        logsBloom: '0x' + '0'.repeat(512), transactionsRoot: zeroHash, stateRoot: zeroHash,
+        logsBloom: '0x' + '0'.repeat(512), transactionsRoot: zeroHash, stateRoot: bytesToHex(saved.root),
         receiptsRoot: zeroHash, miner: '0x' + '0'.repeat(40), difficulty: '0x0', totalDifficulty: '0x0',
         extraData: '0x', size: '0x0', gasLimit: quantity(60_000_000), gasUsed: '0x0',
         baseFeePerGas: '0x1', transactions: [], uncles: [] };
@@ -128,8 +144,8 @@ export async function startDaoHrTestChain() {
         (filter.topics ?? []).every((topic, index) => topic === null ||
           [topic].flat().some(value => value.toLowerCase() === String((log.topics as Hex[])[index]).toLowerCase())));
     }
-    if (method === 'evm_increaseTime') { chain.advance(BigInt(String(params[0]))); return params[0]; }
-    if (method === 'evm_mine') { chain.advance(1); return '0x0'; }
+    if (method === 'evm_increaseTime') { chain.advance(BigInt(String(params[0]))); await snapshot(); return params[0]; }
+    if (method === 'evm_mine') { chain.advance(1); await snapshot(); return '0x0'; }
     throw new Error('Unsupported isolated test RPC method: ' + method);
   }
   // Serialize calls so concurrent product reads cannot race a signed state transition.
