@@ -70,7 +70,7 @@ async function startSandboxReaper(owner, docker, onDisconnect) {
   const name = owner + '-reaper';
   // The reaper itself is outside the wrapper's process scope. --rm and its
   // no-client timeout also cover wrapper death before the registration ACK.
-  await dockerAllocation(['run', '-d', '--rm', '--pull=never', '--name', name,
+  await dockerAllocation(['run', '-d', '--rm', '--pull=missing', '--name', name,
     '--label', 'papercusp.test.reaper=' + owner, '-p', '127.0.0.1::8080', '--mount',
     'type=bind,src=' + client.info.containerRuntime.remoteSocketPath + ',dst=/var/run/docker.sock',
     '-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);
@@ -162,6 +162,29 @@ export async function dockerAllocation(args, environment = {}, {
   } finally { clearTimeout(warning); }
 }
 
+/** A disposable daemon cache is not a sandbox prerequisite. Prepare only
+ * immutable references, join each pull, and confirm availability before the
+ * reaper or provider is allocated. create/run also use pull=missing so cache
+ * eviction between preparation and allocation cannot invalidate this check.
+ */
+export async function prepareSandboxImages(image, { inspect,
+  pull = ref => dockerAllocation(['pull', ref]), isStopped = () => false }) {
+  const references = [image, PG_IMAGE, MAIL_IMAGE, REAPER_IMAGE];
+  if (references.some(ref => !PINNED_IMAGE.test(ref))) {
+    throw new Error('Documenso test images must be pinned by SHA-256 digest');
+  }
+  for (const ref of references) {
+    if (isStopped()) return false;
+    try { inspect(ref); }
+    catch {
+      await pull(ref);
+      if (isStopped()) return false;
+      inspect(ref);
+    }
+  }
+  return true;
+}
+
 /** Normal cleanup joins removal before checking this run's ownership label.
  * A concurrent external reaper may already have removed a named resource;
  * absence is authoritative, while a retained resource always fails closed.
@@ -248,12 +271,16 @@ export async function runSandbox({ image, command }) {
     // before starting; a later start timeout cannot allocate another container.
     reaper.assertConnected();
     containers.push(name);
-    await dockerAllocation(['create', '--pull=never', '--name', name, '--label', 'papercusp.test.owner=' + network,
+    await dockerAllocation(['create', '--pull=missing', '--name', name, '--label', 'papercusp.test.owner=' + network,
       '--network', network, ...args], environment);
     if (!stopped) docker(['start', name]);
   }
   async function cleanup() {
-    try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }
+    try {
+      if (containers.length || networkCreated) {
+        await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker });
+      }
+    }
     finally { if (directory) rmSync(directory, { recursive: true, force: true }); }
   }
   function stop() {
@@ -268,8 +295,9 @@ export async function runSandbox({ image, command }) {
   }
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
-    // Refuse before allocating anything when required images/tools are absent.
-    for (const ref of [image, PG_IMAGE, MAIL_IMAGE, REAPER_IMAGE]) docker(['image', 'inspect', ref]);
+    // Image preparation must finish before any external resource allocation.
+    if (!await prepareSandboxImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
+      isStopped: () => stopped })) return 130;
     const openssl = spawnSync('openssl', ['version'], { stdio: 'ignore', timeout: 5000 });
     if (openssl.status !== 0) throw new Error('openssl is required for the sandbox signing certificate');
     reaper = await startSandboxReaper(network, docker, error => { reaperFailure = error; stop(); });
