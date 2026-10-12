@@ -22,6 +22,17 @@ export declare function sandboxedBashCommand(
   },
 ): string | null;
 
+export declare const RTK_BIN_ENV: string;
+
+export declare const RTK_REWRITE_TIMEOUT_MS: number;
+
+export declare function resolveRtkBin(env?: NodeJS.ProcessEnv): string | null;
+
+export declare function rtkRewriteSync(
+  command: string,
+  opts?: { env?: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number },
+): string | null;
+
 export declare function decideEgress(params: {
   toolName: string;
   toolInput?: Record<string, unknown>;
@@ -29,6 +40,7 @@ export declare function decideEgress(params: {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   sandbox?: (command: string) => string | null;
+  rtk?: (command: string) => string | null;
 }): Promise<
   | { decision: 'allow' }
   | { decision: 'deny'; reason: string }

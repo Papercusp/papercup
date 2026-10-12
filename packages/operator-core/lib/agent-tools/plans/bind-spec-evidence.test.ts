@@ -94,6 +94,35 @@ const measuredBinding = {
   },
 };
 
+describe('plans:bind-spec-evidence test-run identity schema', () => {
+  const filePath = 'test/reconnect.test.ts';
+  const withRunIdentity = (over: Record<string, unknown> = {}) => ({
+    ...measuredBinding,
+    testRunId: 42,
+    details: { testRun: { id: 42, filePath }, ...over },
+  });
+
+  it('accepts a nested run identity only when its id and file agree with the binding', () => {
+    expect(bindingSchema.safeParse(withRunIdentity()).success).toBe(true);
+
+    const wrongId = bindingSchema.safeParse(withRunIdentity({ testRun: { id: 43, filePath } }));
+    expect(wrongId.success).toBe(false);
+    if (!wrongId.success) {
+      expect(wrongId.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ['details', 'testRun', 'id'] }),
+      ]));
+    }
+
+    const wrongPath = bindingSchema.safeParse({ ...withRunIdentity(), evidenceRef: 'test/other.test.ts' });
+    expect(wrongPath.success).toBe(false);
+    if (!wrongPath.success) {
+      expect(wrongPath.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ['evidenceRef'], message: expect.stringContaining('same file') }),
+      ]));
+    }
+  });
+});
+
 describe('plans:bind-spec-evidence instrument declaration schema', () => {
   it('publishes the instrument forms required for operational and manual evidence', () => {
     const published = z.toJSONSchema(tool.args as never);

@@ -3004,6 +3004,14 @@ export const BYPASS_REGISTRY = new Map([
         "execFileAsync is promisify(execFile) for bounded, user-requested git fetch/rebase/status operations in a durable user worktree; git owns recovery state and no in-memory resident queue is created.",
     },
   ],
+  [
+    "packages/operator-core/lib/agent-tools/capability/rtk-rewrite.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "`rtk rewrite <command>` — one string-to-string translation per capability:bash call (WI-6554700010009291), killed after RTK_REWRITE_TIMEOUT_MS (2s) and awaited before the governed job spawn; it runs no user work and leaves nothing resident. The command it returns is executed by bash-jobs' existing admitted spawn.",
+    },
+  ],
   // ── reviewed retry around a receipt-producing write (EI-21850494041821321) ───
   [
     "packages/operator-core/lib/resource-governor/queue.ts::retry-around-receipt",

@@ -797,6 +797,9 @@ describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes 
     expect(headroom.summary).toMatch(/NO code verdict/);
     expect(lock.reason).toBe('infra-inconclusive');
     expect(lock.green).toBeNull();
+    // green-main-cycle-time P-022: the typed blocker runGreenCheckpoint's one bounded retry keys on.
+    expect(headroom.preconditionBlocker).toBe('disk-headroom');
+    expect(lock.preconditionBlocker).toBe('copy-lock');
   });
 
   it('an unrelated dependency-generation exit stays on the crash path', () => {
@@ -807,6 +810,8 @@ describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes 
     });
     expect(other.reason).not.toBe('disk-headroom');
     expect(other.reason).not.toBe('infra-inconclusive');
+    // Never a precondition retry: an untyped exit stays on the crash path.
+    expect(other.preconditionBlocker).toBeUndefined();
   });
 });
 

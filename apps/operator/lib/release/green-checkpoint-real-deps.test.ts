@@ -1229,7 +1229,8 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     // disappear from the response file. The strict CLI must still see the other.
     const selections: string[][] = [];
     const exec: CheckpointExec = async (_cmd, args) => {
-      const response = args.find((arg) => arg.startsWith("--files-from="))!;
+      const response = args.find((arg) => arg.startsWith("--files-from="));
+      if (!response) return { code: 0, stdout: "", stderr: "" };
       selections.push(JSON.parse(readFileSync(response.slice("--files-from=".length), "utf8")));
       return { code: 1, stdout: "explicit file selection contains missing paths", stderr: "" };
     };
@@ -1389,6 +1390,132 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     });
     expect(result?.summary).toContain("TS2322");
     expect(result?.summary).toContain("status=regressed");
+  });
+
+  it("measures whole-program typechecks and downstream blocking lints after a scoped red", async () => {
+    const inventoryTree = mkdtempSync(
+      join(tmpdir(), "green-cp-early-failure-inventory-"),
+    );
+    mkdirSync(join(inventoryTree, "scripts"), { recursive: true });
+    const typecheckScripts = [
+      "lint:tsc",
+      "lint:tsc:papercusp-libs",
+      "lint:tsc:workspaces",
+      "lint:tsc:operator",
+      "lint:tsc:orchestrator",
+      "lint:tsc:scripts",
+    ];
+    const downstreamLints = [
+      "lint:guard-reachability",
+      "lint:mock-cast-escape",
+    ];
+    const typecheckProjects: Record<string, string> = {
+      "lint:tsc": "packages/operator-core/tsconfig.json",
+      "lint:tsc:papercusp-libs": "libs/papercusp/tsconfig.json",
+      "lint:tsc:workspaces": "apps/operator-public/tsconfig.json",
+      "lint:tsc:operator": "apps/operator/tsconfig.json",
+      "lint:tsc:orchestrator": "libs/papercusp/packages/orchestrator/tsconfig.json",
+      "lint:tsc:scripts": "scripts/tsconfig.json",
+    };
+    writeFileSync(
+      join(inventoryTree, "package.json"),
+      JSON.stringify({
+        name: "cp-early-failure-inventory-fixture",
+        scripts: Object.fromEntries([
+          ...Object.keys(typecheckProjects).map((script) => [
+            script,
+            "node scripts/" + script.replaceAll(":", "-") + ".mjs",
+          ]),
+          ...downstreamLints.map((script) => [script, "node scripts/fixture.mjs"]),
+        ]),
+      }),
+    );
+    for (const [script, project] of Object.entries(typecheckProjects)) {
+      writeFileSync(
+        join(inventoryTree, "scripts", script.replaceAll(":", "-") + ".mjs"),
+        "export const TSC_COMMAND = 'npx tsc -p " + project + " --noEmit';\n",
+      );
+    }
+    onTestFinished(() => rmSync(inventoryTree, { recursive: true, force: true }));
+
+    const calls: string[] = [];
+    const failingScripts = new Set([...typecheckScripts, ...downstreamLints]);
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd !== "npm" || args[0] !== "run") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      const script = args[1]!;
+      const scoped = args.some((arg) => arg.startsWith("--files-from="));
+      calls.push(scoped ? script + ":files" : script);
+      const failed = scoped || failingScripts.has(script);
+      return {
+        code: failed ? 1 : 0,
+        stdout: failed ? script + " failed\n" : "",
+        stderr: "",
+      };
+    };
+    const deps = realCheckpointDeps(
+      { ...preflightCfg, checkpointRoot: inventoryTree },
+      exec,
+    );
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      "packages/operator-core/lib/a.ts",
+    ]);
+
+    expect(result?.status).toBe("failed");
+    expect(result?.failingSignatures).toEqual(
+      expect.arrayContaining([...typecheckScripts, ...downstreamLints]),
+    );
+    expect(result?.failureInventory).toMatchObject({
+      ran: true,
+      failingSignatures: expect.arrayContaining([
+        ...typecheckScripts,
+        ...downstreamLints,
+      ]),
+    });
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        "lint:tsc:files",
+        ...typecheckScripts,
+        ...downstreamLints,
+      ]),
+    );
+    expect(result?.failureInventory?.records).toEqual(
+      expect.arrayContaining([
+        ...typecheckScripts.map((id) =>
+          expect.objectContaining({ id, status: "failed" }),
+        ),
+        ...downstreamLints.map((id) =>
+          expect.objectContaining({ id, status: "failed" }),
+        ),
+      ]),
+    );
+  });
+
+  it("skips the SPA build when the scoped failure is the only blocker", async () => {
+    const { exec } = makeExec([
+      {
+        code: 1,
+        stdout:
+          "packages/operator-core/lib/a.ts(1,14): error TS2322\n" +
+          "LINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed\n",
+      },
+    ]);
+    const deps = realCheckpointDeps(preflightCfg, exec);
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      "packages/operator-core/lib/a.ts",
+    ]);
+
+    expect(result?.failureInventory).toMatchObject({ ran: true });
+    expect(result?.failureInventory?.failingSignatures).toEqual([]);
+    expect(
+      result?.failureInventory?.records.find((record) => record.id === "spa-build"),
+    ).toMatchObject({
+      status: "skipped",
+      skipReason: "early changed-file typecheck failure already blocks promotion",
+    });
   });
 
   it("reports a subject hive without lint:tsc as skipped and shells nothing", async () => {

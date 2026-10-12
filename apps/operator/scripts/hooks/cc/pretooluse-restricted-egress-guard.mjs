@@ -40,14 +40,93 @@
  *   - WebFetch and every non-Papercusp MCP tool are DENIED (both egress from the
  *     CLI process itself, outside any shell sandbox).
  *   - Edit/Write/MultiEdit/NotebookEdit of those runtime-config paths are DENIED.
+ *
+ * RTK (WI-6554700010009291, owner directives #1759/#1764). This hook is ALSO the
+ * one place RTK's output compression is applied to native Bash. Claude Code
+ * resolves several PreToolUse hooks that each return `updatedInput` by
+ * completion order (the last one to finish wins), so a separate RTK hook could
+ * silently drop the network sandbox above. Here one hook produces the final
+ * command: RTK rewrites first (`git status` → `rtk git status`), then the
+ * sandbox wraps that, while every deny check keeps judging the ORIGINAL
+ * command. RTK fails open: a missing, failing or slow binary leaves the command
+ * as it was. capability:bash applies the same rewrite server-side
+ * (packages/operator-core/lib/agent-tools/capability/rtk-rewrite.ts).
  */
-import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { accessSync, constants as fsConstants, existsSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { operatorBase, sessionId } from '../inject/core.mjs';
 
 const CHECK_TIMEOUT_MS = 4000;
 const STDIN_TIMEOUT_MS = 2000;
+
+/** Override for the RTK binary location; an empty value disables RTK. */
+export const RTK_BIN_ENV = 'PAPERCUSP_RTK_BIN';
+export const RTK_REWRITE_TIMEOUT_MS = 2000;
+const RTK_MAX_COMMAND_CHARS = 16384;
+
+function isExecutable(file) {
+  try {
+    accessSync(file, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Locate RTK: the override, then `~/.local/bin/rtk` (where the installer pins
+ * it), then PATH. Under Vitest the host's binary is never used implicitly, so a
+ * test's expected command does not depend on what the machine has installed.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | null}
+ */
+export function resolveRtkBin(env = process.env) {
+  const explicit = env[RTK_BIN_ENV];
+  if (explicit !== undefined) {
+    const value = explicit.trim();
+    return value && isExecutable(value) ? value : null;
+  }
+  if (env.VITEST || process.env.VITEST) return null;
+  const candidates = [path.join(env.HOME || homedir(), '.local', 'bin', 'rtk')];
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, 'rtk'));
+  }
+  return candidates.find(isExecutable) ?? null;
+}
+
+/**
+ * The RTK form of a native Bash command, or null to leave it unchanged.
+ * Never offered: vitest commands (EI-9471: rtk's vitest wrapper once dropped a
+ * single-file filter and ran the whole suite), commands carrying the
+ * `RTK_DISABLED=1` opt-out, and oversized commands. rtk exits 0 (rewritten),
+ * 3 (rewritten, rtk would ask; this hook does not delegate permission to rtk),
+ * 1 (no equivalent) or 2 (denied by rtk's rules: leave it alone).
+ * @param {string} command
+ * @param {{ env?: NodeJS.ProcessEnv, cwd?: string, timeoutMs?: number }} [opts]
+ * @returns {string | null}
+ */
+export function rtkRewriteSync(command, opts = {}) {
+  if (!command || command.length > RTK_MAX_COMMAND_CHARS) return null;
+  if (/(^|[\s;&|(])RTK_DISABLED=1(\s|$)/.test(command)) return null;
+  if (/\bvitest\b/.test(command)) return null;
+  const bin = resolveRtkBin(opts.env ?? process.env);
+  if (!bin) return null;
+  try {
+    const run = spawnSync(bin, ['rewrite', command], {
+      cwd: opts.cwd,
+      encoding: 'utf8',
+      timeout: opts.timeoutMs ?? RTK_REWRITE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (run.error || (run.status !== 0 && run.status !== 3)) return null;
+    const rewritten = String(run.stdout ?? '').replace(/[\r\n]+$/, '');
+    return rewritten.trim() && rewritten !== command ? rewritten : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Coarse provider-shaped tokens; a superset of provider-egress.mjs's rules. */
 export const PROVIDER_PREFILTER = [
@@ -245,6 +324,7 @@ async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
  *   env?: NodeJS.ProcessEnv,
  *   fetchImpl?: typeof fetch,
  *   sandbox?: (command: string) => string | null,
+ *   rtk?: (command: string) => string | null,
  * }} params
  * @returns {Promise<
  *   | { decision: 'allow' }
@@ -252,11 +332,20 @@ async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
  *   | { decision: 'rewrite', updatedInput: Record<string, unknown> }
  * >}
  */
-export async function decideEgress({ toolName, toolInput, cwd, env = process.env, fetchImpl = fetch, sandbox }) {
-  const owner = sessionId(env);
-  if (!owner) return { decision: 'allow' };
+export async function decideEgress({ toolName, toolInput, cwd, env = process.env, fetchImpl = fetch, sandbox, rtk }) {
   const input = toolInput ?? {};
   const where = cwd || process.cwd();
+  // The RTK form of a Bash command. Every check below judges `input`, the
+  // original; only the command finally emitted is the RTK form.
+  const rtkCommand =
+    toolName === 'Bash' && typeof input.command === 'string'
+      ? (rtk ?? ((command) => rtkRewriteSync(command, { env, cwd: where })))(input.command)
+      : null;
+  /** Allow, carrying the RTK rewrite when there is one. */
+  const allow = () =>
+    rtkCommand ? { decision: 'rewrite', updatedInput: { ...input, command: rtkCommand } } : { decision: 'allow' };
+  const owner = sessionId(env);
+  if (!owner) return allow();
 
   if (EDIT_TOOLS.has(toolName)) {
     const target = input.file_path ?? input.notebook_path;
@@ -270,7 +359,7 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
   const texts = egressTexts(toolName, input);
   const { refuse, restricted, detail, failure } = await askOperator({ owner, toolName, texts, env, fetchImpl });
   if (refuse) return { decision: 'deny', reason: refuse };
-  if (restricted === false) return { decision: 'allow' };
+  if (restricted === false) return allow();
   if (restricted === null && toolName === 'WebFetch') {
     const checkFailure =
       failure === 'timeout'
@@ -303,7 +392,10 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
       ? detail || 'this session has read restricted personal data'
       : `the operator could not confirm this session or integration tree is unrestricted (${detail}), so it is treated as restricted`;
   if (toolName === 'Bash' && typeof input.command === 'string') {
-    const wrapped = (sandbox ?? ((command) => sandboxedBashCommand(command, { env, cwd: where })))(input.command);
+    // Sandbox the RTK form, so the offline shell still gets compressed output.
+    const wrapped = (sandbox ?? ((command) => sandboxedBashCommand(command, { env, cwd: where })))(
+      rtkCommand ?? input.command,
+    );
     if (wrapped && invokesUserSystemctl(input.command) && masksUserRuntime(wrapped)) {
       return {
         decision: 'deny',

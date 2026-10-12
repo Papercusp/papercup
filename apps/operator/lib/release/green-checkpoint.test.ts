@@ -168,7 +168,19 @@ import {
   orchestratorStdoutTag,
   selectFixerCapacityRows,
   resolveReleaseFixerProvider,
+  decideGatePreconditionRetry,
+  gatePreconditionRetryDelayMsFromEnv,
+  DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS,
+  DEFAULT_REFIRE_RUN_BUDGET_MS,
 } from "./green-checkpoint";
+import type {
+  FrozenRepairBoundedLifeRecord,
+  FrozenRepairBoundedLifeState,
+} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
+import type {
+  FrozenRepairCarryRecord,
+  FrozenRepairPendingCarry,
+} from "@papercusp/operator-core/lib/release/frozen-repair-carry";
 import { git, revParse, advanceReady } from "./git-ops";
 import {
   gateOperatorPgEnv,
@@ -427,6 +439,222 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
     expect(result).toMatchObject({ green: true, reason: "advanced" });
     expect(calls.some((call) => call.startsWith("setup:"))).toBe(true);
     expect(calls).toContain("runGreen");
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-022: a typed setup-precondition refusal (no verdict) is
+// retried ONCE in-process after a short delay instead of idling until the next hourly tick.
+// Measured 2026-10-12: four consecutive fires refused on headroom, each mid-setup (exit 77
+// thrown from setupTree after the preflight passed), and each waited an hour for the next tick.
+describe("P-022: one bounded short-delay retry after a typed precondition refusal", () => {
+  const MIN = 60_000;
+  const exit77 = () =>
+    new Error(
+      "bash /repo/apps/operator/bin/release/dependency-generation.sh exited 77: " +
+        "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=1 required=2",
+    );
+  const exit76 = () =>
+    new Error(
+      "bash /repo/apps/operator/bin/release/dependency-generation.sh exited 76: " +
+        "[dependency-generation] DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=600s",
+    );
+  /** Wires the retry seams onto stub deps and records every seam call in `calls`. */
+  const withRetrySeams = (deps: CheckpointDeps, calls: string[], delayMs = 5 * MIN) => {
+    const slept: number[] = [];
+    const logs: string[] = [];
+    deps.preconditionRetryDelayMs = delayMs;
+    deps.preconditionRetrySleep = async (ms) => {
+      slept.push(ms);
+      calls.push(`sleep:${ms}`);
+    };
+    deps.reclaimDependencyHeadroom = async () => {
+      calls.push("reclaim");
+      return "dependency retention complete: 3/3 store(s) pruned; free 49.93 → 61.20 GiB";
+    };
+    const log = deps.log;
+    deps.log = (line) => {
+      logs.push(line);
+      log(line);
+    };
+    return { slept, logs };
+  };
+  const seed = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("a preflight headroom refusal returns before any setup work, then reclaims, waits and retries exactly once", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { slept } = withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      calls.push(`headroom:${probes}`);
+      return probes === 1
+        ? { ok: false, blocker: "disk-headroom", summary: "dependency copy cannot start: HEADROOM_INSUFFICIENT" }
+        : { ok: true, summary: "dependency-copy headroom ok" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(result.preconditionRetry).toMatchObject({
+      blocker: "disk-headroom",
+      delayMs: 5 * MIN,
+      firstSummary: "dependency copy cannot start: HEADROOM_INSUFFICIENT",
+    });
+    expect(result.preconditionRetry?.cleanup).toContain("3/3 store(s) pruned");
+    expect(probes).toBe(2);
+    // Refusal BEFORE setup: nothing materializes until the retried pass's own preflight passes.
+    const firstSetup = calls.findIndex((c) => c.startsWith("setup:"));
+    expect(firstSetup).toBeGreaterThan(calls.indexOf("headroom:2"));
+    expect(calls.indexOf("reclaim")).toBeLessThan(calls.indexOf("headroom:2"));
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+    // The wait is chunked so liveness is reported at least every minute; it sums to the delay.
+    expect(slept.every((ms) => ms <= MIN)).toBe(true);
+    expect(slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5 * MIN);
+    expect(slept.reduce((a, b) => a + b, 0)).toBeGreaterThan(4 * MIN);
+  });
+
+  it("a second refusal in the same run is final: no further retry, the refusal is reported", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { logs } = withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, summary: `still short (${probes})` };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom", summary: "still short (2)" });
+    expect(result.preconditionRetry).toMatchObject({ blocker: "disk-headroom", firstSummary: "still short (1)" });
+    expect(probes).toBe(2);
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+    expect(calls.some((c) => c.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("runGreen");
+    expect(logs.some((l) => l.includes("GATE_PRECONDITION_RETRY skipped blocker=disk-headroom reason=bound-exhausted"))).toBe(true);
+  });
+
+  it("setup's own exit 77 thrown mid-materialization is retried once, with retention reclaim", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    const setup = deps.setupTree;
+    let setups = 0;
+    deps.setupTree = async (ref, options) => {
+      setups += 1;
+      if (setups === 1) throw exit77();
+      return setup(ref, options);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(result.preconditionRetry?.blocker).toBe("disk-headroom");
+    expect(result.preconditionRetry?.firstSummary).toContain("exit 77");
+    expect(setups).toBe(2);
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+  });
+
+  it("setup's exit 76 (copy lock) is retried once WITHOUT disk reclaim; a second one propagates to the crash handler", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    let setups = 0;
+    deps.setupTree = async () => {
+      setups += 1;
+      throw exit76();
+    };
+
+    await expect(runGreenCheckpoint(cfg(), deps, { candidate, noPush: true })).rejects.toThrow(/exited 76/);
+    expect(setups).toBe(2);
+    expect(calls).not.toContain("reclaim");
+    expect(calls.some((c) => c.startsWith("sleep:"))).toBe(true);
+  });
+
+  it("a wedged copy lock at preflight is classified like setup's exit 76 and retried without reclaim", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, blocker: "copy-lock", summary: "DEPENDENCY_GENERATION_LOCK_BUSY state=wedged" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "infra-inconclusive", preconditionBlocker: "copy-lock" });
+    expect(result.preconditionRetry?.cleanup).toBe("not run (copy-lock refusal)");
+    expect(probes).toBe(2);
+    expect(calls).not.toContain("reclaim");
+  });
+
+  it("does not retry when the delay plus a full pass would overrun the run budget", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { logs } = withRetrySeams(deps, calls);
+    deps.checkDiskHeadroom = async () => ({ ok: false, summary: "short" });
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+      runStartedAtMs: Date.now() - 60 * MIN,
+    });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom" });
+    expect(result.preconditionRetry).toBeUndefined();
+    expect(calls).not.toContain("reclaim");
+    expect(logs.some((l) => l.includes("reason=deadline"))).toBe(true);
+  });
+
+  it("a caller that supplies no retry delay keeps the historical single-pass refusal", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, summary: "short" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom", preconditionBlocker: "disk-headroom" });
+    expect(result.preconditionRetry).toBeUndefined();
+    expect(probes).toBe(1);
+    expect(calls.some((c) => c.startsWith("setup:"))).toBe(false);
+  });
+
+  it("decideGatePreconditionRetry bounds: verdict, blocker, attempt count and run budget", () => {
+    const base = { retriesSoFar: 0, elapsedMs: 0, delayMs: 5 * MIN, budgetMs: DEFAULT_REFIRE_RUN_BUDGET_MS };
+    expect(decideGatePreconditionRetry({ ...base, result: { green: null, preconditionBlocker: "disk-headroom" } }))
+      .toEqual({ retry: true, blocker: "disk-headroom" });
+    expect(decideGatePreconditionRetry({ ...base, result: { green: null } }))
+      .toEqual({ retry: false, reason: "no-blocker" });
+    // A rendered verdict is never retried, whatever it is stamped with.
+    expect(decideGatePreconditionRetry({ ...base, result: { green: false, preconditionBlocker: "copy-lock" } }))
+      .toEqual({ retry: false, reason: "no-blocker" });
+    expect(decideGatePreconditionRetry({ ...base, retriesSoFar: 1, result: { green: null, preconditionBlocker: "copy-lock" } }))
+      .toEqual({ retry: false, reason: "bound-exhausted" });
+    // 110 min budget: 45 min elapsed + 5 min delay + 60 min full pass fits exactly; 46 does not.
+    expect(decideGatePreconditionRetry({ ...base, elapsedMs: 45 * MIN, result: { green: null, preconditionBlocker: "disk-headroom" } }).retry)
+      .toBe(true);
+    expect(decideGatePreconditionRetry({ ...base, elapsedMs: 46 * MIN, result: { green: null, preconditionBlocker: "disk-headroom" } }))
+      .toEqual({ retry: false, reason: "deadline" });
+  });
+
+  it("the retry delay defaults to 5 minutes and accepts only a finite non-negative override", () => {
+    expect(DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({})).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "90000" })).toBe(90_000);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "0" })).toBe(0);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "-1" })).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "soon" })).toBe(5 * MIN);
   });
 });
 
@@ -5713,6 +5941,21 @@ describe("runGreenCheckpoint", () => {
       status: "failed",
       summary: "packages/operator-core/lib/a.ts(1,14): error TS2322",
       failingSignatures: ["lint:tsc"],
+      failureInventory: {
+        ran: true,
+        output: "POST_SUITE_RESULT status=failed\n",
+        failingSignatures: ["lint:tsc:scripts", "lint:guard-reachability"],
+        records: [
+          { id: "lint:tsc:scripts", status: "failed", durationMs: 5 },
+          { id: "lint:guard-reachability", status: "failed", durationMs: 7 },
+          {
+            id: "spa-build",
+            status: "skipped",
+            skipReason: "early changed-file typecheck failure already blocks promotion",
+            durationMs: 0,
+          },
+        ],
+      },
     });
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -5723,11 +5966,25 @@ describe("runGreenCheckpoint", () => {
       from: c1,
       green: false,
       reason: "not-green",
-      failingTests: ["lint:tsc"],
+      failingTests: [
+        "lint:tsc",
+        "lint:tsc:scripts",
+        "lint:guard-reachability",
+      ],
+      postSuiteMeasured: true,
+      postSuiteLegs: expect.arrayContaining([
+        expect.objectContaining({ id: "lint:tsc:scripts", status: "failed" }),
+        expect.objectContaining({
+          id: "lint:guard-reachability",
+          status: "failed",
+        }),
+      ]),
     });
     expect(r.summary).toContain(
       "Early changed-file typecheck failed before the affected-test sweep",
     );
+    expect(r.summary).toContain("Early non-test gate inventory");
+    expect(r.summary).toContain("POST_SUITE_RESULT status=failed");
     expect(calls).not.toContain("runGreen");
     expect(calls).not.toContain("advance");
     expect(
@@ -13665,6 +13922,123 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
     });
     expect(r).toMatchObject({ advanced: true, candidate: c3 });
   });
+
+  // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first fresh cut after a retire
+  // must hold the retired queue's admitted fixes; the quiet cut can step back past one.
+  describe("P-010 carry of a retired frozen queue's fixes into the next fresh cut", () => {
+    function pendingCarry(path: string, blob: string): FrozenRepairPendingCarry {
+      return {
+        schemaVersion: 1,
+        fromCandidate: "c".repeat(40),
+        fromRepairHead: "d".repeat(40),
+        reason: "bounded-life",
+        retiredAtMs: 1_800_000_000_000,
+        admitted: [{ path, blob }],
+        truncated: false,
+      };
+    }
+
+    function withCarry(deps: CheckpointDeps, pending: FrozenRepairPendingCarry | Error, consumed = true) {
+      const logs: string[] = [];
+      const consume = vi.fn(async (_p: FrozenRepairPendingCarry, _r: FrozenRepairCarryRecord) => consumed);
+      const read = vi.fn(async () => {
+        if (pending instanceof Error) throw pending;
+        return pending;
+      });
+      deps.readFrozenRepairPendingCarry = read;
+      deps.consumeFrozenRepairCarry = consume;
+      deps.log = (line: string) => logs.push(line);
+      return { logs, consume, read };
+    }
+
+    it("judges the staging tip when the quiet cut lacks an admitted fix, and records the carry", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300); // the quiet pick — no fix yet
+      const c3 = await commit("fix.ts", "fixed\n", "c3"); // the admitted fix, committed seconds ago
+      const pending = pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c3}:fix.ts`]));
+      const { deps } = stubDeps(true);
+      const { consume, logs } = withCarry(deps, pending);
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ advanced: true, candidate: c3, green: true });
+      expect(consume).toHaveBeenCalledTimes(1);
+      const [consumedPending, record] = consume.mock.calls[0]!;
+      expect(consumedPending).toBe(pending);
+      expect(record).toMatchObject({
+        initialCandidate: c2,
+        initialMissing: ["fix.ts"],
+        judgedCandidate: c3,
+        advancedToTip: true,
+        entries: [{ path: "fix.ts", status: "carried" }],
+      });
+      expect(logs.some((line) => line.includes("lacked 1 fix(es), judging the staging tip instead"))).toBe(true);
+    });
+
+    it("keeps the quiet cut when it already holds every admitted fix", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("fix.ts", "c2", 300); // the fix landed before the quiet window
+      await commit("c.txt", "now\n", "c3");
+      const { deps } = stubDeps(true);
+      const { consume } = withCarry(deps, pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c2}:fix.ts`])));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ advanced: true, candidate: c2 });
+      expect(consume.mock.calls[0]?.[1]).toMatchObject({
+        initialCandidate: c2,
+        judgedCandidate: c2,
+        advancedToTip: false,
+        entries: [{ path: "fix.ts", status: "carried" }],
+      });
+    });
+
+    it("never reads or consumes the carry for an explicitly pinned candidate", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300);
+      await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { read, consume } = withCarry(deps, pendingCarry("fix.ts", "0".repeat(40)));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true, candidate: c2 });
+
+      expect(r).toMatchObject({ candidate: c2 });
+      expect(read).not.toHaveBeenCalled();
+      expect(consume).not.toHaveBeenCalled();
+    });
+
+    it("an unreadable carry keeps the quiet cut and leaves the carry pending", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300);
+      await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { consume, logs } = withCarry(deps, new Error("pg unavailable"));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ candidate: c2 });
+      expect(consume).not.toHaveBeenCalled();
+      expect(logs.some((line) => line.includes("P-010 pending carry unreadable"))).toBe(true);
+    });
+
+    it("a carry replaced before it is recorded still judges the tip, and says the next cut assesses the newer one", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      await datedCommit("b.txt", "c2", 300);
+      const c3 = await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { logs } = withCarry(deps, pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c3}:fix.ts`])), false);
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ candidate: c3 });
+      expect(logs.some((line) => line.includes("the next fresh cut assesses the newer carry"))).toBe(true);
+    });
+  });
 });
 
 describe("pipelineName (EI-7646 — the pipeline-scoped verdict-key segment)", () => {
@@ -15798,5 +16172,206 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     });
     expect(line).not.toContain("Retry after");
     expect(line).toContain("usage-walled");
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-021 / D-023: a frozen queue's life is bounded. A queue that
+// made no new failing-count low in 4 rounds, or is older than 24h, is retired (once per install
+// per 24h) and the same pass re-cuts at the newest known-good commit or the staging tip, with the
+// queue's admitted fixes carried and recorded.
+describe("P-021: bounded frozen-queue life — retire, re-cut and carry", () => {
+  const HOUR = 60 * 60 * 1_000;
+
+  async function frozenLineage() {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const knownGood = await commit("c", "3", "known-good point, before the fix");
+    const tip = await commit("lib/fix.ts", "fixed", "the admitted fix");
+    const fixBlob = (await git(repo, ["rev-parse", `${tip}:lib/fix.ts`])).trim();
+    return { ready, frozen, knownGood, tip, fixBlob };
+  }
+
+  function queueWith(input: {
+    frozen: string;
+    ready: string;
+    tip: string;
+    fixBlob: string;
+    failingCounts: number[];
+    ageMs: number;
+  }): FrozenCandidateRepairQueue {
+    const now = Date.now();
+    return {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: input.frozen,
+      base: input.ready,
+      repairHead: input.frozen,
+      attempts: 1,
+      openedAtMs: now - input.ageMs,
+      updatedAtMs: now - 1_000,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+      convergenceRounds: input.failingCounts.map((failingCount, index) => ({
+        round: index + 1,
+        head: input.frozen,
+        failingCount,
+        atMs: now - input.ageMs + index * 1_000,
+      })),
+      admissions: [
+        {
+          atMs: now - 2_000,
+          actor: "su-test",
+          source: { ref: "staging", sha: input.tip },
+          fromRepairHead: input.frozen,
+          toRepairHead: input.frozen,
+          paths: ["lib/fix.ts"],
+          unchanged: [],
+          blobs: { "lib/fix.ts": input.fixBlob },
+        },
+      ],
+    };
+  }
+
+  function boundedLifeDeps(queue: FrozenCandidateRepairQueue, state: FrozenRepairBoundedLifeState | null) {
+    const { deps } = stubDeps(true);
+    const retired: FrozenRepairBoundedLifeRecord[] = [];
+    const escalations: string[] = [];
+    deps.readFrozenRepairQueueState = async () => ({ status: "value", queue });
+    deps.readFrozenRepairBoundedLifeState = async () => state;
+    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async (_queue, record) => {
+      retired.push(record);
+      return { retired: true };
+    });
+    deps.recordFrozenRepairBoundedLifeEscalation = vi.fn(async () => undefined);
+    deps.escalate = vi.fn(async (summary: string) => {
+      escalations.push(summary);
+    });
+    deps.dispatchFrozenRepairFixer = async () => ({ spawnId: "fixer", runId: "run" });
+    return { deps, retired, escalations };
+  }
+
+  it("retires a non-improving queue and re-cuts at the staging tip carrying the admitted fix", async () => {
+    const lineage = await frozenLineage();
+    // 3 -> 5 -> 8 -> 12 -> 28: four rounds since the low of 3 (the ad82b273 shape).
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const { deps, retired, escalations } = boundedLifeDeps(queue, null);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      trigger: "non-improving",
+      roundsSinceLow: 4,
+      lowestFailingCount: 3,
+      latestFailingCount: 28,
+      candidate: lineage.frozen,
+      recutTarget: lineage.tip,
+      recutTargetSource: "staging-tip",
+      carriedPaths: [{ path: "lib/fix.ts", status: "contained" }],
+      readmitPaths: [],
+    });
+    // The re-cut: this same pass judged the tip, not the frozen candidate.
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.green).toBe(true);
+    expect(escalations.some((line) => line.includes("retired by the bounded-life rule (non-improving)"))).toBe(true);
+  });
+
+  it("retires an over-24h queue that is still improving, re-cutting at a known-good point and listing the fix to re-admit", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 6], ageMs: 25 * HOUR });
+    const { deps, retired } = boundedLifeDeps(queue, null);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      trigger: "age",
+      roundsSinceLow: 0,
+      recutTarget: lineage.knownGood,
+      recutTargetSource: "known-good",
+      // The known-good point predates the fix, so the carry names it for re-admission.
+      carriedPaths: [{ path: "lib/fix.ts", status: "absent-at-target" }],
+      readmitPaths: ["lib/fix.ts"],
+    });
+    expect(result.candidate).toBe(lineage.knownGood);
+  });
+
+  it("never retires while the failing count still makes new lows inside 24h", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 9, 9, 6], ageMs: 23 * HOUR });
+    const { deps, retired } = boundedLifeDeps(queue, null);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(retired).toHaveLength(0);
+    expect(result.candidate).not.toBe(lineage.tip);
+  });
+
+  it("keeps the frozen queue when the locked retire refuses (live fixer) — no re-cut", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const { deps } = boundedLifeDeps(queue, null);
+    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async () => ({ retired: false, refusal: "live-fixer" }));
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(deps.retireFrozenRepairQueueForBoundedLife).toHaveBeenCalledTimes(1);
+    expect(result.candidate).not.toBe(lineage.tip);
+  });
+
+  it("escalates instead of retiring a second time inside the 24h window, once per candidate", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const lastRetireAtMs = Date.now() - 2 * HOUR;
+    const lastRetire = {
+      schemaVersion: 1,
+      trigger: "age",
+      retiredAtMs: lastRetireAtMs,
+      candidate: "0".repeat(40),
+      repairHead: "0".repeat(40),
+      openedAtMs: lastRetireAtMs - 30 * HOUR,
+      ageMs: 30 * HOUR,
+      roundsRecorded: 2,
+      roundsSinceLow: 0,
+      lowestFailingCount: 1,
+      latestFailingCount: 1,
+      recutTarget: lineage.frozen,
+      recutTargetSource: "staging-tip",
+      carriedPaths: [],
+      readmitPaths: [],
+      carryTruncated: false,
+    } satisfies FrozenRepairBoundedLifeRecord;
+    const state: FrozenRepairBoundedLifeState = {
+      schemaVersion: 1,
+      lastRetire,
+      lastRateLimitedEscalation: null,
+      history: [lastRetire],
+    };
+    const first = boundedLifeDeps(queue, state);
+
+    await runGreenCheckpoint(cfg(), first.deps, { noPush: true });
+
+    expect(first.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(first.escalations.filter((line) => line.includes("bounded-life non-improving bound"))).toHaveLength(1);
+    expect(first.deps.recordFrozenRepairBoundedLifeEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate: lineage.frozen, lastRetireAtMs }),
+    );
+
+    const second = boundedLifeDeps(queue, {
+      ...state,
+      lastRateLimitedEscalation: {
+        candidate: lineage.frozen,
+        trigger: "non-improving",
+        atMs: Date.now() - 1_000,
+        lastRetireAtMs,
+      },
+    });
+    await runGreenCheckpoint(cfg(), second.deps, { noPush: true });
+    expect(second.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(second.escalations.filter((line) => line.includes("bounded-life"))).toHaveLength(0);
   });
 });

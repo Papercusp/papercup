@@ -250,6 +250,57 @@ export const bindingSchema = z
     message: 'testFingerprint is server-computed when measurement is supplied',
   })
   .superRefine((binding, ctx) => {
+    const testRunDetails = binding.details?.testRun;
+    if (testRunDetails !== undefined) {
+      const path = ['details', 'testRun'] as const;
+      if (testRunDetails === null || typeof testRunDetails !== 'object' || Array.isArray(testRunDetails)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path],
+          message: 'details.testRun must be the identity object derived from the same canonical testRunId',
+        });
+      } else {
+        const run = testRunDetails as Record<string, unknown>;
+        if (!Number.isSafeInteger(run.id) || run.id !== binding.testRunId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [...path, 'id'],
+            message: 'details.testRun.id must equal the binding testRunId',
+          });
+        }
+        const filePath = typeof run.filePath === 'string' ? run.filePath.trim() : '';
+        if (!filePath) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [...path, 'filePath'],
+            message: 'details.testRun.filePath must identify the recorded test file',
+          });
+        } else {
+          const normalizePath = (value: string) => value.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/^\.\//, '');
+          const evidenceRef = normalizePath(binding.evidenceRef);
+          const declaredPath = normalizePath(filePath);
+          if (binding.evidenceKind === 'test') {
+            const referencePath = evidenceRef.replace(/^test-run:/, '');
+            if (referencePath !== declaredPath) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['evidenceRef'],
+                message: 'test evidenceRef must identify the same file as details.testRun.filePath',
+              });
+            }
+          } else {
+            const referenceRunId = /^test-run\s+(\d+)\b/.exec(binding.evidenceRef);
+            if (!referenceRunId || Number(referenceRunId[1]) !== binding.testRunId || !evidenceRef.includes(declaredPath)) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['evidenceRef'],
+                message: 'run-derived evidenceRef must identify the same testRunId and file as details.testRun',
+              });
+            }
+          }
+        }
+      }
+    }
     if (binding.measurement) {
       const adequacy = binding.details?.adequacy;
       const fixtureCalibrationExpected =

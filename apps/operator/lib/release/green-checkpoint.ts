@@ -61,6 +61,25 @@ import {
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
+  buildFrozenRepairBoundedLifeRecord,
+  decideFrozenRepairBoundedLife,
+  frozenRepairBoundedLifeRateLimitedBody,
+  frozenRepairBoundedLifeRetireBody,
+  frozenRepairBoundedLifeSummary,
+  planFrozenRepairCarry,
+  type FrozenRepairBoundedLifeEscalation,
+  type FrozenRepairBoundedLifeRecord,
+  type FrozenRepairBoundedLifeState,
+  type FrozenRepairRecutTarget,
+} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
+import {
+  assessFrozenRepairCarryAtCut,
+  buildFrozenRepairCarryRecord,
+  frozenRepairCarrySummary,
+  type FrozenRepairCarryRecord,
+  type FrozenRepairPendingCarry,
+} from "@papercusp/operator-core/lib/release/frozen-repair-carry";
+import {
   buildTestPassReuseHealth,
   parsePureProofCaptureResult,
   parsePureProofCaptureArchive,
@@ -1149,7 +1168,8 @@ export interface CheckpointDeps {
    *  candidate; the real dep routes every changed file through a discovered owning
    *  `lint:tsc:* --files` gate in the isolated checkpoint tree. `skipped` means no changed
    *  file had a resolvable owning gate, not green. Optional so older/test deps keep their
-   *  current behaviour; runGreen's unscoped post-suite typechecks remain the final assurance. */
+   *  current behaviour; a failed scoped result carries the real dep's independent non-test
+   *  gate inventory, while clean candidates still receive the normal post-suite assurance. */
   runChangedFileTypecheckPreflight?(
     files: string[],
     range?: { from: string; to: string },
@@ -1163,6 +1183,13 @@ export interface CheckpointDeps {
     diagnostics?: CheckpointTypecheckDiagnostic[];
     /** Exact file paths named by the compiler diagnostics. */
     failingFilePaths?: string[];
+    /** The independent non-test gate legs measured after a failed scoped preflight. */
+    failureInventory?: {
+      ran: boolean;
+      output: string;
+      failingSignatures: string[];
+      records: PostSuiteLegRecord[];
+    };
   }>;
   /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
    *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
@@ -1247,7 +1274,22 @@ export interface CheckpointDeps {
   /** EI-21051243455875854: fail closed before setupTree/runGreen when the temp
    * filesystem cannot safely absorb a full verdict. Real wiring reuses the
    * standing disk alarm's statfs sampling and critical thresholds. */
-  checkDiskHeadroom?(): Promise<{ ok: boolean; summary: string }>;
+  checkDiskHeadroom?(): Promise<{
+    ok: boolean;
+    summary: string;
+    /** P-022: which precondition refused, when `ok` is false. Absent ⇒ disk headroom. */
+    blocker?: GatePreconditionBlocker;
+  }>;
+  /** P-022: free dependency-generation space before the one bounded precondition retry.
+   *  Production runs the existing retention prune ({@link runDependencyGenerationRetention})
+   *  and returns a one-line receipt. Only called for a `disk-headroom` refusal. */
+  reclaimDependencyHeadroom?(): Promise<string>;
+  /** P-022: delay before the one bounded precondition retry. ABSENT ⇒ no retry (direct callers
+   *  keep the historical single-pass refusal); production wiring supplies
+   *  {@link gatePreconditionRetryDelayMsFromEnv}. */
+  preconditionRetryDelayMs?: number;
+  /** P-022: sleep seam for the precondition retry wait (tests never real-sleep). */
+  preconditionRetrySleep?: (ms: number) => Promise<void>;
   /**
    * WI-606293: is there any provider capacity for the release-fixer to run on?
    *
@@ -1329,6 +1371,37 @@ export interface CheckpointDeps {
   readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
   /** P-025: branchable storage read; production prefers this over the legacy null API. */
   readFrozenRepairQueueState?(): Promise<FrozenCandidateRepairQueueRead>;
+  /**
+   * P-021 (green-main-cycle-time-2026-10-08, D-023): the frozen queue's BOUNDED LIFE. Without the
+   * read + retire pair the rule is inert (historical stubs, non-recording CLI runs). The retire
+   * re-checks identity, the decision, the 24h rate limit and fixer liveness under the routine row
+   * lock and persists the retirement record in the same write.
+   */
+  readFrozenRepairBoundedLifeState?(): Promise<FrozenRepairBoundedLifeState | null>;
+  retireFrozenRepairQueueForBoundedLife?(
+    queue: FrozenCandidateRepairQueue,
+    record: FrozenRepairBoundedLifeRecord,
+  ): Promise<{ retired: boolean; refusal?: string }>;
+  /** Dedupes the escalation a rate-limited trigger raises (once per candidate per window). */
+  recordFrozenRepairBoundedLifeEscalation?(
+    escalation: FrozenRepairBoundedLifeEscalation,
+  ): Promise<void>;
+  /** P-012 seam: the newest known-good staging commit, or null (re-cut at the staging tip). */
+  resolveKnownGoodRecutTarget?(): Promise<string | null>;
+  /** Blob/gitlink of `path` at `sha` (null = absent). Default: `git ls-tree` in the integration root. */
+  frozenRepairBlobAt?(sha: string, path: string): Promise<string | null>;
+  /**
+   * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the PENDING CARRY every retire writes
+   * (bounded-life or owner), read at the next fresh cut. Without the read + consume pair the
+   * carry is inert (historical stubs, non-recording CLI runs).
+   */
+  readFrozenRepairPendingCarry?(): Promise<FrozenRepairPendingCarry | null>;
+  /** Compare-and-swap: replace exactly `pending` with `record` as the last consumed carry.
+   *  False = a newer retire replaced it (the next fresh cut assesses that one). */
+  consumeFrozenRepairCarry?(
+    pending: FrozenRepairPendingCarry,
+    record: FrozenRepairCarryRecord,
+  ): Promise<boolean>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
     options: WriteFrozenCandidateRepairQueueOptions,
@@ -1663,6 +1736,19 @@ export interface CheckpointResult {
    *  suite, and `other` for everything unstamped, against the whole pass's measured time. Built
    *  by runGreenCheckpoint; ABSENT ⇒ the round never reached its candidate suite. */
   roundPhases?: GateRoundPhases;
+  /** P-022 (green-main-cycle-time): which typed setup precondition refused this pass. Stamped
+   *  from the writer's exit-code contract (dependency-generation.sh exit 77 / exit 76, or the
+   *  up-front `checkDiskHeadroom` probe of both), never from prose. Present ⇒ no verdict was
+   *  rendered and a short bounded retry may help; {@link runGreenCheckpoint} consumes it. */
+  preconditionBlocker?: GatePreconditionBlocker;
+  /** P-022: this run already retried once after a typed precondition refusal. Describes the
+   *  FIRST pass's refusal; the rest of the result is the retried pass's own outcome. */
+  preconditionRetry?: {
+    blocker: GatePreconditionBlocker;
+    delayMs: number;
+    cleanup: string;
+    firstSummary: string;
+  };
   /** Internal carrier from runGreenCheckpointInner to runGreenCheckpoint, which consumes it to
    *  build `roundPhases` and removes it. Never present on a result that leaves the gate. */
   roundPhaseStamps?: SetupStretchStamp[];
@@ -2177,6 +2263,7 @@ export function buildTerminalFailureCheckpointResult(opts: {
       from: null,
       green: null,
       reason: "disk-headroom",
+      preconditionBlocker: "disk-headroom",
       runId: opts.runId,
       summary:
         "green-checkpoint could not START: dependency-generation refused to materialize a " +
@@ -2192,6 +2279,7 @@ export function buildTerminalFailureCheckpointResult(opts: {
       from: null,
       green: null,
       reason: "infra-inconclusive",
+      preconditionBlocker: "copy-lock",
       runId: opts.runId,
       summary:
         "green-checkpoint deferred before the suite: dependency-generation timed out waiting for " +
@@ -4853,6 +4941,70 @@ export function refireDeadlineExceeded(input: {
 }
 
 /**
+ * P-022 (green-main-cycle-time-2026-10-08): the typed setup preconditions a gate pass can be
+ * refused on before rendering any verdict. `disk-headroom` = dependency-generation.sh exit 77
+ * (a dependency copy would drop free space under reserve + margin); `copy-lock` = exit 76 (the
+ * host dependency-copy lock is held by a stalled or wedged copy).
+ */
+export type GatePreconditionBlocker = "disk-headroom" | "copy-lock";
+
+/** One retry per run: a second refusal in the same run is a standing condition, which the
+ *  next scheduled tick (and the disk owner) handle — not something to spin on in-process. */
+export const MAX_GATE_PRECONDITION_RETRIES = 1;
+
+/** Measured 2026-10-12: four consecutive gate fires refused on headroom and each waited for the
+ *  next HOURLY tick, delaying candidate 70e89c73 by ~3h. Five minutes is long enough for the
+ *  retention prune and a finishing copy to settle, and short against the hour it replaces. */
+export const DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS = 5 * 60_000;
+
+/** The cost a retried pass must still fit inside the run budget: a full candidate suite
+ *  (~55 min measured, CLAUDE.md "costs a ~55min suite"), rounded up. The refused pass is no
+ *  estimate of it — a preflight refusal costs seconds. */
+export const GATE_PRECONDITION_RETRY_PASS_ESTIMATE_MS = 60 * 60_000;
+
+export function gatePreconditionRetryDelayMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS;
+  if (raw === undefined) return DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0
+    ? Math.floor(v)
+    : DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS;
+}
+
+/**
+ * P-022: should this refused pass be retried in-process after a short delay? Pure.
+ * Retries only a typed precondition refusal with no verdict, at most
+ * {@link MAX_GATE_PRECONDITION_RETRIES} times per run, and only when the delay plus a full pass
+ * still fits the shared run budget — a retry killed mid-suite records nothing, which is worse
+ * than the refusal it replaced.
+ */
+export function decideGatePreconditionRetry(input: {
+  result: Pick<CheckpointResult, "green" | "preconditionBlocker">;
+  retriesSoFar: number;
+  elapsedMs: number;
+  delayMs: number;
+  budgetMs: number;
+}):
+  | { retry: true; blocker: GatePreconditionBlocker }
+  | { retry: false; reason: "no-blocker" | "bound-exhausted" | "deadline" } {
+  const blocker = input.result.preconditionBlocker;
+  if (!blocker || input.result.green !== null) return { retry: false, reason: "no-blocker" };
+  if (input.retriesSoFar >= MAX_GATE_PRECONDITION_RETRIES)
+    return { retry: false, reason: "bound-exhausted" };
+  if (
+    refireDeadlineExceeded({
+      elapsedMs: input.elapsedMs + input.delayMs,
+      lastPassMs: GATE_PRECONDITION_RETRY_PASS_ESTIMATE_MS,
+      budgetMs: input.budgetMs,
+    })
+  )
+    return { retry: false, reason: "deadline" };
+  return { retry: true, blocker };
+}
+
+/**
  * Reduce either failing-set representation to ONE comparable key.
  *
  * ⚠ This is the fail-OPEN hazard in the whole feature, so it is a function rather than an inline
@@ -5438,7 +5590,15 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
  *  sidecar (522 agent_facts rows), and reds the gate on a database that is not the operator's.
  *  Three paths run them: runPostSuiteLegs, runGateAtRef and runRepairTickLegs. Round 24 of
  *  frozen queue ad82b273 went red through runRepairTickLegs, which passed no DSN, while the
- *  same lints passed against the operator DB. */
+ *  same lints passed against the operator DB.
+ *
+ *  WI-6554700010009206: `lint:migrations` belongs here too. Its PG leg reads the reservation
+ *  ledger (`harness_shared.migration_reservations`, read-only SELECTs) from the operator DB,
+ *  which is where `db:next-migration` writes it. With no DSN it read the embedded-pg sidecar
+ *  (:24680), which has no reservation rows. That redded the gate at 70e89c73 with
+ *  "917, 1130, 1417..1465 … without a reservation row", while the same lint passed in the
+ *  shared tree. Any new gate leg that opens PG through `scripts/lib/pg-url.mjs` must be
+ *  listed here; `green-checkpoint-plane-dsn.test.ts` checks that for every registered leg. */
 export const LIVE_PLANE_LINT_SCRIPTS: ReadonlySet<string> = new Set([
   "lint:plane-producers",
   "lint:declared-consumed",
@@ -5447,6 +5607,7 @@ export const LIVE_PLANE_LINT_SCRIPTS: ReadonlySet<string> = new Set([
   "lint:plane-adoption",
   "lint:derived-signal-firings",
   "lint:plane-guards",
+  "lint:migrations",
 ]);
 
 /** The env one gate script runs under: the suite env, plus the gate's operator DSN when the
@@ -10052,6 +10213,9 @@ export interface CheckpointOpts {
   salvageDeadlineMs?: number;
   /** P-001: admission-driven recursive passes, independent of stale-red refire accounting. */
   admissionRefires?: number;
+  /** P-022: typed-precondition retries already performed this run (internal; bounded by
+   *  {@link MAX_GATE_PRECONDITION_RETRIES}). */
+  preconditionRetries?: number;
 }
 
 /** A burst of admissions is finite even when every pass races another writer. The durable marker
@@ -11138,6 +11302,171 @@ async function broadcastHeldGateAlert(
     .catch(() => {});
 }
 
+/** P-021: the blob/gitlink `path` names at `sha`, null when absent. `ls-tree` (not
+ * `rev-parse <sha>:<path>`) so an absent path is an empty answer and a broken read THROWS —
+ * which the carry records as `unverified`, never as absent. A non-sha is refused outright: an
+ * empty sha would make `:<path>` read the INDEX copy. */
+async function gitBlobAt(repo: string, sha: string, path: string): Promise<string | null> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a full commit sha: '${sha}'`);
+  const out = String(await git(repo, ["ls-tree", sha, "--", path])).trim();
+  if (!out) return null;
+  const oid = out.split(/\s+/)[2];
+  return oid && /^[0-9a-f]{40}$/.test(oid) ? oid : null;
+}
+
+/**
+ * P-021 (green-main-cycle-time-2026-10-08, D-023): apply the frozen queue's bounded life for
+ * this pass. Returns the retirement record when this pass retired the queue — the caller then
+ * re-cuts at `record.recutTarget` — and null otherwise. Fail-safe: any error KEEPS the queue.
+ */
+async function applyFrozenRepairBoundedLife(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  queue: FrozenCandidateRepairQueue,
+  tip: string,
+): Promise<FrozenRepairBoundedLifeRecord | null> {
+  if (!deps.readFrozenRepairBoundedLifeState || !deps.retireFrozenRepairQueueForBoundedLife) {
+    return null;
+  }
+  const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const short = queue.candidate.slice(0, 8);
+  try {
+    const nowMs = Date.now();
+    const state = await deps.readFrozenRepairBoundedLifeState();
+    const decision = decideFrozenRepairBoundedLife(queue, { nowMs, state });
+    if (decision.kind === "within-bounds") return null;
+    if (decision.kind === "deferred") {
+      deps.log(
+        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
+          `bound; retirement deferred (${decision.reason})`,
+      );
+      return null;
+    }
+    if (decision.kind === "rate-limited") {
+      deps.log(
+        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
+          `bound inside the 24h automatic-retire window; ${decision.escalate ? "escalating" : "already escalated"}, not retiring`,
+      );
+      if (decision.escalate) {
+        try {
+          await deps.escalate?.(
+            `frozen candidate ${short} crossed its bounded-life ${decision.trigger} bound, but an automatic retirement already ran in the last 24h`,
+            frozenRepairBoundedLifeRateLimitedBody(queue, decision),
+          );
+          await deps.recordFrozenRepairBoundedLifeEscalation?.({
+            candidate: queue.candidate,
+            trigger: decision.trigger,
+            atMs: nowMs,
+            lastRetireAtMs: decision.lastRetireAtMs,
+          });
+        } catch (e) {
+          deps.log(`warn: P-021 rate-limited escalation failed: ${errorText(e)}`);
+        }
+      }
+      return null;
+    }
+    let knownGood: string | null = null;
+    try {
+      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+    } catch (e) {
+      deps.log(`warn: P-021 known-good re-cut target unavailable, using the staging tip: ${errorText(e)}`);
+    }
+    const target: FrozenRepairRecutTarget = knownGood
+      ? { sha: knownGood, source: "known-good" }
+      : { sha: tip, source: "staging-tip" };
+    const blobAt =
+      deps.frozenRepairBlobAt ??
+      ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
+    const carry = await planFrozenRepairCarry({ queue, target, blobAt });
+    const record = buildFrozenRepairBoundedLifeRecord({ queue, decision, nowMs, target, carry });
+    const outcome = await deps.retireFrozenRepairQueueForBoundedLife(queue, record);
+    if (!outcome.retired) {
+      deps.log(
+        `P-021 bounded queue life: retirement of frozen candidate ${short} refused ` +
+          `(${outcome.refusal ?? "unknown"}); keeping the frozen queue`,
+      );
+      return null;
+    }
+    deps.log(frozenRepairBoundedLifeSummary(record));
+    await deps
+      .escalate?.(
+        `frozen candidate ${short} retired by the bounded-life rule (${record.trigger}); re-cut at ${record.recutTarget.slice(0, 8)}`,
+        frozenRepairBoundedLifeRetireBody(record),
+      )
+      .catch((e) => deps.log(`warn: P-021 retirement escalation failed: ${errorText(e)}`));
+    return record;
+  } catch (e) {
+    deps.log(`warn: P-021 bounded queue life check failed; keeping the frozen queue: ${errorText(e)}`);
+    return null;
+  }
+}
+
+/**
+ * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): at a FRESH cut (no live queue, no pinned
+ * candidate), carry the fixes of the last retired frozen queue into the candidate. Every admitted
+ * path is checked by content against the candidate (see frozen-repair-carry.ts); if any is
+ * missing or cannot be checked, the staging tip is judged instead. The assessment is recorded by
+ * consuming the pending carry (compare-and-swap). Returns the candidate to judge.
+ *
+ * Fail-safe: a read failure keeps the candidate (and the carry stays pending for the next cut); a
+ * lookup failure inside the assessment reads `unverified` and so advances to the tip.
+ */
+async function applyFrozenRepairCarryAtCut(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  candidate: string,
+  boundedLifeRetire: FrozenRepairBoundedLifeRecord | null,
+): Promise<string> {
+  if (!deps.readFrozenRepairPendingCarry || !deps.consumeFrozenRepairCarry) return candidate;
+  const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  let pending: FrozenRepairPendingCarry | null;
+  try {
+    pending = await deps.readFrozenRepairPendingCarry();
+  } catch (e) {
+    deps.log(`warn: P-010 pending carry unreadable; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
+    return candidate;
+  }
+  if (!pending) return candidate;
+  // A known-good re-cut deliberately judges an OLDER commit; re-admitting the carried fixes onto
+  // it is P-012's executor, which consults this pending carry. Advancing to the tip here would
+  // undo that choice, so the carry stays pending.
+  if (boundedLifeRetire?.recutTargetSource === "known-good") {
+    deps.log(
+      `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} left pending: this pass re-cuts at the ` +
+        `known-good target ${candidate.slice(0, 8)}, whose re-admission is P-012's`,
+    );
+    return candidate;
+  }
+  try {
+    const stagingTip = await revParse(cfg.integrationRoot, cfg.integrationBranch);
+    const blobAt =
+      deps.frozenRepairBlobAt ??
+      ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
+    const initial = await assessFrozenRepairCarryAtCut({ pending, candidate, stagingTip, blobAt });
+    const judged = initial.advanceToTip
+      ? await assessFrozenRepairCarryAtCut({ pending, candidate: stagingTip, stagingTip, blobAt })
+      : initial;
+    const record = buildFrozenRepairCarryRecord({ pending, initial, judged, nowMs: Date.now() });
+    deps.log(frozenRepairCarrySummary(record));
+    let consumed = false;
+    try {
+      consumed = await deps.consumeFrozenRepairCarry(pending, record);
+    } catch (e) {
+      deps.log(`warn: P-010 carry record write failed (the carry stays pending): ${errorText(e)}`);
+    }
+    if (!consumed) {
+      deps.log(
+        `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} was replaced before it could be recorded; ` +
+          `the next fresh cut assesses the newer carry`,
+      );
+    }
+    return judged.candidate;
+  } catch (e) {
+    deps.log(`warn: P-010 carry assessment failed; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
+    return candidate;
+  }
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -11658,6 +11987,19 @@ async function runGreenCheckpointInner(
       summary,
       repairQueue: pendingQueue,
     });
+  }
+  // P-021 (green-main-cycle-time-2026-10-08, D-023): the ONE bounded automatic exception to the
+  // rule below. A queue that made no new failing-count low in 4 rounds, or is older than 24h, is
+  // retired (at most once per install per 24h; a second trigger escalates instead) and this pass
+  // re-cuts at the newest known-good staging commit (P-012) or the staging tip, with the queue's
+  // admitted fixes carried and recorded. See frozen-repair-bounded-life.ts.
+  let boundedLifeRetire: FrozenRepairBoundedLifeRecord | null = null;
+  if (repairQueue && !diagnosticOnly) {
+    boundedLifeRetire = await applyFrozenRepairBoundedLife(cfg, deps, repairQueue, candidate);
+    if (boundedLifeRetire) {
+      repairQueue = null;
+      candidate = boundedLifeRetire.recutTarget;
+    }
   }
   // D-004 / P-009 / P-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
   // deliberately NO age-, stall- or "fossil"-based release of a pinned candidate here. The
@@ -12485,6 +12827,8 @@ async function runGreenCheckpointInner(
     !opts.candidate &&
     !repairVerification &&
     !initialCandidateVerification &&
+    // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
+    !boundedLifeRetire &&
     quietCutSecFromEnv() > 0
   ) {
     try {
@@ -12517,6 +12861,24 @@ async function runGreenCheckpointInner(
       deps.log(
         `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
       );
+    }
+  }
+
+  // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first FRESH cut after a frozen queue
+  // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its
+  // own lineage, and an explicit candidate is the caller's choice.
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    !diagnosticOnly &&
+    repairQueue === null
+  ) {
+    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate, boundedLifeRetire);
+    if (carried !== candidate) {
+      candidate = carried;
+      // The judged commit is the tip now; the quiet cut's excluded window no longer applies.
+      quietCutApplied = false;
     }
   }
 
@@ -12649,7 +13011,7 @@ async function runGreenCheckpointInner(
   // setupTree (which itself copies node_modules) and before any suite work. This is an
   // inconclusive infrastructure result, never evidence that the candidate is broken.
   if (deps.checkDiskHeadroom) {
-    let headroom: { ok: boolean; summary: string };
+    let headroom: { ok: boolean; summary: string; blocker?: GatePreconditionBlocker };
     try {
       headroom = await deps.checkDiskHeadroom();
     } catch (e) {
@@ -12660,12 +13022,16 @@ async function runGreenCheckpointInner(
     }
     deps.log(`disk-headroom preflight: ${headroom.summary}`);
     if (!headroom.ok) {
+      // P-022: a wedged copy lock is the same condition as setup's own exit 76, so it takes that
+      // path's classification ('infra-inconclusive', self-clearing) rather than 'disk-headroom'.
+      const blocker = headroom.blocker ?? "disk-headroom";
       return {
         advanced: false,
         candidate,
         from: lastReady,
         green: null,
-        reason: "disk-headroom",
+        reason: blocker === "copy-lock" ? "infra-inconclusive" : "disk-headroom",
+        preconditionBlocker: blocker,
         summary: headroom.summary,
       };
     }
@@ -13064,9 +13430,15 @@ async function runGreenCheckpointInner(
               ? [...new Set(preflight.checkedFiles)]
               : files;
             if (preflight.status === "failed") {
-              const failingSignatures = preflight.failingSignatures?.length
-                ? [...new Set(preflight.failingSignatures)]
-                : ["lint:tsc"];
+              const failureInventory = preflight.failureInventory;
+              const failingSignatures = [
+                ...new Set([
+                  ...(preflight.failingSignatures?.length
+                    ? preflight.failingSignatures
+                    : ["lint:tsc"]),
+                  ...(failureInventory?.failingSignatures ?? []),
+                ]),
+              ];
               const typecheckPreflight: CheckpointTypecheckPreflight = {
                 status: "failed",
                 checkedFiles,
@@ -13087,9 +13459,23 @@ async function runGreenCheckpointInner(
                 deps.log(
                   `early changed-file typecheck output:\n${preflight.summary}`,
                 );
+              const inventoryDetails = failureInventory?.ran
+                ? "\n\nEarly non-test gate inventory (" +
+                  failureInventory.records.length +
+                  " recorded legs): " +
+                  failureInventory.records
+                    .map((record) => record.id + "=" + record.status)
+                    .join(", ") +
+                  (failureInventory.output.trim()
+                    ? "\n\n" + failureInventory.output
+                    : "")
+                : "";
               const earlySummary =
-                `Early changed-file typecheck failed before the affected-test sweep (${elapsed()}).\n\n` +
-                preflight.summary;
+                "Early changed-file typecheck failed before the affected-test sweep (" +
+                elapsed() +
+                ").\n\n" +
+                preflight.summary +
+                inventoryDetails;
               const earlyLogPath = writeEarlyTypecheckFailureLog({
                 logDir: cfg.checkpointLogDir,
                 candidate,
@@ -13107,6 +13493,10 @@ async function runGreenCheckpointInner(
                 summary: earlySummary,
                 failingTests: failingSignatures,
                 typecheckPreflight,
+                postSuiteMeasured: failureInventory?.ran ?? false,
+                ...(failureInventory?.ran
+                  ? { postSuiteLegs: failureInventory.records }
+                  : {}),
                 ...(earlyLogPath ? { logPath: earlyLogPath } : {}),
               };
             } else {
@@ -13907,6 +14297,7 @@ async function runGreenCheckpointInner(
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
+              ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
               ...roundObservations,
             };
@@ -14050,6 +14441,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(lineage ? { lineage } : {}),
+        ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
         ...roundObservations,
       });
@@ -15816,6 +16208,67 @@ export async function recordDerivedFreezeDispositionWithDeadline(
   }
 }
 
+/**
+ * P-022: reclaim (headroom only), wait, and re-enter {@link runGreenCheckpoint} once. The wait
+ * reports progress at least every minute so a liveness watchdog never reads it as a stall.
+ */
+async function retryAfterGatePrecondition(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  opts: CheckpointOpts,
+  retry: {
+    blocker: GatePreconditionBlocker;
+    delayMs: number;
+    firstSummary: string;
+    runStartedAtMs: number;
+  },
+): Promise<CheckpointResult> {
+  const attempt = (opts.preconditionRetries ?? 0) + 1;
+  const startedAtMs = Date.now();
+  let cleanup = "not run (copy-lock refusal)";
+  if (retry.blocker === "disk-headroom") {
+    if (deps.reclaimDependencyHeadroom) {
+      deps.reportProgress?.("phase:precondition-reclaim");
+      try {
+        cleanup = await deps.reclaimDependencyHeadroom();
+      } catch (e) {
+        cleanup = `failed safely (${e instanceof Error ? e.message : e})`;
+      }
+    } else {
+      cleanup = "unavailable";
+    }
+  }
+  // Cleanup time counts toward the delay: the point is a short retry, not a longer one.
+  const waitMs = Math.max(0, retry.delayMs - (Date.now() - startedAtMs));
+  deps.log(
+    `GATE_PRECONDITION_RETRY blocker=${retry.blocker} attempt=${attempt}/${MAX_GATE_PRECONDITION_RETRIES} ` +
+      `delayMs=${retry.delayMs} waitMs=${waitMs} cleanup=${cleanup}`,
+  );
+  const sleep =
+    deps.preconditionRetrySleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let remaining = waitMs; remaining > 0; remaining -= 60_000) {
+    deps.reportProgress?.("phase:precondition-retry-wait");
+    await sleep(Math.min(60_000, remaining));
+  }
+  // A crash in the retried pass propagates to the caller's crash handling, exactly like the
+  // admission refire's recursion: swallowing it would report the stale refusal instead.
+  const retried = await runGreenCheckpoint(cfg, deps, {
+    ...opts,
+    preconditionRetries: attempt,
+    runStartedAtMs: retry.runStartedAtMs,
+  });
+  return {
+    ...retried,
+    preconditionRetry: {
+      blocker: retry.blocker,
+      delayMs: retry.delayMs,
+      cleanup,
+      firstSummary: retry.firstSummary,
+    },
+  };
+}
+
 export async function runGreenCheckpoint(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -15860,11 +16313,54 @@ export async function runGreenCheckpoint(
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
   const decisionTrace = deps.decisionTrace ?? [];
-  const { roundPhaseStamps, ...innerResult } = await runGreenCheckpointInner(
-    cfg,
-    { ...deps, decisionTrace },
-    innerOpts,
-  );
+  // P-022: a typed setup-precondition refusal (no verdict) is retried ONCE in this run after a
+  // short delay — reclaiming dependency-generation space first for a headroom refusal — instead
+  // of idling until the next hourly tick. Opt-in on the delay dep: production wiring supplies it;
+  // direct callers keep the historical single-pass refusal. The retried pass takes over this
+  // frame's remaining bookkeeping exactly like the admission refire below.
+  const retryPrecondition = async (
+    refused: Pick<CheckpointResult, "green" | "preconditionBlocker" | "summary">,
+  ): Promise<CheckpointResult | null> => {
+    if (!refused.preconditionBlocker || deps.preconditionRetryDelayMs === undefined) return null;
+    const delayMs = deps.preconditionRetryDelayMs;
+    const decision = decideGatePreconditionRetry({
+      result: refused,
+      retriesSoFar: opts.preconditionRetries ?? 0,
+      elapsedMs: Date.now() - admissionRunStartedAtMs,
+      delayMs,
+      budgetMs: refireRunBudgetMsFromEnv(),
+    });
+    if (!decision.retry) {
+      deps.log(
+        `GATE_PRECONDITION_RETRY skipped blocker=${refused.preconditionBlocker} reason=${decision.reason}`,
+      );
+      return null;
+    }
+    return retryAfterGatePrecondition(cfg, deps, opts, {
+      blocker: decision.blocker,
+      delayMs,
+      firstSummary: refused.summary ?? "",
+      runStartedAtMs: admissionRunStartedAtMs,
+    });
+  };
+  let inner: Awaited<ReturnType<typeof runGreenCheckpointInner>>;
+  try {
+    inner = await runGreenCheckpointInner(cfg, { ...deps, decisionTrace }, innerOpts);
+  } catch (error) {
+    // Measured 2026-10-12: every headroom refusal that day was setup's OWN exit 77, thrown
+    // mid-materialization after the preflight passed — so it never reached a returned result.
+    // Classify it with the crash handler's own function; anything that is not a typed
+    // precondition refusal (or not retried) is rethrown untouched to that handler.
+    const classified = buildTerminalFailureCheckpointResult({
+      candidate: opts.candidate ?? opts.candidateHint ?? "",
+      error,
+      runId: deps.runId ?? "",
+    });
+    const retried = await retryPrecondition(classified);
+    if (retried) return retried;
+    throw error;
+  }
+  const { roundPhaseStamps, ...innerResult } = inner;
   // P-013: the round's phase breakdown, against this whole pass's measured time. Built HERE
   // rather than at each of the inner function's result sites, so `other` covers every step after
   // the candidate suite (re-runs, salvage, promotion) whichever branch the pass took.
@@ -15875,6 +16371,9 @@ export async function runGreenCheckpoint(
   const result: CheckpointResult = roundPhases
     ? { ...innerResult, roundPhases }
     : innerResult;
+  // P-022: the preflight's own (returned) precondition refusal.
+  const preconditionRetried = await retryPrecondition(result);
+  if (preconditionRetried) return preconditionRetried;
   const judgedRepairHead = result.repairVerificationHead ?? result.candidate;
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
@@ -17220,6 +17719,8 @@ interface PostSuiteRunOptions {
    *  The suite env drops every DSN by design, so without this the plane lints resolve the
    *  embedded-pg discovery file, which any local install can own. */
   operatorPgEnv?: Readonly<Record<string, string>>;
+  /** Skip the costly SPA build when an earlier scoped check already blocks promotion. */
+  skipBuildReason?: string;
   /** EI-203121: real-path run/setup identity; optional keeps injected legacy seams valid. */
   identity?: {
     runId?: string;
@@ -17243,10 +17744,11 @@ interface PostSuiteRunOptions {
  * operator-core type errors reached `main` on 2026-07-26 — the gate reported green having
  * never typechecked, linted, or built the tree.
  *
- * Hoisting them here makes "the suite is considered passing" the single trigger, so the
- * absorption path can pay the same price the native path pays. The chain still
- * short-circuits (a failing leg skips the rest — a red is a red, and the remaining legs
- * cost real gate minutes), and a subject hive without a script still opts out per-leg via
+ * Hoisting them here makes "the suite is considered passing" the normal trigger, so the
+ * absorption path can pay the same price the native path pays. Soft failures do not halt the
+ * diagnostic chain: every independent cheap leg still runs, while an unreadable candidate
+ * manifest hard-stops scripts that cannot be inspected safely. The expensive SPA build is
+ * skipped after a prior failure. A subject hive without a script still opts out per-leg via
  * hasNpmScript. The ORDER is deliberate and asserted by green-checkpoint-real-deps.test.ts:
  * cheapest-and-most-diagnostic first, the expensive SPA build last.
  */
@@ -17784,9 +18286,17 @@ export async function runPostSuiteLegs(
       skipReason: "candidate provides no lint:migrations script",
     };
   } else {
+    // WI-6554700010009206: the reservation leg reads the operator DB's ledger, so this leg
+    // gets the gate's operator DSN like the plane lints below (see LIVE_PLANE_LINT_SCRIPTS).
+    // The suite env drops every DSN. Without one, the leg read the embedded-pg sidecar in the
+    // checkpoint tree, where no apps/operator/.env.local exists.
     const migrations = await exec("npm", ["run", "lint:migrations"], {
       cwd: treeDir,
-      env,
+      env: gateScriptEnv(
+        "lint:migrations",
+        env,
+        options.operatorPgEnv ?? gateOperatorPgEnv(process.env),
+      ),
       allowNonZero: true,
     });
     legs.lintMigrations = {
@@ -18253,11 +18763,15 @@ export async function runPostSuiteLegs(
   // WI-38185: the build is the one EXPENSIVE leg, so it still short-circuits on ANY prior
   // failure — the cheap legs above now all run (to diagnose the whole red in one pass), but
   // paying for a full SPA bundle on a candidate that already cannot ship would be waste.
-  if (haltedBy || softFailures.length) {
+  // An early scoped typecheck red supplies skipBuildReason even when all full-project checks
+  // pass, since that candidate is still blocked and the bundle cannot change its verdict.
+  if (haltedBy || softFailures.length || options.skipBuildReason) {
     legs.build = {
       status: "skipped",
       skipReason:
-        haltedBy ?? `not run because ${softFailures.join(", ")} failed`,
+        haltedBy ??
+        options.skipBuildReason ??
+        ("not run because " + softFailures.join(", ") + " failed"),
     };
   } else if (!spaWorkspace) {
     legs.build = {
@@ -19363,6 +19877,7 @@ export function realCheckpointDeps(
       const dependencyCopyHeadroom = async (): Promise<{
         ok: boolean;
         summary: string;
+        blocker?: GatePreconditionBlocker;
       }> => {
         let probe: Awaited<ReturnType<CheckpointExec>>;
         try {
@@ -19390,14 +19905,38 @@ export function realCheckpointDeps(
           .find((l) => l.includes("DEPENDENCY_GENERATION_HEADROOM_"))
           ?.replace(/^\[dependency-generation\]\s*/, "")
           .trim();
+        // P-022: the probe also reports the host dependency-copy lock (a COPY_LOCK line when
+        // free or busy behind a live copy, a LOCK_BUSY line + exit 76 when wedged).
+        const lockLine = `${probe.stdout}\n${probe.stderr}`
+          .split(/\r?\n/)
+          .find(
+            (l) =>
+              l.includes("DEPENDENCY_GENERATION_COPY_LOCK ") ||
+              l.includes("DEPENDENCY_GENERATION_LOCK_BUSY"),
+          )
+          ?.replace(/^\[dependency-generation\]\s*/, "")
+          .trim();
+        if (probe.code === 76) {
+          return {
+            ok: false,
+            blocker: "copy-lock",
+            summary: `dependency copy cannot start: ${lockLine ?? "dependency-generation.sh --check-headroom exited 76 (host dependency-copy lock wedged)"}`,
+          };
+        }
         if (probe.code === 77) {
           return {
             ok: false,
+            blocker: "disk-headroom",
             summary: `dependency copy cannot start: ${line ?? "dependency-generation.sh --check-headroom exited 77 (insufficient headroom)"}`,
           };
         }
         if (probe.code === 0)
-          return { ok: true, summary: line ?? "dependency-copy headroom ok" };
+          return {
+            ok: true,
+            summary: [line ?? "dependency-copy headroom ok", lockLine]
+              .filter((part): part is string => Boolean(part))
+              .join("; "),
+          };
         return {
           ok: true,
           summary: `dependency-copy headroom probe exited ${probe.code}; the critical-write floor is the only admission check`,
@@ -19422,6 +19961,13 @@ export function realCheckpointDeps(
         return {
           ok: true,
           summary: `${describe(before)}; ${copyBefore.summary}`,
+        };
+      // P-022: a wedged copy lock is not a space problem, so disk GC cannot clear it.
+      if (copyBefore.blocker === "copy-lock")
+        return {
+          ok: false,
+          blocker: "copy-lock",
+          summary: `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}`,
         };
 
       // EI-22642378999251872: the old path returned immediately and spent one singleton fire per
@@ -19520,6 +20066,8 @@ export function realCheckpointDeps(
       }
       return {
         ok: false,
+        // P-022: a copy lock that wedged during cleanup is still a lock problem.
+        blocker: copyAfter.blocker ?? "disk-headroom",
         summary:
           // EI-23424266636870803: the trailing "floor is <criticalFreeBytesMin> GiB and
           // <criticalFreePctMin>% bytes" clause used to live here. It quoted the raw
@@ -19532,6 +20080,34 @@ export function realCheckpointDeps(
           `${describeTrigger(after, copyAfter)}; initial measurement: ${describe(before)}; ` +
           `${reclamationSummary}; after cleanup: ${describe(after)}`,
       };
+    },
+    // P-022: before the one bounded precondition retry, run the existing dependency-generation
+    // retention prune (the same governed `--prune-only` sweep its routine runs) and report the
+    // MEASURED free-space change beside the integration root — unlinked bytes are not reclaim.
+    preconditionRetryDelayMs: gatePreconditionRetryDelayMsFromEnv(),
+    async reclaimDependencyHeadroom(): Promise<string> {
+      const { statfs } = await import("node:fs/promises");
+      const gib = 1024 ** 3;
+      const freeBytes = async () => {
+        try {
+          const s = await statfs(cfg.integrationRoot);
+          return Number(s.bavail) * Number(s.bsize);
+        } catch {
+          return null;
+        }
+      };
+      const before = await freeBytes();
+      const { runDependencyGenerationRetention } = await import(
+        "@papercusp/operator-core/lib/release/dependency-generation-retention"
+      );
+      const report = await runDependencyGenerationRetention();
+      const after = await freeBytes();
+      const pruned = report.stores.filter((s) => s.status === "pruned").length;
+      const freed =
+        before !== null && after !== null
+          ? `free ${(before / gib).toFixed(2)} → ${(after / gib).toFixed(2)} GiB`
+          : "free space unmeasured";
+      return `dependency retention ${report.status}: ${pruned}/${report.stores.length} store(s) pruned; ${freed}`;
     },
     // P-008: the owner-visible off switch had a DECLARED dep and a documented contract
     // ("the production wiring must fail-safe to TRUE"), a flag key in libs/flags, and a
@@ -19581,6 +20157,39 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          async readFrozenRepairBoundedLifeState() {
+            const { readFrozenRepairBoundedLifeState } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            return readFrozenRepairBoundedLifeState(repairTarget);
+          },
+          async retireFrozenRepairQueueForBoundedLife(
+            queue: FrozenCandidateRepairQueue,
+            record: FrozenRepairBoundedLifeRecord,
+          ) {
+            const { retireFrozenRepairQueueForBoundedLife } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            return retireFrozenRepairQueueForBoundedLife(repairTarget, queue, record);
+          },
+          async recordFrozenRepairBoundedLifeEscalation(
+            escalation: FrozenRepairBoundedLifeEscalation,
+          ) {
+            const { recordFrozenRepairBoundedLifeEscalation } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            await recordFrozenRepairBoundedLifeEscalation(repairTarget, escalation);
+          },
+          async readFrozenRepairPendingCarry() {
+            const { readFrozenRepairPendingCarry } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-carry-store");
+            return readFrozenRepairPendingCarry(repairTarget);
+          },
+          async consumeFrozenRepairCarry(
+            pending: FrozenRepairPendingCarry,
+            record: FrozenRepairCarryRecord,
+          ) {
+            const { consumeFrozenRepairCarry } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-carry-store");
+            return consumeFrozenRepairCarry(repairTarget, pending, record);
+          },
           async readFrozenRepairQueueState() {
             const { readFrozenCandidateRepairQueueState } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
@@ -20013,14 +20622,62 @@ export function realCheckpointDeps(
         }
       }
 
+      // A scoped red currently short-circuits runGreen, so the full-project typechecks and
+      // downstream blocking lints would otherwise stay unmeasured until another gate cycle.
+      // Reuse the existing non-test bundle to capture that failure inventory now. It continues
+      // through soft failures by design; only an unreadable candidate manifest hard-stops it.
+      const failureInventory =
+        failingSignatures.length > 0
+          ? await runPostSuiteLegs(
+              cfg.checkpointRoot,
+              buildGreenCheckpointEnv(
+                null,
+                process.env,
+                runId,
+                cfg.greenCheckpointCapacityMode,
+              ),
+              exec,
+              cfg.spaBuildWorkspace,
+              {
+                operatorPgEnv: gateOperatorPgEnv(process.env),
+                skipBuildReason:
+                  "early changed-file typecheck failure already blocks promotion",
+                ...(range
+                  ? {
+                      identity: {
+                        ...(runId ? { runId } : {}),
+                        candidate: range.to,
+                        headAtStart: range.to,
+                      },
+                    }
+                  : {}),
+              },
+            )
+          : undefined;
+
       return failingSignatures.length > 0
         ? {
             status: "failed",
             checkedFiles,
             summary: summaries.join("\n"),
-            failingSignatures: [...new Set(failingSignatures)],
+            failingSignatures: [
+              ...new Set([
+                ...failingSignatures,
+                ...(failureInventory?.failingSignatures ?? []),
+              ]),
+            ],
             diagnostics,
             failingFilePaths: [...new Set(failingFilePaths)],
+            ...(failureInventory
+              ? {
+                  failureInventory: {
+                    ran: failureInventory.ran,
+                    output: failureInventory.output,
+                    failingSignatures: failureInventory.failingSignatures,
+                    records: failureInventory.records,
+                  },
+                }
+              : {}),
           }
         : {
             status: "passed",

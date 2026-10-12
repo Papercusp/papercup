@@ -1220,6 +1220,279 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'goal-owner-report-original-silence-and-exact-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const { runGoalOwnerReportSweepOnce, goalOwnerReportConditionKey } = await import('../system-health/goal-owner-report-watchdog');
+    const now = Date.now(), hour = 3600_000;
+    const row = { workspaceId: 'fixture', goalId: 'original-goal', agentId: 'original-owner',
+      baselineTsMs: now - 24 * hour, lastReportTsMs: null as number | null, standing: true };
+    const key = goalOwnerReportConditionKey(row), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let candidates = [row], open: string[] = [], report = [row];
+    const nudge = vi.fn(async () => {});
+    const deps = { now: () => now, flagEnabled: async () => true,
+      readGoalModeOwners: async () => candidates, readOpenConditionKeys: async () => open,
+      readReport: async (identity: { workspaceId: string; goalId: string; ownerId: string }) => {
+        expect(identity).toEqual({ workspaceId: row.workspaceId, goalId: row.goalId, ownerId: row.agentId }); return report;
+      },
+      resolveLiveness: async () => new Map([[row.agentId, { ownerId: row.agentId, sessionState: 'live' as const,
+        wakeable: true, liveTurn: true, confirmLiveness: null, heartbeatFresh: true }]]),
+      escalate: async () => { expect(openedKeys).toContain(key); return { coalesced: true }; }, nudge,
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true); openedKeys.push(event.conditionKey!); return true;
+      }, resolve: async (event: { conditionKey: string }) => { resolvedKeys.push(event.conditionKey); return true; } },
+    };
+    const sql = (() => { throw new Error('injected original producer must not query live PG'); }) as unknown as import('postgres').Sql;
+    await runGoalOwnerReportSweepOnce(sql, deps);
+    expect(openedKeys).toEqual([key]); expect(nudge).not.toHaveBeenCalled();
+    candidates = []; open = [key]; report = [];
+    await runGoalOwnerReportSweepOnce(sql, deps); expect(resolvedKeys).toEqual([]);
+    report = [{ ...row, workspaceId: 'foreign', lastReportTsMs: now }];
+    await runGoalOwnerReportSweepOnce(sql, deps); expect(resolvedKeys).toEqual([]);
+    report = [{ ...row, lastReportTsMs: now - 2 * hour }];
+    await runGoalOwnerReportSweepOnce(sql, deps); expect(resolvedKeys).toEqual([]);
+    report = [{ ...row, lastReportTsMs: now - 10 * 60_000 }];
+    await runGoalOwnerReportSweepOnce(sql, deps);
+    expect(resolvedKeys).toEqual([key]);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'session-ingest-original-backlog-parts-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|<module>|1',
+    ...[1, 2, 3, 4].map(ordinal => `health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|${ordinal}`)],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const producer = await import('../search/session-ingest-lag-watchdog');
+    const { evaluateInteractiveUsageFreshness } = await import('../interactive-usage/freshness');
+    const now = Date.parse('2026-10-12T12:00:00Z'), hour = 3600_000;
+    const opts = { workspaceId: 'fixture', installSlug: 'fixture' };
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let recovery: boolean | null = null, healthyUsage = false;
+    const deps = { now, readOpenConditionKeys: async () => [...open],
+      readBacklogRecovery: async () => recovery,
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(
+        healthyUsage ? now : now - hour, now, undefined, 0),
+      recentWatchdogFires: async () => 1, recordFire: async () => undefined as never,
+      openEscalation: async () => { throw new Error('legacy must remain debounced'); }, rail: {
+        broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+          expect(event.oneShot).toBe(true);
+          if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+          open.add(event.conditionKey!); return true;
+        }, resolve: async (event: { conditionKey: string }) => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } } };
+    const savedLag = process.env.PAPERCUSP_INGEST_LAG_THRESHOLD_SEC;
+    const savedParts = process.env.PAPERCUSP_PARTS_WRITER_WINDOW_SEC;
+    process.env.PAPERCUSP_INGEST_LAG_THRESHOLD_SEC = '3600';
+    process.env.PAPERCUSP_PARTS_WRITER_WINDOW_SEC = '3600';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await producer.sessionIngestLagSweep(opts, { ...deps, observe: async () => [{ sourceKind: 'codex',
+        behindFiles: 1, backlogBytes: 2e6, oldestBacklogAgeMs: 6 * hour, worstPath: '/rollout' }] });
+      const parts = { sourceKind: 'claude', expectsParts: true, turnsInWindow: 10, partsInWindow: 0 };
+      await producer.sessionPartsWriterSweep(opts, { ...deps, observe: async () => [parts] });
+      expect(open.size).toBe(3);
+      await producer.sessionIngestLagSweep(opts, { ...deps, observe: async () => [] });
+      await producer.sessionPartsWriterSweep(opts, { ...deps, observe: async () => [{ ...parts, turnsInWindow: 0 }] });
+      await producer.sessionPartsWriterSweep(opts, { ...deps, observe: async () => [{ ...parts, expectsParts: false }] });
+      expect(open.size).toBe(3);
+      recovery = true; healthyUsage = true;
+      await producer.sessionIngestLagSweep(opts, { ...deps, observe: async () => [] });
+      await producer.sessionPartsWriterSweep(opts, { ...deps, observe: async () => [{ ...parts, partsInWindow: 1 }] });
+      expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally {
+      warn.mockRestore();
+      if (savedLag === undefined) delete process.env.PAPERCUSP_INGEST_LAG_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_INGEST_LAG_THRESHOLD_SEC = savedLag;
+      if (savedParts === undefined) delete process.env.PAPERCUSP_PARTS_WRITER_WINDOW_SEC;
+      else process.env.PAPERCUSP_PARTS_WRITER_WINDOW_SEC = savedParts;
+    }
+  },
+}, {
+  id: 'draft-review-original-stale-and-exact-durable-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/scout/draft-review-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const producer = await import('../scout/draft-review-watchdog');
+    const org = await import('@papercusp/db-org');
+    const scopes = await import('../pot/started');
+    const legacy = await import('../pot/watchdog');
+    const membership = await import('../pot-membership');
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    const current = { workspace_id: 'fixture', harness_slug: 'fixture-pot', plan_slug: 'fixture-idea',
+      status: 'draft', archived: false, title: null, updated_at_ms: now - 48 * 3600_000,
+      items: [], decisions: [] as object[], content: '\norigin: scout\n' };
+    let candidates = [current], exists = true, readable = true;
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join(' ');
+      if (query.includes('SELECT DISTINCT workspace_id')) return [];
+      if (query.includes('AND plan_slug =')) {
+        if (!readable) throw new Error('exact plan read unavailable');
+        return exists ? [current] : [];
+      }
+      return candidates;
+    }) as unknown as import('postgres').Sql;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { now, readOpenConditionKeys: async () => [...open], rail: {
+      broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true);
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.add(event.conditionKey!); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    const originalThreshold = process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC;
+    process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC = '43200';
+    const spies = [vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(scopes, 'listBlenderMaintenanceScopes').mockResolvedValue([{ workspaceId: 'fixture', installSlug: 'fixture-pot' }]),
+      vi.spyOn(membership, 'routineStorageSlug').mockResolvedValue('fixture-pot'),
+      vi.spyOn(legacy, 'claimWatchdogFire').mockResolvedValue(false),
+      vi.spyOn(console, 'warn').mockImplementation(() => {})];
+    try {
+      await producer.scoutDraftReviewSweep(deps); expect(open.size).toBe(1);
+      candidates = []; await producer.scoutDraftReviewSweep({ ...deps }); expect(open.size).toBe(1);
+      readable = false; await producer.scoutDraftReviewSweep({ ...deps }); expect(open.size).toBe(1);
+      readable = true; exists = false;
+      current.decisions = [{ id: 'D-001', body: 'Reviewed; needs revision' }];
+      await producer.scoutDraftReviewSweep({ ...deps }); expect(open.size).toBe(1);
+      exists = true; await producer.scoutDraftReviewSweep({ ...deps }); expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+      if (originalThreshold === undefined) delete process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC;
+      else process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC = originalThreshold;
+    }
+  },
+}, {
+  id: 'goal-grading-original-backlog-and-exact-durable-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const { runGoalGradingBacklogSweepOnce } = await import('../system-health/goal-grading-backlog-sweep');
+    const now = Date.parse('2026-10-12T12:00:00Z'), hour = 3600_000;
+    const goal = { workspaceId: 'fixture', goalId: 'fixture:goal' };
+    let candidates = [goal], exists = true, healthy = false, readable = true;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { flagEnabled: async () => true, now: () => now,
+      readGoals: async () => candidates, readGoal: async () => exists ? goal : null,
+      readOpenConditionKeys: async () => [...open],
+      readInput: async () => {
+        if (!readable) throw new Error('backlog ledger unavailable');
+        return { goalId: goal.goalId, nowMs: now, activityMs: Array.from({ length: 10 }, (_, i) => now - (i + 1) * hour),
+          cards: healthy ? [{ windowStartMs: now - 11 * hour, windowEndMs: now, createdMs: now, final: true }] : [] };
+      },
+      resolveLiveness: async () => new Map(),
+      escalate: async () => { throw new Error('legacy unavailable'); },
+      wakeGrader: async () => {}, resolveCleared: async () => 0, rail: {
+        broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+          expect(event.oneShot).toBe(true);
+          if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+          open.add(event.conditionKey!); return true;
+        }, resolve: async (event: { conditionKey: string }) => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runGoalGradingBacklogSweepOnce({} as never, deps); expect(open.size).toBe(1);
+      candidates = []; readable = false;
+      await runGoalGradingBacklogSweepOnce({} as never, { ...deps }); expect(open.size).toBe(1);
+      readable = true; exists = false; healthy = true;
+      await runGoalGradingBacklogSweepOnce({} as never, { ...deps }); expect(open.size).toBe(1);
+      exists = true;
+      await runGoalGradingBacklogSweepOnce({} as never, { ...deps }); expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); }
+  },
+}, {
+  id: 'ungraded-filings-original-stale-coverage-and-exact-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/scout/ungraded-filings-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const producer = await import('../scout/ungraded-filings-watchdog');
+    const org = await import('@papercusp/db-org');
+    const scopes = await import('../pot/started');
+    const legacy = await import('../pot/watchdog');
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    let candidates = [{ idea_id: 'fixture-idea', origin: 'fixture-origin', title: null,
+      routed_ref: 'wi:fixture', routed_at: now - 14 * 86_400_000 }];
+    let remaining: number | null = 1, uncovered = 1;
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join(' ');
+      if (query.includes('SELECT count(*)')) {
+        if (remaining == null) throw new Error('count unavailable');
+        return [{ c: query.includes('NOT EXISTS') ? uncovered : remaining }];
+      }
+      if (query.includes('row_number()')) return candidates;
+      return [];
+    }) as unknown as import('postgres').Sql;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { now, readOpenConditionKeys: async () => [...open], rail: {
+      broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true);
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.add(event.conditionKey!); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    const originalThreshold = process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC;
+    process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = '604800';
+    const spies = [vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
+      vi.spyOn(scopes, 'listBlenderMaintenanceScopes').mockResolvedValue([{ workspaceId: 'fixture', installSlug: 'papercusp' }]),
+      vi.spyOn(scopes, 'listBlenderMaintenanceWorkspaceIds').mockReturnValue(['fixture']),
+      vi.spyOn(legacy, 'recentWatchdogFires').mockRejectedValue(new Error('legacy ledger unavailable')),
+      vi.spyOn(console, 'warn').mockImplementation(() => {})];
+    try {
+      await producer.ungradedFilingsSweep(deps); expect(open.size).toBe(2);
+      candidates = []; await producer.ungradedFilingsSweep({ ...deps }); expect(open.size).toBe(2);
+      remaining = null; await producer.ungradedFilingsSweep({ ...deps }); expect(open.size).toBe(2);
+      remaining = 0; uncovered = 0;
+      await producer.ungradedFilingsSweep({ ...deps }); expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+      if (originalThreshold === undefined) delete process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC;
+      else process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = originalThreshold;
+    }
+  },
+}, {
+  id: 'goal-edit-claim-original-monotonic-violation-and-terminal-goal-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const { runGoalEditClaimSweepOnce } = await import('../system-health/goal-edit-claim-watchdog');
+    const row: import('../system-health/goal-edit-claim-watchdog').EditClaimRowLike = {
+      ledgerId: 1, workspaceId: 'fixture', goalId: 'fixture-goal', agentId: 'fixture-owner',
+      file: 'fixture.ts', repo: 'fixture', tsMs: 1_800_000_000_000 };
+    let rows = [row], status = 'active';
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const deps = { flagEnabled: async () => true,
+      readNewEditClaims: async () => ({ rows, ledgerMaxId: 1 }),
+      resolveGraders: async () => new Map<string, string[]>(),
+      escalate: async () => { throw new Error('legacy unavailable'); }, notify: async () => {}, emitEditClaim: async () => {},
+      readOpenConditionKeys: async () => [...open],
+      readGoalState: async () => ({ workspaceId: row.workspaceId, goalId: row.goalId, status }), rail: {
+        broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+          expect(event.oneShot).toBe(true); open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+        }, resolve: async (event: { conditionKey: string }) => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } } };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runGoalEditClaimSweepOnce({} as never, null, deps); expect(open.size).toBe(1);
+      rows = []; await runGoalEditClaimSweepOnce({} as never, 1, { ...deps }); expect(open.size).toBe(1);
+      status = 'paused'; await runGoalEditClaimSweepOnce({} as never, 1, { ...deps }); expect(open.size).toBe(1);
+      status = 'achieved'; await runGoalEditClaimSweepOnce({} as never, null, { ...deps }); expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); }
+  },
+}, {
   id: 'carry-delivery-original-independent-episodes-and-measured-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1'],
   run: async () => {

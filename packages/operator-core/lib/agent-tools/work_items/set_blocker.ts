@@ -56,7 +56,7 @@ const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
 type BlockerCapabilityInput = z.infer<typeof BLOCKER_CAPABILITY>;
 const SET_BLOCKER_CALL_CONSTRAINT =
-  "When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities.";
+  "For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema. For items:[...], each entry that sets a blocker also requires kind and ref. A clear-only call may omit ref when one active blocker can be resolved; migrateWorkItemRefs:true takes only id. When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities.";
 type BlockerInput = {
   id: string;
   kind?: BlockerKindInput;

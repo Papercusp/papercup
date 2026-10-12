@@ -8,17 +8,43 @@
  * including the fail-closed branches, and (3) the script's stdin/stdout wiring.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   RESTRICTED_EGRESS_MATCHER,
+  RTK_BIN_ENV,
   decideEgress,
   egressTexts,
   prefilterHits,
+  resolveRtkBin,
+  rtkRewriteSync,
   sandboxedBashCommand,
 } from '../pretooluse-restricted-egress-guard.mjs';
+
+/** A stand-in for `rtk rewrite <cmd>` covering the exit codes rtk uses. */
+function fakeRtk() {
+  const dir = mkdtempSync(join(tmpdir(), 'egress-guard-rtk-'));
+  const bin = join(dir, 'rtk');
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+[ "$1" = rewrite ] || exit 64
+case "$2" in
+  "git status") echo "rtk git status"; exit 0 ;;
+  "git log -n 3") echo "warn" >&2; echo "rtk git log -n 3"; exit 3 ;;
+  deny*) exit 2 ;;
+  *vitest*) echo "rtk vitest"; exit 0 ;;
+  *) exit 1 ;;
+esac
+`,
+  );
+  chmodSync(bin, 0o755);
+  return { bin, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 import { providerEgressRules } from '../../../../../../packages/operator-core/lib/personal-vault/provider-egress.mjs';
 
 const HOOK = fileURLToPath(new URL('../pretooluse-restricted-egress-guard.mjs', import.meta.url));
@@ -243,6 +269,109 @@ describe('decideEgress', () => {
   });
 });
 
+/**
+ * RTK (WI-6554700010009291, owner #1759/#1764). Several hooks that each return
+ * Bash `updatedInput` resolve by completion order, so this guard is the ONE
+ * writer: RTK rewrites first, the sandbox wraps that, and every deny check
+ * judges the original command.
+ */
+describe('RTK composed into the single Bash rewrite', () => {
+  const rtk = (command: string) => (command === 'ls' || command.startsWith('git ') ? `rtk ${command}` : null);
+
+  it('rewrites a non-psu session’s command without calling the operator', async () => {
+    const fetchImpl = vi.fn();
+    const result = await decideEgress({ toolName: 'Bash', toolInput: { command: 'git status' }, env: {}, fetchImpl, rtk });
+    expect(result).toEqual({ decision: 'rewrite', updatedInput: { command: 'rtk git status' } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rewrites for an unrestricted psu session, keeping every other input field', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, restricted: false, sourceHold: 'clear' }));
+    const result = await decideEgress({
+      toolName: 'Bash',
+      toolInput: { command: 'ls', description: 'list', timeout: 5000 },
+      env: ENV,
+      fetchImpl,
+      rtk,
+    });
+    expect(result).toEqual({
+      decision: 'rewrite',
+      updatedInput: { command: 'rtk ls', description: 'list', timeout: 5000 },
+    });
+  });
+
+  it('sandboxes the RTK form for a restricted session, so both survive', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, restricted: true }));
+    const result = await decideEgress({
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      env: ENV,
+      fetchImpl,
+      rtk,
+      sandbox: (c) => `SANDBOX[${c}]`,
+    });
+    expect(result).toEqual({ decision: 'rewrite', updatedInput: { command: 'SANDBOX[rtk ls]' } });
+  });
+
+  it('a deny still wins over the rewrite', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, verdict: 'refuse', reason: 'use chat:post' }));
+    const result = await decideEgress({
+      toolName: 'Bash',
+      toolInput: { command: PROVIDER_COMMAND },
+      env: ENV,
+      fetchImpl,
+      rtk: (c) => `rtk ${c}`,
+    });
+    expect(result).toEqual({ decision: 'deny', reason: 'use chat:post' });
+    // The operator judged the ORIGINAL command, not the RTK form.
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).texts).toEqual([PROVIDER_COMMAND]);
+  });
+
+  it('allows unchanged when rtk has no equivalent', async () => {
+    const result = await decideEgress({ toolName: 'Bash', toolInput: { command: 'echo hi' }, env: {}, rtk });
+    expect(result).toEqual({ decision: 'allow' });
+  });
+
+  it('never rewrites a non-Bash tool', async () => {
+    const rtkSpy = vi.fn(rtk);
+    const result = await decideEgress({ toolName: 'Read', toolInput: { file_path: '/tmp/x' }, env: {}, rtk: rtkSpy });
+    expect(result).toEqual({ decision: 'allow' });
+    expect(rtkSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('rtkRewriteSync', () => {
+  it('honours rtk exit 0 and 3 (stdout only), and fails open on 1, 2 and a missing binary', () => {
+    const fake = fakeRtk();
+    try {
+      const env = { [RTK_BIN_ENV]: fake.bin };
+      expect(rtkRewriteSync('git status', { env })).toBe('rtk git status');
+      expect(rtkRewriteSync('git log -n 3', { env })).toBe('rtk git log -n 3');
+      expect(rtkRewriteSync('echo hi', { env })).toBeNull();
+      expect(rtkRewriteSync('deny this', { env })).toBeNull();
+      expect(rtkRewriteSync('git status', { env: { [RTK_BIN_ENV]: join(tmpdir(), 'no-such-rtk-bin') } })).toBeNull();
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  it('never offers vitest (EI-9471) or an RTK_DISABLED=1 command to rtk', () => {
+    const fake = fakeRtk();
+    try {
+      const env = { [RTK_BIN_ENV]: fake.bin };
+      expect(rtkRewriteSync('npx vitest run a.test.ts', { env })).toBeNull();
+      expect(rtkRewriteSync('RTK_DISABLED=1 git status', { env })).toBeNull();
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  it('never picks up the host binary implicitly under vitest', () => {
+    expect(resolveRtkBin({ PATH: process.env.PATH })).toBeNull();
+  });
+});
+
 describe('the installed matcher', () => {
   const asRegex = [(m: string) => new RegExp(m), (m: string) => new RegExp(`^(?:${m})$`)];
   it('matches the guarded tools and no Papercusp MCP tool, under either regex reading', () => {
@@ -335,14 +464,28 @@ function spawnAsync(file: string, args: string[]): Promise<{ code: number | null
 }
 
 describe('script wiring', () => {
+  // The child does not inherit VITEST, so RTK is pinned off unless a case opts in;
+  // otherwise the host's installed rtk would rewrite these commands.
   function run(payload: unknown, env: NodeJS.ProcessEnv) {
     return spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify(payload),
-      env: { PATH: process.env.PATH, ...env },
+      env: { PATH: process.env.PATH, [RTK_BIN_ENV]: '', ...env },
       encoding: 'utf8',
       timeout: 20_000,
     });
   }
+
+  it('prints an RTK updatedInput for a non-psu session when rtk has an equivalent', () => {
+    const fake = fakeRtk();
+    try {
+      const res = run({ tool_name: 'Bash', tool_input: { command: 'git status' } }, { [RTK_BIN_ENV]: fake.bin });
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout) as { hookSpecificOutput: Record<string, unknown> };
+      expect(out.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', updatedInput: { command: 'rtk git status' } });
+    } finally {
+      fake.cleanup();
+    }
+  });
 
   it('prints nothing outside a psu session', () => {
     const res = run({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }, {});

@@ -160,6 +160,15 @@ const specTestAdequacyCompletionGate = vi.fn();
 vi.mock('./spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
 }));
+// P-008 (derived-status-not-hand-written-2026-10-12): the completion prefill reads the
+// holder's read-time mechanics. Default null = no ledger evidence, so every other case in
+// this file keeps the completion exactly as supplied.
+const readWorkItemMechanicsMock = vi.hoisted(() => vi.fn(async (..._a: unknown[]): Promise<unknown> => null));
+vi.mock('./_mechanics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./_mechanics')>()),
+  readWorkItemMechanics: (...a: unknown[]) => readWorkItemMechanicsMock(...a),
+  pgMechanicsLedger: () => ({}),
+}));
 const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-integrity', () => ({
   dispatchPendingGradingAudits: (...a: unknown[]) => dispatchPendingGradingAudits(...a),
@@ -629,6 +638,50 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     const top = safeParse({ id: 'WI-nested', state: 'done', assumptions: 'none', completion: { summary: 's' }, strayTop: 1 });
     expect(top.success).toBe(false);
     expect(String(top.error)).toContain('"message": "Unrecognized key: \\"strayTop\\""');
+  });
+
+  // EI-25789682554301541: an unknown key and known fields with invalid types can
+  // coexist in one completion. The matching union branch must still expose the
+  // concrete schema failure instead of asking for state/assumptions already sent.
+  it('keeps a useful diagnostic when unknown and mistyped completion fields coexist', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-mixed-shape',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'completed a mixed-shape close',
+        testsRun: 'focused test passed',
+        testResult: '1/1 passed',
+        addedTests: ['this field must be boolean'],
+        verification: { tests: 'this key is not part of verification evidence' },
+        rootCauseVerification: 'this field must be a record',
+        selfReview: 'this field must be a record',
+      },
+    });
+    const typedOnly = safeParse({
+      id: 'WI-typed-shape',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'completed with the recorded wrong-typed fields',
+        status: 'resolved',
+        rootCauseVerification: 'this field must be a record',
+        selfReview: 'this field must be a record',
+      },
+    });
+    const diagnostic = String(parsed.error);
+    const typedDiagnostic = String(typedOnly.error);
+
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification');
+    expect(diagnostic).toMatch(/Unrecognized key|not valid|invalid/i);
+    expect(diagnostic).not.toContain('to CLOSE a work-item');
+    expect(typedOnly.success).toBe(false);
+    expect(typedDiagnostic).toContain('completion.rootCauseVerification');
+    expect(typedDiagnostic).not.toContain('to CLOSE a work-item');
   });
 
   it('rejects a block whose structured predictions name the same observable', () => {
@@ -7601,5 +7654,104 @@ describe('work_items:complete — completion verification wiring (P-007 Phase C,
     expect(input.taskPayload).toEqual(task.payload);
     expect(input.completion).toMatchObject({ verificationVerdict: { verdict: 'accept' } });
     expect(r.completionVerification).toMatchObject({ verdict: { applied: 'accept', subject: subject.id } });
+  });
+});
+
+// P-008 / R-7 (derived-status-not-hand-written-2026-10-12): the call site in completeOne.
+// The merge rules themselves are pinned in completion-prefill.test.ts; this block pins
+// that a holder's successful close actually runs them, persists the result, discloses it,
+// and that every skip condition (no claim window, ledger failure) leaves the input intact.
+describe('work_items:complete — completion prefill wiring (P-008)', () => {
+  const held = { ...item, id: 'F-PRE', assignee: 'su-tester', takenAt: '2026-10-12T16:00:00.000Z' };
+  const mechanics = {
+    derived: 'read-time',
+    derivedAt: '2026-10-12T17:00:00.000Z',
+    holder: { ownerId: 'su-tester', claimedAt: '2026-10-12T16:00:00.000Z' },
+    filesWritten: {
+      paths: ['packages/operator-core/vitest.config.ts', 'packages/operator-core/lib/x.test.ts'],
+      total: 2,
+      truncated: false,
+      outsideRepo: 0,
+    },
+    tests: {
+      attribution: 'path-and-claim-window',
+      latest: [{
+        file: 'packages/operator-core/lib/x.test.ts',
+        status: 'pass',
+        at: '2026-10-12T16:30:00.000Z',
+        passed: 3,
+        failed: 0,
+        dirtyTree: false,
+        commitSha: 'ec4366d0843c68dc1ad481a9b86ab476186b6ca8',
+      }],
+      verdict: 'all-pass',
+    },
+    openBlockers: [],
+    sources: [],
+  };
+  const persistedEvidence = () =>
+    (setWorkItemStateWithAliasInfo.mock.calls.at(-1)?.[2] as { completionEvidence?: Record<string, unknown> } | undefined)
+      ?.completionEvidence;
+
+  beforeEach(() => {
+    readWorkItemMechanicsMock.mockReset();
+    readWorkItemMechanicsMock.mockResolvedValue(mechanics);
+    getWorkItem.mockResolvedValue(held);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...held, state: 'done' }));
+  });
+
+  it("a holder's close fills absent evidence from its claim window, persists it, and discloses it", async () => {
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built the widget', verification: { verifiedHow: 'unit' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(readWorkItemMechanicsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'F-PRE', assignee: 'su-tester', takenAt: '2026-10-12T16:00:00.000Z' }),
+      expect.anything(),
+    );
+    expect(r.completionPrefill).toMatchObject({ fields: ['filesChanged', 'testsRun', 'testResult'] });
+    expect(persistedEvidence()).toMatchObject({
+      filesChanged: ['packages/operator-core/vitest.config.ts', 'packages/operator-core/lib/x.test.ts'],
+      testsRun: expect.stringContaining('packages/operator-core/lib/x.test.ts'),
+      testResult: expect.stringMatching(/^all passing/),
+      summary: 'built the widget',
+    });
+  });
+
+  it('a value the closer supplied is persisted unchanged; only the absent fields are filled', async () => {
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testResult: '12/12 green (my run)' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.completionPrefill?.fields).not.toContain('testResult');
+    expect(persistedEvidence()).toMatchObject({ testResult: '12/12 green (my run)' });
+  });
+
+  it('an item with no claim window is never read and carries no prefill', async () => {
+    getWorkItem.mockResolvedValue({ ...held, takenAt: null });
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testsRun: 'x.test.ts', testResult: '1/1' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(readWorkItemMechanicsMock).not.toHaveBeenCalled();
+    expect(r.completionPrefill).toBeUndefined();
+  });
+
+  it('a ledger failure is fail-soft: the close succeeds with the completion as supplied', async () => {
+    readWorkItemMechanicsMock.mockRejectedValue(new Error('pool exhausted'));
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testsRun: 'x.test.ts', testResult: '1/1' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.completionPrefill).toBeUndefined();
+    expect(persistedEvidence()?.filesChanged).toBeUndefined();
   });
 });

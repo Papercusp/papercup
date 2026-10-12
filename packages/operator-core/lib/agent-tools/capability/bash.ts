@@ -69,6 +69,12 @@ import { repoHeadSha } from '../../harness/docs/git-runner';
 import { resolveCapabilityIntegrationRoot } from './base-dir';
 import { classifyCapabilityBashEffect, commandBase, splitClassifiableShell } from './bash-effect';
 import { readRestrictedSourceHoldState } from '../../personal-vault/git-sync-hold';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { RTK_OPT_OUT_PREFIX, rtkCommandForCapabilityBash } from './rtk-rewrite';
+
+/** One-line disclosure attached to a result whose command ran through RTK. */
+export const RTK_RESULT_NOTE = `rtk-compressed (prefix ${RTK_OPT_OUT_PREFIX} for raw output)`;
 
 export { classifyCapabilityBashEffect } from './bash-effect';
 
@@ -629,6 +635,17 @@ export default defineTool({
         isError: true,
       };
     }
+    // WI-6554700010009291 (owner #1759/#1764): this tool replaces native Bash, so
+    // it carries RTK's output compression too. Every gate above and below judges
+    // the ORIGINAL command; only the spawned text is the RTK form. Fail-open: any
+    // RTK problem runs the original command unchanged.
+    const rtk = await rtkCommandForCapabilityBash(command, {
+      cwd,
+      structuredCaller: Boolean(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)),
+      flagEnabled: () => getFlag(FLAGS.CAPABILITY_BASH_RTK, 'system'),
+    });
+    const execCommand = rtk.command;
+    const rtkApplied = rtk.outcome.kind === 'rewritten';
     // EI-21910156647461981: an explicitly detached task survives the caller's
     // carry boundary, so a successor can accidentally launch the exact same
     // command again. Keep this cross-call guard scoped to run_in_background:
@@ -637,7 +654,8 @@ export default defineTool({
     // invariant is enforced separately by the single startBackground call.
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
     if (args.run_in_background && !args.allow_duplicate && workspaceId) {
-      const expectedArgv = ['bash', '-o', 'pipefail', '-c', command];
+      // The live task's argv holds the SPAWNED text, so compare against that.
+      const expectedArgv = ['bash', '-o', 'pipefail', '-c', execCommand];
       const duplicate = (await listLiveTasks(workspaceId)).find(
         (task) =>
           task.class === 'bash-job' &&
@@ -749,6 +767,8 @@ export default defineTool({
     const runOffline = sessionRestricted || sourceHold !== 'clear';
     const childEnv = {
       ...(desktopEnv ?? {}),
+      // RTK prints a bare `rtk`; its directory joins PATH only when absent.
+      ...(rtk.env ?? {}),
       ...integrationEnv,
       // WI-22952438885573520: local test runs launched through capability:bash
       // already execute in a caller-scoped harness/workspace, but the reporter
@@ -810,7 +830,7 @@ export default defineTool({
     // difference is how long this request waits before returning that handle.
     const job = startBackground(
       {
-        command,
+        command: execCommand,
         cwd,
         stateDir: ctx.stateDir,
         ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
@@ -855,6 +875,7 @@ export default defineTool({
         status: 'running',
         cwd,
         log_path: job.logPath,
+        ...(rtkApplied ? { rtk: RTK_RESULT_NOTE } : {}),
         // WI-6677: state the deadline at LAUNCH. It is enforced by SIGTERM/SIGKILL,
         // so a caller who needs longer must know now — not discover it as an
         // unexplained death two hours in.
@@ -910,6 +931,7 @@ export default defineTool({
         truncated: r.truncated,
         total_bytes: r.totalBytes,
         log_path: job.logPath,
+        ...(rtkApplied ? { rtk: RTK_RESULT_NOTE } : {}),
         response_window_ms: responseWindowMs,
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
@@ -940,6 +962,7 @@ export default defineTool({
       ` · ${(r.durationMs / 1000).toFixed(1)}s · cwd ${cwd}` +
       (r.truncated ? ` · bounded preview (${r.totalBytes} bytes total)` : '') +
       ` · full output → ${r.logPath}` +
+      (rtkApplied ? ` · ${RTK_RESULT_NOTE}` : '') +
       integrationHeader;
 
     const isError = r.status === 'failed' && r.exitCode === null;
