@@ -68,6 +68,28 @@ const RUN_REF_RE = /(?:\/tmp\/\S+|\S+\.log\b|bash_id|run_in_background|bash_outp
 /** Cap on how many matched fragments are echoed back, so the note stays one line. */
 const MAX_SIGNALS = 3;
 
+/**
+ * An explicitly attributed historical quotation is evidence about an earlier
+ * report, not the writer's current admission. Keep ambiguous prose and quoted
+ * current reports actionable; this is deliberately not a result-line suppressor.
+ */
+function withoutHistoricalQuotations(text: string): string {
+  const quotes = /"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|“[^”\n]*”|‘[^’\n]*’/g;
+  return text.replace(quotes, (quote: string, offset: number) => {
+    const start = Math.max(
+      text.lastIndexOf('\n', offset - 1),
+      text.lastIndexOf('.', offset - 1),
+      text.lastIndexOf(';', offset - 1),
+    ) + 1;
+    const attribution = text.slice(start, offset);
+    const historical = /\b(?:historical|(?:saved|recovered)\b[^.!?;\n]{0,100}\b(?:transcript|parts?\d*))\b/i;
+    const current = /\b(?:but|however|now|current(?:ly)?)\b/i;
+    return historical.test(attribution) && !current.test(attribution)
+      ? ' '.repeat(quote.length)
+      : quote;
+  });
+}
+
 export interface UnreadRunSignals {
   /** In-flight phrases this body used (deduped, lowercased, capped). */
   inFlight: string[];
@@ -118,7 +140,7 @@ export function describeUnreadRun(
   const text = (body ?? '').trim();
   if (!text) return null;
 
-  const inFlight = collect(text, IN_FLIGHT_RE, true);
+  const inFlight = collect(withoutHistoricalQuotations(text), IN_FLIGHT_RE, true);
   if (inFlight.length === 0) return null;
   const runRefs = collect(text, RUN_REF_RE, false);
   if (runRefs.length === 0) return null;
