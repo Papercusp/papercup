@@ -772,45 +772,87 @@ validate_assertion_command_preflight() {
       sub(/^[[:space:]]*#.*$/, "", line)
       lines[NR] = line
     }
+    function trusted_reference(value, refs,    name) {
+      if (value ~ /^\$[A-Za-z_][A-Za-z0-9_]*$/) {
+        name = substr(value, 2)
+      } else if (value ~ /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/) {
+        name = substr(value, 3, length(value) - 3)
+      } else {
+        return 0
+      }
+      return (name in refs)
+    }
     END {
       subcommands = "(screenshot|info|dom|eval|wait|ipc-monitor|list-windows|page-state|storage|console-monitor|mutations|snapshot|diff|click|type|scroll|select|navigate|invoke|store-inspect|check|probe)"
       tool_vars["VERIFY_TAURI_AGENT_TOOLS_BIN"] = 1
+      pid_vars["VERIFY_TAURI_PID"] = 1
 
       # Existing assertion scripts sometimes bind the executable and verified
       # PID to local variables first (for example TAT=... and PID=...). Keep
       # accepting that form only when the aliases come from the verifier-owned
       # environment values, so a different live bridge cannot be selected.
-      for (i = 1; i <= NR; i++) {
-        line = lines[i]
-        assignment = line
-        sub(/^[[:space:]]*(export|local)[[:space:]]+/, "", assignment)
-        if (assignment ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
-          name = assignment
-          sub(/=.*/, "", name)
-          if (line ~ /(tauri-agent-tools|VERIFY_TAURI_AGENT_TOOLS_BIN)/) tool_vars[name] = 1
-          if (line ~ /VERIFY_TAURI_PID/) pid_vars[name] = 1
+      for (pass = 1; pass <= NR; pass++) {
+        changed = 0
+        for (i = 1; i <= NR; i++) {
+          assignment = lines[i]
+          sub(/^[[:space:]]*(export|local)[[:space:]]+/, "", assignment)
+          if (assignment ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+            name = assignment
+            sub(/=.*/, "", name)
+            value = assignment
+            sub(/^[^=]*=/, "", value)
+            sub(/[[:space:];|&].*$/, "", value)
+            if (value ~ /^".*"$/) value = substr(value, 2, length(value) - 2)
+            if (substr(value, 1, 1) != "\047") {
+              if (trusted_reference(value, tool_vars) && !(name in tool_vars)) {
+                tool_vars[name] = 1
+                changed++
+              }
+              if (trusted_reference(value, pid_vars) && !(name in pid_vars)) {
+                pid_vars[name] = 1
+                changed++
+              }
+            }
+          }
         }
+        if (!changed) break
       }
 
       for (i = 1; i <= NR; i++) {
         line = lines[i]
-        has_bad_option = line ~ /tauri-agent-tools[[:space:]]+--(pid|port)([=[:space:]]|$)/
-        has_subcommand = line ~ ("[[:space:]]" subcommands "([[:space:]]|$)")
-        has_literal_tool = line ~ ("tauri-agent-tools[[:space:]]+" subcommands "([[:space:]]|$)")
+        command_prefix = "(^|[;&|()])[[:space:]]*((if|then|do|else|elif|while|until|!|time|command|exec|builtin|env)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:];|&()]+[[:space:]]+)*"
+        literal_tool = "(tauri-agent-tools|[^[:space:];|&()]*/tauri-agent-tools)"
+        literal_call = command_prefix literal_tool "[[:space:]]+" subcommands
+        has_bad_option = line ~ (command_prefix literal_tool "[[:space:]]+--(pid|port)([=[:space:]]|$)")
+        has_literal_tool = line ~ (literal_call "([[:space:]]|$)")
         has_tool_alias = 0
+        has_pinned_pid = 0
         for (name in tool_vars) {
-          if (index(line, "$" name) > 0 && has_subcommand) has_tool_alias = 1
+          alias_token = "(\"?\\$" name "\"?|\"?\\$\\{" name "\\}\"?)"
+          alias_call = command_prefix alias_token "[[:space:]]+" subcommands
+          if (line ~ (alias_call "([[:space:]]|$)")) {
+            has_tool_alias = 1
+            for (pid_name in pid_vars) {
+              pid_token = "(\"?\\$" pid_name "\"?|\"?\\$\\{" pid_name "\\}\"?)"
+              if (line ~ (alias_call "[[:space:]][^;|&()]*--pid[[:space:]]+" pid_token "([[:space:]]|$)")) {
+                has_pinned_pid = 1
+              }
+            }
+          }
         }
 
-        if (has_bad_option && has_subcommand) {
+        if (has_bad_option) {
           print "option-order:" line
           exit
         }
 
         if (has_literal_tool || has_tool_alias) {
-          has_pinned_pid = line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\$VERIFY_TAURI_PID\"([[:space:]]|$)")
+          if (line ~ (literal_call "[[:space:]][^;|&()]*--pid[[:space:]]+(\"?\\$VERIFY_TAURI_PID\"?|\"?\\$\\{VERIFY_TAURI_PID\\}\"?)([[:space:]]|$)")) {
+            has_pinned_pid = 1
+          }
           for (name in pid_vars) {
-            if (line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\$" name "\"([[:space:]]|$)")) {
+            pid_token = "(\"?\\$" name "\"?|\"?\\$\\{" name "\\}\"?)"
+            if (line ~ (literal_call "[[:space:]][^;|&()]*--pid[[:space:]]+" pid_token "([[:space:]]|$)")) {
               has_pinned_pid = 1
             }
           }
