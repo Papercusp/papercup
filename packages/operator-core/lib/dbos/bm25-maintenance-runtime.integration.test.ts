@@ -6,9 +6,23 @@
  * so unrelated periodic work cannot fire while explicit enqueues are tested.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { fork } from 'node:child_process';
+import { join, resolve } from 'node:path';
 import postgres from 'postgres';
 import type { DBOS as DBOSType, DBOSClient as DBOSClientType } from '@dbos-inc/dbos-sdk';
 import { seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from '../search/lexical/test-pg/bm25-test-db';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof }
+  from '../../test/isolated-integration-proof';
+
+const root = resolve(import.meta.dirname, '../../../..');
+const filePath = 'packages/operator-core/lib/dbos/bm25-maintenance-runtime.integration.test.ts';
+// The maintained runner preserves reporter group identity across its private
+// environment. A distinct child group selects the original runtime assertions
+// without recursively starting another observer.
+const workerGroupSuffix = ':bm25-maintenance-runtime-worker';
+const isWorker = process.env.PAPERCUSP_TEST_RUN_GROUP?.endsWith(workerGroupSuffix);
+
+if (isWorker) {
 
 const QUEUE = 'bm25-maintenance-runtime-test';
 const INDEX = 'harness_shared.runtime_compaction_probe_bm25';
@@ -143,3 +157,50 @@ describe('BM25 maintenance through the real registered DBOS runtime (P-006)', ()
     expect(await needsCompaction()).toBe(false);
   }, 300_000);
 });
+} else {
+  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
+  it('retains the real DBOS maintenance execution and its isolated cleanup witness (P-006)', async context => {
+    const runId = await recordIsolatedIntegrationProof({
+      root, filePath,
+      sourcePaths: [
+        'packages/operator-core/lib/dbos/periodic-workflows.ts',
+        'packages/operator-core/lib/search/lexical/bm25-maintenance.ts',
+        'packages/operator-core/lib/search/lexical/rank.ts',
+        'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts',
+        'packages/operator-core/lib/search/lexical/test-pg/Dockerfile',
+        'libs/papercusp/libs/db/sql/1447-bm25-pg-textsearch-indexes.sql',
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/lib/process-identity.ts',
+        'scripts/with-test-pg.mjs',
+        'scripts/test-files.mjs',
+      ],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env,
+          PC_ISOLATED_RUNTIME_PROOF: '1',
+          PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + workerGroupSuffix,
+        };
+        // Only this outer test owns the retained ledger row and source capture.
+        // The nested suite records into its private database, which is removed
+        // only after the original worker's exit has been observed.
+        for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+          'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+          'PAPERCUSP_TEST_RUNS_DB_URL']) delete env[key];
+        delete env.PC_HEAVY_PREEMPT_READY_FILE;
+        delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+          '--isolated-runtime', '--', process.execPath,
+          '--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath,
+        ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+        expect(result, result.output.slice(-8000)).toMatchObject({
+          code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+        });
+        expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+        expect(result.output).toContain('skippedTests=0');
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ISOLATED_BM25_MAINTENANCE_PROOF_RUN ' + runId);
+  }, workerOptions.testTimeoutMs);
+}
