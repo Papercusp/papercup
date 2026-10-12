@@ -2213,7 +2213,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(first.status).toBe('synced');
     expect(first.contentErrors.some(row => row.file === importerPath && row.detectorKey === 'quarantined-importer')).toBe(true);
-    expect(logs.join('\n')).toContain('quarantined-provider');
+    expect(logs.join('\n')).toContain('staged providers with held HEAD consumers [slug-scope.ts]');
     expect(git(originDir, 'show', `main:${providerPath}`)).toContain('requireUnambiguousSlugScope');
     expect(git(originDir, 'show', `main:${importerPath}`)).toContain('requireUnambiguousSlugScope');
     expect(git(originDir, 'show', `main:${excludedPath}`)).toBe('export const start = 1;');
