@@ -1159,7 +1159,21 @@ const sessionTurn: SearchSource = {
     // to the bounded substring FILL below. RE-ARM ORDER if this is ever
     // revisited: apply migration 1163 FIRST, then restore this argument.
     p.signal?.throwIfAborted();
-    const bm25 = await bm25LegIfAvailable(p.sql as unknown as Sql, 'session_turns', p.query);
+    const sourceSql = p.sql as unknown as Sql;
+    const bm25 = await bm25LegIfAvailable(sourceSql, 'session_turns', p.query, undefined, {
+      // availabilityFor calls this only on a cache miss, so cached lookups do
+      // not acquire a transaction. Its key remains sourceSql, not this tx.
+      availabilityLoader: (read) => boundedOrgTxn(
+        (tx) => read(tx as unknown as Sql),
+        {
+          client: p.sql,
+          signal: p.signal,
+          readOnly: true,
+          statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+        },
+      ),
+      signal: p.signal,
+    });
     p.signal?.throwIfAborted();
     const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`, undefined, bm25);
     // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
