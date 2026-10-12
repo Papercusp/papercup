@@ -173,9 +173,9 @@ describe('read-only named authoring admission — WI-6554700010008817', () => {
     ]);
   });
 
-  async function read(target: { fleet: string } | { cupId: string } = { fleet }) {
+  async function read(target: { fleet: string } | { cupId: string } = { fleet }, proposed = spec) {
     return (await previewSpecDeltaTool.handler(
-      { ...target, harness: 'papercusp', proposed: structuredClone(spec) } as never,
+      { ...target, harness: 'papercusp', proposed: structuredClone(proposed) } as never,
       ctx as never,
     ) as { data: Record<string, any> }).data;
   }
@@ -205,6 +205,31 @@ describe('read-only named authoring admission — WI-6554700010008817', () => {
     expect(result.authoringAdmission.preview.scopeAdmissibleIds).toEqual([]);
     expect(result.authoringAdmission.preview.floored).toEqual([{ id, admissible: false, refusedBy: 'cooldown' }]);
     expect(result.authoringAdmission.errors[0]).toContain(id + ':cooldown');
+    expect(admissionMocks.setClaimSpec).not.toHaveBeenCalled();
+  });
+
+  it('keeps an exact stop-line refusal when a different cohort row permits scope authoring', async () => {
+    const repairId = 'EI-25735803469499102';
+    admissionMocks.explainIssueClaimFloors.mockReset()
+      .mockResolvedValueOnce([
+        { id, admissible: false, refusedBy: 'already-taken', heldBy: holder },
+        { id: repairId, admissible: true },
+      ])
+      .mockResolvedValueOnce([{ id, admissible: false, refusedBy: 'stop-line' }]);
+    const result = await read({ fleet }, {
+      ...spec, view: { filter: { field: 'id', op: 'in', value: [id, repairId] } },
+    });
+    // The write door accepts a cohort with a permitted row; that is not a
+    // universal admission verdict. Consumers must inspect the named receipt.
+    expect(result.authoringAdmission, JSON.stringify({
+      admission: result.authoringAdmission,
+      familyReads: admissionMocks.getWorkItem.mock.calls,
+      floorReads: admissionMocks.explainIssueClaimFloors.mock.calls,
+    })).toMatchObject({ status: 'measured', wouldRefuse: false });
+    expect(result.authoringAdmission.preview.scopeAdmissibleIds).toEqual([repairId]);
+    expect(result.authoringAdmission.preview.alreadyHeldIds).toEqual([]);
+    expect(result.authoringAdmission.preview.floored).toEqual([{ id, admissible: false, refusedBy: 'stop-line' }]);
+    expect(result.authoringAdmission.warning).toContain(id + ':stop-line');
     expect(admissionMocks.setClaimSpec).not.toHaveBeenCalled();
   });
 
