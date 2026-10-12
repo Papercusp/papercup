@@ -1,12 +1,20 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 const root = resolve(__dirname, '../../..');
 
 describe('disposable operator-api monitoring sources', () => {
+  let auditDirectory: string | undefined;
+  afterEach(() => {
+    if (auditDirectory) rmSync(auditDirectory, { recursive: true, force: true });
+    auditDirectory = undefined;
+  });
   it('measures an explicitly paused private gate and preserves missing-source failure', () => {
+    const auditPath = process.env.PAPERCUSP_COMMITTED_SOURCE_AUDIT ??
+      join(auditDirectory = mkdtempSync(join(tmpdir(), 'operator-api-load-audit-')), 'loads.jsonl');
     const probe = `
       import { getOrgPg } from '@papercusp/db-org';
       import { releaseGateTile } from './packages/operator-core/lib/device-monitoring.ts';
@@ -31,7 +39,12 @@ describe('disposable operator-api monitoring sources', () => {
     const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
       cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PAPERCUSP_COMMITTED_SOURCE_AUDIT: auditPath,
+        NODE_OPTIONS: `--import=${resolve(root, 'scripts/lib/committed-source-loader.mjs')} ${process.env.NODE_OPTIONS ?? ''}` },
     });
+    // Retain original phase output even when readiness fails before the probe.
+    console.log(result.stdout);
+    if (result.stderr) console.error(result.stderr);
     expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
     // Progress messages must never be mistaken for the final ready identity.
     // These retained stages also identify import/registry/DB/sidecar stalls.
@@ -53,6 +66,18 @@ describe('disposable operator-api monitoring sources', () => {
     }
     expect(new Set(timings.map(timing => timing.childPid)).size).toBe(1);
     expect(new Set(timings.map(timing => timing.profileSourceSha256)).size).toBe(1);
+    const loads = readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const scriptLoad = loads.find(load => load.file === resolve(root, 'scripts/with-test-pg.mjs') &&
+      load.schemaVersion === 'committed-source-load-receipt-v1');
+    expect(scriptLoad, 'The wrapper must retain its observed loader receipt').toBeDefined();
+    expect(scriptLoad.returnedSha256).toMatch(/^[a-f0-9]{64}$/);
+    const profileLoad = loads.find(load => load.pid === timings[0].childPid &&
+      load.file === resolve(root, 'packages/operator-core/lib/harness-registry.ts') &&
+      load.schemaVersion === 'committed-source-load-receipt-v1');
+    expect(profileLoad, 'Isolation must preserve the audit channel in the actual profile child').toBeDefined();
+    expect(profileLoad.returnedSha256).toMatch(/^[a-f0-9]{64}$/);
+    // This receipt pins one loader boundary; it cannot qualify later transforms.
+    expect(profileLoad.unresolved).toContain('later-loader-transforms-unmeasured');
     for (const stage of ['harness-registry', 'embed-sidecar', 'db-org', 'device-monitoring',
       'pipeline-health', 'why-chain', 'git-pipeline-stats']) {
       const started = timings.find(timing => timing.stage === 'imports:' + stage && timing.phase === 'start' && !timing.heartbeat);
