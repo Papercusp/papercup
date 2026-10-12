@@ -50,11 +50,12 @@ describe('mergeExactAndBm25 (R-13, D-016)', () => {
     bm25.forEach((r, i) => expect(pos.get(r.id)!).toBeLessThanOrEqual(2 * (i + 1) - 1));
   });
 
-  it('scores rows by merged position on the RRF scale, never by either list scale', () => {
+  it('carries the best original ordinal on the RRF scale, never either raw scale (D-039)', () => {
     const merged = mergeExactAndBm25([{ id: 'e', rank: 0.001 }], [{ id: 'b', rank: 999 }], id, 10);
     expect(merged.map(r => r.id)).toEqual(['b', 'e']);
     expect(merged[0].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1), 12);
-    expect(merged[1].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 2), 12);
+    expect(merged[1].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1), 12);
+    expect(merged.map(r => r.fusionRank)).toEqual([1, 1]);
   });
 
   it('returns the BM25 list unchanged in order when the exact list is empty, and honours limit', () => {
