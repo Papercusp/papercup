@@ -33,6 +33,7 @@ vi.mock('../../telemetry-flush', () => ({ flushTelemetry: vi.fn(async () => ({ f
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: vi.fn(async () => null),
   writeOperatorState: vi.fn(async () => {}),
+  updateOperatorState: vi.fn(async (_key: string, initial: unknown, update: (current: unknown) => unknown) => update(initial)),
 }));
 vi.mock('../../voice-credentials', () => ({ readElevenLabsKey: vi.fn(async () => null) }));
 vi.mock('../../setup-wizard-install-id', () => ({ ensureInstallId: vi.fn(async () => 'install-1') }));
@@ -56,7 +57,7 @@ import desktopSetupWizardState from '../routes/desktop/setup-wizard-state';
 import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
 import desktopTelemetryReport from '../routes/desktop/telemetry-report';
 import desktopWorkspaceValidate from '../routes/desktop/workspace-validate';
-import { writeOperatorState, readOperatorState } from '../../operator-state-pg';
+import { writeOperatorState, readOperatorState, updateOperatorState } from '../../operator-state-pg';
 import * as fallbackObservations from '../../degradation/fallback-observations';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
@@ -446,6 +447,7 @@ describe('desktop route ports', () => {
     const res = await appWith(desktopSetupWizardState as AnyRoute[])
       .request('/desktop/setup-wizard-state', { ...json({ last_visited_step: 'keys' }), method: 'PATCH' });
     expect(res.status).toBe(200);
-    expect(writeOperatorState).toHaveBeenCalledOnce();
+    expect(updateOperatorState).toHaveBeenCalledWith('setup_wizard_state', { step_status: {} }, expect.any(Function));
+    expect(await res.json()).toMatchObject({ step_status: {}, last_visited_step: 'keys' });
   });
 });

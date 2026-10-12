@@ -1,10 +1,20 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const exec = promisify(execFile);
 const recorderPath = fileURLToPath(new URL('./event-loop-cpu-recorder.ts', import.meta.url));
+const eagerAdapterPath = fileURLToPath(new URL('./event-loop-cpu-profiler-eager-adapter.cc', import.meta.url));
+const nodeIncludePath = join(dirname(dirname(process.execPath)), 'include', 'node');
+const hasNode259ProfilerHeaders =
+  process.platform === 'linux' &&
+  process.versions.node.startsWith('25.9.') &&
+  existsSync(join(nodeIncludePath, 'v8-profiler.h'));
 
 describe('real monitor CPU recorder in an isolated Node process', () => {
   it('retains useful 100Hz samples across rotations, discards delayed work and releases its sampler', async () => {
@@ -85,4 +95,232 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
     expect(result.active.cpuMs / result.active.wallMs).toBeLessThan(0.15);
     expect(result.after.cpuMs / result.after.wallMs).toBeLessThan(0.02);
   }, 45_000);
+
+  it.skipIf(!hasNode259ProfilerHeaders)(
+    'measures the test-only eager V8 profiler lifecycle beside LoopCpuRecorder',
+    async () => {
+      const maxSamples = 64;
+      const tempDir = await mkdtemp(join(tmpdir(), 'papercusp-eager-profiler-'));
+      const addonPath = join(tempDir, 'eager-profiler.node');
+
+      try {
+        const compile = await exec(
+          process.env.CXX ?? 'c++',
+          [
+            '-std=c++20',
+            '-shared',
+            '-fPIC',
+            '-O2',
+            '-I' + nodeIncludePath,
+            eagerAdapterPath,
+            '-o',
+            addonPath,
+          ],
+          { timeout: 30_000, maxBuffer: 128 * 1024 },
+        );
+        expect(existsSync(addonPath)).toBe(true);
+
+        const run = async (strategy: 'inspector' | 'eager') => {
+          const workerSource =
+            "const { parentPort } = require('node:worker_threads'); " +
+            "let waiting = false; " +
+            "function tick() { if (waiting) return; waiting = true; parentPort.postMessage(1); } " +
+            "parentPort.on('message', () => { waiting = false; setTimeout(tick, 5); }); " +
+            'tick();';
+          const childScript = [
+            "import { createRequire } from 'node:module';",
+            "import { performance } from 'node:perf_hooks';",
+            "import { setTimeout as delay } from 'node:timers/promises';",
+            "import { Worker } from 'node:worker_threads';",
+            'import { LoopCpuRecorder } from ' + JSON.stringify(recorderPath) + ';',
+            'const strategy = ' + JSON.stringify(strategy) + ';',
+            'const maxSamples = ' + maxSamples + ';',
+            'const addonPath = ' + JSON.stringify(addonPath) + ';',
+            'const require = createRequire(import.meta.url);',
+            "const eager = strategy === 'eager' ? require(addonPath) : null;",
+            'const recorderLogs = [];',
+            "const recorder = strategy === 'inspector' ? new LoopCpuRecorder(1500, (line, detail) => recorderLogs.push({ line, ...detail })) : null;",
+            'const worker = new Worker(' + JSON.stringify(workerSource) + ', { eval: true, execArgv: [] });',
+            'let gapWindow = null;',
+            "worker.on('message', () => {",
+            '  const now = performance.now();',
+            '  if (gapWindow) { gapWindow.maxMs = Math.max(gapWindow.maxMs, now - gapWindow.lastMs); gapWindow.lastMs = now; }',
+            "  worker.postMessage('ack');",
+            '});',
+            'await new Promise(resolve => worker.once("online", resolve));',
+            'await delay(40);',
+            'async function measure(action) {',
+            '  await delay(20);',
+            '  const window = { maxMs: 0, lastMs: performance.now() };',
+            '  gapWindow = window;',
+            '  const startedAt = performance.now();',
+            '  const value = await action();',
+            '  await delay(25);',
+            '  gapWindow = null;',
+            '  return { value, durationMs: performance.now() - startedAt, workerGapMaxMs: window.maxMs };',
+            '}',
+            'let cursor = 1;',
+            'let churnedFunctions = 0;',
+            'const retained = Array.from({ length: 25000 }, (_, i) => {',
+            "  const fn = new Function('x', 'return x + ' + i);",
+            "  Object.defineProperty(fn, 'name', { value: 'map_' + i });",
+            '  fn(i);',
+            '  return fn;',
+            '});',
+            'function cpuHotFrame(durationMs = 8) {',
+            '  const until = performance.now() + durationMs;',
+            '  while (performance.now() < until) cursor = retained[cursor % retained.length](cursor) % retained.length;',
+            '}',
+            'let memoryWindow = null;',
+            'function sampleMemory() {',
+            '  if (!memoryWindow) return;',
+            '  const current = process.memoryUsage();',
+            '  memoryWindow.peakRss = Math.max(memoryWindow.peakRss, current.rss);',
+            '  memoryWindow.peakHeapUsed = Math.max(memoryWindow.peakHeapUsed, current.heapUsed);',
+            '}',
+            'async function workFor(durationMs) {',
+            '  const until = performance.now() + durationMs;',
+            '  while (performance.now() < until) {',
+            '    cpuHotFrame();',
+            '    const batch = Array.from({ length: 32 }, (_, offset) => {',
+            "      const name = 'churn_' + churnedFunctions + offset;",
+            "      const fn = new Function('x', 'return x + ' + (churnedFunctions + offset));",
+            "      Object.defineProperty(fn, 'name', { value: name });",
+            '      fn(cursor);',
+            '      return fn;',
+            '    });',
+            '    churnedFunctions += batch.length;',
+            '    void batch;',
+            '    sampleMemory();',
+            '    await delay(5);',
+            '  }',
+            '  return churnedFunctions;',
+            '}',
+            'function summarize(profile) {',
+            '  const nodes = Array.isArray(profile?.nodes) ? profile.nodes : [];',
+            '  const samples = Array.isArray(profile?.samples) ? profile.samples : [];',
+            '  const names = new Map(nodes.map(node => [node.id, node.callFrame?.functionName ?? ""]));',
+            '  const sampledNames = samples.map(id => names.get(id) ?? "");',
+            "  const hotSamples = sampledNames.filter(name => name === 'cpuHotFrame').length;",
+            "  const mapSamples = sampledNames.filter(name => name.startsWith('map_')).length;",
+            '  return { samples: samples.length, nodes: nodes.length, hotSamples, mapSamples, usefulSamples: hotSamples + mapSamples, bytes: Buffer.byteLength(JSON.stringify(profile)) };',
+            '}',
+            'async function captureInspector(durationMs) {',
+            '  const rotate = setInterval(() => { void recorder.update(true, true); }, 40);',
+            '  try {',
+            '    const pending = recorder.record(durationMs + 50);',
+            '    await delay(15);',
+            '    await workFor(durationMs);',
+            '    const recording = await pending;',
+            '    return { profile: summarize(recording.profile), startMs: recording.startMs, stopMs: recording.stopMs };',
+            '  } finally { clearInterval(rotate); }',
+            '}',
+            'async function captureEager(durationMs, alreadyStarted = false) {',
+            '  if (!alreadyStarted) eager.start(maxSamples);',
+            '  await workFor(durationMs);',
+            '  const finished = eager.finish(true, false);',
+            '  return { profile: summarize(JSON.parse(finished.profileJson)), sampleCount: finished.sampleCount, serialized: finished.serialized, disposed: finished.disposed };',
+            '}',
+            'async function revokeInspector(enabled, safe) {',
+            '  const pending = recorder.record(60000).then(() => false, () => true);',
+            '  await delay(15);',
+            '  const measured = await measure(() => recorder.update(enabled, safe));',
+            '  return { updateReturned: measured.value, durationMs: measured.durationMs, workerGapMaxMs: measured.workerGapMaxMs, captureRejected: await pending };',
+            '}',
+            'async function revokeEager() {',
+            '  eager.start(maxSamples);',
+            '  const measured = await measure(() => eager.finish(false, true));',
+            '  return { ...measured.value, durationMs: measured.durationMs, workerGapMaxMs: measured.workerGapMaxMs };',
+            '}',
+            'const startup = await measure(() => strategy === "inspector" ? recorder.update(true, true) : eager.create());',
+            'for (const fn of retained) fn(1);',
+            'await delay(50);',
+            'const primary = await measure(() => strategy === "inspector" ? captureInspector(1000) : captureEager(1000));',
+            'const disabledRevocation = strategy === "inspector" ? await revokeInspector(false, true) : await revokeEager();',
+            'const recoveryWarmup = await measure(() => strategy === "inspector" ? recorder.update(true, true) : (eager.create(), eager.start(maxSamples)));',
+            'const recoveryCapture = await measure(() => strategy === "inspector" ? captureInspector(350) : captureEager(350, true));',
+            'const unsafeRevocation = strategy === "inspector" ? await revokeInspector(true, false) : await revokeEager();',
+            'const memoryBefore = process.memoryUsage();',
+            'memoryWindow = { peakRss: memoryBefore.rss, peakHeapUsed: memoryBefore.heapUsed };',
+            'if (strategy === "inspector") await recorder.update(true, true);',
+            'else { eager.create(); eager.start(maxSamples); }',
+            'await workFor(2100);',
+            'const memoryPeak = { ...memoryWindow };',
+            'memoryWindow = null;',
+            'const delayedCleanup = strategy === "inspector"',
+            '  ? await measure(() => recorder.update(true, true))',
+            '  : await measure(() => eager.finish(false, true));',
+            'if (global.gc) global.gc();',
+            'const memoryAfter = process.memoryUsage();',
+            'const delayed = {',
+            '  cleanup: delayedCleanup.value,',
+            '  durationMs: delayedCleanup.durationMs,',
+            '  workerGapMaxMs: delayedCleanup.workerGapMaxMs,',
+            '  memory: { beforeRss: memoryBefore.rss, peakRss: memoryPeak.peakRss, peakRssDelta: memoryPeak.peakRss - memoryBefore.rss, beforeHeapUsed: memoryBefore.heapUsed, peakHeapUsed: memoryPeak.peakHeapUsed, retainedHeapDelta: memoryAfter.heapUsed - memoryBefore.heapUsed },',
+            '};',
+            'const result = {',
+            '  strategy,',
+            '  startup: { durationMs: startup.durationMs, workerGapMaxMs: startup.workerGapMaxMs },',
+            '  primary: { ...primary.value, durationMs: primary.durationMs, workerGapMaxMs: primary.workerGapMaxMs },',
+            '  disabledRevocation,',
+            '  recoveryWarmup: { durationMs: recoveryWarmup.durationMs, workerGapMaxMs: recoveryWarmup.workerGapMaxMs },',
+            '  recoveryCapture: { ...recoveryCapture.value, durationMs: recoveryCapture.durationMs, workerGapMaxMs: recoveryCapture.workerGapMaxMs },',
+            '  unsafeRevocation,',
+            '  delayed,',
+            '  serializations: strategy === "eager" ? eager.serializationCount() : null,',
+            '  churnedFunctions,',
+            '  recorderWarmups: recorderLogs.filter(entry => "warmupMs" in entry).map(entry => entry.warmupMs),',
+            '};',
+            'if (strategy === "inspector") recorder.stop();',
+            'if (strategy === "eager") eager.dispose();',
+            'await worker.terminate();',
+            'process.stdout.write(JSON.stringify(result));',
+          ].join('\n');
+
+          const { stdout } = await exec(
+            process.execPath,
+            ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', childScript],
+            { timeout: 90_000, maxBuffer: 128 * 1024 },
+          );
+          return JSON.parse(stdout);
+        };
+
+        const inspector = await run('inspector');
+        const eager = await run('eager');
+        const gates = {
+          sampleCap: eager.primary.sampleCount <= maxSamples &&
+            eager.delayed.cleanup.sampleCount <= maxSamples,
+          recoveredHotFrames: eager.recoveryCapture.profile.usefulSamples >= 3,
+          discardedWithoutSerialization:
+            !eager.disabledRevocation.serialized &&
+            !eager.unsafeRevocation.serialized &&
+            !eager.delayed.cleanup.serialized,
+          disposedOnRevocation:
+            eager.disabledRevocation.disposed &&
+            eager.unsafeRevocation.disposed &&
+            eager.delayed.cleanup.disposed,
+          boundedMemory:
+            eager.delayed.memory.peakRssDelta < 128 * 1024 * 1024 &&
+            eager.delayed.memory.retainedHeapDelta < 16 * 1024 * 1024,
+          lowerRecoveryGap:
+            eager.recoveryWarmup.workerGapMaxMs < inspector.recoveryWarmup.workerGapMaxMs,
+        };
+        console.info('P-003 paired eager V8 profiler measurement:', JSON.stringify({ inspector, eager, gates }));
+
+        expect(eager.primary.serialized).toBe(true);
+        expect(eager.primary.profile.samples).toBeLessThanOrEqual(maxSamples);
+        expect(eager.primary.profile.bytes).toBeLessThan(8 * 1024 * 1024);
+        expect(eager.disabledRevocation.serialized).toBe(false);
+        expect(eager.unsafeRevocation.serialized).toBe(false);
+        expect(eager.delayed.cleanup.serialized).toBe(false);
+        expect(eager.delayed.cleanup.disposed).toBe(true);
+        expect(eager.serializations).toBe(2);
+        expect(Number.isFinite(eager.recoveryWarmup.workerGapMaxMs)).toBe(true);
+        expect(Number.isFinite(eager.delayed.workerGapMaxMs)).toBe(true);
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });

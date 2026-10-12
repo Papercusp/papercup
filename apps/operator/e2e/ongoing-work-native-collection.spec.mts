@@ -139,6 +139,36 @@ async function attachNativeEvidence(info: TestInfo, name: string,
   await info.attach(name, { path: file, contentType: attachment.contentType });
 }
 
+async function runNativeActionWithFailureCapture<T>(action: () => Promise<T>,
+  capture: (failure: unknown) => Promise<void>): Promise<T> {
+  try {
+    return await action();
+  } catch (failure) {
+    try {
+      await capture(failure);
+    } catch (captureFailure) {
+      throw new AggregateError([failure, captureFailure],
+        'Native action failed and its post-action evidence could not be retained');
+    }
+    throw failure;
+  }
+}
+
+test('native action rejection captures post-action state before preserving the original error', async () => {
+  const actionFailure = new Error('native click deadline after dispatch');
+  let dispatched = false;
+  let captured: { dispatched: boolean; failure: unknown } | undefined;
+
+  await expect(runNativeActionWithFailureCapture(async () => {
+    dispatched = true;
+    throw actionFailure;
+  }, async failure => {
+    captured = { dispatched, failure };
+  })).rejects.toBe(actionFailure);
+
+  expect(captured).toEqual({ dispatched: true, failure: actionFailure });
+});
+
 test('native JSON evidence survives successful trace disposal', async ({}, info) => {
   const name = 'native-retained-evidence-guard';
   const evidence = { viewport: { width: 1280, height: 900 },
@@ -521,7 +551,52 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(cockpit.hasDraftControls).toBe(false);
     const browse = `${panel} .woe__priority .woe__actions button:last-child`;
     expect(await measure(`document.querySelector(${JSON.stringify(browse)})?.textContent`)).toBe('Browse all plans');
-    await native('click', browse, '--json');
+    await runNativeActionWithFailureCapture(
+      () => native('click', browse, '--json'),
+      async failure => {
+        let state: unknown;
+        let stateError: string | undefined;
+        try {
+          state = await measure(`({
+            url: location.href,
+            routerSearch: window.__TSR_ROUTER__?.latestLocation?.search ?? window.__TSR_ROUTER__?.state?.location?.search ?? null,
+            browseQuery: new URL(location.href).searchParams.get('hudwoebrowse'),
+            priorityIds: Array.from(document.querySelectorAll('[data-testid="ongoing-priority-row"]')).map(n => n.dataset.worklistId),
+            worklistIds: Array.from(document.querySelectorAll('[data-testid="ongoing-worklist-row"]')).map(n => n.dataset.worklistId),
+            buttons: Array.from(document.querySelectorAll('${panel} button')).map(n => ({
+              text: n.textContent, pressed: n.getAttribute('aria-pressed'), disabled: n.disabled,
+            })),
+            alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(n => n.textContent),
+          })`);
+        } catch (error) {
+          stateError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        }
+
+        const screenshotPath = info.outputPath('native-browse-action-failure.png');
+        let screenshotError: string | undefined;
+        try {
+          await native('screenshot', '--output', screenshotPath);
+          await info.attach('native-browse-action-failure-screenshot', {
+            path: screenshotPath, contentType: 'image/png',
+          });
+        } catch (error) {
+          screenshotError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        }
+        await attachNativeEvidence(info, 'native-browse-action-failure', {
+          body: JSON.stringify({
+            action: 'Browse all plans',
+            error: failure instanceof Error
+              ? { name: failure.name, message: failure.message, stack: failure.stack }
+              : String(failure),
+            state,
+            stateError,
+            screenshotError,
+            sourceReceipt,
+          }),
+          contentType: 'application/json',
+        });
+      },
+    );
     await ready(`new URL(location.href).searchParams.get('hudwoebrowse') === 'true'`);
     await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-priority-row"]').length === 3`);
     expect(await measure(`!!document.querySelector('${panel} .woe__draft-bar')`)).toBe(false);

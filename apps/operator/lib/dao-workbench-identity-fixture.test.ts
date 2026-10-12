@@ -5,9 +5,11 @@ import { join, resolve } from 'node:path';
 import childProcess from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer, type Server } from 'node:http';
-import { installIdentityFixture, prepareIdentityFixture, readNativeHostHealth } from '../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { installIdentityFixture, prepareIdentityFixture, readNativeHostHealth, selectIdentityFixtureActor } from '../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { createDeviceAttestationBody } from '../../../packages/operator-core/lib/identity/attest';
 import { verifyEd25519 } from '../../../packages/operator-core/lib/identity/ed25519';
+import { invalidateLocalGithubIdentityCache, resolveLocalGithubIdentity } from '../../../packages/operator-core/lib/identity/resolve-local-github-identity';
+import { clearOctokitCache } from '../../../packages/operator-core/lib/identity/octokit-client';
 
 let cleanup = () => {};
 afterEach(() => cleanup());
@@ -26,10 +28,49 @@ describe('native DAO synthetic identity isolation', () => {
     await expect(exec('secret-tool', ['store', 'service', 'papercusp-device-keypair', 'account', 'real-owner'])).rejects.toThrow('writes');
     await expect(exec('security', ['find-generic-password'])).rejects.toThrow('writes');
     await expect(exec('gh', ['gist', 'create'])).rejects.toThrow('refuses');
-    const user = await fetch('https://api.github.com/user', { headers: { authorization: 'token synthetic-workbench-token' } });
+    const token = (await exec('gh', ['auth', 'token'])).stdout.trim();
+    const user = await fetch('https://api.github.com/user', { headers: { authorization: 'token ' + token } });
     expect(await user.json()).toEqual({ id: fixture.githubUserId, login: fixture.githubLogin });
     await expect(fetch('https://api.github.com/gists', { method: 'POST' })).rejects.toThrow('outbound');
     await expect(fetch('https://api.github.com/user', { headers: { authorization: 'token real-credential' } })).rejects.toThrow('real GitHub credentials');
+  });
+  it('rotates two admins and a candidate through the real cached resolver, verified emails and device signatures', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dao-hr-actors-test-'));
+    const path = prepareIdentityFixture(dir), fixture = JSON.parse(readFileSync(path, 'utf8'));
+    const env = { PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', DAO_WORKBENCH_IDENTITY_FIXTURE: path };
+    invalidateLocalGithubIdentityCache(); clearOctokitCache();
+    const restore = installIdentityFixture(fixture, env);
+    cleanup = () => { restore(); invalidateLocalGithubIdentityCache(); clearOctokitCache(); rmSync(dir, { recursive: true, force: true }); };
+    const identities = [], publicKeys = new Set<string>(), tokens = new Set<string>();
+    // Returning to admin also proves that no stale candidate token/identity leaks.
+    for (const name of ['admin', 'approver', 'candidate', 'admin']) {
+      selectIdentityFixtureActor(path, name, env);
+      const actor = fixture.actors[name];
+      const identity = await resolveLocalGithubIdentity();
+      expect(identity).toEqual({ kind: 'ok', token: actor.token, githubUserId: actor.githubUserId, githubLogin: actor.githubLogin });
+      if (identity.kind !== 'ok') throw new Error('Fixture identity did not resolve');
+      const emails = await fetch('https://api.github.com/user/emails', { headers: { Authorization: 'Bearer ' + identity.token } });
+      expect(await emails.json()).toEqual([{ email: actor.email, verified: true, primary: true, visibility: 'private' }]);
+      const announce = JSON.parse(readFileSync(join(dir, 'announce.json'), 'utf8'));
+      expect(announce).toMatchObject({ githubUserId: actor.githubUserId, keychainId: actor.keychainId, devicePubkeyBase64: actor.device.publicKey });
+      expect(statSync(join(dir, 'announce.json')).mode & 0o777).toBe(0o600);
+      const body = await createDeviceAttestationBody({ keychainId: actor.keychainId, pubkeyBase64: actor.device.publicKey,
+        deviceLabel: 'Isolated HR actor', githubUserId: actor.githubUserId, githubLogin: actor.githubLogin });
+      const { signature_by_device, ...payload } = body;
+      const signature = Buffer.from(signature_by_device, 'base64');
+      expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), actor.device.publicKey, signature)).toBe(true);
+      const other = fixture.actors[name === 'admin' ? 'candidate' : 'admin'];
+      expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), other.device.publicKey, signature)).toBe(false);
+      identities.push(identity); publicKeys.add(actor.device.publicKey); tokens.add(actor.token);
+    }
+    expect(new Set(identities.map(identity => identity.githubUserId)).size).toBe(3);
+    expect(publicKeys.size).toBe(3); expect(tokens.size).toBe(3);
+    const before = readFileSync(join(dir, 'announce.json'), 'utf8');
+    expect(() => selectIdentityFixtureActor(path, 'candidate', {})).toThrow('isolated');
+    expect(() => selectIdentityFixtureActor(path, 'unknown', env)).toThrow('Unknown');
+    expect(readFileSync(join(dir, 'announce.json'), 'utf8')).toBe(before);
+    await expect(fetch(new Request('https://api.github.com/user/emails', { method: 'POST',
+      headers: { authorization: 'Bearer ' + fixture.actors.candidate.token } }))).rejects.toThrow('outbound');
   });
   it('signs the canonical binding with the isolated device and rejects altered metadata', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dao-attestation-test-'));

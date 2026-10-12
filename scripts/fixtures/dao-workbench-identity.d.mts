@@ -7,4 +7,6 @@ export function readNativeHostHealth(env?: NodeJS.ProcessEnv): Promise<{
     health: any;
 }>;
 export function prepareIdentityFixture(directory: any): string;
+/** Switch credentials only; the native journey still performs all product actions through its UI. */
+export function selectIdentityFixtureActor(path: any, name: any, env?: NodeJS.ProcessEnv): void;
 export function installIdentityFixture(fixture: any, env?: NodeJS.ProcessEnv): () => void;

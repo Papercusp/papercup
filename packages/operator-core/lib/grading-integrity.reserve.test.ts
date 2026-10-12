@@ -370,6 +370,7 @@ describe('reservePendingGradingAudit', () => {
       const result = await reservePendingGradingAudit('EI-walled', 'grading-audit:walled', {
         workspaceId: 'ws-test',
         now,
+        allowGenerationIncompatibleBackoff: true,
       });
 
       expect(result).toEqual({ status: 'quota-backoff', backoff: liveBackoff });
@@ -392,9 +393,36 @@ describe('reservePendingGradingAudit', () => {
       const result = await reservePendingGradingAudit('EI-route-failed', 'grading-audit:route-failed', {
         workspaceId: 'ws-test',
         now,
+        allowGenerationIncompatibleBackoff: true,
       });
 
       expect(result).toEqual({ status: 'dispatch-backoff', backoff: dispatchBackoff });
+    });
+
+    it('lets a proven compatible dispatcher clear a live legacy generation-incompatible backoff', async () => {
+      const generationBackoff = {
+        ...liveBackoff,
+        source: 'retry-window' as const,
+        code: 'generation_incompatible',
+        reason: 'an older dispatcher build failed ancestry validation',
+      };
+      const { statements } = transactionHarness({
+        claim: true,
+        currentState: 'pending',
+        backoff: generationBackoff,
+      });
+
+      const result = await reservePendingGradingAudit('EI-recovered-generation', 'grading-audit:recovered-generation', {
+        workspaceId: 'ws-test',
+        now,
+        allowGenerationIncompatibleBackoff: true,
+      });
+
+      expect(result).toMatchObject({ status: 'claimed' });
+      const claim = statements.find((statement) => statement.text.includes('RETURNING feature_id'));
+      expect(claim?.text).toContain("payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'generation_incompatible'");
+      expect(claim?.values).toContain(true);
+      expect(claim?.text).toContain("#- '{observation,gradingAudit,dispatchBackoff}'");
     });
 
     it('does not refuse on a SPENT backoff — an elapsed stamp falls through to the ordinary verdict', async () => {
