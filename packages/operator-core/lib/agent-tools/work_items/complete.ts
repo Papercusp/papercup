@@ -108,6 +108,8 @@ import {
   describeUnprovenContentIdentity,
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
+import { pgMechanicsLedger, readWorkItemMechanics } from './_mechanics';
+import { prefillCompletionFromMechanics, type CompletionPrefill } from './completion-prefill';
 export type { CompletionTreeStampProbe, CompletionTreeStampForEvidenceProbe } from './completion-freshness';
 import { claimsRemediation, evaluateCloseTerminalCriteria } from './terminal-criteria';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
@@ -3591,6 +3593,32 @@ async function completeOne(
   // refusal if that report is enforced). Keep the resolver unchanged and gate only the
   // completion boundary; ordinary remediating done/resolved closes still receive the
   // exact gate and report behavior.
+  //
+  // P-008 / R-7 (plan derived-status-not-hand-written-2026-10-12): a successful close by
+  // the holder fills ABSENT testsRun / testResult / filesChanged from the read-time
+  // mechanics ledgers (completion-prefill.ts) BEFORE any gate reads the evidence, and the
+  // result discloses every filled field as `completionPrefill`. Duplicate closes and
+  // closes by a non-holder are skipped: the claim window's edits are the holder's, not
+  // the closer's. Fail-soft: a ledger error leaves the completion exactly as supplied.
+  let completionPrefill: CompletionPrefill | null = null;
+  if (
+    closeIntentRequested &&
+    successfulClose &&
+    callerOwnsAssignee &&
+    existing.assignee &&
+    existing.takenAt &&
+    !(typeof it.completion.duplicateOf === 'string' && it.completion.duplicateOf.trim())
+  ) {
+    const mechanics = await readWorkItemMechanics(
+      { id: it.id, harness: it.harness ?? existing.harness ?? null, assignee: existing.assignee, takenAt: existing.takenAt },
+      pgMechanicsLedger(ctx.workspaceId ?? ctx.principal?.workspaceId ?? null),
+    ).catch(() => null);
+    const filled = prefillCompletionFromMechanics(it.completion, mechanics);
+    if (filled.prefill) {
+      it.completion = filled.completion;
+      completionPrefill = filled.prefill;
+    }
+  }
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   const duplicateCloseCoverageException =
     typeof it.completion.duplicateOf === 'string' &&
@@ -5604,6 +5632,7 @@ async function completeOne(
     ...(boundaryNoteEligible ? { boundaryNotePosted, ...(boundaryNoteError ? { boundaryNoteError } : {}) } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
+    ...(completionPrefill ? { completionPrefill } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
     // The text is written in the future tense ("will red the next checkpoint"),
     // which is true of a terminal row and false of a close that was rejected — and
