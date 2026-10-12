@@ -99,7 +99,10 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|apps/operator/scripts/ptool.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs': NA_CLI,
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
-  'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts': migrate('P-013'),
+  // Exact original row independently reviewed in thread-post:1175978; D-048.
+  'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier': na(
+    'unit-tier database guard logs a diagnosis and immediately throws before database access; fallback wording describes the separate enum overlay, not a fallback decision at this site',
+  ),
   'log-only-fallback|packages/operator-core/lib/agent-tools/index.ts': NA_FALLBACK_WAKE,
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
@@ -141,7 +144,10 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx': NA_UI,
   'health-flag-no-condition|apps/operator/app/harness/insights/SubstrateHealthPill.tsx': NA_UI,
   'health-flag-no-condition|packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts': migrate('P-013'),
+  // Exact original row independently reviewed in thread-post:1175978; D-048.
+  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows': na(
+    'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback',
+  ),
   'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts': migrate('P-014'),
