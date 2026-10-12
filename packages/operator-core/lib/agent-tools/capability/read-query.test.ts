@@ -75,6 +75,27 @@ describe('querySavedResult', () => {
     expect(returned).toBeLessThan(Buffer.byteLength(body) / 100);
   });
 
+  // R-5: the context window is the requested number of neighbouring lines on each side,
+  // clipped at the body edges, defaulting to 2 and capped at 10.
+  it('returns the requested context window around each match, clipped at the body edges', () => {
+    const body = ['l1', 'l2 hit', 'l3', 'l4', 'l5', 'l6', 'l7 hit'].join('\n');
+    const one = querySavedResult(buf(body), { query: 'hit', context: 1 });
+    expect(one.matches.map((m) => [m.line, m.before, m.after])).toEqual([
+      [2, ['l1'], ['l3']],
+      [7, ['l6'], []],
+    ]);
+    const three = querySavedResult(buf(body), { query: 'hit', context: 3 });
+    expect(three.matches[0].before).toEqual(['l1']);
+    expect(three.matches[0].after).toEqual(['l3', 'l4', 'l5']);
+    expect(three.matches[1].before).toEqual(['l4', 'l5', 'l6']);
+    const dflt = querySavedResult(buf(body), { query: 'l7' });
+    expect(dflt.matches[0].before).toEqual(['l5', 'l6']);
+    const long = Array.from({ length: 30 }, (_, i) => (i === 15 ? 'hit' : `n${i}`)).join('\n');
+    const capped = querySavedResult(buf(long), { query: 'hit', context: 50 });
+    expect(capped.matches[0].before).toHaveLength(10);
+    expect(capped.matches[0].after).toHaveLength(10);
+  });
+
   it('falls back to plain text when a body that looks like JSON does not parse', () => {
     expect(searchableView(buf('{ not json\nsecond')).view).toBe('text');
   });
