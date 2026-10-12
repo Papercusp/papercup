@@ -2515,6 +2515,46 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('preserves a recovering capacity-screen fallback after retiring a gateway-failed primary', async () => {
+    const d = deps();
+    const nowMs = Date.parse('2026-10-12T00:08:00.000Z');
+    d.listScorecards.mockResolvedValue([card('EI-gateway-capacity')]);
+    d.launch
+      .mockResolvedValueOnce(launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-primary', logPath: '/tmp/primary.log' }] },
+      }))
+      .mockResolvedValueOnce(launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }] },
+      }));
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-gateway-capacity'], ctx },
+      {
+        ...d,
+        killTask,
+        providerCanServe: async () => true,
+        now: () => nowMs,
+        readLogTail: (path) => path.includes('fallback')
+          ? '⚠ Selected model is at capacity. Please try a different model.'
+          : 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s',
+        terminalLogMaxRechecks: 0,
+      },
+    );
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-primary', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-primary'],
+        codes: ['inference_gateway_error'],
+        attempts: 2,
+      },
+    });
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
   it('stops after one recovery when the fallback is quota-terminal too', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-double-quota')]);
