@@ -1911,6 +1911,24 @@ else
   echo "! ptool launcher not found at $PTOOL_LAUNCHER; skipping ptool install"
 fi
 
+# 4i. Install the pinned RTK binary at ~/.local/bin/rtk (WI-6554700010009291).
+# The native-Bash egress guard and capability:bash both rewrite shell commands
+# through `rtk rewrite` for compressed output, and both fail OPEN when rtk is
+# absent, so losing the binary silently disables RTK fleet-wide. That happened
+# once already: rtk lived in the Homebrew prefix, the prefix was rebuilt on
+# 2026-08-15, and nothing put it back. install-rtk.sh pins the release by
+# sha256 and installs outside any package manager's prefix; it is a no-op when
+# the pinned version is already there. A failure here is loud but does not
+# abort the rest of the install.
+RTK_INSTALLER="${SCRIPT_DIR}/install-rtk.sh"
+if [ -f "$RTK_INSTALLER" ]; then
+  if ! bash "$RTK_INSTALLER"; then
+    echo "! rtk install failed — RTK output compression stays OFF until it succeeds (re-run: bash $RTK_INSTALLER)"
+  fi
+else
+  echo "! rtk installer not found at $RTK_INSTALLER; skipping rtk install"
+fi
+
 # 5. Verify the endpoint accepts the token.
 echo
 echo "→ Verifying loopback access at ${OPERATOR_URL}/api/mcp?superuser=1"
