@@ -77,7 +77,6 @@ export const DISPOSITIONS = Object.freeze({
   ),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/loop-dead-man.ts': migrate('P-009'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts': migrate('P-009'),
-  'owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts': na(
     'notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own',
   ),
@@ -92,7 +91,6 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/papercup/papercup-proactive-sweep-deps.ts': na(
     'the Papercup assistant’s proactive Sentinel message to its user; a product feature, not a system failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/release/idle-repair-queue-actuator.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/staging-fix-proposal-cli.ts': na(
     'a CLI proposing a staging fix for owner review at normal importance; a proposal, not a failure signal',
   ),

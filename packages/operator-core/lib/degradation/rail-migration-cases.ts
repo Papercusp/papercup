@@ -16,7 +16,7 @@ export interface RailMigrationCase {
   run: () => RailMigrationOutcome | Promise<RailMigrationOutcome>;
 }
 
-export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-010'];
+export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-010'];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [{
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
