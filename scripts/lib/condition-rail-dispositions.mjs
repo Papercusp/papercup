@@ -94,7 +94,6 @@ export const DISPOSITIONS = Object.freeze({
   ),
   'log-only-fallback|apps/operator/bin/llm-test.ts': NA_CLI,
   'log-only-fallback|libs/papercusp/packages/cli/src/snapshot-cli.ts': NA_CLI,
-  'log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts': migrate('P-013'),
   'log-only-fallback|apps/operator/scripts/onboard-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/psu-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/ptool.mjs': NA_CLI,
