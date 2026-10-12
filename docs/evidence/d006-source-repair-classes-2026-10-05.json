@@ -1971,11 +1971,38 @@
           "investigator": "su-8df00c9a-c33a-4292-a81c-7a2bc6e0d307",
           "testSha256": "a2e7907bf435024ab8e7f5b12c122aa6bb054f814c7001a66fe3d9f5179b85f4",
           "editScope": "Confined conventional-test capture retains reached failure phase, complete before/after snapshots, assertion/stack, private database identity, native Node and actual test SHA. Both original cases and token-at-UPDATE/strict terminal replay assertions remain unchanged; ancillary capture failures preserve the original assertion.",
-          "execution": "not-started: diagnostic test must be committed before the ONE maintained immutable literal-file run. Background git-sync is in flight; exact resource-release await276192 unlocks commit verification.",
+          "execution": "CONSUMED: the ONE maintained immutable literal-file diagnostic ran at25b768f6978dcaf7808222bc64feda2d6b74d74f, receipt21132130, exit1,2cases1PASS1FAIL0skip. Full retained failure capture establishes exactly /ideaOrigin ABSENT-to-dream after replay with unchanged completion token; log SHAf3f4b460db170b9d2c050b38e62c0adcbd3cc4f3cf38cafd4c8d1346939c6d17. Do not rerun D018. Separate production repair authority and current-build verification are recorded below under D023.",
           "capturePaths": [".papercusp/scratch/ei257224-d018-diagnostic.log", ".papercusp/scratch/ei257224-d018-failures.json", ".papercusp/scratch/ei257224-d018-receipts.jsonl"],
           "bounds": "D-018 grants diagnosis only. No production repair, old terminal-repair replay, new actor, broad/final sweep, oracle relaxation, gate action or fullarm/trial expansion; full cause/source/environment assurance and final readiness remain unknown."
         },
-        "limits": "Historical original repair is qualified but later clean failures prevent a repaired disposition. Keep row open-unknown, ordinary source admission, strict whole-terminal-payload oracle, independent TEST/D006 STOP and all final readiness/acceptance/shipment limits. The specific D-018 diagnostic allocation is separate from final source admission; this evidence record grants no production repair or repaired verdict."
+        "currentRepair": {
+          "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-023",
+          "item": "EI-25722406556193713",
+          "terminalOwner": "su-1ad13eab-f9a8-407f-9aba-ccbb1713c460",
+          "completionAuthority": "committed",
+          "repairStage": "current-build-focused-production-repair-verified",
+          "rootCause": "Both Dream capture paths omitted origin. Generic routed-ledger stamping later added ideaOrigin to an already-terminal payload. The retained D018 recursive comparison measured only that field changing while the completion token stayed equal.",
+          "repair": "Stamp the maintained Dream origin at both capture paths and use the shared any-family terminal predicate to preserve legacy terminal payloads. Conventional guards retain strict full-payload equality, token-at-UPDATE, crash-before-ledger, concurrent/repeated replay and legacy missing-origin replay. Fixture preconditions use the maintained recipe constants and mergeIssuePayload unset seam.",
+          "testRuns": {
+            "dream": 21134931,
+            "routedLedgerOrigin": 21134930
+          },
+          "testResult": "2026-10-12T01:13:15.609Z: exact two-file current-build private-PG run,23PASS0FAIL0skip,exit0; requested/executed/matched2files, no name selector; private PG stopped.",
+          "testedHead": "ad3ba262de8856b66be5145e47413ae604e6faf2",
+          "sourceEvidence": ".papercusp/scratch/ei257224-d023-20261012T0113-evidence.json",
+          "sourceIdentityScope": "The recorded HEAD and15 measured source/config/helper/fixture hashes were unchanged before and after this run. DIRTY1/2 tested-path dimensions remain current-build local evidence; committed completion authority does not convert them into a clean committed or released test run.",
+          "testSha256": "e5a5250ca307e16186134941ddff45dce9ff2cace91a218afc9bbc6f45c7c886",
+          "schemaFileCount": 1252,
+          "schemaSha256": "dfea1a59d1677af9d45929c5473d48c0447c7056a3339e2b79dbd3bd04443235",
+          "focusedLog": ".papercusp/scratch/ei257224-d023-20261012T0113-tests.log",
+          "focusedLogSha256": "75a4ea931cb286aae94a8a1a7741b6648b8f3e4f0912e2646063740c01cf20af",
+          "receipts": ".papercusp/scratch/ei257224-d023-20261012T0113-receipts.jsonl",
+          "receiptsSha256": "c6e01c62c73cfcbccfad607496fd5a8ce0b3d741d4fb8aee0e60ee5509348f67",
+          "causalVerificationRef": "EI-25722406556193713#completion.rootCauseVerification",
+          "completeImportGraphCurrentness": "unknown",
+          "finalSourceReadiness": "not-established"
+        },
+        "limits": "D023's committed causal completion verifies the bounded production repair in the recorded current-build private-PG environment. Keep this original-source census row open-unknown until its complete loaded-source/configuration/schema/environment and final source admission requirements are met. Preserve the failed historical census, strict whole-terminal-payload oracle, sole independent TEST/D006 STOP and all final readiness/acceptance/shipment limits. D018 is consumed; neither diagnostic nor settled repair is replayed by this evidence reconciliation."
       },
       "lines": [
         13396
@@ -1990,7 +2017,7 @@
         "root": "/tmp/papercusp-lint-as-committed-54c6f7604a-I4I82x",
         "startedAt": "2026-10-06T00:16:39.062Z"
       },
-      "latestReceiptMeaning": "Inherited20793753 is a historical clean PASS, not the latest observed verdict: later clean21070372/21104218 FAIL the replay case. See historicalQualification and owned EI-25722406556193713; current cause and complete loaded source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Inherited20793753 remains historical clean proof and later clean21070372/21104218 remain historical FAILs. D023 currentRepair now records later21134931/21134930 local current-build PASS and a committed causal completion for the origin mutation. That bounded repair does not establish complete loaded-source/import/environment or final D006 assurance; no census-state count, acceptance or shipment claim changes."
     },
     {
       "path": "packages/operator-core/lib/goals/package-goal-e2e.integration.test.ts",
