@@ -406,6 +406,22 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe('bare-gate-imperative');
     });
 
+    it('EI-25438670819476017: accepts a negative-existence owner-directive disclaimer', () => {
+      expect(
+        lintCarrySurfaceProvenance('No applicable owner directive was provided for this task.'),
+      ).toEqual({ flagged: false, matches: [] });
+    });
+
+    it('EI-25438670819476017: keeps an imperative loud beside a negative-existence disclaimer', () => {
+      expect(
+        lintCarrySurfaceProvenance('No applicable owner directive was found; do NOT deploy until reviewed.')
+          .matches[0]?.kind,
+      ).toBe('bare-gate-imperative');
+      expect(lintCarrySurfaceProvenance('Do not ignore owner directive #9.').matches[0]?.kind).toBe(
+        'manual-owner-tag',
+      );
+    });
+
     it('never flags a backtick-quoted mention of the phrase', () => {
       expect(
         lintCarrySurfaceProvenance('the doc uses the phrase `owner directive` loosely').flagged,
