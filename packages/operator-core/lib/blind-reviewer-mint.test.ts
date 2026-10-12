@@ -98,6 +98,30 @@ describe('blind reviewer tool ceiling — catalog truth', () => {
 });
 
 describe('blind reviewer confinement — gate decisions', () => {
+  it('allows only nominated product docs and bounded raw test-file history, never plan or bound-proof selectors', () => {
+    const confinement = blindReviewerConfinement(SLUG, { harness: 'papercusp', docsHarness: 'engineering',
+      docsSlugs: ['agent-insights/proving-a-guard-is-falsifiable'], testFiles: ['lib/probe.test.ts'] });
+    const read = (toolName: string, args: unknown) => evaluateSessionConfinement({ toolName, args, confinement });
+    const docs = { harness: 'engineering', slugs: ['agent-insights/proving-a-guard-is-falsifiable'] };
+    const runs = { harness: 'papercusp', filePath: 'lib/probe.test.ts', source: 'mutation-probe', sinceHours: 24, limit: 20 };
+    expect(read('docs:get', docs).allowed).toBe(true);
+    expect(read('testing:runs', runs).allowed).toBe(true);
+    for (const args of [{ ...docs, slugs: ['other-guide'] }, { ...docs, harness: 'other' },
+      { ...docs, source: true }, { ...docs, slug: docs.slugs[0], slugs: undefined }]) {
+      expect(read('docs:get', args).allowed).toBe(false);
+    }
+    for (const args of [{ ...runs, filePath: 'probe' }, { ...runs, harness: 'other' },
+      { ...runs, limit: 21 }, { ...runs, sinceHours: undefined }, { ...runs, source: 'ci' },
+      { ...runs, testRunIds: [123] }, { ...runs, rollup: 'commit' }]) {
+      expect(read('testing:runs', args).allowed).toBe(false);
+    }
+    for (const name of ['plans:get-spec-evidence', 'plans:get', 'rubrics:get', 'scorecards:get', 'reports:get', 'docs:search']) {
+      expect(read(name, {}).allowed, name).toBe(false);
+    }
+    expect(evaluate('docs:get').allowed).toBe(false); // Legacy no-nomination ceiling stays closed.
+    expect(Object.isFrozen(confinement.denyProductReadsOutside?.docsSlugs)).toBe(true);
+  });
+
   it('refuses the plan-artifact reads the reviewer must not see', () => {
     for (const tool of [
       'plans:get', 'plans:get-specs', 'plans:get-spec-evidence', 'plans:items', 'plans:search',
@@ -160,6 +184,24 @@ describe('mintBlindGapReviewer', () => {
     const loadBrief = vi.fn(async () => brief);
     return { handler, loadBrief, deps: { loadBrief, launcher: async () => ({ handler, confinementKey: KEY }) } };
   }
+
+  it('attaches the nominated product read boundary before launch and supplies executable read hints', async () => {
+    const d = deps();
+    const productReads = { docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', productReads, ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    const [args, ctx] = d.handler.mock.calls[0] as unknown as [{ brief: string }, Record<PropertyKey, unknown>];
+    expect(ctx[KEY]).toMatchObject({ denyProductReadsOutside: { ...productReads, harness: 'papercusp' } });
+    expect(args.brief).toContain("docs:get { harness: 'engineering', slugs: ['agent-insights/product-guide'] }");
+    expect(args.brief).toContain("testing:runs { harness: 'papercusp', filePath: 'lib/probe.test.ts'");
+  });
+
+  it.each([{ testFiles: ['../outside.test.ts'] }, { docsHarness: '*' }, { testFiles: ['lib/source.ts'] }])('refuses an invalid product boundary before launch: %j', async productReads => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', productReads, ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'invalid_product_reads' });
+    expect(d.handler).not.toHaveBeenCalled();
+  });
 
   it('launches headless under the system actor with the confinement on the launcher key', async () => {
     const d = deps();

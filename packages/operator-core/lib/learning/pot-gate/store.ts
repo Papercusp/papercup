@@ -19,6 +19,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { potScopeEnabled, potScopeLookup, type PotLearningScope } from './core';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 type Row = Record<string, unknown>;
 
@@ -46,16 +47,21 @@ async function failOpenOnMissingRelation<T>(
   run: (sql: Sql) => Promise<T>,
   fallback: T,
   what: string,
+  workspaceId: string,
 ): Promise<T> {
   try {
     // A caught query error still aborts a PostgreSQL transaction. Roll back
     // the read's savepoint BEFORE applying the missing-relation fallback, so
     // the caller can continue its reservation or other transactional work.
     const transaction = sql as Sql & Partial<Pick<TransactionSql, 'savepoint'>>;
-    return typeof transaction.savepoint === 'function'
+    const result = typeof transaction.savepoint === 'function'
       ? await transaction.savepoint(tx => run(tx as unknown as Sql)) as T
       : await run(sql);
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: `store:${what}` }, { workspaceId });
+    return result;
   } catch (err) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0,
+      reason: isMissingRelation(err) ? 'scope-relation-missing' : 'scope-read-failed', scope: `store:${what}` }, { workspaceId });
     if (!isMissingRelation(err)) throw err;
     if (!warnedMissingRelation) {
       warnedMissingRelation = true;
@@ -107,6 +113,7 @@ export async function getPotLearningScope(
     },
     null,
     'getPotLearningScope',
+    q.workspaceId,
   );
 }
 
@@ -137,6 +144,7 @@ export async function listPotLearningScope(
     },
     [],
     'listPotLearningScope',
+    q.workspaceId,
   );
 }
 
@@ -157,6 +165,7 @@ export async function disabledPotSlugs(sql: Sql, q: { workspaceId: string }): Pr
     },
     [],
     'disabledPotSlugs',
+    q.workspaceId,
   );
 }
 

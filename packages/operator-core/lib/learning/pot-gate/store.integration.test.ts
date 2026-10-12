@@ -34,6 +34,9 @@ import {
 } from './store';
 import { isDeliberatePause } from './core';
 
+// These tests exercise transactional gate reads, not the separate durable recorder.
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
 let sql: postgres.Sql;
 let containerUri: string;
 const dbName = `lpotscope_${randomBytes(5).toString('hex')}`;

@@ -84,6 +84,9 @@ export interface SessionToolConfinement {
   /** Additional argument boundary, supplied by the host rather than the caller.
    * Only canonical single-item read/progress/completion calls may target it. */
   readonly denyWorkItemsOutside?: { readonly id: string; readonly harness: string; readonly checkout: string };
+  /** Nominated product documentation and raw per-file test history only. This
+   * narrows existing read tools; it grants no plan/bound-evidence access. */
+  readonly denyProductReadsOutside?: ProductReadBoundary;
   /** Why this session is confined — surfaced verbatim in the refusal. */
   readonly reason: string;
   /** Who imposed it (the launching director/fleet), for audit and for the refusal text. */
@@ -103,6 +106,43 @@ export interface SessionConfinementDecision {
 
 const ALLOWED: SessionConfinementDecision = { allowed: true, applied: true };
 const UNCONFINED: SessionConfinementDecision = { allowed: true, applied: false };
+
+export interface ProductReadBoundary {
+  readonly harness: string;
+  readonly docsHarness: string;
+  readonly docsSlugs: readonly string[];
+  readonly testFiles: readonly string[];
+}
+
+export function validProductReadBoundary(value: unknown): value is ProductReadBoundary {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const scope = (s: unknown) => typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(s) && s !== 'all';
+  const path = (s: unknown) => typeof s === 'string' && s.length <= 1000 &&
+    /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(s) && s.split('/').every(p => p && p !== '.' && p !== '..');
+  return Object.keys(row).every(key => ['harness', 'docsHarness', 'docsSlugs', 'testFiles'].includes(key)) &&
+    scope(row.harness) && scope(row.docsHarness) &&
+    Array.isArray(row.docsSlugs) && row.docsSlugs.length <= 10 && row.docsSlugs.every(path) &&
+    Array.isArray(row.testFiles) && row.testFiles.length <= 20 &&
+    row.testFiles.every(p => path(p) && /\.test\.[mc]?[jt]sx?$/.test(p));
+}
+
+function withinProductReadBoundary(tool: string, args: unknown, boundary: ProductReadBoundary): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const row = args as Record<string, unknown>;
+  const keys = tool === 'docs:get' ? ['harness', 'slugs', 'heading', 'offset'] :
+    ['harness', 'filePath', 'source', 'since', 'sinceHours', 'status', 'limit'];
+  if (Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
+  if (tool === 'docs:get') return row.harness === boundary.docsHarness && Array.isArray(row.slugs) &&
+    row.slugs.length > 0 && row.slugs.length <= 10 && row.slugs.every(s => boundary.docsSlugs.includes(s));
+  // Exact file selectors avoid broad ledger reads and author-selected proof IDs.
+  // Bound the raw history; the reviewer discovers observations independently.
+  return row.harness === boundary.harness && typeof row.filePath === 'string' && boundary.testFiles.includes(row.filePath) &&
+    ['local', 'admin-ui', 'mutation-probe'].includes(String(row.source)) &&
+    Number.isInteger(row.limit) && Number(row.limit) >= 1 && Number(row.limit) <= 20 &&
+    (typeof row.since === 'string' && Number.isFinite(Date.parse(row.since)) ||
+      typeof row.sinceHours === 'number' && row.sinceHours > 0 && row.sinceHours <= 168);
+}
 
 export function validWorkItemBoundary(value: unknown): value is NonNullable<SessionToolConfinement['denyWorkItemsOutside']> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -196,8 +236,16 @@ export function evaluateSessionConfinement(args: {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-work-item',
       reason: `tool "${toolName.trim()}" must use the launch-declared single work-item boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };
   }
+  if (confinement.denyProductReadsOutside !== undefined &&
+      (!validProductReadBoundary(confinement.denyProductReadsOutside) ||
+       args.purpose !== 'listing' && ['docs:get', 'testing:runs'].includes(toolName.trim()) &&
+       !withinProductReadBoundary(toolName.trim(), args.args, confinement.denyProductReadsOutside))) {
+    return { allowed: false, applied: true, matchedGlob: 'outside-exact-product-read',
+      reason: `tool "${toolName.trim()}" must use the nominated product read boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
   if (confinement.denyTools.length === 0)
-    return confinement.denyOutside === undefined && confinement.denyWorkItemsOutside === undefined ? UNCONFINED : ALLOWED;
+    return confinement.denyOutside === undefined && confinement.denyWorkItemsOutside === undefined &&
+      confinement.denyProductReadsOutside === undefined ? UNCONFINED : ALLOWED;
 
   const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {

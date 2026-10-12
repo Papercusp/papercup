@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { chromium } from 'playwright-core';
+import { stringToHex } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
@@ -34,9 +35,10 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', String(profile.tauriPID)], { encoding: 'utf8', env: privateEnv, timeout: 65_000 });
     const ev = (code: string) => native('eval', code);
     const value = <T = any>(code: string): T => JSON.parse(ev('JSON.stringify(' + code + ')'));
+    const reload = () => native('navigate', value<string>('location.href'), '--json');
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
     const click = (text: string, scope = 'document') => ev("(()=>{const b=[..." + scope + ".querySelectorAll('button')].find(e=>e.textContent.trim()===" + JSON.stringify(text) + ");if(!b||b.disabled)throw Error('Unavailable control '+ " + JSON.stringify(text) + ");b.click();return true})()");
-    const field = (label: string, input: string) => ev(workbenchTextField(label, input));
+    const field = (label: string, input: string) => ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
     const textHas = (text: string) => wait('document.body.innerText.includes(' + JSON.stringify(text) + ')');
     const navigate = (search: object) => {
       ev("window.__TSR_ROUTER__.navigate({to:'/daos',search:" + JSON.stringify({ dao: slug, daoSection: 'members', ...search }) + "})");
@@ -63,12 +65,12 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       navigate({ daoSection: 'ownership' }); textHas('Your verified wallet:'); captureResponses();
       field('Wallet address', account); field('Wallet chain ID', '1'); click('Request wallet signing challenge');
       const challenge = response('wallet-challenge').value;
-      const signature = await rpc('personal_sign', [challenge.message, account]);
+      const signature = await rpc('personal_sign', [stringToHex(challenge.message), account]);
       field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify'); textHas(account);
     };
     const prepareGovernor = async (name: string, args: unknown[]) => {
       navigate({ daoSection: 'ownership' }); textHas('Equity deployment & holder records'); captureResponses();
-      ev(openWorkbenchSelect('Equity action')); ev(chooseWorkbenchOption('EquityGovernorV2 · ' + name));
+      ev(openWorkbenchSelect('Equity action', '[data-testid=dao-workspace]')); ev(chooseWorkbenchOption('EquityGovernorV2 · ' + name));
       field('Action arguments (JSON array)', JSON.stringify(args)); click('Prepare unsigned wallet transaction');
       return signWallet(response('prepare-equity').unsignedTransaction);
     };
@@ -116,7 +118,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       textHas('Native candidate'); click('Native candidate'); textHas('Another HR admin must approve your offer.');
       expect(value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
       const offerId = value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
-      actor('approver'); native('reload'); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
+      actor('approver'); reload(); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
       field('Company countersigner', 'PER-native-approver'); field('Start date', '2026-11-01'); click('Generate contract'); response('prepare');
       textHas('Non-binding sample.'); click('Start signatures'); response('start');
       const contract = await getContractExecution({ ...key, offerId }, { sql });
@@ -131,7 +133,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         body: JSON.stringify({ event: 'DOCUMENT_COMPLETED', createdAt: new Date().toISOString(),
           payload: { envelopeId: contract.envelope_id, externalId: contract.contract_id, status: 'COMPLETED' } }) });
       expect(completed.status).toBe(200); expect((await completed.json()).ok).toBe(true);
-      native('reload'); textHas('Executed document hash:');
+      reload(); textHas('Executed document hash:');
       for (const kind of ['sealed', 'certificate']) {
         const artifact = await fetch(health.origin + '/api/pot/' + slug + '/contracts/' + offerId + '/document?kind=' + kind);
         expect(artifact.status).toBe(200); expect(Buffer.from(await artifact.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
@@ -139,7 +141,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       actor('candidate'); navigate({ peopleTab: 'onboarding', onboardingOffer: offerId }); textHas('Request wallet challenge'); captureResponses();
       field('Wallet address', config.accounts[1]); field('Wallet chain ID', '1'); click('Request wallet challenge');
       const challenge = response('wallet-challenge').result;
-      field('Wallet signature', await rpc('personal_sign', [challenge.message, config.accounts[1]])); click('Verify wallet signature'); response('wallet-verify');
+      field('Wallet signature', await rpc('personal_sign', [stringToHex(challenge.message), config.accounts[1]])); click('Verify wallet signature'); response('wallet-verify');
       click('Verify my identity and bound wallet'); response('verify-identity');
       actor('admin'); navigate({ peopleTab: 'hiring', hiringOffer: offerId }); textHas('Prepare hire vote'); captureResponses();
       click('Prepare hire vote'); const prepared = response('prepare-hire').result, plan = prepared.plan;
@@ -158,7 +160,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       field('Transaction hash', acceptanceHash); click('Verify acceptance and admit me'); response('admit'); textHas('DAO membership admitted');
       const [member] = await sql`SELECT admitted_at FROM harness_shared.dao_hr_contracts WHERE contract_id=${contract.contract_id}`;
       expect(member?.admitted_at).toBeTruthy();
-      native('reload'); navigate({ peopleTab: 'directory' }); textHas('Native candidate'); click('Native candidate'); textHas('Native engineer');
+      reload(); navigate({ peopleTab: 'directory' }); textHas('Native candidate'); click('Native candidate'); textHas('Native engineer');
       expect(value("document.body.innerText.includes('5000')")).toBe(true);
       actor('admin'); navigate({ peopleTab: 'org' }); textHas('Native candidate');
       navigate({ peopleTab: 'cap' }); textHas('1000');

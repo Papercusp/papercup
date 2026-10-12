@@ -64,6 +64,29 @@ describe('session-confinement store — installation', () => {
 });
 
 describe('exact native launch ceilings', () => {
+  it('snapshots nominated product reads, refuses broad replacement, and fails closed on corrupt stored selectors', async () => {
+    const reads = { harness: 'papercusp', docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
+    const confinement = { denyTools: [], denyOutside: ['docs:get', 'testing:runs'], denyProductReadsOutside: reads,
+      reason: 'blind product reads', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    reads.docsSlugs.push('other-guide');
+    reads.testFiles.push('lib/other.test.ts');
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyProductReadsOutside).toEqual({
+      harness: 'papercusp', docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'],
+    });
+    expect(await checkSessionConfinement({ toolName: 'docs:get', args: { harness: 'engineering', slugs: ['other-guide'] },
+      ctx: { isSuperuser: true, workspaceId: 'papercusp-workspace', uiClientId: IMPLEMENTER_OWNER } as UnifiedToolContext,
+    })).toMatchObject({ decision: 'deny' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).rejects.toThrow(/cannot be replaced/);
+    const malformed = { ...confinement, denyProductReadsOutside: { ...reads, testFiles: ['../outside.test.ts'] } };
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: malformed })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: {
+      ...confinement, denyProductReadsOutside: { ...reads, docsSlugs: null } as never,
+    } })).toMatchObject({ ok: false });
+  });
+
   it('snapshots the exact assignment, refuses retargeting, and rejects malformed stored scope', async () => {
     const boundary = { id: 'F-own', harness: 'bench', checkout: '/private/assignment' };
     const confined = { denyTools: [], denyOutside: ['work_items:get'], denyWorkItemsOutside: boundary, reason: 'assignment', imposedBy: 'host' };

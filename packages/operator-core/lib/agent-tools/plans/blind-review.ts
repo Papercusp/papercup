@@ -58,6 +58,11 @@ export default defineTool({
     slug: z.string().min(1).describe('The plan under review.'),
     op: z.enum(['brief', 'post', 'dispose', 'mint']),
     howToRun: z.string().max(4000).optional().describe('mint: how the reviewer runs the product.'),
+    productReads: z.object({
+      docsHarness: z.string().min(1).max(120).optional(),
+      docsSlugs: z.array(z.string().min(1).max(1000)).max(10).optional(),
+      testFiles: z.array(z.string().min(1).max(1000)).max(20).optional(),
+    }).strict().optional().describe('mint: nominate exact maintained product doc slugs and test files for bounded raw history. No plan artifacts or proof IDs.'),
     activationAuditSeq: z.number().int().positive().optional().describe("post: the brief's activationAuditSeq."),
     gaps: z.array(z.object({ text: z.string().min(1).max(4000) })).max(100).optional().describe('post: one entry per gap; [] when none.'),
     dispositions: z.array(dispositionSchema).min(1).max(200).optional().describe('dispose: one per gap.'),
@@ -77,6 +82,9 @@ export default defineTool({
     }
     if (args.op !== 'mint' && args.howToRun !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['howToRun'], message: "howToRun is op 'mint' only" });
+    }
+    if (args.op !== 'mint' && args.productReads !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['productReads'], message: "productReads is op 'mint' only" });
     }
   }),
   async handler(args, ctx) {
@@ -106,6 +114,7 @@ export default defineTool({
         harness: harnessSlug,
         workspaceId,
         howToRun: args.howToRun,
+        productReads: args.productReads,
         ctx: ctx as unknown as Record<string, unknown>,
       });
       return text(minted.payload, minted.isError);

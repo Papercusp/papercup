@@ -391,6 +391,104 @@ const remainingSyncCases: RailMigrationCase[] = [{
   },
 }];
 
+const learningStoreCases: RailMigrationCase[] = [{
+  id: 'learning-store-original-missing-relation-savepoint-primary-and-other-error',
+  item: 'P-013', route: 'observation', mechanism: 'scout-state-read',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/learning/pot-gate/store.ts|failOpenOnMissingRelation|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const path = 'packages/operator-core/lib/learning/pot-gate/store.ts';
+    const observations: ScoutReadObservation[] = [];
+    let errorCode: string | null = '42P01', rolledBack = false, savepoints = 0, warnings = 0;
+    const sql = Object.assign(async () => {
+      if (errorCode) throw Object.assign(new Error('scope read failed'), { code: errorCode });
+      return [];
+    }, { savepoint: async (run: (tx: unknown) => Promise<unknown>) => {
+      savepoints++;
+      try { return await run(sql); } catch (error) { rolledBack = true; throw error; }
+    } });
+    const helper = execute(original(path, 'async function failOpenOnMissingRelation', 'function'), {
+      warnedMissingRelation: false,
+      isMissingRelation: execute(original(path, 'function isMissingRelation', 'function'), { UNDEFINED_TABLE: '42P01' }, 'isMissingRelation'),
+      console: { warn: () => { warnings++; } },
+      observeFallback: (mechanism: string, row: ScoutReadObservation, options: { workspaceId: string }) => {
+        expect(mechanism).toBe('scout-state-read'); expect(options.workspaceId).toBe('fixture');
+        if (!row.applied) expect(rolledBack).toBe(true);
+        observations.push(row); return true;
+      },
+    }, 'failOpenOnMissingRelation');
+    const readers = ['getPotLearningScope', 'listPotLearningScope', 'disabledPotSlugs'].map(name =>
+      execute(original(path, `export async function ${name}`, 'function'), {
+        failOpenOnMissingRelation: helper, mapRow: (row: unknown) => row,
+      }, name) as (sql: unknown, q: { workspaceId: string; potSlug: string }) => Promise<unknown>);
+    for (const [index, read] of readers.entries()) {
+      expect(await read(sql, { workspaceId: 'fixture', potSlug: 'pot' })).toEqual(index === 0 ? null : []);
+      expect(observations.at(-1)?.scope).toBe(`store:${['getPotLearningScope', 'listPotLearningScope', 'disabledPotSlugs'][index]}`);
+    }
+    expect(warnings).toBe(1); // Warning throttling must not throttle observations.
+    errorCode = null; rolledBack = false;
+    for (const [index, read] of readers.entries()) {
+      expect(await read(sql, { workspaceId: 'fixture', potSlug: 'pot' })).toEqual(index === 0 ? null : []);
+    }
+    errorCode = '42501';
+    await expect(readers[0](sql, { workspaceId: 'fixture', potSlug: 'pot' })).rejects.toMatchObject({ code: '42501' });
+    expect(savepoints).toBe(7);
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      ...Array.from({ length: 3 }, () => [0, 'scope-relation-missing']),
+      ...Array.from({ length: 3 }, () => [1, 'applied']), [0, 'scope-read-failed'],
+    ]);
+    return { route: 'observation', mechanism: 'scout-state-read', observations };
+  },
+}, {
+  id: 'work-item-lock-reclaim-original-read-partial-release-primary-and-exclusions',
+  item: 'P-013', route: 'observation', mechanism: 'work-item-lock-reclaim',
+  rowIds: [1, 2].map(ordinal => `log-only-fallback|packages/operator-core/lib/work-item-lock-release.ts|releaseReclaimedWorkItemLocks|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const path = 'packages/operator-core/lib/work-item-lock-release.ts';
+    const observations: ScoutReadObservation[] = [];
+    let failRead = true, failRelease = false, empty = false;
+    const releaseAttempts: string[] = [];
+    const reclaim = execute(original(path, 'export async function releaseReclaimedWorkItemLocks', 'function'), {
+      normalizeReclaimPaths: execute(original(path, 'export function normalizeReclaimPaths', 'function'), {}, 'normalizeReclaimPaths'),
+      ensureBootstrap: async () => {}, getTxPool: () => ({}),
+      readQueue: async () => {
+        if (failRead) throw new Error('lock store unavailable');
+        return { active_locks: empty ? [] : [
+          { coordination_domain: '/fixture', lock_id: 'first', owner: 'holder', path: 'one.ts', goal_ref: 'WI-item' },
+          { coordination_domain: '/fixture', lock_id: 'second', owner: 'holder', path: 'two.ts', goal_ref: 'WI-item' },
+          { coordination_domain: '/fixture', lock_id: 'unrelated', owner: 'holder', path: 'other.ts', goal_ref: 'WI-other' },
+        ] };
+      },
+      inWorkspaceTxn: async (_domain: string, _owner: string, run: (tx: object) => Promise<unknown>) => run({}),
+      tryRelease: async (_tx: object, args: { lockId: string; paths: string[] }) => {
+        releaseAttempts.push(args.lockId);
+        if (failRelease && args.lockId === 'first') throw new Error('release unavailable');
+        return { released: args.paths };
+      },
+      observeFallback: (mechanism: string, row: ScoutReadObservation) => {
+        expect(mechanism).toBe('work-item-lock-reclaim'); observations.push(row); return true;
+      },
+    }, 'releaseReclaimedWorkItemLocks') as typeof import('../work-item-lock-release').releaseReclaimedWorkItemLocks;
+    const params = { ownerId: 'holder', paths: [], goalRef: 'WI-item' };
+    expect(await reclaim(params)).toEqual({ releases: [], failures: 1, skipped: null });
+    expect(releaseAttempts).toEqual([]);
+    failRead = false; failRelease = true;
+    const partial = await reclaim(params);
+    expect(partial.failures).toBe(1); expect(partial.releases.map(row => row.lockId)).toEqual(['second']);
+    failRelease = false;
+    expect((await reclaim(params)).releases.map(row => row.lockId)).toEqual(['first', 'second']);
+    expect(releaseAttempts).toEqual(['first', 'second', 'first', 'second']);
+    empty = true; expect(await reclaim(params)).toEqual({ releases: [], failures: 0, skipped: null });
+    expect((await reclaim({ ownerId: '', paths: ['one.ts'] })).skipped).toBe('missing-owner');
+    expect((await reclaim({ ownerId: 'holder', paths: [] })).skipped).toBe('no-paths');
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [0, 'lock-read-failed'], [0, 'lock-release-failed'], [1, 'applied'], [1, 'applied'],
+    ]);
+    return { route: 'observation', mechanism: 'work-item-lock-reclaim', observations };
+  },
+}];
+
 const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scope): RailMigrationCase => ({
   id: `coordination-${scope}-original-page-error-primary-and-nonpg-exclusion`,
   item: 'P-013', route: 'observation', mechanism: 'coordination-window-read',
@@ -425,7 +523,7 @@ const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scop
   },
 }));
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...coordinationReadCases, ...remainingSyncCases, {
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...learningStoreCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'retrieval-authoritative-samples-and-one-shot-sweep',
   item: 'P-005',
   route: 'condition',

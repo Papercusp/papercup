@@ -43,6 +43,15 @@ async function choose() {
   await screen.findByText('Exact proposal text');
 }
 describe('DAO member decision actions', () => {
+  it('drives scoped native HR selects through the real change event without touching another form', () => {
+    const changed = vi.fn();
+    render(<><section className="other-form"><label>Candidate<select defaultValue="other"><option value="other">Other</option></select></label></section>
+      <section data-testid="dao-workspace"><label>Candidate<select defaultValue="" onChange={event => changed(event.currentTarget.value)}>
+        <option value="">Select</option><option value="PER-candidate">Candidate</option></select></label></section></>);
+    act(() => { window.eval(workbenchTextField('Candidate', 'PER-candidate', '[data-testid=dao-workspace]')); });
+    expect(changed).toHaveBeenCalledWith('PER-candidate');
+    expect(screen.getAllByRole('combobox').map(select => (select as HTMLSelectElement).value)).toEqual(['other', 'PER-candidate']);
+  });
   it('drives the native verifier through current portaled select and revision checkbox controls', async () => {
     render(<DaoGovernance view={view} />);
     expect(() => window.eval(workbenchTextField('Review proposal', 'project/proposal'))).toThrow('Missing text field');

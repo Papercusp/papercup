@@ -56,6 +56,14 @@ describe('readLaunchEnvelope', () => {
 });
 
 describe('runBlindReviewMintOp', () => {
+  it('threads exact nominated product reads through the adapter into the launch confinement', async () => {
+    const d = deps(envelope({ ok: true, ownerId: 'su-reviewer-1' }));
+    const productReads = { docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
+    await runBlindReviewMintOp({ ...INPUT, productReads }, d.deps);
+    const ctx = (d.handler.mock.calls[0] as unknown as [unknown, Record<PropertyKey, unknown>])[1];
+    expect(ctx[KEY]).toMatchObject({ denyProductReadsOutside: { ...productReads, harness: 'papercusp' } });
+  });
+
   it('mints under the resolved workspace, not the unscoped ctx value', async () => {
     const d = deps(envelope({ ok: true, ownerId: 'su-reviewer-1' }));
     const out = await runBlindReviewMintOp(INPUT, d.deps);

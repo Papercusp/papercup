@@ -15,6 +15,7 @@ import {
   BLIND_GAP_REVIEW_ACTOR,
   mintBlindGapReviewer,
   type MintBlindGapReviewerDeps,
+  type BlindReviewerProductReads,
 } from '../../blind-reviewer-mint';
 
 /** Longest raw (non-JSON) launch text echoed back to the caller. */
@@ -49,6 +50,7 @@ export interface BlindReviewMintOpInput {
   /** The concrete workspace the door resolved; overrides an unscoped ctx.workspaceId. */
   workspaceId: string;
   howToRun?: string | null;
+  productReads?: BlindReviewerProductReads;
   ctx: Record<string, unknown>;
 }
 
@@ -61,6 +63,7 @@ export async function runBlindReviewMintOp(
       slug: input.slug,
       harness: input.harness,
       howToRun: input.howToRun ?? null,
+      productReads: input.productReads,
       ctx: { ...input.ctx, workspaceId: input.workspaceId },
     },
     deps,

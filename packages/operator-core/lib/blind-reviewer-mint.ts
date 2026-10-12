@@ -17,7 +17,7 @@
  * Out of scope (D-041 (4)): reads that are not MCP calls (native Read, or capability:bash
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
-import type { SessionToolConfinement } from './capability-envelope/session-confinement';
+import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
 import type { BlindReviewBrief } from './blind-review-brief';
 
@@ -51,10 +51,22 @@ export const BLIND_REVIEWER_TOOL_CEILING: readonly string[] = Object.freeze([
   'dev:service_health',
 ]);
 
-export function blindReviewerConfinement(slug: string): SessionToolConfinement {
+export type BlindReviewerProductReads = {
+  docsHarness?: string;
+  docsSlugs?: string[];
+  testFiles?: string[];
+};
+
+export function blindReviewerConfinement(slug: string, productReads?: ProductReadBoundary): SessionToolConfinement {
   return Object.freeze({
     denyTools: Object.freeze([] as string[]),
-    denyOutside: BLIND_REVIEWER_TOOL_CEILING,
+    denyOutside: productReads ? Object.freeze([...BLIND_REVIEWER_TOOL_CEILING,
+      ...(productReads.docsSlugs.length ? ['docs:get'] : []),
+      ...(productReads.testFiles.length ? ['testing:runs'] : []),
+    ]) : BLIND_REVIEWER_TOOL_CEILING,
+    ...(productReads ? { denyProductReadsOutside: Object.freeze({ ...productReads,
+      docsSlugs: Object.freeze([...productReads.docsSlugs]), testFiles: Object.freeze([...productReads.testFiles]),
+    }) } : {}),
     denyAmbientContext: true as const,
     imposedBy: BLIND_GAP_REVIEW_ACTOR,
     reason:
@@ -63,7 +75,7 @@ export function blindReviewerConfinement(slug: string): SessionToolConfinement {
   });
 }
 
-export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null): string {
+export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary): string {
   const run = howToRun?.trim()
     ? howToRun.trim()
     : 'Find the running build yourself (dev:service_health), then exercise it with capability:bash.';
@@ -77,6 +89,13 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     '',
     '## How to run the product',
     run,
+    ...(productReads ? [
+      '',
+      'Nominated product reads (all other documentation and ledger selectors remain refused):',
+      ...productReads.docsSlugs.map(slug => `docs:get { harness: '${productReads.docsHarness}', slugs: ['${slug}'] }`),
+      ...productReads.testFiles.map(file => `testing:runs { harness: '${productReads.harness}', filePath: '${file}', source: 'mutation-probe', sinceHours: 24, limit: 20 }`),
+      'These are maintained product docs and raw test-file history, not the plan, its bound proof, or an author-selected proof ID.',
+    ] : []),
     '',
     '## The owner\'s words',
     brief.text,
@@ -97,7 +116,7 @@ export interface MintBlindGapReviewerDeps {
 
 export type MintBlindGapReviewerResult =
   | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit'; message: string };
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'invalid_product_reads'; message: string };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -108,7 +127,7 @@ async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementK
 }
 
 export async function mintBlindGapReviewer(
-  input: { slug: string; harness: string; howToRun?: string | null; ctx: Record<string, unknown> },
+  input: { slug: string; harness: string; howToRun?: string | null; productReads?: BlindReviewerProductReads; ctx: Record<string, unknown> },
   deps: MintBlindGapReviewerDeps = {},
 ): Promise<MintBlindGapReviewerResult> {
   const workspaceId = typeof input.ctx.workspaceId === 'string' ? input.ctx.workspaceId.trim() : '';
@@ -122,7 +141,14 @@ export async function mintBlindGapReviewer(
     return { ok: false, code: 'no_activation_audit',
       message: `${input.slug} has no activation audit, so there are no owner turns to brief a reviewer with.` };
   }
-  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun);
+  const productReads = input.productReads ? { harness: input.harness,
+    docsHarness: input.productReads.docsHarness ?? input.harness,
+    docsSlugs: input.productReads.docsSlugs ?? [], testFiles: input.productReads.testFiles ?? [],
+  } : undefined;
+  if (productReads && !validProductReadBoundary(productReads)) {
+    return { ok: false, code: 'invalid_product_reads', message: 'Product reads require exact documentation slugs, test file paths and concrete harnesses.' };
+  }
+  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads);
   const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
   // A SYSTEM effect, not the caller's personal launch: the reviewer must descend from this
   // actor, or the door's lineage check rejects it as the author's child. Same pattern as
@@ -137,7 +163,7 @@ export async function mintBlindGapReviewer(
     ownerId: BLIND_GAP_REVIEW_ACTOR,
     ownerLabel: 'blind gap review',
     userId: null,
-    [confinementKey]: blindReviewerConfinement(input.slug),
+    [confinementKey]: blindReviewerConfinement(input.slug, productReads),
   };
   const launch = await handler(
     {

@@ -47,6 +47,17 @@ beforeEach(() => {
 });
 
 describe('plans:blind-review op mint', () => {
+  it('passes nominated product reads only on the mint operation', async () => {
+    runBlindReviewMintOp.mockResolvedValue({ isError: false, payload: { ok: true } });
+    const productReads = { docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
+    await call({ slug: SLUG, op: 'mint', productReads });
+    expect(runBlindReviewMintOp).toHaveBeenCalledWith(expect.objectContaining({ productReads }));
+    for (const op of ['brief', 'post', 'dispose']) {
+      const extra = op === 'post' ? { gaps: [] } : op === 'dispose' ? { dispositions: [{ reviewId: 1, gapId: 'G-1', itemId: 'P-001' }] } : {};
+      expect(tool.args.safeParse({ slug: SLUG, op, productReads, ...extra }).success).toBe(false);
+    }
+  });
+
   it('routes to runBlindReviewMintOp with the resolved harness and workspace, and returns its payload', async () => {
     runBlindReviewMintOp.mockResolvedValue({ isError: false, payload: { ok: true, reviewerOwnerId: 'su-r1' } });
 
