@@ -1296,7 +1296,8 @@ DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm',
 
 // Every 6h (:35, off the :50 growth alarm): disk consumer census
 // (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Writes what is filling each
-// watched device (du at idle I/O priority + Postgres/Docker through their APIs) to
+// watched device (du as root via sudo -n at best-effort I/O level 7, falling back to an
+// unprivileged walk + Postgres/Docker sized through their APIs) to
 // harness_shared.disk_census_* so storage:census can show each consumer's size and
 // 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
 // read's 18–30h baseline window. Per-device failures are recorded, never thrown.

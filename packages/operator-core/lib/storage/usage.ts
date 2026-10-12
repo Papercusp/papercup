@@ -430,14 +430,22 @@ export const CENSUS_COVERAGE_GAP_BYTES = 10 * 1024 ** 3;
  */
 export const CENSUS_IONICE_ARGS = ['-c2', '-n7'] as const;
 
-/** argv for one census du walk: best-effort I/O + nice 19 CPU, each only when available. */
+/**
+ * argv for one census du walk: best-effort I/O + nice 19 CPU, each only when available.
+ * With `bins.sudo` the whole walk runs as root through `sudo -n --` (never prompts), so
+ * root-owned trees (/var/lib/postgresql, /var/lib/docker, backup repos on /mnt/data) are
+ * measured instead of being lost to "Permission denied" — the R-1 falsifier is a consumer
+ * above 10 GiB the census does not list, and an unreadable tree hides exactly those. The
+ * walk is read-only (du reads metadata only); the precedent is fleet-logs-gc's sudo census.
+ */
 export function censusDuCommand(
   duArgs: readonly string[],
-  bins: { ionice: string | null; nice: string | null },
+  bins: { ionice: string | null; nice: string | null; sudo?: string | null },
 ): [string, string[]] {
   const niced = bins.nice ? [bins.nice, '-n', '19', 'du', ...duArgs] : ['du', ...duArgs];
-  if (bins.ionice) return [bins.ionice, [...CENSUS_IONICE_ARGS, ...niced]];
-  return [niced[0]!, niced.slice(1)];
+  const prioritized = bins.ionice ? [bins.ionice, ...CENSUS_IONICE_ARGS, ...niced] : niced;
+  const argv = bins.sudo ? [bins.sudo, '-n', '--', ...prioritized] : prioritized;
+  return [argv[0]!, argv.slice(1)];
 }
 
 /** Depth of `path` below `mountRoot`: 0 for the root itself, null when outside it. */

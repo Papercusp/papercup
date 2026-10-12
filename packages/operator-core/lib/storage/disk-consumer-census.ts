@@ -10,10 +10,14 @@
  *      nice 19 — not the idle I/O class, which mq-deadline starves; see usage.ts), streamed into
  *      the consumer tree (every directory ≥ 1 GiB down to depth 6, plus the large
  *      files inside any directory whose own files reach 1 GiB).
- *   3. Stores the operator user cannot read are sized through their own APIs instead
- *      of being lost: the Postgres cluster (pg_database_size + WAL) and Docker
- *      (Engine API /system/df). They are added only when du could not read their
- *      root, so nothing is counted twice.
+ *      The walk runs as root through `sudo -n` when that works non-interactively
+ *      (resolveCensusSudo, probed once per pass), so root-owned trees are measured
+ *      rather than lost to "Permission denied"; otherwise it walks unprivileged and
+ *      the run note says so.
+ *   3. On an unprivileged walk, stores the operator user cannot read are sized through
+ *      their own APIs instead of being lost: the Postgres cluster (pg_database_size +
+ *      WAL) and Docker (Engine API /system/df). They are added only when du could not
+ *      read their root, so nothing is counted twice.
  *   4. used − attributed = the device's `(unattributed)` row. At or above 10 GiB the
  *      read flags a coverage gap: a consumer that large could be missing (R-1 falsifier).
  *   5. One disk_census_runs row + its disk_census_consumers rows, in one transaction.
@@ -21,7 +25,7 @@
  *
  * Linux-only (GNU du flags, /proc/self/mountinfo); other platforms skip with a reason.
  */
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fsp, statfs as statfsCb } from 'node:fs';
 import { request } from 'node:http';
@@ -127,6 +131,30 @@ export async function resolveCensusDevices(paths: readonly string[] = watchedPat
   return out;
 }
 
+/** Bound on the one `sudo -n true` probe per census pass. */
+export const CENSUS_SUDO_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * The sudo binary to run the census du through, or null to walk as the current user.
+ * Null when already root (nothing to elevate), when sudo is not installed, or when it
+ * cannot run non-interactively (no NOPASSWD rule, or a NoNewPrivileges sandbox) — the
+ * census then still runs and its `unreadable path(s)` note + coverage gap say what it missed.
+ */
+export async function resolveCensusSudo(
+  probe: (bin: string) => Promise<boolean> = probeSudo,
+): Promise<string | null> {
+  if (process.getuid?.() === 0) return null;
+  const bin = await resolveBin('sudo');
+  if (!bin) return null;
+  return (await probe(bin)) ? bin : null;
+}
+
+function probeSudo(bin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(bin, ['-n', 'true'], { timeout: CENSUS_SUDO_PROBE_TIMEOUT_MS }, (err) => resolve(!err));
+  });
+}
+
 async function resolveBin(name: string): Promise<string | null> {
   for (const dir of (process.env.PATH ?? '/usr/bin:/bin').split(delimiter)) {
     const candidate = join(dir, name);
@@ -147,21 +175,26 @@ export interface DuRun {
   timedOut: boolean;
   exitCode: number | null;
   error?: string;
+  /** The walk ran as root (via sudo, or the process is root): every store root was readable to du. */
+  privileged?: boolean;
 }
 
 /** Run du over one mount at low priority and stream it into a consumer tree. */
 export async function runDuTree(
   root: string,
-  opts: { floorBytes?: number; maxDepth?: number; timeoutMs?: number } = {},
+  opts: { floorBytes?: number; maxDepth?: number; timeoutMs?: number; sudo?: string | null } = {},
 ): Promise<DuRun> {
   const floorBytes = opts.floorBytes ?? CENSUS_FLOOR_BYTES;
   const maxDepth = opts.maxDepth ?? CENSUS_MAX_DEPTH;
   const acc = new DuTreeAccumulator(root, { floorBytes, maxDepth });
   const duArgs = ['-x', '-0', '-B1', `--max-depth=${maxDepth}`, root];
+  const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
   // Best-effort I/O at the lowest level, not the idle class: see CENSUS_IONICE_ARGS.
+  // sudo relays the timeout's SIGTERM to du, so the 90 min cap still ends the walk.
   const [cmd, args] = censusDuCommand(duArgs, {
     ionice: await resolveBin('ionice'),
     nice: await resolveBin('nice'),
+    sudo: opts.sudo ?? null,
   });
   return new Promise<DuRun>((resolve) => {
     let deniedCount = 0;
@@ -200,7 +233,15 @@ export async function runDuTree(
     child.on('close', (code) => {
       clearTimeout(timer);
       if (pending) acc.addRecord(pending);
-      resolve({ summary: acc.result(), deniedCount, deniedSample, timedOut, exitCode: code, ...(error ? { error } : {}) });
+      resolve({
+        summary: acc.result(),
+        deniedCount,
+        deniedSample,
+        timedOut,
+        exitCode: code,
+        privileged,
+        ...(error ? { error } : {}),
+      });
     });
   });
 }
@@ -337,8 +378,16 @@ async function readableByDu(dir: string): Promise<boolean> {
   }
 }
 
-/** API-sized rows that belong on `device`: only stores du could not read (no double count). */
-export async function apiStoreConsumers(device: CensusDevice, stores: ReadonlyArray<ApiSizedStore | null>): Promise<CensusConsumer[]> {
+/**
+ * API-sized rows that belong on `device`: only stores du could not read (no double count).
+ * A privileged walk read every store root itself, so it takes none.
+ */
+export async function apiStoreConsumers(
+  device: CensusDevice,
+  stores: ReadonlyArray<ApiSizedStore | null>,
+  duPrivileged = false,
+): Promise<CensusConsumer[]> {
+  if (duPrivileged) return [];
   const out: CensusConsumer[] = [];
   for (const store of stores) {
     if (!store) continue;
@@ -371,6 +420,8 @@ export interface CensusDeps {
   runDu?: typeof runDuTree;
   measurePostgres?: (sql: CensusSql) => Promise<ApiSizedStore | null>;
   measureDocker?: () => Promise<ApiSizedStore | null>;
+  /** sudo binary for a privileged walk, or null for unprivileged; probed once per pass. */
+  resolveSudo?: () => Promise<string | null>;
   floorBytes?: number;
   maxDepth?: number;
   now?: () => Date;
@@ -390,7 +441,7 @@ export async function buildDeviceConsumers(
 ): Promise<{ consumers: CensusConsumer[]; attributedBytes: number; unattributedBytes: number }> {
   const consumers: CensusConsumer[] = [...du.summary.consumers];
   for (const own of du.summary.ownFiles) consumers.push(...attributeOwnFiles(own, await listOwnFiles(own.dir), floorBytes));
-  const api = await apiStoreConsumers(device, stores);
+  const api = await apiStoreConsumers(device, stores, du.privileged === true);
   consumers.push(...api);
   // A killed walk never printed the mount total; the depth-1 directories it did finish are a lower bound.
   const duBytes =
@@ -419,16 +470,18 @@ export async function runDiskConsumerCensusOnce(
     (deps.measurePostgres ?? measurePostgres)(sql).catch(() => null),
     (deps.measureDocker ?? measureDocker)().catch(() => null),
   ]);
+  const sudo = await (deps.resolveSudo ?? resolveCensusSudo)().catch(() => null);
   const runs: CensusRunResult[] = [];
   const failures: Array<{ device: string; error: string }> = [];
   for (const device of devices) {
     const startedAt = now();
     try {
-      const du = await (deps.runDu ?? runDuTree)(device.device, { floorBytes, maxDepth });
+      const du = await (deps.runDu ?? runDuTree)(device.device, { floorBytes, maxDepth, sudo });
       const { consumers, attributedBytes, unattributedBytes } = await buildDeviceConsumers(device, du, stores, floorBytes);
       const finishedAt = now();
       const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
       const notes = [
+        du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
         du.timedOut ? 'du timed out; sizes are lower bounds' : null,
         du.error ? `du failed: ${du.error}` : null,
         du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,

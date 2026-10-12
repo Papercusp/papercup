@@ -283,4 +283,20 @@ describe('disk consumer census attribution', () => {
     ]);
     expect(censusDuCommand(duArgs, { ionice: null, nice: null })).toEqual(['du', duArgs]);
   });
+
+  it('wraps the whole prioritized walk in a non-interactive sudo when one is given', () => {
+    // R-1: a root-owned tree the operator user cannot read hides consumers above 10 GiB
+    // (measured 2026-10-12: ~2.78 TB of /mnt/data unattributed on an unprivileged walk).
+    const duArgs = ['-x', '-0', '-B1', '--max-depth=6', '/mnt/data'];
+    expect(censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice', sudo: '/usr/bin/sudo' })).toEqual([
+      '/usr/bin/sudo',
+      ['-n', '--', '/usr/bin/ionice', '-c2', '-n7', '/usr/bin/nice', '-n', '19', 'du', ...duArgs],
+    ]);
+    // -n is what keeps a missing NOPASSWD rule from hanging the census on a password prompt.
+    expect(censusDuCommand(duArgs, { ionice: null, nice: null, sudo: '/usr/bin/sudo' })).toEqual([
+      '/usr/bin/sudo',
+      ['-n', '--', 'du', ...duArgs],
+    ]);
+    expect(censusDuCommand(duArgs, { ionice: null, nice: null, sudo: null })).toEqual(['du', duArgs]);
+  });
 });
