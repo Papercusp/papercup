@@ -205,6 +205,12 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // A pinned report requires its exact reportId. There is no stable report for
   // the generic audit; a fabricated id would measure a miss, not its payload.
   'reports.get': null,
+  // A lineage is selected by a particular published report; there is no stable
+  // representative lineage. A made-up id would only measure an empty result.
+  'reports.lineage': null,
+  // The visible listing supplies funded release refs and explicitly refreshes
+  // their outcome costs. Empty or invented refs would not measure that payload.
+  'cupboard.identityOutcomeCosts': null,
   'designFeatures.detail': null, // a specific featureId (WI-7232 list/detail split)
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,
@@ -243,6 +249,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // null (intentionally unmeasurable) rather than a fabricated owner, which would measure
   // an empty-queue miss and report it as this read's real payload.
   'personalVault.importJobs': null,
+  // The ticket settings page selects its acting user explicitly. Like the
+  // personal-vault and memory reads, it has no stable audit identity.
+  'integrations.tickets': null,
   'userMemory.feedbackStats': null, // a specific userId
   'userMemory.list': null, // a specific userId
   'userMemory.total': null, // a specific userId (the denominator beside userMemory.list)
