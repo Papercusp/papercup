@@ -1343,6 +1343,13 @@ export interface StartupCacheGroup extends StartupCacheTotals {
   markers: string;
   requests: number;
   owners: number;
+  /**
+   * Median byte size of messages[0] content block 0 over members that recorded it; null when none
+   * did. In a Claude Code start that block is the shared repo-guide (CLAUDE.md) reminder, so the
+   * read uplift a tail relocation can buy is bounded by it (plan R-9). A layout attribute, so it
+   * is taken over every member, not only rows with usage.
+   */
+  medianFirstMessageBlock0Bytes: number | null;
 }
 
 export interface StartupCacheSummary {
@@ -1424,6 +1431,12 @@ export function summarizeStartupCacheEvidence(lines: Iterable<string>): StartupC
         markers: startupMarkerSignature(members[0]!),
         requests: members.length,
         owners: new Set(members.map((row) => row.ownerId)).size,
+        medianFirstMessageBlock0Bytes: ((sizes: number[]) => (sizes.length ? median(sizes) : null))(
+          members.flatMap((row) => {
+            const bytes = row.layout?.messages.first?.blocks?.[0]?.bytes;
+            return typeof bytes === 'number' ? [bytes] : [];
+          }),
+        ),
         ...summarizeStartupTotals(members),
       }))
       .sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key)),

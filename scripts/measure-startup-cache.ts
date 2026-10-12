@@ -121,10 +121,10 @@ function render(summary: StartupCacheSummary, cli: Cli, source: string): string 
   out.push(`startup share of journaled cache writes: ${summary.startupWriteShare === null ? 'n/a' : `${(summary.startupWriteShare * 100).toFixed(1)}%`}`);
   if (cli.groups > 0 && summary.groups.length > 0) {
     out.push('', 'layout groups (startup requests; medians over measured rows):');
-    out.push(['requests', 'owners', 'measured', 'unknown', 'med write', 'med read', 'med uncached', 'layout'].join('\t'));
+    out.push(['requests', 'owners', 'measured', 'unknown', 'med write', 'med read', 'med uncached', 'med m0b0 bytes', 'layout'].join('\t'));
     for (const g of summary.groups.slice(0, cli.groups)) {
       out.push([g.requests, g.owners, g.measured, g.unknownUsage, n(g.medianCacheWriteTokens), n(g.medianCacheReadTokens),
-        n(g.medianUncachedInputTokens), g.key].join('\t'));
+        n(g.medianUncachedInputTokens), n(g.medianFirstMessageBlock0Bytes), g.key].join('\t'));
     }
     if (summary.groups.length > cli.groups) out.push(`… ${summary.groups.length - cli.groups} more group(s); raise --groups`);
   }

@@ -1297,6 +1297,8 @@ describe('summarizeStartupCacheEvidence — token-efficiency-prompts-cache-and-b
     ownerId?: string; requestId?: number; startedAt?: number; model?: string; messages?: number; tools?: number;
     systemBlocks?: number; markers?: Array<{ section: 'tools' | 'system' | 'messages'; index: number; block: number | null; ttl: '5m' | '1h' | 'default' }>;
     read?: number | null; write?: number | null; input?: number | null; layout?: null; outcome?: string;
+    /** Byte sizes of messages[0] content blocks; omitted = no first-message layout recorded. */
+    firstBlocks?: number[];
   };
   const line = (o: Over = {}) => {
     const systemBlocks = o.systemBlocks ?? 2;
@@ -1307,7 +1309,15 @@ describe('summarizeStartupCacheEvidence — token-efficiency-prompts-cache-and-b
       layout: o.layout === null ? null : {
         tools: { count: o.tools ?? 90, deferred: 0 },
         system: { form: 'blocks', blockCount: systemBlocks, blocks: Array.from({ length: systemBlocks }, (_, i) => hash(`s${i}`)) },
-        messages: { count: o.messages ?? 1, first: null },
+        messages: {
+          count: o.messages ?? 1,
+          first: o.firstBlocks
+            ? {
+              role: 'user', blockCount: o.firstBlocks.length, hash: hash('m0', o.firstBlocks.reduce((a, b) => a + b, 0)),
+              blocks: o.firstBlocks.map((bytes, i) => hash(`m0b${i}`, bytes)),
+            }
+            : null,
+        },
         markers: o.markers ?? [{ section: 'system', index: 0, block: null, ttl: '1h' }],
         truncated: false,
       },
@@ -1376,6 +1386,21 @@ describe('summarizeStartupCacheEvidence — token-efficiency-prompts-cache-and-b
     expect(summary.groups[2]!.model).toBe('claude-sonnet-test');
     expect(summary.groups[0]).toMatchObject({ model: 'claude-opus-test', owners: 3, medianCacheWriteTokens: 78000, medianCacheReadTokens: 3700 });
     expect(summary.groups.find((g) => g.systemBlocks === 3)).toMatchObject({ medianCacheReadTokens: 84600, medianCacheWriteTokens: 2000 });
+  });
+
+  it('reports the median messages[0] block-0 size per cohort (the repo-guide block R-9 bounds the relocation uplift by), null when unrecorded', () => {
+    const relocated = [{ section: 'system' as const, index: 1, block: null, ttl: '1h' as const }, { section: 'messages' as const, index: 0, block: 0, ttl: '1h' as const }];
+    const summary = summarizeStartupCacheEvidence([
+      line({ ownerId: 'su-a', markers: relocated, firstBlocks: [90000, 400] }),
+      line({ ownerId: 'su-b', markers: relocated, firstBlocks: [92000, 600] }),
+      line({ ownerId: 'su-c', markers: relocated, firstBlocks: [94000] }),
+      // A member without a first-message layout neither counts as zero nor shifts the median.
+      line({ ownerId: 'su-d', markers: relocated }),
+      line({ ownerId: 'su-e' }),
+    ]);
+    const byMarkers = new Map(summary.groups.map((g) => [g.markers, g]));
+    expect(byMarkers.get('s1:1h,m0:1h')).toMatchObject({ requests: 4, medianFirstMessageBlock0Bytes: 92000 });
+    expect(byMarkers.get('s0:1h')).toMatchObject({ requests: 1, medianFirstMessageBlock0Bytes: null });
   });
 
   it('counts schema-marked lines that do not parse as malformed and ignores unrelated lines', () => {
