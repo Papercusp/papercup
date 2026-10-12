@@ -53,6 +53,28 @@ describe('DAO launch preparation', () => {
     sections.banking.signers = ['0x' + '1'.repeat(40)];
     expect(daoLaunchSectionsSchema.safeParse(sections).success).toBe(false);
   });
+  it.each([
+    ['quorumBps', 1, 10_000], ['approvalBps', 5_001, 10_000], ['votingDays', 1, 365],
+  ] as const)('accepts %s bounds and rejects values outside them or fractional values', (field, min, max) => {
+    const sections = preparedDaoRecord().sections;
+    for (const value of [min, max]) {
+      sections.governance[field] = value;
+      expect(daoLaunchSectionsSchema.safeParse(sections).success).toBe(true);
+    }
+    for (const value of [min - 1, max + 1, min + 0.5]) {
+      sections.governance[field] = value;
+      expect(daoLaunchSectionsSchema.safeParse(sections).success).toBe(false);
+    }
+  });
+  it('preserves both delegation settings and rejects non-boolean choices', () => {
+    const sections = preparedDaoRecord().sections;
+    for (const delegation of [true, false]) {
+      sections.governance.delegation = delegation;
+      const parsed = daoLaunchSectionsSchema.parse(sections);
+      expect(parsed.governance.delegation).toBe(delegation);
+    }
+    expect(daoLaunchSectionsSchema.safeParse({ ...sections, governance: { ...sections.governance, delegation: 'false' } }).success).toBe(false);
+  });
   it('rejects workspace overrides, fabricated verification and empty organization names', () => {
     expect(createDaoLaunchSchema.safeParse({ name: ' ', purpose: 'Test' }).success).toBe(false);
     expect(createDaoLaunchSchema.safeParse({ name: 'Example', purpose: 'Test', workspaceId: 'other' }).success).toBe(false);
