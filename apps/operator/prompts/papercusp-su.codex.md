@@ -52,26 +52,18 @@ wrapper is unavailable; `activated:false` means invoke the returned tool
 through `tools:invoke`, not that the tool is missing:
 
 **A direct wrapper returns `stale_tool_contract`?** The MCP session lacks a
-`tools/list` baseline for the current serving generation. Do not retry that
-wrapper or infer the capability is missing. Switch the affected work to the
-`ptool` CLI for this turn: each named `ptool` invocation opens its own MCP
-connection and lists the current catalog before dispatch. `ptool --list` shows
-names only; query `ptool tools:find` for an exact schema, then use
-`ptool tools:invoke` or the exact `ptool <group:verb>` call. The CLI uses its
+`tools/list` baseline for the current serving generation. Do not retry it; use
+`ptool` this turn: each named `ptool` invocation opens its own MCP
+connection and lists the current catalog before dispatch. The CLI uses its
 own connection, so it does not repair the old direct-wrapper session. Return
-to direct wrappers only after that client reconnects and refreshes its list.
+to direct wrappers once that client reconnects and refreshes its list.
 
 **A direct wrapper returns `native_tool_owner_unsupported_capability`?** The
-native-owner route is refusing to forward a host-local `authenticatedPrincipal`
-across the owner RPC; this preserves the authorization boundary. Treat it as a
-transport refusal, not evidence that the tool is missing or its handler failed.
-Do NOT retry the same direct wrapper or route another `tools:invoke` call
-through that same native-owner path. Switch this and the remaining Papercusp
-calls in the session to the installed `ptool` CLI, which opens its own
-authenticated MCP connection and retains this session's `PAPERCUSP_SID`: use
-`ptool tools:find` for schema, then `ptool <group:verb>` or `ptool
-tools:invoke`. A successful ptool call verifies the CLI route only; it does not
-prove the native wrapper route is healthy and is not a reason to loosen
+native-owner route refuses to forward a host-local `authenticatedPrincipal`
+(an authorization boundary, not a missing tool or failed handler).
+Do NOT retry the same direct wrapper or that native-owner path. Switch this and the remaining Papercusp
+calls in the session to the installed `ptool` CLI.
+A successful ptool call verifies the CLI route only — not a reason to loosen
 `authenticatedPrincipal` forwarding.
 
 When you call `exec_command` through `functions.exec`, remember that the outer
@@ -114,12 +106,8 @@ ptool <group:verb> --json - <<'JSON'
 JSON
 ```
 
-Use `--json-file` when a payload is easier as a file. Never put arbitrary JSON
-in shell single quotes: one apostrophe breaks the shell before `ptool` runs.
-(`ptool tools:invoke` also works.) `ptool` keeps this session's
-`PAPERCUSP_SID`, so claims and audit attribution stay yours. It is the
-sanctioned escape hatch when Codex defers every MCP tool, not evidence the
-server or capability is missing.
+`ptool` keeps this session's `PAPERCUSP_SID`, so claims and audit attribution
+stay yours.
 
 ## An empty `exec_command` result means YIELDED, not failed — pass `yield_time_ms: 30000`
 
@@ -130,13 +118,10 @@ JSON and writes it in one shot at the end, that is **zero bytes** — and hands 
 
 **Pick by how long the call might take — the two remedies have different ceilings:**
 
-- **Under ~30s (the common case): pass `yield_time_ms: 30000`.** One call, no extra steps.
-  Covers `coord:orient`, `plans:get`, `work_items:list`, `release:trace`, `tools:invoke` and
-  every `ptool` invocation above. This is a fix, not a workaround.
+- **Under ~30s (the common case): pass `yield_time_ms: 30000`.** One call, no extra steps;
+  covers almost every papercusp and `ptool` call.
 - **Unknown duration, or possibly over 30s: use two-call file capture** (below). `yield_time_ms`
-  is capped at **30000 ms — a hard maximum, not headroom** — so it raises the yield boundary
-  rather than removing it. File capture has **no ceiling**: measured intact at 16.8s / 5,722 bytes,
-  and it does not care how long the command runs.
+  is capped at **30000 ms — a hard maximum, not headroom**. File capture has **no ceiling**.
 
 Either way, if you do get a yield, **poll the `session_id`** — the output is there.
 
@@ -149,8 +134,7 @@ Either way, if you do get a yield, **poll the `session_id`** — the output is t
 
 ⛔ **An empty `output` with a `session_id` is not a failure, not an empty dataset, and NOT a
 papercusp tool bug.** Do not retry it, conclude the tool returned nothing, or
-file it — ~20 agents misread it as a `coord:orient` / `ptool` / `tools:invoke` defect and
-filed ~35 duplicates. Settled as **WI-40869**.
+file it (settled as **WI-40869**).
 
 ### Nested `exec_command` calls: preserve and drain every session handle
 
@@ -181,10 +165,8 @@ ptool <verb> --json - … >/tmp/o.json 2>/tmp/o.err
 cat /tmp/o.json
 ```
 
-⚠ **It must be TWO calls.** A redirect and its `cat` in one command still exceeds the yield, so the
-`cat`'s output is yielded away too and you see empty *again* — and would wrongly conclude the
-workaround failed. The file itself is never at risk: the command runs to completion regardless, so
-the bytes are on disk waiting for call 2.
+⚠ **It must be TWO calls**: in one command the `cat`'s output is yielded away too, so you see
+empty *again*. The command still runs to completion; the bytes wait on disk for call 2.
 
 ## `apply_patch`: ONE operation per file, or the WHOLE patch is rejected
 

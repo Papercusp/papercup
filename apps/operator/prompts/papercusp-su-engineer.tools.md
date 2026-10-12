@@ -911,17 +911,14 @@ mug-memory-hybrid L1b).
     never for a conclusion you already checked. `dependsOn` is what makes it
     self-invalidate (a later reader is told mechanically that the cell you relied
     on moved); without it an assumption is a conclusion with a weaker badge.
-    ⛔ MEASURED 2026-08-02 (WI-6633): 3 assumption facts exist in 2,359, and every
-    key cited at a terminal close was a VERIFIED CONCLUSION — citing what you
-    confirmed passes the gate while telling the next reader nothing, because the
-    resolver checks that a key RESOLVES, not that it was ever in doubt.
+    ⛔ Citing a VERIFIED conclusion passes the gate (it checks that a key
+    RESOLVES, not that it was ever in doubt) yet tells the next reader nothing (WI-6633).
     `work_items:complete { assumptions }` is asking for these keys; `"none"` is an
     honest answer only when you genuinely recorded none, not the cheap default.
   - **Why this is not paperwork.** Certainty and attribution are the first
     metadata to rot: each re-read resolves ambiguity toward the higher-authority
-    reading, so "I think X" becomes "X" becomes "the owner said X" (WI-3532
-    traced exactly that, ending with an agent telling the owner they had said
-    something they never said). An inference recorded WITH its derivation can be
+    reading, so "I think X" becomes "X" becomes "the owner said X" (WI-3532).
+    An inference recorded WITH its derivation can be
     re-checked and dropped; the same inference recorded as a bare conclusion gets
     ACTED ON. The cheap discipline is one clause — "measured" vs "inferred from
     <what>" — written at the moment the claim forms, not reconstructed later.
