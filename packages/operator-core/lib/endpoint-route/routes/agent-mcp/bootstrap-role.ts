@@ -26,6 +26,7 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry';
+import { observeFallback } from '../../../degradation/fallback-observations';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
   adoptStartingTerminalLaunch,
@@ -583,11 +584,14 @@ const post = defineTool({
     // warn so the stale registration is visible to clean up. Resolves the whole
     // class (any deleted harness dir), not one path.
     if (!existsSync(spec.cwd)) {
+      observeFallback('agent-launch-readiness', { eligible: 1, applied: 0, reason: 'launch-cwd-missing', scope: 'role-cwd' }, { workspaceId: workspace });
       const fallbackCwd = papercuspPathForWorkspace(workspace);
       console.warn(
         `[bootstrap-role] launch cwd "${spec.cwd}" does not exist (stale harness registration?); falling back to "${fallbackCwd}"`,
       );
       if (existsSync(fallbackCwd)) spec.cwd = fallbackCwd;
+    } else {
+      observeFallback('agent-launch-readiness', { eligible: 1, applied: 1, reason: 'applied', scope: 'role-cwd' }, { workspaceId: workspace });
     }
 
     // Per-session coord/lock owner (P-022) — now MINTED BY THE LAUNCH-SPEC
