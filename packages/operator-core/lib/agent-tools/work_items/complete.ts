@@ -303,6 +303,7 @@ import {
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { isNonCodeWorkItemKind, PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
 import { dispatchPendingGradingAudits } from '../../grading-integrity';
 import {
   designEvidenceCompletionGate,
@@ -5694,7 +5695,11 @@ async function completeOne(
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
     completionContractVersion: WORK_ITEMS_COMPLETION_CONTRACT.version,
     ...(fleetRepullNudge ? { fleetRepullNudge } : {}),
-    workItem,
+    // oversized-tool-results-reduction-2026-10-12 P-002: a close RECEIPT by default (receipt.ts).
+    // The full row echoed `terminalCompletionEvidence` (the `completion` returned just below),
+    // `summary`, `payload` internals and `externalBlockers`. Lifecycle rules read this same
+    // result, so COMPLETE_RECEIPT keeps every field they read. payloadTier:'full' = whole row.
+    workItem: workItem && ctx.payloadTierOverride !== 'full' ? toWorkItemReceipt(workItem, COMPLETE_RECEIPT) : workItem,
     completion,
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),

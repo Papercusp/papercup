@@ -60,6 +60,7 @@ import { gateWorkScope } from '../../work-scope-policy';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
 import { stampFiledBugReproduction } from '../../attention/bug-reproduction';
 import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
+import { CREATE_RECEIPT, toWorkItemReceipt } from './receipt';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -170,6 +171,15 @@ function describeDedupCoverageWarning(
  * without turning a caller-controlled batch into an unbounded PG fan-out.
  */
 export const WORK_ITEMS_CREATE_MAX_CONCURRENCY = 4;
+
+/**
+ * oversized-tool-results-reduction-2026-10-12 P-002: the default create RECEIPT (see receipt.ts).
+ * The full row echoed the caller's own `summary` back, plus `payload` internals, an inert
+ * `interestWatch` and ~20 nulls. Pass `payloadTier:'full'` for the whole row.
+ */
+export function toCreateReceiptWorkItem(row: object): Record<string, unknown> {
+  return toWorkItemReceipt(row, CREATE_RECEIPT);
+}
 
 function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
   const payload = spec.payload ?? {};
@@ -837,7 +847,7 @@ export default defineTool({
           ok: true as const,
           id: res.workItem.id,
           title: spec.title,
-          workItem: res.workItem,
+          workItem: ctx.payloadTierOverride === 'full' ? res.workItem : toCreateReceiptWorkItem(res.workItem),
           ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
           // EI-20450339646861882: filed, but nothing links it to the plan lane the
