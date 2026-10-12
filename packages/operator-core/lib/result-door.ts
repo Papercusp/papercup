@@ -521,6 +521,13 @@ export function buildProjectionHint(
   // UNDER the constant's 420. Keep it that way: measure a wording change here,
   // do not eyeball it.
   const lead = ` ⓘ Get only what you need in ONE call instead of paging this spill: `;
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-005: the spill itself is searchable in
+  // one call (capability:read `query`, read-query.ts), replacing the ~5 base64 page reads per spill
+  // measured 2026-10-12. It rides the JSON and multi-line variants but not the single-line one,
+  // where a line search returns the same one line. The JSON variant PAID for it by trimming its own
+  // wording (356 → 353 chars): its `next` shares a budget with the retained preview (WI-5656), and a
+  // net +60 chars measurably evicted the `_projection.omitted` samples on an events:status result.
+  const searchIt = ` Or search it: capability:read { file_path, query:"terms" }.`;
   const asString = ` \`projection\` also accepts a JSON STRING.`;
   let shape: { json: unknown; lineCount: number };
   try {
@@ -536,10 +543,9 @@ export function buildProjectionHint(
   }
   if (shape.json) {
     return (
-      `${lead}\`projection: { pick: ["results[].id","results[].state"] }\`. This body is JSON on ` +
-      `${shape.lineCount} line(s), so \`pick\` is what reduces it — the \`pipe\` line-operators are ` +
-      `all-or-nothing here (a no-match returns an EMPTY body, which reads like a filter that ` +
-      `worked).${asString}`
+      `${lead}\`projection: { pick: ["results[].id"] }\`. JSON on ${shape.lineCount} line(s), so ` +
+      `\`pick\` is what reduces it; \`pipe\` is all-or-nothing (a no-match returns an EMPTY ` +
+      `body that reads like a working filter).${asString}${searchIt}`
     );
   }
   if (shape.lineCount > 1) {
@@ -547,7 +553,7 @@ export function buildProjectionHint(
       `${lead}\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. This body ` +
       `is ${shape.lineCount} lines of non-JSON text, so the line-operators are what reduce it: grep ` +
       `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count, applied in ` +
-      `order. \`pick\` does not apply here (it selects JSON fields).${asString}`
+      `order. \`pick\` does not apply here (it selects JSON fields).${asString}${searchIt}`
     );
   }
   return (
@@ -3269,6 +3275,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS
         : []),
       ...(opts.preservePaths ?? []),
+      // code:run's `summary` is the script's authored return value; `state` is
+      // replay support added by the sandbox. The generic identity projector
+      // ranks `state` ahead of ordinary fields, so a large store() value could
+      // consume the whole door and erase the useful script result. Keep the
+      // summary ahead of that replay state while the normal result-door budget
+      // continues to bound both and the spill keeps the full response recoverable.
+      ...(opts.toolName === 'code:run' ? ['summary'] : []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
     // The warning is a separate model-facing content item, so reserve its
