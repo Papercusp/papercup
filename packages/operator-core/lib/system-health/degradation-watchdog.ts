@@ -165,6 +165,10 @@ registerDegradationMechanism({
   description: 'Inbox and outbox reads whose primary paged query completed rather than retrying the full-read fallback after a paging error.',
 });
 registerDegradationMechanism({
+  mechanism: 'improvement-watchdog-read', scopeKeyed: true,
+  description: 'Improvement-watchdog lock, history and key-dedup reads that completed their primary operation rather than sweeping unlocked or using no-history/title-only defaults.',
+});
+registerDegradationMechanism({
   mechanism: 'workspace-routing-read', scopeKeyed: true,
   description: 'Workspace route, placement, recipient and issue-partition decisions that measured their primary inventory, presence files, recipient set or flag rather than selecting a fallback after a read failure.',
 });
