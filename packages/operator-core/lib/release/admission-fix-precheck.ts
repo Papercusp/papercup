@@ -47,7 +47,7 @@ export const ADMISSION_PRECHECK_REFUSALS = Object.freeze([
 export type AdmissionPrecheckRefusalCode = (typeof ADMISSION_PRECHECK_REFUSALS)[number];
 
 /** A repo-relative path the test router would run as a test file. */
-export const TEST_FILE_RE = /\.(?:integration\.)?(?:test|spec)\.[cm]?[jt]sx?$/;
+export const TEST_FILE_RE = /\.(?:integration\.)?(?:test|spec|node-test)\.[cm]?[jt]sx?$/;
 
 export function isTestFilePath(p: string): boolean {
   return TEST_FILE_RE.test(p);
@@ -75,6 +75,8 @@ function normalize(p: string): string {
 export function precheckPopulation(input: {
   signature: readonly SignatureLike[];
   admittedPaths: readonly string[];
+  /** Dependency-selected files from the immutable admission, outside the signature. */
+  affectedTestFiles?: readonly string[];
 }): FixPrecheckPopulation {
   const signatureTestFiles: string[] = [];
   const nonTestKinds = new Set<RepairSignatureKind>();
@@ -87,7 +89,7 @@ export function precheckPopulation(input: {
     }
   }
   const admittedTestFiles: string[] = [];
-  for (const raw of input.admittedPaths) {
+  for (const raw of [...input.admittedPaths, ...(input.affectedTestFiles ?? [])]) {
     const p = normalize(raw);
     if (!p || !isTestFilePath(p)) continue;
     if (signatureTestFiles.includes(p) || admittedTestFiles.includes(p)) continue;
