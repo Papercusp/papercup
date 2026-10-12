@@ -107,7 +107,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': na(
     'performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback',
   ),
-  'log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts': migrate('P-013'),
   'log-only-fallback|packages/operator-core/lib/db-tools/sanitize-baseline.ts': na(
     'developer tool that sanitizes the frozen schema baseline; the unknown-shape note is its own report to the operator running it',
   ),
