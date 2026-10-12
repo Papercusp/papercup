@@ -78,6 +78,9 @@ beforeAll(() => {
   put(fixture, 'ignored-entry.mjs', "import { g } from './gen/out.mjs';\nconsole.log(`G=${g}`);\n");
   put(fixture, 'cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./c.cjs');\n");
   put(fixture, 'c.cjs', "console.log('CJS-RAN');\n");
+  put(fixture, 'cjs/package.json', '{ "type": "commonjs" }\n');
+  put(fixture, 'cjs/[eval]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
+  put(fixture, 'cjs/[stdin]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
   put(fixture, 'dep-entry.mjs', "import { d } from 'dep';\nconsole.log(`D=${d}`);\n");
   put(fixture, 'packages/workspace/package.json', '{ "name": "workspace", "type": "module", "exports": { ".": "./value.mjs", "./new": "./new.mjs", "./cjs": "./value.cjs" } }\n');
   put(fixture, 'packages/workspace/value.mjs', "export const v = 'HEAD';\n");
@@ -124,11 +127,12 @@ function censusPrefix(): { prefix: string[]; env: NodeJS.ProcessEnv } {
   return { prefix: census.argv.slice(0, census.argv.indexOf(RESTRICTED_HOLD_PREFLIGHT_CLI)), env: census.env };
 }
 
-function run(argv: string[], env: NodeJS.ProcessEnv, auditFile?: string) {
+function run(argv: string[], env: NodeJS.ProcessEnv, auditFile?: string, input?: string) {
   const result = spawnSync(process.execPath, argv, {
     cwd: fixture,
     env: auditFile ? { ...env, [AUDIT_ENV]: auditFile } : env,
     encoding: 'utf8',
+    input,
     timeout: 60_000,
   });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
@@ -145,6 +149,70 @@ function readAudit(file: string): AuditRecord[] {
 }
 
 describe('committed-source loader — a scratch checkout', () => {
+  it('runs retained ESM beneath an info-only Git metadata directory outside a checkout', () => {
+    const outside = mkdtempSync(join(scratch, 'retained-api-'));
+    put(outside, '.git/info/exclude', '*.log\n');
+    put(outside, 'artifacts/api.mjs', "console.log('RETAINED-API-RAN');\n");
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(outside, 'artifacts/api.mjs')], cleanEnv());
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RETAINED-API-RAN');
+  }, 60_000);
+
+  it('keeps enforcing committed bytes inside a checkout beneath info-only ancestor metadata', () => {
+    const ancestor = mkdtempSync(join(scratch, 'ignore-ancestor-'));
+    put(ancestor, '.git/info/exclude', '*.log\n');
+    const repo = join(ancestor, 'checkout');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    put(repo, 'entry.mjs', "console.log('NESTED=HEAD');\n");
+    git(repo, ['add', '-A']); git(repo, ['commit', '-q', '-m', 'fixture']);
+    put(repo, 'entry.mjs', "console.log('NESTED=DIRTY');\n");
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(repo, 'entry.mjs')], cleanEnv());
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('NESTED=HEAD');
+    expect(result.stdout).not.toContain('NESTED=DIRTY');
+  }, 60_000);
+
+  it('refuses a damaged checkout rather than treating its missing HEAD as outside code', () => {
+    const damaged = mkdtempSync(join(scratch, 'damaged-repo-'));
+    git(damaged, ['init', '-q']);
+    put(damaged, 'entry.mjs', "console.log('DAMAGED-REPO-RAN');\n");
+    rmSync(join(damaged, '.git/HEAD'));
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(damaged, 'entry.mjs')], cleanEnv());
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain('DAMAGED-REPO-RAN');
+    expect(result.stderr).toMatch(/not a git repository/i);
+  }, 60_000);
+
+  it.each([
+    { name: 'eval', argv: ['-e', "console.log('INLINE-RAN')"], input: undefined },
+    { name: 'print', argv: ['-p', "'INLINE-RAN'"], input: undefined },
+    { name: 'stdin', argv: [], input: "console.log('INLINE-RAN')\n" },
+  ])('allows Node virtual $name wrappers under the inherited test:file preload', ({ argv, input }) => {
+    const loaded = run(argv, { ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}` }, undefined, input);
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('INLINE-RAN');
+  }, 60_000);
+
+  it('still substitutes a dirty checkout ESM imported from eval', () => {
+    const loaded = run(['-e', "import('./mod.mjs').then(({v}) => console.log('V=' + v))"], {
+      ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`,
+    });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('V=HEAD');
+    expect(loaded.stdout).not.toContain('V=DIRTY');
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
+  }, 60_000);
+
+  it.each(['c.cjs', 'cjs/[eval]-wrapper', 'cjs/[stdin]-wrapper'])('still refuses checkout CommonJS %s required from eval', (file) => {
+    const loaded = run(['-e', `require(${JSON.stringify('./' + file)})`], {
+      ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`,
+    });
+    expect(loaded.status, loaded.stderr).not.toBe(0);
+    expect(loaded.stderr).toContain(`COMMITTED_SOURCE refused ${file}`);
+    expect(loaded.stdout).not.toMatch(/CJS-RAN|FILE-WRAPPER-RAN/);
+  }, 60_000);
+
   it('censusSpawnArgs puts the loader first and tsx second', () => {
     expect(censusPrefix().prefix).toEqual(['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx']);
   });

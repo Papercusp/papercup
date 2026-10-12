@@ -32,7 +32,7 @@
 // code; the installed PreToolUse hook applies that same decision to client-native egress.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import Module, { register } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,9 +65,17 @@ function checkoutTop(file) {
       return top;
     }
     seen.push(dir);
-    if (existsSync(join(dir, '.git'))) {
-      for (const d of seen) topByDir.set(d, dir);
-      return dir;
+    const marker = join(dir, '.git');
+    if (existsSync(marker)) {
+      // A home directory may hold only .git/info/exclude for ignore tooling,
+      // without being a checkout. Exempt that exact metadata-only shape, not
+      // arbitrary unreadable repositories: missing HEAD in a real/damaged
+      // gitdir must still fail closed, as must a malformed worktree .git file.
+      const entries = statSync(marker).isDirectory() ? readdirSync(marker) : null;
+      if (entries === null || entries.length !== 1 || entries[0] !== 'info') {
+        for (const d of seen) topByDir.set(d, dir);
+        return dir;
+      }
     }
     const parent = dirname(dir);
     if (parent === dir) {
@@ -229,6 +237,13 @@ function describeEntry(argv1) {
 function guardCommonJs() {
   const compile = Module.prototype._compile;
   Module.prototype._compile = function committedSourceCompile(content, filename) {
+    // Node 25 compiles its own in-memory bridge for -e/-p and stdin through
+    // _compile. These exact virtual module identities have no filesystem bytes
+    // to judge. Real modules (including files named [eval]-wrapper) arrive with
+    // a resolved filename and must still pass the checkout CommonJS fence.
+    if ((this.id === '[eval]' || this.id === '[stdin]') && filename === `${this.id}-wrapper`) {
+      return compile.call(this, content, filename);
+    }
     const where = locate(filename);
     if (where.place === 'checkout' && !isIgnored(where.top, where.rel)) {
       audit({ via: 'cjs', kind: 'commonjs', file: filename, rel: where.rel });
