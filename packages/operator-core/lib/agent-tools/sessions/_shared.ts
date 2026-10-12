@@ -10,6 +10,7 @@ import type { Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import type { SessionState } from '../coordination/presence-wakeability';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
@@ -28,6 +29,9 @@ export type SessionRefreshFailureReason =
   | 'owner_lookup_timeout'
   | 'owner_lookup_aborted'
   | 'owner_lookup_error'
+  | 'liveness_lookup_timeout'
+  | 'liveness_lookup_aborted'
+  | 'liveness_lookup_error'
   | 'resolve_timeout'
   | 'resolve_aborted'
   | 'resolve_error'
@@ -39,6 +43,10 @@ export type SessionRefreshFailureReason =
 export interface SessionRefreshReceipt {
   attempted: number;
   refreshed: number;
+  /** Candidate owners whose current session state was not confirmed refreshable. */
+  unconfirmed?: number;
+  /** Confirmed-refreshable owners left outside the bounded 20-session refresh. */
+  skipped?: number;
   /** Aggregated, anonymized failure categories; never includes owner/session ids or raw errors. */
   failureReasons?: Partial<Record<SessionRefreshFailureReason, number>>;
 }
@@ -48,7 +56,7 @@ function failedSessionRefresh(reason: SessionRefreshFailureReason): SessionRefre
 }
 
 function boundedFailureReason(
-  stage: 'owner_lookup' | 'resolve' | 'ingest',
+  stage: 'owner_lookup' | 'liveness_lookup' | 'resolve' | 'ingest',
   reason: 'timeout' | 'aborted' | 'error' | undefined,
 ): SessionRefreshFailureReason {
   return `${stage}_${reason ?? 'error'}` as SessionRefreshFailureReason;
@@ -151,6 +159,10 @@ export interface WindowTurn {
 interface LiveRefreshDeps {
   resolve?: (ownerId: string) => Promise<{ filePath: string; sessionId: string } | null>;
   ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
+  resolveStates?: (
+    subjects: readonly { ownerId: string }[],
+    opts: { hydrateBatch: true },
+  ) => Promise<ReadonlyMap<string, { sessionState: SessionState | null }>>;
 }
 
 interface TargetSessionRow {
@@ -299,65 +311,84 @@ export async function refreshLiveSessionsBeforeRead(
   owners?: readonly string[] | null,
   deps: LiveRefreshDeps = {},
 ): Promise<SessionRefreshReceipt> {
-  let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
-  let ownerLookupFailure: SessionRefreshFailureReason | undefined;
-  const hasExplicitOwnerScope = ownerIds.length > 0;
-  if (hasExplicitOwnerScope) {
-    // Search filters can carry durable owner sets (notably fleet ever-members)
-    // so the indexed read remains postmortem-safe. Live refresh has a different
-    // scope: only owners with a current Codex adv-session row are candidates.
-    // Intersect here before resolving files so historical members do not turn a
-    // valid historical search into a degraded freshness measurement. Keep
-    // every file-backed session kind here; sessions:list and timeline also
-    // use this helper for active Claude and OMP sessions.
-    const activeOwnerRead = await withBoundedTimeout<Array<{ owner: string }>>(
-      sql<Array<{ owner: string }>>`
-        SELECT DISTINCT coord_owner_id AS owner
-          FROM harness_shared.adv_sessions
-         WHERE ended_at IS NULL
-           AND agent IN ('claude', 'omp', 'codex')
-           AND coord_owner_id = ANY(${ownerIds}::text[])
-      ORDER BY coord_owner_id
-         LIMIT 20`,
-      {
-        fallback: [],
-        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
-        label: 'sessions:live owner scope lookup',
-      },
-    );
-    if (activeOwnerRead.degraded) {
-      ownerLookupFailure = boundedFailureReason('owner_lookup', activeOwnerRead.reason);
-      return { attempted: 0, refreshed: 0, failureReasons: { [ownerLookupFailure]: 1 } };
+  // Search filters can carry durable owner sets (notably fleet ever-members)
+  // so the indexed read remains postmortem-safe. Treat adv_sessions as a broad
+  // candidate source only: ended_at IS NULL is not process liveness, since an
+  // abrupt death can leave an unended row behind. Resolve the canonical session
+  // state for every candidate before applying the 20-owner refresh bound.
+  const requestedOwners = owners == null ? null : [...new Set(owners.filter(Boolean))];
+  const hasExplicitOwnerScope = requestedOwners !== null;
+  if (hasExplicitOwnerScope && requestedOwners.length === 0) return { attempted: 0, refreshed: 0 };
+
+  const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
+    () => hasExplicitOwnerScope
+      ? sql<Array<{ owner: string }>>`
+          SELECT DISTINCT coord_owner_id AS owner
+            FROM harness_shared.adv_sessions
+           WHERE ended_at IS NULL
+             AND agent IN ('claude', 'omp', 'codex')
+             AND coord_owner_id = ANY(${requestedOwners!}::text[])
+        ORDER BY coord_owner_id`
+      : sql<Array<{ owner: string }>>`
+          SELECT DISTINCT coord_owner_id AS owner
+            FROM harness_shared.adv_sessions
+           WHERE ended_at IS NULL
+             AND agent = 'codex'
+             AND coord_owner_id IS NOT NULL
+        ORDER BY coord_owner_id`,
+    {
+      fallback: [],
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label: hasExplicitOwnerScope ? 'sessions:live owner scope lookup' : 'sessions:live owner lookup',
+    },
+  );
+  if (ownerRead.degraded) {
+    const reason = boundedFailureReason('owner_lookup', ownerRead.reason);
+    return { attempted: 0, refreshed: 0, failureReasons: { [reason]: 1 } };
+  }
+  const candidateOwners = [...new Set(ownerRead.value.map((row) => row.owner).filter(Boolean))];
+  if (candidateOwners.length === 0) return { attempted: 0, refreshed: 0 };
+
+  const resolveStates = deps.resolveStates ??
+    (await import('../coordination/liveness-oracle')).resolveSessionStates;
+  const liveness = await withBoundedTimeout(
+    () => resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), { hydrateBatch: true }),
+    {
+      fallback: new Map<string, { sessionState: SessionState | null }>(),
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label: 'sessions:live liveness lookup',
+    },
+  );
+  if (liveness.degraded) {
+    const reason = boundedFailureReason('liveness_lookup', liveness.reason);
+    return {
+      attempted: 0,
+      refreshed: 0,
+      unconfirmed: candidateOwners.length,
+      failureReasons: { [reason]: 1 },
+    };
+  }
+
+  const refreshableOwners: string[] = [];
+  let unconfirmed = 0;
+  for (const ownerId of candidateOwners) {
+    const state = liveness.value.get(ownerId)?.sessionState;
+    if (state === 'live' || state === 'parked' || state === 'draining') {
+      refreshableOwners.push(ownerId);
+    } else if (state == null || state === 'recorded' || state === 'suspect') {
+      // Unknown, recorded-only, and suspect owners are not proof of a current
+      // transcript that can be tailed. Keep that uncertainty visible to search.
+      unconfirmed += 1;
     }
-    ownerIds = activeOwnerRead.value.map((row) => row.owner);
-    if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
+    // `ended` is positive evidence that read-time refresh is not applicable.
   }
-  if (ownerIds.length === 0) {
-    const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
-      sql<Array<{ owner: string }>>`
-        SELECT DISTINCT coord_owner_id AS owner
-          FROM harness_shared.adv_sessions
-         WHERE ended_at IS NULL
-           AND agent = 'codex'
-           AND coord_owner_id IS NOT NULL
-         ORDER BY coord_owner_id
-         LIMIT 20`,
-      {
-        fallback: [],
-        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
-        label: 'sessions:live owner lookup',
-      },
-    );
-    ownerIds = ownerRead.value.map((row) => row.owner);
-    if (ownerRead.degraded) {
-      ownerLookupFailure = boundedFailureReason('owner_lookup', ownerRead.reason);
-    }
-  }
-  if (ownerIds.length === 0) {
-    return ownerLookupFailure
-      ? { attempted: 0, refreshed: 0, failureReasons: { [ownerLookupFailure]: 1 } }
-      : { attempted: 0, refreshed: 0 };
-  }
+  const ownerIds = refreshableOwners.slice(0, 20);
+  const skipped = Math.max(0, refreshableOwners.length - ownerIds.length);
+  const coverage = {
+    ...(unconfirmed > 0 ? { unconfirmed } : {}),
+    ...(skipped > 0 ? { skipped } : {}),
+  };
+  if (ownerIds.length === 0) return { attempted: 0, refreshed: 0, ...coverage };
 
   const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
   const results = await Promise.all(ownerIds.map(async (owner): Promise<SessionRefreshReceipt> => {
@@ -388,6 +419,7 @@ export async function refreshLiveSessionsBeforeRead(
   return {
     attempted: ownerIds.length,
     refreshed: results.reduce((total, result) => total + result.refreshed, 0),
+    ...coverage,
     ...(Object.keys(failureReasons).length > 0 ? { failureReasons } : {}),
   };
 }

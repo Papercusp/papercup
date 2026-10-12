@@ -5,34 +5,58 @@ import {
   SESSION_READ_REFRESH_TIMEOUT_MS,
   SESSION_TARGET_REFRESH_TIMEOUT_MS,
 } from './_shared';
+import type { SessionState } from '../coordination/presence-wakeability';
 
 function sqlReturningLiveOwners(owners: string[]) {
   return vi.fn(async (..._args: unknown[]) => owners.map((owner) => ({ owner })));
 }
 
+type TestSessionState = SessionState | null;
+
+function livenessResolver(states: Record<string, TestSessionState> = {}) {
+  return vi.fn(async (subjects: readonly { ownerId: string }[]) => new Map<string, { sessionState: TestSessionState }>(
+    subjects.map(({ ownerId }) => [ownerId, {
+      sessionState: Object.prototype.hasOwnProperty.call(states, ownerId)
+        ? states[ownerId] ?? null
+        : 'live',
+    }] as const),
+  ));
+}
+
 describe('refreshLiveSessionsBeforeRead', () => {
   it('refreshes explicitly requested owners concurrently and preserves owner identity', async () => {
     const ingest = vi.fn(async () => undefined);
+    const resolveStates = livenessResolver();
     const resolve = vi.fn(async (owner: string) => ({
       filePath: `/tmp/${owner}.jsonl`,
       sessionId: `session-${owner}`,
     }));
     const sql = sqlReturningLiveOwners(['su-a', 'su-b']);
 
-    const result = await refreshLiveSessionsBeforeRead(sql as never, ['su-a', 'su-b', 'su-a'], { resolve, ingest });
+    const result = await refreshLiveSessionsBeforeRead(sql as never, ['su-a', 'su-b', 'su-a'], {
+      resolve,
+      ingest,
+      resolveStates,
+    });
 
     expect(result).toEqual({ attempted: 2, refreshed: 2 });
+    expect(resolveStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-a' }, { ownerId: 'su-b' }],
+      { hydrateBatch: true },
+    );
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(ingest).toHaveBeenCalledWith('/tmp/su-a.jsonl', { owner: 'su-a', sessionId: 'session-su-a' });
     expect(ingest).toHaveBeenCalledWith('/tmp/su-b.jsonl', { owner: 'su-b', sessionId: 'session-su-b' });
   });
 
   it('fails soft per live session instead of failing the read surface', async () => {
+    const resolveStates = livenessResolver();
     const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-missing', 'su-live']) as never, ['su-missing', 'su-live'], {
       resolve: async (owner) => owner === 'su-live'
         ? { filePath: '/tmp/live.jsonl', sessionId: 'live' }
         : null,
       ingest: async () => undefined,
+      resolveStates,
     });
 
     expect(result).toEqual({
@@ -48,6 +72,7 @@ describe('refreshLiveSessionsBeforeRead', () => {
       sessionId: `session-${owner}`,
     }));
     const ingest = vi.fn(async () => undefined);
+    const resolveStates = livenessResolver();
     const sql = sqlReturningLiveOwners(['su-current-codex', 'su-current-claude', 'su-current-omp']);
     const ownerFilter = [
       'su-current-codex',
@@ -60,7 +85,7 @@ describe('refreshLiveSessionsBeforeRead', () => {
     const result = await refreshLiveSessionsBeforeRead(
       sql as never,
       ownerFilter,
-      { resolve, ingest },
+      { resolve, ingest, resolveStates },
     );
 
     const [query, passedOwners] = sql.mock.calls[0] ?? [];
@@ -75,14 +100,78 @@ describe('refreshLiveSessionsBeforeRead', () => {
     expect(ingest).toHaveBeenCalledTimes(3);
   });
 
+  it('filters candidates by canonical liveness before applying the 20-owner cap', async () => {
+    const liveOwners = Array.from({ length: 22 }, (_, index) => `su-live-${index}`);
+    const candidateOwners = ['su-ended-row', 'su-recorded', 'su-unknown', 'su-suspect', ...liveOwners];
+    const resolveStates = livenessResolver({
+      'su-ended-row': 'ended',
+      'su-recorded': 'recorded',
+      'su-unknown': null,
+      'su-suspect': 'suspect',
+      'su-live-1': 'parked',
+      'su-live-2': 'draining',
+    });
+    const resolve = vi.fn(async (owner: string) => ({
+      filePath: `/tmp/${owner}.jsonl`,
+      sessionId: `session-${owner}`,
+    }));
+    const ingest = vi.fn(async () => undefined);
+    const sql = sqlReturningLiveOwners(candidateOwners);
+
+    const result = await refreshLiveSessionsBeforeRead(sql as never, candidateOwners, {
+      resolve,
+      ingest,
+      resolveStates,
+    });
+
+    const [query, passedOwners] = sql.mock.calls[0] ?? [];
+    expect((query as TemplateStringsArray).join('')).toContain('WHERE ended_at IS NULL');
+    expect(passedOwners).toEqual(candidateOwners);
+    expect(resolveStates).toHaveBeenCalledWith(
+      candidateOwners.map((ownerId) => ({ ownerId })),
+      { hydrateBatch: true },
+    );
+    expect(resolve.mock.calls.map(([owner]) => owner)).toEqual(liveOwners.slice(0, 20));
+    expect(result).toEqual({ attempted: 20, refreshed: 20, unconfirmed: 3, skipped: 2 });
+  });
+
+  it('does not resolve transcripts when canonical liveness lookup times out', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const resolveStates = vi.fn(() => new Promise<never>(() => {}));
+      const resolve = vi.fn();
+      const pending = refreshLiveSessionsBeforeRead(
+        sqlReturningLiveOwners(['su-slow']) as never,
+        ['su-slow'],
+        { resolveStates, resolve, ingest: vi.fn() },
+      );
+
+      await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
+
+      await expect(pending).resolves.toEqual({
+        attempted: 0,
+        refreshed: 0,
+        unconfirmed: 1,
+        failureReasons: { liveness_lookup_timeout: 1 },
+      });
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('degrades a slow live resolve or ingest within the read budget', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const ingest = vi.fn(() => new Promise<never>(() => {}));
+      const resolveStates = livenessResolver();
       const pending = refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-slow']) as never, ['su-slow'], {
         resolve: async () => ({ filePath: '/tmp/slow.jsonl', sessionId: 'slow' }),
         ingest,
+        resolveStates,
       });
 
       await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
@@ -163,9 +252,11 @@ describe('refreshLiveSessionsBeforeRead', () => {
   it('classifies a live transcript resolver error without exposing its raw message', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
+      const resolveStates = livenessResolver();
       const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-error']) as never, ['su-error'], {
         resolve: async () => { throw new Error('/private/session/path: permission denied'); },
         ingest: async () => undefined,
+        resolveStates,
       });
 
       expect(result).toEqual({ attempted: 1, refreshed: 0, failureReasons: { resolve_error: 1 } });

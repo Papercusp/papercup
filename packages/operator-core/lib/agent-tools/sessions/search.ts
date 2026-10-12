@@ -231,7 +231,10 @@ export default defineTool({
       ? refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
       : refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null));
     const refreshDegraded =
-      liveRefresh.attempted > liveRefresh.refreshed || Boolean(liveRefresh.failureReasons);
+      liveRefresh.attempted > liveRefresh.refreshed ||
+      (liveRefresh.unconfirmed ?? 0) > 0 ||
+      (liveRefresh.skipped ?? 0) > 0 ||
+      Boolean(liveRefresh.failureReasons);
 
     // D-006 / P-013: turns another agent recorded inside its disclosure windows
     // are excluded INSIDE every matching query below, so they never take a
@@ -370,13 +373,26 @@ export default defineTool({
     // failure arriving through a tool result instead of a summary.
     const staleIndexCaveat = pageHits.length === 0 && refreshDegraded
       ? `⚠ UNVERIFIABLE, NOT ABSENT: the pre-read ingest that tails live transcript(s) into the search index ` +
-        (liveRefresh.attempted > 0
-          ? `FAILED for ${liveRefresh.attempted - liveRefresh.refreshed} of ${liveRefresh.attempted} session(s) in scope. `
-          : `could not enumerate live sessions for refresh. `) +
+        [
+          liveRefresh.attempted > liveRefresh.refreshed
+            ? `FAILED for ${liveRefresh.attempted - liveRefresh.refreshed} of ${liveRefresh.attempted} session(s) in scope.`
+            : undefined,
+          (liveRefresh.unconfirmed ?? 0) > 0
+            ? `Liveness was UNCONFIRMED for ${liveRefresh.unconfirmed} candidate session(s); those were not refreshed.`
+            : undefined,
+          (liveRefresh.skipped ?? 0) > 0
+            ? `The 20-session refresh bound left ${liveRefresh.skipped} confirmed-refreshable candidate session(s) unrefreshed.`
+            : undefined,
+          liveRefresh.attempted === 0 &&
+            (liveRefresh.unconfirmed ?? 0) === 0 &&
+            (liveRefresh.skipped ?? 0) === 0
+            ? `the current live sessions could not be enumerated for refresh.`
+            : undefined,
+        ].filter(Boolean).join(' ') + ` ` +
         `The refresh is fail-soft. Anonymized stage/reason counts are in indexRefresh.failureReasons; raw errors and session ids ` +
-        `are omitted. Turns written since the last SUCCESSFUL ingest — including ` +
-        `ones from the session you are searching right now — are not in the index yet, so this 0 does not mean the ` +
-        `text was never written. Re-running may fix it; if it still returns 0, read the transcript directly ` +
+        `are omitted. If a current session was among the failed, unconfirmed, or skipped candidates, turns written since ` +
+        `its last SUCCESSFUL ingest may not be in the index, so this 0 does not mean the text was never written. ` +
+        `Re-running may fix it if candidate state changes; if it still returns 0, read the transcript directly ` +
         `(sessions:read { session:'self' }) before concluding anything. Do NOT use this 0 as evidence that an owner ` +
         `directive was never given.`
       : undefined;
@@ -730,6 +746,8 @@ export default defineTool({
               attempted: liveRefresh.attempted,
               refreshed: liveRefresh.refreshed,
               degraded: true,
+              ...((liveRefresh.unconfirmed ?? 0) > 0 ? { unconfirmed: liveRefresh.unconfirmed } : {}),
+              ...((liveRefresh.skipped ?? 0) > 0 ? { skipped: liveRefresh.skipped } : {}),
               ...(liveRefresh.failureReasons ? { failureReasons: liveRefresh.failureReasons } : {}),
             },
           }
