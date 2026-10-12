@@ -17,6 +17,7 @@ const { readFallbackWindow, pruneFallbackObservations } = await import('./fallba
 
 const MODULE_URL = new URL('./fallback-observations.ts', import.meta.url).href;
 const WS = 'ws-fallback-observations-it';
+const CORRELATION_ID = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
 
 /** Run the writer in a separate node process (tsx loader), against `dsn`. */
 function writeFromChildProcess(dsn: string): Promise<{ code: number | null; out: string }> {
@@ -24,7 +25,7 @@ function writeFromChildProcess(dsn: string): Promise<{ code: number | null; out:
     import postgres from 'postgres';
     const m = await import(${JSON.stringify(MODULE_URL)});
     const sql = postgres(process.env.FO_DSN, { max: 1, onnotice: () => {} });
-    m.observeFallback('gate.pass-reuse', { eligible: 7689, applied: 0, reason: 'proofs-unavailable', scope: 'run-762a13a6' }, { sql, workspaceId: '${WS}', processTag: 'child-' + process.pid });
+    m.observeFallback('gate.pass-reuse', { eligible: 7689, applied: 0, reason: 'proofs-unavailable', scope: 'run-762a13a6' }, { sql, workspaceId: '${WS}', processTag: 'child-' + process.pid, correlationId: ${JSON.stringify(CORRELATION_ID)} });
     m.observeFallback('gate.pass-reuse', { eligible: 11, applied: 0, reason: 'dirty-checkout' }, { sql, workspaceId: '${WS}' });
     m.observeFallback('gate.pass-reuse', { eligible: 300, applied: 300, reason: 'applied' }, { sql, workspaceId: '${WS}' });
     m.observeFallback('other.mechanism', { eligible: 5, applied: 0, reason: 'x' }, { sql, workspaceId: '${WS}' });
@@ -79,11 +80,11 @@ describe('fallback observations — durable and readable across processes (real 
     const elsewhere = await readFallbackWindow('gate.pass-reuse', 60 * 60 * 1000, { sql: db.adminSql, workspaceId: 'ws-unrelated' });
     expect(elsewhere.samples).toBe(0);
 
-    const rows = await db.adminSql<Array<{ process_tag: string | null; scope: string | null }>>`
-      SELECT process_tag, scope FROM harness_shared.fallback_observations
+    const rows = await db.adminSql<Array<{ process_tag: string | null; scope: string | null; correlation_id: string | null }>>`
+      SELECT process_tag, scope, correlation_id FROM harness_shared.fallback_observations
        WHERE workspace_id = ${WS} AND reason = 'proofs-unavailable'
     `;
-    expect(rows).toEqual([{ process_tag: `child-${reported.pid}`, scope: 'run-762a13a6' }]);
+    expect(rows).toEqual([{ process_tag: `child-${reported.pid}`, scope: 'run-762a13a6', correlation_id: CORRELATION_ID }]);
   }, 60_000);
 
   it('the window excludes rows older than windowMs, and pruning removes rows past retention', async () => {
