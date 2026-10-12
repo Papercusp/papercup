@@ -113,7 +113,10 @@ fi
 # Cleanup stays above this block so ExecStopPost can never wait on backup work.
 if [ "${KOPIA_BACKUP_GUARD_ACTIVE:-0}" != 1 ]; then
   guard="${KOPIA_BACKUP_GUARD_BIN:-$script_dir/kopia-backup-guard.sh}"
-  exec "$guard" --mode wait --label daily-home-vm -- "$0" "$@"
+  # The daily full-home walk is restart-safe but may run for hours. Keep it in
+  # scheduled mode so an overdue DB dump can preempt it; wait mode is reserved
+  # for protected/manual snapshots that must finish before their caller proceeds.
+  exec "$guard" --mode scheduled --label daily-home-vm --priority-on-contention -- "$0" "$@"
 fi
 
 run_kopia_snapshot() {

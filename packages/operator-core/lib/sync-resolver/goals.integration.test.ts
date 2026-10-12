@@ -32,6 +32,7 @@
  *   npm run test:file -- packages/operator-core/lib/sync-resolver/goals.integration.test.ts
  */
 import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,6 +41,7 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { readTypedPropertyCollection } from '../typed-properties';
+import { flushFallbackObservations, observeFallback } from '../degradation/fallback-observations';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..', '..', '..', '..');
@@ -120,10 +122,23 @@ beforeAll(async () => {
     import('../goal-rubric-stewardship')]);
 }, 600_000);
 
+async function closeGoalSql(timeout: number): Promise<void> {
+  try {
+    // A bounded read can leave telemetry buffered beyond the test body. Drain
+    // its real writer before ending the handle it captured or replacing sql.
+    expect(await flushFallbackObservations({ sql })).toMatchObject({ failed: 0, dropped: 0 });
+  } finally {
+    await sql?.end({ timeout });
+  }
+}
+
 afterAll(async () => {
-  await nestedPg?.dispose();
-  await sql?.end({ timeout: 5 });
-  await db?.drop();
+  try {
+    await closeGoalSql(5);
+  } finally {
+    await nestedPg?.dispose();
+    await db?.drop();
+  }
 });
 
 beforeEach(async () => {
@@ -911,12 +926,37 @@ describe('goals.* resolvers against real SQL', () => {
     });
   });
 
-  it('releases the detail transaction before holder liveness acquires the same one-connection pool', async () => {
+  it.each(['available', 'pending'] as const)(
+    'releases the detail transaction before holder liveness acquires the same one-connection pool with %s optional portfolio', async (portfolioState) => {
     const { resolveGoalDetail } = await import('./goals');
+    const settings = await import('../goal-launch-settings');
+    const { AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS } = await import('../agent-obligation-reader');
     await goal();
     await agentOnGoal('su-single-connection');
-    await sql.end({ timeout: 5 });
-    sql = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    const telemetryRef = randomUUID();
+    expect(observeFallback('goal-fixture-pool-close', { eligible: 1, applied: 0,
+      reason: 'fixture pool replacement' }, { sql, workspaceId: WS, correlationId: telemetryRef })).toBe(true);
+    try {
+      await closeGoalSql(5);
+    } finally {
+      sql = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    }
+    // The buffered observation survives the old pool's closure; resetting or
+    // discarding the queue would make this real migrated SQL assertion fail.
+    expect(await sql`SELECT mechanism, reason FROM harness_shared.fallback_observations
+      WHERE workspace_id=${WS} AND correlation_id=${telemetryRef}`)
+      .toEqual([{ mechanism: 'goal-fixture-pool-close', reason: 'fixture pool replacement' }]);
+    const originalPortfolio = settings.readGoalPortfolioBrief;
+    let releasePortfolio!: () => void;
+    const pendingPortfolio = new Promise<void>(resolve => { releasePortfolio = resolve; });
+    const portfolio = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      if (portfolioState === 'pending') await pendingPortfolio;
+      return originalPortfolio(args);
+    });
+    // Optional agenda reads can legitimately use their bounded fallback while
+    // the transaction/connection contract stays intact. Assert that disclosure
+    // explicitly; unrelated warnings and read errors must still fail this case.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const out = await Promise.race([
@@ -924,15 +964,37 @@ describe('goals.* resolvers against real SQL', () => {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error('goal detail held the only connection during holder liveness')), 5_000);
         }),
-      ]) as { goal: { id: string }; agents: Array<{ ownerId: string }>; holderLiveness: string };
+      ]) as { goal: { id: string }; agents: Array<{ ownerId: string }>; holderLiveness: string;
+        goalModeState: { status: string; portfolio: unknown; degradedReasons: string[] } };
       expect(out.goal.id).toBe(GOAL);
       expect(out.agents.map((agent) => agent.ownerId)).toEqual(['su-single-connection']);
       expect(['held', 'lost', 'unknown']).toContain(out.holderLiveness);
       expect(await sql`SELECT 1 AS n`).toEqual([{ n: 1 }]);
+      expect(['known', 'degraded']).toContain(out.goalModeState.status);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toMatch(/^\[bounded-timeout\] agent-obligations:[\w:-]+ exceeded \d+ms — degrading to fallback$/);
+        expect(out.goalModeState.status).toBe('degraded');
+        expect(out.goalModeState.degradedReasons.length).toBeGreaterThan(0);
+      }
+      if (portfolioState === 'pending') {
+        expect(portfolio).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          `[bounded-timeout] agent-obligations:goal-portfolio exceeded ${AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS}ms — degrading to fallback`,
+        );
+        expect(out.goalModeState.portfolio).toBeNull();
+      }
     } finally {
       clearTimeout(timer);
-      await sql.end({ timeout: 1 });
-      sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+      releasePortfolio();
+      await Promise.allSettled(portfolio.mock.results.filter(result => result.type === 'return')
+        .map(result => Promise.resolve(result.value)));
+      portfolio.mockRestore();
+      warn.mockRestore();
+      try {
+        await closeGoalSql(1);
+      } finally {
+        sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+      }
     }
   }, 15_000);
 

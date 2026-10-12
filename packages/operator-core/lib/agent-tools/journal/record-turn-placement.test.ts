@@ -141,7 +141,9 @@ describe('journal native placement seam', () => {
       { harnessSlug: '*' } as never,
     );
     expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
-    expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ harnessSlug: null }));
+    // The observation input types harnessSlug as `string | undefined` (absent = workspace scope),
+    // so the '*' auto-scope must resolve to an explicit undefined, never a concrete harness.
+    expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ harnessSlug: undefined }));
   });
   it('isolates a report observer error from journal success', async () => {
     h.turn.mockResolvedValueOnce({ text: 'Unpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });

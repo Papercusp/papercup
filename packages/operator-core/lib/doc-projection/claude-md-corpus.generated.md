@@ -3115,11 +3115,12 @@ with `--base <sha>` when git-sync may already have swept the edit into `HEAD`.
 **A migration that ADDS a column to a `harness_shared` table can silently strand a
 sibling `*.integration.test.ts` fixture** that hand-rolls that table via an inline
 `CREATE TABLE`; `test:affected` won't select it.A PostToolUse hook nudges you at edit time when this happens
-(`scripts/check-migration-fixture-drift.mjs`, EI-19359711978838614) — advisory only, and
-deliberately narrow: it fires only when some OTHER fixture already builds the exact
-table and is missing the exact new column, not on every fixture that happens to omit it
-(most are INTENTIONALLY partial stubs, e.g. "only the columns the live reads query" —
-that's normal, not drift). `npm run lint:migration-fixture-drift` runs it by hand.
+(`scripts/check-migration-fixture-drift.mjs`, EI-19359711978838614). It is advisory
+only, and it is NOT narrow: it lists EVERY integration fixture that builds the table
+without the new column, including fixtures that are INTENTIONALLY partial stubs (e.g.
+"only the columns the live reads query"). Treat each hit as a file to review, not as
+proven drift; a deliberate stub needs no change (EI-25794636390257047). Run it by hand
+with `node scripts/check-migration-fixture-drift.mjs <migration.sql>`.
 
 ## Full pre-compression rule text (preserved)
 

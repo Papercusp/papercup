@@ -821,6 +821,7 @@ describe('connection binding', () => {
         DeleteSnapshotCommand: () => ({}),
       }, []),
       commands: { run: async (command) => {
+        if (typeof command === 'string') throw new Error('expected a structured publisher command');
         runs.push(command);
         const child = await realRunner.run({
           command: process.execPath,

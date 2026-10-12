@@ -47,7 +47,7 @@ describe('installed acceptance canonical test ledger', () => {
         { ...options, root: REPO_ROOT, config: false },
         { test: { reporters: ['default', ADMIN_TEST_RUNS_REPORTER_PATH] } },
       );
-      return vitestConfig.reporters.map(([reporter]) => reporter);
+      return vitestConfig.reporters.map((entry) => Array.isArray(entry) ? entry[0] : entry);
     };
     // Positive control: exercise Vitest's actual CLI/config merge, which loses
     // the configured recorder when the CLI supplies only the release reporter.

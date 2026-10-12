@@ -4568,3 +4568,117 @@ describe('WI-10007424: --check-headroom is the copy path\'s own reserve, measure
     expect(result.stderr).toContain('--check-headroom cannot be combined');
   });
 });
+
+// green-main-cycle-time P-022: the same up-front preflight also answers the host
+// dependency-copy lock, so a run that can only fail on it refuses BEFORE setup. A
+// busy lock behind a HEALTHY copy is reported and never refused: the copy path waits
+// behind it on a stall budget and then proceeds, so a refusal would lose a round
+// that the wait would have won.
+describe('P-022: --check-headroom probes the host dependency-copy lock before setup', () => {
+  const GIB = 1024 ** 3;
+  const holders: Array<ReturnType<typeof spawn>> = [];
+  afterEach(() => {
+    for (const holder of holders.splice(0)) holder.kill('SIGKILL');
+  });
+  const fresh = () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-lock-probe-'));
+    roots.push(parent);
+    const integration = join(parent, 'integration');
+    mkdirSync(integration);
+    return { integration, lock: join(parent, 'copy.lock') };
+  };
+  const runCheck = (integration: string, lock: string, env: Record<string, string> = {}) =>
+    spawnSync('bash', [SCRIPT, '--integration', integration, '--check-headroom'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEPENDENCY_GENERATION_RESERVE_FS_PATH: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '1',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1900 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(60 * GIB),
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        ...env,
+      },
+      timeout: NATIVE_SHELL_TIMEOUT_MS,
+    });
+  /** Holds the copy lock exactly the way the copy path does (flock on an append fd). */
+  const holdLock = async (lock: string) => {
+    const child = spawn('bash', ['-c', 'exec 9>>"$1"; flock 9; echo locked; exec sleep 120', 'hold', lock], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    holders.push(child);
+    await new Promise<void>((resolveLocked, reject) => {
+      child.stdout!.on('data', (chunk) => {
+        if (String(chunk).includes('locked')) resolveLocked();
+      });
+      child.once('exit', (code) => reject(new Error(`lock holder exited early (${code})`)));
+    });
+  };
+  const writeHolder = (lock: string, pid: number, heldSec: number) => {
+    const since = Math.floor(Date.now() / 1000) - heldSec;
+    writeFileSync(`${lock}.holder`, `pid=${pid} op=copy packages/a since=${since}\n`);
+  };
+  const deadPid = () => {
+    for (let pid = 4_194_000; pid > 1_000; pid -= 7) if (!existsSync(`/proc/${pid}`)) return pid;
+    throw new Error('no free pid found');
+  };
+
+  it('reports a free lock, keeps the headroom verdict, and never creates the lock file', () => {
+    const { integration, lock } = fresh();
+    const absent = runCheck(integration, lock);
+    expect(absent.status, absent.stderr).toBe(0);
+    expect(absent.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=free');
+    expect(absent.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK /);
+    expect(existsSync(lock)).toBe(false);
+
+    writeFileSync(lock, '');
+    const existing = runCheck(integration, lock, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(45 * GIB),
+    });
+    // A free lock never masks the headroom refusal.
+    expect(existing.status).toBe(77);
+    expect(existing.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=free');
+    expect(existsSync(`${lock}.holder`)).toBe(false);
+  });
+
+  it('a lock busy behind a live holder younger than the cap is reported, never refused', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    writeHolder(lock, process.pid, 30);
+    const before = readFileSync(`${lock}.holder`, 'utf8');
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_COPY_LOCK state=busy held=\d+s max=5400s holder=pid=/);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK /);
+    // The probe never rewrites the holder record.
+    expect(readFileSync(`${lock}.holder`, 'utf8')).toBe(before);
+  });
+
+  it('a live holder past the copy-lock cap is wedged: exit 76 before any headroom measurement', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    writeHolder(lock, process.pid, 6_000);
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(76);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_BUSY state=wedged held=\d+s max=5400s/);
+    expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_HEADROOM_');
+
+    // The cap is the waiter's own DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC.
+    writeHolder(lock, process.pid, 120);
+    const tuned = runCheck(integration, lock, { DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '60' });
+    expect(tuned.status, tuned.stderr).toBe(76);
+    expect(tuned.stderr).toMatch(/state=wedged held=\d+s max=60s/);
+  });
+
+  it('a stale holder record (its pid is gone) is busy with unknown age, never wedged', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    // Release never clears the record, so an old record names a former holder.
+    writeHolder(lock, deadPid(), 100_000);
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=busy held=unknown');
+  });
+});

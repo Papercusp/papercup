@@ -44,11 +44,11 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
@@ -598,8 +598,12 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     }
     const checkout = gitCheckout ? verifierGitCheckoutSync(dest, sha, submodules) : undefined;
     const gitMetadataPaths = checkout ? ['.git', ...submodules.map(row => `${row.path}/.git`)] : [];
-    const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
+    const sourceManifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
       ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
+    // Declared, not inferred: the operator-api branch below adds operatorApiInputs after
+    // construction, and JS inference would otherwise drop it from the returned receipt type.
+    /** @type {typeof sourceManifest & { operatorApiInputs?: { path: string, sha256: string } }} */
+    const manifest = sourceManifest;
     if (planned) {
       assert.deepEqual(manifest.files, planned.source.files, 'Operator-api selected source census differs');
       assert.deepEqual(manifest.submodules, planned.source.submodules, 'Operator-api selected submodules differ');
@@ -679,6 +683,47 @@ export async function prepareVerifierDependencies({ donor, dest, receipt }) {
   if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
     throw new PreviewError('verifier dependency preflight returned no source size', 2);
   await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true });
+}
+
+/** Freeze source and dependencies before invoking a command that allocates fixtures.
+ * The receipt survives outside the owned tree; only this invocation's tree is removed.
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv }} options
+ * @returns {Promise<number>}
+ */
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env }) {
+  if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
+    throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
+  const donor = realpathSync(repo);
+  const scratch = join(donor, '.papercusp', 'scratch');
+  await fs.mkdir(scratch, { recursive: true });
+  const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
+  const root = join(owned, 'invoked-source');
+  try {
+    assertOutsideArchive(owned, resolve(receiptPath));
+    const receipt = await prepareVerifierSource({ repo: donor, ref, dest: root,
+      inputs, inputsFile, tauriInputs, gitCheckout: true });
+    await fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
+    await prepareVerifierDependencies({ donor, dest: root, receipt });
+    const childEnv = verifierSourceChildEnv({ root, receiptPath,
+      env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
+        VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
+    const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
+    const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
+    process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+    let exitCode;
+    try {
+      exitCode = await new Promise((done, reject) => {
+        child.once('error', reject);
+        child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
+      });
+    } finally {
+      process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+    }
+    await verifyVerifierSource(root, receipt, { runtimeArtifacts: true });
+    return exitCode;
+  } finally {
+    await fs.rm(owned, { recursive: true, force: true });
+  }
 }
 
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
@@ -1704,7 +1749,8 @@ function parseArgs(argv) {
   const opts = { _: [], coAuthors: [] };
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
-    if (a === '--confirm') opts.confirm = true;
+    if (a === '--' && cmd === 'verifier-run') { opts.command = rest.slice(i + 1); break; }
+    else if (a === '--confirm') opts.confirm = true;
     else if (a === '--runtime-artifacts') opts.runtimeArtifacts = true;
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
@@ -1732,6 +1778,13 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  if (cmd === 'verifier-run') {
+    if (!opts.repo || !opts.ref || !opts.receipt || !(opts.inputs || opts['inputs-file']) || !opts.command?.length)
+      throw new PreviewError('verifier-run requires --repo, --ref, --receipt, --inputs or --inputs-file and -- <command>', 2);
+    return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
+      tauriInputs: opts.tauriInputs === true, command: opts.command });
+  }
   if (cmd === 'verifier-inputs-check') {
     if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
       throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);

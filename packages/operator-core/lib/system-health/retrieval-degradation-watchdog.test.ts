@@ -89,7 +89,7 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
   afterEach(() => setLegHealthObserver(null));
 
   it('records every authoritative search once, including healthy decisions needed for recovery', () => {
-    const observe = vi.fn(() => true);
+    const observe = vi.fn((_mechanism: string, _decision: unknown, _opts?: unknown) => true);
     startRetrievalDegradationWatchdog({ observe });
     startRetrievalDegradationWatchdog({ observe });
     const leg = { status: 'ran', candidates: 5, blocked: null };

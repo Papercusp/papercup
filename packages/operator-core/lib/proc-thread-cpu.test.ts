@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, readlinkSync, openSync, readSync, cl
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type MainThreadActivity,
   AT_FDCWD,
   decodeProcPath,
   parseProcSyscallTarget,
@@ -351,7 +352,7 @@ describe('isConfirmedHostIoWait', () => {
     ).toBe(false);
   });
 
-  it.each([
+  it.each<MainThreadActivity>([
     { cpuKind: 'partial', state: 'D', cpuMs: 51, cores: 0.051, wchan: 'rq_qos_wait' },
     { cpuKind: 'parked', state: 'S', cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' },
     { cpuKind: 'parked', state: 'D', cpuMs: 0, cores: 0, wchan: 'futex_do_wait' },

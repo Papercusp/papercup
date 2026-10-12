@@ -70,7 +70,7 @@ describe('runPackageCacheRetention', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {
-    const sampleDisk = vi.fn(async (paths: string[]) => [
+    const sampleDisk = vi.fn(async (paths: string[] = []) => [
       { ...diskSnapshot(paths[0] === '/cache/npm' ? GIB : 3 * GIB), path: paths[0]! },
     ]);
     const runCommand = vi.fn();

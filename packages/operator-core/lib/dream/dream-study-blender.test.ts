@@ -28,7 +28,7 @@ describe('ordinary Blender admission into the finite Dream study', () => {
   });
   it('uses the long-context tier and refuses a cap below its full reservation before a provider call', async () => {
     const model = 'gpt-6.1-sol:xhigh';
-    const request = { ...opts, model, messages: [{ role: 'user' as const, content: 'x'.repeat(280_000) }] };
+    const request: typeof opts & { system?: string } = { ...opts, model, messages: [{ role: 'user' as const, content: 'x'.repeat(280_000) }] };
     const inputBound = Buffer.byteLength(JSON.stringify({ system: request.system, messages: request.messages }), 'utf8') + 4096;
     const price = priceFor(model)!;
     const standardContextUsd = (inputBound * price.in + request.maxTokens * price.out) / 1_000_000;

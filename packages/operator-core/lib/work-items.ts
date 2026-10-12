@@ -34,7 +34,7 @@ import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClai
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
 import { selfHealTerminalOwnerOriginIfStranded } from './work-items-terminal-owner-origin-heal';
-import type { Fragment, TransactionSql } from 'postgres';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from './flag-distinct-id';
@@ -246,7 +246,13 @@ import {
   type AppliedDefaults,
 } from '@papercusp/search';
 import { WORK_ITEMS_CHUNK_SURFACE } from './search/chunks/registry';
-import { lexicalLeg } from './search/lexical/rank';
+import {
+  boundedExactTopK,
+  EXACT_LIST_MAX_AND_ROWS,
+  lexicalLeg,
+  mergeExactAndBm25,
+  usesWebsearchOperators,
+} from './search/lexical/rank';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -2104,6 +2110,44 @@ async function workItemChunkLeg(
   });
 }
 
+type WorkItemLexicalRow = { id: string; title: string; body: string | null; score: number };
+
+/**
+ * D-016: preserve the exact AND list beside BM25 for the direct work-item search families.
+ * The same family scope is applied inside the bounded candidate query so exact matches cannot
+ * escape workspace, harness, kind, observation-lane, or nature filters.
+ */
+async function mergeExactWorkItemBm25(
+  sql: OrgSql,
+  opts: {
+    table: 'harness_shared.work_items' | 'harness_shared.harness_features_consolidated';
+    scope: (sql: OrgSql) => Fragment;
+    query: string;
+    limit: number;
+    bm25Rows: WorkItemLexicalRow[];
+  },
+): Promise<WorkItemLexicalRow[]> {
+  const exactTop = boundedExactTopK(sql as unknown as Sql, {
+    columns: sql`feature_id AS id, title, summary AS body`,
+    from: sql.unsafe(opts.table),
+    where: opts.scope(sql),
+    tsv: sql`_search`,
+    query: opts.query,
+    limit: opts.limit,
+    maxMatches: EXACT_LIST_MAX_AND_ROWS,
+  });
+  const exactRows = await sql<Array<{ id: string; title: string; body: string | null; rank: number }>>`
+    SELECT id, title, body, exact_rank AS rank
+      FROM (${exactTop}) exact
+  ORDER BY exact_rank DESC`;
+  if (exactRows.length === 0) return opts.bm25Rows;
+
+  const exact = exactRows.map(({ rank, ...row }) => ({ ...row, rank: Number(rank) }));
+  const bm25 = opts.bm25Rows.map(({ score, ...row }) => ({ ...row, rank: Number(score) }));
+  return mergeExactAndBm25(exact, bm25, (row) => row.id, opts.limit)
+    .map(({ rank, ...row }) => ({ ...row, score: rank }));
+}
+
 /**
  * The issue-family `SearchSource` — ranked over the BASE table
  * `harness_shared.work_items`, not the `engineer_issues` view: the view is a
@@ -2153,6 +2197,7 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
       const leg = await lexicalLeg(pg, {
         table: 'work_items',
         query,
+        querySyntax: 'websearch',
         legacy: {
           score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
@@ -2165,7 +2210,12 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
            AND ${leg.match}
       ORDER BY ${leg.order}
          LIMIT ${limit}`;
-      return toListing(rows, 'lexical');
+      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+        ? await mergeExactWorkItemBm25(sql, {
+            table: 'harness_shared.work_items', scope: scoped, query, limit, bm25Rows: rows,
+          })
+        : rows;
+      return toListing(rankedRows, 'lexical');
     },
     ...(selection
       ? {
@@ -2222,6 +2272,7 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
       const leg = await lexicalLeg(pg, {
         table: 'work_items',
         query,
+        querySyntax: 'websearch',
         legacy: {
           score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
@@ -2234,7 +2285,12 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
            AND ${leg.match}
       ORDER BY ${leg.order}
          LIMIT ${limit}`;
-      return toListing(rows, 'lexical');
+      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+        ? await mergeExactWorkItemBm25(sql, {
+            table: 'harness_shared.harness_features_consolidated', scope: scoped, query, limit, bm25Rows: rows,
+          })
+        : rows;
+      return toListing(rankedRows, 'lexical');
     },
     ...(selection
       ? {

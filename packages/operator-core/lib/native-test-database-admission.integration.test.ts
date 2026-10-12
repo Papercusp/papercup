@@ -30,7 +30,10 @@ describe('native test PG admission against the actual private postmaster', () =>
     try {
       const port = await freePort();
       pg = await startEmbeddedPostgresServer({ dataDir, port,
-        extraPostgresSettings: SHARED_TEST_PG_DURABILITY_OFF });
+        // The shared constant is `-c key=value` argv; this server takes a settings record.
+        extraPostgresSettings: Object.fromEntries(SHARED_TEST_PG_DURABILITY_OFF
+          .filter((arg) => arg !== '-c')
+          .map((arg) => arg.split('=') as [string, string])) });
       const foreign = 'postgresql://unused@localhost:1/papercusp';
       const env = { ...process.env, PAPERCUSP_HOME: privateHome,
         PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', VERIFY_TAURI_PID: String(process.pid),

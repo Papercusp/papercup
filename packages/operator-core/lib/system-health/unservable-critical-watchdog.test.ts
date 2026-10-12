@@ -13,6 +13,7 @@ import type { Sql } from 'postgres';
 import type { UnservableSweepDeps } from './unservable-critical-watchdog';
 
 const oracle = vi.hoisted(() => vi.fn());
+const openEscalationMock = vi.hoisted(() => vi.fn(async (_identity: unknown, _input: { body: string }) => {}));
 const broadcastSevereEventMock = vi.hoisted(() => vi.fn(async (_event: {
   conditionKey?: string;
   oneShot?: boolean;
@@ -20,6 +21,7 @@ const broadcastSevereEventMock = vi.hoisted(() => vi.fn(async (_event: {
   body?: string;
 }) => true));
 vi.mock('../work-items', () => ({ explainIssueClaimFloors: oracle }));
+vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: openEscalationMock }));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: broadcastSevereEventMock }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   readConditionEnvelopes: async () => [], computeConditionStates: () => [],
@@ -259,6 +261,24 @@ describe('runUnservableCriticalSweepOnce', () => {
       now: () => NOW,
     });
     expect(res).toMatchObject({ scanned: 2, escalated: 0, failed: 0, skipped: false });
+  });
+});
+
+describe('default escalation guidance', () => {
+  it('does not invent source provenance for an observation-lane item', async () => {
+    openEscalationMock.mockClear();
+    await runUnservableCriticalSweepOnce({} as Sql, {
+      readRows: async () => [row({ itemId: 'EI-observation', floor: 'observation-lane' })],
+      readOpenConditionKeys: async () => [],
+      flagEnabled: async () => true,
+      now: () => NOW,
+    });
+
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const body = openEscalationMock.mock.calls[0][1].body;
+    expect(body).toContain('inspect its provenance and current status');
+    expect(body).toContain('canonical harness owner/claim spec');
+    expect(body).not.toContain('improvements:capture');
   });
 });
 

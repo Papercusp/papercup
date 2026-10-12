@@ -44,9 +44,11 @@ restart_safe=1
 #   LOCK CONTENTION -- 2026-09-29: 'backup OK' only at even hours for 16h, every
 #   odd-hour tick logging result=deferred reason=lock-held staleness_sec=2327..2527,
 #   and the 1h dump-source freshness alarm firing between runs. The lock wait
-#   registers a priority request, so a restart-safe hot sweep yields the lock; a
-#   --no-restart-safe or wait-mode holder is simply waited out, which is never
-#   later than the next hourly tick would have been.
+#   registers a priority request, so a restart-safe hot sweep yields the lock.
+#   A --no-restart-safe or wait-mode holder is intentionally waited out; reserve
+#   wait mode for protected/manual snapshots that must finish before the caller
+#   proceeds. The restart-safe daily full-home walk can exceed the hourly dump
+#   cadence, so it uses scheduled mode and can yield to an overdue DB dump.
 #
 #   ADMISSION PRESSURE -- the first tick after the lock wait went live (13:00 EDT
 #   2026-09-29) waited out the lock for 5s, then logged result=deferred
@@ -66,7 +68,7 @@ priority_on_contention=0
 # 2026-10-06 09:57 EDT: a hook dump stopped the overdue hot sweep (no snapshot since
 # 00:09 EDT) 3s after it began waiting, then was itself killed at its own 900s
 # budget, so the sweep was lost for a dump that never completed. Default 0 keeps
-# every other wait-mode label (daily-home-vm, protected-manual) byte-identical.
+# wait-mode labels such as protected-manual byte-identical.
 deadline_at_arrival=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -639,8 +641,7 @@ run_scheduled_command() {
     [ "$lock_released_early" -eq 0 ] || continue
 
     sample_holder_progress
-    # A wait-mode producer (the daily home snapshot or a protected/manual
-    # snapshot) has priority over a hot sweep. Terminate only
+    # A protected/manual wait-mode producer has priority over a hot sweep. Terminate only
     # this scheduled child and release the flock; content-addressed Kopia
     # snapshots are restart-safe, while leaving the waiter blocked is not.
     #

@@ -14,7 +14,7 @@ vi.mock('../../../superuser-token', () => ({ isLoopbackRequest: () => true }));
 import route from './presence';
 
 async function post(body: Record<string, unknown>) {
-  return (route as { handler: (req: Request) => Promise<Response> }).handler(new Request('http://localhost/api/ui/presence', {
+  return (route as unknown as { handler: (req: Request) => Promise<Response> }).handler(new Request('http://localhost/api/ui/presence', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ client_id: 'requesting-tab', url: 'http://localhost/?chat=true', ...body }),
   }));

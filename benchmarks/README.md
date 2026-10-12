@@ -109,20 +109,36 @@ those require their separate measured records and withheld confirmation.
 Current generation uses `run-launcher.ts` and the authenticated
 `POST /api/external-bench/runs/launch` route. The Evaluation launch form selects
 the committed protocol ID, isolated workspace, current arm and registered seed.
-Its existing estimate read checks the committed protocol, API account and loaded
-host, then derives the exact launch controls. A historical launch or a successful
+Its existing estimate read checks the committed protocol, the payer-matched Codex
+account and loaded host, then derives the exact launch controls. A historical launch or a successful
 refusal fixture does not establish current measured generation or provider billing.
 
 1. Select the `operator-api` current-build route with
    `dev:pipeline_position { path: "packages/operator-core/lib/external-bench/current-su.ts", testClass: "operator-api" }`.
    Verify that its serving runtime contains the tested source. Ordinary acceptance
    uses that current build; final shipment requires separate green-release proof.
-2. Register an OpenAI API bearer account **in the isolated benchmark workspace**.
-   The current Codex budget authenticator accepts `bearer-http` to the official
-   Responses API. Subscription/OAuth and CLI bridge credentials cannot preserve
-   the enforced native output limit and are refused. A production account pool
-   entry does not populate the benchmark workspace. Never disable admission or
-   substitute an ambient login to make a run start.
+2. Register a Codex account **in the isolated benchmark workspace** that matches
+   each arm's frozen payer basis (`arm.payer`; omitted means `api-key`). A
+   production account pool entry does not populate the benchmark workspace.
+   Never disable admission or substitute an ambient login to make a run start.
+   - `payer: "subscription"` (the default route for this workspace per
+     `benchmark-coverage-frontierswe-v2-2026-10-10#D-023`): register a ChatGPT
+     subscription as `accounts:register { workspace: "benchmarks", provider: "codex",
+     credentialRef: "codex-cli:<CODEX_HOME>" }`. Requests go `oauth-http` to the
+     ChatGPT Codex backend, which rejects `max_output_tokens` and has no input-count
+     endpoint, so every request reserves the provider's own limits: the frozen rate
+     needs `inputTokenCeiling` (model context window), `outputTokenCeiling` (model
+     maximum output) and `inputTokenCeilingSourceSha256 =
+     currentBenchCodexSubscriptionContract(model, input, output)`. Budgets and
+     reports are **list-price-equivalent** USD (provider-reported usage at frozen
+     list prices), not money spent; the estimate read returns
+     `costBasis: "list-price-equivalent"`. Prefer an account the fleet gateway is
+     not routing heavily during the run: both read and refresh the same `auth.json`.
+   - `payer: "api-key"`: register an OpenAI API bearer account. The budget
+     authenticator sends `bearer-http` to the official Responses API with a
+     measured input count per request and reports metered spend.
+   An account whose credential does not match the arm's payer is refused at the
+   estimate and at send time.
 3. Before freezing the study, calibrate each arm's actual native client, served
    model, effort, loaded source/runtime, instructions and tools on separate
    non-study work. Native template mode must be explicitly pinned as

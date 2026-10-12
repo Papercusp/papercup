@@ -20,6 +20,9 @@ RestartSec=30min
 # best-effort/7). That unit runs about every 30 min; this one walks the WHOLE
 # home tree once a day and must yield to everything else while it does. The script
 # also re-applies renice/ionice to itself so the settings reach kopia's children.
+# This restart-safe daily walk can run for hours, so keep it in scheduled mode:
+# an overdue DB dump can preempt it. Reserve wait mode for protected/manual work
+# that must finish before its caller proceeds.
 Nice=19
 IOSchedulingClass=idle
 # WI-10002636: Nice only ranks processes inside this unit's own cgroup; against
@@ -37,7 +40,7 @@ MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
 TimeoutStopSec=30s
-ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode wait --label daily-home-vm -- %h/.config/kopia/home-snapshot.sh
+ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label daily-home-vm --priority-on-contention -- %h/.config/kopia/home-snapshot.sh
 # systemd's user manager may fail to kill the root-owned sudo/Kopia child when
 # an OOM tears down the cgroup. The script validates and kills only its recorded
 # exact Kopia PID; it never scans or kills unrelated processes.

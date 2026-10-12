@@ -31,6 +31,7 @@ import {
 import { bodyRefWorkItemResolver, hydrateRefs, resolveGateRefStamps, type RefResolver } from './ref-hydrate-resolve';
 import { findAnnouncementsForKey } from '../../events/await/store';
 import { getWorkItem } from '../../work-items';
+import { workItemFixture } from '../../testing/work-item-fixture';
 
 vi.mock('../../events/await/store', () => ({ findAnnouncementsForKey: vi.fn() }));
 vi.mock('../../work-items', () => ({
@@ -422,7 +423,7 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
   });
 
   it('body hydration resolves in the stamped harness and labels that scope', async () => {
-    vi.mocked(getWorkItem).mockResolvedValue({
+    vi.mocked(getWorkItem).mockResolvedValue(workItemFixture({
       id: 'WI-10000680',
       kind: 'task',
       family: 'issue',
@@ -433,7 +434,7 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
       summary: 'proposal',
       payload: {},
       closedAt: null,
-    } as never);
+    }));
 
     const [hydrated] = await hydrateRefs(
       [{ kind: 'work-item', id: 'WI-10000680', harness: 'email' }],
@@ -445,7 +446,7 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
   });
 
   it('fails closed when a harness-scoped lookup falls back to another harness', async () => {
-    vi.mocked(getWorkItem).mockResolvedValue({
+    vi.mocked(getWorkItem).mockResolvedValue(workItemFixture({
       id: 'WI-10000680',
       kind: 'task',
       family: 'feature',
@@ -456,7 +457,7 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
       summary: 'dropped',
       payload: {},
       closedAt: null,
-    } as never);
+    }));
 
     const [hydrated] = await hydrateRefs(
       [{ kind: 'work-item', id: 'WI-10000680', harness: 'email' }],

@@ -696,7 +696,7 @@ describe('Kopia global backup guard', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        "$GUARD" --mode wait --label protected-manual -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
         db=$!
         wait "$db"
         wait "$hot"
@@ -744,7 +744,7 @@ describe('Kopia global backup guard', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        "$GUARD" --mode wait --label protected-manual -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
         db=$!
         # Release the child only once the guard has SEEN the waiter and declined to yield.
         # Polling the log instead of sleeping keeps this a contract assertion rather than a
@@ -1066,9 +1066,10 @@ describe('Kopia managed entrypoint contract', () => {
 
   it('routes every managed path through the same guard', () => {
     expect(hotService).toContain('kopia-backup-guard.sh --mode scheduled --label hot');
-    expect(homeService).toContain('kopia-backup-guard.sh --mode wait --label daily-home-vm');
+    expect(homeService).toContain('kopia-backup-guard.sh --mode scheduled --label daily-home-vm --priority-on-contention');
     expect(hotScript).toContain('--mode scheduled --label hot');
-    expect(homeScript).toContain('--mode wait --label daily-home-vm');
+    expect(homeScript).toContain('--mode scheduled --label daily-home-vm --priority-on-contention');
+    expect(homeService).not.toContain('kopia-backup-guard.sh --mode wait --label daily-home-vm');
     expect(protectedScript).toContain('--mode wait --label protected-manual');
     expect(dbService).toContain('kopia-backup-guard.sh --mode scheduled --label db-dump');
     expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
@@ -1570,7 +1571,7 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   it('yields an overdue hot sweep at once to a waiter that publishes no deadline', () => {
-    // Calibration for the hold above: a wait-mode producer (the daily home snapshot),
+    // Calibration for the hold above: a protected/manual wait-mode producer,
     // a waiter with no baseline, and a guard from before WI-10004741 all write a marker
     // with no .due. Each counts as due now, so even an overdue sweep yields at once.
     const { dir, env } = fixture();
@@ -1586,7 +1587,7 @@ describe('Kopia managed entrypoint contract', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- touch "$WAIT_RAN" >/dev/null 2>&1 || exit 92
+        "$GUARD" --mode wait --label protected-manual -- touch "$WAIT_RAN" >/dev/null 2>&1 || exit 92
         wait "$hot"
         [ "$?" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 93
         `,
@@ -1969,7 +1970,7 @@ describe('Kopia managed entrypoint contract', () => {
       // design; holding the lock here would park them behind someone else's PSI for up to
       // the whole wait. If the lock were held, this blocks until run()'s 10s timeout.
       const holderRan = join(dir, 'holder-ran');
-      const holder = run(['--mode', 'wait', '--label', 'daily-home-vm', '--', 'touch', holderRan], env);
+      const holder = run(['--mode', 'wait', '--label', 'protected-manual', '--', 'touch', holderRan], env);
       expect(holder.status, `${holder.stdout}\n${holder.stderr}`).toBe(0);
       expect(existsSync(holderRan)).toBe(true);
       expect(existsSync(dbRan)).toBe(false);

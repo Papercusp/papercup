@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => ({
   resolveAgentWorkspaceRoot: vi.fn<(ctx?: { projectDir?: string }) => string>(() => '/repo'),
   resolveGitContext: vi.fn(async () => ({ branch: 'staging', commit: 'stale-cached-sha' })),
   resolveTestRunSource: vi.fn(() => 'admin-ui'),
-  sql: vi.fn(async () => []),
+  // postgres.js tagged-template shape: (strings, ...values) => rows.
+  sql: vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]): Promise<Array<{ id: number }>> => []),
 }));
 
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({

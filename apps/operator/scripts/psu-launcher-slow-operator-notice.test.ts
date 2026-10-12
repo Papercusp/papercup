@@ -106,7 +106,7 @@ describe('local startup measures the blocking hop before the menu', () => {
     const rows: any[] = [];
     const notice = vi.fn();
     const step = createStartupStepRunner({ now: () => clock, record: (row) => rows.push(row), notice });
-    const output = { write: vi.fn(() => { clock += 3; return false; }) };
+    const output = { write: vi.fn((_chunk: string) => { clock += 3; return false; }) };
     const original = output.write;
     let answer!: (value: boolean) => void;
     const pending = traceFirstPromptOutput('Subagents', () => {
@@ -138,7 +138,7 @@ describe('local startup measures the blocking hop before the menu', () => {
   it('uses bounded boot-log readback without capturing plain-launch terminal text', () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-startup-trace-'));
     try {
-      const stream = { write: vi.fn(() => true) };
+      const stream = { write: vi.fn((_chunk: string) => true) };
       const original = stream.write;
       const log = installBootLogCapture('startup-test', { home, stream, argv: [], captureStream: false, prune: false })!;
       const step = createStartupStepRunner({ record: (row) => log.record(`# startup ${JSON.stringify(row)}\n`) });

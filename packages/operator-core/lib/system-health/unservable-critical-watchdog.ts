@@ -368,7 +368,7 @@ function remedyFor(alert: UnservableAlert): string {
     case 'needs-owner-action':
       return `work_items:update { id: '${alert.itemId}', needsHuman: false } if it should actually be worked`;
     case 'observation-lane':
-      return `re-file/relocate it out of the observation lane (it was captured via improvements:capture { lane:'observation' }, which by design never enters the work queue)`;
+      return `inspect its provenance and current status; if work is still warranted, route or promote it through the canonical harness owner/claim spec (observation-lane items do not enter the work queue)`;
     case 'not-claimable-status':
       return `its state is outside the claimable set (ISSUE_FAMILY_CLAIMABLE_STATES=['open']) — work_items:set_state { id: '${alert.itemId}', state:'open' } if it should be worked, or close it if it should not`;
     case 'claim-hold':

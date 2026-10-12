@@ -201,7 +201,10 @@ describe('hosted native OpenRouter authorization', () => {
   };
   async function prepared() {
     const principal = vi.fn<HostedPrincipalResolver>(async () => resolution());
-    const authorize = vi.fn(async () => authorized());
+    // Typed with the REAL reader signature, whose `| null` is the denial path the
+    // 'reader-denied' / 'null-authority' cases below install without a cast.
+    const authorize = vi.fn<NonNullable<HostedBillingRuntimeDependencies['openRouterAdmission']>['authorize']>(
+      async () => authorized());
     const secret = vi.fn(async () => ' selected-key ');
     const observations: unknown[] = [];
     const capture = vi.fn(async (value: unknown) => { observations.push(value); });
@@ -418,7 +421,7 @@ describe('hosted native OpenRouter authorization', () => {
 
   it.each(['allowed', 'reader-denied', 'capture-failed'] as const)('composes the per-invocation native host with %s authenticated admission', async mode => {
     const p = await prepared(); let wire = 0;
-    if (mode === 'reader-denied') p.authorize.mockResolvedValue(null as never);
+    if (mode === 'reader-denied') p.authorize.mockResolvedValue(null);
     if (mode === 'capture-failed') p.capture.mockRejectedValue(new Error('private SQL credential=selected-key'));
     const sdkModel: LanguageModelV3 = { specificationVersion: 'v3', provider: 'fixture', modelId: context.modelId,
       supportedUrls: {}, async doGenerate() { throw new Error('unused'); }, async doStream() {
@@ -489,7 +492,7 @@ describe('hosted native OpenRouter authorization', () => {
     const p = await prepared();
     if (mode === 'different-key') p.secret.mockResolvedValue('different-key');
     if (mode === 'unavailable-key') p.secret.mockRejectedValue(new Error('secret=private credentialRef=env:SELECTED_KEY'));
-    if (mode === 'null-authority') p.authorize.mockResolvedValue(null as never);
+    if (mode === 'null-authority') p.authorize.mockResolvedValue(null);
     if (mode === 'reader-error') p.authorize.mockRejectedValue(new Error('secret=private tenant=private'));
     const handler = p.r.openRouterRequestCapture(p.headers)(context);
     await expect(handler(intent)).rejects.toThrow(/^Hosted OpenRouter authorization or capture failed; reservation remains unresolved$/);

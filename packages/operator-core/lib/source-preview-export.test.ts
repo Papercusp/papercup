@@ -28,6 +28,7 @@ import {
   measureVerifierSourceBytes,
   prepareVerifierSource,
   prepareVerifierDependencies,
+  runVerifierCommand,
   validateVerifierInputs,
   runCli,
   verifyVerifierSource,
@@ -174,9 +175,23 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const inputsFile = join(tmp, 'verifier-large-invalid-inputs.json');
     const invalid = `../${'x'.repeat(200_000)}`;
     writeFileSync(inputsFile, JSON.stringify([invalid]));
+    const priorOptions = process.env.NODE_OPTIONS, priorPath = process.env.NODE_PATH;
+    let env: NodeJS.ProcessEnv;
+    try {
+      // A runner's inherited loader must neither add stderr nor substitute the
+      // CLI being tested. A missing loader makes contamination fail decisively.
+      process.env.NODE_OPTIONS = '--import=/nonexistent/source-preview-test-loader.mjs';
+      process.env.NODE_PATH = '/nonexistent/source-preview-test-dependencies';
+      env = childEnv();
+    } finally {
+      if (priorOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = priorOptions;
+      if (priorPath === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = priorPath;
+    }
     const result = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
       'verifier-inputs-check', '--repo', fx.repo, '--ref', fx.commit, '--inputs-file', inputsFile],
-    { encoding: 'utf8', env: childEnv(), timeout: 60_000, maxBuffer: 1024 * 1024 });
+    { encoding: 'utf8', env, timeout: 60_000, maxBuffer: 1024 * 1024 });
     expect(result.status).toBe(2);
     const expected = `ERROR: invalid tested input: ${invalid}\n`;
     expect(Buffer.byteLength(result.stderr)).toBe(Buffer.byteLength(expected));
@@ -413,6 +428,78 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     rmSync(join(dest, 'node_modules'), { recursive: true });
     await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
       .rejects.toThrow('ERR_MODULE_NOT_FOUND');
+  });
+
+  it.each(['donor-change', 'child-failure', 'frozen-tamper'] as const)
+    ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
+      git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+      const preflight = 'scripts/source-preview.mjs';
+      const provider = 'scripts/provider-fixture.mjs';
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+      write(fixture.repo, provider, [
+        "import { readFileSync, writeFileSync, rmSync } from 'node:fs';",
+        "import { join } from 'node:path';",
+        "import value from '@native-proof/runtime';",
+        "const donor = process.argv[2], mode = process.argv[3];",
+        "writeFileSync(join(donor, 'scripts/provider-fixture.mjs'), 'peer edit after allocation');",
+        "rmSync(join(donor, 'node_modules'), { recursive: true, force: true });",
+        "const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT, 'utf8'));",
+        "writeFileSync(process.argv[4], JSON.stringify({ root: process.cwd(), value, ref: receipt.sourceCommit,",
+        "  receipt: process.env.VERIFY_TAURI_SOURCE_RECEIPT, repo: process.env.PAPERCUSP_REPO_DIR,",
+        "  source: readFileSync('scripts/provider-fixture.mjs', 'utf8'),",
+        "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5] }));",
+        "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
+        "if (mode === 'child-failure') process.exitCode = 37;",
+      ].join('\n'));
+      git(fixture.repo, ['add', preflight, provider, helper, '.gitignore']);
+      git(fixture.repo, ['commit', '-qm', 'full verifier command fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      const original = readFileSync(join(fixture.repo, provider), 'utf8');
+      write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+        name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+      write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
+      const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
+      const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];
+      const invocation = mode === 'donor-change'
+        ? runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--inputs', provider,
+          '--receipt', receiptPath, '--', ...command])
+        : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
+          env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies' } });
+      if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+      else await expect(invocation).resolves.toBe(mode === 'child-failure' ? 37 : 0);
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
+        source: original, options: '', path: '', flag: '--provider-flag=literal' });
+      expect(proof.root).toBe(proof.repo);
+      expect(proof.root).not.toBe(fixture.repo);
+      expect(existsSync(proof.root)).toBe(false);
+      expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+      expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
+      expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+    });
+
+  it('refuses dirty inputs before running any provider command and rejects missing CLI commands', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-dirty'));
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', '.gitignore']); git(fixture.repo, ['commit', '-qm', 'ignored verifier scratch']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = 'apps/operator/src/index.ts';
+    writeFileSync(join(fixture.repo, input), 'dirty before provider allocation');
+    const marker = join(tmp, 'refused-provider-marker');
+    const receiptPath = join(tmp, 'refused-provider-receipt.json');
+    await expect(runVerifierCommand({ repo: fixture.repo, ref, inputs: [input], receiptPath,
+      command: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], "allocated")', marker] }))
+      .rejects.toThrow('dirty tested-input mismatch: ' + input);
+    expect(existsSync(marker)).toBe(false); expect(existsSync(receiptPath)).toBe(false);
+    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    await expect(runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--receipt', receiptPath,
+      '--inputs', input, '--'])).rejects.toThrow('and -- <command>');
   });
 
   it('preserves unlisted gitlinks and original named mappings in a real verifier checkout', async () => {

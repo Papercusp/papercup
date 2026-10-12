@@ -15377,6 +15377,19 @@ async function chooseResumeTarget(session, args) {
  *  operator via the defaults.
  * @param {string | null | undefined} sessionId
  * @param {'claude' | 'codex' | 'omp' | null} [sourceKind]
+ * @param {{
+ *   fetchImpl?: typeof fetch,
+ *   operatorUrl?: string,
+ *   token?: string | null,
+ *   timeoutMs?: number,
+ *   statusTimeoutMs?: number,
+ *   statusAttempts?: number,
+ *   statusDelayMs?: number,
+ *   sleep?: (ms: number) => Promise<unknown>,
+ *   sourceSession?: { agent: string, sessionId: string, configDir?: string | null, coordOwnerId?: string | null } | null,
+ *   home?: string,
+ * }} [options] `sourceSession` is the picked launch row (line ~16404 passes
+ *   it); its configDir is re-pinned in place to the restored archive root.
  */
 export async function tryRematerializeFromArchive(
   sessionId,

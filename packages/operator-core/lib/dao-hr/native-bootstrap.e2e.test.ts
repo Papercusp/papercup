@@ -11,7 +11,7 @@ import { startDaoHrTestChain } from '../../../../scripts/fixtures/dao-hr-test-ch
 import { startDaoHrWalletBindingFixture } from '../../../../scripts/fixtures/dao-hr-wallet-binding';
 import { register, authenticatedAccount, accountToken } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
-import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource } from '../../../../scripts/source-preview.mjs';
+import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
 
 const NATIVE_SOURCE_INPUTS = [
   'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
@@ -20,6 +20,7 @@ const NATIVE_SOURCE_INPUTS = [
   'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
   'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
   'scripts/fixtures/dao-workbench-identity.mjs',
+  'scripts/with-documenso-sandbox.mjs',
 ];
 
 describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined native hire bootstrap', () => {
@@ -44,18 +45,34 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       // allocation. A preflight of the mutable donor alone leaves a boot-time race.
       // The maintained dependency snapshot uses hardlinks. Provider TMPDIR can
       // be on another device, so own this source tree on the donor filesystem.
-      const sourceScratch = join(root, '.papercusp', 'scratch');
-      mkdirSync(sourceScratch, { recursive: true });
-      sourceDirectory = mkdtempSync(join(sourceScratch, 'dao-hr-native-source-'));
-      expect(statSync(sourceDirectory).dev, 'Invoked source must share the dependency donor filesystem').toBe(statSync(root).dev);
-      const sourceRoot = join(sourceDirectory, 'invoked-source');
       const sourceRef = process.env.VERIFY_TAURI_SOURCE_REF?.trim();
       expect(Boolean(sourceRef), 'Explicit committed VERIFY_TAURI_SOURCE_REF is required').toBe(true);
-      const receipt = await prepareVerifierSource({ repo: root, ref: sourceRef!, dest: sourceRoot,
-        inputs: NATIVE_SOURCE_INPUTS, tauriInputs: true, gitCheckout: true });
+      let sourceRoot: string;
+      let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+      let receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+      if (receiptPath) {
+        // The outer verifier freezes the provider wrapper too; reuse its root.
+        sourceRoot = root;
+        Object.assign(env, verifierSourceChildEnv({ root, receiptPath, env }));
+        receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        expect(receipt.sourceCommit).toBe(sourceRef);
+        for (const input of NATIVE_SOURCE_INPUTS)
+          expect(receipt.testedInputs.some(row => row.path === input), 'Missing invoked input: ' + input).toBe(true);
+      } else {
+        const sourceScratch = join(root, '.papercusp', 'scratch');
+        mkdirSync(sourceScratch, { recursive: true });
+        sourceDirectory = mkdtempSync(join(sourceScratch, 'dao-hr-native-source-'));
+        expect(statSync(sourceDirectory).dev, 'Invoked source must share the dependency donor filesystem').toBe(statSync(root).dev);
+        sourceRoot = join(sourceDirectory, 'invoked-source');
+        receipt = await prepareVerifierSource({ repo: root, ref: sourceRef!, dest: sourceRoot,
+          inputs: NATIVE_SOURCE_INPUTS, tauriInputs: true, gitCheckout: true });
+        receiptPath = logPath + '.invoked-source-receipt.json';
+        writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+        await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
+        Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath, env }));
+      }
       writeFileSync(logPath + '.invoked-source-receipt.json', JSON.stringify(receipt), { mode: 0o600 });
-      await verifyVerifierSource(sourceRoot, receipt);
-      await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
+      env.PAPERCUSP_REPO_DIR = sourceRoot;
       env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
       env.VERIFY_TAURI_SOURCE_INPUTS = NATIVE_SOURCE_INPUTS.join(',');
       const identityPath = prepareIdentityFixture(directory);

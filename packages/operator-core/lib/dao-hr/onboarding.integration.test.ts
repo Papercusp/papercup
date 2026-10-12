@@ -33,7 +33,7 @@ async function contributorWorkspace(viewer: number) {
   const directory = {potId:key.daoSlug,title:'DAO',hivePubkey:'fixture-pubkey'} as HiveDirectoryBrowseRow;
   return buildDaoWorkspaceView(key.workspaceId, directory, {
     viewerGithubId: async () => viewer,
-    projects: async () => [{slug:key.daoSlug,harness_kind:'hive'}],
+    projects: async () => [{slug:key.daoSlug,harness_kind:'hive',path:'/fixture/onboarding-dao'}],
     hive: async () => ({pubkeyBase64:'fixture-pubkey'}) as never,
     members: async () => listHiveMembers(key.workspaceId, scope, db.adminSql),
     policyScope: async () => scope, policy: async () => null,

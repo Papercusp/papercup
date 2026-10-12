@@ -7873,6 +7873,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit } = args as { limit: number };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
+      // EI-25791449797018815: getOrgPg bypasses RLS. Scope every leg,
+      // including the parent lookup and count, to this request's workspace.
       // BOUNDED (WI-39825) via the shared rows+count fan-out — third site of this
       // shape, and the third with the same `?? rows.length` wrong-total on a failed
       // count. See `bounded-list-read.ts`.
@@ -7896,13 +7900,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                           (SELECT w.harness_slug
                              FROM harness_shared.work_items w
                             WHERE w.feature_id = t.parent_ref
+                              AND w.workspace_id = t.workspace_id
                               AND w.harness_slug IS NOT NULL
                             LIMIT 1)) AS harness_slug,
                  t.created_at, t.last_post_at, t.post_count
             FROM harness_shared.coord_threads t
+           WHERE t.workspace_id = ${workspaceId}
            ORDER BY t.last_post_at DESC NULLS LAST, t.created_at DESC NULLS LAST
            LIMIT ${limit}`.then((r) => [...r]),
-        count: sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`.then(
+        count: sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads
+          WHERE workspace_id = ${workspaceId}`.then(
           (r) => r[0]?.n ?? null,
         ),
         label: 'conversations.deliberationList',
@@ -7914,6 +7921,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // BOUNDED (WI-39825). A thread and its posts: the view is a transcript, so
       // neither leg is supplementary (a thread with silently-missing posts reads as
       // an empty conversation) and a lapse propagates as a labelled failure.
@@ -7929,17 +7938,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                             (SELECT w.harness_slug
                                FROM harness_shared.work_items w
                               WHERE w.feature_id = t.parent_ref
+                                AND w.workspace_id = t.workspace_id
                                 AND w.harness_slug IS NOT NULL
                               LIMIT 1)) AS harness_slug,
                    t.created_at, t.last_post_at, t.post_count
               FROM harness_shared.coord_threads t
-             WHERE t.thread_id = ${id} LIMIT 1`,
+             WHERE t.workspace_id = ${workspaceId} AND t.thread_id = ${id} LIMIT 1`,
           'deliberationDetail thread',
         ),
         withinBudget(
           sql`SELECT id, author_id, body, created_at, harness_slug
               FROM harness_shared.coord_thread_posts
-             WHERE thread_id = ${id}
+             WHERE workspace_id = ${workspaceId} AND thread_id = ${id}
              ORDER BY created_at ASC NULLS LAST
              LIMIT 1000`,
           'deliberationDetail posts',
@@ -7952,12 +7962,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       }));
       // WI-10005548 / D-006: a post a restricted agent wrote is stored as a sealed
       // stub; the owner is always a permitted reader, so this view shows the text.
-      const [{ unsealRowsForOwner }, { activeWorkspaceId }] = await Promise.all([
-        import('../personal-vault/shared-store-seal'),
-        import('../workspace-registry'),
-      ]);
+      const { unsealRowsForOwner } = await import('../personal-vault/shared-store-seal');
       const ownerPosts = await unsealRowsForOwner(safePosts, {
-        workspaceId: activeWorkspaceId(),
+        workspaceId,
         textOf: (post) => (post as { body?: unknown }).body,
         withText: (post, body) => ({ ...post, body }),
       });
@@ -7973,6 +7980,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit, harness, role } = args as { limit: number; harness?: string; role?: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // BOUNDED (WI-39825) via the shared rows+count fan-out. Same shape, and same
       // pre-existing wrong-answer, as projectSpecRevisions.byProject: a failed
       // count resolved to `?? rows.length`, rendering a confident total equal to
@@ -7985,14 +7994,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                  total_input_tokens, total_output_tokens, total_cost_usd_cents,
                  jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
             FROM harness_shared.agent_chats_consolidated
-           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+           WHERE workspace_id = ${workspaceId}
+             AND (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
              AND (${role ?? null}::text IS NULL OR role = ${role ?? null})
            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
            LIMIT ${limit}`.then((r) => [...r]),
         count: sql<{ n: number }[]>`
           SELECT count(*)::int AS n
             FROM harness_shared.agent_chats_consolidated
-           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+           WHERE workspace_id = ${workspaceId}
+             AND (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
              AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`.then((r) => r[0]?.n ?? null),
         label: 'conversations.agentChatList',
       });
@@ -8003,13 +8014,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       const rows = await sql`
         SELECT id, harness_slug, role, feature_id, title, created_at, updated_at,
                archived_at, transcript, total_input_tokens, total_output_tokens,
                total_cost_usd_cents,
                jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
           FROM harness_shared.agent_chats_consolidated
-         WHERE id = ${id}
+         WHERE workspace_id = ${workspaceId} AND id = ${id}
          LIMIT 1`;
       return rows.map((row) => ({
         ...row,
@@ -8100,6 +8113,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         includeMachine?: boolean;
       };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
       const machineOk = includeMachine === true;
       const query = q?.trim() || null;
@@ -8121,14 +8136,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                  c.body,
                  (SELECT count(*)::int
                     FROM harness_shared.coord_event_log r
-                   WHERE r.body ? 'related_msg_id'
+                   WHERE r.workspace_id = c.workspace_id AND r.body ? 'related_msg_id'
                      AND r.body ->> 'related_msg_id' = c.msg_id) AS reply_count,
                  (SELECT max(r.ts)
                     FROM harness_shared.coord_event_log r
-                   WHERE r.body ? 'related_msg_id'
+                   WHERE r.workspace_id = c.workspace_id AND r.body ? 'related_msg_id'
                      AND r.body ->> 'related_msg_id' = c.msg_id) AS last_reply_ts
             FROM harness_shared.coord_event_log c
-           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+           WHERE c.workspace_id = ${workspaceId}
+             AND c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
@@ -8142,7 +8158,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         sql<{ n: number }[]>`
           SELECT count(*)::int AS n
             FROM harness_shared.coord_event_log c
-           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+           WHERE c.workspace_id = ${workspaceId}
+             AND c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
@@ -8173,6 +8190,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // The reply chain is walked transitively (an ack ON an ack), bounded by
       // depth and row count so a pathological cycle in the data can never turn
       // one pane read into an unbounded recursion. `msg_id` is the join key and
@@ -8182,19 +8201,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           SELECT msg_id, ts, harness_slug, body,
                  0::int AS reply_count, NULL::timestamptz AS last_reply_ts
             FROM harness_shared.coord_event_log
-           WHERE msg_id = ${id}
+           WHERE workspace_id = ${workspaceId} AND msg_id = ${id}
            ORDER BY id ASC
            LIMIT 1`,
         sql`
           WITH RECURSIVE chain AS (
             SELECT c.id, c.msg_id, c.ts, c.body, 1 AS depth
               FROM harness_shared.coord_event_log c
-             WHERE c.body ? 'related_msg_id' AND c.body ->> 'related_msg_id' = ${id}
+             WHERE c.workspace_id = ${workspaceId}
+               AND c.body ? 'related_msg_id' AND c.body ->> 'related_msg_id' = ${id}
             UNION ALL
             SELECT c.id, c.msg_id, c.ts, c.body, chain.depth + 1
               FROM harness_shared.coord_event_log c
               JOIN chain ON c.body ->> 'related_msg_id' = chain.msg_id
-             WHERE c.body ? 'related_msg_id' AND chain.depth < 8
+             WHERE c.workspace_id = ${workspaceId}
+               AND c.body ? 'related_msg_id' AND chain.depth < 8
           )
           SELECT DISTINCT ON (msg_id) msg_id, ts, body
             FROM chain

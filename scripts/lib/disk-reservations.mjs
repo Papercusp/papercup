@@ -163,6 +163,19 @@ export function readReservedBytes(path, opts) {
 /** Strict evidence admission: combine every destination spending the same device.
  * This is a measurement, not a reservation receipt; callers must still reserve.
  * Unlike the build reader, unknown capacity cannot qualify an evidence window.
+ *
+ * @param {Array<{ path: string, bytes: number }>} allocations destinations and the bytes each will consume
+ * @param {{
+ *   protectedBytes?: number,
+ *   keyForPath?: (path: string) => string,
+ *   reservedBytesForPath?: (path: string) => number,
+ *   availableBytesForPath?: (path: string) => number,
+ * }} [options]
+ * @returns {{ admitted: boolean, devices: Array<{
+ *   key: string, paths: string[], allocationBytes: number, availableBytes: number,
+ *   reservedBytes: number, protectedBytes: number, requiredBytes: number,
+ *   effectiveBytes: number, admitted: boolean,
+ * }> }} one budget per physical device; admitted only when every device fits
  */
 export function assessAllocationDiskAdmission(allocations, {
   protectedBytes = 0,

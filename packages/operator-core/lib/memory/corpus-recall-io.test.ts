@@ -10,8 +10,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryWorkDeadline } from './op-deadline';
 import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
+import type { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 
-const pgDiagnosticRows = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+type PgDiagnosticRow = ReturnType<typeof pgResultDiagnosticSnapshot>['results'][number];
+const pgDiagnosticRows = vi.hoisted(() => [] as Array<Partial<PgDiagnosticRow>>);
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
@@ -312,7 +314,7 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
         elapsedMs: 11,
         preBuildMs: 2,
         status: 'ok',
-        correlation: context,
+        correlation: context ?? undefined,
       });
       return [];
     };

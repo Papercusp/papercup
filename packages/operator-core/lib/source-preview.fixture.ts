@@ -26,7 +26,9 @@ export const FIXTURE_ENV = {
 };
 
 export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { ...process.env, ...FIXTURE_ENV, GIT_CONFIG_NOSYSTEM: '1', ...extra };
+  // Test children must execute the fixture/current CLI, without an ambient
+  // loader substituting HEAD bytes or redirecting dependency resolution.
+  return { ...process.env, ...FIXTURE_ENV, GIT_CONFIG_NOSYSTEM: '1', NODE_OPTIONS: '', NODE_PATH: '', ...extra };
 }
 
 export function git(cwd: string, args: string[]): string {

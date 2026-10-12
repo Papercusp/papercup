@@ -255,11 +255,12 @@ describe('carry-respawn native-turn delivery authority', () => {
   });
 
   it(
-    'never books delivered when the fresh child paints output but persists no native user turn',
+    'never books delivered when the marker appears only in another native session',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-carry-delivery-guard-'));
       const claudeConfig = join(root, 'claude');
       mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+      const unrelatedTranscript = join(claudeConfig, 'projects', '-tmp', 'unrelated-session.jsonl');
 
       const phase = process.env.PAPERCUSP_MUTATION_PHASE ?? 'ordinary';
       const ownerId = `su-carry-delivery-guard-${phase}-${process.pid}-${Math.floor(performance.now())}`;
@@ -326,6 +327,16 @@ describe('carry-respawn native-turn delivery authority', () => {
         const terminalDeadline = Date.now() + 5_000;
         let events: Array<Record<string, unknown>> = [];
         while (Date.now() < terminalDeadline) {
+          // The generic submit verifier may see this matching marker in an
+          // unrelated native session. Only the later carry-respawn check has
+          // the minted native id and must reject that false binding.
+          if (captured().includes('PAINT')) {
+            writeFileSync(unrelatedTranscript, JSON.stringify({
+              type: 'user',
+              timestamp: new Date().toISOString(),
+              message: { role: 'user', content: `${marker}\nContinue where you left off` },
+            }) + '\n');
+          }
           if (existsSync(eventLog)) {
             events = readFileSync(eventLog, 'utf8')
               .trim()

@@ -145,6 +145,11 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     schemaVersion: string;
     sourceCommit: string;
     submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
 }>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
@@ -155,6 +160,21 @@ export function prepareVerifierDependencies({ donor, dest, receipt }: {
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
 }): Promise<void>;
+/** Freeze source and dependencies before invoking a command that allocates fixtures.
+ * The receipt survives outside the owned tree; only this invocation's tree is removed.
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv }} options
+ * @returns {Promise<number>}
+ */
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env }: {
+    repo: string;
+    ref: string;
+    receiptPath: string;
+    inputs?: string[];
+    inputsFile?: string;
+    tauriInputs?: boolean;
+    command: string[];
+    env?: NodeJS.ProcessEnv;
+}): Promise<number>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
@@ -176,6 +196,11 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
     schemaVersion: string;
     sourceCommit: string;
     submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
 }>;
 /** Synchronous boundary for hooks such as Playwright onBegin, whose return
  * value is not awaited. Uses the same source population and receipt checks.
@@ -198,6 +223,11 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
     schemaVersion: string;
     sourceCommit: string;
     submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
 };
 /** Transport the independently verified archive receipt into native reporters.
  * A successful parent preflight alone does not give a child source provenance.

@@ -32,10 +32,25 @@ function vm(cmd: string): string {
   return out.trim();
 }
 
+/** The active connector row's generation. The PG store re-reads the active row on
+ *  issue, but the ticket request type requires generation + state up front. */
+async function activeGeneration(): Promise<number> {
+  const rows = await withHostedServiceContext(async (sql) => sql<{ generation: number }[]>`
+    SELECT generation FROM papercusp_auth.hosted_workspace_connectors
+     WHERE control_workspace_id = 'papercusp-workspace' AND organization_id = ${ORG}
+       AND customer_workspace_id = ${CWS} AND host_id = ${HOST} AND route_label = ${HOST}
+       AND state = 'active'
+     LIMIT 1`);
+  const row = rows[0];
+  if (!row) throw new Error('no active connector binding');
+  return row.generation;
+}
+
 async function ticket(userId: string, label: string): Promise<string> {
   const issued = await gateway.issueSessionTicket({
     controlPlaneWorkspaceId: 'papercusp-workspace', organizationId: ORG, customerWorkspaceId: CWS, hostId: HOST,
     routeLabel: HOST, transport: 'websocket', userId, hostedSessionId: `${RUN}-${label}`, audience: 'workspace-operator',
+    generation: await activeGeneration(), state: 'active',
   });
   if (!issued) throw new Error('no active connector binding');
   return issued.ticket;

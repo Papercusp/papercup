@@ -365,6 +365,10 @@
     // P-004 — plain-Node test CLIs import this bridge directly; generate its
     // declaration so TypeScript callers cannot silently fall back to TS7016.
     "scripts/lib/governed-test-process.mjs",
+    // WI-6554700010009179 — scripts/r11-window-snapshot.mts imports the strict
+    // evidence-admission reader directly; without a declaration that import is a
+    // TS7016 and every value it returns (devices[], requiredBytes) is untyped `any`.
+    "scripts/lib/disk-reservations.mjs",
     // EI-25512374287066207 — shared by the armed source and cgroup preloads.
     "libs/test-config/src/process-termination-observer.mjs",
     // WI-41775 — the MODULE axis of check-lint-guard-reachability: which lib/release

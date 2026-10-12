@@ -3,8 +3,20 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+/**
+ * The narrow spawn seam this launcher actually uses — `spawnSync` satisfies it,
+ * and a test fake only has to return the fields read below (not a full
+ * `SpawnSyncReturns`).
+ * @typedef {(command: string, args: readonly string[], options: import('node:child_process').SpawnSyncOptions) => { status: number | null, signal?: NodeJS.Signals | null, error?: Error }} AndroidCheckSpawn
+ */
+
 // Use the Portal's maintained loader for its nested fixture imports. The
 // operator's loader is not interchangeable (historical fixture preflight ENOENT).
+/**
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {AndroidCheckSpawn} [spawn]
+ * @returns {number}
+ */
 export function launchAndroidDownloadCheck(env = process.env, spawn = spawnSync) {
   if (env.PORTAL_ANDROID_CLICK_TEST !== '1') throw new Error('explicit_test_admission_required');
   if (!env.PORTAL_ANDROID_ROOT) throw new Error('explicit_portal_root_required');
