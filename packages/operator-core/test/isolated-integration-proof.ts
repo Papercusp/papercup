@@ -17,6 +17,46 @@ import { testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_
 // @ts-ignore -- same progress watchdog used by that router.
 import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
 
+/** Own the parent reader's delayed telemetry until it has been flushed. The
+ * child runtime's private DB does not route getOrgPg() in this process. Reuse
+ * the migrated org fixture and its canonical pool/URL pinning, preserving the
+ * live-target guard and the reader's ordinary sidecar/fallback behavior. */
+export async function withIsolatedIntegrationSourceObserver<T>(
+  capture: (sql: import('postgres').Sql) => Promise<T>,
+) {
+  const { createOrgTestDb } = await import('./_org-test-db');
+  const { setupBaselineCoordFixture } = await import('../lib/_baseline-coord-fixture');
+  const { flushFallbackObservations } = await import('../lib/degradation/fallback-observations');
+  const db = await createOrgTestDb();
+  const previous = {
+    HARNESS_DATABASE_URL: process.env.HARNESS_DATABASE_URL,
+    HARNESS_ADMIN_DATABASE_URL: process.env.HARNESS_ADMIN_DATABASE_URL,
+  };
+  let fixture: Awaited<ReturnType<typeof setupBaselineCoordFixture>> | undefined;
+  try {
+    fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    const value = await capture(db.adminSql);
+    const flush = await flushFallbackObservations({ sql: db.adminSql });
+    assert.equal(flush.failed, 0, 'private parent fallback observations must persist');
+    return { value, database: db.dbName, flush };
+  } finally {
+    try {
+      // Also drain observations when capture throws, before retiring its pool.
+      const flush = await flushFallbackObservations({ sql: db.adminSql });
+      assert.equal(flush.failed, 0, 'private parent fallback observations must persist at teardown');
+    } finally {
+      try { await fixture?.dispose(); }
+      finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        await db.cleanup();
+      }
+    }
+  }
+}
+
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
@@ -331,11 +371,13 @@ export async function recordIsolatedIntegrationProof(options: {
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
         const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-        const files = await isolatedIntegrationSourceFiles(root, commit, paths);
+        const observed = await withIsolatedIntegrationSourceObserver(() => isolatedIntegrationSourceFiles(root, commit, paths));
+        const files = observed.value;
         source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, repoRoot: root, filePath,
           runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
           workspaceId: resolveTestRunWorkspaceId(),
-          harnessSlug: resolveTestRunHarnessSlug(), files };
+          harnessSlug: resolveTestRunHarnessSlug(), files,
+          parentObserver: { database: observed.database, flush: observed.flush } };
         await writeFile(join(ctx.evidenceDir, 'source.json'), JSON.stringify(source), { flag: 'wx' });
         await options.prepare?.(ctx.evidenceDir);
       } else if (ctx.phase === 'execute') {

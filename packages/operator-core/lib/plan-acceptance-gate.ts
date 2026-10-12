@@ -66,6 +66,8 @@ import {
   getLatestActivationAudit,
   getLatestPlanAudit,
   getPlanItemStatuses,
+  isRepoFileCitation,
+  isVerifyingCitation,
   isCitationContextFailure,
   planItemTextHash,
   planItemTextHashCandidates,
@@ -76,11 +78,13 @@ import {
 } from './plan-audits';
 import {
   describeUnrealized,
+  deriveNonCodeExemptionProofs,
   judgeRequirementRealization,
   type DroppedTarget,
   type ExemptMapping,
   type NonCodeItemProof,
 } from './plan-requirement-realization';
+import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
@@ -1058,10 +1062,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const effectiveByItem = new Map(effectiveAudits.map((entry) => [entry.entry.itemId, entry]));
       const stale: string[] = [];
       const broken: string[] = [];
-      const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
-        entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
+      const hasRepoFileCitations = effectiveAudits.some(({ entry }) =>
+        entry.citations.some(isRepoFileCitation),
       );
-      const citationContextResult = hasVerifyingCitations
+      const citationContextResult = hasRepoFileCitations
         ? await repoCitationContextForHarness(
             audit.harnessSlug,
             effectiveAudits.flatMap(({ entry }) => entry.citations),
@@ -1070,7 +1074,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const citationContext =
         citationContextResult && !isCitationContextFailure(citationContextResult) ? citationContextResult : null;
 
-      if (hasVerifyingCitations && !citationContext) {
+      if (hasRepoFileCitations && !citationContext) {
         if (isCitationContextFailure(citationContextResult)) {
           broken.push(
             ...citationContextResult.citations.map(
@@ -1121,9 +1125,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
 
         if (citationContext) {
           for (const citation of entry.citations) {
-            // D-008: only code/test citations constitute verification. Doc/none
-            // declarations never become code-truth merely by surviving this read.
-            if (citation.kind !== 'code' && citation.kind !== 'test') continue;
+            // D-008: only code/test citations constitute verification. A path-backed doc
+            // gets resolution and freshness checks, but never becomes code-truth evidence.
+            if (!isRepoFileCitation(citation)) continue;
             const resolution = resolveCitation(citation, citationContext.deps);
             if (!resolution.ok) {
               broken.push(
@@ -1134,7 +1138,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
 
             // Collect only RESOLVED code/test citations: an unresolvable path is
             // already reported as `broken` and has no deployment position to ask about.
-            if (citation.path?.trim()) citedEvidencePaths.add(citation.path.trim());
+            if (isVerifyingCitation(citation) && citation.path?.trim()) {
+              citedEvidencePaths.add(citation.path.trim());
+            }
 
             const rel = citation.path?.trim() ?? '';
             const measuredAt = measurement?.commits.get(rel);
@@ -1222,10 +1228,23 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const activationAudit = await getLatestActivationAudit(planSlug);
       const activationMappings = activationAudit?.activation?.mappings ?? [];
       if (activationMappings.length > 0) {
+        // The BAR projection census cannot see non-behavioral inventory clauses.
+        // Resolve that existing exemption contract only for reasoned not-code items;
+        // a failed clause read leaves the requirement unproven.
+        const nonCodeItems = items.filter((item) => item.status === 'done' &&
+          effectiveByItem.get(item.itemId)?.entry.verdict === 'not-code' &&
+          Boolean(effectiveByItem.get(item.itemId)?.entry.note?.trim()));
+        const exemptionProofs = nonCodeItems.length && planHarnessSlug
+          ? await listSpecClauses({
+              planSlug, harnessSlug: planHarnessSlug, workspaceId: activeWorkspaceId(),
+              planItemIds: nonCodeItems.map((item) => item.itemId),
+            }).then((clauses) => deriveNonCodeExemptionProofs({ planSlug, clauses, planItems: nonCodeItems }))
+              .catch(() => [])
+          : [];
         const realization = judgeRequirementRealization({
           mappings: activationMappings,
           itemAudits: effectiveAudits,
-          nonCodeItemProofs,
+          nonCodeItemProofs: [...nonCodeItemProofs, ...exemptionProofs],
           // P-016 / D-040: without this the judge resolves every `P-NNN` target against
           // the folded audit alone, which spans all passes and is never filtered by the
           // plan's current items — so an item deleted from the plan keeps vouching for
@@ -1251,7 +1270,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 `${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
                 `Each names a requirement the plan claims it absorbed. Code verification requires code/test ` +
                 `citations (D-008); a completed, reasoned not-code outcome instead requires exact current ` +
-                `operational/check BAR proof. Doc/none citations alone prove neither. Audit the named ` +
+                `operational/check BAR proof or a current explicit non-behavioral exemption. ` +
+                `Doc/none citations alone prove neither. Audit the named ` +
                 `item(s) against real code or bind current proof for the non-code outcome; if the requirement was not ` +
                 `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
                 `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +

@@ -527,6 +527,41 @@ describe('plans:audit D-008 writer contract', () => {
     }));
   });
 
+  it('pins repo-file doc citations to auditedSha without counting them as verification', async () => {
+    const currentBlobSha = '0'.repeat(40);
+    const auditedBlobSha = '1'.repeat(40);
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'docs/guide.md' ? { isFile: true } : null),
+        readFile: (path) => (path === 'docs/guide.md' ? '# Current guide\n' : null),
+        blobSha: (path) => (path === 'docs/guide.md' ? currentBlobSha : null),
+        blobShaAt: (path, sha) =>
+          path === 'docs/guide.md' && sha === 'a'.repeat(40) ? auditedBlobSha : null,
+      },
+    });
+
+    const result = await body(
+      [{
+        itemId: 'P-001',
+        verdict: 'not-code',
+        note: 'This item delivers a guide.',
+        citations: [{ kind: 'doc', path: 'docs/guide.md' }],
+      }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: true, coverage: { verifiedItems: 0, unverifiedItemIds: ['P-001'] } });
+    expect(result.note).toContain('1 cited file(s) differ in the working tree');
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        itemId: 'P-001',
+        citations: [expect.objectContaining({ kind: 'doc', path: 'docs/guide.md', blobSha: auditedBlobSha })],
+      })],
+    }));
+  });
+
   it('adds no drift note when the working tree matches auditedSha', async () => {
     const blob = '2'.repeat(40);
     mockContext.mockResolvedValue({

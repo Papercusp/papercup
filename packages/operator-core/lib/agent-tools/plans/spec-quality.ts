@@ -160,7 +160,7 @@ function trimmedField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function validExplicitExemption(clause: SpecClauseRevision): boolean {
+export function validExplicitExemption(clause: SpecClauseRevision): boolean {
   if (clause.lifecycleStatus !== 'exempt' || clause.behaviorClass !== 'non-automated') return false;
   const exemption = clause.exemption;
   if (!exemption || typeof exemption !== 'object' || Array.isArray(exemption)) return false;

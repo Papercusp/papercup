@@ -37,6 +37,7 @@ import {
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
+  isRepoFileCitation,
   isVerifyingCitation,
   isCitationContextFailure,
   mergeActivationAuditCoverage,
@@ -274,7 +275,7 @@ function divergentCitationBlobShaProblems(entries: AuditItemEntry[]): Problem[] 
   for (const entry of entries) {
     if (entry.carriedFrom !== undefined) continue;
     for (const citation of entry.citations) {
-      if (!isVerifyingCitation(citation) || !citation.path || !citation.blobSha) continue;
+      if (!isRepoFileCitation(citation) || !citation.path || !citation.blobSha) continue;
       const path = citation.path.trim();
       if (!path) continue;
       const bySha = byPath.get(path) ?? new Map<string, Set<string>>();
@@ -1259,7 +1260,7 @@ export default defineTool({
           storedCitations.push(c);
           continue;
         }
-        if (isVerifyingCitation(c)) {
+        if (isRepoFileCitation(c)) {
           const blobSha = citationBlobSha(c, deps);
           if (!blobSha) {
             problems.push({

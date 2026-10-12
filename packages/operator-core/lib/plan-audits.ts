@@ -124,6 +124,12 @@ export function isVerifyingCitation(c: AuditCitation): boolean {
   return VERIFYING_CITATION_KINDS.has(c.kind);
 }
 
+/** A repository-file citation is checked for durability even when it is not verification.
+ *  A path-backed `doc` is a tracked companion artifact; a PG-canonical doc ref is opaque. */
+export function isRepoFileCitation(c: AuditCitation): boolean {
+  return isVerifyingCitation(c) || (c.kind === 'doc' && Boolean(c.path?.trim()));
+}
+
 export interface AuditCitation {
   kind: CitationKind;
   /** Repo-relative path — required for `code`/`test`, optional for `doc` (a doc that IS a
@@ -141,10 +147,10 @@ export interface AuditCitation {
    *  while a doc ref demanded only a non-empty string, so the honest escape cost MORE than
    *  the dodge. */
   reason?: string;
-  /** Git-compatible blob hash of the cited file's bytes at audit time. Written by
-   *  `plans:audit` for every `code`/`test` citation; never accepted on the wire from
-   *  the auditor. D-007 compares this with the current blob so a rewritten file is
-   *  stale even when its path and symbol still resolve. */
+  /** Git-compatible blob hash of a cited repository file at audit time. Written by
+   *  `plans:audit` for `code`/`test` and path-backed `doc` citations; never accepted on
+   *  the wire from the auditor. D-007 compares this with the current blob so a rewritten
+   *  file is stale even when its path and symbol still resolve. */
   blobSha?: string;
 }
 
@@ -600,7 +606,7 @@ export interface CitationMeasurement {
 }
 
 /**
- * Measure every verifying citation at its top-level repository's HEAD. Batched per
+ * Measure every repository-file citation at its top-level repository's HEAD. Batched per
  * repository (one `rev-parse` plus one `ls-tree` per owning repository, through
  * committed-tree-reader), never one synchronous Git child per citation on the request
  * thread: M moves every few minutes, so a per-commit memo would not save the gate.
@@ -628,7 +634,7 @@ export async function measureCitationBlobsAtHead(
   };
   const relsByTop = new Map<string, Map<string, string>>();
   for (const citation of citations) {
-    const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
+    const rel = isRepoFileCitation(citation) ? citation.path?.trim() : undefined;
     if (!rel || measurement.blobs.has(rel)) continue;
     const abs = deps.locate(rel);
     const repo = abs ? gitRootForFile(abs) : null;
@@ -669,9 +675,9 @@ export function gitBlobSha(body: string | Buffer): string {
     .digest('hex');
 }
 
-/** Fingerprint only citations that constitute code verification. */
+/** Fingerprint a repository-file citation without changing whether it constitutes verification. */
 export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): string | null {
-  if (!isVerifyingCitation(citation)) return null;
+  if (!isRepoFileCitation(citation)) return null;
   const rel = citation.path?.trim();
   if (!rel) return null;
   const direct = deps.blobSha?.(rel);
@@ -680,13 +686,13 @@ export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): st
   return body == null ? null : gitBlobSha(body);
 }
 
-/** Fingerprint a verifying citation at the exact commit/ref recorded by an audit. */
+/** Fingerprint a repository-file citation at the exact commit/ref recorded by an audit. */
 export async function citationBlobShaAt(
   citation: AuditCitation,
   auditedSha: string,
   deps: CitationDeps,
 ): Promise<string | null> {
-  if (!isVerifyingCitation(citation)) return null;
+  if (!isRepoFileCitation(citation)) return null;
   const rel = citation.path?.trim();
   if (!rel) return null;
   return (await deps.blobShaAt?.(rel, auditedSha)) ?? null;
@@ -744,7 +750,7 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
   if (!stat) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
   if (!stat.isFile) return { ok: false, reason: 'not_a_file', detail: rel };
 
-  if (isVerifyingCitation(citation) && deps.isTracked?.(rel) === false) {
+  if (isRepoFileCitation(citation) && deps.isTracked?.(rel) === false) {
     const roots = deps.describeRoots?.(rel);
     const trackingDetail =
       `${rel} is not tracked in git (git-sync may not have swept it yet, or the path may be ignored and never tracked)`;
@@ -1209,7 +1215,7 @@ export async function prewarmRepoCitationTracking(
   for (const root of new Set(roots.map((entry) => path.resolve(entry)))) {
     const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
     for (const citation of citations) {
-      const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
+      const rel = isRepoFileCitation(citation) ? citation.path?.trim() : undefined;
       if (!rel) continue;
       const abs = path.resolve(root, rel);
       if (!abs.startsWith(rootWithSep) || !fs.existsSync(abs)) continue;
@@ -1509,10 +1515,10 @@ export function selectHarnessCitationRepoRoot(
   const canonical = harnessCitationRepoRoot(reg, harnessSlug);
   if (!canonical) return null;
 
-  const verifying = citations.filter(isVerifyingCitation);
+  const repoFiles = citations.filter(isRepoFileCitation);
   const resolvesEveryCitation = (root: string): boolean => {
     const deps = repoCitationDeps(root, registeredRoots);
-    return verifying.every((citation) => resolveCitation(citation, deps).ok);
+    return repoFiles.every((citation) => resolveCitation(citation, deps).ok);
   };
   const project = reg.projects.find((entry) => entry.slug === harnessSlug);
   const mayFallback = Boolean(project && project.harness_kind === 'hive' && !project.self_repo);
@@ -1613,10 +1619,10 @@ function citationFailureForAvailableRoots(
       })
     : [];
   const roots = [...new Set([canonical, ...discovered, ...(mayFallback ? [REPO_ROOT] : [])])];
-  const verifying = citations.filter(isVerifyingCitation);
-  if (verifying.length === 0) return null;
+  const repoFiles = citations.filter(isRepoFileCitation);
+  if (repoFiles.length === 0) return null;
 
-  const failures = verifying.flatMap((citation): CitationFailure[] => {
+  const failures = repoFiles.flatMap((citation): CitationFailure[] => {
     const results = roots.map((root) => resolveCitation(citation, repoCitationDeps(root, registeredRoots)));
     if (results.some((result) => result.ok)) return [];
     const firstFailure = results.find(
@@ -2384,7 +2390,7 @@ export function validatePersistedAuditEntries(items: AuditItemEntry[]): AuditEnt
 
     if (isLegacyCarry) continue;
     for (const citation of item.citations) {
-      if (!isVerifyingCitation(citation)) continue;
+      if (!isRepoFileCitation(citation)) continue;
       if (!citation.blobSha) {
         problems.push({
           itemId: item.itemId,

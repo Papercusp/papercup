@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricsForPlan } from './rubrics';
 import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import {
   getEffectiveItemAudits,
   getLatestActivationAudit,
@@ -54,6 +55,9 @@ vi.mock('./rubrics', () => ({
 }));
 vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
 vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
+vi.mock('./agent-tools/plans/spec-clauses-store', async (orig) => ({
+  ...(await orig<typeof import('./agent-tools/plans/spec-clauses-store')>()), listSpecClauses: vi.fn(),
+}));
 vi.mock('./plan-audits', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./plan-audits')>();
   return {
@@ -141,6 +145,7 @@ beforeEach(() => {
   // P-014 default: no activation audit, so the requirement-realization join is
   // inert. Every pre-P-014 case therefore keeps its original meaning.
   mockActivationAudit.mockResolvedValue(null);
+  vi.mocked(listSpecClauses).mockResolvedValue([]);
   mockCitationContext.mockImplementation(async () => ({
     repoRoot: '/repo',
     rootSource: 'registry' as const,
@@ -403,6 +408,59 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
     }
   });
 
+  it('keeps path-backed doc citations non-verifying but stale after a committed rewrite', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-gate-doc-measure-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const citedDoc = path.join(root, 'docs', 'guide.md');
+    const auditedDoc = '# Audited guide\n';
+    try {
+      fs.mkdirSync(path.dirname(citedDoc), { recursive: true });
+      fs.writeFileSync(citedDoc, auditedDoc);
+      git('init', '-q');
+      git('config', 'user.email', 'gate-test@example.com');
+      git('config', 'user.name', 'Gate Test');
+      git('add', '--', 'docs/guide.md');
+      git('commit', '-qm', 'audited guide');
+      const auditedSha = git('rev-parse', 'HEAD').trim();
+
+      const entry: EffectiveItemAudit = {
+        auditSeq: 1,
+        entry: {
+          itemId: 'P-001',
+          verdict: 'not-code',
+          note: 'This item delivers a guide.',
+          citations: [{ kind: 'doc', path: 'docs/guide.md', blobSha: gitBlobSha(auditedDoc) }],
+          auditedSha,
+          auditedAt: '2026-08-13T11:00:00.000Z',
+          itemTextHash: planItemTextHash('publish the guide'),
+        },
+      };
+      mockCitationContext.mockResolvedValue({
+        repoRoot: root,
+        rootSource: 'registry',
+        deps: repoCitationDeps(root),
+      });
+      mockEffectiveAudits.mockResolvedValue([entry]);
+      mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'publish the guide' }]);
+
+      fs.writeFileSync(citedDoc, '# Peer edit, not committed\n');
+      const uncommitted = await evaluatePlanAcceptanceGate(PLAN);
+      expect(uncommitted).toMatchObject({ satisfied: true });
+
+      git('commit', '-qam', 'publish edited guide');
+      const head = git('rev-parse', 'HEAD').trim();
+      const committed = await evaluatePlanAcceptanceGate(PLAN);
+      expect(committed).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+      expect(committed.message).toContain(
+        `P-001: docs/guide.md changed since audit #1 at commit ${head.slice(0, 12)}`,
+      );
+      expect(mockCitationContext).toHaveBeenCalledWith('papercusp', expect.any(Array));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a deleted/broken path in audit_citations_unresolved rather than calling it blob drift', async () => {
     const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', path: 'src/p_001.ts' });
     files.delete('src/p_001.ts');
@@ -511,6 +569,40 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
   });
 
   const itemDone = () => [{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }];
+
+  const exemption = (over: Partial<SpecClauseRevision> = {}): SpecClauseRevision => ({
+    planSlug: PLAN, specId: 'P-001-consolidation-exempt', planItemId: 'P-001',
+    sourceValId: null, sourceBar: null, currentRevision: 1, revision: 1,
+    behavior: 'Each legacy request is disposed or assigned to a named owner.',
+    behaviorClass: 'non-automated', lifecycleStatus: 'exempt',
+    requiredEvidence: [], requiredTestLayers: [], mutationRequired: false, falsifier: null,
+    exemption: { justification: 'Ledger bookkeeping changes no product behavior.', provenance: 'owner directive 1691' },
+    supersedes: null, contentHash: 'a'.repeat(64), createdBy: 'author', createdAt: '2026-10-11T00:00:00Z',
+    acceptedBy: null, acceptedAt: null, acceptanceRef: null, ...over,
+  });
+
+  it.each(['current', 'missing', 'read failure', 'behavioral sibling'])(
+    'joins explicit inventory scope into the real ship gate: %s', async (scope) => {
+      const entry = docOnlyP001();
+      entry.entry.verdict = 'not-code';
+      entry.entry.note = 'Verified the completed census against its exact completion record.';
+      mockEffectiveAudits.mockResolvedValue([entry]);
+      mockPlanItems.mockResolvedValue(itemDone());
+      mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
+      mockPg.mockReturnValue(sqlReturning([{ plan_slug: PLAN, harness_slug: 'papercusp', template: null, template_slug: null }]));
+      if (scope === 'read failure') vi.mocked(listSpecClauses).mockRejectedValue(new Error('clause read unavailable'));
+      else vi.mocked(listSpecClauses).mockResolvedValue(scope === 'missing' ? [] : [
+        exemption(), ...(scope === 'behavioral sibling' ? [exemption({ specId: 'product-behavior', lifecycleStatus: 'active' })] : []),
+      ]);
+      const verdict = await evaluatePlanAcceptanceGate(PLAN);
+      expect(verdict).toMatchObject(scope === 'current'
+        ? { satisfied: true, skipped: 'flag-off' }
+        : { satisfied: false, code: 'requirement_unrealized' });
+      expect(listSpecClauses).toHaveBeenCalledWith({
+        planSlug: PLAN, harnessSlug: 'papercusp', workspaceId: 'test-ws', planItemIds: ['P-001'],
+      });
+    },
+  );
 
   it('joins current BAR proof into a reasoned non-code audit without treating the doc as code', async () => {
     const entry = docOnlyP001();

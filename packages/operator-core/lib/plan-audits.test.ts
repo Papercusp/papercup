@@ -344,10 +344,15 @@ describe('resolveCitation — trackedness of verifying citations (EI-21729074760
     expect(resolveCitation(code('src/unknown.ts'), resolvingDeps(null))).toEqual({ ok: true });
   });
 
-  it('gates only verifying citation kinds', () => {
-    const deps = resolvingDeps(false);
-    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, deps)).toEqual({ ok: true });
-    expect(resolveCitation({ kind: 'none', reason: 'operational-only item' }, deps)).toEqual({ ok: true });
+  it('requires trackedness for repo-file docs without making them verifying citations', () => {
+    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, resolvingDeps(false))).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, resolvingDeps(true))).toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'doc', ref: '/internal/docs/design', reason: 'PG-canonical doc' }, resolvingDeps(false)))
+      .toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'none', reason: 'operational-only item' }, resolvingDeps(false))).toEqual({ ok: true });
   });
 });
 
@@ -666,16 +671,31 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
     const trackedRoot = path.join(workspaceRoot, 'tracked-repo');
     fs.mkdirSync(trackedRoot, { recursive: true });
     fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
+    fs.mkdirSync(path.join(trackedRoot, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(trackedRoot, 'docs', 'tracked.md'), '# Tracked doc\n');
     git(trackedRoot, 'init', '-q');
-    git(trackedRoot, 'add', '--', 'tracked.ts');
+    git(trackedRoot, 'add', '--', 'tracked.ts', 'docs/tracked.md');
     fs.writeFileSync(path.join(trackedRoot, 'untracked.ts'), 'export const untracked = true;\n');
+    fs.writeFileSync(path.join(trackedRoot, 'docs', 'untracked.md'), '# Untracked doc\n');
 
-    await prewarmRepoCitationTracking([trackedRoot], [code('tracked.ts'), code('untracked.ts')]);
+    await prewarmRepoCitationTracking([trackedRoot], [
+      code('tracked.ts'),
+      code('untracked.ts'),
+      { kind: 'doc', path: 'docs/tracked.md' },
+      { kind: 'doc', path: 'docs/untracked.md' },
+    ]);
     const deps = repoCitationDeps(trackedRoot);
     expect(deps.isTracked?.('tracked.ts')).toBe(true);
     expect(deps.isTracked?.('untracked.ts')).toBe(false);
+    expect(deps.isTracked?.('docs/tracked.md')).toBe(true);
+    expect(deps.isTracked?.('docs/untracked.md')).toBe(false);
     expect(resolveCitation(code('tracked.ts'), deps)).toEqual({ ok: true });
     expect(resolveCitation(code('untracked.ts'), deps)).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/tracked.md' }, deps)).toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/untracked.md' }, deps)).toMatchObject({
       ok: false,
       reason: 'file_untracked',
     });
@@ -721,27 +741,39 @@ describe('measureCitationBlobsAtHead — committed measurement commit M (P-019)'
   it('measures the committed blob at HEAD and ignores an uncommitted edit', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-'));
     const cited = path.join(root, 'src', 'cited.ts');
+    const citedDoc = path.join(root, 'docs', 'guide.md');
     const committed = 'export const cited = "committed";\n';
+    const committedDoc = '# Committed guide\n';
     try {
       fs.mkdirSync(path.dirname(cited), { recursive: true });
+      fs.mkdirSync(path.dirname(citedDoc), { recursive: true });
       fs.writeFileSync(cited, committed);
+      fs.writeFileSync(citedDoc, committedDoc);
       initRepo(root);
-      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'add', '--', 'src/cited.ts', 'docs/guide.md');
       git(root, 'commit', '-qm', 'committed bytes');
       const head = git(root, 'rev-parse', 'HEAD').trim();
       fs.writeFileSync(cited, 'export const cited = "peer uncommitted edit";\n');
+      fs.writeFileSync(citedDoc, '# Peer uncommitted edit\n');
 
-      const measured = await measureCitationBlobsAtHead([code('src/cited.ts')], repoCitationDeps(root));
+      const docCitation: AuditCitation = { kind: 'doc', path: 'docs/guide.md' };
+      const measured = await measureCitationBlobsAtHead([code('src/cited.ts'), docCitation], repoCitationDeps(root));
       expect(measured.blobs.get('src/cited.ts')).toBe(gitBlobSha(committed));
+      expect(measured.blobs.get('docs/guide.md')).toBe(gitBlobSha(committedDoc));
       expect(measured.commits.get('src/cited.ts')).toBe(head);
+      expect(measured.commits.get('docs/guide.md')).toBe(head);
 
       // Once committed, the same edit IS what M measures.
       const edited = 'export const cited = "now committed";\n';
       fs.writeFileSync(cited, edited);
+      const editedDoc = '# Now committed\n';
+      fs.writeFileSync(citedDoc, editedDoc);
       git(root, 'commit', '-qam', 'commit the edit');
-      const after = await measureCitationBlobsAtHead([code('src/cited.ts')], repoCitationDeps(root));
+      const after = await measureCitationBlobsAtHead([code('src/cited.ts'), docCitation], repoCitationDeps(root));
       expect(after.blobs.get('src/cited.ts')).toBe(gitBlobSha(edited));
+      expect(after.blobs.get('docs/guide.md')).toBe(gitBlobSha(editedDoc));
       expect(after.commits.get('src/cited.ts')).toBe(git(root, 'rev-parse', 'HEAD').trim());
+      expect(after.commits.get('docs/guide.md')).toBe(git(root, 'rev-parse', 'HEAD').trim());
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1055,12 +1087,14 @@ describe('resolveCitation — sibling repair suggestion on a miss (EI-2212949146
 });
 
 describe('per-item audit provenance (plan D-006/D-007)', () => {
-  it('stores a Git-compatible blob sha for code evidence only', () => {
+  it('stores blob hashes for repository files but keeps PG-canonical docs opaque', () => {
     expect(gitBlobSha('hello\n')).toBe('ce013625030ba8dba906f756967f9e9ca394464a');
     const deps = repoCitationDeps(repoRoot);
     const citation = code('apps/operator/in-repo.ts');
     expect(citationBlobSha(citation, deps)).toBe(gitBlobSha('export const inRepo = 1;\n'));
-    expect(citationBlobSha({ kind: 'doc', path: 'apps/operator/in-repo.ts' }, deps)).toBeNull();
+    expect(citationBlobSha({ kind: 'doc', path: 'apps/operator/in-repo.ts' }, deps))
+      .toBe(gitBlobSha('export const inRepo = 1;\n'));
+    expect(citationBlobSha({ kind: 'doc', ref: '/internal/docs/design', reason: 'PG-canonical doc' }, deps)).toBeNull();
   });
 
   it('folds newest entries per item across partial passes', () => {
@@ -1143,6 +1177,21 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
           auditedSha: 'abcdef1234567',
           auditedAt: '2026-08-20T12:00:00.000Z',
           itemTextHash: planItemTextHash('requirement'),
+        },
+      ]),
+    ).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'missing_blob_sha' })]);
+  });
+
+  it('rejects a fresh repo-file doc citation without its blob hash', () => {
+    expect(
+      validatePersistedAuditEntries([
+        {
+          itemId: 'P-001',
+          verdict: 'not-code',
+          citations: [{ kind: 'doc', path: 'docs/guide.md' }],
+          auditedSha: 'abcdef1234567',
+          auditedAt: '2026-08-20T12:00:00.000Z',
+          itemTextHash: planItemTextHash('publish guide'),
         },
       ]),
     ).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'missing_blob_sha' })]);

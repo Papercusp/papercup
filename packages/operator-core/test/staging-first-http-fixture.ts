@@ -41,6 +41,7 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   const evidenceDir = e.STAGING_FIRST_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'report-journal') e.PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY = '1';
   const harness = `${workspace}-guard`;
   const registry = await loadHarnessRegistry(workspace, { fresh: true });
   const home = registry.projects.find(project => project.slug === workspace);
@@ -98,6 +99,16 @@ async function main() {
   }
   assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'report-journal') {
+    const receipt = await (await import('./report-journal-http-scenario')).measureReportJournalScenario({
+      workspace, harness, base, headers, evidenceDir,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('REPORT_JOURNAL_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
+      hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (committedReader) {
     const readerReceipt = await committedReader.execute(host.pid!);
     await stopHost();
