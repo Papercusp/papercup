@@ -1897,21 +1897,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       clause: caseScopedClause(),
       classRef: 'plan-class-feature-ship' as const,
     };
+    // Remove the independent coverage-census L3 rung so these assertions isolate whether the
+    // mutation itself establishes the risk floor.
+    const noCoverageCensus = evidence({ coverageEvidenceRef: null });
 
     const siblingCase = evaluateSpecTestAdequacy({
       ...input,
-      evidence: [evidence(), successfulTest(['code-search.definition-lookup']), mutation],
+      evidence: [noCoverageCensus, successfulTest(['code-search.definition-lookup']), mutation],
     });
     expect(siblingCase.ratings.falsifiability.rating).toBe('unknown');
     expect(siblingCase.ratings.falsifiability.evidence).toContain(failedCaseTitle);
     expect(siblingCase.ratings.falsifiability.suggestion).toContain('adequacy.testCases');
+    expect(siblingCase.ratings['plan-class-risk-floor'].rating).toBe('unknown');
     expect(siblingCase.verdict).not.toBe('pass');
 
     const exactCase = evaluateSpecTestAdequacy({
       ...input,
-      evidence: [evidence(), successfulTest([failedCaseTitle]), mutation],
+      evidence: [noCoverageCensus, successfulTest([failedCaseTitle]), mutation],
     });
     expect(exactCase.ratings.falsifiability.rating).toBe('pass');
+    expect(exactCase.ratings['plan-class-risk-floor'].rating).toBe('pass');
 
     // WI-10006745: an earlier same-clause same-file binding with no testCases must not shadow a
     // later one that declares the measured case (the evaluator used to inspect only the first).
