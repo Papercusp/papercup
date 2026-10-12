@@ -835,7 +835,7 @@ export function deriveBindingFromTestRun(
   const isolatedHarnessMatches = recordedExecution?.harnessSlug === row.harness_slug
     || (recordedExecution?.harnessSlug === null && row.harness_slug != null
       && (row.source === 'local' || row.source === 'mutation-probe'));
-  const isolatedRuntimeUnits = recordedExecution?.testLayer === 'integration'
+  const isolatedRuntimeUnits = (recordedExecution?.testLayer === 'integration' || recordedExecution?.testLayer === 'e2e')
     && recordedExecution.workspaceId === row.workspace_id
     && isolatedHarnessMatches
     && recordedExecution.isolatedRuntimeReceipts
