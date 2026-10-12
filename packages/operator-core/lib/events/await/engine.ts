@@ -1116,7 +1116,9 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             // Keep the cursor shortcut for message-less inbox notifications only.
             // Once a delivery references a message, malformed or unresolved
             // payloads fail open and must not be retired by an unrelated read.
-            const lastRead = await lastInboxReadAtBatch([subscriberId]);
+            // foldedOnly: a lifecycle/pre-tool activity:report reads no mail, so it must
+            // never retire a wake (WI-6554700010009285).
+            const lastRead = await lastInboxReadAtBatch([subscriberId], { foldedOnly: true });
             const lastReadAt = lastRead.get(subscriberId) ?? null;
             if (isInboxWakeGroupRedundant(group, lastReadAt)) {
               await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);

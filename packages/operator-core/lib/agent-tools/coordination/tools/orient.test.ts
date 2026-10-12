@@ -489,7 +489,7 @@ describe('coord:orient args', () => {
       ok: true,
       me: { summary: { agents: 1 } },
       claimable: [{ id: 'EI-1' }],
-      inbox: { summary: { total: 2 }, recent: [{ msg_id: 'm1' }] },
+      inbox: { summary: { total: 2 }, entries: [{ msg_id: 'm1' }] },
     };
 
     snapshotOrientAggregate(fallback, snapshot);
@@ -562,7 +562,7 @@ describe('coord:orient args', () => {
       ok: true,
       me: { agents: [{ ownerId: 'me' }] },
       claimable: [{ id: 'EI-1' }],
-      inbox: { summary: { total: 1 }, recent: [] },
+      inbox: { summary: { total: 1 }, entries: [] },
     };
 
     try {
@@ -1636,7 +1636,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         expect(result).toMatchObject({
           me: assignments,
           claimable: [{ id: 'WI-visible' }],
-          inbox: { summary: inbox.summary, entries: inbox.entries, recent: inbox.entries },
+          inbox: {
+            summary: inbox.summary,
+            entries: inbox.entries,
+            recent: { movedTo: 'inbox.entries', length: inbox.entries.length },
+          },
         });
       }
     } finally {
@@ -1712,7 +1716,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect((r.me as { agents: Array<{ ownerId: string }> }).agents[0].ownerId).toBe('me');
     expect(r.claimable).toHaveLength(2);
     expect((r.inbox.summary as { total: number }).total).toBe(3);
-    expect(r.inbox.recent).toEqual([{ msg_id: 'm1' }]);
+    expect(r.inbox.entries).toEqual([{ msg_id: 'm1' }]);
     expect(r.planEvents).toEqual({ total: 1, recent: [{ kind: 'item_status_changed', plan: 'p1' }] });
     // No intent ⇒ no memory recall, no declare.
     expect(r.memory).toBeUndefined();
@@ -1843,15 +1847,20 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(ids).toEqual(['EI-1', 'EI-2', 'F-KEEP']);
   });
 
-  // EI-18667514339699744: coord:orient folds coord:inbox's `entries` under `recent`;
-  // coord:inbox itself calls the same array `entries`. A caller reading the "wrong"
-  // key for the surface it's on got a silent [] instead of an error. Both keys must
-  // resolve to the same rows off coord:orient's fold.
-  it('EI-18667514339699744: aliases the folded inbox under BOTH `recent` and `entries`', async () => {
+  // EI-18667514339699744: coord:orient used to fold coord:inbox's `entries` under
+  // `recent`, so a caller reading the other tool's key got a silent []. The first fix
+  // aliased both keys to one array, which JSON serialized TWICE (26% of orient spill
+  // bytes — oversized-tool-results-reduction-2026-10-12 P-006). Root fix: one name.
+  // The rows live under `entries`; `recent` is a pointer that is loud on misuse.
+  it('EI-18667514339699744: folds the inbox rows ONCE under `entries`, with a loud `recent` pointer', async () => {
     const { call } = fakeCall({ ...CORE });
     const r = await composeOrient({ harness: 'h' }, call, 'me');
-    expect(r.inbox.recent).toEqual([{ msg_id: 'm1' }]);
-    expect(r.inbox.entries).toEqual(r.inbox.recent);
+    expect(r.inbox.entries).toEqual([{ msg_id: 'm1' }]);
+    expect(r.inbox.recent).toEqual({ movedTo: 'inbox.entries', length: 1 });
+    // Not iterable: a reader still on the old key throws instead of seeing an empty inbox.
+    expect(() => [...(r.inbox.recent as unknown as Iterable<unknown>)]).toThrow(TypeError);
+    // The serialized fold carries the row a single time.
+    expect(JSON.stringify(r.inbox).split('"m1"').length - 1).toBe(1);
   });
 
   it('omits the agent filter when no ownerId resolved (fleet-wide assignments)', async () => {

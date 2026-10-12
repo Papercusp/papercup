@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { zstdCompressSync } from 'node:zlib';
 import type { SessionArchiveStore } from '../session-archive';
-import { mkdirSync, mkdtempSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readCanonicalNativeArchive, readStableLiveJsonl } from './source';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 describe('readStableLiveJsonl', () => {
   it('uses a fixed high-water and excludes the trailing partial record', async () => {
@@ -24,6 +30,74 @@ describe('readStableLiveJsonl', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'port-source-cap-')), 'session.jsonl');
     writeFileSync(path, '12345\n');
     await expect(readStableLiveJsonl(path, 5)).rejects.toThrow(/exceeds 5 byte cap/);
+  });
+
+  it.each(['append', 'replace'] as const)('D-017: keeps the opened source prefix when the path changes by %s after fstat', async (change) => {
+    const root = mkdtempSync(join(tmpdir(), 'port-source-race-'));
+    const path = join(root, 'session.jsonl');
+    const original = Buffer.from('{"source":"original"}\n');
+    const later = Buffer.from('{"later":"independent"}\n');
+    writeFileSync(path, original);
+    const before = statSync(path);
+    const actualOpen = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).open;
+    let capturedHandle: Awaited<ReturnType<typeof actualOpen>> | undefined;
+    const open = vi.mocked(fsPromises.open).mockImplementation(async (...args) => {
+      const handle = await actualOpen(...args);
+      if (args[0] === path) {
+        capturedHandle = handle;
+        const actualStat = handle.stat.bind(handle);
+        handle.stat = async (...statArgs) => {
+          const stat = await actualStat(...statArgs);
+          // Change the actual filesystem only after the production descriptor's
+          // high-water is measured; reads and close still use the real handle.
+          if (change === 'append') appendFileSync(path, later);
+          else {
+            renameSync(path, join(root, 'retained-source.jsonl'));
+            writeFileSync(path, later);
+          }
+          return stat;
+        };
+      }
+      return handle;
+    });
+    try {
+      const source = await readStableLiveJsonl(path);
+      expect(open).toHaveBeenCalledWith(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      expect(source.bytes).toEqual(original);
+      expect(source.sha256).toBe(createHash('sha256').update(original).digest('hex'));
+      expect(source.highWaterBytes).toBe(original.length);
+      expect(source.completeBytes).toBe(original.length);
+      expect(source.fileIdentity).toEqual({ path, device: before.dev, inode: before.ino, links: before.nlink });
+      if (change === 'append') expect(readFileSync(path)).toEqual(Buffer.concat([original, later]));
+      else {
+        expect(statSync(path).ino).not.toBe(before.ino);
+        expect(readFileSync(path)).toEqual(later);
+        expect(readFileSync(join(root, 'retained-source.jsonl'))).toEqual(original);
+      }
+      expect(capturedHandle).toBeDefined();
+      await expect(capturedHandle!.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    } finally {
+      open.mockReset().mockImplementation(actualOpen);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('D-017: refuses a source path replaced by a symlink without modifying its target', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'port-source-symlink-'));
+    const path = join(root, 'session.jsonl');
+    const target = join(root, 'independent.jsonl');
+    const bytes = Buffer.from('{"independent":true}\n');
+    writeFileSync(target, bytes);
+    symlinkSync(target, path);
+    const before = statSync(target);
+    try {
+      await expect(readStableLiveJsonl(path)).rejects.toMatchObject({ code: 'ELOOP' });
+      expect(readFileSync(target)).toEqual(bytes);
+      expect(statSync(target).ino).toBe(before.ino);
+      expect(statSync(target).mtimeMs).toBe(before.mtimeMs);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

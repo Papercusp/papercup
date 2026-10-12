@@ -61,7 +61,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql.unsafe('TRUNCATE papercusp_auth.organization_audit_events, papercusp_auth.external_identities, papercusp_auth.organization_memberships, papercusp_auth.hosted_users, papercusp_auth.organizations CASCADE');
+  await sql.unsafe('TRUNCATE papercusp_auth.hosted_sessions, papercusp_auth.organization_audit_events, papercusp_auth.external_identities, papercusp_auth.organization_memberships, papercusp_auth.hosted_users, papercusp_auth.organizations CASCADE');
   const users = await sql<{ id: string }[]>`INSERT INTO papercusp_auth.hosted_users(primary_email)
     VALUES ('admin@example.test'),('member@example.test'),('other@example.test') RETURNING id`;
   [actorId, memberId, otherId] = users.map((u) => u.id);
@@ -72,6 +72,93 @@ beforeEach(async () => {
     VALUES (${organizationId}::uuid,${actorId}::uuid,'admin','active','member_management'),
       (${organizationId}::uuid,${memberId}::uuid,'member','active','member_management'),
       (${organizationId}::uuid,${otherId}::uuid,'member','active','member_management')`;
+});
+
+describe('bounded delegated membership reduction', () => {
+  const reduction = (status: 'suspended' | 'revoked' = 'suspended') => ({ organizationId, userId: memberId, status, purpose: 'Approved access reduction' });
+  async function role(userId: string, next: string) {
+    await sql`DELETE FROM papercusp_auth.organization_memberships WHERE organization_id=${organizationId}::uuid AND user_id=${userId}::uuid`;
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      VALUES (${organizationId}::uuid,${userId}::uuid,${next},'active','member_management')`;
+  }
+  async function sessions() {
+    await sql`INSERT INTO papercusp_auth.hosted_sessions(id,user_id,organization_id,upstream_provider,upstream_session_id,expires_at)
+      VALUES ('target',${memberId},${organizationId},'workos','target',now()+interval '1 hour'),
+        ('foreign',${memberId},${foreignOrganizationId},'workos','foreign',now()+interval '1 hour'),
+        ('actor',${actorId},${organizationId},'workos','actor',now()+interval '1 hour')`;
+  }
+  it.each([
+    ['owner', 'admin'], ['owner', 'member'], ['owner', 'billing'], ['admin', 'member'], ['admin', 'billing'],
+  ])('allows %s to reduce %s with tenant-scoped session closure and audit', async (actorRole, targetRole) => {
+    await role(actorId, actorRole); await role(memberId, targetRole); await sessions();
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      VALUES (${foreignOrganizationId}::uuid,${memberId}::uuid,'member','active','member_management')`;
+    const suspended = await manager.reduceMembership(principal(), reduction());
+    expect(suspended).toMatchObject({ status: 'suspended', changed: true });
+    expect(await sql`SELECT role,status,suspended_at IS NOT NULL AS suspension_recorded FROM papercusp_auth.organization_memberships WHERE id=${suspended.membershipId}::uuid`)
+      .toMatchObject([{ role: targetRole, status: 'suspended', suspension_recorded: true }]);
+    expect(await sql`SELECT status FROM papercusp_auth.organization_memberships WHERE organization_id=${foreignOrganizationId}::uuid`)
+      .toMatchObject([{ status: 'active' }]);
+    expect(await sql`SELECT id,revoked_at IS NOT NULL AS revoked FROM papercusp_auth.hosted_sessions ORDER BY id`)
+      .toEqual([{ id: 'actor', revoked: false }, { id: 'foreign', revoked: false }, { id: 'target', revoked: true }]);
+    expect(await sql`SELECT actor_id,action,purpose,target_id,metadata FROM papercusp_auth.organization_audit_events WHERE id=${suspended.auditId}::uuid`)
+      .toMatchObject([{ actor_id: actorId, action: 'membership.reduce', purpose: 'Approved access reduction', target_id: suspended.membershipId,
+        metadata: { previousStatus: 'active', status: 'suspended', role: targetRole, changed: true } }]);
+    expect(await manager.reduceMembership(principal(), reduction())).toMatchObject({ changed: false, status: 'suspended' });
+    expect(await manager.reduceMembership(principal(), reduction('revoked'))).toMatchObject({ changed: true, status: 'revoked' });
+    await expect(manager.reduceMembership(principal(), reduction())).rejects.toThrow('membership_reduction_restore_forbidden');
+  });
+  it.each([['admin', 'admin'], ['admin', 'owner'], ['owner', 'owner']])('refuses %s acting on %s', async (actorRole, targetRole) => {
+    await role(actorId, actorRole); await role(memberId, targetRole); await sessions();
+    await expect(manager.reduceMembership(principal(), reduction())).rejects.toThrow('membership_reduction_forbidden');
+    expect(await sql`SELECT status FROM papercusp_auth.organization_memberships WHERE user_id=${memberId}::uuid`).toMatchObject([{ status: 'active' }]);
+    expect(await sql`SELECT id FROM papercusp_auth.hosted_sessions WHERE revoked_at IS NOT NULL`).toHaveLength(0);
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+  it.each(['member', 'billing'])('refuses stale %s actor authority', async (actorRole) => {
+    await role(actorId, actorRole);
+    await expect(manager.reduceMembership(principal(), reduction())).rejects.toThrow('membership_reduction_forbidden');
+  });
+  it.each(['suspended', 'revoked'])('refuses a %s administrator', async (status) => {
+    await sql`UPDATE papercusp_auth.organization_memberships SET status=${status},
+      suspended_at=CASE WHEN ${status}='suspended' THEN now() ELSE suspended_at END,
+      revoked_at=CASE WHEN ${status}='revoked' THEN now() ELSE revoked_at END WHERE user_id=${actorId}::uuid`;
+    await expect(manager.reduceMembership(principal(), reduction())).rejects.toThrow('membership_reduction_forbidden');
+  });
+  it('refuses self, foreign organization, absent target and principal without permission', async () => {
+    await expect(manager.reduceMembership(principal(), { ...reduction(), userId: actorId.toUpperCase() })).rejects.toThrow('membership_reduction_forbidden');
+    await expect(manager.reduceMembership(principal(), { ...reduction(), organizationId: foreignOrganizationId })).rejects.toThrow('membership_reduction_forbidden');
+    await expect(manager.reduceMembership(principal(['workspace:view']), reduction())).rejects.toThrow('membership_reduction_forbidden');
+    await sql`DELETE FROM papercusp_auth.organization_memberships WHERE user_id=${memberId}::uuid`;
+    await expect(manager.reduceMembership(principal(), reduction())).rejects.toThrow('membership_reduction_member_not_found');
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+  it.each([{ status: 'active' }, { purpose: '' }, { purpose: 'sk_012345678901234567890123' }, { userId: 'not-a-uuid' }])('rejects malformed or elevating input %j', async (override) => {
+    await expect(manager.reduceMembership(principal(), { ...reduction(), ...override } as never)).rejects.toThrow();
+    expect(await sql`SELECT status FROM papercusp_auth.organization_memberships WHERE user_id=${memberId}::uuid`).toMatchObject([{ status: 'active' }]);
+    expect(await sql`SELECT id FROM papercusp_auth.organization_audit_events`).toHaveLength(0);
+  });
+  it('rolls back membership and session closure together when audit insertion fails', async () => {
+    await sessions();
+    await sql.unsafe('REVOKE INSERT ON papercusp_auth.organization_audit_events FROM hosted_service');
+    try {
+      await expect(manager.reduceMembership(principal(), reduction('revoked'))).rejects.toThrow(/permission denied/);
+      expect(await sql`SELECT status FROM papercusp_auth.organization_memberships WHERE user_id=${memberId}::uuid`).toMatchObject([{ status: 'active' }]);
+      expect(await sql`SELECT id FROM papercusp_auth.hosted_sessions WHERE revoked_at IS NOT NULL`).toHaveLength(0);
+    } finally { await sql.unsafe('GRANT INSERT ON papercusp_auth.organization_audit_events TO hosted_service'); }
+  });
+  it('concurrent reductions cannot restore a revoked membership', async () => {
+    await sessions();
+    const outcomes = await Promise.allSettled([manager.reduceMembership(principal(), reduction()), manager.reduceMembership(principal(), reduction('revoked'))]);
+    expect(outcomes[1].status).toBe('fulfilled');
+    expect(await sql`SELECT status FROM papercusp_auth.organization_memberships WHERE user_id=${memberId}::uuid`).toMatchObject([{ status: 'revoked' }]);
+    expect(await sql`SELECT id FROM papercusp_auth.hosted_sessions WHERE id='target' AND revoked_at IS NULL`).toHaveLength(0);
+  });
+  it('database service authority independently refuses role elevation and restoration', async () => {
+    await expect(run(async (tx) => tx`UPDATE papercusp_auth.organization_memberships SET role='owner' WHERE user_id=${memberId}::uuid`)).rejects.toThrow(/only reduce/);
+    await manager.reduceMembership(principal(), reduction('revoked'));
+    await expect(run(async (tx) => tx`UPDATE papercusp_auth.organization_memberships SET status='active' WHERE user_id=${memberId}::uuid`)).rejects.toThrow(/restore or elevate/);
+  });
 });
 
 describe('audited directory binding administration', () => {

@@ -463,7 +463,7 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
 describe('facts:list key lookup — distinguish projection omission from live absence (EI-19437221871431967)', () => {
   const nowMs = Date.parse('2026-08-12T00:00:00.000Z');
 
-  it('accepts a permanent or future-expiring current version', () => {
+  it('accepts a permanent, future-expiring, or unretracted wall version as current', () => {
     expect(
       isLiveFact(
         { expiresAt: 'infinity', retractedAt: null, supersededAt: null },
@@ -476,6 +476,27 @@ describe('facts:list key lookup — distinguish projection omission from live ab
         nowMs,
       ),
     ).toBe(true);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: null, supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(true);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: null, supersededAt: '2026-08-11T00:00:00.000Z' },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: '2026-08-11T00:00:00.000Z', supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(projectFact(fact('owner action remains required', {
+      key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z',
+    }), false)).toMatchObject({ wallActiveDespiteTtl: true });
   });
 
   it('rejects expired, retracted, and superseded versions', () => {

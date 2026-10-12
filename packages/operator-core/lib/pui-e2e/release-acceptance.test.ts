@@ -9,13 +9,38 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
   RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('native SU prerequisite approvals', () => {
+  it.each([
+    'Write(xd://mcp_papercusp-su_work_items_get)',
+    'Write(xd://mcp__papercusp_su_work_items_get)',
+    'Write(xd://mcp__papercusp_su__work_items_get)',
+  ])('answers the mounted MCP call once without allowing later native writes: %s', (title) => {
+    expect(suToolApproval(title)).toEqual({ tool: 'papercusp-su · work items get', remember: false });
+  });
+
+  it('keeps the existing direct MCP per-tool approval', () => {
+    expect(suToolApproval('papercusp-su · work items get (MCP)'))
+      .toEqual({ tool: 'papercusp-su · work items get', remember: true });
+  });
+
+  it.each([
+    'Write(/tmp/requested-note.txt)',
+    'Bash(printf note > /tmp/requested-note.txt)',
+    'Write(xd://mcp__other_server__work_items_get)',
+    'Write(/tmp/xd://mcp__papercusp_su__work_items_get)',
+    'Write(xd://mcp__papercusp_su__work_items_get/another-path)',
+  ])('leaves native effects and unrelated devices for their explicit card: %s', (title) => {
+    expect(suToolApproval(title)).toBeUndefined();
+  });
+});
 
 describe('native approval terminal wait', () => {
   const event = (value: Record<string, unknown>) => value as unknown as SuSessionEvent;

@@ -100,6 +100,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'PUT /hosted/organizations/:organizationId/members/:userId/directory-binding',
   'DELETE /hosted/organizations/:organizationId/members/:userId/directory-binding',
   'POST /hosted/organizations/:organizationId/members/access-review',
+  'POST /hosted/organizations/:organizationId/members/:userId/reduce-access',
   'POST /hosted/cli/device/code',
   'GET /hosted/cli/device',
   'POST /hosted/cli/device/decision',

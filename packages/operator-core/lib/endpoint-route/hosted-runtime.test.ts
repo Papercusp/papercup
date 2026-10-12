@@ -56,6 +56,8 @@ describe('hosted runtime composition', () => {
 
     expect(plane.mounted.map((route) => `${route.method} ${route.path}`)).toEqual(HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS);
     expect(plane.components.providerDelegationManager).toBeTypeOf('function');
+    const reduction = plane.mounted.find((route) => route.path.endsWith('/reduce-access'));
+    expect(reduction).toMatchObject({ method: 'POST', auth: { capabilities: ['members:manage'], kind: ['user'], trust: ['verified'] } });
     // The service-role probe still precedes every secret read, and the boot
     // preflight then dereferences each ref the runtime actually uses, in order.
     expect(bootOrder.slice(0, 5)).toEqual([

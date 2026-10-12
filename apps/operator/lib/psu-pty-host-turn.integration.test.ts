@@ -93,7 +93,7 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
-it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
+it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-after-reconcile', 'rearmed-replaced'] as const)(
   'keeps a repainting tagged wake pending until native submission: %s',
   async (scenario) => {
     const root = mkdtempSync(join(tmpdir(), 'pty-submit-ack-'));
@@ -106,11 +106,13 @@ it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
     const marker = '⟦turn-origin:wake-pump nonce:6554700010008912⟧';
     const data = `${marker}\nverify the exact staged wake`;
     const deliveryId = `submit-ack-${scenario}`;
+    const rearmed = scenario.startsWith('rearmed-');
+    const replaced = scenario.includes('replaced');
     const { io, captured } = fakeIo();
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
       "let line='',crs=0;process.stdout.write('READY\\n');",
-      "if(process.env.TEST_ACCEPT==='rearmed-late-native'){const busy=setInterval(()=>process.stdout.write('BUSY\\n'),15);setTimeout(()=>clearInterval(busy),400);}",
+      rearmed ? "const busy=setInterval(()=>process.stdout.write('BUSY\\n'),15);setTimeout(()=>clearInterval(busy),400);" : '',
       "process.stdin.on('data',data=>{for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
       "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
@@ -119,19 +121,26 @@ it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
       "process.stdout.write('NATIVE_ACCEPTED\\n');line='';}}});",
       'setTimeout(()=>process.exit(0),18000);',
     ].join('');
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('FRESH_READY\\n');",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\x04'){process.exit(0);return;}if(c==='\\r'){process.stdout.write('FRESH_SUBMIT:'+line+'\\n');line='';}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
       bridgeTty: false, onExit: () => {},
       env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
-        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: scenario === 'rearmed-late-native' ? '100' : '3000',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: rearmed ? '100' : '3000',
         PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
       }),
+      mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
     });
     const events = () => existsSync(log)
       ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -143,7 +152,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
       // pending. The child's first Enter only repaints its unchanged composer.
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
       expect(await waitForOutput(captured, 'REPAINT:1')).toBe(true);
-      if (scenario === 'rearmed-late-native') {
+      if (rearmed) {
         expect(events()).toContainEqual(expect.objectContaining({ kind: 'wake-rearm-queued' }));
       }
       expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
@@ -157,6 +166,31 @@ it.each(['retry', 'late-native', 'rearmed-late-native'] as const)(
         expect(events()).toContainEqual(expect.objectContaining({ kind: 'submit-verify-unconfirmed', reason: 'native-submission-unconfirmed' }));
         expect(events().some((row) => row.kind === 'turn-delivered')).toBe(false);
         expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+        if (replaced) {
+          // Replace only this disposable child, without launching an LLM or
+          // typing into an owner terminal. An empty carry adds no new prompt.
+          expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+            data: '', systemPromptAddendum: 'fixture replacement' })).toMatchObject({ ok: true, reason: 'accepted' });
+          expect(await waitForOutput(captured, 'FRESH_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+          if (scenario === 'replaced-after-reconcile') {
+            expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+              data: 'FRESH_CONTROL', deliveryId: 'fresh-control' })).toMatchObject({ ok: true, reason: 'accepted' });
+            expect(await waitForOutput(captured, 'FRESH_SUBMIT:FRESH_CONTROL')).toBe(true);
+          }
+          // Even an exact late predecessor row cannot certify that the new
+          // child accepted this wake. Keep its ID safe from a second paste.
+          writeFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(),
+            message: { role: 'user', content: data } }) + '\n');
+          const verdict = { ok: false, reason: 'deferred-native-turn-start-superseded' };
+          expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject(verdict);
+          expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject(verdict);
+          expect(events()).toContainEqual(expect.objectContaining({
+            kind: 'native-turn-start-superseded', deliveryId,
+          }));
+          expect(captured()).not.toContain('FRESH_SUBMIT:'+marker);
+          expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
+          return;
+        }
         // A slow backend can persist the written prompt after verification's
         // window. Reconcile that exact row without pasting the text again.
         writeFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(),
@@ -213,7 +247,8 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
       data: 'QUEUED_WAKE', deliveryId: 'queued-before-carry' })).toMatchObject({ ok: true, reason: 'accepted' });
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
-      data: 'fixture carry', deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
+      data: 'fixture carry', systemPromptAddendum: 'fixture carry',
+      deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
     const deadline = Date.now() + 6500;
     while (Date.now() < deadline && !captured().includes('ECHO:QUEUED_WAKE') &&
       !(existsSync(log) && readFileSync(log, 'utf8').includes('"phase":"pre-write"'))) await sleep(15);
@@ -222,6 +257,13 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
     expect(events).toContainEqual(expect.objectContaining({
       kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
     }));
+    // The carry mint seam is selected by systemPromptAddendum. Without it the
+    // fixture spawned a fresh child, and teardown's EOT raced onto its dying
+    // predecessor. Verify the intended pre-spawn refusal before cleanup.
+    const mintDeadline = Date.now() + 3000;
+    while (Date.now() < mintDeadline && !readFileSync(log, 'utf8').includes('"reason":"argv-build-failed"')) await sleep(15);
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({ kind: 'respawn-failed', reason: 'argv-build-failed', detail: 'fixture carry argv unavailable' }));
   } finally {
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
     await done;

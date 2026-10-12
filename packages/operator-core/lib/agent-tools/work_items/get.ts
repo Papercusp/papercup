@@ -37,6 +37,7 @@ import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
 import { planItemTextDriftForWorkItem } from "../../plan-items/text-drift-report";
 import { attachHolderContext } from "./_holder-lens";
+import { readWorkItemMechanics } from "./_mechanics";
 import { holderContextReader } from "../coordination/holder-advisory";
 import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { isWorkItemIdAmbiguousError, type WorkItemIdAmbiguousError } from "../../work-items-physical-row";
@@ -395,7 +396,7 @@ const SOURCE_ROW_ROOTS = new Set([
   'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness',
   'deploymentPosition', 'citedFacts', 'planItemBlocked', 'planItemClaimCollision',
   'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
-  'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'error', 'retryable', 'phase',
+  'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'mechanics', 'error', 'retryable', 'phase',
   'budgetMs', 'message', '_stub', 'corroboration',
 ]);
 
@@ -976,6 +977,8 @@ export default defineTool({
     const needsClaimCollision = sourceSelectionWants(sourceSelection, 'planItemClaimCollision');
     const needsPlanItemTextDrift = sourceSelectionWants(sourceSelection, 'planItemTextDrift');
     const needsHolder = sourceSelectionWants(sourceSelection, 'holder');
+    // P-009/R-8 (D-004): the read-time mechanical section of a held item.
+    const needsMechanics = !checksOnly && !checkpointOnly && sourceSelectionWants(sourceSelection, 'mechanics');
     const needsThreadWindow = sourceSelectionWants(sourceSelection, 'threadWindow', 'threadWindowReadFailed');
     const needsCompletionFreshness = sourceSelectionWants(sourceSelection, 'completionFreshness');
     const needsDeploymentPosition = sourceSelectionWants(sourceSelection, 'deploymentPosition');
@@ -1013,6 +1016,7 @@ export default defineTool({
       !needsClaimCollision &&
       !needsPlanItemTextDrift &&
       !needsHolder &&
+      !needsMechanics &&
       !needsThreadWindow &&
       !needsCompletionFreshness &&
       !needsDeploymentPosition &&
@@ -1357,6 +1361,7 @@ export default defineTool({
           decoratedRows,
           priorWorkRaw,
           threadWindowReadResult,
+          mechanics,
         ] = await Promise.all([
           needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
             getWorkItemCheckpointWithMeta({
@@ -1433,6 +1438,11 @@ export default defineTool({
             currentClaimant: workItem.assignee,
           })).catch(() => null) : Promise.resolve(null),
           threadWindowRead,
+          // P-009/R-8: recomputed from agent_activity, test_runs and the blocker
+          // projection on every read; never written back. Fail-soft like its siblings.
+          needsMechanics && workItem.assignee && workItem.takenAt
+            ? trackWorkItemsGetEnrichment(stage, 'mechanics', () => readWorkItemMechanics(workItem)).catch(() => null)
+            : Promise.resolve(null),
         ]);
         const [decorated] = decoratedRows;
         const {
@@ -1484,8 +1494,9 @@ export default defineTool({
         let checkpointStale: ReturnType<typeof computeCheckpointStaleness> | undefined;
         // Skip the presence round-trip entirely when a declared verdict already
         // answers the question authoritatively.
-        if (needsCheckpointStale && !freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
-          const assigneePresence = await trackWorkItemsGetEnrichment(stage, 'assigneePresence', () => getPresence(workItem.assignee)).catch(() => null);
+        const staleAssignee = workItem.assignee;
+        if (needsCheckpointStale && !freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && staleAssignee) {
+          const assigneePresence = await trackWorkItemsGetEnrichment(stage, 'assigneePresence', () => getPresence(staleAssignee)).catch(() => null);
           const activeAt = assigneePresence?.lastActiveAt ? Date.parse(assigneePresence.lastActiveAt) : null;
           const staleness = computeCheckpointStaleness({
             checkpointUpdatedAtMs,
@@ -1705,6 +1716,7 @@ export default defineTool({
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
           ...(planItemTextDrift ? { planItemTextDrift } : {}),
+          ...(mechanics ? { mechanics } : {}),
           ...(boundedThread ? { threadWindow: threadWindowReadResult.threadWindow } : {}),
           ...(threadWindowReadResult.failed ? { threadWindowReadFailed: true as const } : {}),
           // P-002: present ONLY when the requested window exceeded the effective

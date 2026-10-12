@@ -675,7 +675,9 @@ describe('capability:read', () => {
       }>;
     };
     const branches = published.anyOf ?? published.oneOf ?? [];
-    expect(branches).toHaveLength(4);
+    // Query and searched-view modes were added after the original four branches;
+    // keep them in the published schema contract and test their exclusivity too.
+    expect(branches).toHaveLength(6);
 
     const evidenceBranch = branches.find((branch) => branch.required?.includes('evidence_class'));
     expect(evidenceBranch).toBeDefined();
@@ -692,6 +694,17 @@ describe('capability:read', () => {
     const contentBranch = branches.find((branch) => branch.required?.includes('content_indexes'));
     expect(contentBranch?.properties?.evidence_class?.not).toBeDefined();
     expect(contentBranch?.properties?.tail?.not).toBeDefined();
+
+    const queryBranch = branches.find((branch) => branch.required?.includes('query'));
+    expect(queryBranch?.properties?.offset?.not).toBeDefined();
+    expect(queryBranch?.properties?.byte_offset?.not).toBeDefined();
+    expect(queryBranch?.properties?.evidence_class?.not).toBeDefined();
+
+    const viewBranch = branches.find((branch) => branch.required?.includes('view_lines'));
+    expect(viewBranch?.properties?.query?.not).toBeDefined();
+    expect(viewBranch?.properties?.offset?.not).toBeDefined();
+    expect(viewBranch?.properties?.byte_offset?.not).toBeDefined();
+    expect(viewBranch?.properties?.evidence_class?.not).toBeDefined();
 
     const lineBranch = branches.find((branch) => !branch.required?.length);
     expect(lineBranch?.properties?.evidence_class?.not).toBeDefined();

@@ -983,6 +983,9 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
       "plans:new",
       "plans:set-now",
       "plans:set-status",
+      "processes:freeze",
+      "processes:kill",
+      "processes:limit",
       "release:checkpoint-run",
       "release:deploy",
       "scheduler:get_next",
@@ -2721,6 +2724,41 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":{"sites":[]}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-25758615329816479: tools:invoke-wrapped processes:list retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"counts":{"total":0,"byState":{},"byClass":{}},"tasks":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "processes:list", args: { live: true, limit: 20 } },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe(
+      '{"result":{"ok":true,"counts":{"total":0,"byState":{},"byClass":{}},"tasks":[]}}',
+    );
     expect(upstream.hits()).toBe(2);
   });
 

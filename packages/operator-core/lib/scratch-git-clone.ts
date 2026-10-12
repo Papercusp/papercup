@@ -7,21 +7,43 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 export type ScratchGitRunner = (argv: string[], cwd: string, signal: AbortSignal) =>
   Promise<{ code: number | null; output: string }>;
 
 /** Standalone local-only runner: bounded, no shell, no inherited credentials. */
-function runLocalGit(argv: string[], cwd: string, signal: AbortSignal):
+export function runLocalGit(argv: string[], cwd: string, signal: AbortSignal):
 Promise<{ code: number | null; output: string }> {
+  const timeoutMs = 60_000;
+  const started = performance.now();
   return new Promise(resolvePromise => {
     execFile('git', argv, {
-      cwd, signal, timeout: 60_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
+      cwd, signal, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
       env: { PATH: process.env.PATH, LANG: 'C.UTF-8',
         GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
     }, (error, stdout, stderr) => {
+      const durationMs = Math.round(performance.now() - started);
+      // execFile uses killed for both its deadline and its output limit. A
+      // SIGTERM alone therefore cannot prove a timeout; preserve the measured
+      // deadline alongside the actual termination instead of guessing a cause.
+      const aborted = signal.aborted || error?.code === 'ABORT_ERR';
+      const failure = !error ? null : {
+        kind: aborted ? 'aborted'
+          : error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output-limit'
+            : typeof error.code === 'number' ? 'exit'
+              : error.signal || error.killed ? 'terminated' : 'spawn-error',
+        errorCode: error.code ?? null,
+        signal: error.signal ?? null,
+        killed: error.killed ?? false,
+        aborted,
+        durationMs,
+        timeoutMs,
+        deadlineReached: durationMs >= timeoutMs,
+      };
       resolvePromise({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0,
-        output: stdout + stderr + (error ? '\n' + error.message : '') });
+        output: stdout + stderr + (error ? '\n' + error.message
+          + '\n[scratch-git-runner] ' + JSON.stringify(failure) : '') });
     });
   });
 }

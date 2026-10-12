@@ -44,7 +44,7 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../../capability/foreground-transport-cap';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../compaction-recovery';
-import { shapeOrient } from './orient-shape';
+import { inboxRecentPointer, shapeOrient } from './orient-shape';
 import { shapeLeaderBrief } from '../../fleet/leader-brief-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 // Type-only: the runtime half (interestFold) is dynamically imported at its use site,
@@ -498,10 +498,9 @@ export interface OrientResult {
    *  fabricated total is worse than an admitted bound. EI-20113865649946366. */
   claimableTruncated?: OrientClaimableTruncated;
   /** coord:inbox folded down to its summary + the most-recent bounded entries.
-   *  EI-18667514339699744: `entries` is aliased alongside `recent` (same array,
-   *  same reference) so a caller reading either coord:orient's or coord:inbox's
-   *  key name gets the real rows instead of a silent [] on a mismatched read. */
-  inbox: { summary?: unknown; recent?: unknown; entries?: unknown };
+   *  The rows live under `entries` (coord:inbox's own key); `recent` is a pointer
+   *  to them (inboxRecentPointer, EI-18667514339699744 root fix) — not a copy. */
+  inbox: { summary?: unknown; entries?: unknown; recent?: { movedTo: 'inbox.entries'; length: number } };
   /** Bounded capless-governor state; never includes per-request or per-queue rows. */
   governor?: import('../../../resource-governor/state-snapshot').GovernorOrientSummary | null;
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
@@ -1567,10 +1566,13 @@ export async function composeOrient(
     claimable,
     ...(claimableHarnessScope ? { claimableHarnessScope } : {}),
     ...(claimableTruncated ? { claimableTruncated } : {}),
-    // EI-18667514339699744: alias `entries` alongside `recent` — coord:inbox's own
-    // key name — so a caller who reads either name off this fold gets real rows
-    // instead of a silent empty array on a mismatched accessor.
-    inbox: { summary: inbox?.summary, recent: inbox?.entries, entries: inbox?.entries },
+    // EI-18667514339699744: the rows live under `entries` — coord:inbox's own key — and
+    // `recent` is a loud pointer to them, never a second serialized copy (P-006).
+    inbox: {
+      summary: inbox?.summary,
+      entries: inbox?.entries,
+      ...(Array.isArray(inbox?.entries) ? { recent: inboxRecentPointer(inbox.entries.length) } : {}),
+    },
     // P-026/P-027: the shell-out-avoidance scalars. Unconditional and in-process
     // (no await, no round-trip) — the whole point is that the answer has already
     // arrived by the time an agent would have thought to run `date` or `uptime`.

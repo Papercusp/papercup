@@ -703,6 +703,28 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
     expect(d.isDuplicate('complete-1')).toBe(true);
   });
 
+  it('retains a superseded written ID without certifying success or extending its TTL', () => {
+    let t = 0;
+    const d = makeDeliveryDedup({ ttlMs: 100, now: () => t });
+    d.markPending('old-child');
+    d.beginWrite(['old-child']);
+    t = 50;
+    d.markSuperseded('old-child');
+    d.clearPending('old-child');
+    d.markPending('old-child');
+    d.markCompleted('old-child');
+    expect(d.state('old-child')).toBe('superseded');
+    expect(d.isDuplicate('old-child')).toBe(true);
+    expect(d.requestCancel(['old-child'], [1]).status).toBe('writing');
+    t = 101;
+    expect(d.state('old-child')).toBeNull();
+    d.markSuperseded('unknown');
+    expect(d.state('unknown')).toBeNull();
+    d.markCompleted('confirmed');
+    d.markSuperseded('confirmed');
+    expect(d.state('confirmed')).toBe('completed');
+  });
+
   it('a fresh id is not a duplicate; marking it accepted makes the NEXT check a duplicate', () => {
     const d = makeDeliveryDedup();
     expect(d.isDuplicate('35092')).toBe(false);

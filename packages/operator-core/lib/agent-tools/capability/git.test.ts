@@ -7,19 +7,21 @@
  * gives an honest end-to-end probe of the CHILD PROCESS's actual env without
  * mocking anything — the exact vector a bee's `capability:git` would have had.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { capabilityBwrapWorks } from './exec-sandbox';
 import capabilityGit, { createScratchClone, emptyPathspecNote, runGit, runGitReadOnlyEvidence } from './git';
+import { runLocalGit } from '../../scratch-git-clone';
 
 const spawnCalls = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
+    execFile: vi.fn(actual.execFile),
     spawn: (...args: Parameters<typeof actual.spawn>) => {
       spawnCalls(...args);
       return actual.spawn(...args);
@@ -58,6 +60,68 @@ describe('runGit', () => {
     const r = await runGit(['--version'], STATE, STATE, never);
     expect(r.code).toBe(0);
     expect(r.output).toContain('git version');
+  });
+});
+
+describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', () => {
+  function diagnostic(output: string): Record<string, unknown> {
+    const line = output.split('\n').find(line => line.startsWith('[scratch-git-runner] '));
+    expect(line).toBeDefined();
+    return JSON.parse(line!.slice('[scratch-git-runner] '.length));
+  }
+
+  it('preserves an actual Git rejection and its exit code through scratchClone', async () => {
+    const source = repository('cap-git-diagnostic-');
+    const { createScratchClone: clone } = await import('../../scratch-git-clone');
+    const error = await clone({ source, ref: 'missing-ref', signal: never }).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('scratchClone.ref does not resolve');
+    expect(diagnostic(error.message)).toMatchObject({
+      kind: 'exit', errorCode: 128, killed: false, signal: null, aborted: false, timeoutMs: 60_000,
+    });
+    expect(error.message).toContain('fatal:');
+  });
+
+  it('distinguishes a real caller abort from a Git rejection or deadline', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runLocalGit(['--version'], STATE, controller.signal);
+    expect(result.code).toBeNull();
+    expect(diagnostic(result.output)).toMatchObject({
+      kind: 'aborted', errorCode: 'ABORT_ERR', aborted: true, timeoutMs: 60_000,
+    });
+  });
+
+  it.each([
+    ['terminated', { code: null, killed: true, signal: 'SIGTERM' }],
+    ['output-limit', { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true }],
+    ['spawn-error', { code: 'ENOENT' }],
+  ])('preserves %s metadata without interpreting every kill as timeout', async (kind, metadata) => {
+    const failure = Object.assign(new Error('fixture failure'), metadata);
+    const mocked = vi.mocked(execFile);
+    mocked.mockImplementationOnce(((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error, stdout: string, stderr: string) => void;
+      callback(failure, 'partial stdout', 'partial stderr');
+    }) as typeof execFile);
+    try {
+      const result = await runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
+      expect(result.code).toBeNull();
+      expect(result.output).toContain('partial stdoutpartial stderr\nfixture failure');
+      const detail = diagnostic(result.output);
+      expect(detail).toMatchObject({ kind, errorCode: metadata.code, killed: 'killed' in metadata,
+        signal: 'signal' in metadata ? metadata.signal : null, aborted: false, timeoutMs: 60_000,
+        deadlineReached: false });
+      expect(detail.durationMs).toEqual(expect.any(Number));
+      expect(detail.durationMs).toBeGreaterThanOrEqual(0);
+      expect(mocked.mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
+    } finally { mocked.mockClear(); }
+  });
+
+  it('keeps successful output free of failure diagnostics', async () => {
+    const result = await runLocalGit(['--version'], STATE, never);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatch(/^git version/);
+    expect(result.output).not.toContain('[scratch-git-runner]');
   });
 });
 

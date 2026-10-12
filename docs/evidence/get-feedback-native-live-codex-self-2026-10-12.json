@@ -1030,6 +1030,111 @@
     ],
     "next": "Continue D006 remaining canonical/direct/lock/filesystem and required native matrix acceptance; preserve settled native/CodexCodex/releaseLease/ABA/HTTP/SQL/CPU proofs by reference."
   },
+  "d006LockWriterExtension": {
+    "priorArtifactSha256": "38066bc8b805df1b563926f48d74550631e968d174a403cc1587cc8bf04d4bb8",
+    "evidencePlane": "local-current-tree-disposable-postgres",
+    "testPath": "packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts",
+    "case": "D-006: answerer preserves source lock families and waiter; observer detects file release/reacquire",
+    "testSha256": "db3e25c6f6ea2daf7a7b3b25c3519c2a9dd4135e2805f039a3c3031fa5f5eecd",
+    "method": "Maintained locks store/inWorkspaceTxn, unique domain, source file/resource/granular/waiter snapshots. Refused answerer release/heartbeat/cancel plus successful own release preserve every source row. Disposable file-table trigger detects actual source DELETE/INSERT release/reacquire despite equal holder endpoints. application_name tags the wrapper, not a physical native actor.",
+    "result": { "passed": 1, "failed": 0, "unselected": 7, "processExit": 0, "reporterReceiptId": 21154950, "ledgerReadback": "Receipt inserted; independent canonical row and committed qualification pending.", "prefix": "/dev/shm/get-feedback-d006-lock-local-20261012T1819", "files": [".log", ".receipts.jsonl", ".sources.json", ".result.json"], "privateDatabase": "Stopped/removed; fresh exec39210 drainedexit0." },
+    "fixtureCorrection": { "item": "EI-25798598604716657", "rootCause": "dbLive probed before ensureBootstrap created separate papercusp_su; private PG logged database does not exist. All8 skipped, runner refused verdict exit2.", "fix": "Bootstrap maintained locks substrate before SELECT1; new case executes and passes.", "initialLog": "/dev/shm/get-feedback-d006-lock-local-20261012T1813.log", "ownership": "Filing open, claim refused not_claimable. Work registered on existing owned WI-10005889/P-002; no force or claim bypass." },
+    "limits": ["Local dirty proof only; full conventional file and committed baseline/copy/mutant qualification pending for this NEW case.", "No native actor, retained production lock-history, full executed graph or universal filesystem immutability claim.", "Settled system-wake/CodexCodex/releaseLease/ABA/HTTP/SQL/CPU unchanged. R6 immutable4/shortfall4, independent rubric9 vetting and exact R7 shipment open."],
+    "next": "Read exact21154950; qualify only NEW lock case using maintained committed/private-PG/copy-out seams. Candidate mutant removes owner predicates from file lockId release/heartbeat; retain snapshot and transactional observer assertions. Do not rerun settled proofs solelyHEAD."
+  },
+  "d006LockCommittedQualification": {
+    "priorArtifactSha256": "96ce71118a85dc1ebdd2807765800ea48f640ebfbe0526e214fd40a69b29a87d",
+    "evidencePlane": "committed-tree-disposable-postgres-maintained-locks-store",
+    "commitSha": "3b657afb5c9e1b9914297368f01950863c5ae733",
+    "testPath": "packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts",
+    "case": "D-006: answerer preserves source lock families and waiter; observer detects file release/reacquire",
+    "namedBytes": {
+      "committedTestSha256": "b243ec40be8dc307dcecfec797dc4ff765637e32dc29bc90781afe1edf2f0824",
+      "localCorrectedPreflightTestSha256": "db3e25c6f6ea2daf7a7b3b25c3519c2a9dd4135e2805f039a3c3031fa5f5eecd",
+      "subjectPath": "libs/papercusp/packages/locks/src/su-lock-store.ts",
+      "subjectSha256": "caa0e47a4903e387fc718582c18336040208cd054b599a47427c8c43978708dd",
+      "mutantSha256": "a42a541c9b296584ab6dc3efcdfecd6e8a78fe595f02f086b611d4f4886286e3"
+    },
+    "method": "Maintained lint-as-committed snapshot, with-test-pg disposable database and mutation-probe.sh copy-out overlay. Existing ensureBootstrap/_resetForTests provisions the separate locks database before the ORIGINAL committed dbLive probe; the committed b243ec test lacks the local db3e25 preflight correction. No repository subject was mutated.",
+    "fullFile": {
+      "local": {
+        "testRunId": 21155017,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": true,
+        "prefix": "/dev/shm/get-feedback-d006-lock-full-local-20261012T1836",
+        "logSha256": "2436cb3ad37daa00e5eb93a67b973950a0a08a33a3b31615359dc4cff02661d8",
+        "sourceMapSha256": "09ba7ce3f4174401f2979b832fec2d686b2566a5f9cd278f74a69d33e7a48351"
+      },
+      "committed": {
+        "testRunId": 21155658,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "prefix": "/dev/shm/get-feedback-d006-lock-causal-20261012T1856",
+        "logSha256": "0814c1c19467f67f85c838552c0a4a88aa2add78ec5bdaaa3670465f13b53408",
+        "sourceMapPath": "/dev/shm/get-feedback-d006-lock-causal-20261012T1856-full.sources.json",
+        "sourceMapSha256": "d965150af41f5e60baf035427dedaf28fc1405bfbd5da7ab39ac63dae0e219c6"
+      }
+    },
+    "causalQualification": {
+      "baseline": {
+        "testRunId": 21155700,
+        "passed": 1,
+        "failed": 0,
+        "unselected": 7
+      },
+      "unchangedCopy": {
+        "testRunId": 21155709,
+        "passed": 1,
+        "failed": 0,
+        "unselected": 7
+      },
+      "mutant": {
+        "testRunId": 21155716,
+        "passed": 0,
+        "failed": 1,
+        "unselected": 7
+      },
+      "mutation": "Remove owner predicates from the pinned file lockId-only release branch (original line953) and heartbeat branch (original line995). Exact perl -Mstrict -pe preflight verifies two removals and mutant a42a541c before PG allocation.",
+      "expectedBaseline": "Foreign operations leave source file/resource/granular/waiter rows identical and the source observer empty; answerer's own release succeeds; source release/reacquire emits DELETE/INSERT and restores the holder.",
+      "expectedMutant": "Foreign file release returns the source path and fails the no-release assertion.",
+      "actualObservation": "Both controls pass. Mutant fails at cross-agent-isolation.integration.test.ts:161:22 with actual ['iso/source.ts'] versus expected []. The combined mutant fails before heartbeat, snapshot and observer assertions; those later assertions are not independently falsified by this mutant.",
+      "verdict": "caught",
+      "guardExit": 1,
+      "probeExit": 0,
+      "mutantParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "treeIntegrity": "Maintained probe verified byte-identical original subject after overlay; named diagnostic sources are stable in all three legs.",
+      "prefix": "/dev/shm/get-feedback-d006-lock-mut-20261012T1904",
+      "logSha256": "99e1bd307f958086ec7f41051c1fe08665cafeb1b58e881e0d91b64808eccb90",
+      "commandReceiptSha256": "9305e4f0bf7326d8a7a735454bbd2adcc8d8d84910b451fde901153730de8182",
+      "sourceMaps": {
+        "baselineSha256": "1445c1188715fab59b3a5a5e164844ac795adb3d0dc1785f6e1de9d689aa1ab8",
+        "unchangedCopySha256": "1445c1188715fab59b3a5a5e164844ac795adb3d0dc1785f6e1de9d689aa1ab8",
+        "mutantSha256": "4cd73605606f6c402e3c47ef8acc83243fbd52a2afa6d725b222f66267035faf"
+      },
+      "descriptor": "Compatibility gate withheld descriptor because deployed reader d740fc3802 predates its parser. No descriptor linkage claimed."
+    },
+    "harnessAudit": {
+      "firstAttempt": "1856 committed full8 passed; mutant double regex escapes changed no bytes, probe refused exit2.",
+      "secondAttempt": "1900 external preflight used perl -0pe, but maintained runner uses perl -pe; probe refused unchanged mutant exit2 before baseline.",
+      "thirdAttempt": "1904 exact linewise preflight passed; original/copy/mutant completed. All three private databases stopped and fresh execs drained.",
+      "preflightCorrection": {
+        "item": "EI-25798598604716657",
+        "status": "Open, claim refused not_claimable; no bypass. Local db3e25 preflight passes full8. Same corrected bytes are committed at39bba16fa3a1aa32a82924e31734f7e68e4756e5; standalone committed preflight not separately qualified by the earlier b243ec controls."
+      }
+    },
+    "limits": [
+      "Six exact canonical rows independently read at /dev/shm/get-feedback-d006-lock-qualified-20261012T1912.exact-ledger.json. Local receipts stay dirty; committed receipts stay pinned to3b657b.",
+      "Worker diagnostics capture named executed source bytes. Selected causal source-map rows are empty; whole import/config/main-process graph remains unknown. Full-file map records socket/config-deps-unavailable opaque effects.",
+      "This store-seam guard measures authenticated wrapper behavior and a disposable transactional observer, not a physical native actor, retained production lock-history, universal same-UID filesystem immutability or additional native matrix credit.",
+      "All previous artifact sections/checks, settled system-wake/native/CodexCodex/releaseLease/ABA/HTTP/SQL/CPU evidence and original R6 immutable4/shortfall4 are retained. Independent rubric9 vetting/failed-author-audit wall and exact R7 shipment remain open."
+    ],
+    "next": "Continue residual D006 direct/filesystem/native matrix and acceptance work. Do not replay this qualified case or settled proofs solely for HEAD. Preserve preflight correction's distinct scope."
+  },
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }

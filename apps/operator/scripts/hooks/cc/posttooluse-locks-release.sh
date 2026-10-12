@@ -412,14 +412,25 @@ def native_edit_proof(tool, response, paths):
 
 
 def recover_failed_code_mode_edit(current_cache_path):
-    """Release cached nested apply_patch locks when its parent exec completes."""
-    if tool_name not in ('exec', 'functions.exec', 'functions__exec'):
+    """Release an orphan token after its parent or same-session retry completes.
+
+    A failed nested patch can reject its parent before PostToolUse runs. The
+    successful retry reuses that token and only attests the edit; consuming the
+    earlier automatic token here closes that lifecycle without waiting for TTL.
+    """
+    native_retry = tool_name in CODEX_NATIVE_EDIT_TOOLS
+    if native_retry:
+        if not native_edit_result_succeeded(payload.get('tool_response', payload.get('toolResponse'))):
+            return
+    elif tool_name not in ('exec', 'functions.exec', 'functions__exec'):
         return
     try:
         source = tool_input if isinstance(tool_input, str) else json.dumps(tool_input)
     except Exception:
         return
-    if 'apply_patch' not in source or '*** Begin Patch' not in source:
+    if (not native_retry and 'apply_patch' not in source) or '*** Begin Patch' not in source:
+        return
+    if not isinstance(session_id, str) or not session_id:
         return
 
     def path_named_in_patch(path, domain):
@@ -441,11 +452,19 @@ def recover_failed_code_mode_edit(current_cache_path):
         base = str(lock_file)[:-len('.lock')]
         if str(lock_file) == current_cache_path:
             continue
+        if Path(base + '.batch').exists():
+            continue  # PostToolBatch owns sibling edits that may still be running.
         try:
             lock_id = lock_file.read_text().strip()
             paths = json.loads(Path(base + '.paths').read_text())
             domain = Path(base + '.domain').read_text().strip()
+            cached_owner = Path(base + '.owner').read_text().strip()
+            cached_session = Path(base + '.session').read_text().strip()
         except Exception:
+            continue
+        # Owner identity survives carry-respawns. A token from another native
+        # continuation is not proof that its edit has finished in THIS session.
+        if cached_owner != owner or cached_session != session_id:
             continue
         if not lock_id or not domain or not isinstance(paths, list) or not paths:
             continue
@@ -470,6 +489,7 @@ def recover_failed_code_mode_edit(current_cache_path):
             if isinstance(row, dict)
             and (row.get('lock_id') or row.get('lockId')) == lock_id
             and (row.get('owner') or row.get('ownerId')) == owner
+            and (not native_retry or str(row.get('intent', '')).startswith('PreToolUse:'))
         ]
         if not owned:
             cleanup_sidecars(base)

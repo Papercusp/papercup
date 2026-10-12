@@ -909,6 +909,41 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     },
   );
 
+  it.each(["same-session", "foreign-owner", "foreign-session", "failed-retry", "explicit-hold", "active-batch", "missing-session"])(
+    "native retry consumes only the completed %s automatic token",
+    async (scenario) => {
+      const identity = { PAPERCUSP_LOCK_SID: "test-retry-owner", PAPERCUSP_SID: "test-retry-owner" };
+      const path = `sub/retry-${scenario}.ts`;
+      const patch = ["*** Begin Patch", `*** Update File: ${path}`, "@@", "-before", "+after", "*** End Patch"].join("\n");
+      const failedId = `tu-first-${scenario}`;
+      const retryId = `tu-retry-${scenario}`;
+      nextInner = { ok: true, lock_id: failedId, newly_held: [path] };
+      await run({ tool_name: "apply_patch", tool_input: patch, tool_use_id: failedId, session_id: "s", cwd: repo }, identity);
+      expect(fs.existsSync(join(cache, `${failedId}.lock`))).toBe(true);
+      if (scenario === "foreign-owner") fs.writeFileSync(join(cache, `${failedId}.owner`), "peer-owner");
+      if (scenario === "foreign-session") fs.writeFileSync(join(cache, `${failedId}.session`), "other-native-session");
+      if (scenario === "missing-session") fs.unlinkSync(join(cache, `${failedId}.session`));
+      if (scenario === "active-batch") fs.writeFileSync(join(cache, `${failedId}.batch`), "{}");
+
+      // The first patch failed before mutation and had no PostToolUse. A retry
+      // reuses that hold, so PreToolUse writes only an attest, not a release token.
+      nextInner = { ok: true, lock_id: failedId, newly_held: [] };
+      await run({ tool_name: "apply_patch", tool_input: patch, tool_use_id: retryId, session_id: "s", cwd: repo }, identity);
+      expect(fs.existsSync(join(cache, `${retryId}.lock`))).toBe(false);
+      recoveryQueueInner = { active_locks: [{ lock_id: failedId, path, owner: "test-retry-owner", intent: scenario === "explicit-hold" ? "deliberate multi-file hold" : "PreToolUse:apply_patch" }] };
+      recoveryReleaseInner = { ok: true, released: [path], held_before: 1 };
+      await runPost({ tool_name: "apply_patch", tool_input: { command: patch }, tool_use_id: retryId, session_id: "s", cwd: repo,
+        tool_response: scenario === "failed-retry" ? { ok: false, error: "expected lines not found" } : { success: true } }, identity);
+
+      const recovered = requests.filter((r) => r.body.params.name === "locks:release" && r.body.params.arguments.lock_id === failedId);
+      expect(recovered).toHaveLength(scenario === "same-session" ? 1 : 0);
+      expect(fs.existsSync(join(cache, `${failedId}.lock`))).toBe(!["same-session", "explicit-hold"].includes(scenario));
+      // A deliberate hold has no matching automatic token and must never be
+      // selected by this recovery. The release is always the exact old token.
+      if (scenario === "same-session") expect(recovered[0].body.params.arguments).toMatchObject({ lock_id: failedId, paths: [path] });
+    },
+  );
+
   it("retains failed-nested sidecars when the parent cannot prove the queue response shape", async () => {
     const identity = {
       PAPERCUSP_LOCK_SID: "test-queue-unknown-owner",

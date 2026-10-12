@@ -372,6 +372,20 @@ export interface DirectoryAccessReview {
 const ACCESS_REVIEW_MEMBER_LIMIT = 1000;
 const ACCESS_REVIEW_IDENTITY_LIMIT = 100;
 
+export interface MembershipReductionInput {
+  organizationId: string;
+  userId: string;
+  status: 'suspended' | 'revoked';
+  purpose: string;
+}
+
+export interface MembershipReduction {
+  membershipId: string;
+  status: 'suspended' | 'revoked';
+  changed: boolean;
+  auditId: string;
+}
+
 export function validateDirectoryBinding(input: DirectoryBindingInput): DirectoryBindingInput & { authorizedGroupIds: string[] } {
   const identifier = (value: unknown, field: string): string => {
     if (typeof value !== 'string' || !value.trim() || value.length > 512) throw new TypeError(`directory_binding_invalid:${field}`);
@@ -393,6 +407,63 @@ export function validateDirectoryBinding(input: DirectoryBindingInput): Director
  * link an email, or reactivate a removed identity or membership. */
 export class HostedDirectoryBindingManager {
   constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  /** Delegated administration reuses the service role's reduction-only grant.
+   * No actor may remove an owner or itself; admins may only manage lower roles.
+   * Locks keep permission checks, reduction, session closure and audit atomic. */
+  async reduceMembership(principal: HostedPrincipal, raw: MembershipReductionInput): Promise<MembershipReduction> {
+    const identifier = (value: unknown, field: string) => {
+      if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        throw new TypeError(`membership_reduction_invalid:${field}`);
+      }
+      return value.toLowerCase();
+    };
+    if (raw.status !== 'suspended' && raw.status !== 'revoked') throw new TypeError('membership_reduction_invalid:status');
+    if (typeof raw.purpose !== 'string' || !raw.purpose.trim() || raw.purpose.length > 512) throw new TypeError('membership_reduction_invalid:purpose');
+    const input = { organizationId: identifier(raw.organizationId, 'organizationId'), userId: identifier(raw.userId, 'userId'),
+      status: raw.status, purpose: raw.purpose.trim() };
+    assertGovernancePayloadSafe(input);
+    if (!isHostedPrincipal(principal) || principal.activeOrganizationId !== input.organizationId ||
+        !principal.permissions.has('members:manage') || principal.userId === input.userId) throw new Error('membership_reduction_forbidden');
+    return this.run<MembershipReduction>(async (sql) => {
+      const organizations = await sql`SELECT id FROM papercusp_auth.organizations
+        WHERE id = ${input.organizationId}::uuid AND status = 'active' FOR SHARE`;
+      if (!organizations[0]) throw new Error('membership_reduction_organization_not_found');
+      const members = await sql<Array<{ id: string; user_id: string; role: string; status: string; user_status: string }>>`
+        SELECT membership.id::text, membership.user_id::text, membership.role, membership.status, member.status AS user_status
+        FROM papercusp_auth.organization_memberships AS membership
+        JOIN papercusp_auth.hosted_users AS member ON member.id = membership.user_id
+        WHERE membership.organization_id = ${input.organizationId}::uuid
+          AND membership.user_id IN (${principal.userId}::uuid, ${input.userId}::uuid)
+        ORDER BY membership.user_id FOR UPDATE OF membership FOR SHARE OF member`;
+      const actor = members.find((row) => row.user_id === principal.userId);
+      if (!actor || actor.user_status !== 'active' || !hostedPermissionsForMembership(actor).has('members:manage')) {
+        throw new Error('membership_reduction_forbidden');
+      }
+      const target = members.find((row) => row.user_id === input.userId);
+      if (!target || target.user_status === 'deleted') throw new Error('membership_reduction_member_not_found');
+      if (target.role === 'owner' || (actor.role === 'admin' && !['member', 'billing'].includes(target.role))) {
+        throw new Error('membership_reduction_forbidden');
+      }
+      if (target.status === 'revoked' && input.status === 'suspended') throw new Error('membership_reduction_restore_forbidden');
+      const changed = target.status !== input.status;
+      if (changed) await sql`UPDATE papercusp_auth.organization_memberships
+        SET status = ${input.status},
+            suspended_at = CASE WHEN ${input.status} = 'suspended' THEN COALESCE(suspended_at, now()) ELSE suspended_at END,
+            revoked_at = CASE WHEN ${input.status} = 'revoked' THEN COALESCE(revoked_at, now()) ELSE revoked_at END,
+            updated_at = now()
+        WHERE id = ${target.id}::uuid AND organization_id = ${input.organizationId}::uuid`;
+      // The same user may belong to other organizations. Close only this grant's sessions.
+      await sql`UPDATE papercusp_auth.hosted_sessions
+        SET revoked_at = now(), revocation_reason = ${`membership_${input.status}`}, updated_at = now()
+        WHERE user_id = ${input.userId} AND organization_id = ${input.organizationId} AND revoked_at IS NULL`;
+      const auditId = await appendOrganizationAuditEvent({ organizationId: input.organizationId,
+        actorKind: 'customer_user', actorId: principal.userId, action: 'membership.reduce', purpose: input.purpose,
+        targetType: 'organization_membership', targetId: target.id,
+        metadata: { previousStatus: target.status, status: input.status, role: target.role, changed } }, sql);
+      return { membershipId: target.id, status: input.status, changed, auditId };
+    });
+  }
 
   /** Local authority and approved directory references, not an IdP attestation
    * or a census of every workspace/tool grant. Never return identity profiles. */

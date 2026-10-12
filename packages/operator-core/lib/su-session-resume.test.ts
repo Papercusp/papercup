@@ -305,4 +305,15 @@ describe('structured exact resume preparation', () => {
     expect(resume.nativeSession).toMatchObject({ backend: 'omp', ompThreadId: 'saved-native', agentHome: '/saved/omp' });
     await resume.release();
   });
+
+  it('passes the saved OMP home into transcript preflight before preparing the native executor', async () => {
+    const saved = fixture('omp');
+    m.transcript.mockImplementation(async (source) => source.agentHome === '/saved/omp');
+    const resume = await prepareStructuredSuResume(saved);
+    expect(m.transcript).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'omp', ompThreadId: 'saved-native', agentHome: '/saved/omp',
+    }), expect.any(Object));
+    expect(resume.boot.envelopeEnv.PI_CODING_AGENT_DIR).toBe('/saved/omp');
+    await resume.release();
+  });
 });

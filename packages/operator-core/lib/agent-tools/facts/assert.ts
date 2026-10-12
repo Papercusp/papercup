@@ -1,7 +1,8 @@
 /**
  * facts:assert — upsert a standing fact: a deterministic, scoped CONCLUSION
  * that will be folded VERBATIM into every relevant future brief / dossier /
- * orient until it expires or is retracted. Every ordinary write must declare
+ * orient until it expires or is retracted (an unretracted `wall:` remains folded
+ * after TTL expiry until explicit retraction or supersession). Every ordinary write must declare
  * a lifetime; conventions, typed safety slots, and confidence tiers have their
  * documented lifetime rules, and there is no silent ordinary 7-day default.
  * (queen-memory-hybrid-2026-07-02 L1b; D-001: harness/work_item scopes optional).
@@ -36,6 +37,7 @@ import {
   GUARD_RAIL_KEY_PREFIX,
   FACT_VOLATILE_MAX_TTL_SEC,
   validateFactLifetime,
+  isFactFileAnchor,
   validateConventionEnforcement,
   type AgentFact,
   type FactDependency,
@@ -668,7 +670,7 @@ export default defineTool({
       .max(FACT_MAX_DEPENDENCIES)
       .optional()
       .describe(
-        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare.`,
+        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare. "file:<repo path>" anchors the fact to that file's blob: reads report it stale when the file changes, and ttlSec may be omitted.`,
       ),
     claim: z
       .record(z.string(), z.unknown())
@@ -934,6 +936,7 @@ export default defineTool({
           subjectVolatile?: unknown;
           measuredAt?: unknown;
           measurement?: { measuredAt?: unknown } | null;
+          dependsOn?: unknown;
         };
         if (
           typeof candidate.key === 'string' &&
@@ -990,6 +993,13 @@ export default defineTool({
           permanent: candidate.permanent,
           confidence: candidate.confidence,
           subjectVolatile: candidate.subjectVolatile === true || hasMeasuredAt,
+          // P-012 — a DECLARED `file:` anchor passes preflight; the store re-checks
+          // that it actually resolved to a blob before accepting a missing ttlSec.
+          fileAnchored:
+            Array.isArray(candidate.dependsOn) &&
+            candidate.dependsOn.some((d: unknown) =>
+              isFactFileAnchor(typeof d === 'string' ? d : String((d as { cell?: unknown } | null)?.cell ?? '')),
+            ),
         });
         if (lifetimeError) {
           const path = lifetimeError.includes('permanent:true') ? ['permanent'] : ['ttlSec'];

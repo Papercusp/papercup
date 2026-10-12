@@ -197,7 +197,7 @@ describe('PUI public release publisher', () => {
     expect(page).toContain('<h2>Linux</h2>');
     expect(page).toContain('<h2>macOS</h2>');
     expect(page).toContain('<h2>Windows</h2>');
-    expect(page).toContain('Requires WSL2');
+    expect(page).toContain('open its Linux terminal');
     expect(page).toContain('macOS Apple Silicon download is awaiting release verification');
     expect(page).not.toContain('href="https://pub.example.test/unguessable-prefix/pui/0.1.0/pui-0.1.0-macos');
     expect(page).toContain('Launch PSU, select your cloud desktop');
@@ -205,6 +205,9 @@ describe('PUI public release publisher', () => {
     expect(page).toContain('Papercusp cloud — sign in to use a hosted workspace');
     expect(page).toContain('Local — this computer');
     expect(page).toContain('href="../index.html#download-gui"');
+    expect(page).toContain('PSU and PUI are already included in Desktop Server.');
+    expect(page).toContain('Windows uses the same download as Linux, through WSL2.');
+    expect(page).toContain('There is no separate Windows executable.');
     expect(page).not.toMatch(/(?:psu|pui) --connect/);
     expect(latest.artifacts['linux-x86_64'].archiveSha256).toBe(files.digest);
   });

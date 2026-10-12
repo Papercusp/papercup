@@ -95,6 +95,7 @@ try {
 // dependencies or allocating PG. The worker still receives the private exact
 // environment through the maintained systemd environment transport.
 let managedTaskSocket;
+let runtimeRoot = null;
 if (managedTasks) {
   try {
     if (process.platform !== 'linux' || !process.env.XDG_RUNTIME_DIR?.trim()) {
@@ -105,16 +106,27 @@ if (managedTasks) {
     if (!socket.isSocket() || socket.uid !== process.getuid()) {
       throw new Error('user-manager private control socket must be an owned socket');
     }
-    const probeEnv = { ...process.env };
+    // The source directory may also contain a session bus. systemd-run falls
+    // back to that bus when systemd/private is stale, so probing it would admit
+    // a route the isolated worker can never use. Probe the exact private alias
+    // before allocating PG, and retain that directory for the actual worker.
+    runtimeRoot = await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-'));
+    const privateRuntime = join(runtimeRoot, 'xdg-runtime');
+    await mkdir(join(privateRuntime, 'systemd'), { recursive: true, mode: 0o700 });
+    const privateSocket = join(privateRuntime, 'systemd', 'private');
+    if (Buffer.byteLength(privateSocket) > 107) throw new Error('private managed-task socket exceeds native address capacity');
+    await symlink(managedTaskSocket, privateSocket);
+    const probeEnv = { ...process.env, XDG_RUNTIME_DIR: privateRuntime };
     delete probeEnv.DBUS_SESSION_BUS_ADDRESS;
     const probe = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect',
       '--property=CollectMode=inactive-or-failed', '--', 'true'],
     { env: probeEnv, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'ignore', 'pipe'] });
     if (probe.error || probe.status !== 0) {
-      throw new Error(probe.error?.message ?? `scope probe exited ${probe.status}: ${probe.stderr.trim()}`);
+      throw new Error(probe.error?.message ?? `private runtime scope probe exited ${probe.status}: ${probe.stderr.trim()}`);
     }
     console.log('[with-test-pg] managed task preflight passed (private user-manager control socket)');
   } catch (error) {
+    if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
     console.error('[with-test-pg] managed task preflight failed: ' + error.message);
     process.exit(1);
   }
@@ -182,7 +194,7 @@ if (!tmpdirHasCriticalHeadroom(tmpdir())) {
   throw new Error('private Postgres storage preflight failed: no temporary volume has critical headroom');
 }
 const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-test-pg-'));
-const runtimeRoot = isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
+runtimeRoot ??= isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
 const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` : null;
 const port = await freePort();
 
@@ -330,13 +342,6 @@ function assertNotTerminating() {
 }
 
 async function main() {
-if (managedTaskSocket) {
-  const privateManager = join(runtimeRoot, 'xdg-runtime', 'systemd');
-  const privateSocket = join(privateManager, 'private');
-  if (Buffer.byteLength(privateSocket) > 107) throw new Error('private managed-task socket exceeds native address capacity');
-  await mkdir(privateManager, { recursive: true, mode: 0o700 });
-  await symlink(managedTaskSocket, privateSocket);
-}
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 

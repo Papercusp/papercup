@@ -77,6 +77,47 @@ import {
 } from '../goal-owner-report';
 import { runGoalGradingBacklogSweepOnce } from './goal-grading-backlog-sweep';
 import { runGoalComputedTenureCardSweepOnce } from './goal-computed-tenure-card-sweep';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+const CONDITION_PREFIX = 'alarm:goal-owner-report:';
+export function goalOwnerReportConditionKey(row: Pick<GoalOwnerReportRowLike, 'workspaceId' | 'goalId' | 'agentId'>): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([row.workspaceId, row.goalId, row.agentId]));
+}
+
+async function readOpenReportConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+
+function reportConditionIdentity(key: string): GoalOwnerReportOwnerFilter | null {
+  if (!key.startsWith(CONDITION_PREFIX)) return null;
+  try {
+    const value: unknown = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length)));
+    if (!Array.isArray(value) || value.length !== 3 ||
+        !value.every(part => typeof part === 'string' && part.trim().length > 0)) return null;
+    const [workspaceId, goalId, ownerId] = value;
+    return goalOwnerReportConditionKey({ workspaceId, goalId, agentId: ownerId }) === key
+      ? { workspaceId, goalId, ownerId } : null;
+  } catch { return null; }
+}
+
+function measuredReportRow(row: GoalOwnerReportRowLike, nowMs: number): boolean {
+  return !!row && [row.workspaceId, row.goalId, row.agentId]
+    .every(part => typeof part === 'string' && part.trim().length > 0) &&
+    typeof row.standing === 'boolean' && Number.isFinite(nowMs) && nowMs >= 0 &&
+    typeof row.baselineTsMs === 'number' && Number.isFinite(row.baselineTsMs) &&
+    row.baselineTsMs >= 0 && row.baselineTsMs <= nowMs &&
+    (row.lastReportTsMs === null || (typeof row.lastReportTsMs === 'number' &&
+      Number.isFinite(row.lastReportTsMs) && row.lastReportTsMs >= 0 && row.lastReportTsMs <= nowMs));
+}
+
+function reportTimestamp(value: unknown): number {
+  return typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))
+    ? Number(value) : Number.NaN;
+}
 
 /** Hours-scale detection needs no seconds-scale sweep: one tick per 10 minutes
  *  bounds the worst-case detection lag to ~4% of the floor. */
@@ -358,6 +399,11 @@ export interface GoalOwnerReportSweepDeps {
   /** Directed wake of the owner with the report skeleton — fired ONCE per silence. */
   nudge: (alert: GoalOwnerReportAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
+  now: () => number;
+  readOpenConditionKeys: () => Promise<string[]>;
+  /** Exact scoped registration read; missing, inactive or ambiguous rows are unknown. */
+  readReport: (identity: GoalOwnerReportOwnerFilter) => Promise<GoalOwnerReportRowLike[]>;
+  rail?: Partial<AlarmAttentionDeps>;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -494,8 +540,8 @@ function makeReadGoalModeOwners(
       goalId: r.goal_id,
       agentId: r.owner_id,
       standing: r.standing,
-      baselineTsMs: Number(r.baseline_ts_ms),
-      lastReportTsMs: r.last_report_ts_ms === null ? null : Number(r.last_report_ts_ms),
+      baselineTsMs: reportTimestamp(r.baseline_ts_ms),
+      lastReportTsMs: r.last_report_ts_ms === null ? null : reportTimestamp(r.last_report_ts_ms),
     }));
   };
 }
@@ -566,6 +612,9 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalOwnerReportSweepDeps>): Goal
     escalate: defaultEscalate,
     nudge: defaultNudge,
     flagEnabled: defaultFlagEnabled,
+    now: () => Date.now(),
+    readOpenConditionKeys: readOpenReportConditionKeys,
+    readReport: identity => makeReadGoalModeOwners(sql, identity)(),
     ...overrides,
   };
 }
@@ -585,8 +634,39 @@ export async function runGoalOwnerReportSweepOnce(
     return { scanned: 0, overdue: 0, nudged: 0, skipped: true };
   }
 
+  const nowMs = deps.now();
   const rows = await deps.readGoalModeOwners();
-  const candidates = findOverdueReports(rows, Date.now());
+  // Only an exact, valid report measurement clears a durable silence episode.
+  // Candidate absence, a fresh mode baseline, lost liveness and disabled ticks
+  // cannot stand in for the report this detector measures.
+  try {
+    for (const key of await deps.readOpenConditionKeys()) {
+      const identity = reportConditionIdentity(key);
+      if (!identity) continue;
+      try {
+        const recovered = await deps.readReport(identity);
+        if (recovered.length !== 1) continue;
+        const row = recovered[0];
+        if (!measuredReportRow(row, nowMs) || goalOwnerReportConditionKey(row) !== key ||
+            row.lastReportTsMs === null || row.lastReportTsMs < row.baselineTsMs) continue;
+        const floor = row.standing ? GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS : GOAL_OWNER_REPORT_MAX_SILENCE_MS;
+        if (nowMs - row.lastReportTsMs <= floor) {
+          await resolveAlarm(key, WATCHDOG_IDENTITY.ownerId, deps.rail);
+        }
+      } catch (e) {
+        console.warn(`[goal-owner-report-watchdog] recovery read failed (non-fatal): ${String(e)}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[goal-owner-report-watchdog] condition read failed (non-fatal): ${String(e)}`);
+  }
+  const measured = rows.filter(row => measuredReportRow(row, nowMs));
+  const counts = new Map<string, number>();
+  for (const row of measured) {
+    const key = goalOwnerReportConditionKey(row);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const candidates = findOverdueReports(measured.filter(row => counts.get(goalOwnerReportConditionKey(row)) === 1), nowMs);
   let nudged = 0;
   if (candidates.length === 0) {
     return { scanned: rows.length, overdue: 0, nudged, skipped: false };
@@ -607,6 +687,17 @@ export async function runGoalOwnerReportSweepOnce(
   });
 
   for (const alert of alerts) {
+    // The keyed rail precedes legacy escalation debounce and the directed wake.
+    // Either delivery path may fail without suppressing the other.
+    try {
+      const event = { conditionKey: goalOwnerReportConditionKey(alert), oneShot: true,
+        summary: `Goal owner ${alert.agentId} is report-silent on '${alert.goalId}'`,
+        body: `No current owner report within the measured ${alert.floorMs / 60_000}-minute cadence (workspace ${alert.workspaceId}).` };
+      if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (e) {
+      console.warn(`[goal-owner-report-watchdog] condition delivery failed (non-fatal): ${String(e)}`);
+    }
     let opened = false;
     try {
       const { coalesced } = await deps.escalate(alert);

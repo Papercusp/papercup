@@ -12,14 +12,14 @@
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import postgres from 'postgres';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { guardResource } from '../locks/resource-lock-guard';
+import { guardResource, type FenceToken } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '../../migration-deploy-guard';
@@ -32,7 +32,7 @@ import { runGovernedOperation } from '../../resource-governor/execution';
 // re-exports the same names for existing importers but creates no local binding.
 import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
 import { openEscalation } from '../coordination/escalations';
-import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
+import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder, type FenceCheck } from '../locks/su-lock-store';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
@@ -209,6 +209,8 @@ export function migrationPsqlScript(args: {
   sha256: string;
   lockTimeoutSec: number;
   guardPreamble: string;
+  /** Enabled applies pause here until the runner revalidates the exact lease. */
+  fenceMarker?: string;
 }): string {
   const breakpoint = args.sqlText.includes('statement-breakpoint');
   const bodies = breakpoint
@@ -246,6 +248,11 @@ export function migrationPsqlScript(args: {
         `SET LOCAL statement_timeout = 0;\n` +
         `SET LOCAL lock_timeout = '${args.lockTimeoutSec}s';\n` +
         args.guardPreamble +
+        // The checkpoint must also fire for the already-applied branch;
+        // otherwise psql waits for stdin while the parent waits for a marker.
+        (args.fenceMarker
+          ? `\\endif\n\\echo ${args.fenceMarker}\n\\if :papercusp_migration_already_applied\n\\else\n`
+          : '') +
         body +
         ledgerWrite +
         `COMMIT;\n`
@@ -350,12 +357,15 @@ export function isDuplicateMigrationLedgerFailure(stderr: string): boolean {
   return SCHEMA_MIGRATIONS_DUP_KEY_RE.test(stderr);
 }
 
-type PsqlResult = { status: number; stdout: string; stderr: string; signal?: string | null };
+type PsqlResult = { status: number; stdout: string; stderr: string; signal?: string | null; staleFence?: StaleMigrationFence };
+
+type StaleMigrationFence = Exclude<FenceCheck, { current: true }> | { current: false; reason: 'check_failed' };
+type MigrationFenceGuard = Pick<FenceToken, 'assertCurrent'> & { marker: string };
 
 type PsqlRunner = (
   cmd: string,
   args: string[],
-  opts: { input?: string; encoding: 'utf8'; onHeartbeat?: (elapsedSec: number) => void },
+  opts: { input?: string; encoding: 'utf8'; onHeartbeat?: (elapsedSec: number) => void; fence?: MigrationFenceGuard },
 ) => Promise<PsqlResult>;
 
 /** Run a psql command asynchronously, optionally emitting a heartbeat while
@@ -363,7 +373,7 @@ type PsqlRunner = (
  * operator event loop, so ctx.progress could never refresh the MCP idle
  * deadline. The child receives its SQL through stdin just as the old sync
  * path did. */
-const runPsql: PsqlRunner = (cmd, args, opts) =>
+export const runPsql: PsqlRunner = (cmd, args, opts) =>
   runGovernedOperation(
     {
       workspaceId: activeWorkspaceId(),
@@ -382,8 +392,10 @@ const runPsql: PsqlRunner = (cmd, args, opts) =>
     async () =>
       new Promise((resolve, reject) => {
         const startedAt = Date.now();
+        let lastHeartbeatAt = startedAt;
         let settled = false;
         let heartbeatTimer: ManagedHandle | undefined;
+        let staleFence: StaleMigrationFence | undefined;
         const finish = (result: PsqlResult) => {
           if (settled) return;
           settled = true;
@@ -399,24 +411,72 @@ const runPsql: PsqlRunner = (cmd, args, opts) =>
           reject(error);
         };
 
-        if (opts.onHeartbeat) {
+        // Only the preamble is sent initially. Every transaction stops after
+        // its SQL guards (including the unbounded backup wait) and reports a
+        // private marker. DDL is sent only after assertCurrent re-reads the
+        // original domain/lock/fence, never a same-owner replacement lease.
+        const markerLine = opts.fence ? `\\echo ${opts.fence.marker}\n` : undefined;
+        const parts = markerLine ? (opts.input ?? '').split(markerLine) : [];
+        if (opts.fence && parts.length < 2) {
+          fail(new Error('Fenced migration script has no transaction checkpoint'));
+          return;
+        }
+        let nextPart = 1;
+        let checking: Promise<boolean> | undefined;
+        let child: ReturnType<typeof execFile>;
+        const checkFence = (): Promise<boolean> => {
+          if (settled || staleFence) return Promise.resolve(false);
+          if (!opts.fence) return Promise.resolve(true);
+          if (checking) return checking;
+          checking = (async () => {
+            let check: FenceCheck | StaleMigrationFence;
+            try {
+              check = await opts.fence!.assertCurrent();
+            } catch {
+              check = { current: false, reason: 'check_failed' };
+            }
+            if (!check.current && !settled) {
+              staleFence = check;
+              // SIGINT makes psql cancel its own backend's waiting statement.
+              // No peer/backup backend is selected or signalled.
+              child.stdin?.end();
+              child.kill('SIGINT');
+            }
+            return check.current && !settled && !staleFence;
+          })().finally(() => { checking = undefined; });
+          return checking;
+        };
+
+        if (opts.onHeartbeat || opts.fence) {
           heartbeatTimer = managedSetInterval(
             'db-migrate-psql-progress',
-            PSQL_PROGRESS_INTERVAL_MS,
+            opts.fence ? 1_000 : PSQL_PROGRESS_INTERVAL_MS,
             () => {
               if (settled) return;
+              // Bound a backup wait by lease validity, even if the backup
+              // never releases. The checkpoint check still closes the race
+              // between this periodic cancellation and the backup release.
+              void checkFence();
+              if (Date.now() - lastHeartbeatAt < PSQL_PROGRESS_INTERVAL_MS) return;
+              lastHeartbeatAt = Date.now();
               try {
                 opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000));
               } catch {
                 // Progress is advisory; a disconnected transport must not abort psql.
               }
             },
-            { category: 'lifecycle', classification: 'must-sample' },
+            {
+              category: 'lifecycle', classification: 'must-sample',
+              // This timer belongs to one joined child, not a host sweep.
+              // Run it in real-time integration tests and never let a second
+              // runner replace the first runner's cancellation/heartbeat.
+              allowInTest: true, instanced: true,
+            },
           );
         }
 
         try {
-          const child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
+          child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
             const status = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
             const diagnostic = stderr.trim()
               ? stderr
@@ -424,13 +484,36 @@ const runPsql: PsqlRunner = (cmd, args, opts) =>
                 ? `${error.message}${error.signal ? ` (killed by ${error.signal})` : ''}`
                 : '';
             finish({
-              status,
+              status: staleFence ? 1 : status,
               stdout: stdout ?? '',
-              stderr: diagnostic,
+              stderr: staleFence ? `Migration ABORTED: stale_fence_${staleFence.reason}\n${diagnostic}` : diagnostic,
               signal: error?.signal ?? null,
+              ...(staleFence ? { staleFence } : {}),
             });
           });
-          child.stdin?.end(opts.input);
+          if (opts.fence) {
+            let pendingOutput = '';
+            child.stdout?.on('data', (data: string | Buffer) => {
+              pendingOutput += data.toString();
+              let newline: number;
+              while ((newline = pendingOutput.indexOf('\n')) >= 0) {
+                const line = pendingOutput.slice(0, newline).replace(/\r$/, '');
+                pendingOutput = pendingOutput.slice(newline + 1);
+                if (line !== opts.fence!.marker) continue;
+                // Do not reuse a periodic check begun before the marker.
+                void (async () => {
+                  if (checking) await checking;
+                  if (!(await checkFence()) || nextPart >= parts.length) return;
+                  const input = parts[nextPart++];
+                  if (nextPart === parts.length) child.stdin?.end(input);
+                  else child.stdin?.write(input + markerLine);
+                })().catch(fail);
+              }
+            });
+            child.stdin?.write(parts[0] + markerLine);
+          } else {
+            child.stdin?.end(opts.input);
+          }
         } catch (error) {
           fail(error);
         }
@@ -485,6 +568,7 @@ async function runMigrationWithLockRetry(
   // backoff-retried apply going silent — see db:migrate's emitProgress wiring.
   onAttempt?: (attempt: number, maxAttempts: number) => void,
   onHeartbeat?: (elapsedSec: number) => void,
+  fence?: MigrationFenceGuard,
 ): Promise<{ result: PsqlResult; attempts: number }> {
   for (let attempt = 1; ; attempt++) {
     onAttempt?.(attempt, maxAttempts);
@@ -493,8 +577,9 @@ async function runMigrationWithLockRetry(
       input: attemptScript,
       encoding: 'utf8',
       onHeartbeat,
+      fence,
     });
-    if (result.status === 0) return { result, attempts: attempt };
+    if (result.status === 0 || result.staleFence) return { result, attempts: attempt };
     if (attempt >= maxAttempts || !isRetryableLockFailure(result.stderr ?? '')) return { result, attempts: attempt };
     await sleep(lockRetryBackoffMs(attempt));
   }
@@ -960,6 +1045,7 @@ export default defineTool({
           const lockTimeoutSec = args.lock_timeout_sec ?? DEFAULT_LOCK_TIMEOUT_SEC;
           const migrationMaxAttempts =
             args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
+          const fenceMarker = `PAPERCUSP_MIGRATION_FENCE_${randomUUID().replace(/-/g, '')}`;
           // EI-9417/WI-6381: fail fast on ordinary hot-table contention, or
           // honour the caller-widened wait for a known long-lived holder.
           // WI-1373379: migrationPsqlScript repeats the selected preamble in
@@ -977,6 +1063,7 @@ export default defineTool({
                 lockTimeoutSec,
                 await shouldSkipBusyBackupRendezvous(path.basename(resolvedFile), sqlText),
               ),
+              fenceMarker,
             });
           // perf:allow A4 — this tool IS the sanctioned dev-only migration
           // applier: psql's meta-command interpreter runs full .sql files
@@ -1017,8 +1104,21 @@ export default defineTool({
                 }),
               );
             },
+            { marker: fenceMarker, assertCurrent: fence.assertCurrent },
           );
           if (r.status !== 0) {
+            if (r.staleFence) {
+              return json({
+                ok: false,
+                applied: false,
+                reason: `stale_fence_${r.staleFence.reason}`,
+                fence_seq: fence.seq,
+                ...('live_fence_seq' in r.staleFence ? { live_fence_seq: r.staleFence.live_fence_seq } : {}),
+                attempts,
+                stderr: r.stderr.slice(-2000),
+                note: 'Migration stopped when its exact exclusive(db-schema) lease ceased to be current. Earlier breakpoint chunks may have committed; no later chunk was admitted.',
+              });
+            }
             // WI-6002: before trusting this failure, check whether it's actually
             // the schema_migrations duplicate-key guard tripping on a migration
             // an EARLIER attempt already committed (see the comment above

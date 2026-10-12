@@ -10,11 +10,12 @@
  * would see "no fact" and could easily misread that as "resolved" — a critical
  * safety signal that decayed to the SAFE-LOOKING state with nobody told.
  *
- * `facts:assert { slot:'wall' }` (agent-tools/facts/assert.ts) is the write-side
- * half of the fix: it keys the fact under `wall:` and defaults its TTL to 90d
- * instead of 7d. This module is the READ-side backstop for when even that longer
- * window elapses without a re-assert or an explicit retract — TTL decay on a
- * wall must be LOUD, never silent. Same chassis as the sibling watchdogs
+ * `facts:assert { slot:'wall' }` (agent-tools/facts/assert.ts) keys the fact under
+ * `wall:` and defaults its TTL to 90d. Expiry requests review; the current
+ * unretracted wall stays folded and retained until explicit retraction or
+ * supersession. This module is the READ-side escalation when the review deadline
+ * passes without a re-assert or explicit retract — TTL lapse must be LOUD, never
+ * silent. Same chassis as the sibling watchdogs
  * (rubric-staleness-watchdog.ts, release-deploy-staleness): a PURE alert
  * formatter (unit-tested with no DB), a thin PG sweep wired into the shared
  * routinesTick as one durable step, fail-soft throughout, and the shared

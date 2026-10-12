@@ -144,6 +144,10 @@ export function projectFact(
     createdBy: f.createdBy,
     updatedAt: f.updatedAt,
     expiresAt: f.expiresAt,
+    ...(f.key.startsWith(WALL_KEY_PREFIX) && f.retractedAt == null && f.supersededAt == null &&
+        !isPermanentFactExpiry(f.expiresAt) && Date.parse(f.expiresAt) <= Date.now()
+      ? { wallActiveDespiteTtl: true }
+      : {}),
     ...(f.retractedAt !== undefined ? { retractedAt: f.retractedAt } : {}),
     ...(f.retractedBy !== undefined ? { retractedBy: f.retractedBy } : {}),
     ...(f.retractionReason !== undefined ? { retractionReason: f.retractionReason } : {}),
@@ -208,11 +212,14 @@ export function projectFact(
  * missing current fact into a false positive.
  */
 export function isLiveFact(
-  f: Pick<AgentFact, 'expiresAt' | 'retractedAt' | 'supersededAt'> | undefined,
+  f: Pick<AgentFact, 'expiresAt' | 'retractedAt' | 'supersededAt'> & Partial<Pick<AgentFact, 'key'>> | undefined,
   nowMs = Date.now(),
 ): boolean {
   if (!f || f.supersededAt != null || f.retractedAt != null) return false;
   if (isPermanentFactExpiry(f.expiresAt)) return true;
+  // A wall TTL requests review; it does not clear an owner-gated blocker.
+  // Its explicit retract/supersession remains the only retirement signal.
+  if (f.key?.startsWith(WALL_KEY_PREFIX)) return true;
   const expiresAtMs = Date.parse(f.expiresAt);
   return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
 }

@@ -4424,17 +4424,13 @@ export function sessionTranscriptFile(session, { home = homedir() } = {}) {
   }
   if (session.agent === "omp" && session.ompThreadId) {
     const roots = [];
+    if (session.agentHome) {
+      // An exact resume must inspect the home saved by its native descriptor,
+      // never accept the same thread id from an unrelated default store.
+      return findOmpTranscript(join(session.agentHome, "sessions"), session.ompThreadId);
+    }
     if (session.id != null) {
-      roots.push(
-        join(
-          home,
-          ".papercusp",
-          "su-omp-homes",
-          `session-${session.id}`,
-          "agent",
-          "sessions",
-        ),
-      );
+      roots.push(join(trackedOmpAgentHome(session, home), "sessions"));
     }
     roots.push(join(home, ".omp", "agent", "sessions"));
     for (const root of roots) {
@@ -6117,6 +6113,10 @@ function ompSessionConfigRelativeDir(sessionId, home) {
   return relative(home, join(root, `session-${sessionId}`));
 }
 
+function trackedOmpAgentHome(session, home) {
+  return session.agentHome || join(home, ompSessionConfigRelativeDir(session.id, home), "agent");
+}
+
 export function writeOmpSessionConfigDir(
   sessionId,
   opts = {},
@@ -6657,10 +6657,10 @@ export function buildResumeEnv(
  */
 export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   if (session?.agent !== "omp" || session?.id == null) return {};
-  const rel = ompSessionConfigRelativeDir(session.id, home);
-  const root = join(home, rel);
+  const agentDir = trackedOmpAgentHome(session, home);
+  const root = dirname(agentDir);
+  const rel = relative(home, root);
   if (!existsSync(root)) return {};
-  const agentDir = join(root, "agent");
   linkOmpAgentDb(join(home, ".omp", "agent"), agentDir);
   // The launcher moved eligible servers out of the stock MCP map. A resume
   // from a new shell must therefore load the adapter from this saved profile,
@@ -15014,9 +15014,25 @@ function providerForResumeTarget(agent) {
   return "omp-configured-provider";
 }
 
+/** PURE (exported for tests): the backends the interactive resume picker offers
+ * as targets. Every backend, whatever the source: the session-port service
+ * prepares claude, codex and omp sources alike (session-port/service.ts source
+ * gate) and resolveResumeTarget already ports any scripted `--agent` pair. The
+ * picker used to offer other backends only to Claude sources — a leftover from
+ * when protocol v1 read Claude transcripts only — so a Codex or OMP session could
+ * never be switched interactively (consult-backed-parking-2026-10-12 P-011,
+ * R-10). The source backend is listed first so the native rows lead the menu. */
+export function resumePickerBackendsFor(session) {
+  const source = session?.agent;
+  return AGENTS.includes(source)
+    ? [source, ...AGENTS.filter((agent) => agent !== source)]
+    : [...AGENTS];
+}
+
 /** Resolve the backend before account selection. Same-backend selections keep
- * the byte-identical native resume/fork path; a tracked plain Claude source may
- * instead create a fresh Codex/OMP session through protocol v1. */
+ * the byte-identical native resume/fork path; any other backend creates a fresh
+ * session for the target through the session port (protocol v1), whichever of
+ * claude, codex or omp the tracked source runs on. */
 export function resolveResumeTarget(session, args = {}, selected = {}) {
   const sourceAgent = session?.agent;
   if (!AGENTS.includes(sourceAgent))
@@ -15257,7 +15273,7 @@ async function chooseResumeTarget(session, args) {
   if (picked !== CHOOSE_MODEL)
     return resolveResumeTarget(session, args, picked);
 
-  const allowedBackends = session.agent === "claude" ? AGENTS : [session.agent];
+  const allowedBackends = resumePickerBackendsFor(session);
   const askCustomSpec = async (targetAgent) => {
     const typed = await input({
       message: `${targetAgent} model spec (<model>[:<effort>]; empty = backend default):`,

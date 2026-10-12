@@ -128,7 +128,7 @@ afterEach(() => {
       /* already gone */
     }
   }
-  rmSync(tmp, { recursive: true, force: true });
+  if (tmp !== undefined) rmSync(tmp, { recursive: true, force: true });
 });
 
 describe('vite-build-singleflight — build serialization (EI-9836)', () => {

@@ -1207,6 +1207,25 @@ export function formatLintTscResultMarker({ label, scope, code, nothingTypecheck
     headSha?: string | null;
 }): string;
 /**
+ * WI-6554700010009284 — the exit code for a run in which tsc produced NO output: a toolchain
+ * failure (the compiler never ran, was withheld by pc-heavy, or died before printing anything).
+ *
+ * Exit 1 is reserved for this gate's own CONSIDERED failure, which `formatLintTscResultMarker`
+ * labels `regressed` (or a flag-refined variant), and exit 0 is a pass, so this returns neither.
+ * Exiting 1 here told the caller "your edit regressed types" when nothing was measured: observed
+ * in a sandbox with no user D-Bus, where pc-heavy's detached scope failed with
+ * PC_HEAVY_RESULT status=undetermined exit=75. The child's own abnormal status passes through
+ * (pc-heavy's EX_TEMPFAIL 75, a signal as 128+N), so the marker names the real failure as
+ * `error(N)`. Anything else becomes EX_SOFTWARE (70). Every value is non-zero, so CI stays red.
+ *
+ * @param {{ status?: number | null, signal?: string | null }} [child]
+ * @returns {number}
+ */
+export function toolchainFailureExitCode({ status, signal }?: {
+    status?: number | null;
+    signal?: string | null;
+}): number;
+/**
  * The pre-run stamp (EI-19323399466378077): what this run is about to judge, printed BEFORE the
  * compile so a killed/hung run still leaves it on disk. Mirrors scripts/test-files.mjs's
  * `TEST_FILE_PROVENANCE` banner (same item, same fix shape, two files) — the resolved file set
@@ -1328,6 +1347,8 @@ export const LANDING_RACE_WINDOW_SEC: number;
  * @type {number}
  */
 export const TSC_HEAP_MB: number;
+/** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
+export const TOOLCHAIN_FAILURE_EXIT_CODE: 70;
 /** Where the standing-verdict marker lives, relative to the repo root. */
 export const LINT_TSC_RUN_MARKER_REL: ".papercusp/scratch/lint-tsc-last-run.json";
 /**

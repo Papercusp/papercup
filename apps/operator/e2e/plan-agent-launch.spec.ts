@@ -235,11 +235,12 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     expect(revisions[1]!.rationale).toContain('first scripted edit');
     expect(revisions[2]!.seq).toBe(1); // origin
 
-    // ── 5. plans:launch — admin path always sends await:false; we
+    // ── 5. plans:launch — request the background mode used by the UI; we
     //      verify the row exists immediately.
     await seedFakeLlmPlanAcceptance(harnessSlug, slug);
     const launched = await adminPost(request, 'launch', {
       slug,
+      await: false,
       note: 'P-028: focus on P-001.',
     });
     expect(launched.status).toBe(200);
@@ -293,6 +294,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     if (settled!.status === 'idle') {
       const resumed = await adminPost(request, 'resume', {
         runId,
+        await: false,
         message: 'P-028: continue — describe what you just did.',
       });
       expect(resumed.status).toBe(200);

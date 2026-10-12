@@ -15,6 +15,34 @@ const request = (method: string, payload = body) => new Request('https://app.pap
   { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
 
 describe('hosted directory binding routes', () => {
+  it('passes only path-bound target and requested reduction to the manager', async () => {
+    const reduceMembership = vi.fn(async () => ({ membershipId: 'membership', status: 'suspended', auditId: 'audit', changed: true }));
+    const route = createHostedDirectoryBindingRoutes({ reduceMembership } as unknown as HostedDirectoryBindingManager)[3];
+    const response = await route.handler(request('POST', { status: 'suspended', purpose: 'Remove access' } as never), context());
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(reduceMembership.mock.calls[0]).toEqual([context().principal,
+      { organizationId: 'org', userId: 'member', status: 'suspended', purpose: 'Remove access' }]);
+    expect(await response.json()).toMatchObject({ ok: true, membership: { status: 'suspended', changed: true } });
+  });
+  it('rejects foreign/unauthorized reductions and body authority overrides before calling the manager', async () => {
+    const reduceMembership = vi.fn();
+    const route = createHostedDirectoryBindingRoutes({ reduceMembership } as unknown as HostedDirectoryBindingManager)[3];
+    expect((await route.handler(request('POST'), context('foreign'))).status).toBe(403);
+    expect((await route.handler(request('POST'), context('org', ['workspace:view']))).status).toBe(403);
+    expect((await route.handler(request('POST'), context())).status).toBe(400);
+    expect(reduceMembership).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['membership_reduction_forbidden', 403], ['membership_reduction_restore_forbidden', 409],
+    ['membership_reduction_member_not_found', 404], ['membership_reduction_organization_not_found', 404],
+    ['membership_reduction_invalid:status', 400], ['database credential=internal-secret', 503],
+  ])('maps reduction %s without leaking internal failure details', async (code, status) => {
+    const route = createHostedDirectoryBindingRoutes({ reduceMembership: vi.fn().mockRejectedValue(new TypeError(code)) } as unknown as HostedDirectoryBindingManager)[3];
+    const response = await route.handler(request('POST', { status: 'revoked', purpose: 'Remove access' } as never), context());
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: { code: status === 503 ? 'membership_reduction_unavailable' : code } });
+  });
   it('exports only the session/path organization with no-store download headers', async () => {
     const review = vi.fn(async (_principal: HostedPrincipal, _input: { organizationId: string; purpose: string }) => ({ members: [], auditId: 'audit' }));
     const route = createHostedDirectoryBindingRoutes({ review } as unknown as HostedDirectoryBindingManager)[2];

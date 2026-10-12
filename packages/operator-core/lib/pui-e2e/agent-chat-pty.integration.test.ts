@@ -39,11 +39,11 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalTurnSettled, nativeInterruptRequest } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
-import { isClaudeConfigDirLaunchReady, sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
 // that load on the shared box trips at random; fail-on-console turned it into
@@ -814,6 +814,8 @@ interface ScreenApproval {
   native?: string;
   /** The SU tool a papercusp-su title names, e.g. `papercusp-su · work items claimable`. */
   suTool?: string;
+  /** Mounted MCP calls use native Write permission, so approve once only. */
+  rememberSuTool?: boolean;
   /** The index of the title line in `lines`. */
   at: number;
 }
@@ -830,9 +832,10 @@ function screenApproval(lines: string[]): ScreenApproval | undefined {
   }
   const title = lines[at];
   if (at < 0 || !title) return undefined;
-  const suTool = /^(papercusp-su · .+) \(MCP\)$/.exec(title)?.[1];
+  const suApproval = suToolApproval(title);
+  const suTool = suApproval?.tool;
   const native = suTool ? undefined : /^([A-Z][A-Za-z ]*?)(?:\(.*\))?$/.exec(title)?.[1];
-  return { title, native, suTool, at };
+  return { title, native, suTool, rememberSuTool: suApproval?.remember, at };
 }
 /** The digit that picks one answer of a visible approval card: `yes` (once),
  * `always` (`Yes, and don't ask again …` / `Yes, and allow all edits …`) or `no`. */
@@ -921,7 +924,7 @@ class PuiPane {
     const readPath = readAt < 0 ? undefined
       : [...this.nativeReadPaths].find((p) => lines.slice(readAt, readAt + 4).some((line) => line.includes(p)));
     if (!tool && !readPath) return false;
-    const pick = readPath ? approvalOptionKey(lines, 'yes')
+    const pick = readPath || card?.rememberSuTool === false ? approvalOptionKey(lines, 'yes')
       : approvalOptionKey(lines, 'always') ?? approvalOptionKey(lines, 'yes');
     if (!pick) return false;
     this.pty.write(pick);
@@ -5593,8 +5596,9 @@ function installedManifest(): Record<string, unknown> {
     return manifest;
 }
 /** A real engine's approval for the SU's own papercusp-su call (D-021). */
-function isSuToolApprovalCard(card: { prompt: string }): boolean {
-  return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '');
+function isSuToolApprovalCard(card: { prompt: string; approval?: { title: string } | null }): boolean {
+  return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '')
+    || Boolean(suToolApproval(card.approval?.title ?? ''));
 }
 
 /** D-028: an approval card names its tool call in `approval.title` (a command
@@ -8031,7 +8035,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           }
           return false;
         }, { timeoutMs: 120_000, intervalMs: 100 });
-        expect(approvalWait.ok, 'the native tool must request approval within 120 seconds').toBe(true);
+        expect(approvalWait.ok, `the native tool must request approval within 120 seconds; pending cards: ${pendingCards().map((card) => card.approval?.title ?? card.prompt.split('\n')[0]).join('; ') || 'none'}`).toBe(true);
         const targetApprovalCard = pendingCards().find((card) => cardMentions(card, approvalFixturePath));
         if (!targetApprovalCard) throw new Error('Native tool approval card disappeared before it could be answered');
         approvalCard = targetApprovalCard;
@@ -8097,6 +8101,20 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           )).toBe(true);
         }, { timeout: 120_000, interval: 100 });
         frames.approved = pane.screen();
+        // Retain this completed clause even if the later OS-restart clause
+        // fails and afterAll removes the private native home and note.
+        console.info('PUI_OPERATOR_NATIVE_APPROVAL_RECEIPT', JSON.stringify({
+          backend: scriptedEngine.backend,
+          session: approvalCommand.target,
+          turnId: approvalCommand.turnId,
+          correlationId: approvalCard.correlationId,
+          choice: approvalLabel,
+          cardReplyStatus: childCardReplies().at(-1)?.status,
+          toolCallId: approvalStart?.callId,
+          toolCompleted: approvalEnd?.isError === false,
+          exactEffectVerified: true,
+          effectSha256: createHash('sha256').update(readFileSync(approvalFixturePath)).digest('hex'),
+        }));
       }
       pane.write(greeting);
       pane.enter();
@@ -8127,6 +8145,27 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         );
       }
       frames.beforeRestart = pane.screen();
+      if (scriptedEngine.real) {
+        const extension = saved!.backendExtension;
+        const nativeTranscriptPath = sessionTranscriptFile({
+          id: saved!.identity.advSessionId,
+          agent: saved!.identity.backend,
+          sessionId: saved!.identity.nativeSessionId,
+          ompThreadId: saved!.identity.nativeSessionId,
+          coordOwnerId: saved!.identity.ownerId,
+          ...(extension.backend === 'omp' ? { agentHome: extension.agentHome } : {}),
+          ...(extension.backend === 'codex' ? { codexHome: extension.codexHome } : {}),
+          ...(extension.backend === 'claude' ? { configDir: extension.configDir } : {}),
+        });
+        expect(nativeTranscriptPath, 'the exact native transcript must be locatable before exiting').toBeTruthy();
+        console.info('PUI_OPERATOR_PRE_RESTART_RECEIPT', JSON.stringify({
+          descriptor: saved,
+          nativeTranscriptPath,
+          transcriptSha256: createHash('sha256').update(readFileSync(nativeTranscriptPath!)).digest('hex'),
+          approvalEnabled,
+          greetingVerified: true,
+        }));
+      }
     } catch (error) {
       const diagnosis = await operatorFailureProbe(first.port);
       console.info(

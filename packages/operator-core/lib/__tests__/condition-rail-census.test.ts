@@ -35,6 +35,50 @@ function enumerate(raw: string, file: string) {
     ts.forEachChild(node, visit);
   };
   visit(sf);
+  // A log message can carry its wording through a preceding const it interpolates
+  // (`const outcome = … 'fallback to local execution'; console.warn(`… ${outcome}`)`).
+  // Bindings are collected top-down and a name resolves to its INNERMOST enclosing
+  // binding — a different mechanism from the scanner's bottom-up scope walk, so a
+  // scoping/shadowing defect in either shows up here as a count mismatch.
+  type Binding = { scope: ts.Node; end: number; initializer?: ts.Expression; constant: boolean };
+  const bindings = new Map<string, Binding[]>();
+  const bind = (name: ts.BindingName, scope: ts.Node, binding: Omit<Binding, 'scope'>): void => {
+    if (ts.isIdentifier(name)) bindings.set(name.text, [...(bindings.get(name.text) ?? []), { scope, ...binding }]);
+    else for (const element of name.elements) if (!ts.isOmittedExpression(element)) bind(element.name, scope, { end: element.end, constant: false });
+  };
+  for (const node of nodes) {
+    if (ts.isVariableDeclaration(node)) {
+      const list = node.parent;
+      const declared = ts.isVariableDeclarationList(list);
+      const scope = !declared ? list : ts.isVariableStatement(list.parent) ? list.parent.parent : list.parent;
+      const constant = declared && !!(list.flags & ts.NodeFlags.Const) && ts.isIdentifier(node.name);
+      bind(node.name, scope, { end: node.end, initializer: node.initializer, constant });
+    } else if (ts.isParameter(node)) bind(node.name, node.parent, { end: node.end, constant: false });
+  }
+  const span = (node: ts.Node) => node.end - node.getStart(sf);
+  const resolveName = (id: ts.Identifier, seen: Set<Binding>): string => {
+    const at = id.getStart(sf);
+    const visible = (bindings.get(id.text) ?? []).filter((b) => b.scope.getStart(sf) <= at && at < b.scope.end);
+    if (visible.length === 0) return '';
+    const innermost = Math.min(...visible.map((b) => span(b.scope)));
+    const binding = visible.filter((b) => span(b.scope) === innermost).at(-1)!;
+    if (!binding.constant || !binding.initializer || binding.end >= at || seen.has(binding)) return '';
+    return literalAlternatives(binding.initializer, new Set(seen).add(binding));
+  };
+  const literalAlternatives = (node: ts.Node, seen = new Set<Binding>()): string => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+    if (ts.isTemplateExpression(node)) {
+      return node.head.text + node.templateSpans.map((s) => literalAlternatives(s.expression, seen) + s.literal.text).join('');
+    }
+    if (ts.isConditionalExpression(node)) return `${literalAlternatives(node.whenTrue, seen)} ${literalAlternatives(node.whenFalse, seen)}`;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      return literalAlternatives(node.left, seen) + literalAlternatives(node.right, seen);
+    }
+    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+      return literalAlternatives(node.expression, seen);
+    }
+    return ts.isIdentifier(node) ? resolveName(node, seen) : '';
+  };
   if (watchdogModule) candidates.push({ class: 'bespoke-watchdog', line: 1 });
   for (const node of nodes) {
     if (ts.isCallExpression(node)) {
@@ -44,8 +88,10 @@ function enumerate(raw: string, file: string) {
       if (ts.isPropertyAccessExpression(expression) &&
           /^(?:console|logger|LOG|log)$/.test(expression.expression.getText(sf)) &&
           /^(?:warn|error|log|info)$/.test(name)) {
+        const fallbackWording = /fall(?:ing|s)?[ -]?back|fail(?:ing|s)?[ -]?open|fail(?:ed|ing)? open|degrad(?:ed|ing) to/i;
         const args = node.arguments.map((arg) => arg.getText(sf)).join(' ');
-        if (/fall(?:ing|s)?[ -]?back|fail(?:ing|s)?[ -]?open|fail(?:ed|ing)? open|degrad(?:ed|ing) to/i.test(args)) add('log-only-fallback', node);
+        const literals = () => node.arguments.map((arg) => literalAlternatives(arg)).join(' ');
+        if (fallbackWording.test(args) || fallbackWording.test(literals())) add('log-only-fallback', node);
         else exclude(lineOf(node), 'log call has no fallback wording in its complete arguments');
       }
       if (name === 'managedSetInterval') {
@@ -170,6 +216,7 @@ describe('independent census omission controls', () => {
   it.each([
     ['owner-only-alarm', 'packages/x/check.ts', 'notifyAttention({}); notifyAttentionOnce({});'],
     ['log-only-fallback', 'packages/x/check.ts', "console.warn('falling back');"],
+    ['log-only-fallback', 'packages/x/check.ts', "const outcome = ok ? 'rejected' : 'fallback to local execution'; console.warn(`sidecar ${outcome}`);"],
     ['health-flag-no-condition', 'packages/x/health.ts', 'function check() { return { degraded: n > 5 }; }'],
     ['bespoke-watchdog', 'packages/x/check.ts', "managedSetInterval('x-watchdog', 60, run);"],
     ['bespoke-watchdog', 'packages/x/empty-watchdog.ts', 'export const x = 1;'],
@@ -198,6 +245,22 @@ describe('independent census omission controls', () => {
     const calls = enumerate('notifyAttention({}); notifyAttention({});', 'packages/x/check.ts').candidates;
     expect(calls).toHaveLength(2);
     expect(reconcile(calls, calls.slice(1), 'packages/x/check.ts').join()).toContain('enumerator=2, scanner=1');
+  });
+
+  it.each([
+    ['a const interpolated into a template', "const outcome = ok ? 'rejected' : 'fallback to local execution'; console.warn(`[x] ${outcome}: ${reason}`);", 1],
+    ['a nested-conditional const reached through concatenation',
+      "const why = a ? '' : b ? `, swap (page-delta fallback)` : ''; console.info(`[p] run ${id}: ` + `load${why})`);", 1],
+    ['a const shadowed by a parameter', "const outcome = 'fallback'; function f(outcome: string) { console.warn(`${outcome}`); }", 0],
+    ['a const shadowed by a destructured binding',
+      "const outcome = 'fallback'; function f() { const { outcome } = load(); console.warn(`${outcome}`); }", 0],
+    ['a const read before its declaration', "console.warn(`${later}`); const later = 'fallback';", 0],
+    ['a let binding, whose value is not known statically', "let mode = 'fallback'; console.warn(`${mode}`);", 0],
+  ])('resolves log wording carried by %s, in agreement with the scanner', (_label, raw, count) => {
+    const file = 'packages/x/check.ts';
+    const expected = enumerate(raw, file).candidates;
+    expect(expected.filter((row) => row.class === 'log-only-fallback')).toHaveLength(count);
+    expect(reconcile(expected, scanSites(raw, file), file)).toEqual([]);
   });
 
   it('reconciles compound parameter spans without treating simple annotations as runtime writes', () => {

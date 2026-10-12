@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { EventEmitter } from 'node:events';
 
 // WI-5217: explicit result/param types so `.mock.calls[...]` destructures and
 // `.mockResolvedValue({...extra fields})` overrides typecheck against the real
@@ -168,9 +169,18 @@ beforeEach(() => {
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
   h.execFile
     .mockReset()
-    .mockImplementation((cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+    .mockImplementation((cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => {
+      const stdout = new EventEmitter();
+      let buffered = '';
+      return { stdout, kill: vi.fn(),
       stdin: {
+        write: (input: string) => {
+          buffered += input;
+          const marker = /\\echo (PAPERCUSP_MIGRATION_FENCE_\w+)\n$/.exec(input)?.[1];
+          if (marker) queueMicrotask(() => stdout.emit('data', marker + '\n'));
+        },
         end: (input?: string) => {
+          input = buffered + (input ?? '');
           const result = h.spawnSync(cmd, args, {
             ...opts,
             ...(input === undefined ? {} : { input }),
@@ -187,7 +197,7 @@ beforeEach(() => {
           });
         },
       },
-    }));
+    }; });
   h.readFileSync.mockReset().mockReturnValue('CREATE TABLE foo (id int);\n');
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
@@ -654,7 +664,7 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     const error = Object.assign(new Error('psql process failed'), { signal: 'SIGTERM' });
     h.execFile.mockImplementationOnce(
       (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
-        stdin: { end: () => queueMicrotask(() => callback(error, '', '')) },
+        stdin: { write: () => queueMicrotask(() => callback(error, '', '')), end: vi.fn() },
       }),
     );
 
@@ -676,7 +686,7 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     const error = Object.assign(new Error('spawn psql ENOENT'), { code: 'ENOENT' });
     h.execFile.mockImplementationOnce(
       (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
-        stdin: { end: () => queueMicrotask(() => callback(error, '', '')) },
+        stdin: { write: () => queueMicrotask(() => callback(error, '', '')), end: vi.fn() },
       }),
     );
 
@@ -692,7 +702,7 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     const error = Object.assign(new Error('generic execFile failure'), { code: 1 });
     h.execFile.mockImplementationOnce(
       (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
-        stdin: { end: () => queueMicrotask(() => callback(error, '', 'ERROR: syntax error')) },
+        stdin: { write: () => queueMicrotask(() => callback(error, '', 'ERROR: syntax error')), end: vi.fn() },
       }),
     );
 
@@ -711,6 +721,68 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     );
     expect(out.already_applied).toBe(true);
     expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('db:migrate — lease loss after SQL guards (WI-10008141)', () => {
+  beforeEach(() => { process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1'; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each(['expired_or_released', 'superseded'] as const)(
+    'withholds the DDL and action receipt when the post-wait fence is %s', async (reason) => {
+      const assertCurrent = vi.fn()
+        .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+        .mockResolvedValue({ current: false, reason, live_fence_seq: 8 });
+      h.guardResource.mockImplementation(async (_spec, run) => ({
+        acquired: true, result: await run({ seq: 7, assertCurrent }),
+      }));
+      const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+      expect(out).toMatchObject({ ok: false, applied: false, reason: `stale_fence_${reason}`, attempts: 1 });
+      expect(assertCurrent).toHaveBeenCalledTimes(2);
+      const sent = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+      expect(sent).toContain('pg_advisory_xact_lock');
+      expect(sent).not.toContain(`\\i ${FILE}`);
+      expect(sent).not.toContain('INSERT INTO harness_shared.schema_migrations');
+      expect(h.recordResourceAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed when post-wait lease validation is unavailable', async () => {
+    const assertCurrent = vi.fn()
+      .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+      .mockRejectedValue(new Error('lock database unavailable'));
+    h.guardResource.mockImplementation(async (_spec, run) => ({
+      acquired: true, result: await run({ seq: 7, assertCurrent }),
+    }));
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.reason).toBe('stale_fence_check_failed');
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+    expect((h.spawnSync.mock.calls[0][2] as { input: string }).input).not.toContain(`\\i ${FILE}`);
+  });
+
+  it('cancels its own blocked child on expiry and never retries that fence, even with lock-timeout stderr', async () => {
+    vi.useFakeTimers();
+    const assertCurrent = vi.fn()
+      .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+      .mockResolvedValue({ current: false, reason: 'expired_or_released' });
+    h.guardResource.mockImplementation(async (_spec, run) => ({
+      acquired: true, result: await run({ seq: 7, assertCurrent }),
+    }));
+    const write = vi.fn();
+    const kill = vi.fn();
+    h.execFile.mockImplementationOnce((_cmd, _args, _opts, callback: ExecFileCallback) => ({
+      stdout: new EventEmitter(), kill,
+      stdin: { write, end: () => queueMicrotask(() => callback(
+        Object.assign(new Error('cancelled'), { code: 3 }), '', 'ERROR: canceling statement due to lock timeout',
+      )) },
+    }));
+    const pending = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(parse(await pending)).toMatchObject({ reason: 'stale_fence_expired_or_released', attempts: 1 });
+    expect(kill).toHaveBeenCalledWith('SIGINT');
+    expect(h.execFile).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).not.toContain(`\\i ${FILE}`);
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
   });
 });
 
@@ -770,7 +842,7 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
       h.execFile.mockImplementationOnce(
         (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => {
           finish = callback;
-          return { stdin: { end: vi.fn() } };
+          return { stdin: { write: vi.fn(), end: vi.fn() }, stdout: new EventEmitter(), kill: vi.fn() };
         },
       );
       const { ctx, progress } = progressCtx();

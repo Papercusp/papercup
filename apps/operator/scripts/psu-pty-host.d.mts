@@ -4022,7 +4022,7 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
 }): {
     /** Return the live state for `id`, or null when it is new/expired. */
     state(id: any): any;
-    /** True when `id` is pending or completed within the TTL. `id` may be
+    /** True when `id` is retained within the TTL, including refused writes. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
     isDuplicate(id: any): boolean;
@@ -4030,6 +4030,9 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     markPending(id: any): void;
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id: any): void;
+    /** A written but unconfirmed turn belongs to a child that no longer exists.
+     * Preserve its original TTL and suppress repasting without claiming success. */
+    markSuperseded(id: any): void;
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
      *  boundary before the caller may settle the durable wake as suppressed. */

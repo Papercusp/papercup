@@ -6,6 +6,7 @@ import {
   type AdapterLagObservation, type PartsWriterObservation,
 } from './session-ingest-lag-watchdog';
 import { evaluateInteractiveUsageFreshness } from '../interactive-usage/freshness';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 const filesystem = vi.hoisted(() => ({ stat: vi.fn(), open: vi.fn() }));
 // Native ESM namespaces are immutable; mock this boundary before the producer
@@ -24,6 +25,11 @@ const backlog = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservati
 const parts = (over: Partial<PartsWriterObservation> = {}): PartsWriterObservation => ({
   sourceKind: 'claude', expectsParts: true, turnsInWindow: 10, partsInWindow: 0, ...over,
 });
+/** Spy getOrgPg() onto a `{ sql }` stand-in via the sanctioned partial-client helper. */
+function stubOrgSql(sql: unknown): void {
+  vi.spyOn(org, 'getOrgPg');
+  mockOrgPgSql(vi.mocked(org.getOrgPg), sql);
+}
 function fixture() {
   const open = new Set<string>();
   const rail = {
@@ -125,7 +131,7 @@ describe('original parts verdict producer', () => {
   it.each([true, false, '', ' ', '1.5', '-1'])('production SQL counts reject %s before recovery', async value => {
     const f = fixture(); const key = sessionIngestConditionKey('parts', opts.workspaceId, opts.installSlug, 'claude');
     f.open.add(key);
-    vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql: async () => [{ source_kind: 'claude', turns: '10', parts: value }] } as never);
+    stubOrgSql(async () => [{ source_kind: 'claude', turns: '10', parts: value }]);
     const result = await sessionPartsWriterSweep(opts, f.deps);
     expect(result[0].outcome).toBe('error'); expect(f.open.has(key)).toBe(true);
     expect(f.rail.broadcast).not.toHaveBeenCalled(); expect(f.rail.resolve).not.toHaveBeenCalled();
@@ -134,7 +140,7 @@ describe('original parts verdict producer', () => {
   it('valid decimal PostgreSQL counts measure actual parts recovery', async () => {
     const f = fixture(); const key = sessionIngestConditionKey('parts', opts.workspaceId, opts.installSlug, 'claude');
     f.open.add(key);
-    vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql: async () => [{ source_kind: 'claude', turns: '10', parts: '1' }] } as never);
+    stubOrgSql(async () => [{ source_kind: 'claude', turns: '10', parts: '1' }]);
     await sessionPartsWriterSweep(opts, f.deps); expect(f.open.has(key)).toBe(false);
   });
   it('retains its pure synchronous API and publishes in the awaited production mode', async () => {
@@ -175,7 +181,7 @@ describe('exact affected-file production reader', () => {
     const row = { source_kind: 'codex', file_path: '/fixture/rollout', byte_offset: '0',
       updated_at: new Date(now - 6 * hour).toISOString() };
     const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [row]);
-    vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never);
+    stubOrgSql(sql);
     const stat = filesystem.stat.mockResolvedValue({ isFile: () => true, size: 2e6 });
     return { row, sql, stat, read: () => readIngestBacklogRecovery('codex', '/fixture/rollout', hour, now) };
   }
@@ -199,11 +205,11 @@ describe('exact affected-file production reader', () => {
     f.row.byte_offset = '0'; f.row.updated_at = 'invalid'; expect(await f.read()).toBe(null);
   });
   it('file read failure and short reads are unknown', async () => {
-    const f = readerFixture(); f.stat.mockResolvedValue({ isFile: () => true, size: 128 * 1024 } as never);
+    const f = readerFixture(); f.stat.mockResolvedValue({ isFile: () => true, size: 128 * 1024 });
     const open = filesystem.open.mockRejectedValueOnce(new Error('unreadable'));
     expect(await f.read()).toBe(null);
     const close = vi.fn(async () => {});
-    open.mockResolvedValue({ read: async () => ({ bytesRead: 0 }), close } as never);
+    open.mockResolvedValue({ read: async () => ({ bytesRead: 0 }), close });
     expect(await f.read()).toBe(null); expect(close).toHaveBeenCalledOnce();
   });
 });

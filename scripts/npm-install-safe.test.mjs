@@ -339,6 +339,120 @@ test("reify and repair still publish and propagate generation failure", {
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
+test("test:affected preflight refuses stale workspace lock metadata before launching tests", async () => {
+  const fixture = createManifestResolutionFixture();
+  const manifestPath = join(fixture.repoRoot, "packages", "operator-core", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.dependencies = { "fixture-pkg": "1.2.3" };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  const events = [];
+  let childRuns = 0;
+  const run = () => runCommandUnderInstallMutex({
+    repoRoot: fixture.repoRoot,
+    commandArgs: ["node", "scripts/affected-tests.mjs"],
+    acquireReadMutex: async (_name, fn) => fn(),
+    runCommand: () => { childRuns += 1; return { status: 0 }; },
+    env: {},
+    log: (line) => events.push(line),
+  });
+
+  try {
+    assert.equal(await run(), TEST_FILE_EXIT_NOT_MEASURED);
+    assert.equal(childRuns, 0);
+    assert.match(events.join("\n"), /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT/);
+    assert.match(events.join("\n"), /packages\/operator-core dependencies/);
+    assert.match(events.join("\n"), /TEST_RUN_NOT_MEASURED reason=workspace-lock-manifest-drift/);
+
+    delete manifest.dependencies;
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    assert.equal(await run(), 0, events.join("\n"));
+    assert.equal(childRuns, 1);
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fallback install refuses stale workspace lock metadata before npm runs", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  const manifestPath = join(fixture.repoRoot, "packages", "operator-core", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.dependencies = { "fixture-pkg": "1.2.3" };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fixture.cli, "--repo-root", fixture.repoRoot, "install", "--dry-run"],
+      { cwd: fixture.repoRoot, encoding: "utf8", timeout: 15_000, env: fixture.env },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr + result.stdout);
+    assert.match(result.stderr, /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT/);
+    assert.match(result.stderr, /packages\/operator-core dependencies/);
+    assert.equal(existsSync(fixture.tracePath), false, "npm cache verify and Arborist must not start");
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("manifest-only installs refuse stale workspace metadata before resolution", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  const manifestPath = join(fixture.repoRoot, "packages", "operator-core", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.dependencies = { "stale-fixture": "1.0.0" };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  try {
+    const blocked = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      cwd: fixture.repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(blocked.error);
+    assert.equal(blocked.status, 1, blocked.stderr + blocked.stdout);
+    assert.match(blocked.stderr, /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT/);
+    assert.match(blocked.stderr, /packages\/operator-core dependencies/);
+    assert.equal(existsSync(fixture.tracePath), false, "the cache verifier and Arborist must not start");
+
+    // Even package-lock-only invokes Arborist's graph resolver. Refuse it too while
+    // the recorded graph disagrees with the manifests, then prove it proceeds once
+    // the workspace lock mirror is reconciled.
+    fixture.args.push("--package-lock-only");
+    const driftedLockOnly = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      cwd: fixture.repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(driftedLockOnly.error);
+    assert.equal(driftedLockOnly.status, 1, driftedLockOnly.stderr + driftedLockOnly.stdout);
+    assert.match(driftedLockOnly.stderr, /NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT/);
+    assert.equal(existsSync(fixture.tracePath), false);
+
+    const lockPath = join(fixture.repoRoot, "package-lock.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock.packages["packages/operator-core"].dependencies = manifest.dependencies;
+    writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
+    const reconciled = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      cwd: fixture.repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(reconciled.error);
+    assert.equal(reconciled.status, 0, reconciled.stderr + reconciled.stdout);
+    assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"), ["cache-verify", "resolve"]);
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("repo writers can proceed during resolution but stay blocked during reify and repair", {
   skip: process.platform === "win32",
 }, () => {
@@ -1562,6 +1676,10 @@ test("test:file runs Vitest under the repo install reader mutex", () => {
     packageJson.scripts["test:file"],
     /bash scripts\/pc-heavy\.sh node --import \.\/scripts\/lib\/committed-source-loader\.mjs scripts\/npm-install-safe\.mjs --exec-under-lock -- node --import \.\/scripts\/lib\/committed-source-loader\.mjs scripts\/test-files\.mjs$/,
   );
+  assert.match(
+    packageJson.scripts["test:affected"],
+    /bash scripts\/pc-heavy\.sh node --import \.\/scripts\/lib\/committed-source-loader\.mjs scripts\/npm-install-safe\.mjs --exec-under-lock -- node scripts\/affected-tests\.mjs$/,
+  );
 });
 
 test("symlinked npm-install-safe CLI executes reader commands", () => {
@@ -1617,14 +1735,26 @@ test("parseCliArgs treats a leading --help / -h as a wrapper help request", () =
 
 test("the CLI prints usage for --help and exits 0 without spawning npm or taking the mutex", () => {
   const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));
-  // A PATH with no npm on it: if --help ever reached npm again the child would fail, not hang.
-  const result = spawnSync(process.execPath, [cli, "--help"], {
-    encoding: "utf8",
-    timeout: 20_000,
-    env: { ...process.env, PATH: "/nonexistent-npm-install-safe-help" },
-  });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, USAGE);
-  assert.match(USAGE, /^Usage: npm run install:safe/);
+  // Keep git available to the committed-source loader, but no npm on PATH: if --help ever
+  // reaches npm, the child fails immediately rather than hanging or running an install.
+  const gitExecutable = process.env.PATH
+    .split(delimiter)
+    .map((dir) => join(dir, "git"))
+    .find((path) => existsSync(path));
+  assert.ok(gitExecutable, "git must be available to the committed-source loader");
+  const binDir = mkdtempSync(join(tmpdir(), "npm-install-safe-help-path-"));
+  try {
+    symlinkSync(gitExecutable, join(binDir, "git"));
+    const result = spawnSync(process.execPath, [cli, "--help"], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, PATH: binDir },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, USAGE);
+    assert.match(USAGE, /^Usage: npm run install:safe/);
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
 });

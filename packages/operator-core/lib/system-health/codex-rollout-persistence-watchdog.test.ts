@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,8 @@ const lifecycleMocks = vi.hoisted(() => ({
   retireLifecycleWatches: vi.fn(async () => ({ awaits: 0, predicateWatches: 0 })),
   releaseWorkItems: vi.fn(async () => ({ releasedIds: [], claimsCleared: 0 })),
   notifyAttention: vi.fn(async () => undefined),
+  broadcast: vi.fn(async () => true),
+  resolve: vi.fn(async () => true),
 }));
 
 vi.mock('../adv-sessions', async (importOriginal) => ({
@@ -25,9 +27,14 @@ vi.mock('../work-item-lease-release', () => ({
   releaseAllWorkItemLeasesForOwner: lifecycleMocks.releaseWorkItems,
 }));
 vi.mock('../attention-notify', () => ({ notifyAttention: lifecycleMocks.notifyAttention }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: lifecycleMocks.broadcast }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  computeConditionStates: () => [], readConditionEnvelopes: async () => [],
+}));
 
 import {
   checkCodexRolloutPersistence,
+  codexRolloutConditionKey,
   classifyCodexProviderError,
   evaluateCodexRolloutPersistence,
   evaluateCodexProviderFailureRecurrence,
@@ -36,6 +43,7 @@ import {
   readCodexRolloutTail,
   scanCodexProviderFailureTail,
   type CodexRolloutPersistenceSnapshot,
+  type CodexRolloutPersistenceWatchdogOptions,
 } from './codex-rollout-persistence-watchdog';
 
 const NOW = 1_000_000;
@@ -67,6 +75,146 @@ describe('evaluateCodexRolloutPersistence', () => {
     expect(evaluateCodexRolloutPersistence({ ...base, historyMtimeMs: NOW - 6 * 60_000 }, NOW).stalled).toBe(false);
     expect(evaluateCodexRolloutPersistence({ ...base, pidAlive: false, rolloutMtimeMs: null }, NOW).stalled).toBe(false);
     expect(evaluateCodexRolloutPersistence({ ...base, rolloutMtimeMs: NOW - 2 * 60_000 }, NOW).stalled).toBe(false);
+  });
+});
+
+describe('P-014 original Codex persistence and provider condition episodes', () => {
+  let root: string, history: string, rollout: string;
+  let previousHome: string | undefined;
+  let now: number;
+  const row = { id: 42, owner_id: 'owner:42', pid: 123, workspace_id: 'workspace:1' };
+  let rows: typeof row[];
+  let open: Array<{ conditionKey: string; openedAtMs: number }>;
+  let updates: unknown[][];
+  let legacyFailure: boolean;
+  let coalesced: boolean;
+  const broadcast = vi.fn(async (_event: { conditionKey?: string; oneShot?: boolean }) => true);
+  const resolve = vi.fn(async (_event: { conditionKey: string }) => true);
+  let opts: CodexRolloutPersistenceWatchdogOptions;
+  const key = (kind: 'persistence' | 'provider') => codexRolloutConditionKey(kind, row.workspace_id, '42', row.owner_id);
+  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const query = strings.join('');
+    if (query.includes('SELECT id, coord_owner_id AS owner_id')) return rows;
+    if (query.includes('INSERT INTO harness_shared.harness_escalations')) {
+      expect(broadcast).toHaveBeenCalled();
+      if (legacyFailure) throw new Error('legacy write failed');
+      return coalesced ? [] : [{ phase: values[0] }];
+    }
+    if (query.includes('SELECT phase')) return [{ phase: values[0] === 'codex-rollout-stall:%'
+      ? 'codex-rollout-stall:42' : 'codex-provider-failure:42' }];
+    if (query.includes('UPDATE harness_shared.harness_escalations')) updates.push(values);
+    return [];
+  }) as unknown as import('postgres').Sql;
+  const pass = () => checkCodexRolloutPersistence(sql, opts);
+  const setTimes = async (historyAt: number, rolloutAt: number) => {
+    await utimes(history, new Date(historyAt), new Date(historyAt));
+    await utimes(rollout, new Date(rolloutAt), new Date(rolloutAt));
+  };
+  const success = async (at: number = now) => {
+    await writeFile(rollout, JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg',
+      payload: { type: 'task_complete', status: 'completed' } }) + '\n');
+    await setTimes(now, now);
+  };
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    now = Date.now() + 1000;
+    rows = [{ ...row }]; open = []; updates = []; legacyFailure = false; coalesced = true;
+    broadcast.mockResolvedValue(true); resolve.mockResolvedValue(true);
+    root = await mkdtemp(join(tmpdir(), 'codex-condition-'));
+    previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    const day = join(root, 'session-42', 'sessions', '2026', '10', '12');
+    await mkdir(day, { recursive: true });
+    history = join(root, 'session-42', 'history.jsonl');
+    rollout = join(day, 'rollout-original.jsonl');
+    await writeFile(history, '{}\n');
+    await writeFile(rollout, ['t1', 't2', 't3'].map(turn => providerTaskCompleteLine(turn)).join('\n') + '\n');
+    await setTimes(now - 60_000, now - 17 * 60_000);
+    opts = { now: () => now, pidAlive: () => true, readOpenConditions: async () => open,
+      rail: { broadcast, resolve } };
+  });
+  afterEach(async () => {
+    if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+    else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHome;
+    await rm(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+  const remember = () => { open = ['persistence', 'provider'].map(kind => ({
+    conditionKey: key(kind as 'persistence' | 'provider'), openedAtMs: now - 1000,
+  })); };
+
+  it('opens both exact one-shot keys before coalescing and recovers after restart with measured files and a successful terminal', async () => {
+    expect((await pass()).alarmed).toEqual([]);
+    expect(broadcast.mock.calls.map(([event]) => event.conditionKey)).toEqual([key('persistence'), key('provider')]);
+    expect(broadcast.mock.calls.every(([event]) => event.oneShot === true)).toBe(true);
+    expect(lifecycleMocks.notifyAttention).not.toHaveBeenCalled();
+    remember(); await success();
+    const result = await pass();
+    expect(resolve.mock.calls.map(([event]) => event.conditionKey)).toEqual([key('persistence'), key('provider')]);
+    expect(result.recovered).toEqual(['42']); expect(result.providerRecovered).toEqual(['42']);
+    expect(updates).toHaveLength(2);
+    expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing-row', 'foreign-owner', 'foreign-workspace', 'duplicate', 'invalid-id', 'invalid-pid'])(
+    'preserves durable episodes for %s registration', async mode => {
+      remember(); await success();
+      if (mode === 'missing-row') rows = [];
+      if (mode === 'foreign-owner') rows = [{ ...row, owner_id: 'foreign' }];
+      if (mode === 'foreign-workspace') rows = [{ ...row, workspace_id: 'foreign' }];
+      if (mode === 'duplicate') rows = [{ ...row }, { ...row }];
+      if (mode === 'invalid-id') rows = [{ ...row, id: true as unknown as number }];
+      if (mode === 'invalid-pid') rows = [{ ...row, pid: Number.NaN }];
+      await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
+    });
+
+  it.each(['missing-history', 'missing-rollout', 'partial-directory', 'dead-pid', 'idle-history', 'future-mtime', 'failed-episodes'])(
+    'preserves persistence recovery for %s evidence', async mode => {
+      remember(); await success();
+      // A missing history does not invalidate independently measured provider success.
+      open = open.filter(episode => episode.conditionKey === key('persistence'));
+      if (mode === 'missing-history') await rm(history);
+      if (mode === 'missing-rollout') await rm(rollout);
+      if (mode === 'partial-directory') await writeFile(join(root, 'session-42', 'sessions', 'not-a-directory'), 'x');
+      if (mode === 'dead-pid') opts.pidAlive = () => false;
+      if (mode === 'idle-history') await setTimes(now - 6 * 60_000, now);
+      if (mode === 'future-mtime') await setTimes(now, now + 60_000);
+      if (mode === 'failed-episodes') opts.readOpenConditions = async () => { throw new Error('condition read failed'); };
+      await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
+    });
+
+  it.each(['empty-tail', 'failed-tail', 'throwing-tail', 'old-success', 'future-success', 'undated-success', 'invalid-open-time'])(
+    'preserves provider episodes for %s evidence', async mode => {
+      remember(); open = open.filter(episode => episode.conditionKey === key('provider')); await success();
+      if (mode === 'empty-tail') await writeFile(rollout, '{}\n');
+      if (mode === 'failed-tail') opts.readRolloutTail = async () => null;
+      if (mode === 'throwing-tail') opts.readRolloutTail = async () => { throw new Error('tail failed'); };
+      if (mode === 'old-success') await success(now - 2000);
+      if (mode === 'future-success') await success(now + 60_000);
+      if (mode === 'undated-success') await writeFile(rollout, JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } }));
+      if (mode === 'invalid-open-time') open[0]!.openedAtMs = Number.NaN;
+      await setTimes(now, now);
+      await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
+    });
+
+  it('keeps delivery legs independent when the legacy insert or condition broadcast fails', async () => {
+    legacyFailure = true;
+    await pass(); expect(broadcast).toHaveBeenCalledTimes(2);
+    legacyFailure = false; coalesced = false;
+    broadcast.mockRejectedValue(new Error('condition rail unavailable'));
+    await pass(); expect(lifecycleMocks.notifyAttention).toHaveBeenCalledTimes(2);
+    expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
+  });
+
+  it('does not retire legacy markers after failed resolution', async () => {
+    remember(); await success(); resolve.mockResolvedValue(false);
+    await pass(); expect(resolve).toHaveBeenCalledTimes(2); expect(updates).toEqual([]);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('refuses invalid threshold %s as recovery evidence', async value => {
+    remember(); open = open.filter(episode => episode.conditionKey === key('persistence')); await success();
+    opts.rolloutLagMs = value;
+    await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
   });
 });
 

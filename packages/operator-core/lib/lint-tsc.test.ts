@@ -108,6 +108,8 @@ import {
   formatLintTscRunStamp,
   gitHeadShaForLintTsc,
   writeLintTscRunMarker,
+  toolchainFailureExitCode,
+  TOOLCHAIN_FAILURE_EXIT_CODE,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
@@ -607,6 +609,73 @@ describe('concurrent-edit regression guard (EI-20211153048499132)', () => {
     expect(stderr).toContain('INCONCLUSIVE');
     expect(stderr).toContain('src/value.ts');
     expect(stderr).not.toContain('Fix the new errors');
+  });
+});
+
+// WI-6554700010009284 — a compile that produced NO output is a toolchain failure: nothing was
+// measured. It used to `process.exit(1)`, and exit 1 is the gate's CONSIDERED failure, so the
+// LINT_TSC_RESULT marker told the caller `status=regressed` (observed when pc-heavy's detached
+// scope could not reach the user D-Bus: PC_HEAVY_RESULT status=undetermined exit=75).
+describe('a no-output toolchain failure never reads as regressed (WI-6554700010009284)', () => {
+  let dir = '';
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = '';
+  });
+
+  function runGateWithSilentCompiler(compilerExit: number) {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-toolchain-failure-'));
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/entry.ts'), 'export const answer = 42;\n');
+    writeFileSync(join(dir, 'baseline.json'), JSON.stringify({ files: {} }));
+    writeFileSync(join(dir, 'fake-tsc.mjs'), `process.exit(${compilerExit});\n`);
+    writeFileSync(
+      join(dir, 'run.mjs'),
+      `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate({ root: ${JSON.stringify(dir)}, ` +
+        `tscCommand: ${JSON.stringify(`${process.execPath} ${join(dir, 'fake-tsc.mjs')}`)}, ` +
+        `baselineFile: ${JSON.stringify(join(dir, 'baseline.json'))}, label: 'fixture', argv: [] });\n`,
+    );
+    let status: number | null = 0;
+    let stdout = '';
+    let stderr = '';
+    try {
+      stdout = execFileSync(process.execPath, [join(dir, 'run.mjs')], { cwd: dir, encoding: 'utf8', stdio: 'pipe' });
+    } catch (error) {
+      const failed = error as { status?: number | null; stdout?: string; stderr?: string };
+      status = failed.status ?? null;
+      stdout = String(failed.stdout ?? '');
+      stderr = String(failed.stderr ?? '');
+    }
+    return { status, stdout, stderr };
+  }
+
+  it("passes the compiler's own abnormal exit through (pc-heavy EX_TEMPFAIL 75 -> error(75))", () => {
+    const { status, stdout, stderr } = runGateWithSilentCompiler(75);
+    expect(status).toBe(75);
+    expect(stdout).toContain('status=error(75)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('toolchain failure');
+  });
+
+  it('a silent compiler that exits 1 still fails, but as error(70), never regressed', () => {
+    const { status, stdout } = runGateWithSilentCompiler(1);
+    expect(status).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+    expect(stdout).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(stdout).not.toContain('status=regressed');
+  });
+
+  it('toolchainFailureExitCode never returns 0 or 1 (pass / considered failure)', () => {
+    expect(toolchainFailureExitCode({ status: 75 })).toBe(75);
+    expect(toolchainFailureExitCode({ status: null, signal: 'SIGTERM' })).toBe(143);
+    expect(toolchainFailureExitCode({ status: null, signal: 'SIGKILL' })).toBe(137);
+    for (const child of [{}, { status: 0 }, { status: 1 }, { status: -1 }, { status: 300 }, { signal: 'NOT_A_SIGNAL' }]) {
+      const code = toolchainFailureExitCode(child);
+      expect(code).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+      expect(formatLintTscResultMarker({ label: 'x', scope: 'all', code })).toContain(`status=error(${code})`);
+    }
   });
 });
 

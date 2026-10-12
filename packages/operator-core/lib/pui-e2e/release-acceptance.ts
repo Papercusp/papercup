@@ -26,6 +26,17 @@ export const REPO_ROOT = moduleRepoRoot(import.meta.url);
 export const UX_CONTRACT = path.join(REPO_ROOT, 'apps/tui/PUBLIC_RELEASE_UX.md');
 export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptance-matrix.json');
 
+/** Classify the SU prerequisite approvals the fixture already answers. OMP
+ * mounts MCP calls as native Write devices; remembering that approval would
+ * grant all native Write calls, including the later effect under test. */
+export function suToolApproval(title: string): { tool: string; remember: boolean } | undefined {
+  const direct = /^(papercusp-su · .+) \(MCP\)$/.exec(title);
+  if (direct) return { tool: direct[1]!, remember: true };
+  const mounted = /^Write\(xd:\/\/mcp(?:__|_)papercusp(?:-|_)su_{1,2}([A-Za-z0-9_]+)\)$/.exec(title);
+  if (mounted) return { tool: `papercusp-su · ${mounted[1]!.replace(/_/g, ' ')}`, remember: false };
+  return undefined;
+}
+
 /** Keep the native interruption probe within one ordinary model response. */
 export function nativeInterruptRequest(listId: string, count = 1000): string {
   if (!Number.isInteger(count) || count < 1 || count > 1000) {

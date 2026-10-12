@@ -225,6 +225,12 @@ function hasConditionKeyProperty(arg) {
 const RAIL_FUNCTION_SET = new Set(RAIL_FUNCTIONS);
 const ALARM_FUNCTION_SET = new Set(ALARM_FUNCTIONS);
 
+/** True when a binding name — an identifier OR a destructuring pattern — introduces `text`. */
+function bindsName(name, text) {
+  if (ts.isIdentifier(name)) return name.text === text;
+  return name.elements.some((element) => !ts.isOmittedExpression(element) && bindsName(element.name, text));
+}
+
 /** Read literal alternatives used by a log, including preceding lexical const bindings. */
 function logLiteralText(node, sf, seen = new Set()) {
   if (!node || seen.has(node)) return '';
@@ -243,7 +249,7 @@ function logLiteralText(node, sf, seen = new Set()) {
   }
   if (!ts.isIdentifier(node)) return '';
   for (let scope = node.parent; scope; scope = scope.parent) {
-    if (isFunctionLike(scope) && scope.parameters.some((p) => ts.isIdentifier(p.name) && p.name.text === node.text)) {
+    if (isFunctionLike(scope) && scope.parameters.some((p) => bindsName(p.name, node.text))) {
       return ''; // A parameter shadows an outer constant, even if its value is unknown.
     }
     if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
@@ -251,8 +257,12 @@ function logLiteralText(node, sf, seen = new Set()) {
     for (const statement of scope.statements) {
       if (!ts.isVariableStatement(statement)) continue;
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name) && declaration.name.text === node.text) {
-          binding = { declaration, constant: !!(statement.declarationList.flags & ts.NodeFlags.Const) };
+        // A destructured name shadows too; its value is not a statically-known literal.
+        if (bindsName(declaration.name, node.text)) {
+          binding = {
+            declaration,
+            constant: ts.isIdentifier(declaration.name) && !!(statement.declarationList.flags & ts.NodeFlags.Const),
+          };
         }
       }
     }

@@ -1,5 +1,25 @@
 # Ongoing-work shipment: legacy package reconciliation proposal
 
+## Current revision — 2026-10-12
+
+This revision supersedes the dated preparation below where it differs. Plan D-006 now records the instruction to ship; the parent shipment lane is held by another agent. This session continues its owned WI-10007422 child under the original SELF route.
+
+The actual selected legacy goal remains killed, with installed version 1.1.0, local user package 0.1.0, manual worklist declaration, and saved worklist version 5. No live configuration was changed. The bundled package is now **1.4.0**, with SHA-256 `ccc9ae22b451eca5ce54473920af9f9695e9e8fce55f331e2e4911c3871edfe3`. Its collection has **defaultSelected:false**: newly active plans are visible but require an owner pick. The old proposal's defaultSelected:true and automatic-selection wording must not be applied.
+
+The required source preparation is implemented using existing surfaces:
+
+- `goals:create` now accepts `standing`, `budgetWindowSec`, and the full validated `launchSettings` document. The existing holder policy validator still applies; a top-level holder changes only the holder key. The shared goal-row writer persists the fields atomically. Creation does not enter GOAL mode or launch a holder.
+- The existing package-board fold now prefers an active instance, then a paused held instance, then an unstarted paused replacement ahead of terminal history. Terminal-only history keeps its prior readout; a package with only an unstarted stub keeps its Start behavior. Selecting a paused replacement is navigation, not activation.
+- Canonical tests passed: **62 creation tests**, native receipt `21155111`, and **11 board tests**, native receipt `21155103`. Both are current working-tree proof, marked dirty in the ledger; neither certifies a released artifact. The earlier red creation receipt `21155084` demonstrates the formerly rejected fields. Receipt `21155099` retained a test-author mistake about the existing conditional mode attribution query; that test was corrected after reading the writer. All processes were drained and locks released.
+
+The exact private proposal is [creation-review.json](../../.papercusp/scratch/wi-10007422/creation-review.json). It contains complete creation arguments, the old/new worklist-body section diff, all **71** saved plan refs from an untruncated authoritative read, source fingerprints, and executable rollout checks. It is **proposal-only**: no handler, goal creation, property write, package replacement, or start was invoked.
+
+The proposed new record is paused and standing. It keeps the $500 / 7-day ceiling, nine complete role profiles, custom tripwire threshold without historical measurements, and the entire existing duty body except its worklist interface section. That change uses the current 1.4 owner-pick contract. The audit-before-placement section and the elected-holder instruction remain. The metadata records the customized body/tripwire through the existing package-instance override so later starts can preserve it. Existing killed records retain their spend, pause/kill history, identity, and property provenance. The proposal explicitly chooses holder loss behavior `deactivate`; no automatic respawn is introduced.
+
+Live approval covers only creating this paused record and transferring the saved refs through the maintained versioned property writer. Before applying, re-read the complete old source and version, verify the serving creation schema and board source contain the changes, create once, read back the actual allocated id, then read the new property version before its CAS write. Require the actual collection to leave newly discovered plans unselected, and verify the old killed record remains unchanged. Agent activation is separate. Final released-artifact evidence, independent certification, author verdict, and shipment remain with the parent shipment lane.
+
+The observations below are retained as **2026-10-08 history**, not current implementation instructions.
+
 Prepared for Avi under WI-10007422, a child of WI-10007153. The approved SELF route continues. This proposal changes no goal, package, property value, agent, or live release.
 
 ## Decision needed

@@ -193,6 +193,139 @@ export function verificationScopeForNpmArgs({
   };
 }
 
+const LOCK_MANIFEST_DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+];
+const LOCK_GUARDED_TEST_RUNNERS = new Set([
+  "scripts/affected-tests.mjs",
+  "scripts/test-files.mjs",
+]);
+
+function normalizedRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * Detect the measured npm failure class before either Arborist or a project test
+ * runner consumes the dependency graph. Root-lock workspace entries mirror the
+ * manifest dependency maps; stale copies can detach npm's ideal-tree link targets
+ * and crash inside build-ideal-tree before npm can repair them.
+ */
+function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
+  const root = resolve(repoRoot);
+  const shrinkwrapPath = join(root, "npm-shrinkwrap.json");
+  const lockPath = existsSync(shrinkwrapPath)
+    ? shrinkwrapPath
+    : join(root, "package-lock.json");
+  if (!existsSync(lockPath)) return [];
+
+  let lock;
+  try {
+    lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  } catch {
+    return [{
+      workspace: "<lockfile>",
+      field: "JSON",
+      differences: { packageLock: { manifest: "readable", lock: "unparseable" } },
+    }];
+  }
+  const lockPackages = lock?.packages;
+  // Legacy npm lockfile formats do not carry the per-workspace manifest mirror
+  // this guard audits. Leave those trees to npm's own parser.
+  if (!lockPackages || typeof lockPackages !== "object" || Array.isArray(lockPackages))
+    return [];
+
+  const candidates = new Set(["", ...resolveWorkspaceDirs(root)]);
+  for (const key of Object.keys(lockPackages)) {
+    if (!key || key.includes("node_modules/") || lockPackages[key]?.link) continue;
+    const absolute = resolve(root, key);
+    if (!isStrictlyWithin(root, absolute)) continue;
+    const rel = relative(root, absolute).split(sep).join("/");
+    if (existsSync(join(absolute, "package.json"))) candidates.add(rel);
+  }
+
+  const mismatches = [];
+  for (const workspace of [...candidates].sort()) {
+    const manifestPath = workspace
+      ? join(root, workspace, "package.json")
+      : join(root, "package.json");
+    if (!existsSync(manifestPath)) continue;
+
+    const lockEntry = lockPackages[workspace];
+    if (!lockEntry || typeof lockEntry !== "object") {
+      mismatches.push({
+        workspace,
+        field: "packages entry",
+        differences: { entry: { manifest: "present", lock: "missing" } },
+      });
+      continue;
+    }
+    if (lockEntry.link) continue;
+
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch {
+      mismatches.push({
+        workspace,
+        field: "package.json",
+        differences: { manifest: { packageJson: "unparseable", lock: "not compared" } },
+      });
+      continue;
+    }
+
+    for (const field of LOCK_MANIFEST_DEPENDENCY_FIELDS) {
+      const declared = normalizedRecord(manifest[field]);
+      const locked = normalizedRecord(lockEntry[field]);
+      const differences = {};
+      for (const dependency of new Set([
+        ...Object.keys(declared),
+        ...Object.keys(locked),
+      ])) {
+        if (isDeepStrictEqual(declared[dependency], locked[dependency])) continue;
+        differences[dependency] = {
+          manifest: Object.hasOwn(declared, dependency) ? declared[dependency] : "<absent>",
+          lock: Object.hasOwn(locked, dependency) ? locked[dependency] : "<absent>",
+        };
+      }
+      if (Object.keys(differences).length > 0)
+        mismatches.push({ workspace, field, differences });
+    }
+  }
+  return mismatches;
+}
+
+function formatRootLockManifestMismatches(mismatches) {
+  const lines = [
+    `NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT: ${mismatches.length} root lockfile field(s) disagree with package manifests.`,
+    "The guarded operation was not started; stale dependency metadata can crash npm Arborist before it repairs the lock.",
+  ];
+  for (const mismatch of mismatches.slice(0, 20)) {
+    lines.push(
+      `  - ${mismatch.workspace || "<root>"} ${mismatch.field}: ${JSON.stringify(mismatch.differences)}`,
+    );
+  }
+  if (mismatches.length > 20)
+    lines.push(`  - … ${mismatches.length - 20} more mismatch(es)`);
+  lines.push(
+    "FIX: reconcile the reported workspace dependency maps in package-lock.json with package.json, review the lockfile, then retry the install.",
+  );
+  return lines.join("\n");
+}
+
+function isGuardedTestRunner(commandArgs, repoRoot) {
+  const targets = new Set(
+    [...LOCK_GUARDED_TEST_RUNNERS].map((path) => resolve(repoRoot, path)),
+  );
+  return commandArgs.some(
+    (arg) => typeof arg === "string" && targets.has(resolve(repoRoot, arg)),
+  );
+}
+
 /**
  * Verify and repair npm's content-addressed cache before reification. npm's
  * cache verifier removes index entries whose content blobs disappeared, so a
@@ -1035,6 +1168,13 @@ function isFalseConfig(value) {
     ["false", "0", "no"].includes(value.toLowerCase());
 }
 
+function isPackageLockOnlyInstall(npmArgs, env) {
+  return npmBooleanArg(npmArgs, "--package-lock-only") === true ||
+    ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, "package_lock_only") ?? "").toLowerCase(),
+    );
+}
+
 function isLocalOrRemotePackageSpec(spec) {
   const unsupportedTarget =
     /^(?:file:|git(?:\+|:)|github:|gitlab:|bitbucket:|https?:|ssh:|\.{1,2}[\\/]|[A-Za-z]:[\\/]|[\\/]{1,2})/i;
@@ -1079,11 +1219,7 @@ function manifestOnlyInstallPlan(npmArgs, env) {
       eligible: false,
       reason: "the invocation disables or redirects manifest or lockfile writes",
     };
-  const packageLockOnly =
-    npmBooleanArg(npmArgs, "--package-lock-only") === true ||
-    ["true", "1", "yes"].includes(
-      String(npmConfigValue(env, "package_lock_only") ?? "").toLowerCase(),
-    );
+  const packageLockOnly = isPackageLockOnlyInstall(npmArgs, env);
   return {
     eligible: true,
     packageLockOnly,
@@ -1260,11 +1396,18 @@ async function runManifestOnlyInstall({
       // applied; main() then re-resolves against the current manifests (WI-10006714).
       let stale = null;
       const layout = await withFsMutexRead(lockName, async () => {
+        const mismatches = findRootLockManifestMismatches(repoRoot);
+        if (mismatches.length > 0) {
+          console.error(formatRootLockManifestMismatches(mismatches));
+          return { supported: false, preflightDrift: true };
+        }
         const value = manifestOnlyResolutionLayout(repoRoot);
         if (!value.supported) return value;
         input = createManifestOnlyTree(repoRoot, value.inputPaths);
         return value;
       });
+      if (layout.preflightDrift)
+        return { supported: true, status: 1 };
       if (!layout.supported)
         return { supported: false, reason: layout.reason };
       try {
@@ -1592,6 +1735,14 @@ export async function runCommandUnderInstallMutex({
   let childStarted = false;
 
   const executeReader = async () => {
+    if (!cacheRead && isGuardedTestRunner(commandArgs, repoRoot)) {
+      const mismatches = findRootLockManifestMismatches(repoRoot);
+      if (mismatches.length > 0) {
+        log(formatRootLockManifestMismatches(mismatches));
+        log("TEST_RUN_NOT_MEASURED reason=workspace-lock-manifest-drift");
+        return TEST_FILE_EXIT_NOT_MEASURED;
+      }
+    }
     childStarted = true;
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
@@ -1748,6 +1899,11 @@ export async function main(argv = process.argv.slice(2)) {
   const installStatus = await withFsMutex(
     lockName,
     async () => {
+      const mismatches = findRootLockManifestMismatches(repoRoot);
+      if (mismatches.length > 0) {
+        console.error(formatRootLockManifestMismatches(mismatches));
+        return 1;
+      }
       const cacheStatus = await verifyNpmCacheExclusive({
         verify: () => verifyNpmCache({ repoRoot, npmArgs, env: npmEnv }),
       });

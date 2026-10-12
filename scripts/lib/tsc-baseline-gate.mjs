@@ -18,6 +18,7 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -2674,6 +2675,33 @@ export function formatLintTscResultMarker({
   return runStartIso != null ? `${withRouted} at=${runStartIso} head=${headSha ?? 'unknown'}` : withRouted;
 }
 
+/** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
+export const TOOLCHAIN_FAILURE_EXIT_CODE = 70;
+
+/**
+ * WI-6554700010009284 — the exit code for a run in which tsc produced NO output: a toolchain
+ * failure (the compiler never ran, was withheld by pc-heavy, or died before printing anything).
+ *
+ * Exit 1 is reserved for this gate's own CONSIDERED failure, which `formatLintTscResultMarker`
+ * labels `regressed` (or a flag-refined variant), and exit 0 is a pass, so this returns neither.
+ * Exiting 1 here told the caller "your edit regressed types" when nothing was measured: observed
+ * in a sandbox with no user D-Bus, where pc-heavy's detached scope failed with
+ * PC_HEAVY_RESULT status=undetermined exit=75. The child's own abnormal status passes through
+ * (pc-heavy's EX_TEMPFAIL 75, a signal as 128+N), so the marker names the real failure as
+ * `error(N)`. Anything else becomes EX_SOFTWARE (70). Every value is non-zero, so CI stays red.
+ *
+ * @param {{ status?: number | null, signal?: string | null }} [child]
+ * @returns {number}
+ */
+export function toolchainFailureExitCode({ status = null, signal = null } = {}) {
+  if (typeof status === 'number' && Number.isInteger(status) && status > 1 && status <= 255) return status;
+  const signalNumber = signal
+    ? /** @type {Record<string, number | undefined>} */ (/** @type {unknown} */ (osConstants.signals))[signal]
+    : undefined;
+  if (typeof signalNumber === 'number' && Number.isInteger(signalNumber)) return 128 + signalNumber;
+  return TOOLCHAIN_FAILURE_EXIT_CODE;
+}
+
 /**
  * The pre-run stamp (EI-19323399466378077): what this run is about to judge, printed BEFORE the
  * compile so a killed/hung run still leaves it on disk. Mirrors scripts/test-files.mjs's
@@ -3071,6 +3099,12 @@ export async function runTscBaselineGate({
 
   let tscOutput = '';
   let tscThrew = false;
+  // WI-6554700010009284 — the compile child's abnormal exit, kept so a no-output toolchain
+  // failure exits with ITS code (see toolchainFailureExitCode), never the `regressed` exit 1.
+  /** @type {number | null} */
+  let tscChildStatus = null;
+  /** @type {string | null} */
+  let tscChildSignal = null;
   // EI-21441555291852229 — some projects consume tracked declarations generated from
   // JavaScript modules. Running tsc before refreshing those companions makes the first
   // typecheck after an export change fail on the stale `.d.mts`, even though that same
@@ -3271,13 +3305,22 @@ export async function runTscBaselineGate({
     } catch (e) {
       tscThrew = true;
       tscOutput = e.stdout || '';
+      tscChildStatus = typeof e.status === 'number' ? e.status : null;
+      tscChildSignal = typeof e.signal === 'string' ? e.signal : null;
     }
   }
   if (tscThrew && !tscOutput) {
     // tsc itself failed to run (no diagnostics at all) — never treat that as zero errors, it would
-    // ratchet every file's baseline to 0 and mask everything.
-    console.error('❌ tsc produced no output — toolchain failure, not a clean run.');
-    process.exit(1);
+    // ratchet every file's baseline to 0 and mask everything. Never exit 1 either (WI-6554700010009284):
+    // exit 1 is the gate's considered failure, which the LINT_TSC_RESULT marker labels `regressed`.
+    const toolchainExit = toolchainFailureExitCode({ status: tscChildStatus, signal: tscChildSignal });
+    console.error(
+      `❌ tsc produced no output — toolchain failure, not a clean run ` +
+        `(child status=${tscChildStatus ?? 'none'} signal=${tscChildSignal ?? 'none'}). Exiting ${toolchainExit}: ` +
+        `the verdict is error(${toolchainExit}), UNMEASURED, not a type regression. Re-run it ` +
+        `(from host context if a sandbox lacked the user D-Bus pc-heavy needs).`,
+    );
+    process.exit(toolchainExit);
   }
 
   const diagnosticRoots = diagnosticPathRoots(root);

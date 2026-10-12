@@ -70,7 +70,8 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
         agentHome: extension.agentHome, exactResumeSupported: true, missingReason: null };
   const session = { ...row, sessionId: nativeId, ompThreadId: nativeId,
     configDir: native.backend === 'claude' ? native.configDir : undefined,
-    codexHome: native.backend === 'codex' ? native.codexHome : undefined };
+    codexHome: native.backend === 'codex' ? native.codexHome : undefined,
+    agentHome: native.backend === 'omp' ? native.agentHome : undefined };
   stage?.('resume-local-liveness');
   let liveHost = await findLiveHostAsync(record.ownerId);
   if (liveHost) throw new Error('This session still has a live host; reconnect to that process');

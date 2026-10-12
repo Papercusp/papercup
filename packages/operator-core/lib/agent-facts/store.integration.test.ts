@@ -38,6 +38,7 @@ import {
   FACT_VOLATILE_MAX_TTL_SEC,
   GUARD_RAIL_KEY_PREFIX,
   listLapsedWallFacts,
+  sweepExpiredFacts,
   listConventionFacts,
   factCitationRef,
   listFactEvictionDisclosures,
@@ -3034,6 +3035,32 @@ describe('listLapsedWallFacts', () => {
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).toContain('wall:renewed');
     await assertFact({ ...base, key: 'wall:renewed', body: 'fresh body', ttlSec: 3600 }, db.sql);
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).not.toContain('wall:renewed');
+  });
+
+  it('keeps a lapsed wall folded and retained until explicit retraction', async () => {
+    await assertLapsed('wall:retained-after-lapse', 'owner action is still required', 45);
+    const selector = { scope: 'harness' as const, scopeRef: 'papercusp' };
+
+    const folded = await foldFacts([selector], { workspaceId: WS, audiences: 'all' }, db.sql);
+    expect(folded.map((fact) => fact.key)).toContain('wall:retained-after-lapse');
+    await expect(countLiveFacts(selector, { workspaceId: WS, audiences: 'all' }, db.sql)).resolves.toBe(1);
+    expect(renderFactsFold(folded, Date.now())).toContain('TTL lapsed — remains active until retracted');
+    const resolved = await resolveAssumptions(['wall:retained-after-lapse'], [selector], { workspaceId: WS }, db.sql);
+    expect(resolved[0]?.condition).toBe('live');
+
+    // The ordinary 30-day reaper must not erase an unretracted wall's only
+    // durable record just because the review deadline was missed.
+    expect(await sweepExpiredFacts(db.sql)).toBe(0);
+    expect(await factVersions({ ...base, key: 'wall:retained-after-lapse' }, db.sql)).toHaveLength(1);
+
+    await retractFact({ scope: 'harness', scopeRef: 'papercusp', key: 'wall:retained-after-lapse', workspaceId: WS }, db.sql);
+    const afterRetraction = await foldFacts([selector], { workspaceId: WS, audiences: 'all' }, db.sql);
+    expect(afterRetraction.map((fact) => fact.key)).not.toContain('wall:retained-after-lapse');
+    await db.sql`UPDATE harness_shared.agent_facts
+                    SET retracted_at = now() - interval '31 days'
+                  WHERE workspace_id = ${WS} AND key = 'wall:retained-after-lapse'`;
+    expect(await sweepExpiredFacts(db.sql)).toBe(1);
+    expect(await factVersions({ ...base, key: 'wall:retained-after-lapse' }, db.sql)).toHaveLength(0);
   });
 });
 

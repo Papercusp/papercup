@@ -1740,6 +1740,9 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(stats.delivered).toBe(0);
     expect(stats.suppressed).toBe(1);
     expect(stats.deferred).toBe(0);
+    // WI-6554700010009285: only an inbox-FOLDING read may retire a wake. A lifecycle
+    // activity:report (a relaunched CLI's "▶ session started") reads no mail.
+    expect(h.lastInboxReadAtBatch).toHaveBeenCalledWith(['su-a'], { foldedOnly: true });
   });
 
   it('retries a psu-host-accepted wake after the inbox read advances, so the pending host text can refresh', async () => {

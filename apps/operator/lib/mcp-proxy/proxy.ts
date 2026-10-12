@@ -1220,6 +1220,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:get",
   "work_items:search",
   "work_items:claimable",
+  // Process inventory is a ledger read; its optional reconciliation is dry-run only.
+  "processes:list",
   // Scorecard reads use seed-free rubric resolution; a missing/malformed rubric stays
   // unknown instead of entering the first-party lazy-seed writer.
   "scorecards:get",

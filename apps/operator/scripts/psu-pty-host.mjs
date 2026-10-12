@@ -8544,7 +8544,7 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     state(id) {
       return getState(id);
     },
-    /** True when `id` is pending or completed within the TTL. `id` may be
+    /** True when `id` is retained within the TTL, including refused writes. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
     isDuplicate(id) {
@@ -8554,14 +8554,21 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     markPending(id) {
       if (!id) return;
       const current = entries.get(id);
-      if (current?.state === 'completed' || current?.state === 'cancelled' || current?.writeStarted) return;
+      if (current?.state === 'completed' || current?.state === 'cancelled' || current?.state === 'superseded' || current?.writeStarted) return;
       entries.set(id, { ...current, state: 'pending', at: now() });
     },
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
       if (!id) return;
-      if (entries.get(id)?.state === 'cancelled') return;
+      if (['cancelled', 'superseded'].includes(entries.get(id)?.state)) return;
       entries.set(id, { state: 'completed', at: now() });
+    },
+    /** A written but unconfirmed turn belongs to a child that no longer exists.
+     * Preserve its original TTL and suppress repasting without claiming success. */
+    markSuperseded(id) {
+      const current = entries.get(id);
+      if (current?.state !== 'pending') return;
+      entries.set(id, { ...current, state: 'superseded', writeStarted: true });
     },
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
@@ -12015,10 +12022,14 @@ export function hostThroughPty(o) {
       transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
       : { available: false, started: false };
   };
-  const reconcileNativeStartPending = () => {
+  const reconcileNativeStartPending = ({ supersededOnly = false } = {}) => {
     for (const [id, pending] of nativeStartPending) {
-      if (pending.child !== child || nativeStartProof(pending).started) {
-        if (pending.child === child) deliveryDedup.markCompleted(id);
+      if (pending.child !== child) {
+        deliveryDedup.markSuperseded(id);
+        nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'native-turn-start-superseded', { deliveryId: id, childGeneration });
+      } else if (!supersededOnly && nativeStartProof(pending).started) {
+        deliveryDedup.markCompleted(id);
         nativeStartPending.delete(id);
       }
     }
@@ -12950,13 +12961,20 @@ export function hostThroughPty(o) {
       if (receiveProvenanceRejection) return { ok: false, reason: receiveProvenanceRejection };
       // EI-19311270129974785: a RETRY of a delivery this host has already accepted
       // is short-circuited before any mode-specific state mutation. Pending means
-      // the detached pipeline has not committed a write yet; completed means the
-      // original delivery reached its commitment point. A terminal failed/deferred
+      // delivery remains unconfirmed (either gated or already written); completed
+      // means the original delivery reached its commitment point. A terminal failed/deferred
       // pipeline clears pending below so a later retry remains eligible.
       // Absent/empty deliveryId (a one-shot raw/osc/compact/mcp-reconnect call, or a
       // pre-fix sender) makes this a no-op — unchanged behavior.
+      // Reconcile child replacement before looking up this ID: a previous
+      // turn's context may already have been retired by a different delivery.
+      // The shared dedup tombstone survives both paths and refuses a repaste.
+      reconcileNativeStartPending({ supersededOnly: true });
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
+        if (duplicateState === 'superseded') {
+          return { ok: false, reason: 'deferred-native-turn-start-superseded' };
+        }
         const pendingStart = nativeStartPending.get(msg.deliveryId);
         if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
           deliveryDedup.markCompleted(msg.deliveryId);

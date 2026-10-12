@@ -457,19 +457,18 @@ export const DEAD_END_KEY_PREFIX = 'dead-end:';
  * `facts:assert { slot:'wall' }` (facts/assert.ts normalizeWallSlot) keys the
  * fact under this prefix — machine-greppable (`key LIKE 'wall:%'`), same
  * convention as {@link DEAD_END_KEY_PREFIX} — and defaults its TTL to
- * {@link WALL_DEFAULT_TTL_SEC}; unlike an ordinary fact, this typed slot has
- * an explicit store-owned lifetime so a routine decay window can't silently
- * clear it. {@link listLapsedWallFacts}
- * is the read leg the wall-lapse watchdog sweeps so an eventual lapse is LOUD
- * (an escalation), never silent.
+ * {@link WALL_DEFAULT_TTL_SEC}. The TTL is a review deadline, not a clearance:
+ * an unretracted current wall remains in folds after expiry until explicit
+ * retraction or supersession. {@link listLapsedWallFacts} is the read leg the
+ * wall-lapse watchdog sweeps so an eventual lapse is LOUD (an escalation),
+ * never silent.
  */
 export const WALL_KEY_PREFIX = 'wall:';
 /** Default TTL applied to a `slot:'wall'` assert when the caller omits
  *  `ttlSec` — the schema's own max (90d, no schema change needed). Long
  *  enough that a shorter ordinary lifetime cannot silently clear an
- *  unremediated risk;
- *  the wall-lapse watchdog is the loud backstop for when even 90d elapses
- *  without a re-assert or an explicit retract. */
+ *  unremediated risk. Expiry raises the wall-lapse alert and keeps the fact
+ *  folded until explicit retraction or supersession. */
 export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
 /**
@@ -609,6 +608,33 @@ export const FACT_MAX_DEPENDENCIES = 12;
 export const FACT_MAX_SUPERSEDES = 12;
 /** Bound for {@link FactDependency.observed} — a label, not a payload. */
 export const FACT_DEPENDENCY_OBSERVED_CHARS = 120;
+
+/**
+ * P-012 (derived-status-not-hand-written-2026-10-12) — a `dependsOn` entry spelled
+ * `file:<repo-relative path>` is a FILE ANCHOR rather than a registered cell. It is
+ * observed through the same `file:` content-hash resolver `work_items:checkpoint`
+ * uses (`freshness/resolvers.ts`), so its stored `digest` IS the file's blob token
+ * (`sha256:<16 hex>`) at assert time, and a later read reports the fact stale the
+ * moment that blob changes.
+ */
+export const FACT_FILE_ANCHOR_PREFIX = 'file:';
+
+/** True when a declared dependency is a file anchor (see {@link FACT_FILE_ANCHOR_PREFIX}). PURE. */
+export function isFactFileAnchor(cell: string): boolean {
+  const c = (cell ?? '').trim();
+  return c.startsWith(FACT_FILE_ANCHOR_PREFIX) && c.length > FACT_FILE_ANCHOR_PREFIX.length;
+}
+
+/**
+ * P-012 — the stored lifetime of a file-anchored fact that declared no `ttlSec`.
+ *
+ * The anchor, not the clock, is what tells a reader the fact went stale, so the
+ * caller may omit `ttlSec`. The row still gets a FINITE bound rather than
+ * `infinity`: an unbounded row has the maximal remaining-TTL fraction and would be
+ * the least evictable row in the capped population (the reason `permanent:true` is
+ * refused outside the cap-exempt kinds). 90 days is the schema's own `ttlSec` max.
+ */
+export const FILE_ANCHORED_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
 export interface AgentFact {
   scope: FactScope;
@@ -1021,6 +1047,13 @@ export interface FactLifetimeInput {
   permanent?: boolean;
   confidence?: FactConfidence | null;
   subjectVolatile?: boolean;
+  /**
+   * P-012 — the fact carries at least one RESOLVED file anchor (a `file:` dependency
+   * with a stored blob digest). Such a fact may omit `ttlSec`: its staleness is
+   * detected by the anchor. An anchor that did not resolve does not count, because
+   * it can never report the fact stale.
+   */
+  fileAnchored?: boolean;
 }
 
 /**
@@ -1106,12 +1139,16 @@ export function validateFactLifetime(input: FactLifetimeInput): string | null {
   // null kind is exactly the "is this a wall:/dead-end:/guard-rail: key" question.
   if (isFactCapExempt({ key, kind: null })) return null;
   if (input.confidence === 'provisional' || input.confidence === 'suspected') return null;
+  // P-012 — a resolved file anchor declares the fact's lifetime by content: it goes
+  // stale when the anchored blob changes (resolveFactLifetime gives it a finite GC bound).
+  if (input.fileAnchored === true) return null;
 
   return (
     'facts:assert — state how long this fact should live; there is no default any more. Pass ttlSec:<seconds> ' +
     "for a bounded fact, or permanent:true for a standing one (accepted for kind:'convention' and the " +
     "wall:/dead-end:/guard-rail: slots). Declaring kind:'convention' makes it permanent on its own, and " +
-    "confidence:'provisional'|'suspected' already implies a short TTL. The silent 7-day default was removed " +
+    "confidence:'provisional'|'suspected' already implies a short TTL. A dependsOn 'file:<path>' anchor also " +
+    'counts, but only when that file resolves to a blob. The silent 7-day default was removed ' +
     'because it was being applied to facts whose lifetime nobody had chosen, which then expired unread.'
   );
 }
@@ -1167,6 +1204,11 @@ export function resolveFactLifetime(
 
   const byConfidence = defaultTtlSecForConfidence(input.confidence);
   if (byConfidence != null) return { permanent: false, ttlSec: byConfidence };
+
+  // P-012 — BELOW the confidence branch on purpose: a hedged (provisional/suspected)
+  // file-anchored fact keeps its short hedge TTL, so a hunch cannot calcify for 90d
+  // merely because it also named a file.
+  if (input.fileAnchored === true) return { permanent: false, ttlSec: FILE_ANCHORED_DEFAULT_TTL_SEC };
 
   // UNREACHABLE while validateFactLifetime runs first — pinned from BOTH directions by
   // describe('the two functions AGREE — resolve is only ever reached past validate') in
@@ -1809,6 +1851,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // absorbed), and it refuses here in the store rather than only in the tool so a
   // routine or a backfill cannot slip past it — the same reasoning that puts
   // validateUndecidableSettledBy and validateConventionEnforcement on this side.
+  // P-012 — only a RESOLVED anchor (a stored blob digest) counts as a lifetime: an
+  // anchor recorded as `unknown` can never report the fact stale.
+  const fileAnchored = (input.dependsOn ?? []).some(
+    (d) => isFactFileAnchor(d?.cell ?? '') && typeof d.digest === 'string' && d.digest.length > 0,
+  );
   const lifetimeError = validateFactLifetime({
     key: input.key,
     kind: input.kind ?? null,
@@ -1816,6 +1863,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     permanent: input.permanent,
     confidence: input.confidence ?? null,
     subjectVolatile,
+    fileAnchored,
   });
   if (lifetimeError) throw new InvalidInputError(lifetimeError);
   const lifetime = resolveFactLifetime({
@@ -1825,6 +1873,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     confidence: input.confidence ?? null,
     subjectVolatile,
     effectiveTtlSec,
+    fileAnchored,
   });
   const permanentFact = lifetime.permanent;
   const ttl = lifetime.ttlSec;
@@ -3004,7 +3053,11 @@ function liveFactPredicate(
          -- would serve an agent both the corrected value and the value it
          -- corrected, as peers.
          AND superseded_at IS NULL
-         AND retracted_at IS NULL AND expires_at > now()
+         AND retracted_at IS NULL
+         -- A wall's TTL is a review deadline, not evidence that its owner-gated
+         -- blocker cleared. Keep the current unretracted wall in every fold;
+         -- listLapsedWallFacts separately drives the expiry escalation.
+         AND (expires_at > now() OR key LIKE ${`${WALL_KEY_PREFIX}%`})
          AND ${
            keyPrefixes.length > 0
              ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
@@ -3608,13 +3661,18 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
   const sql = sqlOf(inject);
   const rows = await sql<{ key: string }[]>`
     DELETE FROM harness_shared.agent_facts
-     WHERE expires_at < now() - interval '30 days'
+     WHERE (expires_at < now() - interval '30 days'
         OR retracted_at < now() - interval '30 days'
         -- P-008 (a): bound the version tail on the SUPERSEDE date, not on the
         -- version's own expiry. A long-TTL fact (a 90d wall) corrected on day
         -- one leaves a version whose expires_at is still months out; without
         -- this clause the tail would outlive the value it was corrected to.
-        OR superseded_at < now() - interval '30 days'
+        OR superseded_at < now() - interval '30 days')
+       -- Keep the current unretracted wall as durable blocker state after its
+       -- TTL lapse. Expiry alerts for review; only explicit retraction or a
+       -- newer version retires the blocker and allows history cleanup.
+       AND NOT (key LIKE ${`${WALL_KEY_PREFIX}%`}
+                AND retracted_at IS NULL AND superseded_at IS NULL)
     RETURNING key`;
   return rows.length;
 }
@@ -3698,9 +3756,12 @@ export function renderFactsFold(
   const lines = facts.map((f) => {
     const scope = f.scopeRef ? `${f.scope}:${f.scopeRef}` : f.scope;
     const aud = f.audienceScope ? ` ⊸${f.audienceScope}` : '';
+    const expiresAt = Date.parse(f.expiresAt);
     const expiry = isPermanentFactExpiry(f.expiresAt)
       ? 'permanent'
-      : `expires ~${Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000))}d`;
+      : f.key.startsWith(WALL_KEY_PREFIX) && Number.isFinite(expiresAt) && expiresAt <= now
+        ? 'TTL lapsed — remains active until retracted'
+        : `expires ~${Math.max(0, Math.round((expiresAt - now) / 86_400_000))}d`;
     const age = renderFactAge(f.updatedAt, now);
     const rendered = renderFactSrc(f);
     const src = rendered ? `, src ${rendered}` : '';

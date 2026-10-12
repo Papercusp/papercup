@@ -7,6 +7,7 @@ export const HOSTED_DIRECTORY_BINDING_ROUTES = [
   { method: 'PUT', path: '/hosted/organizations/:organizationId/members/:userId/directory-binding', access: 'authenticated' },
   { method: 'DELETE', path: '/hosted/organizations/:organizationId/members/:userId/directory-binding', access: 'authenticated' },
   { method: 'POST', path: '/hosted/organizations/:organizationId/members/access-review', access: 'authenticated' },
+  { method: 'POST', path: '/hosted/organizations/:organizationId/members/:userId/reduce-access', access: 'authenticated' },
 ] as const;
 
 export function createHostedDirectoryBindingRoutes(manager: HostedDirectoryBindingManager) {
@@ -26,6 +27,26 @@ export function createHostedDirectoryBindingRoutes(manager: HostedDirectoryBindi
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_json');
         body = value;
       } catch { return Response.json({ error: { code: 'invalid_json' } }, { status: 400 }); }
+      if (route.path.endsWith('/reduce-access')) {
+        if (Object.keys(body).some((key) => !['status', 'purpose'].includes(key))) {
+          return Response.json({ error: { code: 'membership_reduction_invalid:fields' } }, { status: 400 });
+        }
+        try {
+          const membership = await manager.reduceMembership(principal, {
+            organizationId, userId: String(ctx.params.userId ?? ''),
+            status: body.status as 'suspended' | 'revoked', purpose: body.purpose as string,
+          });
+          return Response.json({ ok: true, membership }, { headers: { 'cache-control': 'no-store' } });
+        } catch (cause) {
+          const code = cause instanceof Error ? cause.message : 'membership_reduction_failed';
+          const status = code === 'membership_reduction_forbidden' ? 403
+            : code === 'membership_reduction_restore_forbidden' ? 409
+            : ['membership_reduction_member_not_found', 'membership_reduction_organization_not_found'].includes(code) ? 404
+            : /^membership_reduction_invalid:/.test(code) || /^hosted-governance:/.test(code) ? 400 : 503;
+          return Response.json({ error: { code: status === 503 ? 'membership_reduction_unavailable' : code } },
+            { status, headers: { 'cache-control': 'no-store' } });
+        }
+      }
       if (route.method === 'POST') {
         try {
           const review = await manager.review(principal, { organizationId, purpose: body.purpose as string });

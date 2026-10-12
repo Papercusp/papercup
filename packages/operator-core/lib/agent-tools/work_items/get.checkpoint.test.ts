@@ -88,7 +88,8 @@ import {
   computeWorkItemSubjectFingerprint,
 } from '../../carry-note';
 
-const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
+const ctxFields = { uiClientId: 'su-tester', workspaceId: 'default' };
+const ctx = ctxFields as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: any };
 
@@ -485,7 +486,7 @@ describe('work_items:get — checkpoint field', () => {
 
     const result = await get.handler(
       { id: item.id } as never,
-      { ...ctx, sourceProjection: { pick: ['summary'] } } as never,
+      { ...ctxFields, sourceProjection: { pick: ['summary'] } } as never,
     ) as Out;
 
     expect(workItemsGetSourceReadOptions({ pick: ['summary'] }, false)).toEqual({

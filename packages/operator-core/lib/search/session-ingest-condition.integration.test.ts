@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as org from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import { readIngestBacklogRecovery } from './session-ingest-lag-watchdog';
 
 describe('ingest exact recovery (real migrated PostgreSQL and files)', () => {
   let db: OrgTestDb, directory: string;
   beforeAll(async () => {
     db = await createOrgTestDb(); directory = await mkdtemp(join(tmpdir(), 'ingest-condition-'));
-    vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql: db.adminSql } as never);
+    vi.spyOn(org, 'getOrgPg');
+    mockOrgPgSql(vi.mocked(org.getOrgPg), db.adminSql);
   });
   afterAll(async () => {
     vi.restoreAllMocks();

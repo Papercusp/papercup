@@ -8049,6 +8049,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     },
   );
 
+  // Every-pair picker + port resolution for codex/omp sources lives in
+  // psu-resume-cross-backend.test.ts (acceptance bar R-10's tree check).
   it("CONTROL: a resume that names no target still composes a same-backend native resume", () => {
     const command = buildAgentLaunchCommand({
       mode: "resume",
@@ -12098,6 +12100,51 @@ describe("original Codex routing — existing profile only", () => {
 
 describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)", () => {
   const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  it("uses the saved OMP home for transcript preflight and native resume", async () => {
+    const agentHome = join(home, 'relocated-omp', 'agent');
+    const sessions = join(agentHome, 'sessions', 'project');
+    mkdirSync(sessions, { recursive: true });
+    const transcript = join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`);
+    writeFileSync(transcript, `{"type":"session","id":"${UUID}"}\n`);
+    const source = { id: 42, agent: 'omp', ompThreadId: UUID, agentHome };
+    const rematerialize = vi.fn(async () => null);
+    expect(sessionTranscriptFile(source, { home })).toBe(transcript);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+    expect(rematerialize).not.toHaveBeenCalled();
+    expect(ompTrackedResumeEnv(source, { home })).toMatchObject({
+      PI_CONFIG_DIR: 'relocated-omp', PI_CODING_AGENT_DIR: agentHome,
+    });
+  });
+
+  it("uses the configured OMP root when no saved OMP home was supplied", async () => {
+    const root = join(home, 'configured-omp');
+    vi.stubEnv('PAPERCUSP_SU_OMP_HOMES_DIR', root);
+    try {
+      const agentHome = join(root, 'session-42', 'agent');
+      const sessions = join(agentHome, 'sessions', 'project');
+      mkdirSync(sessions, { recursive: true });
+      const transcript = join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`);
+      writeFileSync(transcript, `{"type":"session","id":"${UUID}"}\n`);
+      const source = { id: 42, agent: 'omp', ompThreadId: UUID };
+      const rematerialize = vi.fn(async () => null);
+      expect(sessionTranscriptFile(source, { home })).toBe(transcript);
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+      expect(rematerialize).not.toHaveBeenCalled();
+      expect(ompTrackedResumeEnv(source, { home }).PI_CODING_AGENT_DIR).toBe(agentHome);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not replace a missing saved OMP home with a transcript in another home", async () => {
+    const sessions = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions');
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`), '{}\n');
+    const source = { id: 42, agent: 'omp', ompThreadId: UUID, agentHome: join(home, 'missing', 'agent') };
+    const rematerialize = vi.fn(async () => null);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(false);
+    expect(rematerialize).toHaveBeenCalledWith(UUID, 'omp', { sourceSession: source, home });
+    expect(ompTrackedResumeEnv(source, { home })).toEqual({});
+  });
+
   it("uses the saved Codex home for exact resume without restoring an unrelated default home", async () => {
     const codexHome = mkdtempSync(join(tmpdir(), 'pui-saved-codex-'));
     try {
