@@ -320,8 +320,16 @@ export async function createDatatypeDestinationSinks(
       ref,
       async deliver(event: CanonicalExternalEvent) {
         const payload = await withRecordLinks(sql, source, { ...event.payload, dataSourceId: source.id });
+        // A record that names its container is readable by that container's members only (D-026);
+        // its list is created empty when membership has not named it yet, so nobody reads it early.
+        const aclRef = str(payload.aclRef);
         const listId = route.scope === 'organization'
-          ? (await ensurePermissionList(sql, source.workspaceId, route.source, source.id)).id
+          ? (await ensurePermissionList(
+            sql,
+            source.workspaceId,
+            route.source,
+            aclRef ? containerPermissionRef(source.id, aclRef) : source.id,
+          )).id
           : null;
         const author = str(payload.author);
         const linked = linkedExternalId(payload);
@@ -345,7 +353,7 @@ export async function createDatatypeDestinationSinks(
 
 /** What applying a provider's membership snapshot did (D-015.4). */
 export type DataSourceMembershipOutcome =
-  | { applied: true; listId: string; members: number; added: number; removed: number }
+  | { applied: true; listId: string; members: number; added: number; removed: number; containers?: number }
   | { applied: false; reason: 'not_organization_scope' | 'permission_mapping_mismatch' };
 
 /**
@@ -365,17 +373,57 @@ export async function applyDataSourceMembership(
     sourceId: string;
     identityProvider: string;
     members: ReadonlyArray<{ providerUserId: string }>;
+    /** Per-container readership (D-026). Absent: container lists are left as they are. */
+    containers?: ReadonlyArray<{ ref: string; title?: string; members: ReadonlyArray<{ providerUserId: string }> }>;
   },
 ): Promise<DataSourceMembershipOutcome> {
   const source = await loadSource(sql, input.workspaceId, input.sourceId);
   if (source.scope !== 'organization') return { applied: false, reason: 'not_organization_scope' };
   if (source.permissionMapping?.mode !== 'source-acl') return { applied: false, reason: 'permission_mapping_mismatch' };
-  const list = await ensurePermissionList(sql, source.workspaceId, normalizePersonalSource(source.kind), source.id);
-  const delta = await replacePermissionListMembers(
-    sql,
-    source.workspaceId,
-    list.id,
-    input.members.map(({ providerUserId }) => ({ provider: input.identityProvider, providerUserId })),
-  );
-  return { applied: true, listId: list.id, members: input.members.length, ...delta };
+  const corpusSource = normalizePersonalSource(source.kind);
+  const toMembers = (members: ReadonlyArray<{ providerUserId: string }>) =>
+    members.map(({ providerUserId }) => ({ provider: input.identityProvider, providerUserId }));
+  const list = await ensurePermissionList(sql, source.workspaceId, corpusSource, source.id);
+  const delta = await replacePermissionListMembers(sql, source.workspaceId, list.id, toMembers(input.members));
+  let added = delta.added;
+  let removed = delta.removed;
+  if (input.containers) {
+    const named: string[] = [];
+    for (const container of input.containers) {
+      const ref = containerPermissionRef(source.id, container.ref);
+      named.push(ref);
+      const containerList = await ensurePermissionList(sql, source.workspaceId, corpusSource, ref);
+      if (container.title && container.title !== containerList.title) {
+        await sql`
+          UPDATE harness_shared.document_permission_lists SET title = ${container.title}
+           WHERE workspace_id = ${source.workspaceId} AND id = ${containerList.id}`;
+      }
+      const containerDelta = await replacePermissionListMembers(sql, source.workspaceId, containerList.id, toMembers(container.members));
+      added += containerDelta.added;
+      removed += containerDelta.removed;
+    }
+    // A container the snapshot no longer names (archived, or the app left it) loses every reader.
+    const stale = await sql<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.document_permission_lists
+       WHERE workspace_id = ${source.workspaceId} AND source = ${corpusSource}
+         AND source_ref LIKE ${`${source.id}#%`}
+         AND NOT (source_ref = ANY(${sql.array(named)}::text[]))`;
+    for (const { id } of stale) {
+      const staleDelta = await replacePermissionListMembers(sql, source.workspaceId, id, []);
+      removed += staleDelta.removed;
+    }
+  }
+  return {
+    applied: true,
+    listId: list.id,
+    members: input.members.length,
+    added,
+    removed,
+    ...(input.containers ? { containers: input.containers.length } : {}),
+  };
+}
+
+/** The permission-list source_ref of one container of a source (D-026). */
+export function containerPermissionRef(sourceId: string, ref: string): string {
+  return `${sourceId}#${ref}`;
 }

@@ -52,10 +52,12 @@ import {
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import {
+  PROVIDER_ACL_REF_PATTERN,
   PROVIDER_SYNC_ADOPT_CAPABILITY,
   PROVIDER_SYNC_WAKE_CAPABILITY,
   type ProviderAdoptResult,
   type ProviderServices,
+  type ProviderSourceScope,
   type ProviderWakeResult,
 } from '@papercusp/plugin-sdk';
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
@@ -94,6 +96,20 @@ export interface ConnectorSourceRow {
   backfillStatus: string | null;
   failureCount: number;
   wakeRequestedAt: string | null;
+  /** personal | organization | pot; passed on every sync request (D-026). */
+  scope?: string | null;
+}
+
+type MembershipInput = {
+  identityProvider: string;
+  members: ReadonlyArray<{ providerUserId: string }>;
+  containers?: ReadonlyArray<{ ref: string; title?: string; members: ReadonlyArray<{ providerUserId: string }> }>;
+};
+
+const SOURCE_SCOPES = new Set<ProviderSourceScope>(['personal', 'organization', 'pot']);
+
+function sourceScopeOf(source: Pick<ConnectorSourceRow, 'scope'>): ProviderSourceScope | null {
+  return source.scope && SOURCE_SCOPES.has(source.scope as ProviderSourceScope) ? (source.scope as ProviderSourceScope) : null;
 }
 
 export type ConnectorSourceOutcomeKind =
@@ -158,7 +174,7 @@ export interface ConnectorSyncDeps {
   applyMembership?: (
     sql: postgres.Sql,
     source: ConnectorSourceRow,
-    input: { identityProvider: string; members: ReadonlyArray<{ providerUserId: string }> },
+    input: MembershipInput,
   ) => Promise<DataSourceMembershipOutcome>;
   /** Parameters of the provider's configured service credentials (D-018.1). */
   servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
@@ -298,7 +314,7 @@ function asAdoptResult(value: unknown, provider: RegisteredProvider): ProviderAd
 function defaultApplyMembership(
   sql: postgres.Sql,
   source: ConnectorSourceRow,
-  input: { identityProvider: string; members: ReadonlyArray<{ providerUserId: string }> },
+  input: MembershipInput,
 ): Promise<DataSourceMembershipOutcome> {
   return applyDataSourceMembership(sql, { workspaceId: source.workspaceId, sourceId: source.id, ...input });
 }
@@ -315,11 +331,19 @@ export function assertProviderRecords(
     throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned no record list` });
   }
   const declared = new Set(provider.descriptor.datatypes);
+  const containers = provider.descriptor.membership?.containers === true;
   for (const record of records as Array<Partial<ProviderRecord> | null>) {
     if (!record || typeof record.nativeId !== 'string' || !record.nativeId || !declared.has(record.datatype as string)) {
       throw new ProviderSyncFailure({
         kind: 'transient',
         message: `provider ${provider.descriptor.id} returned a record with an undeclared datatype or empty native id`,
+      });
+    }
+    // A record may name its container only when the descriptor declares containers (D-026).
+    if (record.aclRef !== undefined && (!containers || typeof record.aclRef !== 'string' || !PROVIDER_ACL_REF_PATTERN.test(record.aclRef))) {
+      throw new ProviderSyncFailure({
+        kind: 'transient',
+        message: `provider ${provider.descriptor.id} returned a record with an aclRef its descriptor does not allow`,
       });
     }
   }
@@ -361,7 +385,8 @@ export async function admitConnectorRecord(
     event: record.event,
     externalId: record.nativeId,
     datatypeId: record.datatype,
-    adapterPayload: record.payload,
+    // The container rides on the payload so the document sink can bind its readership (D-026).
+    adapterPayload: record.aclRef ? { ...record.payload, aclRef: record.aclRef } : record.payload,
     normalize: (payload) => payload as Record<string, unknown>,
     occurredAt: record.occurredAt ?? null,
     dedupeKey: connectorRecordDedupeKey(source.id, record),
@@ -390,10 +415,20 @@ function assertPage(page: unknown, provider: RegisteredProvider): asserts page i
         message: `provider ${provider.descriptor.id} returned a membership snapshot its descriptor does not declare`,
       });
     }
-    const members = (p.membership as Partial<ProviderMembershipSnapshot> | null)?.members;
-    const wellFormed = Array.isArray(members) && members.every((member) =>
+    const snapshot = p.membership as Partial<ProviderMembershipSnapshot> | null;
+    const wellFormedMembers = (members: unknown) => Array.isArray(members) && members.every((member) =>
       !!member && typeof member.providerUserId === 'string' && member.providerUserId.trim() !== '');
-    if (!wellFormed) {
+    const containers = snapshot?.containers;
+    const wellFormedContainers = containers === undefined || (
+      provider.descriptor.membership.containers === true
+      && Array.isArray(containers)
+      && containers.every((container) => !!container
+        && typeof container.ref === 'string' && PROVIDER_ACL_REF_PATTERN.test(container.ref)
+        && (container.title === undefined || typeof container.title === 'string')
+        && wellFormedMembers(container.members))
+      && new Set(containers.map((container) => container.ref)).size === containers.length
+    );
+    if (!wellFormedMembers(snapshot?.members) || !wellFormedContainers) {
       throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned a malformed membership snapshot` });
     }
   }
@@ -410,7 +445,8 @@ const SOURCE_COLUMNS = (sql: postgres.Sql) => sql`
   cursor,
   backfill_status AS "backfillStatus",
   sync_failure_count AS "failureCount",
-  sync_wake_requested_at AS "wakeRequestedAt"`;
+  sync_wake_requested_at AS "wakeRequestedAt",
+  scope`;
 
 /** Sources of the given provider kinds that are due for a sync pass now. */
 export async function listDueConnectorSources(
@@ -733,6 +769,7 @@ async function syncSource(
             mode,
             ...(source.config ? { config: source.config } : {}),
             ...(deps.services ? { services: deps.services } : {}),
+            ...(sourceScopeOf(source) ? { scope: sourceScopeOf(source)! } : {}),
           },
           { fetch: deps.hostFetch },
         );
@@ -770,6 +807,7 @@ async function syncSource(
         outcome.membership = await deps.applyMembership(sql, working, {
           identityProvider: declaredMembership.identityProvider,
           members: page.membership.members,
+          ...(page.membership.containers ? { containers: page.membership.containers } : {}),
         });
       }
       const backfillStatus = mode === 'backfill' ? (page.hasMore ? 'running' : 'complete') : 'complete';

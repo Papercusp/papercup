@@ -308,6 +308,13 @@ export interface ProviderCredentialField {
    * only host-held ingress uses.
    */
   hosts?: string[];
+  /**
+   * Each person stores their own value (e.g. a Slack user token), instead of the owner storing one
+   * for the source (D-026). The host injects it only into `host.fetch` calls made on that person's
+   * behalf ({@link PROVIDER_SEARCH_LIVE_CAPABILITY}), where it takes precedence over the source
+   * credential for the same host. Requires `hosts`; never an ingress credential.
+   */
+  perPrincipal?: boolean;
 }
 
 /** Credential keys: lowercase, start with a letter, `-`/`_` allowed. */
@@ -341,14 +348,77 @@ export function providerCredentialValueIssue(field: Pick<ProviderCredentialField
   return null;
 }
 
-/** The declared credential whose `hosts` include `hostname`, if any. */
+/** The declared source credential (not per-person) whose `hosts` include `hostname`, if any. */
 export function providerCredentialForHost(
   descriptor: Pick<ProviderDescriptor, 'setup'>,
   hostname: string,
 ): ProviderCredentialField | null {
   const host = hostname.toLowerCase();
   for (const field of descriptor.setup?.credentials ?? []) {
+    if (field.perPrincipal) continue;
     if ((field.hosts ?? []).some((h) => h.toLowerCase() === host)) return field;
+  }
+  return null;
+}
+
+/** The declared per-person credential whose `hosts` include `hostname`, if any (D-026). */
+export function providerPrincipalCredentialForHost(
+  descriptor: Pick<ProviderDescriptor, 'setup'>,
+  hostname: string,
+): ProviderCredentialField | null {
+  const host = hostname.toLowerCase();
+  for (const field of descriptor.setup?.credentials ?? []) {
+    if (!field.perPrincipal) continue;
+    if ((field.hosts ?? []).some((h) => h.toLowerCase() === host)) return field;
+  }
+  return null;
+}
+
+/**
+ * Capability for searching a source live, storing nothing (D-026): `invoke({ capability:
+ * 'search.live', args: { query, limit } })` returns {@link ProviderLiveSearchResult}. The host makes
+ * the call on behalf of the person searching, so per-person credentials apply and the vendor itself
+ * enforces what that person can see.
+ */
+export const PROVIDER_SEARCH_LIVE_CAPABILITY = 'search.live';
+
+/** Arguments the host passes to {@link PROVIDER_SEARCH_LIVE_CAPABILITY}. */
+export interface ProviderLiveSearchArgs {
+  query: string;
+  /** Most hits wanted; the provider may return fewer. */
+  limit: number;
+}
+
+/** One hit of a live search, best first. */
+export interface ProviderLiveSearchHit {
+  /** Provider-native id, unique within the source. */
+  externalId: string;
+  title: string;
+  text: string;
+  /** ISO-8601 time of the hit, or null. */
+  occurredAt: string | null;
+  participants: string[];
+  /** https link to the hit at the vendor, or null. */
+  permalink: string | null;
+}
+
+export interface ProviderLiveSearchResult {
+  hits: ProviderLiveSearchHit[];
+}
+
+/** Why `value` is not a well-formed {@link ProviderLiveSearchResult}, or null when it is. */
+export function providerLiveSearchResultIssue(value: unknown): string | null {
+  const hits = (value as { hits?: unknown } | null)?.hits;
+  if (!Array.isArray(hits)) return 'search.live result must carry a hits list';
+  for (const [index, hit] of hits.entries()) {
+    const h = (hit ?? {}) as Partial<ProviderLiveSearchHit>;
+    if (!isNonEmptyString(h.externalId)) return `search.live hits[${index}].externalId must be a non-empty string`;
+    if (typeof h.title !== 'string' || typeof h.text !== 'string') return `search.live hits[${index}] needs title and text strings`;
+    if (!(h.occurredAt === null || typeof h.occurredAt === 'string')) return `search.live hits[${index}].occurredAt must be a string or null`;
+    if (!Array.isArray(h.participants) || !h.participants.every((p) => typeof p === 'string')) {
+      return `search.live hits[${index}].participants must be a list of strings`;
+    }
+    if (!(h.permalink === null || typeof h.permalink === 'string')) return `search.live hits[${index}].permalink must be a string or null`;
   }
   return null;
 }
@@ -360,6 +430,12 @@ export interface ProviderMembershipDescriptor {
    * provider-identity mappings (e.g. `github`), which resolve a member id to a workspace user.
    */
   identityProvider: string;
+  /**
+   * The source is made of containers with their own members (Slack channels, shared folders), so
+   * snapshots may carry {@link ProviderMembershipSnapshot.containers} and records may name the
+   * container they belong to with {@link ProviderRecord.aclRef} (cupboard-distributable-integrations-2026-10-10 D-026).
+   */
+  containers?: boolean;
 }
 
 /**
@@ -369,8 +445,27 @@ export interface ProviderMembershipDescriptor {
  * unverifiable readership fails closed.
  */
 export interface ProviderMembershipSnapshot {
+  /** Who may read the source's records that name no container. */
+  members: Array<{ providerUserId: string }>;
+  /**
+   * Every container the source currently has, each with its complete members. Only a provider
+   * whose descriptor declares `membership.containers` may send it. A container the previous
+   * snapshot named and this one does not loses every reader (fail closed).
+   */
+  containers?: ProviderMembershipContainer[];
+}
+
+/** One container of a source and who may read it (D-026). */
+export interface ProviderMembershipContainer {
+  /** Provider-native container id; records name it as their `aclRef`. Matches {@link PROVIDER_ACL_REF_PATTERN}. */
+  ref: string;
+  /** Human name of the container, e.g. `#general`. */
+  title?: string;
   members: Array<{ providerUserId: string }>;
 }
+
+/** Container refs: printable, no spaces, at most 200 characters. */
+export const PROVIDER_ACL_REF_PATTERN = /^[A-Za-z0-9._:@#\/-]{1,200}$/;
 
 /**
  * Push-wake scheme (plan linear-asana-task-sync-2026-10-05, D-016).
@@ -460,7 +555,15 @@ export interface ProviderSyncRequest {
   config?: Record<string, unknown>;
   /** Parameters of the descriptor's configured service credentials (D-018.1). */
   services?: ProviderServices;
+  /**
+   * Whose data the source is (D-026): `personal` (one person's account), `organization` (readers
+   * follow the provider's membership snapshots) or `pot`. Absent from hosts older than D-026.
+   */
+  scope?: ProviderSourceScope;
 }
+
+/** The scopes a data source can have. */
+export type ProviderSourceScope = 'personal' | 'organization' | 'pot';
 
 export interface ProviderRecord {
   /** One of the descriptor's declared datatypes. */
@@ -483,6 +586,12 @@ export interface ProviderRecord {
    * are new deliveries.
    */
   version?: string;
+  /**
+   * The container this record belongs to (a {@link ProviderMembershipContainer.ref}), when the
+   * descriptor declares `membership.containers`. An organization source's document is readable by
+   * that container's members only; a record without one follows the source-wide members (D-026).
+   */
+  aclRef?: string;
 }
 
 export interface ProviderSyncPage {
@@ -753,10 +862,17 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts));
   }
   if (d.ingress !== undefined) {
-    const credentialKeys = (Array.isArray(d.setup?.credentials) ? d.setup.credentials : [])
-      .map((field) => (field && typeof field === 'object' ? (field as { key?: unknown }).key : undefined))
-      .filter(isNonEmptyString);
-    issues.push(...ingressDescriptorIssues(d.ingress, capabilities.filter(isNonEmptyString), egress.filter(isNonEmptyString), credentialKeys));
+    const fields = (Array.isArray(d.setup?.credentials) ? d.setup.credentials : [])
+      .filter((field): field is ProviderCredentialField => !!field && typeof field === 'object');
+    const credentialKeys = fields.map((field) => field.key).filter(isNonEmptyString);
+    const principalCredentialKeys = fields.filter((field) => field.perPrincipal === true).map((field) => field.key).filter(isNonEmptyString);
+    issues.push(...ingressDescriptorIssues(
+      d.ingress,
+      capabilities.filter(isNonEmptyString),
+      egress.filter(isNonEmptyString),
+      credentialKeys,
+      principalCredentialKeys,
+    ));
   }
   if (d.membership !== undefined) {
     const membership = d.membership as unknown;
@@ -765,6 +881,10 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
       : undefined;
     if (!isNonEmptyString(identityProvider) || !PROVIDER_ID_PATTERN.test(identityProvider)) {
       issues.push(`provider.membership.identityProvider must match ${PROVIDER_ID_PATTERN}`);
+    }
+    const containers = membership && typeof membership === 'object' ? (membership as { containers?: unknown }).containers : undefined;
+    if (containers !== undefined && typeof containers !== 'boolean') {
+      issues.push('provider.membership.containers must be true or false');
     }
   }
   return issues;
@@ -793,7 +913,13 @@ function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
   return issues;
 }
 
-function ingressDescriptorIssues(ingress: unknown, capabilities: string[], egress: string[], credentialKeys: string[]): string[] {
+function ingressDescriptorIssues(
+  ingress: unknown,
+  capabilities: string[],
+  egress: string[],
+  credentialKeys: string[],
+  principalCredentialKeys: string[] = [],
+): string[] {
   if (!ingress || typeof ingress !== 'object' || Array.isArray(ingress)) return ['provider.ingress must be an object'];
   const issues: string[] = [];
   for (const key of Object.keys(ingress)) {
@@ -814,6 +940,8 @@ function ingressDescriptorIssues(ingress: unknown, capabilities: string[], egres
     issues.push(`${at}.credential must name a provider.setup.credentials key`);
   } else if (!credentialKeys.includes(s.credential)) {
     issues.push(`${at}.credential '${s.credential}' is not a provider.setup.credentials key`);
+  } else if (principalCredentialKeys.includes(s.credential)) {
+    issues.push(`${at}.credential '${s.credential}' is a per-person credential; the host's connection needs the source's own`);
   }
   const open = s.open as Partial<ProviderSocketIngressDescriptor['open']> | undefined;
   if (!open || typeof open !== 'object' || Array.isArray(open)) {
@@ -917,6 +1045,9 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
   const issues: string[] = [];
   const keys: string[] = [];
   const claimedHosts = new Map<string, string>();
+  // Per-person credentials claim hosts among themselves only: on a call made for a person they
+  // take precedence over the source credential for the same host (D-026).
+  const claimedPrincipalHosts = new Map<string, string>();
   for (const host of serviceHosts) claimedHosts.set(host.toLowerCase(), 'provider.serviceCredentials');
   for (const [index, entry] of (credentials as unknown[]).entries()) {
     const at = `provider.setup.credentials[${index}]`;
@@ -950,6 +1081,14 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
       if (field[text] !== undefined && typeof field[text] !== 'string') issues.push(`${at}.${text} must be a string`);
     }
     if (field.helpUrl !== undefined && !isHttpsUrl(field.helpUrl)) issues.push(`${at}.helpUrl must be an https URL`);
+    if (field.perPrincipal !== undefined && typeof field.perPrincipal !== 'boolean') {
+      issues.push(`${at}.perPrincipal must be true or false`);
+    }
+    const perPrincipal = field.perPrincipal === true;
+    if (perPrincipal && field.hosts === undefined) {
+      issues.push(`${at}.perPrincipal needs hosts: a per-person credential is only ever injected into host.fetch`);
+    }
+    const claims = perPrincipal ? claimedPrincipalHosts : claimedHosts;
     if (field.hosts !== undefined) {
       if (!Array.isArray(field.hosts) || field.hosts.length === 0) {
         issues.push(`${at}.hosts must list at least one host when present`);
@@ -962,10 +1101,10 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
         }
         if (!providerEgressAllows(egress, host)) issues.push(`${at} host '${host}' is not in provider.egressHosts`);
         const lower = host.toLowerCase();
-        const owner = claimedHosts.get(lower);
+        const owner = claims.get(lower);
         // One host, one injected credential: otherwise which token a request carries is ambiguous.
         if (owner) issues.push(`${at} host '${host}' is already given a credential by ${owner}`);
-        else claimedHosts.set(lower, at);
+        else claims.set(lower, at);
       }
     }
   }
