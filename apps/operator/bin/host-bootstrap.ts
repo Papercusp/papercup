@@ -88,6 +88,7 @@ import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
 import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import { setDiscoveryIdentityObserver } from '@papercusp/db-org';
+import { setMdxRenderObserver } from '@papercusp/docs-engine';
 
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
@@ -414,6 +415,9 @@ export function runBootstrap(): void {
   BOOTSTRAP_STATE.ran = true;
   // The generic DB package reports identity outcomes without depending on this host's rail.
   setDiscoveryIdentityObserver((mechanism, observation) => {
+    observeFallback(mechanism, observation);
+  });
+  setMdxRenderObserver((mechanism, observation) => {
     observeFallback(mechanism, observation);
   });
 
@@ -2132,20 +2136,11 @@ export function runBootstrap(): void {
       }
     })();
 
-  // External-triggers P-006: Slack Socket Mode is an outbound, process-local
-  // lifecycle connection. Start it only in the background owner process; its
-  // managed timer is visible through schedule:inventory and retries cold gaps
-  // and disconnects without requiring public ingress.
-  if (backgroundWorkers && cluster.isPrimary)
-    void import('@papercusp/operator-core/lib/external-triggers/slack-socket-manager')
-      .then(({ startSlackSocketManager }) => startSlackSocketManager())
-      .catch((e) => {
-        console.warn('[slack-socket] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
-      });
-
   // cupboard-distributable-integrations-2026-10-10 P-003 / D-009: the generic
-  // socket ingress for installed provider packages that declare `ingress.socket`.
-  // Same owner-process rule as above; its managed timer is the inventory row.
+  // socket ingress for installed provider packages that declare `ingress.socket`
+  // (Slack Socket Mode is one: the slack package). It is an outbound,
+  // process-local lifecycle connection, so it starts only in the background owner
+  // process; its managed timer is the schedule:inventory row.
   if (backgroundWorkers && cluster.isPrimary)
     void import('@papercusp/operator-core/lib/providers/provider-socket-ingress')
       .then(({ startProviderSocketIngress }) => startProviderSocketIngress())
