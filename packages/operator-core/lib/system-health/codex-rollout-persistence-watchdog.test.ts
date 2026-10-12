@@ -46,7 +46,7 @@ import {
   type CodexRolloutPersistenceWatchdogOptions,
 } from './codex-rollout-persistence-watchdog';
 
-const NOW = 1_000_000;
+const NOW = Date.parse('2026-10-12T12:00:00Z');
 const base: CodexRolloutPersistenceSnapshot = {
   sessionId: '11801',
   ownerId: 'su-owner',
@@ -185,6 +185,8 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
 
   it.each(['empty-tail', 'failed-tail', 'throwing-tail', 'old-success', 'future-success', 'undated-success', 'invalid-open-time'])(
     'preserves provider episodes for %s evidence', async mode => {
+      const warnings = mode === 'throwing-tail'
+        ? vi.spyOn(console, 'warn').mockImplementation(() => undefined) : null;
       remember(); open = open.filter(episode => episode.conditionKey === key('provider')); await success();
       if (mode === 'empty-tail') await writeFile(rollout, '{}\n');
       if (mode === 'failed-tail') opts.readRolloutTail = async () => null;
@@ -195,14 +197,38 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
       if (mode === 'invalid-open-time') open[0]!.openedAtMs = Number.NaN;
       await setTimes(now, now);
       await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
+      if (warnings) expect(warnings).toHaveBeenCalledWith(
+        '[codex-rollout-watchdog] provider tail read failed for session 42: tail failed',
+      );
     });
 
+  it('measures the clock after asynchronous file reads rather than treating writes during the sweep as future evidence', async () => {
+    await setTimes(now, now);
+    opts.now = vi.fn().mockReturnValueOnce(now - 1000).mockReturnValue(now);
+    expect((await pass()).providerFailureSessionIds).toEqual(['42']);
+    expect(opts.now).toHaveBeenCalledTimes(2);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key('provider') }));
+  });
+
+  it('compares fractional filesystem mtimes at the whole-millisecond clock precision', async () => {
+    const at = now + 0.5;
+    await utimes(rollout, at / 1000, at / 1000);
+    expect((await pass()).providerFailureSessionIds).toEqual(['42']);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key('provider') }));
+  });
+
   it('keeps delivery legs independent when the legacy insert or condition broadcast fails', async () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     legacyFailure = true;
     await pass(); expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(warnings).not.toHaveBeenCalled();
     legacyFailure = false; coalesced = false;
     broadcast.mockRejectedValue(new Error('condition rail unavailable'));
     await pass(); expect(lifecycleMocks.notifyAttention).toHaveBeenCalledTimes(2);
+    expect(warnings.mock.calls).toEqual([
+      ['[codex-rollout-watchdog] ALARM: owner:42 (session 42)'],
+      ['[codex-rollout-watchdog] PROVIDER ALARM: owner:42 (session 42)'],
+    ]);
     expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
   });
 

@@ -373,7 +373,9 @@ export function evaluateCodexRolloutPersistence(
 
 async function statMtime(path: string): Promise<number | null> {
   try {
-    return (await fs.stat(path)).mtimeMs;
+    // Date.now() measures whole milliseconds; filesystem timestamps can carry
+    // sub-millisecond precision. Compare both at the clock's measured precision.
+    return Math.floor((await fs.stat(path)).mtimeMs);
   } catch {
     return null;
   }
@@ -652,7 +654,7 @@ export async function checkCodexRolloutPersistence(
         FROM harness_shared.adv_sessions
        WHERE agent = 'codex' AND ended_at IS NULL AND coord_owner_id IS NOT NULL
     `;
-    const now = (opts.now ?? Date.now)();
+    let now = (opts.now ?? Date.now)();
     if (!measuredTime(now, now)) return out;
     let episodes: Array<{ conditionKey: string; openedAtMs: number }> = [];
     try { episodes = await (opts.readOpenConditions ?? readOpenCodexConditions)(); } catch { /* Unknown preserves recovery. */ }
@@ -676,6 +678,10 @@ export async function checkCodexRolloutPersistence(
           !(row.pid === null || (Number.isSafeInteger(row.pid) && row.pid > 0)) ||
           registrations.get(row.id) !== 1) continue;
       const read = await readSnapshot(row, alive);
+      // Snapshot reads are asynchronous. A file written during the read may be
+      // newer than the sweep's start without being future evidence.
+      now = (opts.now ?? Date.now)();
+      if (!measuredTime(now, now)) continue;
       const snapshot = read.snapshot;
       const verdict = evaluateCodexRolloutPersistence(snapshot, now, opts);
       const persistenceKey = codexRolloutConditionKey('persistence', row.workspace_id, snapshot.sessionId, row.owner_id);
