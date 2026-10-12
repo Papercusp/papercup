@@ -189,7 +189,87 @@
       "resolvedCoordination": { "workspaceWindowRows": 85, "sourceExplicitRecipientRows": 0, "childAuthoredRows": 3, "childRecipient": "su-e16e0da4-f858-4e10-9665-55116edbc36b", "childRowIds": [24155889, 24155892, 24155897], "broadcastRowIds": [24155862, 24155887, 24155937, 24155938], "broadcastSenders": ["task-manager", "mac-vm-watchdog", "service-health", "system-watchdog"], "positiveControlId": 24155889, "positiveControlStatus": "passed", "writerMeaning": "messages.ts persists expanded selector recipients in body.to and preserves the original audience. readInbox also matches wildcard recipients. The complete bounded query includes both source membership and wildcard rows across surfaces.", "limit": "The four wildcard messages are system-authored, not child-authored. They are potential inbox content for the source; actual source delivery or wake is not established. The absence of a body.wake key is not evidence no wake occurred." },
       "canonicalAbaControl": { "testPath": "packages/operator-core/lib/work-items-release-claim-honesty.integration.test.ts", "testTitle": "D-006: equal claim endpoints retain a real release/reclaim ABA witness", "status": "local-verification-passed", "testRunId": 21145437, "passed": 1, "failed": 0, "unselected": 10, "harnessSlug": "papercusp", "workspaceId": "papercusp-workspace", "worktreeDirty": true, "processExit": 0, "log": "/dev/shm/get-feedback-d006-aba-local-20261012T1338.log", "method": "Extend the existing disposable real-PG suite. Observe canonical claimWorkItem/releaseWorkItem writes with a test-only trigger on the backing work_items table; distinguish a refused foreign release from an actual release/reclaim whose assignee endpoints match. Preserve the root pool for the production writer's own bounded transaction, preflight table kind and transaction support, and clean up the observer on every outcome.", "initialAttemptIds": [21145401, 21145415], "initialAttemptOutcome": "Both failed at fixture setup: first targeted a view, second substituted an outer transaction tag lacking begin. Both defects were audited and corrected before another attempt; neither is evidence of a production failure.", "limit": "This control validates the observation method against canonical feature-family writers. It is local dirty proof; the runner observed HEAD moving and imported-source provenance remains unknown. It is not production history, native actor attribution, issue-family coverage or a complete source-isolation verdict." }
     },
-    "next": "Verify the canonical ABA control and intentional Codex-to-Codex guard expansion with the maintained runners. Preserve exact recorded-history limits, existing native/R6 gaps and shipment requirements."
+    "committedControlExtension": {
+      "observedAt": "2026-10-12T13:50:00Z",
+      "priorArtifactSha256": "f2345d74abdfcaf2c4e92562d5f3c5d563c6fc59ee0ad6e4277c362a19d202b5",
+      "commitSha": "04d8561b560dfa0595e9195d22e8238c4e902264",
+      "cleanControl": { "testRunId": 21145497, "passed": 1, "failed": 0, "unselected": 10, "worktreeDirty": false, "isScratchConfig": false, "harnessSlug": "papercusp", "workspaceId": "papercusp-workspace", "processExit": 0, "log": "/dev/shm/get-feedback-d006-aba-clean-20261012T1341.log", "logSha256": "f6e4e7f9273bcdb0917dc8ae527a36fe712f0fc237ce8c57b4137a33df7a50a6" },
+      "mutation": {
+        "runner": "scripts/mutation-probe.sh",
+        "runnerSha256": "108fb5af6ae4cb6aee32bdf8d6e559c5286b6cc0a7d57f23eae1f4a4e4046c90",
+        "root": "/tmp/pcv/papercusp-lint-as-committed-04d8561b56-c5Y13h",
+        "subject": "packages/operator-core/lib/work-items.ts",
+        "change": "Replace the feature-family atomic expectedAssignee condition with AND TRUE in a private copy-out overlay.",
+        "baselineTestRunId": 21145504,
+        "copyBaselineTestRunId": 21145994,
+        "mutantTestRunId": 21146105,
+        "controls": "Both controls passed 1 selected case with 10 unselected; the unchanged test and production subject were pinned to the recorded commit.",
+        "mutantResult": "0 passed, 1 failed, 10 unselected. The foreign release returned the feature instead of null at work-items-release-claim-honesty.integration.test.ts:135. The maintained probe reported caught with test-file-assertion-failure.",
+        "processExit": 0,
+        "guardExit": 1,
+        "relocation": "overlay",
+        "mutantParse": "unchecked",
+        "descriptor": null,
+        "descriptorLimit": "The runner withheld descriptors because deployed reader d740fc3802 with test-config bf397e653e predates the parser. All three actual ledger rows have mutation=null; assertion evidence is retained, but replay-descriptor binding eligibility is not claimed.",
+        "log": "/dev/shm/get-feedback-d006-aba-mut-20261012T1347.log",
+        "logSha256": "2e7d49478d690e6ee9bfe766fdbf80534eadfcadc87ced9a4e9f9bd09d1f6935",
+        "replay": "The log retains exact MUTATION_PROBE_EVIDENCE_JSON argv, runner commit and hashes; preserve its expression, selected case, scope and overlay method.",
+        "sources": [
+          { "phase": "baseline", "path": "/dev/shm/get-feedback-d006-aba-mut-20261012T1347-baseline.sources.json", "sha256": "2f89174b3f6b13abd8f85cdbbfc1ffdbcab7eb6d043d0e672716e13c7f85d1ac" },
+          { "phase": "copy-baseline", "path": "/dev/shm/get-feedback-d006-aba-mut-20261012T1347-copy-baseline.sources.json", "sha256": "2f89174b3f6b13abd8f85cdbbfc1ffdbcab7eb6d043d0e672716e13c7f85d1ac" },
+          { "phase": "mutant", "path": "/dev/shm/get-feedback-d006-aba-mut-20261012T1347-mutant.sources.json", "sha256": "977eab33b9f5aa36bf8ba386014e84f52eb045ea23e02c2d2eee70d64b38f1a1" }
+        ],
+        "namedSourceHashes": { "test": "919367cd0df9a4846bef792b496811fd28afdd68fbd90cdf6896e893c53c9b73", "originalProduction": "1523225312482270acc6ae35630f8717f913613275b259f4f564d2f040fe54c4", "mutantProduction": "3f958dcbeb97a1eb36cfb34eb577945f12db5951699bd48a7e6753cee6819af1" },
+        "integrity": "After the probe, the retained clone's test and production bytes independently match their recorded committed blobs. All three canonical ledger rows are harness/workspace-qualified and worktreeDirty=false; that flag does not describe the namespace's intentionally overlaid source.",
+        "sourceGraphLimit": "All three original-source maps explicitly mark the complete executed graph unknown because modules were not captured at collection. Named test and subject hashes distinguish original controls from the loaded mutant; a complete graph/current governing adequacy verdict is not claimed."
+      },
+      "transportExpansion": { "status": "not-committed-at-observation", "observedHead": "ec6214596cc104df383d1c441c5925dbb998e147", "testPath": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts", "workingSha256": "36a702a7ba551ed45aed1b68fc387758f8f092e0b84cc5bea9f57450cf12aeb8", "committedSha256": "53128c99acb275f51f730203125896bc2da9c735bfb0c73cd464e69e926eb171", "exclusionEvidence": "The 13:38 routines:list read names this test and _mcp-host.ts as quarantined importers of a peer's active turn hold on result-door.ts. One scoped FYI was sent to the holder; its hold is preserved. This does not establish a stalled git-sync routine." },
+      "limit": "This is a canonical feature-family detector control in disposable real Postgres, not production history, physical native actor attribution, source filesystem isolation, issue-family coverage or shipment acceptance. Original local-dirty evidence and the bounded native/history limits remain unchanged."
+    },
+    "controlActivationHistoryExtension": {
+      "priorArtifactSha256": "f9f26772e552d03f2fbdf656c629ea1be299b6dcb801a7d92814d2d65117b0a8",
+      "window": { "startInclusive": "2026-10-12T12:04:14Z", "endExclusive": "2026-10-12T12:09:00Z", "workspaceId": "papercusp-workspace", "sourceOwnerId": "su-26e81472-29ed-4d18-8b4b-4520850d8aef" },
+      "activationEvents": {
+        "relation": "harness_shared.session_identity_activation_events",
+        "sourceWindowRows": 0,
+        "truncated": false,
+        "positiveControl": { "id": 67069, "ownerId": "su-b29cc9b9-d7b2-4041-8866-945df189934b", "phase": "applied", "source": "control", "recordedAt": "2026-10-12T14:11:54.584425Z", "status": "passed", "scope": "same relation and workspace, later than the trial window" },
+        "latestRetainedBeforeWindowEnd": { "id": 64298, "controlGeneration": 28, "phase": "applied", "source": "control", "recordedAt": "2026-10-11T11:24:59.161178Z", "advSessionId": 40295, "nativeSessionId": "01a12a9e-752e-74b0-a22a-193655291064" },
+        "limit": "The latest five rows before the window end are a bounded history page, not the full lifetime population. The latest retained applied event names an older native incarnation than the trial source 01a12b36-959b-7171-8827-52882103ae32. This establishes a retained-event attribution limit; it does not falsify the exact trial native-frame and per-call attribution already recorded. No source activation event is retained in the fixed trial window; unrecorded or direct changes remain outside this observation."
+      },
+      "controlEndpoint": {
+        "controlGeneration": 28,
+        "controlUpdatedAt": "2026-10-11T10:57:23.731814Z",
+        "latestTransitionSource": "control-anchor:reconcile",
+        "activationStatus": "applied",
+        "desiredSpecificationRevision": "c6f2bfbe5af0f2ba809e51cf7fb01c51ce1db3942389e7f620fd1abf40d8b68a",
+        "appliedSpecificationRevision": "c6f2bfbe5af0f2ba809e51cf7fb01c51ce1db3942389e7f620fd1abf40d8b68a",
+        "desiredStateRevision": "1600b27dc9c0c15ddb38e274",
+        "appliedStateRevision": "1600b27dc9c0c15ddb38e274",
+        "limit": "This endpoint was read after the trial. persistControlAnchor atomically retains only the latest state/transition and increments generation on a changed state; there is no captured pre-trial control baseline here. Activation phases have a separate event ledger. Endpoint equality or a pre-window updated_at does not prove complete source control continuity, every actor, or absence of direct writes."
+      },
+      "lockWriterLimits": {
+        "canonicalStore": "libs/papercusp/packages/locks/src/su-lock-store.ts",
+        "observation": "The existing local lock store upserts agent_file_locks on acquire, refreshes on heartbeat and deletes the owner-qualified rows on release. Those endpoint rows do not preserve a release/reacquire history. The cross-machine authority emits a separate peer-log lock-event on successful acquire/release; recordLockEvent catches sink failures and the resolver may have no booted log.",
+        "limit": "No lock-event history or trial runtime sink availability was measured in this extension. The best-effort federated event stream is not a universal local/source lock history. No empty-lock or no-lock-mutation claim is made, and no new table, instrument, monitor or lock implementation is introduced."
+      },
+      "writerSourcesAtRead": {
+        "superprojectHead": "0a56098b20a22455937aac1a8bdd66da93150bda",
+        "files": [
+          { "path": "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts", "sha256": "511e36b3bcc17b9b525f4296227443f68c654b2b4311d7aacc15408daded46e5" },
+          { "path": "packages/operator-core/lib/session-identity-attribution.ts", "sha256": "da0fab92d512c4c7b3dfde7abd92c73bc1f96bb9a96352a7f13dc6f8b8ffd458" },
+          { "path": "libs/papercusp/packages/locks/src/su-lock-store.ts", "sha256": "caa0e47a4903e387fc718582c18336040208cd054b599a47427c8c43978708dd" },
+          { "path": "packages/operator-core/lib/authority/lock-event-stream.ts", "sha256": "c81b18085b23328f389dfa95777c2284f11e79822e1ef8c94b33b81a30974f24" },
+          { "path": "packages/operator-core/lib/authority/file-lock-authority-ops.ts", "sha256": "474b42f950c84642fde60db43f19a1a1cc76e3f116d60ac6ea0f75d2f71c56f3" },
+          { "path": "packages/operator-core/lib/authority/lock-event-wiring.ts", "sha256": "fbf25bd6ed3734bcd9e256406695199595a38910b8b0b4630f0c7021a526b08a" }
+        ],
+        "limit": "These are repository writer bytes read in this continuation, not a complete executed-source graph or attestation of the trial runtime's loaded writer versions."
+      },
+      "receipt": { "path": "/dev/shm/get-feedback-d006-control-native-receipts-20261012T1421.json", "sha256": "c1fde06f1577a16280efb1762c37f5e063f000b8e26f3623973f5fe2bc8420bb", "nativeSessionId": "01a1306b-7fb0-7243-ba89-9b4a094e746a", "method": "Retain the three exact completed native MCP code:run result records, their argument SQL, timestamps and line hashes. The scalar endpoint read recovers revisions omitted by the preceding nested summary; it does not repeat the source-window query." },
+      "followup": { "workItemId": "EI-25783526988153071", "assignee": "su-e16e0da4-f858-4e10-9665-55116edbc36b", "status": "open, unconfirmed", "question": "Determine whether the actual source reanchor should have emitted a new applied activation span; inspect the producer and exact provenance before naming a cause. Preserve the observed native reply attribution and do not replay trials or monitor the source peer." },
+      "status": "bounded retained-history and writer-semantics observation; full isolation and acceptance remain open"
+    },
+    "next": "Use the maintained clean runner for the intentional Codex-to-Codex expansion only after its actual bytes are committed, then calibrate that new case with the existing identity mutation seam. The ABA committed control and bounded activation/control read are complete at their disclosed scopes; do not rerun them solely for HEAD. Preserve native/R6 population and matrix gaps, rubric vetting and exact R7 shipment requirements."
   },
   "projectDecision": "Retain the captured plan-only claim endpoints, exact nested reply/close physical binding and bounded actor/system-port/coordination/PTY observations as native-conversion evidence. Continue the remaining D-006 mutation/wake coverage before isolation acceptance. No mandatory reporting-only reconciliation or new monitoring surface is introduced.",
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
