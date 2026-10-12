@@ -250,6 +250,55 @@ function processPin(pid: number) {
   return { pid, identity, parentPid };
 }
 
+/** Admit the original private worker only after pinning its actual lifetime. */
+export function observeIsolatedWorkerLifetime(child: ChildProcess, root: string, evidenceDir: string, runId?: string) {
+  const observation: { lifecycle?: any; ended?: any; observationError?: unknown } = {};
+  child.on('message', (message: any) => {
+    if (message.kind !== 'isolated-runtime-start' && message.kind !== 'isolated-runtime-end') return;
+    try {
+      if (message.kind === 'isolated-runtime-start') {
+        assert.ok(!observation.lifecycle, 'one start per run');
+        assert.equal(message.supervisorPid, child.pid);
+        assert.equal(message.root, root);
+        const observer = processPin(process.pid);
+        const supervisor = processPin(child.pid!);
+        const worker = processPin(message.childPid);
+        assert.equal(supervisor.parentPid, observer.pid);
+        assert.equal(worker.parentPid, supervisor.pid);
+        assert.equal(readlinkSync(`/proc/${worker.pid}/cwd`), root);
+        const env = Object.fromEntries(readFileSync(`/proc/${worker.pid}/environ`, 'utf8')
+          .split('\0').filter(Boolean).map(entry => [entry.slice(0, entry.indexOf('=')), entry.slice(entry.indexOf('=') + 1)]));
+        assert.equal(env.PAPERCUSP_WORKSPACE_ID, message.workspace);
+        assert.equal(env.HOME, join(message.runtimeRoot, 'home'));
+        assert.equal(env.PAPERCUSP_PG_PORT, String(message.pgPort));
+        assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
+        assert.ok(/^test-runtime-/.test(message.workspace));
+        const pgFile = readFileSync(join(message.dataDir, 'postmaster.pid'), 'utf8').split('\n');
+        assert.equal(Number(pgFile[3]), message.pgPort);
+        const database = processPin(Number(pgFile[0]));
+        assert.equal(database.parentPid, supervisor.pid);
+        const argv = readFileSync(`/proc/${worker.pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+        observation.lifecycle = { schemaVersion: 1, runId, host: hostname(), observedAt: new Date().toISOString(),
+          observer, supervisor, worker, database, argv, cwd: root, workspace: message.workspace,
+          runtimeRoot: message.runtimeRoot, dataDir: message.dataDir, pgPort: message.pgPort };
+      } else {
+        assert.ok(observation.lifecycle && !observation.ended);
+        assert.equal(message.childPid, observation.lifecycle.worker.pid);
+        observation.ended = { ...message, observedAt: new Date().toISOString() };
+      }
+    } catch (error) { observation.observationError = error; }
+    writeFileSync(join(evidenceDir, 'lifecycle-observation.json'), JSON.stringify({
+      lifecycle: observation.lifecycle ?? null, ended: observation.ended ?? null,
+      observationError: observation.observationError instanceof Error ? observation.observationError.message
+        : observation.observationError ? String(observation.observationError) : null,
+    }));
+    if (message.kind === 'isolated-runtime-start') child.send({ kind: 'isolated-runtime-observed',
+      childPid: message.childPid, token: message.token,
+      accepted: !observation.observationError && !!observation.lifecycle });
+  });
+  return observation;
+}
+
 /** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
 export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
   const files = paths.map(path => {
@@ -272,6 +321,7 @@ export async function recordIsolatedIntegrationProof(options: {
   let lifecycle: any;
   let ended: any;
   let observationError: unknown;
+  let observation: ReturnType<typeof observeIsolatedWorkerLifetime> | undefined;
   let observedChild: ChildProcess | undefined;
   const result = await runHarness({
     contract: { name: 'isolated-integration', phases: [
@@ -292,52 +342,9 @@ export async function recordIsolatedIntegrationProof(options: {
         await options.execute(child => {
           assert.ok(!observedChild, 'one lifecycle per run');
           observedChild = child;
-          child.on('message', (message: any) => {
-            // Bootstrap progress has its own append-only stream. Only actual
-            // lifecycle events can change the original lifetime snapshot.
-            if (message.kind !== 'isolated-runtime-start' && message.kind !== 'isolated-runtime-end') return;
-            try {
-              if (message.kind === 'isolated-runtime-start') {
-                assert.ok(!lifecycle, 'one start per run');
-                assert.equal(message.supervisorPid, child.pid);
-                assert.equal(message.root, root);
-                const observer = processPin(process.pid);
-                const supervisor = processPin(child.pid!);
-                const worker = processPin(message.childPid);
-                assert.equal(supervisor.parentPid, observer.pid);
-                assert.equal(worker.parentPid, supervisor.pid);
-                assert.equal(readlinkSync(`/proc/${worker.pid}/cwd`), root);
-                const env = Object.fromEntries(readFileSync(`/proc/${worker.pid}/environ`, 'utf8')
-                  .split('\0').filter(Boolean).map(entry => [entry.slice(0, entry.indexOf('=')), entry.slice(entry.indexOf('=') + 1)]));
-                assert.equal(env.PAPERCUSP_WORKSPACE_ID, message.workspace);
-                assert.equal(env.HOME, join(message.runtimeRoot, 'home'));
-                assert.equal(env.PAPERCUSP_PG_PORT, String(message.pgPort));
-                assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
-                assert.ok(/^test-runtime-/.test(message.workspace));
-                const pgFile = readFileSync(join(message.dataDir, 'postmaster.pid'), 'utf8').split('\n');
-                assert.equal(Number(pgFile[3]), message.pgPort);
-                const database = processPin(Number(pgFile[0]));
-                assert.equal(database.parentPid, supervisor.pid);
-                const argv = readFileSync(`/proc/${worker.pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-                lifecycle = { schemaVersion: 1, runId: ctx.runId, host: hostname(), observedAt: new Date().toISOString(),
-                  observer, supervisor, worker, database, argv, cwd: root, workspace: message.workspace,
-                  runtimeRoot: message.runtimeRoot, dataDir: message.dataDir, pgPort: message.pgPort };
-              } else if (message.kind === 'isolated-runtime-end') {
-                assert.ok(lifecycle && !ended);
-                assert.equal(message.childPid, lifecycle.worker.pid);
-                ended = { ...message, observedAt: new Date().toISOString() };
-              }
-            } catch (error) { observationError = error; }
-            writeFileSync(join(ctx.evidenceDir, 'lifecycle-observation.json'), JSON.stringify({
-              lifecycle: lifecycle ?? null, ended: ended ?? null,
-              observationError: observationError instanceof Error ? observationError.message : observationError ? String(observationError) : null,
-            }));
-            if (message.kind === 'isolated-runtime-start') {
-              child.send({ kind: 'isolated-runtime-observed', childPid: message.childPid,
-                token: message.token, accepted: !observationError && !!lifecycle });
-            }
-          });
+          observation = observeIsolatedWorkerLifetime(child, root, ctx.evidenceDir, ctx.runId);
         }, ctx.evidenceDir);
+        ({ lifecycle, ended, observationError } = observation ?? {});
         if (observationError) throw observationError;
         assert.ok(lifecycle && ended, 'original start and cleanup observations are required');
         assert.ok(!ended.signal && ended.runtimeRemoved && ended.pgDataRemoved);

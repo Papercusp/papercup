@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, observeIsolatedWorkerLifetime } from '../../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(60_000);
@@ -17,9 +17,13 @@ it('measures private committed-reader fixture scope before bundling or HTTP exec
   const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
     process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
   { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  const observation = observeIsolatedWorkerLifetime(child, root, evidenceDir);
   const result = await captureIsolatedWorker(child, evidenceDir, options);
   expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
     timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+  expect(observation.observationError).toBeUndefined();
+  expect(observation.lifecycle?.workspace).toMatch(/^test-runtime-/);
+  expect(observation.ended).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
   const receipt = JSON.parse(await readFile(join(evidenceDir, 'committed-reader-setup-receipt.json'), 'utf8'));
   expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
     bundleStarted: false, httpStarted: false, sidecarStarted: false });
