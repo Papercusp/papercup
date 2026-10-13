@@ -326,7 +326,8 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
-const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT } = launchAgentModule;
+const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT,
+  INTERNAL_BACKEND_BIN_OVERRIDE } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -571,6 +572,38 @@ describe('internal launch context provenance', () => {
     expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
       workspaceId: 'ws-test', confinement: scopedCeiling });
     expect(declareConfinementMock.mock.invocationCallOrder.at(-1)).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+  });
+  // benchmark-coverage-frontierswe-v2-2026-10-10 D-026: the bench runner pins the CLI to a
+  // container-exec wrapper through a context symbol that no MCP argument can carry.
+  it('delivers a backend binary override to the headless child as PAPERCUSP_BACKEND_BIN_<AGENT>', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: '/tmp/papercusp-cexec-t/codex' } } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_BACKEND_BIN_CODEX).toBe('/tmp/papercusp-cexec-t/codex');
+  });
+  it.each([
+    ['a visible launch', { headless: false }, { codex: '/tmp/papercusp-cexec-t/codex' }, /fresh headless launch/],
+    ['an unknown agent', { headless: true }, { gemini: '/tmp/x/gemini' }, /unknown agent: gemini/],
+    ['a relative path', { headless: true }, { codex: 'cexec/codex' }, /absolute path/],
+  ])('refuses a backend binary override on %s before opening a process', async (_label, patch, override, message) => {
+    const res = await launchAgent.handler(
+      { brief: 'Container task', harness: 'papercusp', agent: 'codex', ...patch },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: override } as never,
+    );
+    expect(isError(res)).toBe(true);
+    expect(JSON.stringify(res)).toMatch(message);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+  it('a plain launch carries no backend override env', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'Plain task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su' } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(Object.keys(spawnedEnv(spawnHeadlessMock)).filter((k) => k.startsWith('PAPERCUSP_BACKEND_BIN_'))).toEqual([]);
   });
   it('refuses missing or failed durable server tool confinement before opening a process', async () => {
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:

@@ -591,3 +591,19 @@ account and D031 observations do not establish the complete current UI label
 and transition census for every first-task flow. Provider readiness, payment
 and provisioning journeys, real novice comprehension, independent acceptance
 and exact production shipment remain unverified. The R-1 clause stays open.
+
+## First-task source-test acceptance, 2026-10-13 09:24Z
+
+The saved governing evaluation for `DOCS-FIRST-TASK@1` reports PASS on staging
+port 3170 with evaluator build `661cf267d5` and no blocking clauses. The
+completed evidence refresh retained bindings `41365` and `41366` and retired
+the earlier `41124` and `41127` records. Its positive unit evidence includes
+run `21188656`; the separate approval-removal control was caught in run
+`21192594`. The docs Vitest configuration now records the executing project
+as the unit layer, and the maintained injection guard checks that layer.
+
+The full saved evaluation is
+`/tmp/su9998-first-task-governing-unscoped-0924.json`; durable evidence and
+source-custody details are on `WI-10006917`. This records the completed
+source-test clause without replaying it. Runtime/model acceptance, the real
+novice study, independent acceptance and exact production shipment remain open.

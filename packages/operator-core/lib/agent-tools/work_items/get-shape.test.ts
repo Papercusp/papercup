@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/agent-mcp";
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
-import { shapeWorkItemsGet } from "./get-shape";
+import { COMPLETION_EMITTED_AT_ROW, shapeWorkItemsGet } from "./get-shape";
 
 type Envelope = {
   ok: boolean;
@@ -577,7 +577,56 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
 
     expect(result.completion).toEqual(completion);
     expect(result.hasCompletionEvidence).toBe(true);
-    expect(workItem.terminalCompletionEvidence).toEqual(completion);
+    // P-001 (oversized-tool-results-reduction-2026-10-12): `completion` is derived from
+    // `workItem.terminalCompletionEvidence`, so a shaped row emits the record ONCE and the
+    // nested key carries an in-band reference instead of a second copy.
+    expect(workItem.terminalCompletionEvidence).toBe(COMPLETION_EMITTED_AT_ROW);
+    expect(JSON.stringify(out).split(completion.summary).length - 1).toBe(1);
+  });
+
+  it('emits a completion record once at both shaped tiers and keeps a differing nested record', () => {
+    const completion = {
+      summary: 'S'.repeat(400),
+      testsRun: 'npm run test:file -- get-shape.test.ts',
+      testResult: 'passed',
+      verifiedHow: 'focused Vitest regression',
+      filesChanged: ['get-shape.ts'],
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeWorkItemsGet(
+        envelope([
+          row({
+            workItem: { id: 'WI-once', kind: 'bug', state: 'done', title: 'once', terminalCompletionEvidence: completion },
+            completion,
+            checkpoint: null,
+          }),
+        ]),
+        tier,
+      ) as Envelope;
+      const body = JSON.stringify(out);
+      expect(body.split('S'.repeat(400)).length - 1).toBe(1);
+      expect((out.results[0].workItem as Record<string, unknown>).terminalCompletionEvidence).toBe(
+        COMPLETION_EMITTED_AT_ROW,
+      );
+      expect(out.results[0].hasCompletionEvidence).toBe(true);
+    }
+
+    // A row-level record that is NOT the nested one must not be collapsed into a reference.
+    const other = { ...completion, summary: 'different record' };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: { id: 'WI-differs', kind: 'bug', state: 'done', title: 'differs', terminalCompletionEvidence: completion },
+          completion: other,
+          checkpoint: null,
+        }),
+      ]),
+      'trimmed',
+    ) as Envelope;
+    expect((out.results[0].workItem as Record<string, unknown>).terminalCompletionEvidence).not.toBe(
+      COMPLETION_EMITTED_AT_ROW,
+    );
+    expect(out.results[0].completion).toEqual(other);
   });
 
   it('keeps the evidence-presence bit when completion detail is clipped', () => {

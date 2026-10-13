@@ -17,7 +17,7 @@ vi.mock('../../../libs/generic/tauri-verify/src/bridge-client', () => ({ bridgeE
 vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
   listRuntimeVintage: async () => [], measureRuntimeVintageEnvironment: () => 'measured-native' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
-import { nativeChildEnvironment, nativeTestDatabaseEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
+import { checkNativeLedger, nativeChildEnvironment, nativeTestDatabaseEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
 import { verifierSourceFiles } from './verifier-source';
 
 describe('DAO native wrapper scope preflight', () => {
@@ -132,6 +132,66 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       nativeChildren: [{ script: 'scripts/native.mts', bundle,
         sha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') }] };
   };
+
+  it.each([false, true])('checks the ledger before native allocation and propagates handshake failure=%s', fail => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://fixture@localhost:6432/ledger');
+    vi.stubEnv('PAPERCUSP_PGBOUNCER', '0');
+    seams.execute.mockImplementation(() => { if (fail) throw new Error('ledger startup refused'); });
+    const check = () => checkNativeLedger(sourceRoot);
+    if (fail) expect(check).toThrow('ledger startup refused');
+    else expect(check).not.toThrow();
+    const [command, args, options] = seams.execute.mock.calls[0];
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 4)).toEqual(['--import', 'tsx', '--input-type=module', '-e']);
+    expect(args[4]).toContain('SELECT 1');
+    expect(options.cwd).toBe(sourceRoot);
+    expect(options.timeout).toBe(10_000);
+    expect(options.env.DATABASE_URL).toBe('postgresql://fixture@localhost:6432/ledger');
+    expect(options.env.PAPERCUSP_PGBOUNCER).toBe('1');
+    expect(options.env.PAPERCUSP_PG_PORT).toBeUndefined();
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+    expect(seams.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { url: 'postgresql://fixture@localhost:6432/ledger', pooled: true },
+    { url: 'postgresql://fixture@127.0.0.1:6432/ledger', pooled: true },
+    { url: 'postgresql://fixture@localhost:6439/ledger', poolerPort: '6439', pooled: true },
+    { url: 'postgresql://fixture@localhost:5432/ledger', pooled: false },
+    { url: 'postgresql://fixture@localhost:45000/ledger', pooled: false },
+    { url: 'postgresql://fixture@db.example:6432/ledger', pooled: false },
+  ])('keeps ledger $url exact and separates its startup policy from the private app PG', async ({ url, poolerPort, pooled }) => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', url);
+    vi.stubEnv('PAPERCUSP_PGBOUNCER', '0');
+    vi.stubEnv('PAPERCUSP_PGBOUNCER_PORT', poolerPort ?? '6432');
+    await runNativeE2e();
+    const ledgerEnv = seams.execute.mock.calls[0][2].env;
+    const appEnv = seams.execute.mock.calls[1][2].env;
+    expect(ledgerEnv.HARNESS_ADMIN_DATABASE_URL).toBe(url);
+    expect(ledgerEnv.DATABASE_URL).toBe(url);
+    expect(ledgerEnv.PAPERCUSP_PG_PORT).toBeUndefined();
+    expect(ledgerEnv.PAPERCUSP_PGBOUNCER).toBe(pooled ? '1' : '0');
+    expect(appEnv.HARNESS_ADMIN_DATABASE_URL).toBe('postgresql://fixture@localhost:37461/papercusp');
+    expect(appEnv.PAPERCUSP_PG_PORT).toBe('37461');
+    expect(appEnv.PAPERCUSP_PGBOUNCER).toBe('0');
+    expect(process.env.PAPERCUSP_PG_PORT).toBe('37461');
+    expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(appEnv.HARNESS_ADMIN_DATABASE_URL);
+    const { buildConnectionOptions, maybePgbouncer, pgbouncerEnabled } =
+      await vi.importActual<typeof import('../../../libs/papercusp/libs/db/src/connection')>(
+        '../../../libs/papercusp/libs/db/src/connection');
+    vi.stubEnv('PAPERCUSP_PG_PORT', ledgerEnv.PAPERCUSP_PG_PORT);
+    vi.stubEnv('PAPERCUSP_PGBOUNCER', ledgerEnv.PAPERCUSP_PGBOUNCER);
+    expect(maybePgbouncer(url)).toBe(url);
+    const startup = buildConnectionOptions({ searchPath: 'harness_shared,public',
+      applicationName: 'reports-ledger-regression', idleInTxMs: 60_000,
+      stmtTimeoutMs: 30_000, clientConnCheckMs: 30_000, pooled: pgbouncerEnabled() });
+    if (pooled) {
+      for (const key of ['client_connection_check_interval', 'idle_in_transaction_session_timeout',
+        'statement_timeout', 'tcp_keepalives_idle', 'tcp_keepalives_interval', 'tcp_keepalives_count'])
+        expect(startup).not.toHaveProperty(key);
+    } else expect(startup.client_connection_check_interval).toBe('30000');
+  });
 
   it.each([false, true])('preserves the parent discovery root and removes the profile after runner failure=%s', async (fail) => {
     seams.execute.mockImplementation((_command, args, options) => {

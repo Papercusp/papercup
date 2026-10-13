@@ -191,6 +191,48 @@ export function findAlreadyAppliedHunks(base: string | null, hunks: readonly Fro
   return already;
 }
 
+/**
+ * WI-6554700010009991: the ledger rows a whole-blob / committed-patch admission CARRIES, so the
+ * admission can record them as `ledgerRowIds` and a later hunk-exact admission treats them as
+ * consumed instead of refusing `hunk-already-applied` (or, on a build without that check,
+ * replaying an insertion twice).
+ *
+ * Each unconsumed row on a path is judged INDEPENDENTLY against that path's REAL admitted
+ * content. It deliberately does not reuse `findAlreadyAppliedHunks`' sequence result: that
+ * applies an absent-but-applicable hunk to a virtual content and keeps judging, so a later row
+ * could be judged present on text the real blob lacks. A mis-consumed row is never replayed,
+ * which is the unsafe direction, so this errs toward leaving a row unconsumed; a row left behind
+ * still meets the WI-6554700010009955 content check on the next hunk-exact admission.
+ *
+ *   - `write`    carried when the content is exactly its body.
+ *   - `oversize` never: it holds no content to judge.
+ *   - `edit`     the same presence rule as `findAlreadyAppliedHunks`, applied to one row alone.
+ *
+ * A path missing from `contentByPath`, or mapped to null (deleted, or not a regular-file blob),
+ * carries nothing. Ids come back in ledger order.
+ */
+export function findCarriedLedgerRowIds(input: {
+  contentByPath: ReadonlyMap<string, string | null>;
+  ledger: readonly FrozenRepairEditLedgerRow[];
+  consumedLedgerRowIds?: Iterable<number>;
+}): number[] {
+  const consumed = new Set(input.consumedLedgerRowIds ?? []);
+  const carried: number[] = [];
+  for (const row of input.ledger) {
+    if (consumed.has(row.id)) continue;
+    const content = input.contentByPath.get(row.path);
+    if (content === undefined || content === null) continue;
+    const h = row.hunk;
+    const present =
+      h.kind === 'write' ? content === h.body : h.kind === 'edit' && findAlreadyAppliedHunks(content, [h]).length === 1;
+    if (present) {
+      consumed.add(row.id);
+      carried.push(row.id);
+    }
+  }
+  return carried;
+}
+
 function exitsFor(path: string, foreignAgents: string[]): string[] {
   const named = foreignAgents.length > 0 ? foreignAgents.map((a) => JSON.stringify(a)).join(', ') : '<agent>';
   return [

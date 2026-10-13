@@ -135,7 +135,7 @@ export interface HostedWorkspaceHostRuntime {
 export function defaultHostedAudit(event: HostedHostAuditEvent): void {
   recordDesktopAudit(hostedDesktopAuditRow(event), {
     idPrefix: 'hosted-vnc',
-    onError: (error) => console.warn('[hosted-workspace-host] audit write failed:', error),
+    onError: () => console.warn('[hosted-workspace-host] audit write failed:', 'desktop_audit_write_failed'),
   });
 }
 
@@ -155,7 +155,7 @@ export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
 export function defaultRelayUsageReport(customerWorkspaceId: string, relayUsage: unknown): void {
   void import('../connected-apps/alert-sweep')
     .then(({ onRelayUsageReported }) => onRelayUsageReported(customerWorkspaceId, relayUsage))
-    .catch((error) => console.warn('[hosted-workspace-host] relay usage report failed:', error));
+    .catch(() => console.warn('[hosted-workspace-host] relay usage report failed:', 'relay_usage_report_failed'));
 }
 
 /**
@@ -166,7 +166,7 @@ export function defaultRelayUsageReport(customerWorkspaceId: string, relayUsage:
 export function defaultMembershipReport(report: unknown): void {
   void import('../connected-apps/membership-report')
     .then(({ onMembershipReported }) => onMembershipReported(report))
-    .catch((error) => console.warn('[hosted-workspace-host] membership report failed:', error));
+    .catch(() => console.warn('[hosted-workspace-host] membership report failed:', 'membership_report_failed'));
 }
 
 /**

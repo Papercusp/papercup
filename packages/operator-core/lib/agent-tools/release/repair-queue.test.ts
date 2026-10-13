@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import type { FrozenRepairEditLedgerRow } from '../../release/frozen-repair-edit-ledger';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
 import { precheckPopulation } from '../../release/admission-fix-precheck';
@@ -2744,6 +2745,36 @@ describe('release:repair-queue', () => {
       });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
       expect(auditDetails).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
+    });
+
+    it('a whole-blob admission records the ledger rows its admitted blob carries, so a later hunk-exact admit treats them as consumed (WI-6554700010009991)', async () => {
+      const ledgerRow = (id: number, agent: string, hunk: FrozenRepairEditLedgerRow['hunk']): FrozenRepairEditLedgerRow => ({
+        id, candidate: 'a'.repeat(40), agent, path: 'lib/red.test.ts', hunk, atMs: 5, toolUseId: `t${id}`, editIndex: 0, workItem: null,
+      });
+      mocks.ledger.mockResolvedValueOnce([
+        ledgerRow(51, 'su-test', { kind: 'edit', old: 'x\n', new: 'x\ny\n', replaceAll: false }),
+        ledgerRow(52, 'peer', { kind: 'edit', old: 'a = 1', new: 'a = 2', replaceAll: false }),
+        // Edited after the admitted blob was cut: its post-image is absent, so it stays unconsumed.
+        ledgerRow(53, 'su-test', { kind: 'edit', old: 'z = 1', new: 'z = 9', replaceAll: false }),
+      ]);
+      mocks.foreign.mockReturnValue({ count: 1, agents: ['peer'], byPath: { 'lib/red.test.ts': 1 } });
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.admissionGit.mockImplementation((argv: string[]) =>
+        argv[0] === 'cat-file'
+          ? { status: 0, stdout: 'x\ny\na = 2\nz = 1\n', stderr: '' }
+          : { status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' },
+      );
+      const result = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true, reason: 'shared refactor reviewed', confirm: true } as never,
+          ctx,
+        ),
+      );
+      expect(mocks.admissionGit).toHaveBeenCalledWith(['cat-file', 'blob', 'f'.repeat(40)], { cwd: '/repo' });
+      expect(result).toMatchObject({ ok: true, admitted: true, mode: 'whole-blob', ledgerRowIds: [51, 52] });
+      const written = mocks.write.mock.calls[0]![1] as Written;
+      expect(written.admissions[0]).toMatchObject({ mode: 'whole-blob', ledgerRowIds: [51, 52] });
+      expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'whole-blob', ledgerRowIds: [51, 52] });
     });
 
     it('wholeBlob sourceCommit pins the reviewed integration ancestor instead of rereading a moving staging tip', async () => {

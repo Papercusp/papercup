@@ -5,6 +5,9 @@ import {
   readHostedWorkspaceHostConfig,
   registerHostedCustomerWorkspace,
   __resetHostedWorkspaceHostRuntime,
+  defaultHostedAudit,
+  defaultRelayUsageReport,
+  defaultMembershipReport,
 } from './hosted-workspace-host-runtime';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -12,10 +15,41 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRegistry } from '../workspace-registry';
 import { hostedDesktopAuditRow, isHostedDesktopAuditAction } from '../desktop/desktop-audit';
+import * as desktopAudit from '../desktop/desktop-audit';
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
 import SecretStream from '@hyperswarm/secret-stream';
 import { ByocSealedChannel } from './byoc-sealed-channel';
+
+vi.mock('../connected-apps/alert-sweep', () => ({
+  onRelayUsageReported: () => Promise.reject(new Error('CUSTOMER_REPORT_CONTENT_5e18')),
+}));
+vi.mock('../connected-apps/membership-report', () => ({
+  onMembershipReported: () => Promise.reject(new Error('CUSTOMER_REPORT_CONTENT_5e18')),
+}));
+
+it('keeps default audit and report failure consoles free of database binding and arbitrary error content', async () => {
+  const marker = 'CUSTOMER_AUDIT_CONTENT_a7bf';
+  const error = new DrizzleQueryError('insert into audit_log values ($1)', [marker], new Error(marker));
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const audit = vi.spyOn(desktopAudit, 'recordDesktopAudit').mockImplementation((_event, deps) => { deps!.onError!(error); });
+  try {
+    defaultHostedAudit({ action: 'desktop_watch_started', organizationId: 'org_1', customerWorkspaceId: 'cust_1',
+      hostId: 'host_1', generation: 1, detail: marker });
+    defaultRelayUsageReport('cust_1', { bytes: 42 });
+    defaultMembershipReport({ customerWorkspaceId: 'cust_1' });
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(3));
+    expect(warning.mock.calls).toEqual(expect.arrayContaining([
+      ['[hosted-workspace-host] audit write failed:', 'desktop_audit_write_failed'],
+      ['[hosted-workspace-host] relay usage report failed:', 'relay_usage_report_failed'],
+      ['[hosted-workspace-host] membership report failed:', 'membership_report_failed'],
+    ]));
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('CUSTOMER_REPORT_CONTENT_5e18');
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
+  } finally { audit.mockRestore(); warning.mockRestore(); }
+});
 
 class FakePty extends EventEmitter implements HostedHostPty {
   killed = false;

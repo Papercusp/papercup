@@ -49,6 +49,7 @@ import {
 } from '../../release/frozen-repair-edit-ledger';
 import {
   attributeUnledgeredPaths,
+  findCarriedLedgerRowIds,
   summarizeForeignHunks,
   SOLE_EDITOR_WINDOW_MARGIN_MS,
   type EditAttributionRow,
@@ -1879,12 +1880,33 @@ export default defineTool({
         effectReceipt = { receiptId: admitted.receiptId, ownership: admitted.ownership };
         outcome = admitted.effect;
       }
+      // WI-6554700010009991: a whole-blob / committed-patch admission records the ledger rows its
+      // admitted blobs carry, judged against the real blob content, so a later hunk-exact admit
+      // treats them as consumed. Only paths with an unconsumed row are read. Bookkeeping never
+      // fails the admission: a blob that cannot be read leaves its rows unconsumed, and the
+      // WI-6554700010009955 content check still catches them on the next hunk-exact admit.
+      let carriedLedgerRowIds: number[] = [];
+      if (outcome.ok && !hunkExact && ledgerRows.length > 0) {
+        const consumed = new Set((queue.admissions ?? []).flatMap((e) => e.ledgerRowIds ?? []));
+        const contentByPath = new Map<string, string | null>();
+        for (const [path, blob] of Object.entries(outcome.entry.blobs)) {
+          if (!blob || !ledgerRows.some((r) => r.path === path && !consumed.has(r.id))) continue;
+          try {
+            const cat = await runJob('carried-ledger-rows', { kind: 'git', argv: ['cat-file', 'blob', blob], cwd: root });
+            if (cat.status === 0) contentByPath.set(path, cat.stdout);
+          } catch {
+            // Left unconsumed (see above).
+          }
+        }
+        carriedLedgerRowIds = findCarriedLedgerRowIds({ contentByPath, ledger: ledgerRows, consumedLedgerRowIds: consumed });
+      }
+      const carriedRecord = carriedLedgerRowIds.length > 0 ? { ledgerRowIds: carriedLedgerRowIds } : {};
       const precheckEntry = precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population });
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
       const provenance = patch
-        ? { mode, patch, source: { ref: sourceRef, root } }
+        ? { mode, patch, source: { ref: sourceRef, root }, ...carriedRecord }
         : hunkExact
           ? {
               mode,
@@ -1905,6 +1927,7 @@ export default defineTool({
               foreignHunksAccepted: foreign.count,
               foreignAgents: foreign.agents,
               foreignHunksByPath: foreign.byPath,
+              ...carriedRecord,
             };
       if (!outcome.ok) {
         if (outcome.code === 'nothing-to-admit') {
@@ -1947,16 +1970,17 @@ export default defineTool({
         });
       }
       // The ledger entry carries HOW the source was built (D-008): hunk-exact with the replayed
-      // hunks per path, or whole-blob with the foreign hunks it accepted and why.
+      // hunks per path, or whole-blob with the foreign hunks it accepted and why. Whole-blob and
+      // committed-patch entries also name the ledger rows their blobs carry (WI-6554700010009991).
       const entry: FrozenRepairAdmission = {
         ...outcome.entry,
         mode,
         precheck: precheckEntry,
         ...(patch
-          ? { patch }
+          ? { patch, ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
-            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),
       };
       const proof = {
         diff: outcome.diff,
@@ -2071,10 +2095,10 @@ export default defineTool({
         precheckRadius: population.radius ?? null,
         mode,
         ...(patch
-          ? { patch }
+          ? { patch, ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
-            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),
         precheck: precheckEntry,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
         persisted,

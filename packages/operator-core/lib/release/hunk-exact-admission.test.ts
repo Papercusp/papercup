@@ -17,6 +17,7 @@ import {
   buildCommittedPatchSource,
   buildHunkExactSource,
   findAlreadyAppliedHunks,
+  findCarriedLedgerRowIds,
   SOLE_EDITOR_WINDOW_MARGIN_MS,
   summarizeForeignHunks,
   type EditAttributionRow,
@@ -403,6 +404,41 @@ describe('hunk-already-applied — a hunk repairHead already carries is never re
     expect(findAlreadyAppliedHunks('a = 10', [ed('a = 1', 'a = 10'), ed('a = 10', 'a = 20')])).toEqual([0]);
     expect(findAlreadyAppliedHunks('x', [{ kind: 'oversize', of: 'edit', bytes: 1, sha256: 'f'.repeat(64) }, ed('x', 'xy')])).toEqual([]);
     expect(findAlreadyAppliedHunks('old', [{ kind: 'write', body: 'new' }, ed('new', 'new!')])).toEqual([]);
+  });
+});
+
+describe('findCarriedLedgerRowIds — the rows a whole-blob / committed-patch admission carries (WI-6554700010009991)', () => {
+  const ed = (old: string, nu: string, replaceAll = false) => ({ kind: 'edit' as const, old, new: nu, replaceAll });
+  const carried = (content: Record<string, string | null>, ledger: FrozenRepairEditLedgerRow[], consumed: number[] = []) =>
+    findCarriedLedgerRowIds({ contentByPath: new Map(Object.entries(content)), ledger, consumedLedgerRowIds: consumed });
+
+  it('names every row whose effect is in the real admitted content, in ledger order and across agents', () => {
+    const insert = row('me', 'lib/a.ts', ed('x\n', 'x\ny\n'));
+    const replace = row('peer', 'lib/a.ts', ed('a = 1', 'a = 2'));
+    const write = row('me', 'lib/b.ts', { kind: 'write', body: 'whole\n' });
+    const absent = row('me', 'lib/a.ts', ed('z = 1', 'z = 9'));
+    expect(carried({ 'lib/a.ts': 'x\ny\na = 2\nz = 1\n', 'lib/b.ts': 'whole\n' }, [insert, replace, write, absent])).toEqual([
+      insert.id,
+      replace.id,
+      write.id,
+    ]);
+  });
+
+  it('judges each row alone: an applicable-but-absent row does not make a dependent row look carried', () => {
+    // Sequence judgement would apply row 1 to a virtual content and then find row 2's post-image
+    // there. The real blob carries neither, so neither may be consumed.
+    const first = row('me', 'lib/a.ts', ed('x\n', 'x\ny\n'));
+    const second = row('me', 'lib/a.ts', ed('q', 'y'));
+    expect(findAlreadyAppliedHunks('x\n', [first.hunk, second.hunk])).toEqual([1]);
+    expect(carried({ 'lib/a.ts': 'x\n' }, [first, second])).toEqual([]);
+  });
+
+  it('never carries an oversize row, an already-consumed row, or a row on a deleted or unread path', () => {
+    const oversize = row('me', 'lib/a.ts', { kind: 'oversize', of: 'edit', bytes: 1, sha256: 'f'.repeat(64) });
+    const consumedRow = row('me', 'lib/a.ts', ed('x\n', 'x\ny\n'));
+    const onDeleted = row('me', 'lib/gone.ts', ed('x\n', 'x\ny\n'));
+    const onUnread = row('me', 'lib/b.ts', ed('x\n', 'x\ny\n'));
+    expect(carried({ 'lib/a.ts': 'x\ny\n', 'lib/gone.ts': null }, [oversize, consumedRow, onDeleted, onUnread], [consumedRow.id])).toEqual([]);
   });
 });
 

@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 
 import {
+  backendBinOverrideEnvKey,
   backendSearchDirs,
   decodeSpawnPathDirs,
   encodeSpawnPathDirs,
@@ -551,3 +552,70 @@ describe.skipIf(process.platform === 'win32')(
     });
   },
 );
+
+describe('per-launch backend override (benchmark-coverage-frontierswe-v2 D-026)', () => {
+  let root: string;
+  let pathDir: string;
+  let wrapper: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'backend-override-'));
+    pathDir = join(root, 'path-bin');
+    mkdirSync(pathDir, { recursive: true });
+    writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    wrapper = join(root, 'cexec', 'codex');
+    mkdirSync(dirname(wrapper), { recursive: true });
+    writeFileSync(wrapper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('names one key per agent', () => {
+    expect(backendBinOverrideEnvKey('codex')).toBe('PAPERCUSP_BACKEND_BIN_CODEX');
+    expect(backendBinOverrideEnvKey('claude')).toBe('PAPERCUSP_BACKEND_BIN_CLAUDE');
+  });
+
+  it('a set override wins over a codex that PATH would find', () => {
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('codex')]: wrapper },
+    });
+    expect(r?.bin).toBe(wrapper);
+    expect(r?.override).toBe(true);
+    expect(r?.onPath).toBe(false);
+  });
+
+  it('without the override the same env resolves the PATH codex', () => {
+    const r = resolveBackendLaunch('codex', { home: root, platform: 'linux', env: { PATH: pathDir } });
+    expect(r?.bin).toBe(join(pathDir, 'codex'));
+    expect(r?.override).toBe(false);
+  });
+
+  it.each([
+    ['a relative path', 'cexec/codex'],
+    ['a missing file', '/nonexistent/papercusp/codex'],
+    ['a directory', '__DIR__'],
+    ['a non-executable file', '__NOEXEC__'],
+  ])('fails closed on %s instead of falling back to the PATH codex', (_label, value) => {
+    let v = value;
+    if (value === '__DIR__') v = dirname(wrapper);
+    if (value === '__NOEXEC__') {
+      v = join(root, 'noexec-codex');
+      writeFileSync(v, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    }
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('codex')]: v },
+    });
+    expect(r).toBeNull();
+  });
+
+  it('an override for another agent does not affect codex resolution', () => {
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('claude')]: '/nonexistent/claude' },
+    });
+    expect(r?.bin).toBe(join(pathDir, 'codex'));
+  });
+});

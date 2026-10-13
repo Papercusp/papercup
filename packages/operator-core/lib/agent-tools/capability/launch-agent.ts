@@ -93,7 +93,7 @@ import {
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
-import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
+import { BACKEND_AGENTS, backendBinOverrideEnvKey, preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
@@ -125,6 +125,14 @@ export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fi
 /** Private controller seam, absent from the public tool schema. */
 export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
 export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('internal-scoped-session-confinement');
+/**
+ * Internal context key (benchmark-coverage-frontierswe-v2-2026-10-10 D-026): pin a fresh
+ * headless launch's backend CLI to an exact executable, e.g. `{ codex: <container-exec
+ * wrapper> }`. Delivered to psu as backendBinOverrideEnvKey(agent), which
+ * resolveBackendLaunch honours without falling back. A context symbol, not an argument,
+ * so no MCP caller can set it; only the server-side bench runner does.
+ */
+export const INTERNAL_BACKEND_BIN_OVERRIDE: unique symbol = Symbol('internal-backend-bin-override');
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
@@ -764,6 +772,24 @@ export default defineTool({
       return err('Scoped native inference requires an exact server-side session tool ceiling before launch.');
     if (scopedGateway && (args.resume || args.successor || args.fork || (args.count ?? args.members?.length ?? 1) !== 1)) {
       return err('Scoped inference gateway requires a fresh single native launch.');
+    }
+    const backendBinOverride = (ctx as typeof ctx & {
+      [INTERNAL_BACKEND_BIN_OVERRIDE]?: Readonly<Record<string, string>>;
+    })[INTERNAL_BACKEND_BIN_OVERRIDE];
+    const backendBinOverrideEnv: Record<string, string> = {};
+    if (backendBinOverride !== undefined) {
+      if (args.resume || args.successor || args.fork || args.headless !== true) {
+        return err('A backend binary override requires a fresh headless launch.');
+      }
+      for (const [agentName, binPath] of Object.entries(backendBinOverride)) {
+        if (!(BACKEND_AGENTS as readonly string[]).includes(agentName)) {
+          return err(`A backend binary override names an unknown agent: ${agentName}.`);
+        }
+        if (typeof binPath !== 'string' || !isAbsolute(binPath)) {
+          return err(`A backend binary override for ${agentName} must be an absolute path.`);
+        }
+        backendBinOverrideEnv[backendBinOverrideEnvKey(agentName)] = binPath;
+      }
     }
     // A launch-declared confinement binds a NEW identity before its process opens. A
     // resumed, successor or forked identity already ran turns unconfined, so it is refused
@@ -2162,6 +2188,7 @@ export default defineTool({
             ? { PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: internalKickoffOrigin }
             : {}),
           ...(args.originalRouting ? { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(args.originalRouting) } : {}),
+          ...backendBinOverrideEnv,
         };
         const memberLabel = memberLabels[i];
         const targetOwnerId = memberOwnerIds[i];

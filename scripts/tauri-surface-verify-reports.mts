@@ -92,6 +92,33 @@ export function nativeTestDatabaseEnvironment(profile: NativeLiveProfile, env = 
   return { ...privateEnv, PAPERCUSP_TEST_PG_ADMIN_URL: address.toString() };
 }
 
+/** Pin recorder startup policy to its ledger endpoint, never the app's private PG. */
+export function nativeLedgerEnvironment(env = process.env): NodeJS.ProcessEnv {
+  const ledgerUrl = env.PAPERCUSP_TEST_RUNS_DB_URL;
+  assert.ok(ledgerUrl, 'Keep native results in the shared test ledger');
+  const address = new URL(ledgerUrl);
+  assert.ok(['postgres:', 'postgresql:'].includes(address.protocol), 'Native ledger requires a Postgres URL');
+  const poolerPort = Number(env.PAPERCUSP_PGBOUNCER_PORT) || 6432;
+  const pooled = ['localhost', '127.0.0.1'].includes(address.hostname)
+    && Number(address.port) === poolerPort;
+  // Explicit URLs stay exact: a direct or remote endpoint must not be rerouted
+  // to this machine's shared pooler. Only its known loopback pooler is pooled.
+  const childEnv: NodeJS.ProcessEnv = { ...env, HARNESS_ADMIN_DATABASE_URL: ledgerUrl, DATABASE_URL: ledgerUrl,
+    PAPERCUSP_PGBOUNCER: pooled ? '1' : '0' };
+  delete childEnv.PAPERCUSP_PG_PORT;
+  return childEnv;
+}
+
+/** SELECT-only admission check, runnable before allocating the native verifier. */
+export function checkNativeLedger(sourceRoot = process.cwd(), env = process.env): void {
+  execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    try { await sql\`SELECT 1\`; }
+    finally { await sql.end({ timeout: 2 }); }
+  `], { cwd: sourceRoot, stdio: 'inherit', timeout: 10_000, env: nativeLedgerEnvironment(env) });
+}
+
 /** Preserve startup stdout/stderr and the original stack in the test failure. */
 export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, script: string, args: string[] = []) {
   const env = nativeChildEnvironment(profile);
@@ -168,9 +195,7 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   `, JSON.stringify({ workspaceId: process.env.PAPERCUSP_TEST_RUN_WORKSPACE,
     unit: runtimeUnits[0], pid: tauriPID, treeSha: receipt.sourceCommit,
     bundleVersion: 'executable-sha256:' + digest })], {
-    cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,
-      HARNESS_ADMIN_DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL,
-      DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL },
+    cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: nativeLedgerEnvironment(),
   });
 
   for (const script of nativeScripts) {
@@ -456,6 +481,9 @@ async function verifyReports(evidenceDir: string) {
 }
 
 async function main() {
+  if (process.argv.includes('--check-ledger')) {
+    checkNativeLedger(); console.log('REPORTS_NATIVE_LEDGER_PREFLIGHT_OK'); return;
+  }
   if (process.argv.includes('--e2e')) { await runNativeE2e(); return; }
   const selection = parseSelectionArgs(process.argv.slice(2));
   const result = await runHarness({ contract: { name: 'reports-library-tauri',
