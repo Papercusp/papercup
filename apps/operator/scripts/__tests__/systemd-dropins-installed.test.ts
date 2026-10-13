@@ -164,6 +164,9 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
 const FAKE_SYSTEMCTL = `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+// Scope-aware like the real thing: --user answers from scripts/systemd/<unit>.d, the system
+// manager from scripts/systemd/system/<unit>.d (P-008 system drop-ins).
+const isUser = process.argv.includes('--user');
 const args = process.argv.slice(2).filter((a) => a !== '--user');
 if (args[0] === 'is-system-running') { process.stdout.write('running\\n'); process.exit(0); }
 if (args[0] !== 'show') { process.stderr.write('fake systemctl: unsupported ' + args.join(' ') + '\\n'); process.exit(64); }
@@ -188,7 +191,7 @@ if (mode === 'fail-dropin-read-once' && props.includes('DropInPaths') && units.i
   process.exit(1);
 }
 const blocks = units.map((u) => {
-  const dir = path.join(process.env.FAKE_SYSTEMD_DIR, u + '.d');
+  const dir = path.join(process.env.FAKE_SYSTEMD_DIR, isUser ? '' : 'system', u + '.d');
   let confs = fs.existsSync(dir) ? fs.readdirSync(dir).filter((c) => c.endsWith('.conf')) : [];
   if (drop && u === process.env.FAKE_DROP_UNIT) confs = confs.filter((c) => c !== process.env.FAKE_DROP_CONF);
   const values = { Id: u, LoadState: 'loaded', ActiveState: 'inactive', DropInPaths: confs.map((c) => '/fake/' + u + '.d/' + c).join(' ') };
@@ -206,15 +209,19 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
   chmodSync(join(binDir, 'systemctl'), 0o755);
   afterAll(() => rmSync(binDir, { recursive: true, force: true }));
 
-  function runWithFake(mode: string, args: string[] = []) {
+  function runWithFake(
+    mode: string,
+    args: string[] = [],
+    drop: { unit: string; conf: string } = { unit: DROP_UNIT, conf: DROP_CONF },
+  ) {
     const stateDir = mkdtempSync(join(binDir, 'state-'));
     const result = runGuard(args, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       FAKE_SYSTEMCTL_MODE: mode,
       FAKE_SYSTEMCTL_STATE: stateDir,
       FAKE_SYSTEMD_DIR: join(REPO_ROOT, 'apps/operator/scripts/systemd'),
-      FAKE_DROP_UNIT: DROP_UNIT,
-      FAKE_DROP_CONF: DROP_CONF,
+      FAKE_DROP_UNIT: drop.unit,
+      FAKE_DROP_CONF: drop.conf,
       CHECK_SYSTEMD_DROPINS_RETRY_DELAY_MS: '0',
     });
     const showCalls = Number(readFileSync(join(stateDir, 'show-calls'), 'utf8'));
@@ -281,5 +288,28 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
     const list = runWithFake('drop-always', ['--list']);
     expect(list.stdout).toMatch(/^\s*MISSING\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf\s*$/m);
     expect(list.stdout).toMatch(/^installed=\d+ missing=1 unit-absent=0$/m);
+  });
+
+  // papercusp-performance-audit-2026-10-12 P-008: the serving-path PostgreSQL weights are
+  // SYSTEM drop-ins (scripts/systemd/system/). They must be read from the system manager and,
+  // when missing, reported with a root-owned install, never a symlink into a user's home.
+  const SYSTEM_DROP = { unit: 'system-postgresql.slice', conf: '60-papercusp-serving-cpu-weight.conf' };
+
+  it('tracks the system-scope PostgreSQL drop-ins (guards against a vacuous system pass)', () => {
+    const systemDir = join(REPO_ROOT, 'apps/operator/scripts/systemd/system');
+    expect(existsSync(join(systemDir, `${SYSTEM_DROP.unit}.d`, SYSTEM_DROP.conf))).toBe(true);
+    const list = runWithFake('none', ['--list']);
+    expect(list.stdout).toMatch(
+      /^\s*INSTALLED\s+system-postgresql\.slice\s+60-papercusp-serving-cpu-weight\.conf\s*$/m,
+    );
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=0$/m);
+  });
+
+  it('catches a missing SYSTEM drop-in and prints the root install, not a user symlink', () => {
+    const gate = runWithFake('drop-always', [], SYSTEM_DROP);
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${SYSTEM_DROP.unit}  <-  ${SYSTEM_DROP.conf}`);
+    expect(gate.stderr).toContain(`/etc/systemd/system/${SYSTEM_DROP.unit}.d/${SYSTEM_DROP.conf}`);
+    expect(gate.stderr).not.toContain(`~/.config/systemd/user/${SYSTEM_DROP.unit}.d`);
   });
 });

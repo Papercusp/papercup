@@ -1952,6 +1952,12 @@ export async function retireInFlightCandidateAfterResult(
  * Returns the incumbent ONLY on positive liveness evidence (`live`). `dead`/`unknown`, a runner
  * that is this process, or a non-conflict status return null. That keeps the loud crash path for
  * every case where no live run is provably carrying the verdict.
+ *
+ * WI-6554700010009727 — "this process" includes a reservation recorded under the systemd unit
+ * this process runs IN (`self.units`, from `ownCgroupUnits`). Measured 2026-10-13 03:51Z: a
+ * manual reservation carried unit papercup-green-checkpoint-manual-1fxzuva.service with pid and
+ * runId null, while the CLI attached under a different gateFireId. Probing that unit answered
+ * `live` because it was the caller, so the run stood down against itself and no suite ran.
  */
 export async function liveIncumbentAfterAttachConflict(
   activation: {
@@ -1962,7 +1968,7 @@ export async function liveIncumbentAfterAttachConflict(
       currentPhysicalRunner: QualificationPhysicalRunner | null;
     };
   },
-  self: { pid: number; runId: string },
+  self: { pid: number; runId: string; units?: readonly string[] },
   probe: (runner: QualificationPhysicalRunner) => Promise<RunnerLiveness> = (runner) => probeRunnerLiveness(runner),
 ): Promise<{ runner: QualificationPhysicalRunner; runId: string | null; candidate: string | null } | null> {
   if (activation.status !== "conflict") return null;
@@ -1971,9 +1977,42 @@ export async function liveIncumbentAfterAttachConflict(
   if (!transaction || !runner) return null;
   if (runner.pid != null && runner.pid === self.pid) return null;
   if (transaction.runId && transaction.runId === self.runId) return null;
+  if (runnerUnitIsOwn(runner, self.units)) return null;
   const liveness = await probe(runner).catch((): RunnerLiveness => "unknown");
   if (liveness !== "live") return null;
   return { runner, runId: transaction.runId, candidate: runner.candidate ?? transaction.candidate };
+}
+
+/**
+ * WI-6554700010009727 — the systemd units (`*.service` / `*.scope`) on this process's cgroup v2
+ * path, outermost first. A detached checkpoint CLI runs inside the transient unit its launcher
+ * reserved, so a reservation naming one of these units belongs to THIS process. An unreadable
+ * cgroup file returns [], which leaves the existing liveness behaviour unchanged.
+ */
+export function ownCgroupUnits(read: () => string = () => readFileSync("/proc/self/cgroup", "utf8")): string[] {
+  let text: string;
+  try {
+    text = read();
+  } catch {
+    return [];
+  }
+  const units: string[] = [];
+  for (const line of text.split("\n")) {
+    const path = line.split(":").slice(2).join(":");
+    for (const segment of path.split("/")) {
+      if (/\.(service|scope)$/.test(segment)) units.push(segment);
+    }
+  }
+  return units;
+}
+
+/** True when the reserved runner's unit is one this process runs inside (WI-6554700010009727). */
+export function runnerUnitIsOwn(
+  runner: Pick<QualificationPhysicalRunner, "unit">,
+  units: readonly string[] | undefined,
+): boolean {
+  const unit = runner.unit?.trim();
+  return Boolean(unit && units?.includes(unit));
 }
 
 /** The `skipped-locked` summary for a fire that lost the qualification attach race (WI-6554700010009570). */
@@ -23532,7 +23571,8 @@ if (require.main === module) {
         // WI-6554700010009570: a refusal because a DIFFERENT live runner already holds this attempt
         // is a lost launch race, not a crash. Stand down on the lock-loser terminal so the no-verdict
         // streak does not advance and the holder's in-flight candidate marker survives.
-        const incumbent = await liveIncumbentAfterAttachConflict(activation, { pid: process.pid, runId });
+        const selfUnits = ownCgroupUnits();
+        const incumbent = await liveIncumbentAfterAttachConflict(activation, { pid: process.pid, runId, units: selfUnits });
         if (incumbent) {
           const summary = attachRaceSkipSummary(incumbent);
           console.log(`${orchestratorStdoutTag()} ${summary}`);
@@ -23548,6 +23588,19 @@ if (require.main === module) {
             ...(gateFireId ? { gateFireId } : {}),
           });
           process.exit(0);
+        }
+        const reservedRunner =
+          'transaction' in activation ? activation.transaction?.currentPhysicalRunner ?? null : null;
+        if (reservedRunner && runnerUnitIsOwn(reservedRunner, selfUnits)) {
+          // WI-6554700010009727: the reservation is OURS (same systemd unit) but was recorded under a
+          // different runner id than the gateFireId this CLI attached with. That is launcher/CLI id
+          // skew, not a lost race; name it so the crash is diagnosable instead of a silent stand-down.
+          throw new Error(
+            `checkpoint qualification runner attachment refused: ${activation.status} — the reserved runner ` +
+              `${reservedRunner.id} is this process's own unit ${reservedRunner.unit}, but this CLI attached as ` +
+              `${gateFireId ?? 'an unrecorded gateFireId'}; the launcher's reservation id and the transported ` +
+              `gateFireId disagree (launcher/CLI version skew, WI-6554700010009727)`,
+          );
         }
         throw new Error(`checkpoint qualification runner attachment refused: ${activation.status}`);
       }

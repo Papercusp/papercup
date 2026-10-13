@@ -28,7 +28,11 @@ import {
 import { createExternalTriggerSource } from '../external-triggers/admin';
 import { installPluginFromCupboardCore, type InstallPluginCoreDeps, InstallPluginError } from './install-plugin-core';
 import { armTriggerPack } from './trigger-pack-lifecycle';
-import { materializeTriggerPack, TRIGGER_PACK_EDGE_EVENT_KEY } from './trigger-pack-materialize';
+import {
+  materializeTriggerPack,
+  TRIGGER_PACK_EDGE_EVENT_KEY,
+  triggerPackExecutionAgentName,
+} from './trigger-pack-materialize';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -180,6 +184,11 @@ describe('trigger-pack materialization (R-8)', () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.armed === false)).toBe(true);
     expect(rows.every((row) => row.packInstallationId === installation.id)).toBe(true);
+    // WI-6554700010008920: every plan binding names its executor. Without one a run
+    // only mints an unassigned work-item that nothing consumes, and the orphan sweep
+    // fails it; with one the run assigns + wakes the session that adopted the name.
+    const packExecution = { appHarnessSlug: HARNESS, agentName: triggerPackExecutionAgentName(PLUGIN) };
+    expect(packExecution.agentName).toMatch(/^[a-z0-9][a-z0-9-]*$/);
 
     const external = rows.find((row) => row.id === installation.resources.bindings['inbound-mail']!.triggerBindingId)!;
     // The portable `ext:*:` pattern binds to the installer's local source and kind.
@@ -190,7 +199,7 @@ describe('trigger-pack materialization (R-8)', () => {
       datatypeId: 'email-message',
       planHarnessSlug: HARNESS,
       planSlug: REPLY_SLUG,
-      action: { type: 'launch-plan', input: { tone: 'warm' } },
+      action: { type: 'launch-plan', input: { tone: 'warm' }, execution: packExecution },
       stormPolicy: expect.objectContaining({ maxRuns: 2, windowSeconds: 3600 }),
     });
 
@@ -202,7 +211,7 @@ describe('trigger-pack materialization (R-8)', () => {
       eventFilter: { upstreamBindingId: external.id },
       datatypeId: 'trigger-run-completion',
       planSlug: FOLLOW_SLUG,
-      action: { type: 'launch-plan', input: { tone: 'warm' } },
+      action: { type: 'launch-plan', input: { tone: 'warm' }, execution: packExecution },
     });
 
     // Nothing publisher-specific: no installer-foreign source, account or run id.

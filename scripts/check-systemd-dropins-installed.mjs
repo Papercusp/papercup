@@ -42,9 +42,14 @@
  * gate or make the supervision reconciler file a false work-item.
  *
  * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf`
- * drop-ins, plus the Diodon/zeitgeist lifecycle on a host with an active graphical
- * session. Root-owned system units installed by `sudo install` (per the README's
- * user-manager-watchdog section) are a different mechanism and are NOT covered here.
+ * drop-ins (read with `systemctl --user`), SYSTEM-scope drop-ins tracked under
+ * `scripts/systemd/system/<unit>.{service,slice}.d/*.conf` (read with plain `systemctl`;
+ * installed as root-owned copies by `sudo install`, so the check is "is it in the unit's
+ * DropInPaths", never "is it a symlink"), plus the Diodon/zeitgeist lifecycle on a host with
+ * an active graphical session. Root-owned system UNIT FILES (not drop-ins) installed per the
+ * README's user-manager-watchdog section are a different mechanism and are NOT covered here.
+ * System drop-ins were added for papercusp-performance-audit-2026-10-12 P-008
+ * (WI-6554700010009308): the PostgreSQL serving-path weights live on system units.
  *
  * Usage:
  *   node scripts/check-systemd-dropins-installed.mjs           # gate
@@ -86,9 +91,9 @@ function sleepSync(ms) {
  * systemctl's own first stderr line (or the exit status / signal). A failure is kept as a
  * failure — collapsing it into empty output is the defect this guard once had.
  */
-function runSystemctl(args) {
+function runSystemctl(args, scope = 'user') {
   try {
-    const stdout = execFileSync('systemctl', ['--user', ...args], {
+    const stdout = execFileSync('systemctl', scope === 'user' ? ['--user', ...args] : args, {
       stdio: 'pipe',
       encoding: 'utf8',
       timeout: 15_000,
@@ -132,11 +137,11 @@ function parseShowBlocks(stdout) {
  * is retried. Returns { units: Map<unit, props> } or, when every attempt failed,
  * { error } naming the last failure.
  */
-function showUnits(units, properties, required = []) {
+function showUnits(units, properties, required = [], scope = 'user') {
   const args = ['show', '--property=Id', ...properties.map((p) => `--property=${p}`), ...units];
   let error = 'no read attempted';
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
-    const read = runSystemctl(args);
+    const read = runSystemctl(args, scope);
     if (read.ok) {
       const blocks = parseShowBlocks(read.stdout);
       const complete =
@@ -182,20 +187,45 @@ function installedSymlink(path) {
   }
 }
 
-/** Collect tracked drop-ins as { unit, confPath, confName }. */
+/**
+ * Collect tracked drop-ins as { unit, confPath, confName, scope }. User drop-ins live directly
+ * under scripts/systemd/<unit>.service.d/; system drop-ins under scripts/systemd/system/,
+ * where a slice can carry one too (CPUWeight on system-postgresql.slice).
+ */
 function trackedDropIns() {
   if (!existsSync(systemdDir)) return [];
   const found = [];
-  for (const entry of readdirSync(systemdDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.endsWith('.service.d')) continue;
-    const unit = entry.name.slice(0, -2); // "foo.service.d" -> "foo.service"
-    const dir = join(systemdDir, entry.name);
-    for (const conf of readdirSync(dir)) {
-      if (!conf.endsWith('.conf')) continue;
-      found.push({ unit, confName: conf, confPath: join(dir, conf) });
+  const collect = (root, scope, suffixes) => {
+    if (!existsSync(root)) return;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !suffixes.some((s) => entry.name.endsWith(s))) continue;
+      const unit = entry.name.slice(0, -2); // "foo.service.d" -> "foo.service"
+      const dir = join(root, entry.name);
+      for (const conf of readdirSync(dir)) {
+        if (!conf.endsWith('.conf')) continue;
+        found.push({ unit, confName: conf, confPath: join(dir, conf), scope });
+      }
     }
+  };
+  collect(systemdDir, 'user', ['.service.d']);
+  collect(join(systemdDir, 'system'), 'system', ['.service.d', '.slice.d']);
+  return found.sort((a, b) =>
+    `${a.scope}/${a.unit}/${a.confName}`.localeCompare(`${b.scope}/${b.unit}/${b.confName}`),
+  );
+}
+
+/** Read LoadState + DropInPaths for each scope's units; merge into one Map keyed by scope+unit. */
+function showTracked(entries) {
+  const units = new Map();
+  const errors = [];
+  for (const scope of ['user', 'system']) {
+    const scoped = [...new Set(entries.filter((d) => d.scope === scope).map((d) => d.unit))];
+    if (scoped.length === 0) continue;
+    const read = showUnits(scoped, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths'], scope);
+    if (read.error) errors.push(scope === 'user' ? read.error : `system scope: ${read.error}`);
+    for (const [unit, props] of read.units ?? []) units.set(`${scope}:${unit}`, props);
   }
-  return found.sort((a, b) => `${a.unit}/${a.confName}`.localeCompare(`${b.unit}/${b.confName}`));
+  return { units, errors };
 }
 
 /** Names of the drop-ins a unit has loaded, from its DropInPaths property. */
@@ -226,15 +256,14 @@ const unitAbsent = [];
 const unreadable = [];
 const readErrors = [];
 
-const trackedUnits = [...new Set(dropIns.map((d) => d.unit))];
-const firstRead = showUnits(trackedUnits, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths']);
-if (firstRead.error) readErrors.push(firstRead.error);
+const firstRead = showTracked(dropIns);
+readErrors.push(...firstRead.errors);
 
 const suspects = [];
 for (const d of dropIns) {
-  const props = firstRead.units?.get(d.unit);
+  const props = firstRead.units.get(`${d.scope}:${d.unit}`);
   if (!props) unreadable.push(d);
-  else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: 'unit not present in user scope' });
+  else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: `unit not present in ${d.scope} scope` });
   else if (loadedDropInNames(props).has(d.confName)) installed.push(d);
   else suspects.push(d);
 }
@@ -243,13 +272,12 @@ for (const d of dropIns) {
 // single anomalous answer must not fail the gate or file a work-item on its own.
 if (suspects.length > 0) {
   sleepSync(RETRY_DELAYS_MS[0] ?? 0);
-  const suspectUnits = [...new Set(suspects.map((d) => d.unit))];
-  const confirm = showUnits(suspectUnits, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths']);
-  if (confirm.error) readErrors.push(`confirmation read: ${confirm.error}`);
+  const confirm = showTracked(suspects);
+  readErrors.push(...confirm.errors.map((e) => `confirmation read: ${e}`));
   for (const d of suspects) {
-    const props = confirm.units?.get(d.unit);
+    const props = confirm.units.get(`${d.scope}:${d.unit}`);
     if (!props) unreadable.push(d);
-    else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: 'unit not present in user scope' });
+    else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: `unit not present in ${d.scope} scope` });
     else if (loadedDropInNames(props).has(d.confName)) installed.push(d);
     else missing.push(d);
   }
@@ -297,10 +325,20 @@ if (missing.length > 0) {
       `   The unit is running WITHOUT the configuration this repo believes it has.\n` +
       `   (Confirmed by two separate reads.)\n`,
   );
-  for (const { unit, confName, confPath } of missing) {
+  for (const { unit, confName, confPath, scope } of missing) {
     const rel = confPath.slice(repoRoot.length + 1);
     console.error(`  ${unit}  <-  ${confName}`);
     console.error(`     tracked at: ${rel}`);
+    if (scope === 'system') {
+      // Root-owned copy, not a symlink into a user's home: the system manager must not load
+      // configuration a non-root user can rewrite.
+      console.error(`     install:    sudo install -D -m0644 "${confPath}" /etc/systemd/system/${unit}.d/${confName} \\`);
+      console.error(`                 && sudo systemctl daemon-reload`);
+      console.error(
+        `     then verify: systemctl show ${unit} --property=DropInPaths --value | tr ' ' '\\n' | grep ${confName}\n`,
+      );
+      continue;
+    }
     console.error(`     install:    mkdir -p ~/.config/systemd/user/${unit}.d \\`);
     console.error(`                 && ln -sfn "${confPath}" ~/.config/systemd/user/${unit}.d/${confName} \\`);
     console.error(`                 && systemctl --user daemon-reload`);

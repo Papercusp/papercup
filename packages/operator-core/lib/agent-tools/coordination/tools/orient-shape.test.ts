@@ -46,7 +46,10 @@ function fixture(n = 20) {
         ts: `t${i}`,
         kind: 'message',
         from: 'su-x',
-        summary: 'm'.repeat(400),
+        // Distinct per entry, so the "rows travel ONCE" count below measures duplication
+        // of a single row rather than five rows that happen to share identical text.
+        // Still exactly 400 chars: fold #2 below pins the source summary length.
+        summary: `msg ${i} `.padEnd(400, 'm'),
         body: 'b'.repeat(800),
       })),
     },
@@ -728,9 +731,11 @@ describe('EI-203907 fleetSummaries shaping', () => {
  * The overshoot was self-inflicted: the post-compaction fold BEEFS the inbox (cap 5 -> 20,
  * summaries 140 -> 700) precisely because a just-compacted agent lost its message context,
  * so `afterCompaction` is both the call that most needs a complete picture and the one most
- * likely to overshoot. Note the doubling that makes it so easy to overshoot: `entries` is
- * aliased to the SAME projected array as `recent`, so every inbox entry is serialized
- * TWICE — 20 beefed entries alone can approach the whole ceiling.
+ * likely to overshoot. Until P-006 (oversized-tool-results-reduction-2026-10-12) `entries`
+ * was also aliased to the SAME projected array as `recent`, so every inbox entry was
+ * serialized TWICE. The rows now travel once, so 20 beefed entries (~16.5KB) sit just under
+ * the 17KB budget, and a real overshoot needs other passthrough bulk beside them. The
+ * fixture below supplies that bulk through `control`.
  */
 describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () => {
   const bigInbox = (n: number) =>
@@ -746,7 +751,9 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
   const overflowing = () => ({
     self: { ownerId: 'su-7854d874', ownerLabel: 'su · su-7854d' },
     recovery: { selfRecall: 'sessions:search { session: "self" }', loop: { active: true, intervalSec: 900 } },
-    control: { state: { modes: ['auto'], carry: 'warm' } },
+    // ~4KB of passthrough bulk (survives every rung unchanged): beef + bulk overshoots the
+    // 17KB budget, while plain-trimmed inbox + bulk fits comfortably.
+    control: { state: { modes: ['auto'], carry: 'warm' }, stack: Array.from({ length: 40 }, (_, i) => `layer-${i}:${'c'.repeat(90)}`) },
     inbox: { summary: { total: 517, returned: 25 }, entries: bigInbox(40) },
   });
 

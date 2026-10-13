@@ -153,6 +153,8 @@ import {
   computeGateLineage,
   retireInFlightCandidateAfterResult,
   liveIncumbentAfterAttachConflict,
+  ownCgroupUnits,
+  runnerUnitIsOwn,
   attachRaceSkipSummary,
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
@@ -3810,6 +3812,48 @@ describe("qualification attach race (WI-6554700010009570)", () => {
     ).resolves.toBeNull();
     await expect(liveIncumbentAfterAttachConflict({ status: "missing-identity" }, self, live)).resolves.toBeNull();
     expect(live).not.toHaveBeenCalled();
+  });
+
+  it("never treats a reservation recorded under THIS process's own unit as a live incumbent (WI-6554700010009727)", async () => {
+    // Measured 2026-10-13 03:51Z: a manual reservation with pid and runId null, whose unit was the CLI's
+    // own unit; the probe said `live` because it was probing the caller, and the run stood down on itself.
+    const ownManual = {
+      ...incumbentRunner,
+      id: "manual:e4939c92:1791863496390",
+      pid: null,
+      pidIdentity: null,
+      unit: "papercup-green-checkpoint-manual-1fxzuva.service",
+    };
+    const live = vi.fn(async () => "live" as const);
+    const units = ["user@1000.service", "papercup-green-checkpoint-manual-1fxzuva.service"];
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(ownManual as never, null), { ...self, units }, live),
+    ).resolves.toBeNull();
+    expect(live).not.toHaveBeenCalled();
+    // A DIFFERENT unit stays a real incumbent even when this process knows its own units.
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), { ...self, units }, live),
+    ).resolves.not.toBeNull();
+  });
+
+  it("reads this process's systemd units from a cgroup v2 path and fails open to [] when unreadable", () => {
+    expect(
+      ownCgroupUnits(
+        () => "0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-green-checkpoint-manual-1fxzuva.service\n",
+      ),
+    ).toEqual(["user@1000.service", "papercup-green-checkpoint-manual-1fxzuva.service"]);
+    expect(
+      ownCgroupUnits(() => "0::/user.slice/user-1000.slice/user@1000.service/papercusp-checkpoint-e4939c92.scope/sub\n"),
+    ).toEqual(["user@1000.service", "papercusp-checkpoint-e4939c92.scope"]);
+    expect(
+      ownCgroupUnits(() => {
+        throw new Error("ENOENT");
+      }),
+    ).toEqual([]);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, ["a.service"])).toBe(true);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, ["b.service"])).toBe(false);
+    expect(runnerUnitIsOwn({ unit: null }, ["a.service"])).toBe(false);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, undefined)).toBe(false);
   });
 
   it("stands down on the lock-loser terminal, which never retires the holder's in-flight marker", async () => {
