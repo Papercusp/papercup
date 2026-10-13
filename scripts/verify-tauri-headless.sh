@@ -93,7 +93,7 @@
 #     Boots the instance, runs <assertion-command...> with
 #     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DEV_URL /
 #     VERIFY_TAURI_DISPLAY exported (VERIFY_TAURI_DEV_URL is the plain
-#     http://127.0.0.1:$VERIFY_TAURI_PORT origin — use it instead of
+#     selected loopback host:$VERIFY_TAURI_PORT origin — use it instead of
 #     reconstructing the URL or parsing `tauri-agent-tools eval
 #     "location.origin"`, which can return an empty string against a live,
 #     healthy bridge; EI-21918804482820617),
@@ -170,6 +170,13 @@
 #     source the printed environment from a later agent tool call.
 #
 # ENV OVERRIDES (all optional)
+#   VERIFY_TAURI_DEV_HOST         WebView and sidecar loopback host:
+#                                127.0.0.1 (default) or localhost.
+#   VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
+#                                1 = log the first SessionChatModal CSS response
+#                                at the SPA host, including Host, status,
+#                                Content-Length, body completion, and duration.
+#                                Default 0.
 #   VERIFY_TAURI_REQUIRE_BUILT  repo-relative files/dirs (comma or space
 #                                separated) the frozen SPA MUST contain: the
 #                                paths your change edited (WI-10004972). Before
@@ -373,6 +380,33 @@
 #                                anchor that distinguishes an agent rig from the
 #                                owner's live desktop.
 set -uo pipefail
+
+verify_tauri_dev_host() {
+  local candidate="${VERIFY_TAURI_DEV_HOST:-127.0.0.1}"
+  case "$candidate" in
+    127.0.0.1|localhost) printf '%s\n' "$candidate" ;;
+    *)
+      echo "FATAL: VERIFY_TAURI_DEV_HOST must be 127.0.0.1 or localhost; got '$candidate'." >&2
+      return 2
+      ;;
+  esac
+}
+VERIFY_TAURI_DEV_HOST="$(verify_tauri_dev_host)" || exit $?
+export VERIFY_TAURI_DEV_HOST
+
+verify_tauri_dev_url() {
+  printf 'http://%s:%s' "$VERIFY_TAURI_DEV_HOST" "$1"
+}
+
+VERIFY_TAURI_TRACE_SESSION_CHAT_CSS="${VERIFY_TAURI_TRACE_SESSION_CHAT_CSS:-0}"
+case "$VERIFY_TAURI_TRACE_SESSION_CHAT_CSS" in
+  0|1) ;;
+  *)
+    echo "FATAL: VERIFY_TAURI_TRACE_SESSION_CHAT_CSS must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
+export VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
 
 # EI-21590235587564636: this wrapper can run for several minutes while a peer
 # edits the shared checkout. Bash reads a script lazily, so an in-place save of
@@ -2464,7 +2498,7 @@ write_boot_only_env_script() {
     {
       printf 'VERIFY_TAURI_PID=%q\n' "$VERIFY_TAURI_PID"
       printf 'VERIFY_TAURI_PORT=%q\n' "$VERIFY_TAURI_PORT"
-      printf 'VERIFY_TAURI_DEV_URL=%q\n' "http://127.0.0.1:$VERIFY_TAURI_PORT"
+      printf 'VERIFY_TAURI_DEV_URL=%q\n' "$(verify_tauri_dev_url "$VERIFY_TAURI_PORT")"
       printf 'VERIFY_TAURI_DISPLAY=%q\n' "$VERIFY_TAURI_DISPLAY"
       printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"
       printf 'VERIFY_TAURI_LAUNCH_PROVENANCE=%q\n' "$VERIFY_TAURI_LAUNCH_PROVENANCE"
@@ -2495,8 +2529,8 @@ write_boot_only_env_script() {
         printf 'export PAPERCUSP_WORKSPACE=%q\n' "$ISOLATED_WORKSPACE"
         printf 'export PAPERCUSP_WORKSPACE_ID=%q\n' "$ISOLATED_WORKSPACE"
         printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\n' "$ISOLATED_WORKSPACES_ROOT"
-        printf 'export PAPERCUSP_OPERATOR_BASE=%q\n' "http://127.0.0.1:$DEV_PORT"
-        printf 'export PAPERCUSP_OPERATOR_URL=%q\n' "http://127.0.0.1:$DEV_PORT"
+        printf 'export PAPERCUSP_OPERATOR_BASE=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
+        printf 'export PAPERCUSP_OPERATOR_URL=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
         printf 'export HARNESS_ADMIN_DATABASE_URL=%q\n' "$ISOLATED_ADMIN_URL"
         printf 'export HARNESS_DATABASE_URL=%q\n' "$ISOLATED_APP_URL"
         printf 'export PAPERCUSP_PG_PORT=%q\n' "$ISOLATED_PG_PORT"
@@ -2783,6 +2817,19 @@ retain_boot_attempt_evidence() {
 NODE
 }
 
+capture_isolated_pg_diagnostics() {
+  [ -n "${WORK:-}" ] && [ -n "${ISOLATED_PG_PID:-}" ] || return 0
+  # setsid gives this throwaway boot its own session. Retain only that session's
+  # process state before stop.sh kills it; omit argv so credentials cannot leak.
+  (
+    umask 077
+    {
+      date -u +%Y-%m-%dT%H:%M:%SZ
+      ps --sid "$ISOLATED_PG_PID" -o pid,ppid,stat,etimes,wchan:32,comm || true
+    } > "$WORK/isolated-pg-processes.log"
+  ) || true
+}
+
 teardown() {
   local ec=$?
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
@@ -2803,6 +2850,7 @@ teardown() {
   vh_capture_phase_stop
   vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
   log "tearing down (exit=$ec)"
+  capture_isolated_pg_diagnostics
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
   # EI-211769: the dev bridge writes a per-PID authentication token in the
@@ -3189,6 +3237,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   # never string-interpolated into the JS.
   cat > "$ISOLATED_PG_BOOT_SCRIPT" <<'PGBOOT'
 import { createServer } from 'node:net';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const repoDir = process.env.ISOLATED_PG_REPO_DIR;
@@ -3229,12 +3278,51 @@ function classifyStartupStage(message) {
   return null;
 }
 
-function reportStartupStage(message, observedStages) {
+function createStartupDiagnosticWriter(file, maxBytes = 1024 * 1024) {
+  // This sibling of the disposable data directory survives teardown. Keep raw
+  // startup output private and bounded; stdout carries only fixed stage names.
+  writeFileSync(file, '', { flag: 'wx', mode: 0o600 });
+  let written = 0;
+  return message => {
+    const remaining = maxBytes - written;
+    if (remaining <= 0) return;
+    const bytes = Buffer.from(String(message) + '\n').subarray(0, remaining);
+    appendFileSync(file, bytes);
+    written += bytes.length;
+  };
+}
+
+function reportStartupStage(message, observedStages, startupLog = { pending: '' }) {
   const stage = classifyStartupStage(message);
-  if (!stage || observedStages.has(stage)) return;
-  observedStages.add(stage);
-  // Emit fixed stage names only; never copy raw Postgres output, paths, or SQL.
-  console.log(`PG_STAGE stage=${stage}`);
+  if (stage && !observedStages.has(stage)) {
+    observedStages.add(stage);
+    // Emit fixed names only; never copy raw Postgres output, paths, or SQL.
+    console.log(`PG_STAGE stage=${stage}`);
+  }
+  if (!message.startsWith('pg: ') || !observedStages.has('initdb') ||
+      observedStages.has('postmaster-start')) return;
+  // The embedded dependency forwards stdout chunks, not complete lines.
+  startupLog.pending = (startupLog.pending + message.slice(4)).slice(-8192);
+  const lines = startupLog.pending.split(/\r?\n/);
+  startupLog.pending = lines.pop() ?? '';
+  const completedSteps = [
+    [/^creating subdirectories \.\.\. ok$/, 'subdirectories'],
+    [/^selecting dynamic shared memory implementation \.\.\. \S+$/, 'shared-memory'],
+    [/^selecting default max_connections \.\.\. \d+$/, 'max-connections'],
+    [/^selecting default shared_buffers \.\.\. \S+$/, 'shared-buffers'],
+    [/^selecting default time zone \.\.\. \S+$/, 'time-zone'],
+    [/^creating configuration files \.\.\. ok$/, 'configuration'],
+    [/^running bootstrap script \.\.\. ok$/, 'bootstrap'],
+    [/^performing post-bootstrap initialization \.\.\. ok$/, 'post-bootstrap'],
+    [/^syncing data to disk \.\.\. ok$/, 'sync'],
+  ];
+  for (const line of lines) {
+    const step = completedSteps.find(([pattern]) => pattern.test(line.trim()))?.[1];
+    const key = step && `initdb-${step}`;
+    if (!key || observedStages.has(key)) continue;
+    observedStages.add(key);
+    console.log(`PG_PROGRESS startup=${key}`);
+  }
 }
 
 // WI-10004558: give this throwaway server the SAME connection ceiling the shipped
@@ -3267,6 +3355,8 @@ console.log(
 
 let pg = null;
 const observedStartupStages = new Set();
+const startupLog = { pending: '' };
+const retainStartupDiagnostic = createStartupDiagnosticWriter(`${dataDir}.startup.log`);
 const observedMigrations = new Set();
 async function shutdown() {
   try {
@@ -3287,7 +3377,8 @@ try {
     dbSqlDir: sqlDir,
     extraPostgresSettings,
     onLog: message => {
-      reportStartupStage(message, observedStartupStages);
+      retainStartupDiagnostic(message);
+      reportStartupStage(message, observedStartupStages, startupLog);
       // The next distinct migration can only start after the preceding one
       // finishes. Provider chatter/NOTICEs and retries of one file are not
       // forward progress and must not keep a stalled boot alive.
@@ -3353,9 +3444,9 @@ PGWATCHDOG
         ISOLATED_PG_EXTENSION="${ISOLATED_PG_DECISION#extend:}"
         ISOLATED_PG_EXTENSION="${ISOLATED_PG_EXTENSION%%:*}"
         ISOLATED_PG_DEADLINE=$((ISOLATED_PG_ELAPSED + ISOLATED_PG_EXTENSION))
-        log "PG_BOOT_PROGRESS elapsed=${ISOLATED_PG_ELAPSED}s migrations=$ISOLATED_PG_PROGRESS_COUNT next_check=${ISOLATED_PG_DEADLINE}s ceiling=${ISOLATED_PG_CEILING}s"
+        log "PG_BOOT_PROGRESS elapsed=${ISOLATED_PG_ELAPSED}s progress_steps=$ISOLATED_PG_PROGRESS_COUNT next_check=${ISOLATED_PG_DEADLINE}s ceiling=${ISOLATED_PG_CEILING}s"
       else
-        echo "FATAL: isolated-db readiness ${ISOLATED_PG_DECISION##*:} after ${ISOLATED_PG_ELAPSED}s (migrations=$ISOLATED_PG_PROGRESS_COUNT) — tail:" >&2
+        echo "FATAL: isolated-db readiness ${ISOLATED_PG_DECISION##*:} after ${ISOLATED_PG_ELAPSED}s (progress_steps=$ISOLATED_PG_PROGRESS_COUNT) — tail:" >&2
         tail -40 "$ISOLATED_PG_LOG" >&2
         exit 1
       fi
@@ -3391,7 +3482,7 @@ PGWATCHDOG
   ISOLATED_UNSET_LINE="-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN"
   # IPC prefers OPERATOR_BASE over the listener port. Keep parent MCP pins
   # outside this disposable host's API boundary, including boot-only handoffs.
-  ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_OPERATOR_BASE=\"http://127.0.0.1:$DEV_PORT\" PAPERCUSP_OPERATOR_URL=\"http://127.0.0.1:$DEV_PORT\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
+  ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_OPERATOR_BASE=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_OPERATOR_URL=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
   # The disposable PG cluster has no data in common with the host backup.
   # Keep the guard, with a coordination namespace private to this run.
   ISOLATED_ENV_LINE+=" KOPIA_BACKUP_LOCK_PATH=\"$WORK/backup-guard/kopia.lock\" KOPIA_BACKUP_STATE_DIR=\"$WORK/backup-guard/state\""
@@ -3479,7 +3570,9 @@ write_and_launch_tauri() {
   OPERATOR_STARTUP_DIAGNOSTIC_DIR="${VH_RUN_DIR:-$WORK}/phases/boot/operator-startup/attempt-$BOOT_ATTEMPTS"
   mkdir -p -- "$OPERATOR_STARTUP_DIAGNOSTIC_DIR"
   OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED=0
-  local TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
+  local TAURI_DEV_URL
+  TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"
+  local OPERATOR_DEV_URL="$TAURI_DEV_URL"
   local TAURI_CONFIG
   # ONE definition of the window shape, shared by both branches below, so they
   # cannot drift on geometry. `--config` JSON REPLACES the windows array
@@ -3517,8 +3610,9 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   PAPERCUSP_BIND_HOST=127.0.0.1 \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL="$NATIVE_TERMINAL" \\
   PAPERCUSP_VERIFY_TAURI_DEV_URL="$TAURI_DEV_URL" \\
-  PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR="$OPERATOR_STARTUP_DIAGNOSTIC_DIR" \\
-  PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
+  PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR="$OPERATOR_STARTUP_DIAGNOSTIC_DIR" \\\\
+  PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS="$VERIFY_TAURI_TRACE_SESSION_CHAT_CSS" \\\\
+  PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\\\
   PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
   PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR=0 \\
   PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR=0 \\
@@ -3532,8 +3626,8 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   $OPERATOR_SOURCE_ENV_LINE \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
-  PAPERCUSP_OPERATOR_BASE="http://127.0.0.1:$DEV_PORT" \\
-  PAPERCUSP_OPERATOR_URL="http://127.0.0.1:$DEV_PORT" \\
+  PAPERCUSP_OPERATOR_BASE="$OPERATOR_DEV_URL" \\\\
+  PAPERCUSP_OPERATOR_URL="$OPERATOR_DEV_URL" \\\\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
 LAUNCH
   chmod +x "$WORK/launch.sh"
@@ -3818,8 +3912,8 @@ if [ "$ISOLATED_DB" = "1" ]; then
   }
   SIDECAR_ENVIRON="$(tr '\0' '\n' < "/proc/$SIDECAR_PID/environ" 2>/dev/null)"
   if ! grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON" ||
-     ! grep -Fxq "PAPERCUSP_OPERATOR_BASE=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON" ||
-     ! grep -Fxq "PAPERCUSP_OPERATOR_URL=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_OPERATOR_BASE=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"; then
     echo "FATAL: isolated sidecar lost its workspace, private registry or owned API pin; refusing to verify another workspace." >&2
@@ -3877,7 +3971,7 @@ log "bridge provenance verified: owner=$TAURI_LAUNCH_PROVENANCE pid=$BRIDGE_PID 
 
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
-export VERIFY_TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
+export VERIFY_TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export DISPLAY="$VERIFY_TAURI_DISPLAY"
 export VERIFY_TAURI_OWNER_SID="$TAURI_OWNER_SID"
@@ -4308,7 +4402,7 @@ fi
 # the assertion fails somewhere far from the cause — the same silent-false-green
 # shape the origin-health gate above exists to prevent.
 if [ "$ISOLATED_SEED" = "ready" ]; then
-  SEED_URL="http://127.0.0.1:$DEV_PORT/api/desktop/setup-wizard-state"
+  SEED_URL="$(verify_tauri_dev_url "$DEV_PORT")/api/desktop/setup-wizard-state"
   if ! SEED_JSON="$(node - "$SEED_URL" 2>&1 <<'READY_SEED_JS'
 const url = process.argv[2];
 const timeoutMs = 30_000;
