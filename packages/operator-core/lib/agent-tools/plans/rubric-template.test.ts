@@ -44,8 +44,8 @@ const minimalData = {
 describe('rubric template schema', () => {
   it('retains an additive 23-file guard inventory within the test runner 50-file bound', () => {
     const files = Array.from({ length: 50 }, (_, i) => `lib/guard-${i}.test.ts`);
-    expect(rubricCriterionCheckSchema.parse({ kind: 'tests', files: files.slice(0, 23) }).files)
-      .toEqual(files.slice(0, 23));
+    expect(rubricCriterionCheckSchema.parse({ kind: 'tests', files: files.slice(0, 23) }))
+      .toEqual({ kind: 'tests', files: files.slice(0, 23) });
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files }).success).toBe(true);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: [...files, 'extra.test.ts'] }).success)
       .toBe(false);
