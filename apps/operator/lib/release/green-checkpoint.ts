@@ -16183,6 +16183,11 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   // ENOSPC leg failures folded into queue.legs as `failing`, which read as code reds.
   // Apply the SAME admission check (fail-closed, like the candidate path): with no headroom
   // the tick leaves the legs unmeasured, and the lifecycle never infers anything from that.
+  // WI-6554700010009547: entry line, so a stall in the headroom probe or the leg runs is
+  // attributable from the run log (the completion line below only prints on return).
+  deps.log(
+    `P-009 repair-tick legs started at ${queue.repairHead.slice(0, 12)}`,
+  );
   if (deps.checkDiskHeadroom) {
     let headroom: { ok: boolean; summary: string };
     try {
@@ -16279,6 +16284,46 @@ async function foldRepairTickLegsIntoQueue(
  */
 export const DERIVED_FREEZE_DISPOSITION_DEADLINE_MS = 30_000;
 
+/** WI-6554700010009547: ceiling for the frozen-repair leg routing step. It reads the open
+ * leg conditions and mints/settles work-items: seconds of DB work, never minutes. */
+export const FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS = 60_000;
+
+/**
+ * WI-6554700010009547: bound ONE observational post-verdict step. Once a suite verdict
+ * exists, nothing after it may hold the run (its run-lock and checkpoint tree) open. Run
+ * b874ad21 logged `derived freeze-disposition write completed in 54ms`, then printed nothing
+ * for ~2h until the 180m self-watchdog killed it: the steps after that line had no deadline
+ * and logged nothing on entry, so the log could not say which one stalled. Every step routed
+ * through here logs `<label> started` BEFORE it awaits, so a future stall names its own step,
+ * and it resolves `false` at the deadline instead of hanging. The step's promise is abandoned,
+ * not cancelled; the run's normal exit (`releaseAndExit` → `process.exit`) ends it.
+ */
+export async function runPostVerdictStepWithDeadline(
+  label: string,
+  step: () => Promise<unknown>,
+  log: (line: string) => void,
+  deadlineMs: number,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  log(`${label} started (deadline ${deadlineMs}ms)`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const completed = await Promise.race([
+      step().then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), deadlineMs);
+      }),
+    ]);
+    log(`${label} ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
+    return completed;
+  } catch (error) {
+    log(`${label} failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** The derived disposition is observational. Once a suite verdict exists, a stuck
  * state writer must not retain the checkpoint tree and suppress the next tick. */
 export async function recordDerivedFreezeDispositionWithDeadline(
@@ -16286,24 +16331,12 @@ export async function recordDerivedFreezeDispositionWithDeadline(
   log: (line: string) => void,
   deadlineMs = DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
 ): Promise<boolean> {
-  const startedAt = Date.now();
-  log(`derived freeze-disposition write started (deadline ${deadlineMs}ms)`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const completed = await Promise.race([
-      write().then(() => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), deadlineMs);
-      }),
-    ]);
-    log(`derived freeze-disposition write ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
-    return completed;
-  } catch (error) {
-    log(`derived freeze-disposition write failed: ${error instanceof Error ? error.message : error}`);
-    return false;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return runPostVerdictStepWithDeadline(
+    "derived freeze-disposition write",
+    write,
+    log,
+    deadlineMs,
+  );
 }
 
 /**
@@ -16592,23 +16625,26 @@ export async function runGreenCheckpoint(
     finalResult.repairQueueRead?.status !== "unreadable"
   ) {
     const q = finalResult.green ? null : (finalResult.repairQueue ?? null);
-    await deps
-      .routeFrozenRepairLegsToAgents({
-        pipeline: pipelineName(cfg.integrationRoot),
-        queue:
-          q && q.candidate && q.repairHead
-            ? {
-                candidate: q.candidate,
-                repairHead: q.repairHead,
-                failingTests: q.failingTests ?? [],
-              }
-            : null,
-      })
-      .catch((e) =>
-        deps.log(
-          `warn: frozen-repair leg routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
-        ),
-      );
+    const routeLegs = deps.routeFrozenRepairLegsToAgents;
+    // WI-6554700010009547: bounded and entry-logged, like the disposition write above. A
+    // failure or a deadline is non-fatal: the held candidate stays correctly held.
+    await runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () =>
+        routeLegs({
+          pipeline: pipelineName(cfg.integrationRoot),
+          queue:
+            q && q.candidate && q.repairHead
+              ? {
+                  candidate: q.candidate,
+                  repairHead: q.repairHead,
+                  failingTests: q.failingTests ?? [],
+                }
+              : null,
+        }),
+      deps.log,
+      FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
+    );
   }
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
   // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
@@ -23165,6 +23201,12 @@ if (require.main === module) {
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
   let verdictRecordedAtMs: number | null = null;
   const emitResult = async (r: CheckpointResult): Promise<void> => {
+    // WI-6554700010009547: entry lines go to STDERR (stdout carries only the marker), so a
+    // stall between the verdict and the marker names its own step in the run log.
+    await writeStdioFlushed(
+      process.stderr,
+      `${orchestratorStdoutTag()} terminal emit started (qualification-progress stop, verdict record, marker)\n`,
+    );
     await stopQualificationProgress?.();
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
     // single marker line. CRITICAL for cross-version compat: the routine that invokes
@@ -23179,7 +23221,15 @@ if (require.main === module) {
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
       // emitted inconclusive wake from leaving its logical qualification falsely `running`.
       record: gateVerdictTargetFromEnv() ? async (result) => {
+        await writeStdioFlushed(
+          process.stderr,
+          `${orchestratorStdoutTag()} terminal verdict record started\n`,
+        );
         const recorded = await recordOwnVerdict(result);
+        await writeStdioFlushed(
+          process.stderr,
+          `${orchestratorStdoutTag()} terminal verdict record ${recorded ? "completed" : "not recorded"}\n`,
+        );
         verdictRecordedAtMs = recorded ? Date.now() : null;
         return recorded;
       } : undefined,
