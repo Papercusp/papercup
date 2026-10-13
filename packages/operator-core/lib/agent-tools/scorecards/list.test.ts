@@ -30,7 +30,7 @@ import { listScorecardPage } from '../../scorecards';
 const listScorecardPageM = vi.mocked(listScorecardPage);
 const listModule = await import('./list');
 const listTool = listModule.default;
-const { resolveScorecardListDetail, toScoresOnlyRow } = listModule;
+const { resolveScorecardListDetail, toRerunRecipeDigest, toScoresOnlyRow } = listModule;
 
 const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -201,6 +201,59 @@ describe('scorecards:list correctness payload', () => {
     expect(resolveScorecardListDetail('scores', 'EI-1')).toBe('scores');
     expect(toScoresOnlyRow(null)).toBeNull();
     expect(toScoresOnlyRow({ issueId: 'x' })).toEqual({ issueId: 'x' });
+  });
+
+  // WI-6554700010009929: in 'scores' mode the rerun recipe was ~70% of each row. Browse keeps the
+  // recipe IDENTITY and sizes every other field; the replay body returns with detail:'full'.
+  it("'scores' digests rerunRecipe to its identity plus omittedChars; 'full' keeps the replay body", async () => {
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: 'abc1234',
+      classRef: 'plan-class-feature-ship',
+      derivation: { kind: 'evaluator', note: 'd' },
+      args: { slug: 'p', current: 'a'.repeat(2_400) },
+      current: { files: 'c'.repeat(1_800) },
+      selection: { keys: 's'.repeat(600) },
+    };
+    const row = {
+      issueId: 'EI-recipe', createdAt: '2026-10-13T00:00:00.000Z', rubricRef: 'spec-test-adequacy',
+      ratings: { 'criterion-1': { rating: 'pass', evidence: 'e'.repeat(500) } }, nKeys: 1, missingKeys: [],
+      rerunRecipe,
+    } as unknown as ScorecardRow;
+
+    listScorecardPageM.mockResolvedValueOnce({ rows: [row], hasMore: false });
+    const lean = (await listTool.handler(
+      { rubricRef: 'spec-test-adequacy' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: { evidenceOmitted?: string; scorecards: Array<{ rerunRecipe: Record<string, unknown> }> } };
+    const digest = lean.data.scorecards[0].rerunRecipe;
+    expect(digest).toEqual({
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: 'abc1234',
+      classRef: 'plan-class-feature-ship',
+      derivation: { kind: 'evaluator', note: 'd' },
+      omittedChars: {
+        args: JSON.stringify(rerunRecipe.args).length,
+        current: JSON.stringify(rerunRecipe.current).length,
+        selection: JSON.stringify(rerunRecipe.selection).length,
+      },
+    });
+    expect(lean.data.evidenceOmitted).toContain('rerunRecipe');
+    expect(JSON.stringify(lean.data).length).toBeLessThan(1_200); // the ~5KB replay body is gone
+
+    listScorecardPageM.mockResolvedValueOnce({ rows: [row], hasMore: false });
+    const full = (await listTool.handler(
+      { rubricRef: 'spec-test-adequacy', detail: 'full' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: { scorecards: Array<{ rerunRecipe: unknown }> } };
+    expect(full.data.scorecards[0].rerunRecipe).toEqual(rerunRecipe);
+
+    // A recipe-less or non-object recipe passes through untouched.
+    expect(toRerunRecipeDigest(undefined)).toBeUndefined();
+    expect(toRerunRecipeDigest('opaque')).toBe('opaque');
+    expect(toRerunRecipeDigest({ schemaVersion: 1 })).toEqual({ schemaVersion: 1 });
   });
 
   it('accepts the returned keyset cursor and passes it to the scorecard page reader', async () => {
