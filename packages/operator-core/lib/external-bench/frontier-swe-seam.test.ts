@@ -6,6 +6,7 @@ import type { BenchTask } from './types';
 import type { ProcExec } from './grader/swe-bench-pro';
 import {
   checkFrontierSweIntegrity,
+  frontierSweAgentNetworkArgs,
   makeFrontierSweCloneGradeSeam,
   restoreRelocatedSessions,
   type FrontierSweEnvHandle,
@@ -104,9 +105,9 @@ describe('makeFrontierSweCloneGradeSeam', () => {
   });
 
   describe('agent-container network policy (WI-6554700010008591)', () => {
-    const runOf = async (over: Record<string, unknown>, cfg: { allowlistNetwork?: string } = {}) => {
+    const runOf = async (over: Record<string, unknown>) => {
       const { exec, calls } = fakeDocker({});
-      await makeFrontierSweCloneGradeSeam({ version: 'v', exec, ...cfg }).clone(task(over));
+      await makeFrontierSweCloneGradeSeam({ version: 'v', exec }).clone(task(over));
       return calls.find((c) => c[0] === 'run')!;
     };
     /** The value of a `docker run` option, asserting it precedes the image (an option, not a command argument). */
@@ -129,12 +130,15 @@ describe('makeFrontierSweCloneGradeSeam', () => {
       expect(run).toContain('PX_TASK_NETWORK_MODE=allowlist');
     });
 
-    it("an arm that runs its model client in-container attaches the supplied egress-restricted network for 'allowlist'", async () => {
-      const run = await runOf({ networkMode: 'allowlist' }, { allowlistNetwork: 'bench-model-egress' });
-      expect(optionValue(run, '--network')).toBe('bench-model-egress');
-      // ...but never for a 'no-network' task: the allowlist network is still egress.
-      const offline = await runOf({ networkMode: 'no-network' }, { allowlistNetwork: 'bench-model-egress' });
-      expect(optionValue(offline, '--network')).toBe('none');
+    it('an in-container model client gets the per-task egress network for EVERY mode, as upstream Harbor does (D-030)', () => {
+      for (const networkMode of ['no-network', 'none', 'allowlist']) {
+        const args = frontierSweAgentNetworkArgs(task({ networkMode }), { egressNetwork: 'egress-net-1' });
+        expect(args).toEqual(['--network', 'egress-net-1', '-e', `PX_TASK_NETWORK_MODE=${networkMode}`]);
+      }
+      // No declared mode: the client still reaches its model only through the egress network.
+      expect(frontierSweAgentNetworkArgs(task({}), { egressNetwork: 'egress-net-1' })).toEqual(['--network', 'egress-net-1']);
+      // An unknown mode still refuses, egress or not.
+      expect(() => frontierSweAgentNetworkArgs(task({ networkMode: 'public' }), { egressNetwork: 'egress-net-1' })).toThrow(/cannot enforce/);
     });
 
     it('a task with no declared mode (v1 history) keeps its historical run: no network flag, no PX_TASK env', async () => {
@@ -246,6 +250,27 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
     return { base, homesRoot, sqliteRoot, codexBinary: join(base, 'codex-musl') };
   }
   const owner = { uid: 4242, gid: 4343 };
+  /**
+   * A fake run egress. It logs into the fake docker's call list, so the order of lease events relative to docker
+   * calls is assertable.
+   */
+  function fakeEgress(log: string[][], opts: { failOpen?: boolean } = {}) {
+    let n = 0;
+    return {
+      async openTaskNetwork(tag: string) {
+        if (opts.failOpen) throw new Error('egress open failed');
+        const network = `egress-net-${++n}`;
+        log.push(['egress-open', network, tag]);
+        return {
+          network,
+          async release() {
+            log.push(['egress-release', network]);
+            return [];
+          },
+        };
+      },
+    };
+  }
   /** Stand in for the docker-exec wrapper: relocate a session dir into the per-task dir and leave the symlink. */
   function relocate(hostRoot: string, perTaskDir: string, name: string, file?: string) {
     const target = join(perTaskDir, name);
@@ -257,7 +282,7 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
   it('clone mints a per-task dir beside each shared root, mounts it over the root at the same path, mounts the musl Codex read-only, and exposes the mounts on the handle', async () => {
     const r = roots();
     const { exec, calls } = fakeDocker({});
-    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
     const h = await seam.clone(task());
     const m = h.inContainerCodex!;
     expect(m.binPath).toBe('/opt/papercusp/codex');
@@ -293,21 +318,76 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
     expect(calls.filter((c) => c[0] === 'exec')).toEqual([]);
   });
 
-  it('a failed docker run releases the per-task dirs instead of leaking them', async () => {
+  it('a failed docker run releases the per-task dirs and the egress network instead of leaking them', async () => {
     const r = roots();
-    const { exec } = fakeDocker({}, { runCode: 125 });
-    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    const { exec, calls } = fakeDocker({}, { runCode: 125 });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
     await expect(seam.clone(task())).rejects.toThrow(/docker run failed/);
     for (const root of [r.homesRoot, r.sqliteRoot]) {
       const siblings = readdirSync(dirname(root)).filter((n) => n.includes('.bench-'));
       expect(siblings).toEqual([]);
     }
+    expect(calls.map((c) => c[0])).toEqual(['egress-open', 'run', 'egress-release']);
+  });
+
+  it('clone puts the container on its own egress network for every mode and records it on the handle', async () => {
+    const r = roots();
+    for (const networkMode of ['no-network', 'allowlist']) {
+      const { exec, calls } = fakeDocker({});
+      const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
+      const h = await seam.clone(task({ networkMode }));
+      expect(calls[0]).toEqual(['egress-open', 'egress-net-1', h.instanceId]);
+      const run = calls.find((c) => c[0] === 'run')!;
+      expect(run[run.indexOf('--network') + 1]).toBe('egress-net-1');
+      expect(run).toContain(`PX_TASK_NETWORK_MODE=${networkMode}`);
+      expect(h.taskNetwork).toBe('egress-net-1');
+      await seam.teardown(h);
+    }
+  });
+
+  it('teardown releases the egress network only after the container is removed, and only once', async () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
+    const h = await seam.clone(task({ networkMode: 'allowlist' }));
+    await seam.teardown(h);
+    await seam.teardown(h);
+    const rmAt = calls.findIndex((c) => c[0] === 'rm');
+    const releases = calls.flatMap((c, i) => (c[0] === 'egress-release' ? [i] : []));
+    expect(releases).toHaveLength(1);
+    expect(releases[0]).toBeGreaterThan(rmAt);
+  });
+
+  it('an unknown declared mode refuses before any egress network is opened', async () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
+    await expect(seam.clone(task({ networkMode: 'public' }))).rejects.toThrow(/cannot enforce/);
+    expect(calls).toEqual([]);
+  });
+
+  it('an egress that cannot open a network fails the clone before any container or per-task dir exists', async () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls, { failOpen: true }) });
+    await expect(seam.clone(task())).rejects.toThrow(/egress open failed/);
+    expect(calls).toEqual([]);
+    for (const root of [r.homesRoot, r.sqliteRoot]) {
+      expect(existsSync(dirname(root)) ? readdirSync(dirname(root)).filter((n) => n.includes('.bench-')) : []).toEqual([]);
+    }
+  });
+
+  it('inContainerCodex and egress must be configured together', () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    expect(() => makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } })).toThrow(/requires egress/);
+    expect(() => makeFrontierSweCloneGradeSeam({ version: 'v', exec, egress: fakeEgress(calls) })).toThrow(/only for an in-container Codex/);
   });
 
   it('teardown hands the mounts back to the host user inside the container BEFORE removing it, then moves each relocated session back into its shared root', async () => {
     const r = roots();
     const { exec, calls } = fakeDocker({});
-    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner }, egress: fakeEgress(calls) });
     const h = await seam.clone(task());
     const [homes, sqlite] = h.inContainerCodex!.roots;
     // Another session that never ran in this container.
@@ -358,7 +438,7 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
     const r = roots();
     const { exec, calls } = fakeDocker({});
     const mk = (over: Record<string, unknown>) => () =>
-      makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner, ...over } });
+      makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner, ...over }, egress: fakeEgress(calls) });
     expect(mk({ homesRoot: 'relative/homes' })).toThrow(/must be absolute/);
     expect(mk({ codexBinary: join(r.base, 'co,dex') })).toThrow(/contains ','/);
     expect(mk({ sqliteRoot: join(r.homesRoot, 'sqlite') })).toThrow(/must not nest/);

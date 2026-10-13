@@ -24,6 +24,7 @@ import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward }
 import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
 import { checkContainerEvidenceIntegrity, FRONTIER_SWE_PROTECTED_PATHS, type EvidenceIntegrity } from './evidence-integrity';
 import { CONTAINER_CODEX_BIN_PATH, resolveContainerCodexBinary } from './container-exec-target';
+import type { BenchEgress, TaskNetworkLease } from './bench-egress';
 import { codexHomesRoot, codexSqliteHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
@@ -39,6 +40,11 @@ export interface FrontierSweEnvHandle {
    * at `binPath`.
    */
   inContainerCodex?: InContainerCodexMounts;
+  /**
+   * The per-task `--internal` egress network the container is on (D-031), when the seam has an egress. Plain data:
+   * the lease that releases it lives inside the seam, so the handle stays serializable.
+   */
+  taskNetwork?: string;
 }
 
 /** The per-task mounts clone() made for an in-container Codex arm. */
@@ -85,12 +91,13 @@ export interface FrontierSweSeamConfig {
    */
   extraRunArgs?: string[];
   /**
-   * The docker network to attach an agent container to for a v2 `network_mode = "allowlist"` task, for an arm
-   * that runs its model client INSIDE the container. It must already restrict egress to the model endpoints —
-   * the seam neither creates nor audits it. Unset (the default, and correct for the host-side model loop in
-   * frontier-swe-runagent.ts) → `--network none`.
+   * The run's egress (bench-egress.ts, D-030 / D-031) for an arm that runs its model client INSIDE the container.
+   * Required with {@link inContainerCodex} and refused without it. clone() opens one `--internal` network per task
+   * on which only the gateway and MCP are reachable (as `papercusp-egress:<port>`), and puts the container on it for
+   * EVERY network mode, mirroring upstream Harbor, which gives the agent its model host on no-network tasks too.
+   * teardown() releases it after the container is gone. Unset (the host-side model loop) → `--network none`.
    */
-  allowlistNetwork?: string;
+  egress?: Pick<BenchEgress, 'openTaskNetwork'>;
   /**
    * The vendored v1 Proximal-Labs/frontier-swe checkout (default PAPERCUSP_FRONTIER_SWE_DIR). For a v1 (shared)
    * task the seam `docker cp`s `<repoDir>/tasks/<id>/tests` into the container at `/tests` at GRADE time (and
@@ -160,24 +167,29 @@ const NETWORK_FLAG = /^--net(work)?(=|$)/;
  *     google.com, github.com and the task's own toolchain origin are UNREACHABLE, so an open container both
  *     breaks that contract and lets an agent fetch answers or toolchains the task deliberately baked offline.
  *
- * frontier-swe-runagent.ts runs the model loop on the HOST (the gateway) and only `docker exec`s tools into the
- * container, so the container needs no model host: `--network none` satisfies `allowlist` (zero hosts is a subset
- * of the allowlist). An arm that runs a model client INSIDE the container passes `allowlistNetwork` instead.
+ * A host-side model loop runs on the HOST (the gateway) and only `docker exec`s tools into the container, so the
+ * container needs no model host: `--network none` satisfies `allowlist` (zero hosts is a subset of the allowlist).
  *
- * Fail closed: a declared mode this function does not know THROWS — never a silent unrestricted run. A task with
- * no declared mode (v1 history rows) keeps its historical unrestricted run. `PX_TASK_NETWORK_MODE` mirrors
- * px-eval's sandbox env so the image's own preflight checks the same policy we applied.
+ * An arm that runs its model client INSIDE the container passes `egressNetwork` — a per-task `--internal` network
+ * on which only the gateway and MCP are reachable (bench-egress.ts, D-030 / D-031). It is used for EVERY mode,
+ * no-network included: upstream Harbor's `merge_extra_allowlists` likewise turns no-network into an allowlist of
+ * the agent's model host. A task with no declared mode gets it too, because the in-container client can only reach
+ * its model through that network.
+ *
+ * Fail closed: a declared mode this function does not know THROWS — never a silent unrestricted run. Without an
+ * egress network, a task with no declared mode (v1 history rows) keeps its historical unrestricted run.
+ * `PX_TASK_NETWORK_MODE` mirrors px-eval's sandbox env so the image's own preflight checks the declared policy.
  */
-export function frontierSweAgentNetworkArgs(task: BenchTask, opts: { allowlistNetwork?: string } = {}): string[] {
+export function frontierSweAgentNetworkArgs(task: BenchTask, opts: { egressNetwork?: string } = {}): string[] {
+  const egress = opts.egressNetwork?.trim();
   const raw = task.graderMeta?.['networkMode'];
-  if (raw === undefined || raw === null) return [];
+  if (raw === undefined || raw === null) return egress ? ['--network', egress] : [];
   if (typeof raw !== 'string' || raw.trim() === '') {
     throw new Error(`FrontierSWE clone: task ${task.instanceId} has a malformed networkMode (${JSON.stringify(raw)}) — refusing to guess a network policy`);
   }
   const mode = raw.trim();
   const env = ['-e', `PX_TASK_NETWORK_MODE=${mode}`];
-  if (mode === 'no-network' || mode === 'none') return ['--network', 'none', ...env];
-  if (mode === 'allowlist') return ['--network', opts.allowlistNetwork?.trim() || 'none', ...env];
+  if (mode === 'no-network' || mode === 'none' || mode === 'allowlist') return ['--network', egress || 'none', ...env];
   throw new Error(`FrontierSWE clone: task ${task.instanceId} declares network_mode '${mode}', which this seam cannot enforce — refusing an unrestricted run`);
 }
 
@@ -294,6 +306,16 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
   }
   const exec = cfg.exec ?? liveProcExec;
   const codex = cfg.inContainerCodex ? resolveInContainerCodexConfig(cfg.inContainerCodex) : null;
+  // An in-container Codex reaches its model only through the egress, and a host-side loop must not get one.
+  if (codex && !cfg.egress) throw new Error('FrontierSWE seam: inContainerCodex requires egress — the in-container Codex has no other route to its model');
+  if (cfg.egress && !codex) throw new Error('FrontierSWE seam: egress is only for an in-container Codex arm — a host-side model loop runs with --network none');
+  /** Open per-task egress leases, by container id (the handle carries only the network name). */
+  const leases = new Map<string, TaskNetworkLease>();
+  const releaseLease = async (lease: TaskNetworkLease | undefined, instanceId: string) => {
+    if (!lease) return;
+    const errors = await lease.release();
+    if (errors.length) console.warn(`[frontier-swe-seam] ${instanceId}: egress network release: ${errors.join('; ').slice(0, 500)}`);
+  };
   const grader = makeFrontierSweGrader(
     {
       version: cfg.version,
@@ -311,7 +333,10 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
       const image = task.graderMeta?.['dockerImage'] as string | undefined;
       if (!image) throw new Error(`FrontierSWE clone: task ${task.instanceId} has no dockerImage in graderMeta`);
       const gpus = Number(task.graderMeta?.['gpus'] ?? 0);
-      const runArgs = ['run', '-d', ...frontierSweAgentNetworkArgs(task, { allowlistNetwork: cfg.allowlistNetwork })];
+      // Validate the declared mode BEFORE opening an egress lease, so a refusal cannot leak a network.
+      frontierSweAgentNetworkArgs(task);
+      const lease = cfg.egress ? await cfg.egress.openTaskNetwork(task.instanceId) : undefined;
+      const runArgs = ['run', '-d', ...frontierSweAgentNetworkArgs(task, { egressNetwork: lease?.network })];
       if (gpus > 0) runArgs.push('--gpus', 'all');
       if (cfg.extraRunArgs?.length) runArgs.push(...cfg.extraRunArgs);
       // v2 oracle stage: every v2 image's ENTRYPOINT (entrypoint.sh, run once at container init) gates its oracle
@@ -332,6 +357,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
           runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary));
         } catch (e) {
           restoreRelocatedSessions(roots);
+          await releaseLease(lease, task.instanceId);
           throw e;
         }
       }
@@ -342,14 +368,23 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
         r = await exec('docker', runArgs);
       } catch (e) {
         if (mounts) restoreRelocatedSessions(mounts.roots);
+        await releaseLease(lease, task.instanceId);
         throw e;
       }
       const containerId = r.stdout.trim().split('\n').pop() ?? '';
       if (r.code !== 0 || !containerId) {
         if (mounts) restoreRelocatedSessions(mounts.roots);
+        await releaseLease(lease, task.instanceId);
         throw new Error(`FrontierSWE clone: docker run failed for ${task.instanceId} (${image}) — exit ${r.code}: ${r.stderr.slice(0, 300)}`);
       }
-      return { containerId, image, instanceId: task.instanceId, ...(mounts ? { inContainerCodex: mounts } : {}) };
+      if (lease) leases.set(containerId, lease);
+      return {
+        containerId,
+        image,
+        instanceId: task.instanceId,
+        ...(mounts ? { inContainerCodex: mounts } : {}),
+        ...(lease ? { taskNetwork: lease.network } : {}),
+      };
     },
 
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
@@ -410,6 +445,14 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
         await exec('docker', ['rm', '-f', handle.containerId]);
       } catch {
         /* swallow — a teardown failure must never break the run */
+      }
+      // The task network goes only after its container (docker refuses to remove a network with live endpoints).
+      const lease = leases.get(handle.containerId);
+      leases.delete(handle.containerId);
+      try {
+        await releaseLease(lease, handle.instanceId);
+      } catch {
+        /* swallow — release is never-throw already; this guards a custom egress */
       }
       if (m) {
         const report = restoreRelocatedSessions(m.roots);

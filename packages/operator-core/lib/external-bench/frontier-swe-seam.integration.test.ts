@@ -18,21 +18,26 @@ import { join } from 'node:path';
 import type { BenchTask } from './types';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import { materializeDockerExecWrapper } from './container-exec-target';
+import { startBenchEgress, type BenchEgress } from './bench-egress';
 
 let base: string;
 const handles: FrontierSweEnvHandle[] = [];
+let egress: BenchEgress | undefined;
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), 'fswe-seam-int-'));
-  execFileSync('docker', ['image', 'inspect', 'alpine'], { stdio: 'ignore' });
+  for (const image of ['alpine', 'nginx:alpine']) execFileSync('docker', ['image', 'inspect', image], { stdio: 'ignore' });
 });
 
-afterAll(() => {
+afterAll(async () => {
   for (const h of handles) spawnSync('docker', ['rm', '-f', h.containerId], { stdio: 'ignore' });
+  await egress?.stop();
   // Anything a failed run left root-owned is removed from inside a throwaway container.
   spawnSync('docker', ['run', '--rm', '--network', 'none', '-v', `${base}:/w`, 'alpine', 'rm', '-rf', '/w/x'], { stdio: 'ignore' });
   rmSync(base, { recursive: true, force: true });
-});
+  // Cleanup is several sequential daemon calls; on this host one `docker rm`/`create` can stall for minutes
+  // (EI-25661823593517912), so the default 90s hook budget failed a run whose test had passed.
+}, 300_000);
 
 function task(): BenchTask {
   return {
@@ -74,10 +79,24 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     chmodSync(stub, 0o755);
 
     const hostOwner = { uid: process.getuid!(), gid: process.getgid!() };
-    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', inContainerCodex: { homesRoot, sqliteRoot, codexBinary: stub, hostOwner } });
+    // A real run egress (D-030 / D-031). This test exercises only the network attachment, so nothing listens on
+    // the relay target; bench-egress.integration.test.ts covers reachability.
+    egress = await startBenchEgress({ runId: 'seam-int', endpoints: [{ name: 'gw', listenPort: 8788, targetPort: 9 }] });
+    const seam = makeFrontierSweCloneGradeSeam({
+      version: 'v',
+      inContainerCodex: { homesRoot, sqliteRoot, codexBinary: stub, hostOwner },
+      egress,
+    });
     const h = await seam.clone(task());
     handles.push(h);
     const m = h.inContainerCodex!;
+    // The container is on its own internal task network and nothing else.
+    expect(h.taskNetwork).toMatch(/^pc-egress-seam-int-[0-9a-f]{6}-t1-seam-int-task$/);
+    const nets = execFileSync('docker', ['inspect', '-f', '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}', h.containerId], {
+      encoding: 'utf8',
+    });
+    expect(nets.trim().split(/\s+/)).toEqual([h.taskNetwork]);
+    expect(execFileSync('docker', ['network', 'inspect', '-f', '{{.Internal}}', h.taskNetwork!], { encoding: 'utf8' }).trim()).toBe('true');
     const { wrapperPath } = materializeDockerExecWrapper(
       {
         kind: 'docker-exec',
@@ -105,6 +124,9 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     await seam.teardown(h);
 
     expect(spawnSync('docker', ['inspect', h.containerId], { stdio: 'ignore' }).status).not.toBe(0);
+    // The task network went with the container; the run's egress stays up for other tasks.
+    expect(spawnSync('docker', ['network', 'inspect', h.taskNetwork!], { stdio: 'ignore' }).status).not.toBe(0);
+    expect(spawnSync('docker', ['inspect', egress.sidecarId], { stdio: 'ignore' }).status).toBe(0);
     for (const { perTaskDir } of m.roots) expect(existsSync(perTaskDir)).toBe(false);
     // The session dir is a real dir in its shared root again, with everything the container wrote.
     expect(lstatSync(sessionHome).isSymbolicLink()).toBe(false);
@@ -120,5 +142,5 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     rmSync(sqliteHome, { recursive: true });
     expect(existsSync(sessionHome) || existsSync(sqliteHome)).toBe(false);
     expect(readFileSync(join(homesRoot, 'session-12', 'auth.json'), 'utf8')).toContain('other-session');
-  }, 60_000);
+  }, 90_000);
 });
