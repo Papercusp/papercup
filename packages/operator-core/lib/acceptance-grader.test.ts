@@ -11,6 +11,7 @@ import {
   classifyAcceptanceGraderParkedWithoutEmit,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
+  readOpenGradingAnswererTerminalFailure,
   hasAcceptanceGraderNativeApiError,
   launchAcceptanceGrader,
   isAcceptanceGradingRequestForPlan,
@@ -99,6 +100,68 @@ describe('native terminal API-error provenance', () => {
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
       ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
     })).resolves.toBeNull();
+  });
+});
+
+describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => {
+  const input = { workspaceId: 'grader-ws', conversationId: 'grader-conv', answeringOwnerId: 'su-answerer' };
+  const target = { ok: true, ownerId: input.answeringOwnerId, agent: 'claude', sessionId: 'native-answerer' };
+  const native = JSON.stringify({ type: 'assistant', sessionId: target.sessionId,
+    isApiErrorMessage: true, apiErrorStatus: 429, message: { role: 'assistant', stop_reason: 'end_turn' } });
+  const log = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n❯';
+  function dependencies() {
+    const task = { taskId: 'exact-task', sessionId: target.sessionId, logPath: 'answerer.log', endedAt: null };
+    return {
+      resolveTarget: vi.fn(async () => target as Awaited<ReturnType<typeof import('./agent-launch-core').resolveResumeTarget>>),
+      findTranscript: vi.fn(async () => 'answerer.jsonl'),
+      listTasks: vi.fn(async () => [task] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>),
+      killTask: vi.fn(async () => ({ ok: true }) as Awaited<ReturnType<typeof import('./task-manager/control').killTask>>),
+      readLogTail: vi.fn((path: string) => path === 'answerer.jsonl' ? native : log),
+    };
+  }
+
+  it('binds the native failure to the current answerer task and retires only that task', async () => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(deps.findTranscript).toHaveBeenCalledWith(target.sessionId, { owner: input.answeringOwnerId });
+    expect(deps.listTasks).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId, classes: ['agent-session'], limit: 1,
+    }));
+    expect(await failure?.retire?.()).toBe(true);
+    expect(deps.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
+  it('keeps a task from another native incarnation untouched', async () => {
+    const deps = dependencies();
+    deps.listTasks.mockResolvedValue([{ taskId: 'new-task', sessionId: 'new-native', logPath: 'new.log' }] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>);
+    expect(await readOpenGradingAnswererTerminalFailure(input, deps)).toBeNull();
+    expect(deps.killTask).not.toHaveBeenCalled();
+  });
+
+  it('awaits asynchronous native readers before inspecting and revalidating the turn', async () => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, {
+      ...deps, readLogTail: async (path) => path === 'answerer.jsonl' ? native : log,
+    });
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(await failure?.retire?.()).toBe(true);
+    expect(deps.killTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['task', 'native-turn', 'native-binding'])('refuses retirement after a concurrent %s change', async (change) => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).not.toBeNull();
+    if (change === 'task') {
+      deps.listTasks.mockResolvedValue([{ taskId: 'new-task', sessionId: target.sessionId, logPath: 'new.log' }] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>);
+    } else if (change === 'native-turn') {
+      deps.readLogTail.mockImplementation((path) => path === 'answerer.jsonl' ? native + '\n' + JSON.stringify({ type: 'user', sessionId: target.sessionId }) : log);
+    } else {
+      deps.resolveTarget.mockResolvedValue({ ...target, sessionId: 'new-native' } as never);
+    }
+    expect(await failure?.retire?.()).toBe(false);
+    expect(deps.killTask).not.toHaveBeenCalled();
   });
 });
 

@@ -1953,39 +1953,54 @@ type OpenGradingAnswererFailure = AcceptanceGraderTerminalFailure & {
 };
 
 /** Inspect the CURRENT answering incarnation, never the routed expert's old transcript. */
-async function readOpenGradingAnswererTerminalFailure(input: {
+export async function readOpenGradingAnswererTerminalFailure(input: {
   workspaceId: string; conversationId: string; answeringOwnerId: string;
-}): Promise<OpenGradingAnswererFailure | null> {
+}, deps: {
+  resolveTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
+  findTranscript?: typeof import('./claude-sessions').findSessionTranscript;
+  listTasks?: typeof listTasks;
+  killTask?: typeof killTask;
+  readLogTail?: AcceptanceGraderLogTailReader;
+} = {}): Promise<OpenGradingAnswererFailure | null> {
   const [{ resolveResumeTarget }, { findSessionTranscript }] = await Promise.all([
     import('./agent-launch-core'), import('./claude-sessions'),
   ]);
-  const target = await resolveResumeTarget({ agentId: input.answeringOwnerId });
+  const resolveTarget = deps.resolveTarget ?? resolveResumeTarget;
+  const findTranscript = deps.findTranscript ?? findSessionTranscript;
+  const readTasks = deps.listTasks ?? listTasks;
+  const readTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+  const taskFilter = { workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId,
+    classes: ['agent-session'] as Array<'agent-session'>, includeEnded: true, limit: 1 };
+  const target = await resolveTarget({ agentId: input.answeringOwnerId });
   if (!target.ok || target.ownerId !== input.answeringOwnerId ||
       !['claude', 'claude-code'].includes(target.agent ?? '') || !target.sessionId) return null;
   const [path, tasks] = await Promise.all([
-    findSessionTranscript(target.sessionId, { owner: input.answeringOwnerId }),
-    listTasks({ workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId,
-      classes: ['agent-session'], includeEnded: true, limit: 1 }),
+    findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
+    readTasks(taskFilter),
   ]);
   const task = tasks[0];
   // An unbound task, a newer incarnation, or an unreadable transcript is not failure evidence.
   if (!path || !task?.logPath || task.sessionId !== target.sessionId) return null;
-  const nativeTail = readAcceptanceGraderLogTail(path);
+  const nativeTail = await readTail(path);
   if (!hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
   const failure = await detectAcceptanceGraderTerminalFailure(task.logPath, {
-    readLogTail: readAcceptanceGraderLogTail, nativeTranscriptPath: path,
+    readLogTail: readTail, nativeTranscriptPath: path,
     nativeSessionId: target.sessionId, maxRechecks: 0, detectStartupStall: false,
   });
   if (!failure) return null;
   return {
     ...failure,
     retire: async () => {
-      const current = await resolveResumeTarget({ agentId: input.answeringOwnerId });
+      const [current, currentTasks] = await Promise.all([
+        resolveTarget({ agentId: input.answeringOwnerId }), readTasks(taskFilter),
+      ]);
+      const currentTask = currentTasks[0];
       if (!current.ok || current.ownerId !== input.answeringOwnerId ||
           current.sessionId !== target.sessionId || current.agent !== target.agent ||
-          readAcceptanceGraderLogTail(path) !== nativeTail) return false;
-      if (task.endedAt) return true;
-      const result = await killTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+          currentTask?.taskId !== task.taskId || currentTask.sessionId !== target.sessionId ||
+          await readTail(path) !== nativeTail) return false;
+      if (currentTask.endedAt) return true;
+      const result = await (deps.killTask ?? killTask)(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
       return result.ok || result.error === 'not_live' || result.error === 'task_not_found';
     },
   };
@@ -2009,6 +2024,7 @@ export async function reconcileOpenGradingCascades(
   deps: {
     nowMs?: number;
     readTerminalFailure?: typeof readOpenGradingAnswererTerminalFailure;
+    continueDispatch?: typeof import('./consult/consult-dispatch').continueCascadeDispatchProd;
   } = {},
 ): Promise<{
   liveConversationId: string | null;
@@ -2131,7 +2147,7 @@ export async function reconcileOpenGradingCascades(
         if (recovery === 'pending') {
           // The durable consult launch lease outlives this request. It owns the
           // next dispatch, including the existing independence and model routing.
-          void continueCascadeDispatchProd(params.workspaceId, row.conversation_id, {
+          void (deps.continueDispatch ?? continueCascadeDispatchProd)(params.workspaceId, row.conversation_id, {
             workspaceId: params.workspaceId, harnessSlug: null, launchedBy: ACCEPTANCE_GRADING_SWEEP_ACTOR,
           }).catch(() => {});
         }
