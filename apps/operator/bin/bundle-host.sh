@@ -95,6 +95,13 @@ HELPER_DIR="$OPERATOR_DIR/bin"
 # checks) and the gate itself start under the committed-source loader, so each runs its committed
 # (HEAD) bytes: a held restricted write to a helper cannot run here with the network. A missing
 # loader makes node fail, which refuses the build (fail closed), never an unjudged run.
+# NODE_OPTIONS preloads run before argv imports. An inherited tsx hook would
+# therefore transform TypeScript before our committed-source hook judges it;
+# returning the raw HEAD bytes at that point leaves an untransformed declare
+# for Node to parse. Use the same loader-first ordering as censusSpawnArgs,
+# including descendants that clear execArgv. Always prefix it: an inherited
+# copy may itself appear after tsx, and repeated imports are cached by Node.
+export NODE_OPTIONS="--import=\"$REPO_ROOT/scripts/lib/committed-source-loader.mjs\" ${NODE_OPTIONS:-}"
 COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mjs")
 
 # EI-21252421327077269: install:safe serializes WRITERS, but a systemd restart
@@ -136,6 +143,8 @@ OUTDIR="$(dirname "$OUTFILE")"
 # Bare ESM imports resolve beside the generated file, independently of cwd.
 # Default outputs inherit this checkout's node_modules; an explicit output
 # elsewhere needs the same maintained dependencies before it can run.
+# This initializer owns the output's dependency path. Callers use it as
+# prepared; another `ln -s` follows its directory link into the donor.
 prepare_host_runtime_dependencies() { # <repo root> <out dir>
   local repo_root="$1" out_dir="$2" physical_out
   mkdir -p "$out_dir" || return 1
@@ -146,7 +155,15 @@ prepare_host_runtime_dependencies() { # <repo root> <out dir>
       echo "ERROR: custom host output requires $repo_root/node_modules" >&2
       return 1
     }
-    ln -s "$repo_root/node_modules" "$out_dir/node_modules" || return 1
+    # Create exactly this path. `ln -s` can descend into a directory (including
+    # a directory symlink) created after the absent-path check and write into
+    # the shared donor. Node's symlink syscall refuses an existing destination
+    # atomically; the directory check below validates a concurrent winner.
+    node -e '
+const fs = require("node:fs");
+try { fs.symlinkSync(process.argv[1], process.argv[2], "dir"); }
+catch (error) { if (error.code !== "EEXIST") throw error; }
+' "$repo_root/node_modules" "$out_dir/node_modules" || return 1
   fi
   # Preserve caller-supplied dependencies; never replace a directory or link.
   [[ -d "$out_dir/node_modules" ]] || {
