@@ -1598,6 +1598,7 @@ export async function claimAdvSessionResume(
             WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
               AND successor.id > adv_sessions.id
          )
+       FOR UPDATE
     `;
     if (!target) return false;
     if (target.retired_at != null) return 'retired' as const;
