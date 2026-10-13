@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
 const source = vi.hoisted(() => ({ root: '/portal' }));
@@ -35,6 +36,66 @@ const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unk
 afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
 
 describe('portable Playwright ledger reporter', () => {
+  it.each(['baseline', 'copy-baseline', 'mutant'])(
+    'persists the original mutation descriptor and test bytes for the %s leg', async leg => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-mutation-'));
+      const file = join(dir, 'guard.spec.ts');
+      const contents = 'test("preserves the conversation", () => {});';
+      const descriptor = {
+        schemaVersion: 1,
+        probeInvocationId: 'playwright-qualified-probe',
+        mode: 'copy-out',
+        subjectPath: 'src/conversation.tsx',
+        mutateExpression: 's/created.chatId/previous.chatId/',
+        againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64),
+        subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-created.chatId\n+previous.chatId\n',
+        mutantDiffTruncated: false,
+        testCommandSha256: 'c'.repeat(64),
+        testCommand: 'npx playwright test guard.spec.ts',
+      };
+      try {
+        writeFileSync(file, contents);
+        source.root = dir;
+        vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
+        vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+        vi.stubEnv('PAPERCUSP_MUTATION_PHASE', leg);
+        vi.stubEnv('PAPERCUSP_MUTATION_DESCRIPTOR', JSON.stringify(descriptor));
+        sql.mockReset().mockResolvedValue([{ id: '6791' }]);
+        const reporter = new Reporter();
+        reporter.onBegin();
+        // The invocation is captured before tests run, even if a test changes the environment.
+        vi.stubEnv('PAPERCUSP_MUTATION_DESCRIPTOR', '{}');
+        reporter.onTestEnd({ title: 'conversation guard', location: { file } } as never,
+          { status: leg === 'mutant' ? 'failed' : 'passed', startTime: new Date(), duration: 1,
+            errors: leg === 'mutant' ? [{ message: 'expected blank conversation' }] : [] } as never);
+        await reporter.onEnd(); await reporter.onExit();
+        const details = sql.mock.calls[0]!.at(-1);
+        expect(parseTestRunExecutionDetails(details)?.mutation).toEqual({
+          ...descriptor, leg,
+          testFileSha256: createHash('sha256').update(contents).digest('hex'),
+        });
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+  it.each(['', '{', '{}'])(
+    'keeps an absent or invalid mutation export %j from invalidating the ledger row', async descriptor => {
+      vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+      vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'mutant');
+      vi.stubEnv('PAPERCUSP_MUTATION_DESCRIPTOR', descriptor);
+      sql.mockReset().mockResolvedValue([{ id: '6792' }]);
+      const reporter = new Reporter();
+      reporter.onBegin();
+      reporter.onTestEnd({ title: 'legacy guard', location: { file: '/portal/guard.spec.ts' } } as never,
+        { status: 'failed', startTime: new Date(), duration: 1, errors: [] } as never);
+      await reporter.onEnd(); await reporter.onExit();
+      const details = parseTestRunExecutionDetails(sql.mock.calls[0]!.at(-1));
+      expect(details).toMatchObject({ mutationPhase: 'mutant', failed: 1 });
+      expect(details).not.toHaveProperty('mutation');
+    });
+
   it.each(['', '1'])('prepares owned native custody with database isolation flag %j', async isolation => {
     const dir = mkdtempSync(join(tmpdir(), 'native-runtime-reader-'));
     const receipt = join(dir, 'receipt.json');

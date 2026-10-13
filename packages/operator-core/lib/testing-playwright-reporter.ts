@@ -36,11 +36,18 @@ import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-s
 import {
   describeWorktreeDirt,
   resolveMutationProbePhase,
+  sha256OfTestFile,
   resolveTestRunHarnessSlug,
   resolveTestRunWorkspaceId,
   appendTestRunReceipts,
   reporterWriteBudget,
 } from '@papercusp/test-config/admin-test-runs-reporter';
+import {
+  mutationDescriptorForRow,
+  readMutationInvocationDescriptor,
+  type MutationDescriptor,
+  type MutationInvocationDescriptor,
+} from '@papercusp/test-config/mutation-descriptor';
 import { posix, relative } from 'node:path';
 import { prepareNativeRuntimeReader } from './testing-native-runtime';
 export { prepareNativeRuntimeReader } from './testing-native-runtime';
@@ -84,6 +91,7 @@ interface TestRunRow {
   finishedAt: Date;
   outputTail: string | null;
   worktreeDirty: boolean;
+  mutation?: MutationDescriptor;
   passed: number;
   failed: number;
   skipped: number;
@@ -137,7 +145,8 @@ export function playwrightExecutionDetails(
     failed: row.failed,
     skipped: row.skipped,
     collectionFailed: false,
-    mutationPhase: resolveMutationProbePhase(),
+    mutationPhase: row.mutation?.leg ?? resolveMutationProbePhase(),
+    ...(row.mutation ? { mutation: row.mutation } : {}),
     commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
     ...(row.runtimeEnvironmentBefore ? {
@@ -315,6 +324,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private runtimeReader?: RuntimeReader;
   private runtimePreparationFailed = false;
   private runtimeBefore?: RuntimeCapture;
+  private mutationInvocation: MutationInvocationDescriptor | null = null;
 
   constructor(options: { readRuntimeEnvironment?: RuntimeReader } = {}) {
     this.runtimeReader = options.readRuntimeEnvironment;
@@ -323,6 +333,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
+    this.mutationInvocation = readMutationInvocationDescriptor();
     let preparationError: unknown;
     try {
       this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
@@ -449,6 +460,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               finishedAt: new Date(agg.finishedAt),
               outputTail,
               worktreeDirty,
+              mutation: mutationDescriptorForRow(this.mutationInvocation, resolveMutationProbePhase(),
+                sha256OfTestFile(file)),
               passed: agg.passed,
               failed: agg.failed,
               skipped: agg.skipped,
